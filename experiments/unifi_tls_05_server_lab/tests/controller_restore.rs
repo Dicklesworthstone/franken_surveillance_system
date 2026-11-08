@@ -249,9 +249,22 @@ fn scenario(case: &'static str) -> Test {
     let scheduled = case == "scheduled";
     let unit = format!("fss-unifi-restore-fixture-{}", std::process::id());
     let _timer = TimerUnit(scheduled.then_some(unit.clone()));
-    let output_path = temp.0.join("scheduled.stdout");
-    let error_path = temp.0.join("scheduled.stderr");
     let mut cmd = if scheduled {
+        let user = Command::new("id").arg("-un").output()?;
+        let group = Command::new("id").arg("-gn").output()?;
+        if !user.status.success() || !group.status.success() {
+            return Err("cannot identify fixture user".into());
+        }
+        let user = std::str::from_utf8(&user.stdout)?.trim();
+        let group = std::str::from_utf8(&group.stdout)?.trim();
+        if [user, group].iter().any(|s| {
+            s.is_empty()
+                || !s
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        }) {
+            return Err("invalid fixture identity".into());
+        }
         let mut command = Command::new("sudo");
         command
             .args([
@@ -263,14 +276,11 @@ fn scenario(case: &'static str) -> Test {
                 "--timer-property=AccuracySec=1s",
             ])
             .arg(format!("--unit={unit}"))
-            .arg(format!(
-                "--property=StandardOutput=file:{}",
-                output_path.display()
-            ))
-            .arg(format!(
-                "--property=StandardError=file:{}",
-                error_path.display()
-            ))
+            .arg(format!("--uid={user}"))
+            .arg(format!("--gid={group}"))
+            .arg("--property=UMask=0077")
+            .arg("--property=StandardOutput=journal")
+            .arg("--property=StandardError=journal")
             .arg(env!("CARGO_BIN_EXE_unifi_controller_restore"));
         command
     } else {
@@ -322,21 +332,6 @@ fn scenario(case: &'static str) -> Test {
         }
         let limit = Instant::now() + Duration::from_secs(20);
         loop {
-            let output = std::fs::read_to_string(&output_path).unwrap_or_default();
-            if output.contains("restore_claim_observed_effect_unsettled") && journal.is_dir() {
-                break;
-            }
-            if Instant::now() >= limit {
-                return Err(format!(
-                    "scheduled restore did not complete: {}",
-                    std::fs::read_to_string(&error_path).unwrap_or_default()
-                )
-                .into());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let limit = Instant::now() + Duration::from_secs(5);
-        loop {
             let log = Command::new("sudo")
                 .args([
                     "-n",
@@ -350,11 +345,15 @@ fn scenario(case: &'static str) -> Test {
                     "cat",
                 ])
                 .output()?;
-            if String::from_utf8_lossy(&log.stdout).contains("Deactivated successfully") {
+            let text = String::from_utf8_lossy(&log.stdout);
+            if text.contains("restore_claim_observed_effect_unsettled")
+                && text.contains("Deactivated successfully")
+                && journal.is_dir()
+            {
                 break;
             }
             if Instant::now() >= limit {
-                return Err("scheduled service did not report successful termination".into());
+                return Err(format!("scheduled restore did not complete: {text}").into());
             }
             std::thread::sleep(Duration::from_millis(50));
         }

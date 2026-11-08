@@ -593,6 +593,10 @@ fn run(args: Options) -> ResultBox<()> {
                 Ok(clock)=>clock,
                 Err(error)=>return TaskCompletion { output:Err(Box::new(error) as Box<dyn Error>), outcome:TaskOutcome::Failed("trial clock unavailable".into()), completed_at:task_start },
             };
+            // Keep setup and later controller effects distinct for reconnect
+            // decisions, while retaining both through task completion.
+            let setup_approval=Approval(Cell::new(false));
+            let approval=Approval(Cell::new(false));
             let output:ResultBox<()> = async {
                 task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
                 let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
@@ -613,7 +617,7 @@ fn run(args: Options) -> ResultBox<()> {
                 println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                 let config=Arc::new(config);
                 let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events,reply_startup_requests:args.reply_startup_requests};
-                let wall=Wall {task,clock}; let setup_approval=Approval(Cell::new(false));
+                let wall=Wall {task,clock};
                 #[cfg(target_os="linux")]
                 let mut setup_session=if let Some(setup_args)=&args.setup {
                     let prefix=(u32::from(*args.listen.ip()) ^ u32::from(args.camera)).leading_zeros().min(32) as u8;
@@ -638,7 +642,25 @@ fn run(args: Options) -> ResultBox<()> {
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let mut setup_owner=setup::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&setup_approval,admission:&setup_policy,handoff_authority:&setup_policy};
                     let framing=if setup_args.chunked {handoff::Framing::Chunked} else {handoff::Framing::ContentLength};
-                    let session=setup_upgrade::setup_and_upgrade_with_retries(cx,&mut setup_owner,&mut controller_listener,args.listen.port(),&mut http,&setup_config,framing,16*1024,Duration::from_secs(10),Duration::from_secs(20),MAX_INITIAL_CONNECTIONS,&mut trace,config.clone(),ProtocolPolicy::RequireOffer,&policy,controller).await?;
+                    let setup_result=setup_upgrade::setup_and_upgrade_with_retries(cx,&mut setup_owner,&mut controller_listener,args.listen.port(),&mut http,&setup_config,framing,16*1024,args.wait.min(MAX_IO_WAIT),Duration::from_secs(20),MAX_INITIAL_CONNECTIONS,&mut trace,config.clone(),ProtocolPolicy::RequireOffer,&policy,controller).await;
+                    let outcome=match trace.outcome() {
+                        None=>"unavailable",
+                        Some(setup::Outcome::AlreadyAssociated {..})=>"already_associated",
+                        Some(setup::Outcome::Refused {..})=>"refused",
+                        Some(setup::Outcome::Indeterminate {..})=>"indeterminate",
+                        Some(setup::Outcome::Observed {readback,..})=>match readback {
+                            handoff::Readback::Requested=>"requested",
+                            handoff::Readback::Previous=>"previous",
+                            handoff::Readback::Different=>"different",
+                            handoff::Readback::Unset=>"unset",
+                            handoff::Readback::Missing=>"missing",
+                            handoff::Readback::Unsupported=>"unsupported",
+                        },
+                    };
+                    let accept_started=trace.accept_started();
+                    let dispatch_started=trace.setup_mut().dispatch_started();
+                    println!("trial_stage=setup_trace outcome={outcome} dispatch_started={dispatch_started} accept_started={accept_started} claims_unverified=true");
+                    let session=setup_result?;
                     let handoff=if matches!(trace.outcome(),Some(setup::Outcome::AlreadyAssociated {..})) {"no_effect_observed"} else {"requires_reconciliation"};
                     println!("trial_stage=setup_websocket_accepted https_pin=matched controller_peer=network_claim handoff={handoff}");
                     Some(session)
@@ -646,7 +668,6 @@ fn run(args: Options) -> ResultBox<()> {
                 #[cfg(not(target_os="linux"))]
                 let mut setup_session:Option<unifi_tls_05_server_lab::setup_upgrade::Session<'_, '_, '_>>=None;
                 let deadline=cx.now()+args.wait;
-                let approval=Approval(Cell::new(false));
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
                 let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
                 let syncs:Vec<_>=(0..128).map(|i|OperationId::parse(format!("operation:unifi-trial-sync-{i:04}"))).collect::<Result<_,_>>()?;
@@ -884,10 +905,24 @@ fn run(args: Options) -> ResultBox<()> {
                 Ok(())
             }.await;
             let completed_at=clock.now().unwrap_or(deadline);
-            let outcome=if output.is_ok() {TaskOutcome::Indeterminate("camera settings and protocol effects require reconciliation".into())} else {TaskOutcome::Failed("trial failed; effect journal may require reconciliation".into())};
+            let outcome=if setup_approval.0.get() || approval.0.get() {
+                TaskOutcome::Indeterminate("camera settings or protocol effects require reconciliation".into())
+            } else if output.is_ok() {
+                TaskOutcome::Success
+            } else {
+                TaskOutcome::Failed("trial stopped before effect approval; inspect journal for preparation failure".into())
+            };
             TaskCompletion {output,outcome,completed_at}
         }).await?;
-        result.receipt?; result.output
+        let receipt=result.receipt?;
+        let outcome=match receipt.outcome {
+            TaskOutcome::Success=>"success_no_effect",
+            TaskOutcome::Indeterminate(_)=>"effect_unsettled",
+            TaskOutcome::Failed(_)=>"failed_before_approval",
+            TaskOutcome::Cancelled=>"cancelled",
+        };
+        println!("trial_task_outcome={outcome}");
+        result.output
     })
 }
 fn main() {

@@ -993,33 +993,133 @@ fn setup_process_fixture(
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_produces_a_private_decodable_clip() -> Test {
-    direct_trial_process_clip(false, false, false, false)
+    direct_trial_process_clip(false, false, false, false, 0)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_handles_time_sync_before_hello_and_produces_clip() -> Test {
-    direct_trial_process_clip(true, false, false, false)
+    direct_trial_process_clip(true, false, false, false, 0)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_receives_media_without_settings_reply() -> Test {
-    direct_trial_process_clip(true, true, false, false)
+    direct_trial_process_clip(true, true, false, false, 0)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_discovers_sets_up_and_records_fixture() -> Test {
-    direct_trial_process_clip(false, false, true, false)
+    direct_trial_process_clip(false, false, true, false, 0)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_discovers_chunked_setup_and_records_fixture() -> Test {
-    direct_trial_process_clip(false, false, true, true)
+    direct_trial_process_clip(false, false, true, true, 0)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "requires disposable TLS certificate, key and private fixture interface"]
+fn direct_trial_process_waits_for_delayed_camera_after_setup() -> Test {
+    direct_trial_process_clip(false, false, true, false, 12)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "requires disposable TLS certificate, key and private fixture interface"]
+fn direct_trial_setup_timeout_preserves_handoff_trace_and_indeterminate_receipt() -> Test {
+    use std::{
+        os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+        process::{Command, Stdio},
+        time::Instant,
+    };
+    let root =
+        std::env::temp_dir().join(format!("fss-direct-setup-timeout-{}", std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let temp = Temp(root);
+    let bind: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(bind.is_private() || bind.is_link_local()) {
+        return Err("private fixture interface required".into());
+    }
+    let reserve = std::net::TcpListener::bind((bind, 0))?;
+    let port = reserve.local_addr()?.port();
+    drop(reserve);
+    let cert = PathBuf::from(std::env::var("FSS_LAB_CERT_DER")?);
+    let key = PathBuf::from(std::env::var("FSS_LAB_KEY_DER")?);
+    let fixture = setup_process_fixture(
+        &std::fs::read(&cert)?,
+        &std::fs::read(&key)?,
+        port,
+        bind,
+        false,
+    )?;
+    let credential = temp.0.join("fixture-credential.json");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&credential)?;
+    file.write_all(br#"{"username":"fixture","password":"synthetic"}"#)?;
+    drop(file);
+    let journal = temp.0.join("journal");
+    let clip = temp.0.join("clip.mp4");
+    let child = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+        .arg(format!("{bind}:{port}"))
+        .arg(bind.to_string())
+        .arg("001122aabbcc")
+        .arg(&cert)
+        .arg(&key)
+        .arg(&journal)
+        .arg(&clip)
+        .arg("12345678-1234-4abc-9abc-123456789abc")
+        .arg("3")
+        .arg(format!(
+            "--setup-camera={},{},{},{}",
+            fixture.discovery_port,
+            fixture.https_port,
+            cert.display(),
+            credential.display()
+        ))
+        .arg("--owner-authorized")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut child = TrialChild(Some(child));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if child
+            .0
+            .as_mut()
+            .ok_or("missing child")?
+            .try_wait()?
+            .is_some()
+        {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("setup timeout fixture did not terminate".into());
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let output = child.0.take().ok_or("missing child")?.wait_with_output()?;
+    fixture.finish()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    if output.status.success()
+        || !stdout.contains("trial_stage=setup_trace outcome=previous dispatch_started=true accept_started=true claims_unverified=true")
+        || !stdout.contains("trial_task_outcome=effect_unsettled")
+        || !stderr.contains("Deadline")
+        || !journal.is_dir()
+        || clip.exists()
+    {
+        return Err(format!("setup timeout lost evidence: stdout={stdout} stderr={stderr}").into());
+    }
+    Ok(())
 }
 
 fn direct_trial_process_clip(
@@ -1027,6 +1127,7 @@ fn direct_trial_process_clip(
     media_before_reply: bool,
     with_setup: bool,
     setup_chunked: bool,
+    connection_delay_secs: u64,
 ) -> Test {
     use std::{
         os::unix::fs::{DirBuilderExt, PermissionsExt},
@@ -1036,7 +1137,7 @@ fn direct_trial_process_clip(
     let cert_path = PathBuf::from(std::env::var("FSS_LAB_CERT_DER")?);
     let key_path = PathBuf::from(std::env::var("FSS_LAB_KEY_DER")?);
     let root = std::env::temp_dir().join(format!(
-        "fss-direct-trial-process-{}-{sync_before_hello}-{media_before_reply}-{with_setup}-{setup_chunked}",
+        "fss-direct-trial-process-{}-{sync_before_hello}-{media_before_reply}-{with_setup}-{setup_chunked}-{connection_delay_secs}",
         std::process::id()
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
@@ -1103,6 +1204,24 @@ fn direct_trial_process_clip(
         .stderr(Stdio::piped())
         .spawn()?;
     let mut child = TrialChild(Some(child));
+    if connection_delay_secs > 0 {
+        let fixture = setup_fixture
+            .as_ref()
+            .ok_or("missing delayed setup fixture")?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !fixture
+            .camera
+            .as_ref()
+            .ok_or("missing camera fixture")?
+            .is_finished()
+        {
+            if Instant::now() > deadline {
+                return Err("setup fixture did not finish".into());
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        std::thread::sleep(Duration::from_secs(connection_delay_secs));
+    }
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(std::fs::read(cert_path)?))?;
     let client_config = Arc::new(
@@ -1284,11 +1403,13 @@ fn direct_trial_process_clip(
         return Err("startup protocol trace was not retained".into());
     }
     if !report.contains("trial_complete")
+        || !report.contains("trial_task_outcome=effect_unsettled")
         || !report.contains("trial_stage=tcp_accepted")
         || (!with_setup && !report.contains("trial_stage=handshake_eof_retry"))
         || !report.contains("trial_stage=pre_effect_websocket_eof_retry")
         || !report.contains("trial_stage=tls_handshake_completed")
-        || (with_setup && !report.contains("trial_stage=setup_websocket_accepted"))
+        || (with_setup && (!report.contains("trial_stage=setup_websocket_accepted")
+            || !report.contains("trial_stage=setup_trace outcome=previous dispatch_started=true accept_started=true claims_unverified=true")))
         || !report.contains("trial_stage=websocket_accepted")
         || !report.contains("effects=reconciliation_required")
         || !report.contains("continuous_recording=false")
@@ -1382,6 +1503,7 @@ fn direct_trial_no_camera_reports_deadline_without_claiming_an_effect() -> Test 
     let stderr = String::from_utf8(output.stderr)?;
     if output.status.success()
         || !stdout.contains("controller_listener_ready")
+        || !stdout.contains("trial_task_outcome=failed_before_approval")
         || !stderr.contains("Deadline")
         || stderr.contains("completion is inconsistent")
     {
@@ -1697,6 +1819,9 @@ fn direct_trial_retirement_case(
     let stdout = String::from_utf8(output.stdout)?;
     if output.status.success()
         || !stderr.contains(expected)
+        || (after_effect && !stdout.contains("trial_task_outcome=effect_unsettled"))
+        || (!after_effect && !stdout.contains("trial_task_outcome=failed_before_approval"))
+        || (case == "effect-after-setup" && !stdout.contains("trial_stage=setup_trace outcome=previous dispatch_started=true accept_started=true claims_unverified=true"))
         || clip.exists()
         || stdout.contains("pre_effect_websocket_eof_retry")
         || (after_effect

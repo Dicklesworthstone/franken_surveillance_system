@@ -398,3 +398,17 @@ unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER 
 The key and clip can contain private material; use an owner-controlled private
 directory. This lab does not supply automatic rollback. Do not redirect a
 working camera until a separately verified restoration path is ready.
+
+`unifi_controller_restore` is an experimental Linux recovery building block.
+It accepts an explicit expected temporary controller and original controller,
+requires two matching camera settings observations, and will not write if the
+camera reports a third address. It can emit one journaled fixed-length or
+chunked restoration request; an indeterminate effect is not retried. An
+`--observe-only` mode performs no write or journal creation. The original
+destination's identity and availability must be independently verified. A
+disposable camera and an independent systemd timer have exercised these paths,
+but a real-camera restore or reconnection has not been qualified.
+
+```text
+unifi_controller_restore CAMERA_IPV4 HTTPS_PORT CERT_DER CREDENTIAL_FILE EXPECTED_TEMP_IPV4 RESTORE_IPV4 NEW_JOURNAL_DIR [--chunked] [--observe-only] --owner-authorized
+```

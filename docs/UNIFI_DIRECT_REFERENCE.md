@@ -6224,3 +6224,73 @@ certificate pin does not independently authenticate physical identity. The
 existing recorder was active, its restart count remained 70, and two recent
 fallback files were present afterward. This is not proof that a real restore
 write, scheduled restoration, or camera reconnection will succeed.
+
+An independent transient systemd timer was then exercised against a disposable
+loopback TLS camera and the Rust restore executable. The first fixture printed
+a passing test result, but root-owned synthetic journal files prevented RCH
+from retiring its source tree. Same-ID recovery initially failed with permission
+denied. Ownership of that specific test-only journal was returned to the
+worker account, after which recovery acknowledged and released job
+`30100509981409851`; the recovered delivery exit was zero while the daemon's
+earlier completion reported 130. The fixture was changed to run the transient
+service as the worker user. Its next run, `30100509981409853`, failed because
+the test could not read root-created output files, although the service journal
+reported successful deactivation. The fixture was corrected to use the service
+journal for output and retained no protected test files in the source tree.
+
+Strict-remote job `30100509981409855` then passed the scheduled synthetic
+restore, and job `30100509981409856` passed both ignored restore tests: the
+11 direct synthetic cases plus the separately scheduled case. Both jobs exited
+zero, were acknowledged and released sources; the clean-overlay fingerprint
+was `ffa830e6ab0fcccb57c09ada23d958de86033d247bdeaf921ffce61e51fcea69`.
+The final fixture SHA-256 is
+`b638ab49d110d375abd64b237af2929ce8de6aab4fb9d00c239551c2356489ab`;
+the restore executable source is unchanged from the preceding entry. This
+qualifies a synthetic timer and synthetic restore write, not a real camera
+restore or reboot. The real G4 remains on its existing recorder.
+
+For a separate native listener, `mac-mini-old` was found to have an available
+USB NVMe volume, but its configured RCH worker is operator-disabled and was
+not re-enabled. An isolated RCH daemon and detached checkout were used to try
+`mac-mini-max`, with build staging on its mounted bulk volume. The first request
+without an explicit Darwin target was refused before admission. Job
+`30101070306869249` then failed during source transfer before Cargo execution;
+its source custody was released. A same-input retry with a longer transfer
+timeout, job `30101070306869250`, ended with unconfirmed source freshness and
+retirement; its recovery metadata reports `execution_started: false`. Same-ID
+recovery with the supported timing multiplier subsequently returned exit 1,
+terminal acknowledgment, and confirmed source, tree and pair release. No
+compilation occurred, so no native macOS build or listener result is claimed.
+
+For a separate Linux listener, strict-remote job `30100509981409862` compiled
+the two binaries successfully but returned delivery exit 102: RCH rejected
+unqualified Linux artifacts for the macOS target and did not replace local
+outputs. Its terminal acknowledgment and source release were confirmed. Job
+`30100509981409871` then built the same committed source with the explicit
+`x86_64-unknown-linux-gnu` target; compilation and delivery exited zero, the
+job was acknowledged, and sources were released. The clean-overlay fingerprint
+was `fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195`.
+The delivered restore and trial executable SHA-256 values were respectively
+`b6473023264897abb3d47d2da03efa1010a3bd13b77365cc44311b4d4bb9702b` and
+`5aff4b149d007f2e53d321ebb9df329efd8d5601df146dc185d0764ab6e73d82`.
+
+Using a debug-stripped copy of the hash-matched restore executable, an
+independently scheduled one-shot systemd service on `trj` ran `--observe-only`
+against the real G4 using its existing private credential file. It reported
+`observed_original_no_effect`, and systemd reported successful deactivation;
+the expected journal path did not exist afterward. This exercised two camera
+settings reads and a login, with no settings write. The network-observed pin
+still lacks independent camera identity proof. This is not a live restore
+write or proof of recovery after a camera restart.
+
+The delivered trial executable was also copied to `ts1` and SHA-256 matched
+before execution. With a fresh laboratory certificate, a dummy loopback peer
+and no setup option, it bound the selected LAN interface on the controller
+port, reported listener readiness, reached its expected no-camera deadline,
+created its laboratory journal and produced no clip. This was a host/listener
+check only; the real camera was not redirected and no native video was tested.
+After both checks, the existing recorder was active with restart count 70,
+the fallback timer was active, and a recent archive run copied a file with no
+reported error. The fallback archive code specifies a 30-day age threshold for
+matching complete recordings under `/bulk/unifi_camera_recordings`; a live
+30-day retention outcome and uninterrupted coverage remain unproven.
