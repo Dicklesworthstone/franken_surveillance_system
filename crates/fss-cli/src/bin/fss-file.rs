@@ -68,8 +68,11 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
           [--max-cached-luma-bytes N] (default 64 MiB, max 256 MiB)\n\
           [--max-decode-read-bytes N] (default 512 MiB, max 4 GiB), cumulative across spans,\n\
           separate from the complete original-source verification read. Decode work, pixels,\n\
-          selection, output and encode options above/below apply. gray-mkv requires a rate.\n\
-          Movie edits and gaps remain exact report metadata; output playback retimes pictures.\n\
+          selection, output and encode options above/below apply. gray-mkv accepts either\n\
+          --output-rate NUM/DEN (uniform retiming) or --output-timing movie (source intervals).\n\
+          Movie timing preserves clipped frame durations and the full query duration, including\n\
+          gaps, at 1 ns resolution. It requires duration <=2^53 ns (about 104 days); endpoints\n\
+          are floored independently. Gaps add no pictures; their display is player-dependent.\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N [--segment-count M]\n\
           --interpretation gray|ycbcr [--output FILE] [--receipt-out FILE]\n\
           Output defaults to pgm; --output-format pgm|mjpeg|gray-mkv requires --output.\n\
@@ -989,6 +992,16 @@ mod tests {
         assert!(parse(&media_args("export-movie", &matroska)).is_err());
         matroska.extend(["--output-rate", "30000/1001"]);
         assert!(parse(&media_args("export-movie", &matroska)).is_ok());
+        let mut source_timed = valid.to_vec();
+        source_timed.extend(["--output-format", "gray-mkv", "--output-timing", "movie"]);
+        assert!(parse(&media_args("export-movie", &source_timed)).is_ok());
+        source_timed.extend(["--output-rate", "30/1"]);
+        assert!(parse(&media_args("export-movie", &source_timed)).is_err());
+        for mode in ["movie", "uniform", "capture"] {
+            let mut pgm = valid.to_vec();
+            pgm.extend(["--output-timing", mode]);
+            assert!(parse(&media_args("export-movie", &pgm)).is_err());
+        }
     }
 
     #[test]

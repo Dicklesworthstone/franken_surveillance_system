@@ -4,7 +4,7 @@
 use super::{OwnedDirectory, TestResult, command, field, success};
 use fss_codec_jpeg_encode::{EncodeBudget, EncodeConfig, EncodeLimits, PixelFormat, encode_jpeg};
 use fss_container::demux::{AvcMp4, DemuxLimits, VideoCodec};
-use fss_container::matroska_gray::{GrayMatroskaConfig, PlaybackRate};
+use fss_container::matroska_gray::{GrayMatroskaConfig, PlaybackRate, TimedGrayMatroskaConfig};
 use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec, SensorId,
 };
@@ -60,6 +60,20 @@ impl Movie {
     }
 
     fn export(&self, query: Range<u64>, format: &str, path: &Path) -> Command {
+        self.export_with_timing(query, format, path, false)
+    }
+
+    fn export_movie_timed(&self, query: Range<u64>, path: &Path) -> Command {
+        self.export_with_timing(query, "gray-mkv", path, true)
+    }
+
+    fn export_with_timing(
+        &self,
+        query: Range<u64>,
+        format: &str,
+        path: &Path,
+        movie_timing: bool,
+    ) -> Command {
         let mut result = command(&self.root, "export-movie");
         result
             .args([
@@ -84,7 +98,11 @@ impl Movie {
             result.args(["--jpeg-quality", "85"]);
         }
         if format == "gray-mkv" {
-            result.args(["--output-rate", "30000/1001"]);
+            if movie_timing {
+                result.args(["--output-timing", "movie"]);
+            } else {
+                result.args(["--output-rate", "30000/1001"]);
+            }
         }
         result
     }
@@ -195,6 +213,23 @@ fn rendered(format: &str, images: &[Image]) -> TestResult<Vec<u8>> {
             }
             _ => return Err("unknown test format".into()),
         }
+    }
+    Ok(bytes)
+}
+
+fn rendered_movie_timed(
+    images: &[Image],
+    intervals: &[(u64, u64)],
+    duration_ns: u64,
+) -> TestResult<Vec<u8>> {
+    assert_eq!(images.len(), intervals.len());
+    let first = images.first().ok_or("missing movie picture")?;
+    let config = TimedGrayMatroskaConfig::new(first.dimensions, duration_ns)?;
+    let mut bytes = config.initialization()?.bytes().to_vec();
+    for (ordinal, (image, &(start_ns, end_ns))) in images.iter().zip(intervals).enumerate() {
+        assert_eq!(image.dimensions, first.dimensions);
+        bytes.extend_from_slice(config.frame(ordinal as u64, start_ns, end_ns)?.prefix());
+        bytes.extend_from_slice(&image.pixels);
     }
     Ok(bytes)
 }
@@ -335,6 +370,11 @@ fn child(bytes: &[u8], parent: &Range<usize>, kind: &[u8; 4]) -> TestResult<Rang
 /// Replace only the real fixture's edit table and adjust containing sizes/chunk offsets.
 /// Encoded SPS/PPS and all ten original sample payloads remain unchanged.
 fn repeated_edits() -> TestResult<Vec<u8>> {
+    // At movie scale 1000 / media scale 10240: [3,1], then [0], repeated once.
+    edit_fixture(&[(400, 8192), (200, 4096), (400, 8192), (200, 4096)])
+}
+
+fn edit_fixture(edits: &[(u32, i32)]) -> TestResult<Vec<u8>> {
     let mut bytes = AVC.to_vec();
     let moov = box_at(&bytes, 0..bytes.len(), b"moov")?;
     let trak = child(&bytes, &moov, b"trak")?;
@@ -349,19 +389,26 @@ fn repeated_edits() -> TestResult<Vec<u8>> {
     assert_eq!(bytes[elst.start + 8], 0);
     assert_eq!(bytes[mvhd.start + 8], 0);
     assert_eq!(bytes[tkhd.start + 8], 0);
-    // At movie scale 1000 / media scale 10240: [3,1], then [0], repeated once.
-    let edits = [(400_u32, 8192_i32), (200, 4096), (400, 8192), (200, 4096)];
     let mut replacement = Vec::new();
     replacement.extend_from_slice(&(16_u32 + 12 * edits.len() as u32).to_be_bytes());
     replacement.extend_from_slice(b"elst");
     replacement.extend_from_slice(&0_u32.to_be_bytes());
     replacement.extend_from_slice(&(edits.len() as u32).to_be_bytes());
-    for (duration, media_time) in edits {
+    let mut total_duration = 0_u32;
+    for &(duration, media_time) in edits {
+        total_duration = total_duration
+            .checked_add(duration)
+            .ok_or("edit duration overflow")?;
         replacement.extend_from_slice(&duration.to_be_bytes());
         replacement.extend_from_slice(&media_time.to_be_bytes());
         replacement.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
     }
-    let growth = u32::try_from(replacement.len() - elst.len())?;
+    let growth = u32::try_from(
+        replacement
+            .len()
+            .checked_sub(elst.len())
+            .ok_or("fixture edits shrink")?,
+    )?;
     for parent in [&moov, &trak, &edts] {
         let size = word(&bytes, parent.start)?
             .checked_add(growth)
@@ -369,7 +416,7 @@ fn repeated_edits() -> TestResult<Vec<u8>> {
         bytes[parent.start..parent.start + 4].copy_from_slice(&size.to_be_bytes());
     }
     for at in [mvhd.start + 24, tkhd.start + 28] {
-        bytes[at..at + 4].copy_from_slice(&1200_u32.to_be_bytes());
+        bytes[at..at + 4].copy_from_slice(&total_duration.to_be_bytes());
     }
     for index in 0..word(&bytes, stco.start + 12)? as usize {
         let at = stco.start + 16 + 4 * index;
@@ -442,6 +489,157 @@ fn movie_export_repeats_backwards_edits_without_duplicating_cached_frames_or_dec
     let receipts = values(&output, "frame_receipt_digest")?;
     assert_eq!(receipts.len(), 6);
     assert_eq!(&receipts[..3], &receipts[3..]);
+    assert_eq!(movie.journals()?, before);
+    Ok(())
+}
+
+fn assert_movie_timing(output: &Output, duration_ns: u64) -> TestResult {
+    assert_eq!(field(output, "movie_export_complete")?, "true");
+    assert_eq!(field(output, "gray_mkv_timing")?, "source_movie_intervals");
+    assert_eq!(
+        field(output, "gray_mkv_source_movie_timing_preserved")?,
+        "true"
+    );
+    assert_eq!(
+        field(output, "movie_output_source_timing_preserved")?,
+        "true"
+    );
+    assert_eq!(field(output, "movie_output_gaps_filled")?, "false");
+    assert_eq!(
+        field(output, "gray_mkv_duration_ns")?.parse::<u64>()?,
+        duration_ns
+    );
+    assert_eq!(
+        std::str::from_utf8(&output.stdout)?.lines().last(),
+        Some("movie_export_complete=true")
+    );
+    Ok(())
+}
+
+#[test]
+fn movie_source_timing_preserves_clipped_edges_and_distinguishes_uniform_retiming() -> TestResult {
+    let movie = Movie::import("movie-timing-clipped", AVC)?;
+    let images = selected(&native_images(AVC)?, &[3, 1])?;
+    let expected = rendered_movie_timed(
+        &images,
+        &[(0, 150_000_000), (150_000_000, 300_000_000)],
+        300_000_000,
+    )?;
+    let before = movie.journals()?;
+    let path = movie.path("source-time.mkv");
+    let output = movie
+        .export_movie_timed(450..750, &path)
+        .args(["--max-output-bytes", &expected.len().to_string()])
+        .output()?;
+    success(&output);
+    assert_movie_timing(&output, 300_000_000)?;
+    assert_eq!(fs::read(&path)?, expected);
+    assert_eq!(values(&output, "frame_segment")?, ["3", "1"]);
+    assert_eq!(field(&output, "gray_mkv_frames")?, "2");
+    assert_eq!(
+        field(&output, "gray_mkv_sha256")?,
+        ContentDigest::sha256(&expected).to_text()
+    );
+
+    let uniform_path = movie.path("uniform-time.mkv");
+    let uniform = movie.export(450..750, "gray-mkv", &uniform_path).output()?;
+    success(&uniform);
+    assert_eq!(fs::read(&uniform_path)?, rendered("gray-mkv", &images)?);
+    assert_ne!(fs::read(uniform_path)?, expected);
+    assert_eq!(
+        values(&output, "frame_receipt_digest")?,
+        values(&uniform, "frame_receipt_digest")?
+    );
+    assert_eq!(
+        field(&output, "movie_output_lineage_sha256")?,
+        field(&uniform, "movie_output_lineage_sha256")?
+    );
+    assert_ne!(
+        field(&output, "gray_mkv_frame_receipts_sha256")?,
+        field(&uniform, "gray_mkv_frame_receipts_sha256")?
+    );
+
+    let short_path = movie.path("source-time-quota.mkv");
+    let short = movie
+        .export_movie_timed(450..750, &short_path)
+        .args(["--max-output-bytes", &(expected.len() - 1).to_string()])
+        .output()?;
+    incomplete(&short)?;
+    assert!(fs::read(short_path)?.len() < expected.len());
+    assert_eq!(movie.journals()?, before);
+    Ok(())
+}
+
+#[test]
+fn movie_source_timing_preserves_repeated_edits_and_partial_first_and_last_pictures() -> TestResult
+{
+    let source = repeated_edits()?;
+    let movie = Movie::import("movie-timing-repeated", &source)?;
+    let images = selected(&native_images(AVC)?, &[3, 1, 0, 3, 1, 0])?;
+    let expected = rendered_movie_timed(
+        &images,
+        &[
+            (0, 150_000_000),
+            (150_000_000, 350_000_000),
+            (350_000_000, 550_000_000),
+            (550_000_000, 750_000_000),
+            (750_000_000, 950_000_000),
+            (950_000_000, 1_100_000_000),
+        ],
+        1_100_000_000,
+    )?;
+    let before = movie.journals()?;
+    let path = movie.path("repeated-source-time.mkv");
+    let output = movie.export_movie_timed(50..1150, &path).output()?;
+    success(&output);
+    assert_movie_timing(&output, 1_100_000_000)?;
+    assert_eq!(fs::read(path)?, expected);
+    assert_eq!(
+        values(&output, "frame_segment")?,
+        ["3", "1", "0", "3", "1", "0"]
+    );
+    assert_eq!(field(&output, "movie_output_frames")?, "6");
+    assert_eq!(field(&output, "movie_cached_frames")?, "3");
+    assert_eq!(field(&output, "movie_decoded_frames")?, "4");
+    let receipts = values(&output, "frame_receipt_digest")?;
+    assert_eq!(&receipts[..3], &receipts[3..]);
+    assert_eq!(movie.journals()?, before);
+    Ok(())
+}
+
+#[test]
+fn movie_source_timing_retains_leading_internal_and_trailing_gaps_without_filler_pictures()
+-> TestResult {
+    let source = edit_fixture(&[(100, -1), (400, 8192), (200, -1), (200, 4096), (300, -1)])?;
+    let movie = Movie::import("movie-timing-gaps", &source)?;
+    let images = selected(&native_images(AVC)?, &[3, 1, 0])?;
+    let expected = rendered_movie_timed(
+        &images,
+        &[
+            (100_000_000, 300_000_000),
+            (300_000_000, 500_000_000),
+            (700_000_000, 900_000_000),
+        ],
+        1_500_000_000,
+    )?;
+    let before = movie.journals()?;
+    let path = movie.path("gaps.mkv");
+    let output = movie.export_movie_timed(0..1500, &path).output()?;
+    success(&output);
+    assert_movie_timing(&output, 1_500_000_000)?;
+    assert_eq!(fs::read(path)?, expected);
+    assert_eq!(values(&output, "frame_segment")?, ["3", "1", "0"]);
+    assert_eq!(field(&output, "movie_output_frames")?, "3");
+    assert_eq!(field(&output, "movie_cached_frames")?, "3");
+    let gaps = values(&output, "movie_gap")?;
+    assert_eq!(gaps.len(), 4);
+    assert_eq!(
+        gaps.iter()
+            .filter(|row| row.contains("kind=empty_edit "))
+            .count(),
+        3
+    );
+    assert!(gaps.iter().any(|row| row.contains("kind=unrepresented ")));
     assert_eq!(movie.journals()?, before);
     Ok(())
 }
@@ -673,6 +871,36 @@ fn movie_export_requires_its_output_and_rate_and_keeps_selection_metadata_only()
             "--output-format",
             "gray-mkv",
         ],
+        vec![
+            "--interpretation",
+            "ycbcr",
+            "--output",
+            "destination",
+            "--output-timing",
+            "movie",
+        ], // Movie timing requires the Matroska output format.
+        vec![
+            "--interpretation",
+            "ycbcr",
+            "--output",
+            "destination",
+            "--output-format",
+            "gray-mkv",
+            "--output-timing",
+            "movie",
+            "--output-rate",
+            "30000/1001",
+        ], // Source intervals and operator retiming cannot both apply.
+        vec![
+            "--interpretation",
+            "ycbcr",
+            "--output",
+            "destination",
+            "--output-format",
+            "gray-mkv",
+            "--output-timing",
+            "capture",
+        ], // No capture-clock semantics are inferred from source movie time.
     ]
     .into_iter()
     .enumerate()

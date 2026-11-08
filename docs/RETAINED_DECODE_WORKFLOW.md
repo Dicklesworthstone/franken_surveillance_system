@@ -207,16 +207,16 @@ of exact reconstructed mask values; the lossless profile preserves screened
 samples exactly. FLDT grants, payment-mask attestations and custody publication
 remain outstanding for the full VIT-023 reviewer route.
 
-**Verification:** twelve pure-core contracts and five CLI contracts (three native
+**Historical window verification (2026-11-07):** twelve pure-core contracts and five CLI contracts (three native
 video process cases, one JPEG decode/reopen/replay case, and one grammar case)
 are authored. They cover exhaustive small-interval containment, signed bounds,
 unknown time, clock/source drift, ordering, duplicates, cancellation, empty and
 incomplete ranges, selected native JPEG bytes/work, and late refusal fencing.
 The original recovered window source subsequently passed all twelve pure-core
 contracts at published `edc1bb01247c341939a0fadbafdcb67f11537320` on 2026-11-07.
-The full CLI check was SIGKILLed in unchanged fss-core before CLI diagnostics.
-Native process validation remains pending, including the new lossless-output
-integration authored after the execution workspace disconnected.
+That full CLI check was SIGKILLed in unchanged fss-core before CLI diagnostics.
+The window CLI process contracts still lack native execution; the newer
+framing/stream results below remain scoped separately.
 
 ## Private lossless grayscale Matroska output
 
@@ -270,10 +270,12 @@ are refused for this format.
 make the file's scope explicit. Pixel preservation does not add FLDT release
 authority, source protection attestations, derivative custody or recipient delivery.
 
-**Validation:** new Rust and process contracts are authored and independently
-source-reviewed; native compilation, formatting, Clippy and execution are pending
-after workspace disconnection. A separate pre-outage 7×5 format prototype decoded
-all 105 samples exactly through FFmpeg, but did not execute this Rust writer.
+**Validation:** the final uniform/movie framing, stream and selection components
+passed 50 focused native contracts; eight JPEG range regressions also passed.
+The current production movie-timed writer independently matched 1,032 frames and
+331,372 luma bytes through FFmpeg/FFprobe 6.1.1-3ubuntu5. These component results
+do not certify retained I/O or filesystem durability. Full CLI process and parser
+execution remains blocked by Asupersync compiler SIGKILL; no Clippy success is claimed.
 See [the exact profile, receipt wire and validation boundary](LOSSLESS_MATROSKA_OUTPUT.md).
 
 ## Private grayscale JPEG/MJPEG output
@@ -413,15 +415,16 @@ first to inspect the source's movie timescale, exact rational intervals, edits,
 gaps and prerequisite coding spans; that command still returns metadata only.
 
 For a retained file whose movie timescale is 1000, this selects the half-open
-movie interval from 0.4 to 0.8 seconds and creates a local lossless review clip:
+movie interval from 0.45 to 0.75 seconds and preserves its clipped presentation
+timing in a local lossless review clip:
 
 ```sh
 fss-file select-movie --root DEPLOYMENT --site SITE --import-id sha256:HEX \
-  --start-movie-tick 400 --end-movie-tick 800
+  --start-movie-tick 450 --end-movie-tick 750
 
 fss-file export-movie --root DEPLOYMENT --site SITE --import-id sha256:HEX \
-  --start-movie-tick 400 --end-movie-tick 800 --interpretation ycbcr \
-  --output selected.mkv --output-format gray-mkv --output-rate 25/1 \
+  --start-movie-tick 450 --end-movie-tick 750 --interpretation ycbcr \
+  --output selected.mkv --output-format gray-mkv --output-timing movie \
   --work-units 1000000000 --max-cached-luma-bytes 67108864 \
   --max-output-bytes 67108864
 ```
@@ -454,6 +457,7 @@ their gaps remain inspectable with `select-movie`.
 | `--max-decode-read-bytes` | Default 512 MiB, max 4 GiB | Actual custody chunk reads across all decode spans, reserved before I/O; reloads count again |
 | `--work-units` | Default 100 million | One shared native encoded-byte plus coded-luma-capacity allowance |
 | `--max-output-bytes` | Default 64 MiB, max 256 MiB | Whole output, including container/frame headers |
+| Movie-timed clip duration | Hard limit `2^53` ns, about 104 days | Complete query duration, including timestamp holes; exactly representable in Matroska Duration |
 | `--encode-work-units` | Default 2 billion, MJPEG only | One shared JPEG encoding allowance, including repeated occurrences |
 
 The existing selection-work, row, quoted source/Annex-B byte, source-file,
@@ -464,17 +468,42 @@ Neither allowance is refreshed by a new random-access span.
 
 Output formats are `pgm` (default), `mjpeg`, and `gray-mkv`. PGM and gray-Matroska
 preserve exact screened sample values; MJPEG is a lossy grayscale derivative.
-Gray-Matroska requires an explicit rational `--output-rate`. Its playback cadence
-retimes the selected pictures: source movie intervals, edit durations and gaps
-remain exact report metadata rather than embedded timing. No black frames or
-absence evidence are invented for gaps. PGM/MJPEG embed no playback timing.
+For gray-Matroska, `--output-timing movie` is available only on `export-movie`
+and is mutually exclusive with `--output-rate`. Uniform timing remains the
+default: omit `--output-timing` or choose `uniform`, and provide a rational
+`--output-rate NUM/DEN` to retime selected pictures. Neither timing option applies
+to PGM/MJPEG, which embed no playback timing.
+
+Movie timing rebases the query start to zero and floors each original rational
+endpoint independently to nanoseconds. Frame duration is the difference of its
+converted endpoints, so fractional periods do not accumulate rounding drift.
+For the indexed AVC fixture, the example selects original segments `[3,1]` and
+writes intervals `[0,150000000)` and `[150000000,300000000)` ns. It preserves the
+complete native pictures while clipping their display intervals. A selected
+interval that becomes zero-length after flooring refuses before decoding or
+output creation; exact rational intervals remain in the report and lineage.
+
+The Matroska header declares the full query duration, including leading, internal
+and trailing gaps. Gaps remain timestamp holes: no black pictures or absence
+evidence are generated, and a player's display during a hole is player-defined.
+The `2^53`-nanosecond ceiling makes the declared binary64 duration exact.
+These are movie presentation coordinates; they establish neither capture time
+nor UTC and do not change the retained capture assumptions.
 
 The report pairs `movie_output_index` and original `frame_segment` with native
 decode receipts, source capsules, pixel hashes and the existing exact `movie_sample`
 rows. `movie_output_lineage_sha256`, under `fss.file_movie_output.v1`, binds the
 authenticated source pins, query/timescales, selection intervals, edits/gaps,
-occurrence order and decoded-frame pins. Keep this report with the output file
-to retain its source mapping. This is a local derivation, not a retained export
+occurrence order and decoded-frame pins. Movie-timed Matroska additionally emits
+`movie_output_start_ns`/`movie_output_end_ns`,
+`gray_mkv_timing=source_movie_intervals`, `gray_mkv_movie_lineage_sha256`, the
+complete `gray_mkv_duration_ns` and the separate `gray_mkv_last_frame_end_ns`.
+Its ordered receipt uses `fss.file_gray_matroska_movie_frame_receipts.v1` and binds
+the movie lineage, declared query duration and each actual output interval.
+Uniform output retains its existing receipt domain. Both modes keep
+`gray_mkv_source_capture_timing_preserved=false` and `gray_mkv_published=false`.
+Keep this report with the output file to retain its source mapping. This is a
+local derivation, not a retained export
 package, remote reviewer grant or coverage certificate.
 
 The destination must be a new private file outside the deployment. Output owners
@@ -482,6 +511,17 @@ recheck the path and synchronize the complete file before completion. A write,
 encode or sync failure can leave an incomplete private file; only
 `movie_export_complete=true` certifies successful completion of the entire request.
 The command does not change source capture assumptions or publication authority.
+
+**Validation:** the final five-target native suite passed all 50 contracts,
+including real AVC presentation reordering, HEVC selected-RASL refusal, exact
+rational clipping, repeated edits, bounds, cancellation and stream failure fencing.
+Eight JPEG range regression contracts also passed. The actual timed encoder's
+independent FFmpeg/FFprobe comparison passed 1,032 frames and 331,372 exact sample
+bytes, including every packet timestamp/duration and full query envelopes.
+Eleven movie-export process contracts and parser cases are authored but remain
+unexecuted because both full CLI attempts were SIGKILLed in the unchanged
+Asupersync dependency before reaching CLI diagnostics. See
+[the source pins, receipt layout and scoped validation](LOSSLESS_MATROSKA_OUTPUT.md).
 
 ## Retained MP4 (H.264 and H.265) import
 

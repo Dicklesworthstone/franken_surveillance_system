@@ -154,8 +154,9 @@ fn same_receipt(left: &StreamReceipt, right: &StreamReceipt) {
     assert_eq!(left.frame_receipts_digest, right.frame_receipts_digest);
     assert_eq!(left.encoder, right.encoder);
     assert_eq!(left.dimensions, right.dimensions);
-    assert_eq!(left.rate, right.rate);
+    assert_eq!(left.timing, right.timing);
     assert_eq!(left.duration_ns, right.duration_ns);
+    assert_eq!(left.last_frame_end_ns, right.last_frame_end_ns);
     assert_eq!(left.hashed_bytes, right.hashed_bytes);
 }
 
@@ -172,10 +173,14 @@ fn assert_fenced(
     let mut checks = 0;
     assert!(
         encoder
-            .frame(frame(dimensions, pixels, pin(1)), || writer.create(), &mut || {
-                checks += 1;
-                Ok(())
-            })
+            .frame(
+                frame(dimensions, pixels, pin(1)),
+                || writer.create(),
+                &mut || {
+                    checks += 1;
+                    Ok(())
+                }
+            )
             .is_err()
     );
     assert!(
@@ -207,7 +212,9 @@ struct Element<'a> {
 }
 
 fn element(input: &[u8]) -> Test<(Element<'_>, &[u8])> {
-    let first = *input.first().ok_or_else(|| invalid("missing EBML identifier"))?;
+    let first = *input
+        .first()
+        .ok_or_else(|| invalid("missing EBML identifier"))?;
     let id_width = first.leading_zeros() as usize + 1;
     if id_width > 4 || input.len() <= id_width {
         return Err(invalid("invalid EBML identifier width").into());
@@ -236,14 +243,25 @@ fn element(input: &[u8]) -> Test<(Element<'_>, &[u8])> {
     let payload = input
         .get(start..end)
         .ok_or_else(|| invalid("truncated EBML element"))?;
-    Ok((Element { id, payload, unknown, size_width }, &input[end..]))
+    Ok((
+        Element {
+            id,
+            payload,
+            unknown,
+            size_width,
+        },
+        &input[end..],
+    ))
 }
 
 fn children(mut bytes: &[u8]) -> Test<Vec<Element<'_>>> {
     let mut result = Vec::new();
     while !bytes.is_empty() {
         let (child, rest) = element(bytes)?;
-        assert!(!child.unknown, "only the top-level Segment may have unknown size");
+        assert!(
+            !child.unknown,
+            "only the top-level Segment may have unknown size"
+        );
         result.push(child);
         bytes = rest;
     }
@@ -251,12 +269,20 @@ fn children(mut bytes: &[u8]) -> Test<Vec<Element<'_>>> {
 }
 
 fn ids(elements: &[Element<'_>], expected: &[u32]) {
-    assert_eq!(elements.iter().map(|element| element.id).collect::<Vec<_>>(), expected);
+    assert_eq!(
+        elements
+            .iter()
+            .map(|element| element.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 fn one<'a>(elements: &[Element<'a>], id: u32) -> Test<Element<'a>> {
     let mut matching = elements.iter().filter(|element| element.id == id);
-    let value = *matching.next().ok_or_else(|| invalid("missing expected EBML field"))?;
+    let value = *matching
+        .next()
+        .ok_or_else(|| invalid("missing expected EBML field"))?;
     assert!(matching.next().is_none(), "duplicate EBML field");
     Ok(value)
 }
@@ -278,14 +304,28 @@ struct ParsedFrame<'a> {
 }
 
 fn inspect(bytes: &[u8]) -> Test<([u32; 2], Vec<ParsedFrame<'_>>)> {
+    inspect_with_duration(bytes, None)
+}
+
+fn inspect_with_duration(
+    bytes: &[u8],
+    duration: Option<u64>,
+) -> Test<([u32; 2], Vec<ParsedFrame<'_>>)> {
     let (header, rest) = element(bytes)?;
     assert_eq!(header.id, 0x1a45dfa3);
     assert!(!header.unknown);
     let header = children(header.payload)?;
-    ids(&header, &[0x4286, 0x42f7, 0x42f2, 0x42f3, 0x4282, 0x4287, 0x4285]);
+    ids(
+        &header,
+        &[0x4286, 0x42f7, 0x42f2, 0x42f3, 0x4282, 0x4287, 0x4285],
+    );
     for (id, expected) in [
-        (0x4286, 1), (0x42f7, 1), (0x42f2, 4),
-        (0x42f3, 8), (0x4287, 4), (0x4285, 2),
+        (0x4286, 1),
+        (0x42f7, 1),
+        (0x42f2, 4),
+        (0x42f3, 8),
+        (0x4287, 4),
+        (0x4285, 2),
     ] {
         assert_eq!(uint(one(&header, id)?)?, expected);
     }
@@ -301,7 +341,21 @@ fn inspect(bytes: &[u8]) -> Test<([u32; 2], Vec<ParsedFrame<'_>>)> {
     assert_eq!(segment[0].id, 0x1549a966);
     assert_eq!(segment[1].id, 0x1654ae6b);
     let info = children(segment[0].payload)?;
-    ids(&info, &[0x2ad7b1, 0x4d80, 0x5741]);
+    if let Some(duration) = duration {
+        assert_eq!(info.len(), 4);
+        assert_eq!(
+            f64::from_be_bytes(one(&info, 0x4489)?.payload.try_into()?),
+            duration as f64
+        );
+        let ordinary: Vec<_> = info
+            .iter()
+            .copied()
+            .filter(|field| field.id != 0x4489)
+            .collect();
+        ids(&ordinary, &[0x2ad7b1, 0x4d80, 0x5741]);
+    } else {
+        ids(&info, &[0x2ad7b1, 0x4d80, 0x5741]);
+    }
     assert_eq!(uint(one(&info, 0x2ad7b1)?)?, 1);
     for id in [0x4d80, 0x5741] {
         assert_eq!(one(&info, id)?.payload, b"fss.matroska_gray.v1");
@@ -383,7 +437,9 @@ fn expected_identity() -> Test<(ContentDigest, u64)> {
         hash.update(source);
         work += 8 + source.len() as u64;
     }
-    let digest = hash.finalize().map_err(|_| invalid("identity hash overflow"))?;
+    let digest = hash
+        .finalize()
+        .map_err(|_| invalid("identity hash overflow"))?;
     Ok((ContentDigest::new(DigestAlgorithm::Sha256, digest), work))
 }
 
@@ -415,16 +471,25 @@ fn exact_odd_rectangle_masks_survive_timed_container_and_receipt_hashing() -> Te
     assert_eq!(receipt.frames, 3);
     assert_eq!(receipt.digest, ContentDigest::sha256(&bytes));
     assert_eq!(receipt.dimensions, dimensions);
-    assert_eq!(receipt.rate, rate);
+    assert_eq!(receipt.timing, stream::Timing::Uniform(rate));
     assert_eq!(receipt.duration_ns, 100_100_000);
     let (identity, identity_work) = expected_identity()?;
     assert_eq!(receipt.encoder, identity);
     assert!(!receipt.encoder.is_laboratory());
-    assert_eq!(receipt.frame_receipts_digest.algorithm(), DigestAlgorithm::Sha256);
+    assert_eq!(
+        receipt.frame_receipts_digest.algorithm(),
+        DigestAlgorithm::Sha256
+    );
     assert_ne!(receipt.frame_receipts_digest.bytes(), [0; 32]);
     // Source verification + exact accepted output + complete generation and lineage inputs.
-    let expected_work = FRAME_RECEIPTS_DOMAIN.len() as u64 + 1
-        + identity_work + 48 + (65 * 37 * 3) + receipt.bytes + (96 * 3) + 65;
+    let expected_work = FRAME_RECEIPTS_DOMAIN.len() as u64
+        + 1
+        + identity_work
+        + 48
+        + (65 * 37 * 3)
+        + receipt.bytes
+        + (96 * 3)
+        + 65;
     assert_eq!(receipt.hashed_bytes, expected_work);
     assert_eq!(WORK_MODEL, "logical_sha256_input_bytes");
     Ok(())
@@ -453,7 +518,11 @@ fn complete_first_frame_quota_is_checked_before_hashing_or_lazy_creation() -> Te
     for maximum in [expected.len() as u64, DEFAULT_OUTPUT_BYTES] {
         let writer = Writer::new(17);
         let mut encoder = Encoder::new(maximum, 1, rate)?;
-        encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || Ok(()))?;
+        encoder.frame(
+            frame([7, 5], &pixels, pin(1)),
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
         let (_, receipt) = encoder.finish(&mut || Ok(()))?;
         assert_eq!(writer.bytes(), expected);
         same_receipt(&receipt, &expected_receipt);
@@ -462,12 +531,21 @@ fn complete_first_frame_quota_is_checked_before_hashing_or_lazy_creation() -> Te
     let mut encoder = Encoder::new(expected.len() as u64 - 1, 1, rate)?;
     let mut checks = 0;
     assert!(
-        encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || {
-            checks += 1;
-            Ok(())
-        }).is_err()
+        encoder
+            .frame(
+                frame([7, 5], &pixels, pin(1)),
+                || writer.create(),
+                &mut || {
+                    checks += 1;
+                    Ok(())
+                }
+            )
+            .is_err()
     );
-    assert_eq!(checks, 1, "no pixel or implementation hashing after quota refusal");
+    assert_eq!(
+        checks, 1,
+        "no pixel or implementation hashing after quota refusal"
+    );
     assert_eq!(writer.0.borrow().created, 0);
     assert!(writer.bytes().is_empty());
     assert_fenced(encoder, &writer, [7, 5], &pixels)
@@ -478,12 +556,28 @@ fn late_quota_refusal_preserves_complete_prior_frame_and_never_certifies_it_as_c
     let rate = PlaybackRate::new(30, 1)?;
     let pixels = vec![57; 7 * 5];
     let (first, _) = encode([7, 5], std::slice::from_ref(&pixels), &[pin(1)], rate, 17)?;
-    let (both, _) = encode([7, 5], &[pixels.clone(), pixels.clone()], &[pin(1), pin(2)], rate, 17)?;
+    let (both, _) = encode(
+        [7, 5],
+        &[pixels.clone(), pixels.clone()],
+        &[pin(1), pin(2)],
+        rate,
+        17,
+    )?;
     let writer = Writer::new(17);
     let mut encoder = Encoder::new(both.len() as u64 - 1, 2, rate)?;
-    encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || Ok(()))?;
+    encoder.frame(
+        frame([7, 5], &pixels, pin(1)),
+        || writer.create(),
+        &mut || Ok(()),
+    )?;
     assert!(
-        encoder.frame(frame([7, 5], &pixels, pin(2)), || writer.create(), &mut || Ok(())).is_err()
+        encoder
+            .frame(
+                frame([7, 5], &pixels, pin(2)),
+                || writer.create(),
+                &mut || Ok(())
+            )
+            .is_err()
     );
     assert_eq!(writer.bytes(), first);
     assert_fenced(encoder, &writer, [7, 5], &pixels)
@@ -507,7 +601,11 @@ fn invalid_dimensions_lengths_pixels_and_source_pins_refuse_without_creating_out
             6 => input.decode_receipt = pin(1).with_laboratory(true),
             _ => input.decode_receipt = ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]),
         }
-        assert!(encoder.frame(input, || writer.create(), &mut || Ok(())).is_err());
+        assert!(
+            encoder
+                .frame(input, || writer.create(), &mut || Ok(()))
+                .is_err()
+        );
         assert_eq!(writer.0.borrow().created, 0);
         assert!(writer.bytes().is_empty());
         assert_fenced(encoder, &writer, [7, 5], &pixels)?;
@@ -522,7 +620,11 @@ fn dimension_drift_and_late_invalid_lineage_permanently_fence_the_stream() -> Te
     for changed_dimensions in [true, false] {
         let writer = Writer::new(17);
         let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 2, rate)?;
-        encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || Ok(()))?;
+        encoder.frame(
+            frame([7, 5], &pixels, pin(1)),
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
         let before = writer.bytes();
         let mut next = frame([7, 5], &pixels, pin(2));
         if changed_dimensions {
@@ -530,7 +632,11 @@ fn dimension_drift_and_late_invalid_lineage_permanently_fence_the_stream() -> Te
         } else {
             next.decode_receipt = pin(2).with_laboratory(true);
         }
-        assert!(encoder.frame(next, || writer.create(), &mut || Ok(())).is_err());
+        assert!(
+            encoder
+                .frame(next, || writer.create(), &mut || Ok(()))
+                .is_err()
+        );
         assert_eq!(writer.bytes(), before);
         assert_eq!(writer.0.borrow().created, 1);
         assert_fenced(encoder, &writer, [7, 5], &pixels)?;
@@ -542,7 +648,9 @@ fn dimension_drift_and_late_invalid_lineage_permanently_fence_the_stream() -> Te
 fn allowances_empty_streams_and_frame_limit_cannot_produce_success_receipts() -> Test {
     let rate = PlaybackRate::new(1, 1)?;
     for (maximum, frames) in [
-        (0, 1), (MAX_OUTPUT_BYTES + 1, 1), (DEFAULT_OUTPUT_BYTES, 0),
+        (0, 1),
+        (MAX_OUTPUT_BYTES + 1, 1),
+        (DEFAULT_OUTPUT_BYTES, 0),
         (DEFAULT_OUTPUT_BYTES, 1025),
     ] {
         assert!(Encoder::<Writer>::new(maximum, frames, rate).is_err());
@@ -551,9 +659,21 @@ fn allowances_empty_streams_and_frame_limit_cannot_produce_success_receipts() ->
     assert!(empty.finish(&mut || Ok(())).is_err());
     let writer = Writer::new(17);
     let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
-    encoder.frame(frame([1, 1], &[16], pin(1)), || writer.create(), &mut || Ok(()))?;
+    encoder.frame(
+        frame([1, 1], &[16], pin(1)),
+        || writer.create(),
+        &mut || Ok(()),
+    )?;
     let before = writer.bytes();
-    assert!(encoder.frame(frame([1, 1], &[16], pin(2)), || writer.create(), &mut || Ok(())).is_err());
+    assert!(
+        encoder
+            .frame(
+                frame([1, 1], &[16], pin(2)),
+                || writer.create(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
     assert_eq!(writer.bytes(), before);
     assert_fenced(encoder, &writer, [1, 1], &[16])
 }
@@ -566,7 +686,8 @@ fn maximum_frame_count_and_slowest_rate_keep_every_boundary_exact() -> Test {
     for ordinal in 0..1024 {
         encoder.frame(
             frame([1, 1], &[16], pin((ordinal % 251) as u8)),
-            || writer.create(), &mut || Ok(()),
+            || writer.create(),
+            &mut || Ok(()),
         )?;
     }
     let (_, receipt) = encoder.finish(&mut || Ok(()))?;
@@ -587,25 +708,52 @@ fn maximum_frame_count_and_slowest_rate_keep_every_boundary_exact() -> Test {
 #[test]
 fn normalized_rate_is_canonical_and_source_order_is_bound_separately_from_pixels() -> Test {
     let pixels = vec![vec![16; 35], vec![16; 35]];
-    let (bytes, receipt) = encode([7, 5], &pixels, &[pin(1), pin(2)], PlaybackRate::new(30, 1)?, 17)?;
-    let (equivalent, equivalent_receipt) =
-        encode([7, 5], &pixels, &[pin(1), pin(2)], PlaybackRate::new(60, 2)?, 17)?;
+    let (bytes, receipt) = encode(
+        [7, 5],
+        &pixels,
+        &[pin(1), pin(2)],
+        PlaybackRate::new(30, 1)?,
+        17,
+    )?;
+    let (equivalent, equivalent_receipt) = encode(
+        [7, 5],
+        &pixels,
+        &[pin(1), pin(2)],
+        PlaybackRate::new(60, 2)?,
+        17,
+    )?;
     assert_eq!(bytes, equivalent);
     same_receipt(&receipt, &equivalent_receipt);
 
-    let (reordered, reordered_receipt) =
-        encode([7, 5], &pixels, &[pin(2), pin(1)], PlaybackRate::new(30, 1)?, 17)?;
+    let (reordered, reordered_receipt) = encode(
+        [7, 5],
+        &pixels,
+        &[pin(2), pin(1)],
+        PlaybackRate::new(30, 1)?,
+        17,
+    )?;
     assert_eq!(bytes, reordered);
     assert_eq!(receipt.digest, reordered_receipt.digest);
-    assert_ne!(receipt.frame_receipts_digest, reordered_receipt.frame_receipts_digest);
+    assert_ne!(
+        receipt.frame_receipts_digest,
+        reordered_receipt.frame_receipts_digest
+    );
     assert_eq!(receipt.encoder, reordered_receipt.encoder);
     assert_eq!(receipt.hashed_bytes, reordered_receipt.hashed_bytes);
 
-    let (retimed, retimed_receipt) =
-        encode([7, 5], &pixels, &[pin(1), pin(2)], PlaybackRate::new(25, 1)?, 17)?;
+    let (retimed, retimed_receipt) = encode(
+        [7, 5],
+        &pixels,
+        &[pin(1), pin(2)],
+        PlaybackRate::new(25, 1)?,
+        17,
+    )?;
     assert_ne!(bytes, retimed);
     assert_ne!(receipt.digest, retimed_receipt.digest);
-    assert_ne!(receipt.frame_receipts_digest, retimed_receipt.frame_receipts_digest);
+    assert_ne!(
+        receipt.frame_receipts_digest,
+        retimed_receipt.frame_receipts_digest
+    );
     assert_eq!(receipt.encoder, retimed_receipt.encoder);
     assert_eq!(retimed_receipt.duration_ns, 80_000_000);
     Ok(())
@@ -623,7 +771,11 @@ fn invalid_writer_progress_and_eight_consecutive_interruptions_fence_completion(
             state.always_interrupt = case == 2;
         }
         let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
-        let result = encoder.frame(frame([7, 5], &[31; 35], pin(1)), || writer.create(), &mut || Ok(()));
+        let result = encoder.frame(
+            frame([7, 5], &[31; 35], pin(1)),
+            || writer.create(),
+            &mut || Ok(()),
+        );
         assert!(result.is_err());
         if case == 2 {
             assert_eq!(writer.0.borrow().writes, 8);
@@ -649,7 +801,11 @@ fn seven_interruptions_recover_and_retry_allowance_resets_only_after_progress() 
         state.interruption_cycle = 7;
     }
     let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
-    encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || Ok(()))?;
+    encoder.frame(
+        frame([7, 5], &pixels, pin(1)),
+        || writer.create(),
+        &mut || Ok(()),
+    )?;
     let (_, receipt) = encoder.finish(&mut || Ok(()))?;
     assert_eq!(writer.bytes(), expected);
     same_receipt(&receipt, &expected_receipt);
@@ -667,19 +823,34 @@ fn partial_header_payload_and_second_frame_failures_never_certify_shorter_output
     let first_payload = initial + config.frame(0)?.prefix().len();
     let first_end = first_payload + pixels.len();
     let second_payload = first_end + config.frame(1)?.prefix().len();
-    let (expected, _) =
-        encode([7, 5], &[pixels.clone(), pixels.clone()], &[pin(1), pin(2)], rate, 17)?;
+    let (expected, _) = encode(
+        [7, 5],
+        &[pixels.clone(), pixels.clone()],
+        &[pin(1), pin(2)],
+        rate,
+        17,
+    )?;
     for limit in [1, first_payload + 5, second_payload + 5] {
         let writer = Writer::new(17);
         writer.0.borrow_mut().fail_after = Some(limit);
         let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 2, rate)?;
-        let first = encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || Ok(()));
+        let first = encoder.frame(
+            frame([7, 5], &pixels, pin(1)),
+            || writer.create(),
+            &mut || Ok(()),
+        );
         if limit < first_end {
             assert!(first.is_err());
         } else {
             first?;
             assert!(
-                encoder.frame(frame([7, 5], &pixels, pin(2)), || writer.create(), &mut || Ok(())).is_err()
+                encoder
+                    .frame(
+                        frame([7, 5], &pixels, pin(2)),
+                        || writer.create(),
+                        &mut || Ok(())
+                    )
+                    .is_err()
             );
         }
         assert_eq!(writer.bytes(), expected[..limit]);
@@ -697,14 +868,20 @@ fn cancellation_before_creation_and_during_pin_hashing_fences_without_output() -
         let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
         let mut checks = 0;
         assert!(
-            encoder.frame(frame([128, 128], &pixels, pin(1)), || writer.create(), &mut || {
-                checks += 1;
-                if checks == reject_at {
-                    Err(io::Error::other("cancelled while hashing"))
-                } else {
-                    Ok(())
-                }
-            }).is_err()
+            encoder
+                .frame(
+                    frame([128, 128], &pixels, pin(1)),
+                    || writer.create(),
+                    &mut || {
+                        checks += 1;
+                        if checks == reject_at {
+                            Err(io::Error::other("cancelled while hashing"))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                )
+                .is_err()
         );
         assert_eq!(checks, reject_at);
         assert_eq!(writer.0.borrow().created, 0);
@@ -723,16 +900,29 @@ fn cancellation_after_partial_or_complete_frame_bytes_never_returns_a_receipt() 
         let writer = Writer::new(17);
         let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
         assert!(
-            encoder.frame(frame([7, 5], &pixels, pin(1)), || writer.create(), &mut || {
-                if writer.0.borrow().bytes.len() >= cancel_after {
-                    Err(io::Error::other("cancelled after accepted output"))
-                } else {
-                    Ok(())
-                }
-            }).is_err()
+            encoder
+                .frame(
+                    frame([7, 5], &pixels, pin(1)),
+                    || writer.create(),
+                    &mut || {
+                        if writer.0.borrow().bytes.len() >= cancel_after {
+                            Err(io::Error::other("cancelled after accepted output"))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                )
+                .is_err()
         );
         let written = writer.bytes();
-        assert_eq!(written.len(), if cancel_after == 1 { 17 } else { expected.len() });
+        assert_eq!(
+            written.len(),
+            if cancel_after == 1 {
+                17
+            } else {
+                expected.len()
+            }
+        );
         assert_eq!(written, expected[..written.len()]);
         assert_fenced(encoder, &writer, [7, 5], &pixels)?;
     }
@@ -745,7 +935,15 @@ fn creation_failure_is_permanent_and_never_retries_the_sink() -> Test {
     let writer = Writer::new(17);
     writer.0.borrow_mut().create_failure = true;
     let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
-    assert!(encoder.frame(frame([7, 5], &[29; 35], pin(1)), || writer.create(), &mut || Ok(())).is_err());
+    assert!(
+        encoder
+            .frame(
+                frame([7, 5], &[29; 35], pin(1)),
+                || writer.create(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
     assert_eq!(writer.0.borrow().created, 1);
     assert_eq!(writer.0.borrow().writes, 0);
     assert!(writer.bytes().is_empty());
@@ -758,21 +956,308 @@ fn finish_requires_successful_flush_and_both_cancellation_checkpoints() -> Test 
     for case in 0..3 {
         let writer = Writer::new(17);
         let mut encoder = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
-        encoder.frame(frame([7, 5], &[29; 35], pin(1)), || writer.create(), &mut || Ok(()))?;
+        encoder.frame(
+            frame([7, 5], &[29; 35], pin(1)),
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
         let before = writer.bytes();
         writer.0.borrow_mut().flush_failure = case == 1;
         assert!(
-            encoder.finish(&mut || {
-                if case == 0 || (case == 2 && writer.0.borrow().flushes > 0) {
-                    Err(io::Error::other("cancelled at completion"))
-                } else {
-                    Ok(())
-                }
-            }).is_err()
+            encoder
+                .finish(&mut || {
+                    if case == 0 || (case == 2 && writer.0.borrow().flushes > 0) {
+                        Err(io::Error::other("cancelled at completion"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
         );
         assert_eq!(writer.bytes(), before);
         assert_eq!(writer.0.borrow().flushes, usize::from(case != 0));
         assert_eq!(writer.0.borrow().created, 1);
+    }
+    Ok(())
+}
+
+fn encode_movie(
+    intervals: &[(u64, u64)],
+    duration: u64,
+    selection: ContentDigest,
+    piece: usize,
+) -> Test<(Vec<u8>, StreamReceipt)> {
+    let writer = Writer::new(piece);
+    let mut encoder =
+        Encoder::new_movie(DEFAULT_OUTPUT_BYTES, intervals.len(), duration, selection)?;
+    for (index, (start, end)) in intervals.iter().copied().enumerate() {
+        let pixels = [0, 16, index as u8, 127, 235, 255];
+        encoder.frame_at(
+            frame([3, 2], &pixels, pin(index as u8)),
+            start,
+            end,
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
+    }
+    let (_, receipt) = encoder.finish(&mut || Ok(()))?;
+    assert_eq!(writer.0.borrow().created, 1);
+    assert_eq!(writer.0.borrow().flushes, 1);
+    assert!(writer.0.borrow().largest <= 4096);
+    Ok((writer.bytes(), receipt))
+}
+
+#[test]
+fn movie_stream_preserves_timestamp_holes_and_full_envelope_with_exact_pixels() -> Test {
+    let intervals = [(100, 200), (350, 600), (900, 950)];
+    let (expected, expected_receipt) = encode_movie(&intervals, 1000, pin(91), usize::MAX)?;
+    let (dimensions, parsed) = inspect_with_duration(&expected, Some(1000))?;
+    assert_eq!(dimensions, [3, 2]);
+    assert_eq!(parsed.len(), 3);
+    for (index, (frame, (start, end))) in parsed.iter().zip(intervals).enumerate() {
+        assert_eq!(frame.timestamp_ns, start);
+        assert_eq!(frame.duration_ns, end - start);
+        assert_eq!(frame.pixels, [0, 16, index as u8, 127, 235, 255]);
+    }
+    assert_eq!(expected_receipt.duration_ns, 1000);
+    assert_eq!(expected_receipt.last_frame_end_ns, 950);
+    assert_eq!(
+        expected_receipt.timing,
+        stream::Timing::Movie {
+            duration_ns: 1000,
+            movie_lineage: pin(91)
+        }
+    );
+    assert_eq!(
+        expected_receipt.timing.domain(),
+        stream::MOVIE_FRAME_RECEIPTS_DOMAIN
+    );
+    assert_eq!(expected_receipt.digest, ContentDigest::sha256(&expected));
+    for piece in [1, 17, 4096] {
+        let (bytes, receipt) = encode_movie(&intervals, 1000, pin(91), piece)?;
+        assert_eq!(bytes, expected);
+        same_receipt(&receipt, &expected_receipt);
+    }
+    Ok(())
+}
+
+#[test]
+fn movie_lineage_binds_query_intervals_and_duration_separately_from_pixels() -> Test {
+    let intervals = [(100, 200), (300, 600)];
+    let (original, receipt) = encode_movie(&intervals, 1000, pin(91), 17)?;
+    let (same_pixels_and_times, other_selection) = encode_movie(&intervals, 1000, pin(92), 17)?;
+    assert_eq!(same_pixels_and_times, original);
+    assert_eq!(other_selection.digest, receipt.digest);
+    assert_ne!(
+        other_selection.frame_receipts_digest,
+        receipt.frame_receipts_digest
+    );
+    let (different_times, other_times) =
+        encode_movie(&[(100, 200), (301, 600)], 1000, pin(91), 17)?;
+    assert_ne!(different_times, original);
+    assert_ne!(
+        other_times.frame_receipts_digest,
+        receipt.frame_receipts_digest
+    );
+    let (longer_tail, other_duration) = encode_movie(&intervals, 1001, pin(91), 17)?;
+    assert_ne!(longer_tail, original);
+    assert_ne!(
+        other_duration.frame_receipts_digest,
+        receipt.frame_receipts_digest
+    );
+    assert_eq!(other_duration.last_frame_end_ns, receipt.last_frame_end_ns);
+    assert_ne!(receipt.timing.domain(), stream::FRAME_RECEIPTS_DOMAIN);
+    Ok(())
+}
+
+#[test]
+fn movie_mode_and_interval_refusals_fence_writes_and_completion() -> Test {
+    let rate = PlaybackRate::new(30, 1)?;
+    let writer = Writer::new(17);
+    let mut movie = Encoder::new_movie(DEFAULT_OUTPUT_BYTES, 1, 1000, pin(91))?;
+    assert!(
+        movie
+            .frame(
+                frame([3, 2], &[16; 6], pin(1)),
+                || writer.create(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
+    assert!(writer.bytes().is_empty());
+    assert_fenced(movie, &writer, [3, 2], &[16; 6])?;
+    let writer = Writer::new(17);
+    let mut uniform = Encoder::new(DEFAULT_OUTPUT_BYTES, 1, rate)?;
+    assert!(
+        uniform
+            .frame_at(
+                frame([3, 2], &[16; 6], pin(1)),
+                100,
+                200,
+                || writer.create(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
+    assert!(writer.bytes().is_empty());
+    assert_fenced(uniform, &writer, [3, 2], &[16; 6])?;
+    for interval in [(199, 300), (300, 299), (300, 300), (300, 1001)] {
+        let writer = Writer::new(17);
+        let mut movie = Encoder::new_movie(DEFAULT_OUTPUT_BYTES, 2, 1000, pin(91))?;
+        movie.frame_at(
+            frame([3, 2], &[16; 6], pin(1)),
+            100,
+            200,
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
+        let before = writer.bytes();
+        assert!(
+            movie
+                .frame_at(
+                    frame([3, 2], &[17; 6], pin(2)),
+                    interval.0,
+                    interval.1,
+                    || writer.create(),
+                    &mut || Ok(())
+                )
+                .is_err()
+        );
+        assert_eq!(writer.bytes(), before);
+        assert_fenced(movie, &writer, [3, 2], &[16; 6])?;
+    }
+    for duration in [0, fss_container::matroska_gray::MAX_TIMED_DURATION_NS + 1] {
+        assert!(Encoder::<Writer>::new_movie(DEFAULT_OUTPUT_BYTES, 1, duration, pin(91)).is_err());
+    }
+    for selection in [
+        ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]),
+        pin(1).with_laboratory(true),
+    ] {
+        assert!(Encoder::<Writer>::new_movie(DEFAULT_OUTPUT_BYTES, 1, 1000, selection).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn movie_quota_accounts_for_duration_header_and_never_completes_a_prefix() -> Test {
+    let (first, _) = encode_movie(&[(100, 200)], 1000, pin(91), 17)?;
+    let (both, expected_receipt) = encode_movie(&[(100, 200), (300, 600)], 1000, pin(91), 17)?;
+    let writer = Writer::new(17);
+    let mut encoder = Encoder::new_movie(first.len() as u64 - 1, 1, 1000, pin(91))?;
+    let mut checks = 0;
+    assert!(
+        encoder
+            .frame_at(
+                frame([3, 2], &[0, 16, 0, 127, 235, 255], pin(0)),
+                100,
+                200,
+                || writer.create(),
+                &mut || {
+                    checks += 1;
+                    Ok(())
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(checks, 1);
+    assert_eq!(writer.0.borrow().created, 0);
+    assert_fenced(encoder, &writer, [3, 2], &[16; 6])?;
+    for maximum in [both.len() as u64 - 1, both.len() as u64] {
+        let writer = Writer::new(17);
+        let mut encoder = Encoder::new_movie(maximum, 2, 1000, pin(91))?;
+        encoder.frame_at(
+            frame([3, 2], &[0, 16, 0, 127, 235, 255], pin(0)),
+            100,
+            200,
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
+        let result = encoder.frame_at(
+            frame([3, 2], &[0, 16, 1, 127, 235, 255], pin(1)),
+            300,
+            600,
+            || writer.create(),
+            &mut || Ok(()),
+        );
+        if maximum == both.len() as u64 {
+            result?;
+            let (_, receipt) = encoder.finish(&mut || Ok(()))?;
+            assert_eq!(writer.bytes(), both);
+            same_receipt(&receipt, &expected_receipt);
+        } else {
+            assert!(result.is_err());
+            assert_eq!(writer.bytes(), first);
+            assert_fenced(encoder, &writer, [3, 2], &[16; 6])?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn movie_cancellation_at_every_frame_checkpoint_and_failed_flush_cannot_complete() -> Test {
+    let writer = Writer::new(17);
+    let mut encoder = Encoder::new_movie(DEFAULT_OUTPUT_BYTES, 1, 1000, pin(91))?;
+    let mut checkpoints = 0;
+    encoder.frame_at(
+        frame([3, 2], &[16; 6], pin(1)),
+        100,
+        200,
+        || writer.create(),
+        &mut || {
+            checkpoints += 1;
+            Ok(())
+        },
+    )?;
+    let expected = writer.bytes();
+    encoder.finish(&mut || Ok(()))?;
+    for cut in 1..=checkpoints {
+        let writer = Writer::new(17);
+        let mut encoder = Encoder::new_movie(DEFAULT_OUTPUT_BYTES, 1, 1000, pin(91))?;
+        let mut count = 0;
+        assert!(
+            encoder
+                .frame_at(
+                    frame([3, 2], &[16; 6], pin(1)),
+                    100,
+                    200,
+                    || writer.create(),
+                    &mut || {
+                        count += 1;
+                        if count == cut {
+                            Err(io::Error::other("cancelled timed frame"))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                )
+                .is_err()
+        );
+        let written = writer.bytes();
+        assert_eq!(written, expected[..written.len()]);
+        assert_fenced(encoder, &writer, [3, 2], &[16; 6])?;
+    }
+    for case in 0..3 {
+        let writer = Writer::new(17);
+        let mut encoder = Encoder::new_movie(DEFAULT_OUTPUT_BYTES, 1, 1000, pin(91))?;
+        encoder.frame_at(
+            frame([3, 2], &[16; 6], pin(1)),
+            100,
+            200,
+            || writer.create(),
+            &mut || Ok(()),
+        )?;
+        writer.0.borrow_mut().flush_failure = case == 1;
+        assert!(
+            encoder
+                .finish(&mut || {
+                    if case == 0 || (case == 2 && writer.0.borrow().flushes > 0) {
+                        Err(io::Error::other("cancelled timed finalization"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+        );
     }
     Ok(())
 }

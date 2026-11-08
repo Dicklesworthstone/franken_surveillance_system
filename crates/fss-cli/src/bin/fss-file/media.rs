@@ -45,7 +45,9 @@ mod export_options;
 mod movie_export;
 #[path = "movie_output.rs"]
 mod movie_output;
-use export_options::ExportOptions;
+#[path = "movie_timing.rs"]
+mod movie_timing;
+use export_options::{ExportOptions, MatroskaTiming};
 
 const MAX_SCAN_FRAMES: usize = 128;
 
@@ -772,6 +774,30 @@ impl FrameExport {
             ),
         }
     }
+
+    fn frame_at(
+        &mut self,
+        input: jpeg_stream::FrameInput<'_>,
+        timing: movie_timing::FrameTiming,
+        cx: &ReplayCx,
+    ) -> std::io::Result<()> {
+        match self {
+            Self::GrayMatroska(export) => export.frame_at(
+                gray_matroska_stream::FrameInput {
+                    dimensions: input.dimensions,
+                    pixels: input.pixels,
+                    luma_sha256: input.luma_sha256,
+                    decode_receipt: input.decode_receipt,
+                },
+                timing.start_ns,
+                timing.end_ns,
+                cx,
+            ),
+            _ => Err(std::io::Error::other(
+                "movie timing requires lossless Matroska output",
+            )),
+        }
+    }
 }
 
 fn prepare_video_export(
@@ -819,9 +845,14 @@ fn prepare_output_export(
                     root,
                     maximum,
                     maximum_frames,
-                    action
-                        .output_rate
-                        .ok_or_else(|| std::io::Error::other("missing Matroska playback rate"))?,
+                    match action.matroska_timing {
+                        Some(MatroskaTiming::Uniform(rate)) => rate,
+                        _ => {
+                            return Err(std::io::Error::other(
+                                "movie timing requires an authenticated movie selection",
+                            ));
+                        }
+                    },
                     cx,
                 )
                 .map(FrameExport::GrayMatroska),

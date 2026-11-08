@@ -1,0 +1,245 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "timezone": "America/New_York",
+  "state": "source_movie_timing_implemented_native_components_and_independent_oracle_passed_cli_unverified",
+  "mission": {
+    "goal": "Close consequential native footage-review gaps and publish meaningful checkpoints directly to main through GitHub, without PRs.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl"
+    ],
+    "previous_feature_commit": "d40279ef32b48bb763072c363083042434c86ce3",
+    "concurrent_head_preserved": "e9a652a8ec65d1beba03cb9f2979e17d6697d123",
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "FSS-068 / fss-x4a.13.8",
+      "VIT-023 / fss-vit023-review-export-w8aai: local review output only"
+    ]
+  },
+  "authority": {
+    "git": "User explicitly authorized meaningful direct-main GitHub commits. Preserve concurrent edits with non-force expected-head ref updates.",
+    "live_device_execution": false,
+    "policy_activation": false,
+    "external_delivery": false
+  },
+  "completed": [
+    "export-movie --output-format gray-mkv --output-timing movie admits authenticated selected movie intervals; --output-rate is mutually exclusive. Existing uniform-rate commands retain their grammar and behavior.",
+    "MovieTiming validates all selected occurrences before decoding or output, subtracts the query origin, and converts each rational endpoint independently using checked integer arithmetic.",
+    "Explicit Matroska intervals preserve clipped durations and leading/internal/trailing holes. Info.Duration declares the full query envelope before any frame. No synthetic pictures or black-gap display guarantee.",
+    "A separate movie frame-receipts domain binds full query duration, authenticated movie lineage, exact emitted intervals, native source receipts, pixel pins, output bytes and logical hash work.",
+    "Whole-frame quota admission precedes lazy output creation; overlap, mode mismatch, bad pins, cancellation and write/flush failures permanently fence completion.",
+    "Concurrent archive-discovery and webhook work is preserved. The H264 test dependency removed by a concurrent commit is restored alongside its new ledger dependency, with locked offline metadata checked."
+  ],
+  "verification": {
+    "native": {
+      "status": "passed",
+      "toolchain": "nightly-2026-08-31",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "command": "cargo test --locked --offline -p fss-container --test matroska_gray_contract --test timed_matroska_gray_contract --test movie_output_contract --test movie_timing_contract --test gray_matroska_stream_contract",
+      "targets_passed": {
+        "matroska_gray_contract": 6,
+        "timed_matroska_gray_contract": 5,
+        "movie_output_contract": 10,
+        "movie_timing_contract": 8,
+        "gray_matroska_stream_contract": 21
+      },
+      "total_passed": 50,
+      "failed": 0,
+      "scope": "Actual production timing helper, container framing and stream encoder; movie materializer includes actual native AVC/HEVC and demux. No full retained-custody/CLI process or filesystem durability execution claim.",
+      "log_sha256": "98d8e256f9167cb0a30075be9816777509f93de7f0b58baa10467fb858e9b530"
+    },
+    "jpeg_regression": {
+      "status": "passed",
+      "command": "cargo test --locked --offline -p fss-codec-jpeg-encode --test file_jpeg_range_contract",
+      "total_passed": 8,
+      "failed": 0,
+      "log_sha256": "8967c65efe954edee75b625e0231163c0d59f2ce30333bb8c91f2732d3df2ad0"
+    },
+    "independent_oracle": {
+      "status": "passed",
+      "scope": "actual production Encoder::new_movie/frame_at plus actual fss-container/fss-core libraries; synthetic pixels/pins; no runtime/custody/CLI durability claim",
+      "versions": {
+        "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+        "ffprobe": "ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023 the FFmpeg developers",
+        "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers"
+      },
+      "frames": 1032,
+      "pixel_bytes": 331372,
+      "all_packet_pts_dts_durations_exact_integer_ns": true,
+      "all_decoded_luma_bytes_exact": true,
+      "format_duration_text_tolerance_ns": 1000,
+      "duration_precision_note": "FFprobe format duration text has microsecond precision. Independent native EBML tests verify the exact binary64 duration, including 2^53 ns.",
+      "cases": [
+        {
+          "name": "gaps",
+          "dimensions": [
+            7,
+            5
+          ],
+          "frames": 3,
+          "pixel_bytes": 105,
+          "container_bytes": 362,
+          "duration_ns": 1000000000,
+          "last_frame_end_ns": 900000000,
+          "first_timestamp_ns": 100000000,
+          "format_duration_seconds": "1.000000",
+          "packet_timing_matches": true,
+          "pixels_match": true,
+          "sha256": "fc657e1529ca495dc38e7081c4d83d4969f5bea7220b66a3042ce75cf1927746",
+          "encoder_identity": "sha256:cfc7b5a876570b52a54bda66380a46afcce4fbb361cff331fa19962771eb6ab9"
+        },
+        {
+          "name": "maximum",
+          "dimensions": [
+            1,
+            1
+          ],
+          "frames": 3,
+          "pixel_bytes": 3,
+          "container_bytes": 251,
+          "duration_ns": 9007199254740992,
+          "last_frame_end_ns": 9007199254740992,
+          "first_timestamp_ns": 0,
+          "format_duration_seconds": "9007199.254740",
+          "packet_timing_matches": true,
+          "pixels_match": true,
+          "sha256": "10782d2c5e59fc2942c1f9bea816b2f3729e402fe1193836791b369ffe088fd6",
+          "encoder_identity": "sha256:cfc7b5a876570b52a54bda66380a46afcce4fbb361cff331fa19962771eb6ab9"
+        },
+        {
+          "name": "fractional",
+          "dimensions": [
+            17,
+            19
+          ],
+          "frames": 1024,
+          "pixel_bytes": 330752,
+          "container_bytes": 360507,
+          "duration_ns": 35167466666,
+          "last_frame_end_ns": 34290923455,
+          "first_timestamp_ns": 123456789,
+          "format_duration_seconds": "35.167466",
+          "packet_timing_matches": true,
+          "pixels_match": true,
+          "sha256": "12d58a24a597a88fd1029cd12b1039539421ec1f205b48b85ef39416beb7afc5",
+          "encoder_identity": "sha256:cfc7b5a876570b52a54bda66380a46afcce4fbb361cff331fa19962771eb6ab9"
+        },
+        {
+          "name": "full_range",
+          "dimensions": [
+            256,
+            1
+          ],
+          "frames": 2,
+          "pixel_bytes": 512,
+          "container_bytes": 751,
+          "duration_ns": 4000000000,
+          "last_frame_end_ns": 3000000000,
+          "first_timestamp_ns": 0,
+          "format_duration_seconds": "4.000000",
+          "packet_timing_matches": true,
+          "pixels_match": true,
+          "sha256": "ef2c1c38e7c5b105afdb5616bfd14bc1625a59497e3d7f12e4d6524f331090cf",
+          "encoder_identity": "sha256:cfc7b5a876570b52a54bda66380a46afcce4fbb361cff331fa19962771eb6ab9"
+        }
+      ],
+      "tool_binary_sha256": {
+        "ffmpeg": "ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+        "ffprobe": "272f6ebc634a63d9c8b4ca68e964119d980f25154e5aa2c35e5487da48e9a58f"
+      },
+      "report_sha256": "2f736366063fd61c2d3e03a74ee09d5de2ea30bce0561f45c3a4f6202d586d68",
+      "driver_sha256": "407ef5a755aafac941f64c3369e70c9dacde670ed16928d5deb8b9e14b44af66",
+      "runner_sha256": "47c5eb2fa6661201c5c16bfd4c42eaa9e267962e6e767c2d46bdd5835782d98b"
+    },
+    "cli_contracts": {
+      "status": "authored_not_executed",
+      "movie_process_tests": 11,
+      "parser_contracts": 1
+    },
+    "cli_typecheck": {
+      "status": "failed_before_cli_source",
+      "standard": {
+        "source_context": "first movie export checkpoint; see SESSION_HANDOFF_2026-11-07_MOVIE_EXPORT.json",
+        "elapsed_seconds": 195.31,
+        "child_peak_rss_kib": 3261532,
+        "cargo_exit": 101,
+        "compiler_flags": null
+      },
+      "supplementary_diagnostic": {
+        "source_head": "d40279ef32b48bb763072c363083042434c86ce3",
+        "elapsed_seconds": 169.02,
+        "child_peak_rss_kib": 4373708,
+        "cargo_exit": 101,
+        "compiler_flags": "-Zthreads=1 -Zmir-opt-level=0",
+        "source_drift": [],
+        "result_sha256": "286f7be36e95ad56013751f97c71e336d3f11ce7408db8432368b0ad1307b7a2"
+      },
+      "common": "Pinned nightly; locked/offline; one job; debug/incremental disabled; 6 GiB per-process virtual memory cap. Unchanged Asupersync 0.5.0 metadata compilation terminated with SIGKILL. No Rust source diagnostic; CLI not reached; initiating signal cause unknown.",
+      "qualification": "Neither run is a passing typecheck, process test or release qualification. No dependency or gate was weakened. No further full build attempted after the supplementary failure."
+    },
+    "source_review": {
+      "status": "completed",
+      "scope": "Two independent reviews of timing/stream semantics and a final CLI API/call-site review; no concrete remaining blocker. Source review is not compilation or execution."
+    },
+    "locked_metadata": {
+      "status": "passed",
+      "command": "cargo metadata --locked --offline --no-deps --format-version 1"
+    },
+    "source_sha256": {
+      "crates/fss-cli/src/bin/fss-file.rs": "1c50d058821960b936097e79706bcc1e83ba9d823950e9bed3b1f8d208d751e3",
+      "crates/fss-cli/src/bin/fss-file/export_options.rs": "ee3a39d7b6df2fdf58ba6eb0cee2507ee51769284387706836b64c913fea58d5",
+      "crates/fss-cli/src/bin/fss-file/gray_matroska_stream.rs": "c160c1ff0bfd57a9b403f37cae602baeee3f982edfd67516d0ab10c631e00d93",
+      "crates/fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs": "ef7160ce52ef7310a8ce5bbd9bc504b6d84825201759e9c3e7fa8c74562b6029",
+      "crates/fss-cli/src/bin/fss-file/media.rs": "40c0bee09276eaf4347412f2e1472794f45e411ec1b28f7626f6b85cedfc57a4",
+      "crates/fss-cli/src/bin/fss-file/movie_export.rs": "b04c0c49f5ad7c0b8ebab9cf5facb73f0aa5c6dd70ded21fbfbcd4f5cac26be5",
+      "crates/fss-cli/src/bin/fss-file/movie_output.rs": "3fb9a72bbe8bd8baeec0063e97ace59c4f0faa553ce3332ac38f289fdbafd680",
+      "crates/fss-cli/src/bin/fss-file/movie_timing.rs": "50b1eb911af2769100b0ead0168a42b628b28b44f68b495aa3c809829fe33f77",
+      "crates/fss-cli/tests/decoded_media_cli_contract/movie_export.rs": "3947b5fb47283068fba83177e455babf69ea810028532aa196f03187f1a6b907",
+      "crates/fss-codec-jpeg-encode/tests/file_jpeg_range_contract.rs": "29b60f6888585d64bd9da8487e1129a057f845d065aa153aa9ec82ab77138e31",
+      "crates/fss-container/src/matroska_gray.rs": "d7567476fa196fc2794344f84ad77732ea004443f0296c08b76cb7bb3e730975",
+      "crates/fss-container/src/matroska_gray/ebml.rs": "c727c32e6e8cb91fe84644b1207f83ed2a48c4614b4fbd4f2c66116ec66e479b",
+      "crates/fss-container/tests/gray_matroska_stream_contract.rs": "3f41f2b5b4a14daf1d34c4b4b046dda2206634c6092cd600eb31e4a071002fc7",
+      "crates/fss-container/tests/movie_output_contract.rs": "3145db4e519b11bca0f33edbe179360e8049b8ab9911a97748f38a22667405bc",
+      "crates/fss-container/tests/movie_timing_contract.rs": "ff7b38de8103cd8f94cb62bd630f78b076e8980d6719a8d3a5c39b83c7edfb1d",
+      "crates/fss-container/tests/timed_matroska_gray_contract.rs": "1519116e3f342cf3eaacfc0cdc7364fa445f50374116e913da1f859eb8bc2973",
+      "crates/fss-cli/Cargo.toml": "8742de98f558a91945a51f359ce01a8e4b321d611928bad67ef25a7970964eb3",
+      "Cargo.lock": "103010b3bcb88b9da62dc1c2be09bb3c31cd99e3eadccee716fc8fa7ea20ba04",
+      "rust-toolchain.toml": "d34a84f364eb0446833610d9835b48a36a2c8519eba5e0c769858a0cd816e1c8"
+    }
+  },
+  "important_boundaries": [
+    "The source is a retained original ADP-FILE-001 MP4/MOV import. Archive RTSP catalogs remain separate.",
+    "At most 1024 selected occurrences and 1024 aggregate coded samples. Existing cache, output, work, source-read and privacy bounds remain unchanged.",
+    "Movie query duration is positive and at most 2^53 ns. Every admitted duration integer is exact as binary64; rational source endpoints are floored independently by less than 1 ns.",
+    "Timestamp gaps are not pictures, black-frame guarantees or evidence of physical absence. Capture clock assumptions and UTC remain separate.",
+    "Output remains a private local derivative. Only full source completion and durable writer finalization can report export success; output-stage failure may leave a private incomplete file.",
+    "Broad VIT/FSS beads remain open. No FLDT recipient grant, payment-zone attestation, retained derivative custody/expiry or remote delivery is implemented by this feature."
+  ],
+  "continuation": {
+    "highest_value_next": [
+      "Run exact-source full CLI typecheck and all authored movie process contracts on a capable host.",
+      "Implement authorized retained reviewer delivery with explicit recipient/grant, privacy attestation, derivative custody, expiry and revocation as a coherent VIT-023 slice.",
+      "Connect discovered recording-archive intervals to complete decode/export using the existing source/custody bounds; do not relabel original-file support as archive export."
+    ],
+    "obligations": [
+      "Full CLI execution and release qualification remain explicitly unverified.",
+      "Keep broader beads open until their complete acceptance scope is met."
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "d40279ef32b48bb763072c363083042434c86ce3",
+      "change": "Native exact selected movie output with cumulative decode/source budgets."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Source-movie-timed lossless output preserving clipped durations and complete query gaps."
+    }
+  ]
+}

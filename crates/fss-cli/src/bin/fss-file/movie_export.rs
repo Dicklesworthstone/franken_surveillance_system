@@ -6,12 +6,14 @@ use super::movie_output::{
     DEFAULT_LUMA_BYTES, FrameInput, LINEAGE_DOMAIN, MAX_LUMA_BYTES, MAX_MOVIE_FRAMES, MovieOutput,
     MovieOutputError, SourceBinding,
 };
+use super::movie_timing::{MovieTiming, MovieTimingError};
 use super::{
-    ComponentInterpretation, DecodeLimits, DecoderLimits, EncodeBudget, ExportOptions,
-    H265DecoderLimits, ParseResult, RecordedH264Range, RecordedH264Request, RecordedH265Range,
-    RecordedH265Request, RecordedVideoDecodeBudget, RunResult, VIDEO_DECODE_WORK_MODEL, Values,
-    encode_usage_lines, finish_video_export, jpeg_stream, malformed, number, parse_decode_limits,
-    prepare_output_export, privacy_lines, source_selection_lines, text,
+    ComponentInterpretation, DecodeLimits, DecoderLimits, EncodeBudget, ExportOptions, FrameExport,
+    H265DecoderLimits, MatroskaTiming, ParseResult, RecordedH264Range, RecordedH264Request,
+    RecordedH265Range, RecordedH265Request, RecordedVideoDecodeBudget, RunResult,
+    VIDEO_DECODE_WORK_MODEL, Values, encode_usage_lines, finish_video_export, gray_matroska_stream,
+    jpeg_stream, malformed, number, parse_decode_limits, prepare_output_export, privacy_lines,
+    source_selection_lines, text,
 };
 use fss_container::demux::{MovieDecodeSpan, VideoCodec};
 use fss_core::{ContentDigest, SensorCapsule};
@@ -54,6 +56,7 @@ pub(super) fn accepts_option(option: &str) -> bool {
                 | "--output"
                 | "--output-format"
                 | "--output-rate"
+                | "--output-timing"
                 | "--max-output-bytes"
                 | "--jpeg-quality"
                 | "--encode-work-units"
@@ -186,6 +189,16 @@ fn export(
         },
         action.maximum_luma_bytes,
     )?;
+    // Resolve every clipped boundary before any decoding or output creation. The known query
+    // duration also retains trailing gaps in the Matroska header without a later rewrite.
+    let timing = if action.export.matroska_timing == Some(MatroskaTiming::Movie) {
+        Some(MovieTiming::new(&selected.selection, &mut || {
+            cx.checkpoint("file_cli:movie_timing")
+                .map_err(|_| MovieTimingError::Cancelled)
+        })?)
+    } else {
+        None
+    };
     movie::report(&selected, cx, out)?;
     let mut provenance = BTreeMap::new();
     let mut decoded_frames = 0_u64;
@@ -225,8 +238,33 @@ fn export(
     // Completion is deliberately after every range's Ok(None), not after the last wanted
     // picture. A late source/codec refusal, or a selected RASL with no output, creates no file.
     let complete = output.finish(&mut || cache_checkpoint(cx))?;
-    let mut export = prepare_output_export(&action.export, complete.frames(), root, cx)?
-        .ok_or_else(|| io::Error::other("movie export requires an output destination"))?;
+    let mut export = if let Some(timing) = &timing {
+        if timing.frames() != complete.frames() {
+            return Err(
+                io::Error::other("movie timing and selected occurrence counts differ").into(),
+            );
+        }
+        let path = action
+            .export
+            .output
+            .as_deref()
+            .ok_or_else(|| io::Error::other("movie export requires an output destination"))?;
+        FrameExport::GrayMatroska(gray_matroska_stream::MatroskaExport::prepare_movie(
+            path,
+            root,
+            action
+                .export
+                .maximum_output_bytes
+                .unwrap_or(gray_matroska_stream::DEFAULT_OUTPUT_BYTES),
+            complete.frames(),
+            timing.duration_ns(),
+            complete.lineage_digest(),
+            cx,
+        )?)
+    } else {
+        prepare_output_export(&action.export, complete.frames(), root, cx)?
+            .ok_or_else(|| io::Error::other("movie export requires an output destination"))?
+    };
     for ordinal in 0..complete.frames() {
         cx.checkpoint("file_cli:movie_output_frame")?;
         let frame = complete
@@ -235,16 +273,22 @@ fn export(
         let source = provenance
             .get(&frame.segment)
             .ok_or_else(|| io::Error::other("movie occurrence has no source capsule"))?;
-        export.frame(
-            jpeg_stream::FrameInput {
-                dimensions: frame.dimensions,
-                pixels: frame.pixels(),
-                luma_sha256: frame.luma_sha256,
-                decode_receipt: frame.decode_receipt,
-            },
-            encode_budget,
-            cx,
-        )?;
+        let input = jpeg_stream::FrameInput {
+            dimensions: frame.dimensions,
+            pixels: frame.pixels(),
+            luma_sha256: frame.luma_sha256,
+            decode_receipt: frame.decode_receipt,
+        };
+        if let Some(timing) = &timing {
+            let interval = timing
+                .frame(ordinal)
+                .ok_or_else(|| io::Error::other("movie occurrence has no playback interval"))?;
+            export.frame_at(input, interval, cx)?;
+            writeln!(out, "movie_output_start_ns={}", interval.start_ns)?;
+            writeln!(out, "movie_output_end_ns={}", interval.end_ns)?;
+        } else {
+            export.frame(input, encode_budget, cx)?;
+        }
         source_selection_lines(
             out,
             selected.import_identity,
@@ -301,7 +345,8 @@ fn export(
     writeln!(out, "movie_output_order=selected_presentation_occurrences")?;
     writeln!(
         out,
-        "movie_output_source_timing_preserved=false\nmovie_output_gaps_filled=false"
+        "movie_output_source_timing_preserved={}\nmovie_output_gaps_filled=false",
+        timing.is_some(),
     )?;
     writeln!(
         out,

@@ -7,12 +7,16 @@
 
 use std::io::{self, Write};
 
-use fss_container::matroska_gray::{GrayMatroskaConfig, PlaybackRate};
+use fss_container::matroska_gray::{
+    GrayMatroskaConfig, MAX_TIMED_DURATION_NS, PlaybackRate, TimedGrayMatroskaConfig,
+};
 use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 
 pub(crate) const DEFAULT_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const FRAME_RECEIPTS_DOMAIN: &str = "fss.file_gray_matroska_frame_receipts.v1";
+pub(crate) const MOVIE_FRAME_RECEIPTS_DOMAIN: &str =
+    "fss.file_gray_matroska_movie_frame_receipts.v1";
 pub(crate) const ENCODER_IDENTITY_DOMAIN: &str = "fss.file_gray_matroska_encoder.v1";
 pub(crate) const WORK_MODEL: &str = "logical_sha256_input_bytes";
 const WRITE_CHUNK: usize = 4096;
@@ -33,9 +37,26 @@ fn digest(hash: Sha256Hasher) -> io::Result<ContentDigest> {
 }
 
 fn valid_pin(pin: ContentDigest) -> bool {
-    pin.algorithm() == DigestAlgorithm::Sha256
-        && !pin.is_laboratory()
-        && pin.bytes() != [0; 32]
+    pin.algorithm() == DigestAlgorithm::Sha256 && !pin.is_laboratory() && pin.bytes() != [0; 32]
+}
+
+/// Explicit playback semantics. The movie lineage retains the original rational intervals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Timing {
+    Uniform(PlaybackRate),
+    Movie {
+        duration_ns: u64,
+        movie_lineage: ContentDigest,
+    },
+}
+
+impl Timing {
+    pub(crate) fn domain(self) -> &'static str {
+        match self {
+            Self::Uniform(_) => FRAME_RECEIPTS_DOMAIN,
+            Self::Movie { .. } => MOVIE_FRAME_RECEIPTS_DOMAIN,
+        }
+    }
 }
 
 pub(crate) struct FrameInput<'a> {
@@ -54,16 +75,17 @@ pub(crate) struct StreamReceipt {
     pub frame_receipts_digest: ContentDigest,
     pub encoder: ContentDigest,
     pub dimensions: [u32; 2],
-    pub rate: PlaybackRate,
+    pub timing: Timing,
     pub duration_ns: u64,
+    pub last_frame_end_ns: u64,
     pub hashed_bytes: u64,
 }
 
 /// A byte ceiling also bounds linear hashing and output work; no refill or frame buffer.
 pub(crate) struct Encoder<W> {
     writer: Option<W>,
-    config: Option<GrayMatroskaConfig>,
-    rate: PlaybackRate,
+    dimensions: Option<[u32; 2]>,
+    timing: Timing,
     encoder: Option<ContentDigest>,
     hash: Sha256Hasher,
     receipts: Sha256Hasher,
@@ -77,21 +99,40 @@ pub(crate) struct Encoder<W> {
 }
 
 impl<W: Write> Encoder<W> {
-    pub(crate) fn new(
+    pub(crate) fn new(maximum: u64, maximum_frames: usize, rate: PlaybackRate) -> io::Result<Self> {
+        Self::with_timing(maximum, maximum_frames, Timing::Uniform(rate))
+    }
+
+    pub(crate) fn new_movie(
         maximum: u64,
         maximum_frames: usize,
-        rate: PlaybackRate,
+        duration_ns: u64,
+        movie_lineage: ContentDigest,
     ) -> io::Result<Self> {
+        if !(1..=MAX_TIMED_DURATION_NS).contains(&duration_ns) || !valid_pin(movie_lineage) {
+            return Err(refused("invalid movie timeline or selection lineage"));
+        }
+        Self::with_timing(
+            maximum,
+            maximum_frames,
+            Timing::Movie {
+                duration_ns,
+                movie_lineage,
+            },
+        )
+    }
+
+    fn with_timing(maximum: u64, maximum_frames: usize, timing: Timing) -> io::Result<Self> {
         if maximum == 0 || maximum > MAX_OUTPUT_BYTES || !(1..=1024).contains(&maximum_frames) {
             return Err(refused("invalid Matroska export allowance"));
         }
         let mut receipts = Sha256Hasher::new();
-        receipts.update(FRAME_RECEIPTS_DOMAIN.as_bytes());
+        receipts.update(timing.domain().as_bytes());
         receipts.update(&[0]);
         Ok(Self {
             writer: None,
-            config: None,
-            rate,
+            dimensions: None,
+            timing,
             encoder: None,
             hash: Sha256Hasher::new(),
             receipts,
@@ -100,7 +141,7 @@ impl<W: Write> Encoder<W> {
             bytes: 0,
             frames: 0,
             duration_ns: 0,
-            hashed_bytes: FRAME_RECEIPTS_DOMAIN.len() as u64 + 1,
+            hashed_bytes: timing.domain().len() as u64 + 1,
             failed: false,
         })
     }
@@ -111,10 +152,32 @@ impl<W: Write> Encoder<W> {
         create: impl FnOnce() -> io::Result<W>,
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
+        self.admit_frame(input, None, create, check)
+    }
+
+    /// Timestamp holes are retained without synthesizing pictures or promising black playback.
+    pub(crate) fn frame_at(
+        &mut self,
+        input: FrameInput<'_>,
+        start_ns: u64,
+        end_ns: u64,
+        create: impl FnOnce() -> io::Result<W>,
+        check: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.admit_frame(input, Some((start_ns, end_ns)), create, check)
+    }
+
+    fn admit_frame(
+        &mut self,
+        input: FrameInput<'_>,
+        interval: Option<(u64, u64)>,
+        create: impl FnOnce() -> io::Result<W>,
+        check: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
         if self.failed {
             return Err(refused("Matroska export fenced after an earlier refusal"));
         }
-        let result = self.frame_inner(input, create, check);
+        let result = self.frame_inner(input, interval, create, check);
         if result.is_err() {
             self.failed = true;
         }
@@ -124,28 +187,66 @@ impl<W: Write> Encoder<W> {
     fn frame_inner(
         &mut self,
         input: FrameInput<'_>,
+        interval: Option<(u64, u64)>,
         create: impl FnOnce() -> io::Result<W>,
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
         if self.frames >= self.maximum_frames || !valid_pin(input.decode_receipt) {
-            return Err(refused("Matroska frame allowance or source receipt refused"));
+            return Err(refused(
+                "Matroska frame allowance or source receipt refused",
+            ));
         }
-        let config = GrayMatroskaConfig::new(input.dimensions, self.rate)
-            .map_err(io::Error::other)?;
-        if self.config.as_ref().is_some_and(|prior| prior.dimensions() != input.dimensions) {
+        if self
+            .dimensions
+            .is_some_and(|prior| prior != input.dimensions)
+        {
             return Err(refused("Matroska dimensions changed within the stream"));
         }
-        let framing = config.frame(self.frames as u64).map_err(io::Error::other)?;
+        let (framing, initialization) = match (self.timing, interval) {
+            (Timing::Uniform(rate), None) => {
+                let config =
+                    GrayMatroskaConfig::new(input.dimensions, rate).map_err(io::Error::other)?;
+                let initialization = if self.frames == 0 {
+                    Some(config.initialization().map_err(io::Error::other)?)
+                } else {
+                    None
+                };
+                (
+                    config.frame(self.frames as u64).map_err(io::Error::other)?,
+                    initialization,
+                )
+            }
+            (Timing::Movie { duration_ns, .. }, Some((start_ns, end_ns))) => {
+                if start_ns < self.duration_ns {
+                    return Err(refused(
+                        "movie intervals overlap or reverse within Matroska output",
+                    ));
+                }
+                let config = TimedGrayMatroskaConfig::new(input.dimensions, duration_ns)
+                    .map_err(io::Error::other)?;
+                let framing = config
+                    .frame(self.frames as u64, start_ns, end_ns)
+                    .map_err(io::Error::other)?;
+                let initialization = if self.frames == 0 {
+                    Some(config.initialization().map_err(io::Error::other)?)
+                } else {
+                    None
+                };
+                (framing, initialization)
+            }
+            _ => {
+                return Err(refused(
+                    "Matroska frame timing does not match its explicit mode",
+                ));
+            }
+        };
         if input.pixels.len() != framing.payload_bytes() {
             return Err(refused("Matroska luma length mismatch"));
         }
-        let initialization = if self.frames == 0 {
-            Some(config.initialization().map_err(io::Error::other)?)
-        } else {
-            None
-        };
-        let initialization_bytes = initialization.as_ref().map_or(0, |header| header.bytes().len());
+        let initialization_bytes = initialization
+            .as_ref()
+            .map_or(0, |header| header.bytes().len());
         let additional = initialization_bytes
             .checked_add(framing.prefix().len())
             .and_then(|bytes| bytes.checked_add(input.pixels.len()))
@@ -166,8 +267,19 @@ impl<W: Write> Encoder<W> {
         if self.encoder.is_none() {
             let identity = self.implementation_identity(check)?;
             self.lineage(&identity.bytes())?;
-            self.lineage(&self.rate.numerator().to_le_bytes())?;
-            self.lineage(&self.rate.denominator().to_le_bytes())?;
+            match self.timing {
+                Timing::Uniform(rate) => {
+                    self.lineage(&rate.numerator().to_le_bytes())?;
+                    self.lineage(&rate.denominator().to_le_bytes())?;
+                }
+                Timing::Movie {
+                    duration_ns,
+                    movie_lineage,
+                } => {
+                    self.lineage(&duration_ns.to_le_bytes())?;
+                    self.lineage(&movie_lineage.bytes())?;
+                }
+            }
             self.lineage(&input.dimensions[0].to_le_bytes())?;
             self.lineage(&input.dimensions[1].to_le_bytes())?;
             self.encoder = Some(identity);
@@ -189,13 +301,15 @@ impl<W: Write> Encoder<W> {
         self.lineage(&framing.timestamp_ns().to_le_bytes())?;
         self.lineage(&framing.duration_ns().to_le_bytes())?;
         self.duration_ns = framing.end_ns();
-        self.config = Some(config);
+        self.dimensions = Some(input.dimensions);
         self.frames += 1;
         Ok(())
     }
 
     fn charge_hash(&mut self, bytes: usize) -> io::Result<()> {
-        self.hashed_bytes = self.hashed_bytes.checked_add(bytes as u64)
+        self.hashed_bytes = self
+            .hashed_bytes
+            .checked_add(bytes as u64)
             .ok_or_else(|| refused("Matroska hash accounting overflow"))?;
         Ok(())
     }
@@ -235,7 +349,9 @@ impl<W: Write> Encoder<W> {
         while offset < bytes.len() {
             check()?;
             let end = (offset + WRITE_CHUNK).min(bytes.len());
-            match self.writer.as_mut()
+            match self
+                .writer
+                .as_mut()
                 .ok_or_else(|| refused("missing Matroska output writer"))?
                 .write(&bytes[offset..end])
             {
@@ -265,31 +381,47 @@ impl<W: Write> Encoder<W> {
             return Err(refused("incomplete Matroska export"));
         }
         check()?;
-        let encoder = self.encoder.ok_or_else(|| refused("missing Matroska encoder identity"))?;
-        let dimensions = self.config.as_ref()
-            .ok_or_else(|| refused("missing Matroska configuration"))?.dimensions();
-        let mut writer = self.writer.take().ok_or_else(|| refused("missing Matroska output"))?;
+        let encoder = self
+            .encoder
+            .ok_or_else(|| refused("missing Matroska encoder identity"))?;
+        let dimensions = self
+            .dimensions
+            .ok_or_else(|| refused("missing Matroska dimensions"))?;
+        let duration_ns = match self.timing {
+            Timing::Uniform(_) => self.duration_ns,
+            Timing::Movie { duration_ns, .. } => duration_ns,
+        };
+        let mut writer = self
+            .writer
+            .take()
+            .ok_or_else(|| refused("missing Matroska output"))?;
         writer.flush()?;
         check()?;
         let stream_digest = digest(std::mem::replace(&mut self.hash, Sha256Hasher::new()))?;
         self.lineage(&[0xff])?;
         self.lineage(&(self.frames as u64).to_le_bytes())?;
         self.lineage(&self.bytes.to_le_bytes())?;
-        self.lineage(&self.duration_ns.to_le_bytes())?;
+        self.lineage(&duration_ns.to_le_bytes())?;
         self.lineage(&stream_digest.bytes())?;
-        let complete_hash_work = self.hashed_bytes.checked_add(8)
+        let complete_hash_work = self
+            .hashed_bytes
+            .checked_add(8)
             .ok_or_else(|| refused("Matroska hash accounting overflow"))?;
         self.lineage(&complete_hash_work.to_le_bytes())?;
-        Ok((writer, StreamReceipt {
-            bytes: self.bytes,
-            frames: self.frames,
-            digest: stream_digest,
-            frame_receipts_digest: digest(self.receipts)?,
-            encoder,
-            dimensions,
-            rate: self.rate,
-            duration_ns: self.duration_ns,
-            hashed_bytes: self.hashed_bytes,
-        }))
+        Ok((
+            writer,
+            StreamReceipt {
+                bytes: self.bytes,
+                frames: self.frames,
+                digest: stream_digest,
+                frame_receipts_digest: digest(self.receipts)?,
+                encoder,
+                dimensions,
+                timing: self.timing,
+                duration_ns,
+                last_frame_end_ns: self.duration_ns,
+                hashed_bytes: self.hashed_bytes,
+            },
+        ))
     }
 }

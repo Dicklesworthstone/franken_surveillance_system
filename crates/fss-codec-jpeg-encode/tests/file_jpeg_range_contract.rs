@@ -267,7 +267,10 @@ fn bounded_range_streams_real_jpegs_in_source_order_with_exact_pixels_and_cumula
     assert_eq!((media.frames, media.bytes), (3, bytes.len() as u64));
     assert_eq!(media.digest, ContentDigest::sha256(&bytes));
     assert_eq!(media.dimensions, [7, 5]);
-    assert_eq!(media.rate, PlaybackRate::new(30_000, 1001)?);
+    assert_eq!(
+        media.timing,
+        stream::Timing::Uniform(PlaybackRate::new(30_000, 1001)?)
+    );
     assert_eq!(media.duration_ns, 100_100_000);
     assert_ne!(media.encoder.bytes(), [0; 32]);
     assert_ne!(media.frame_receipts_digest, media.digest);

@@ -4,6 +4,41 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Source-timed movie review clips
+
+`fss-file export-movie --output-format gray-mkv --output-timing movie` now embeds
+the selected MP4/MOV presentation intervals, including clipped first/last pictures,
+in lossless grayscale Matroska. Every endpoint is independently converted with
+checked integer arithmetic relative to the query start. The complete query duration
+is declared before output, preserving leading, internal and trailing timestamp gaps.
+Repeated/backward edits retain their selected movie order. No filler picture is
+invented; a player's display during a gap remains player-defined.
+
+The explicit mode is mutually exclusive with `--output-rate`; existing uniform
+retiming remains available. The one-nanosecond profile admits at most 1024 pictures
+and a query duration of `2^53` nanoseconds, ensuring an exactly represented Matroska
+duration. A separate receipt domain binds the movie selection, full duration,
+actual frame intervals, native receipts and screened pixels. Timing, whole-frame
+quota, cancellation and write failures fence completion. Movie presentation time
+does not establish capture time or UTC. See [the movie export workflow](docs/RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection)
+and [the explicit-interval format](docs/LOSSLESS_MATROSKA_OUTPUT.md).
+
+**Validation:** 50 native component contracts pass: six uniform framing, five
+explicit-interval framing, eight movie timing, ten native movie materialization
+and 21 stream contracts. All eight retained JPEG range regressions also pass.
+An independent FFmpeg/FFprobe 6.1.1-3ubuntu5 comparison of the actual production
+encoder verified all 1032 frames, 331372 luma bytes and every packet timestamp and
+duration, covering gaps, one-nanosecond intervals, fractional cadence, odd dimensions
+and the maximum duration. Native EBML tests independently verify the exact duration
+field. Eleven movie-export CLI process contracts plus the parser contract are
+authored but unexecuted. The standard CLI check and a supplementary single-threaded
+compiler diagnostic both stopped at unchanged Asupersync 0.5.0 metadata compilation
+with SIGKILL, before CLI source diagnostics. The initiating signal cause is unknown.
+Source/API review found no concrete integration blocker; it is not execution proof.
+No production dependency or qualification gate was changed. The existing H264
+test-only dependency is retained alongside concurrent additions. See the
+[typed timing handoff](docs/SESSION_HANDOFF_2026-11-07_MOVIE_TIMING.json) for exact scope.
+
 ## Durable webhook wire evidence and cold inspection
 
 The shared native alert owner used by `fss-event alert` and canonical `fss commit`

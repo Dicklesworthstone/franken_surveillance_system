@@ -6,12 +6,18 @@ use super::{OutputFormat, jpeg_stream, pgm_stream};
 use fss_container::matroska_gray::PlaybackRate;
 use std::path::PathBuf;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MatroskaTiming {
+    Uniform(PlaybackRate),
+    Movie,
+}
+
 #[derive(Debug)]
 pub(super) struct ExportOptions {
     pub(super) output: Option<PathBuf>,
     pub(super) maximum_output_bytes: Option<u64>,
     pub(super) output_format: OutputFormat,
-    pub(super) output_rate: Option<PlaybackRate>,
+    pub(super) matroska_timing: Option<MatroskaTiming>,
     pub(super) jpeg_quality: u8,
     pub(super) encode_work_units: u64,
 }
@@ -31,32 +37,29 @@ impl ExportOptions {
         } else {
             OutputFormat::Pgm
         };
-        let output_rate = if output_format == OutputFormat::GrayMatroska {
-            let value = text(values, "--output-rate")?;
-            if value.len() > 15 {
-                return Err(malformed(
-                    "output rate requires NUM/DEN with components in 1..1000000",
-                ));
-            }
-            let (numerator, denominator) = value
-                .split_once('/')
-                .ok_or_else(|| malformed("output rate requires NUM/DEN"))?;
-            let integer = |part: &str| {
-                if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-                    return Err(malformed(
-                        "output rate requires positive decimal components",
-                    ));
-                }
-                part.parse::<u32>()
-                    .map_err(|_| malformed("output rate component exceeds limit"))
+        let matroska_timing = if output_format == OutputFormat::GrayMatroska {
+            let mode = if values.contains_key("--output-timing") {
+                text(values, "--output-timing")?
+            } else {
+                "uniform"
             };
-            Some(
-                PlaybackRate::new(integer(numerator)?, integer(denominator)?)
-                    .map_err(|_| malformed("output rate components must be in 1..1000000"))?,
-            )
+            match mode {
+                "uniform" => Some(MatroskaTiming::Uniform(parse_rate(values)?)),
+                "movie" => {
+                    if values.contains_key("--output-rate") {
+                        return Err(malformed(
+                            "movie timing and --output-rate are mutually exclusive",
+                        ));
+                    }
+                    Some(MatroskaTiming::Movie)
+                }
+                _ => return Err(malformed("output timing must be uniform or movie")),
+            }
         } else {
-            if values.contains_key("--output-rate") {
-                return Err(malformed("--output-rate requires --output-format gray-mkv"));
+            if values.contains_key("--output-rate") || values.contains_key("--output-timing") {
+                return Err(malformed(
+                    "output rate/timing requires --output-format gray-mkv",
+                ));
             }
             None
         };
@@ -95,9 +98,34 @@ impl ExportOptions {
             output: values.get("--output").map(PathBuf::from),
             maximum_output_bytes,
             output_format,
-            output_rate,
+            matroska_timing,
             jpeg_quality,
             encode_work_units,
         })
     }
+}
+
+fn parse_rate(values: &Values) -> ParseResult<PlaybackRate> {
+    let value = text(values, "--output-rate")?;
+    if value.len() > 15 {
+        return Err(malformed(
+            "output rate requires NUM/DEN with components in 1..1000000",
+        ));
+    }
+    let (numerator, denominator) = value
+        .split_once('/')
+        .ok_or_else(|| malformed("output rate requires NUM/DEN"))?;
+    let integer = |part: &str| {
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(malformed(
+                "output rate requires positive decimal components",
+            ));
+        }
+        part.parse::<u32>()
+            .map_err(|_| malformed("output rate component exceeds limit"))
+    };
+    Ok(
+        PlaybackRate::new(integer(numerator)?, integer(denominator)?)
+            .map_err(|_| malformed("output rate components must be in 1..1000000"))?,
+    )
 }

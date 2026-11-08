@@ -2,10 +2,12 @@
 
 `fss-container::matroska_gray` frames unchanged, privacy-screened grayscale
 samples as a deterministic Matroska video track. The `fss-file` decoded-output
-commands expose it as `--output-format gray-mkv --output-rate NUM/DEN`. It gives
-a local reviewer explicit playback timing and exact reconstructed screened sample
-values. The existing JPEG derivative remains lossy, including at quality 100;
-this profile performs no image compression.
+commands expose it as `--output-format gray-mkv --output-rate NUM/DEN`.
+`export-movie` also accepts `--output-format gray-mkv --output-timing movie`
+to preserve the selected source movie intervals on a query-relative timeline.
+Both modes give a local reviewer explicit timing and exact reconstructed screened
+sample values. The existing JPEG derivative remains lossy, including at quality
+100; these profiles perform no image compression.
 
 The core returns fixed-size metadata buffers. It does not receive pixel data,
 allocate an image, open a file, spawn a process or change a privacy policy. The
@@ -23,11 +25,12 @@ frame prefix.
 | Colour declaration | Eight bits per channel, full sample range |
 | Dimensions | Positive axes at most 4096; at most 4,194,304 sample bytes per frame |
 | Count | Zero-based output ordinals 0 through 1023 |
-| Playback rate | Explicit positive numerator and denominator, each at most 1,000,000 before reduction |
+| Uniform timing | Explicit positive rate numerator and denominator, each at most 1,000,000 before reduction |
+| Movie timing | Positive explicit frame intervals inside a declared clip duration of at most `2^53` ns |
 | Timestamp scale | One nanosecond |
 | Frame framing | One finite Cluster and BlockGroup per frame; explicit BlockDuration before the final Block |
 | Independence | No lacing or ReferenceBlock; every frame contains all its samples |
-| Segment | Unknown-size streaming Segment; initialization is written once |
+| Segment | Unknown-size streaming Segment; initialization is written once; movie mode declares its complete duration before frames |
 | Metadata | Fixed application labels; no audio, source dates, filenames, tags, thumbnails or attachments |
 | Index | No Cues, SeekHead or final duration rewrite |
 | Storage | At most 256 initialization bytes and 64 prefix bytes; no heap allocation in the core |
@@ -46,7 +49,7 @@ expansion, RGB conversion, contrast adjustment or inferred colour calibration.
 Exact sample preservation does not imply that every player's display processing
 will reproduce identical screen luminance.
 
-## Playback time is explicit
+## Uniform playback time
 
 The selected rate is a presentation cadence. It is not inferred from the source
 capture interval, arrival times, clip endpoints or output frame count. Source
@@ -75,6 +78,36 @@ Equivalent ratios normalize to one value: 60000/2002 equals 30000/1001. Input
 component bounds are checked before normalization, so an oversized declaration
 cannot evade the bound by cancelling a common factor.
 
+## Source movie time
+
+`export-movie --output-timing movie` converts the authenticated selection's
+clipped presentation intervals to nanoseconds. The query's start movie tick is
+the output origin. For an interval endpoint `p/d` in movie ticks, movie timescale
+`M`, and query `[Q0,Q1)`, the checked integer conversion is:
+
+```text
+boundary_ns(p) = floor((p − Q0*d) × 1,000,000,000 / (d*M))
+clip_duration_ns = floor((Q1 − Q0) × 1,000,000,000 / M)
+frame_duration_ns = boundary_ns(end) − boundary_ns(start)
+```
+
+Each endpoint is floored from its original rational position, independently of
+previous frames. Period rounding cannot accumulate, and matching endpoints stay
+equal. A selected frame whose interval collapses to zero nanoseconds refuses
+before decoding or output creation; exact rational intervals remain in the movie
+report and lineage. This preserves movie presentation time, not capture time or UTC.
+
+The complete query duration is written in `Info.Duration`, including leading,
+internal and trailing timestamp holes. No pictures are generated for those holes;
+a player may hold a prior picture or otherwise choose how to display them.
+The clip ceiling is `MAX_TIMED_DURATION_NS = 2^53` nanoseconds, about 104 days.
+RFC 9559 [section 5.1.2.10](https://www.rfc-editor.org/rfc/rfc9559.html#section-5.1.2.10)
+defines Duration as a positive float in Segment ticks. With the one-nanosecond
+TimestampScale, every admitted integer duration is exactly representable in the
+chosen big-endian IEEE 754 binary64 encoding, one of the floating-point
+representations defined by RFC 8794
+[sections 7 and 7.3](https://www.rfc-editor.org/rfc/rfc8794.html#section-7.3).
+
 ## Local decoded-output CLI
 
 For an already retained AVC/HEVC range, request an explicit presentation rate:
@@ -97,18 +130,32 @@ written. See [the retained JPEG range workflow](RETAINED_DECODE_WORKFLOW.md#boun
 AVC/HEVC range
 receipts remain unpublished derivations and retain their existing command scope.
 
-`--output-rate` is mandatory for `gray-mkv` and refused for other formats.
+Uniform timing remains the default and requires `--output-rate`. The rate is
+refused for other output formats. Only `export-movie` admits source movie timing,
+and `--output-timing movie` is mutually exclusive with `--output-rate`.
 
 For an exact MP4/MOV movie-time interval, `fss-file export-movie` automatically
 decodes the prerequisite AVC/HEVC spans and feeds only the selected presentation
 occurrences to this writer. Repeated/backward edits reuse screened luma; preroll
 does not appear in the clip. The frame ceiling applies to output occurrences,
 and the separate movie lineage digest binds their original intervals and native
-decode receipts. This profile's explicit rate still retimes those pictures; it
-does not encode source movie durations or gaps. See
+decode receipts. For a source movie timescale of 1000, this clips both ends of
+the selected presentation interval and preserves its 300 ms duration:
+
+```sh
+fss-file export-movie --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --start-movie-tick 450 --end-movie-tick 750 --interpretation ycbcr \
+  --output selected.mkv --output-format gray-mkv --output-timing movie \
+  --work-units 1000000000 --max-output-bytes 67108864
+```
+
+For the indexed AVC fixture, the output retains original source segments `[3,1]`
+with query-relative intervals `[0,150000000)` and `[150000000,300000000)` ns.
+Choose `--output-timing uniform --output-rate NUM/DEN` instead to retime selected
+pictures at a supplied cadence. See
 [movie-time export](RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection)
 for the complete CLI, memory and cumulative-work contract.
-Its syntax is two positive decimal components separated by one slash, each
+Rate syntax is two positive decimal components separated by one slash, each
 bounded to 1,000,000 before reduction; signs, whitespace and decimal rates are
 refused. `--jpeg-quality` and `--encode-work-units` remain JPEG-only options.
 The default output remains PGM.
@@ -125,7 +172,7 @@ need 16,588,800 sample bytes, plus framing. The writer borrows the screened luma
 slice instead of copying it into another image buffer. A lower allowance refuses
 the request; it never drops frames, changes resolution or substitutes compression.
 
-### Source-time selection and presentation
+### Capture-window selection and uniform presentation
 
 The existing paired `--output-window-ns START:EXCLUSIVE_END` and
 `--output-clock-basis BASIS` options also apply. For example, a three-frame
@@ -144,7 +191,8 @@ Selection uses the retained source clock and closed uncertainty intervals.
 Playback starts at zero and uses consecutive selected-frame ordinals. The selected
 source capture times, omitted intervals and gaps are **not** converted into
 Matroska timestamps. The separately reported window request/selection digests
-retain the source-time decisions. The decoder still processes all required
+retain the source-time decisions. This capture-window route is separate from
+`export-movie` and its movie-tick timing option. The decoder still processes all required
 dependencies through successful range EOF; an uncertain late boundary refuses
 the entire export even if an earlier selected frame is already on disk.
 
@@ -153,7 +201,8 @@ the entire export even if an earlier selected frame is already on disk.
 The CLI supplies only current-policy-screened luma and the owning decoder's
 sealed frame-receipt digest. The writer checks its independent luma SHA-256,
 positive bounded shape, stable dimensions and non-laboratory source pin before
-admitting a frame. Source order is retained, including display reordering.
+admitting a frame. It retains the owner's order: decoded display order for direct
+ranges, or selected movie-occurrence order for `export-movie`.
 
 The existing private-output owner creates a new file outside the deployment
 and refuses overwrite. On Unix it requests mode 0600 and checks the opened file
@@ -181,10 +230,15 @@ export. The selected-output success report contains:
 | `gray_mkv_frame_receipts_sha256`, `gray_mkv_frame_receipts_domain` | Ordered source/output derivation |
 | `gray_mkv_encoder_identity` | Source-bound encoder/framing generation |
 | `gray_mkv_width`, `gray_mkv_height` | Stable packed-luma dimensions |
-| `gray_mkv_rate_numerator`, `gray_mkv_rate_denominator`, `gray_mkv_duration_ns` | Reduced requested cadence and final presentation boundary |
+| `gray_mkv_duration_ns`, `gray_mkv_last_frame_end_ns` | Complete presentation duration and last frame end; movie mode can retain a trailing gap |
+| `gray_mkv_rate_numerator`, `gray_mkv_rate_denominator` | Reduced requested cadence; uniform mode only |
+| `gray_mkv_movie_lineage_sha256` | Authenticated movie-selection lineage; movie mode only |
 | `gray_mkv_hashed_bytes`, `gray_mkv_work_unit_model` | Logical SHA-256 input accounting |
 | `gray_mkv_pixel_format=grayscale_luma`, `gray_mkv_lossy=false`, `gray_mkv_exact_luma_preserved=true` | Exact screened sample interpretation |
-| `gray_mkv_timing=operator_requested_uniform_rate`, `gray_mkv_source_capture_timing_preserved=false` | Explicit retiming scope |
+| `gray_mkv_timing` | `operator_requested_uniform_rate` or `source_movie_intervals` |
+| `gray_mkv_source_movie_timing_preserved` | True only for explicit movie timing, with `absolute_boundary_floor_ns` rounding and query-start origin |
+| `gray_mkv_gaps_filled=false`, `gray_mkv_gap_display=player_defined` | Timestamp holes remain unfilled in movie mode |
+| `gray_mkv_source_capture_timing_preserved=false` | Neither mode establishes capture timing or UTC |
 | `gray_mkv_published=false` | No retained derivative custody or delivery publication |
 
 ### Ordered lineage and bounded work
@@ -195,14 +249,22 @@ length and exact UTF-8 bytes in this order: `gray_matroska_stream/encoder.rs`,
 `fss-container/src/matroska_gray.rs`, and its `matroska_gray/ebml.rs` helper.
 A change to framing or sample handling therefore changes the identity.
 
-The ordered receipt hashes the NUL-terminated domain
+The uniform ordered receipt hashes the NUL-terminated domain
 `fss.file_gray_matroska_frame_receipts.v1`, then the encoder identity (32 bytes),
-reduced rate and dimensions (four little-endian u32 values). Each 96-byte row
+reduced rate and dimensions (four little-endian u32 values): a 48-byte header
+after the domain. The movie receipt uses
+`fss.file_gray_matroska_movie_frame_receipts.v1`, followed by the encoder identity
+(32 bytes), declared query duration (u64), movie-output lineage digest (32 bytes),
+and dimensions (two u32 values): an 80-byte header after the domain.
+
+Both modes use the same 96-byte frame row. Each row
 contains the selected-output ordinal (u64), owning decode-receipt digest (32 bytes),
 screened-luma digest (32 bytes), sample byte count (u64), timestamp (u64) and
 duration (u64), in that order. All integers are little-endian.
-Its 65-byte trailer is `0xff`, frame count, file byte count, presentation end,
+Its 65-byte trailer is `0xff`, frame count, file byte count, complete duration,
 file digest, and total logical hash input bytes; integer counts are u64.
+For movie timing the complete duration includes a trailing gap; each frame's
+own end is already bound by its timestamp and duration row.
 Thus identical pixels from different source or privacy histories have different
 lineage, while the file digest continues to describe only exact media bytes.
 
@@ -212,8 +274,10 @@ hashers, not SHA compression rounds or decoder work. For a successful file with
 input bytes, the total is:
 
 ```text
-I + receipt_domain_bytes_including_NUL + 48 + 96*F + L + B + 65
+I + receipt_domain_bytes_including_NUL + H + 96*F + L + B + 65
 ```
+
+`H` is 48 for uniform timing or 80 for movie timing.
 
 There is no user-refillable encode allowance. The fixed source closure, 1024-frame
 ceiling and aggregate byte ceiling bound this linear work; existing decode work
@@ -236,10 +300,18 @@ buffer is introduced.
 - `payload_bytes()`: the exact required byte count;
 - `timestamp_ns()`, `duration_ns()` and `end_ns()`: the presentation interval.
 
+`TimedGrayMatroskaConfig::new([width, height], duration_ns)` validates the same
+pixel bounds and a clip duration in `1..=MAX_TIMED_DURATION_NS`. Its `dimensions()`
+and `duration_ns()` expose those values; `initialization()` includes the complete
+Duration. `frame(output_ordinal, start_ns, end_ns)` returns the same `FrameFraming`
+type and refuses zero/reversed intervals, an end beyond the declared duration,
+or an ordinal outside `0..1024`. It has no rate or inferred cadence.
+
 There is no trailer. The owner writes initialization once, then each prefix and
 its exact unchanged sample slice. The core is stateless: retrying the same
-configuration and ordinal produces identical framing, but it does not authorize
-repeating a frame in an already-written output.
+configuration and frame arguments produces identical framing, but it does not
+authorize repeating a frame in an already-written output. The timed stream owner
+also enforces increasing, nonoverlapping intervals before writing.
 
 Refusals distinguish invalid rate, invalid dimensions, frame-count limit,
 unrepresentable timeline and bounded-layout failure. They contain no payload,
@@ -252,8 +324,9 @@ The file/stream owner must enforce the complete operation contract:
 1. Verify source identity and current privacy/deletion state before output
    creation, and admit only already-screened samples.
 2. Check the sample slice length against `payload_bytes()` and keep dimensions
-   constant. Preserve decoded display order. Use consecutive selected-output
-   ordinals; source segment numbers need not be consecutive.
+   constant. Preserve decoded display order for direct ranges or the selected
+   movie-occurrence order for `export-movie`. Use consecutive selected-output
+   ordinals; source segment numbers need not be consecutive or increasing.
 3. Reserve cumulative frame, byte and work ceilings before writing. Initialization,
    every prefix and every sample byte all count. A per-frame check cannot renew
    an exhausted stream allowance.
@@ -261,8 +334,9 @@ The file/stream owner must enforce the complete operation contract:
    zero-progress writer, changed shape, invalid source or exhausted budget
    fences successful completion; it must not certify a shorter stream.
 5. Bind output bytes, exact source order, screened sample digests, playback rate
-   and current transform generations into derivative lineage. Retain source-time
-   request and selection receipts separately when selecting a window.
+   or explicit movie intervals/query duration, and current transform generations
+   into derivative lineage. Retain source-time request and selection receipts
+   separately when selecting a window.
 6. Flush and complete the owner's durability operation before returning a
    successful completion receipt.
 
@@ -278,7 +352,18 @@ resizing, dropping selected frames or substituting lossy encoding.
 
 ## Verification status
 
-**The production framing and stream writer now have native execution results.**
+**The final explicit-time source passed 50 focused native contracts on 2026-11-08:**
+six uniform framing, 21 stream, ten movie materialization, eight rational movie
+timing and five explicit-time framing contracts. Eight retained-JPEG range
+regression contracts also passed. These execute the production source components;
+they do not substitute for retained I/O, privacy authorization or filesystem sync.
+Eleven movie-export process contracts and the new parser cases remain unexecuted:
+both full CLI build attempts were SIGKILLed while compiling the unchanged
+Asupersync dependency, before reaching CLI diagnostics. No full CLI or Clippy
+success is claimed.
+
+### Historical uniform-rate native validation
+
 At source `ef7972ad2f773fecc501a907dbc2f87bda21c8fa`, the pinned nightly passed
 all 72 focused container tests: 50 library tests, six framing contracts and sixteen
 stream contracts. The independent production-encoder comparison below also
@@ -311,7 +396,31 @@ The core and stream tests are included in the completed native run. The eight
 CLI/process/parser contracts in this paragraph remain authored without a full
 CLI execution result in this session.
 
-### Completed production encoder comparison
+### Completed source-movie production encoder comparison
+
+A temporary native driver called the actual production `Encoder::new_movie` and
+`frame_at`, linked to the actual first-party core/container libraries. Rust was
+`rustc 1.100.0-nightly (908501772 2026-08-30)`. FFmpeg and FFprobe
+`6.1.1-3ubuntu5` independently checked four files: **1,032 frames and 331,372 luma
+bytes matched exactly**, as did every packet's integer-nanosecond PTS, DTS and
+duration. Cases covered leading/internal/trailing holes, one-nanosecond frames,
+the `2^53` duration ceiling, 1,024 fractional 30000/1001 boundaries, odd dimensions
+and the full 0–255 sample range. Format-level duration matched within FFprobe's
+one-microsecond text resolution; native EBML contracts check exact binary64
+Duration bytes independently. No black-frame display or seeking claim is made.
+
+| Executed production source | SHA-256 |
+|---|---|
+| `gray_matroska_stream/encoder.rs` | `ef7160ce52ef7310a8ce5bbd9bc504b6d84825201759e9c3e7fa8c74562b6029` |
+| `fss-container/src/matroska_gray.rs` | `d7567476fa196fc2794344f84ad77732ea004443f0296c08b76cb7bb3e730975` |
+| `matroska_gray/ebml.rs` | `c727c32e6e8cb91fe84644b1207f83ed2a48c4614b4fbd4f2c66116ec66e479b` |
+
+The resulting encoder identity was
+`sha256:cfc7b5a876570b52a54bda66380a46afcce4fbb361cff331fa19962771eb6ab9`.
+Fixture pixels and source/receipt pins were explicitly synthetic test inputs;
+the encoder, framing, digest implementation and independent media tools were real.
+
+### Historical uniform-rate production encoder comparison
 
 A pinned-native fixture compiled the actual `GrayMatroskaConfig`, EBML helper and
 streaming `Encoder` sources, then wrote the production output. FFmpeg/FFprobe
@@ -359,24 +468,34 @@ accuracy, live sources or privacy-attestation validity.
 
 ### Reproduction and remaining integration checks
 
-On the pinned nightly and exact published source:
+The current focused native reproduction on the pinned nightly is:
 
 ```sh
-cargo test --locked --offline -p fss-container --lib \
-  --test matroska_gray_contract --test gray_matroska_stream_contract
+CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+cargo test --locked --offline -p fss-container \
+  --test matroska_gray_contract --test gray_matroska_stream_contract \
+  --test timed_matroska_gray_contract --test movie_timing_contract \
+  --test movie_output_contract
+CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+cargo test --locked --offline -p fss-codec-jpeg-encode --test file_jpeg_range_contract
+```
+
+Both test commands passed. Remaining full CLI and lint checks require a host
+with enough memory for the unchanged runtime dependency:
+
+```sh
 cargo clippy --locked --offline -p fss-container --lib \
   --test matroska_gray_contract --test gray_matroska_stream_contract \
+  --test timed_matroska_gray_contract --test movie_timing_contract \
+  --test movie_output_contract \
   --no-deps -- -D warnings
 cargo test --locked --offline -p fss-cli --bin fss-file \
   --test decoded_media_cli_contract --test file_video_stream_cli
 ```
 
-The first command passed in the restored workspace. The full CLI check was
-stopped during shared-host memory pressure; no complete-CLI or Clippy success is
-claimed. Rerun those integration checks on a sufficiently provisioned host, using
-the exact final source and the new retained JPEG range contracts as applicable.
-The production comparison above replaces the earlier feasibility-only evidence;
-its five executed cases are the measured scope.
+Use the exact final source for integration checks. The measured scope of the
+independent comparisons is the four current movie-timed cases and five historical
+uniform-rate cases above; the format-only prototype remains separate evidence.
 
 Useful isolated-oracle commands are:
 
@@ -395,7 +514,7 @@ production dependencies or runtime fallbacks.
 ## Remaining review-export boundary
 
 This container can preserve samples supplied by a privacy owner and can express
-a selected playback cadence. It does not issue FLDT access grants, validate
+a selected cadence or authenticated movie intervals. It does not issue FLDT access grants, validate
 payment-mask attestations, authorize a recipient, establish original source
 custody or publish an expiring disclosure artifact. Those remain separate
 VIT-023 requirements. A timed, lossless local derivative must not be described
