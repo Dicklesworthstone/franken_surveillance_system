@@ -6384,3 +6384,48 @@ datagram and one matching camera claim, which the command labeled unverified;
 it did not claim absence or attempt login, setup, or a management write. This
 is an actual-camera Rust discovery observation from `ts1`, not automatic
 enrollment, physical identity proof, or video.
+
+Strict-remote job `30100509981409965` subsequently passed all 15 selected
+direct-trial process cases, with three other cases filtered out. This includes
+the delayed synthetic camera, fixed-length and chunked setup, synthetic video,
+timeout, and post-effect stop cases. It exited zero, was acknowledged, and
+released its source. The clean-overlay fingerprint was
+`e25ad9236f6d8702a9c6fa7c243fd3a959b88cc46750ddcd528f85fa0471a4b6`;
+the trial and fixture source SHA-256 values were
+`89ae1c571c9b0ebc96256351552d53d86008beb2515cf6333658e08c1914056e`
+and `e3f122412316d235970fde04182175f09b851b56c1ce19695f5f775f434a7f2c`,
+matched on the worker. The built trial executable was SHA-256 `183781825b34da54383e44849dcc64cd3011fa1c4a1dcd7bea2f148d83c6a7ec`;
+a debug-stripped copy `9fae565ed95723ab3d47e0276297d3f81e75176fcbe12e1d45feefea2e401674` was matched on `ts1` and passed a
+no-camera listener/deadline check there.
+
+An owner-authorized physical G4 trial then used that stripped Rust listener
+on `ts1`, while the existing recorder stayed active on `trj`. Two
+independent `trj` systemd timers using the Rust restoration command were
+armed before one chunked, journaled controller-address handoff. Its immediate
+readback did not confirm the requested destination. The listener accepted the
+G4's network claim, retried an early TLS EOF, completed TLS and WebSocket
+upgrade, observed one uncorrelated and one correlated time-sync message
+claiming a response was expected, then saw `UnexpectedEof` in `AwaitHello`
+after a time-sync effect was prepared. It did not retry that effect and did
+not produce a clip. These counts and the network pin do not prove physical
+identity or establish why the camera disconnected.
+
+A separate immediate Rust check observed the original controller twice and
+made no restoration write. Both independently scheduled restoration checks
+later exited successfully with the same no-change result. The existing
+recorder remained active with restart count 70. After the trial, a staging
+video file was archived under the approved bulk destination with its SHA-256
+matching the unchanged staging source. This is evidence of post-trial
+recording recovery, not proof of gap-free coverage or Rust-owned video.
+
+The forward handoff's external outcome remains indeterminate: its readback
+was unconfirmed, and later observation of the original address cannot establish
+whether the temporary address was briefly applied. Its private journal is on
+`trj` at `/data/unifi-g4-recorder/fss-rust-recovery-AsLXQ1Vg/forward-journal`. The listener's separate
+time-sync effect journal is on `ts1` at `/tmp/fss-g4-trial-RygGWvte/trial-journal`.
+These journals retain unresolved obligations; neither authorizes replay, and
+the `ts1` temporary location is not a durable independently anchored
+archive. No automatic second handoff or reuse of those effect identities is
+authorized by the current evidence. A recovery workflow needs to retain and
+reconcile the exact journal state and its independent pin before another
+management attempt can be treated as safe.
