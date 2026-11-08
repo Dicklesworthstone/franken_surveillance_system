@@ -124,9 +124,9 @@ fn whole_original_admission_has_an_absolute_bound_and_explicit_origin_scope() ->
     for case in 0..4 {
         let mut unsupported = original.clone();
         match case {
-            0 => unsupported.adapter_id = rtsp_import::catalog::ADAPTER.to_owned(),
+            0 => unsupported.adapter_id = "ADP-RTSP-UNKNOWN-001".to_owned(),
             1 => unsupported.adapter_generation.push_str(":other"),
-            2 => unsupported.adapter_id = rtsp_import::pages::ADAPTER.to_owned(),
+            2 => unsupported.adapter_id = "ADP-FILE-002".to_owned(),
             _ => unsupported.format = "mkvavc".to_owned(),
         }
         assert!(matches!(
@@ -140,25 +140,35 @@ fn whole_original_admission_has_an_absolute_bound_and_explicit_origin_scope() ->
 }
 
 #[test]
-fn native_window_admission_requires_its_exact_generation_profile() -> Test {
+fn every_native_origin_requires_its_exact_generation_profile() -> Test {
     let movie = AvcMp4::parse(SOURCE, None, DemuxLimits::default())?;
     let mut native = manifest(&movie)?;
-    native.adapter_id = rtsp_import::ADAPTER.to_owned();
     // Structural admission is deliberately weaker than selection: the real selector must also
     // authenticate completion membership and replay the retained origin identified by this hash.
-    for generation in [
-        ADP_FILE_GENERATION.to_owned(),
-        format!("{}{}", rtsp_import::GENERATION, "a".repeat(63)),
-        format!("{}{}", rtsp_import::GENERATION, "A".repeat(64)),
+    for (adapter, prefix) in [
+        (rtsp_import::ADAPTER, rtsp_import::GENERATION),
+        (
+            rtsp_import::catalog::ADAPTER,
+            rtsp_import::catalog::GENERATION,
+        ),
+        (rtsp_import::pages::ADAPTER, rtsp_import::pages::GENERATION),
     ] {
-        native.adapter_generation = generation;
-        assert!(source_admission(&native, RetainedReadLimits::default()).is_err());
+        native.adapter_id = adapter.to_owned();
+        for generation in [
+            ADP_FILE_GENERATION.to_owned(),
+            format!("{prefix}{}", "a".repeat(63)),
+            format!("{prefix}{}", "A".repeat(64)),
+            format!("{prefix}{}:other", "a".repeat(64)),
+        ] {
+            native.adapter_generation = generation;
+            assert!(source_admission(&native, RetainedReadLimits::default()).is_err());
+        }
+        native.adapter_generation = format!("{prefix}{}", "a".repeat(64));
+        assert_eq!(
+            source_admission(&native, RetainedReadLimits::default())?,
+            SOURCE.len()
+        );
     }
-    native.adapter_generation = format!("{}{}", rtsp_import::GENERATION, "a".repeat(64));
-    assert_eq!(
-        source_admission(&native, RetainedReadLimits::default())?,
-        SOURCE.len()
-    );
     Ok(())
 }
 

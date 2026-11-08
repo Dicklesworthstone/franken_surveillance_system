@@ -21,10 +21,10 @@ const STAGE_SELECT: &str = "file_retained:movie_select";
 const STAGE_COMPLETE: &str = "file_retained:movie_complete";
 const HASH_CHECKPOINT_BYTES: usize = 64 * 1024;
 
-/// Maximum independently reserved native-origin payload bytes for one movie selection.
-/// A single-window origin contains its immutable root and four native recording objects.
-/// Origin-proof and import-authority metadata reads remain separately bounded by their owners.
-pub const MAX_MOVIE_ORIGIN_READ_BYTES: u64 = rtsp_import::MAX_ORIGINAL_BYTES;
+/// Maximum independently reserved native-origin replay bytes for one movie selection.
+/// Catalog/page replay admits at most 128 MiB of originals plus a 4 MiB proof reservation.
+/// Single-window closures retain their 32 MiB limit; import-authority metadata is separately bounded.
+pub const MAX_MOVIE_ORIGIN_READ_BYTES: u64 = rtsp_import::catalog::MAX_REPLAY_READ_BYTES;
 
 /// A movie-time selection tied to exact completed import custody.
 ///
@@ -52,11 +52,12 @@ pub struct RetainedMovieSelection {
     /// Retained MP4/MOV payload bytes read, including unselected media; exactly `input_bytes`.
     /// Metadata reads additionally consume any installed cumulative spool read allowance.
     pub source_bytes_read: u64,
-    /// Native origin-payload reservations before I/O, independent of the reconstructed MP4.
-    /// Zero for ordinary files; successful single-window replay charges the exact root and
-    /// four child lengths. Origin-proof and authority metadata are not counted here.
+    /// Native origin-replay reservations before I/O, independent of the reconstructed MP4.
+    /// Zero for ordinary files; single-window replay charges the exact root and four children.
+    /// Catalog/page replay also charges every original catalog root/index and a conservative
+    /// 4 MiB proof reservation. Other proof/authority reads keep their separately bounded owners.
     pub origin_read_bytes_charged: u64,
-    /// Nonrefillable allowance for the separate native-origin payload reservations.
+    /// Nonrefillable allowance for the separate native-origin replay reservations.
     pub maximum_origin_read_bytes: u64,
     /// The unique selected video track of the authenticated original.
     pub track_id: u32,
@@ -78,19 +79,20 @@ fn demux_refusal(refusal: DemuxError, stage: &'static str) -> FileIngestError {
 impl RetainedFileImport {
     /// Select a half-open interval in the original MP4/MOV movie timescale after custody checks.
     ///
-    /// The complete original is read once, bounded by `read_limits.max_source_bytes` and the
+    /// The complete retained MP4/MOV is read once, bounded by `read_limits.max_source_bytes` and the
     /// demuxer's absolute input ceiling **before** source allocation. The independent
     /// `selection_limits.max_source_bytes` bounds the quoted decode samples and their preroll;
     /// a small selection does not authorize an unbounded full-file read. Each chunk, the full
     /// original, every retained sample index/range/digest, and final root/completion authority
     /// are checked before any result is released. Cancellation or any refusal is atomic.
     ///
-    /// Supports original `ADP-FILE-001` MP4/MOV imports and completed single-window native RTSP
-    /// recording imports. Native origins additionally replay every retained packet, index and
-    /// remux object, then match the complete reconstructed MP4 byte-for-byte before selection.
+    /// Supports original `ADP-FILE-001` MP4/MOV imports and completed native RTSP window,
+    /// catalog and catalog-page imports. Native origins additionally replay every retained packet,
+    /// index, catalog and remux object, then match the complete MP4 byte-for-byte before selection.
     /// Their independent read allowance defaults to [`MAX_MOVIE_ORIGIN_READ_BYTES`]; use
-    /// [`Self::select_movie_interval_with_origin_limit`] to narrow it. Catalog/page imports and
-    /// other formats remain unsupported. Movie ticks never imply UTC or a capture origin.
+    /// [`Self::select_movie_interval_with_origin_limit`] to narrow it. Native catalog admission
+    /// still requires continuous decode intervals and identical initialization bytes. No page
+    /// boundary rebases the timeline or refills a budget. Movie ticks never imply UTC or a capture origin.
     pub fn select_movie_interval(
         &self,
         deployment: &ReferenceDeployment,
@@ -112,10 +114,10 @@ impl RetainedFileImport {
     /// Select with an independently bounded native-origin replay allowance.
     ///
     /// The complete retained MP4/MOV read keeps its existing `read_limits` admission. For a
-    /// native single-window origin, every original root/child length is additionally reserved
-    /// before that object's I/O, without refill. Zero permits ordinary files but refuses any
-    /// native payload read; values above [`MAX_MOVIE_ORIGIN_READ_BYTES`] refuse before I/O.
-    /// Origin-proof and import-authority metadata retain their existing separate bounds.
+    /// native origin, every original root/child length is additionally reserved before its I/O,
+    /// without refill; catalog/page replay first reserves its maximum proof length. Zero permits
+    /// ordinary files but refuses native replay; values above [`MAX_MOVIE_ORIGIN_READ_BYTES`]
+    /// refuse before I/O. Other proof/import-authority reads retain their existing separate bounds.
     pub fn select_movie_interval_with_origin_limit(
         &self,
         deployment: &ReferenceDeployment,
@@ -140,8 +142,8 @@ impl RetainedFileImport {
 
         // A checked absolute ceiling applies even if the caller supplied an enormous retained
         // source limit. Original-file reads hold this buffer plus at most one bounded chunk.
-        // Native replay additionally holds one bounded window and its reconstructed media,
-        // under the recording owner's existing 32 MiB closure and media limits.
+        // Native replay additionally holds bounded proof/window data and reconstructed media,
+        // under the recording owners' existing 32 MiB window and 64 MiB catalog media ceilings.
         let mut source = Vec::new();
         source
             .try_reserve_exact(maximum)
@@ -182,6 +184,21 @@ impl RetainedFileImport {
         // local to this call and is dropped immediately after verification, never reused as
         // future on-disk availability or as a substitute for final membership revalidation.
         let mut origin_read_bytes_charged = 0_u64;
+        let mut reserve_origin = |bytes| {
+            checkpoint(cx, STAGE_ORIGIN)?;
+            let required = origin_read_bytes_charged
+                .checked_add(bytes)
+                .ok_or_else(|| demux_refusal(DemuxError::Limit, STAGE_ORIGIN))?;
+            if required > maximum_origin_read_bytes {
+                return Err(FileIngestError::SpoolCapacityExceeded {
+                    limit: "movie_origin_read_bytes",
+                    required,
+                    available: maximum_origin_read_bytes,
+                });
+            }
+            origin_read_bytes_charged = required;
+            Ok(())
+        };
         rtsp_import::verify_range_budgeted(
             deployment,
             &self.manifest,
@@ -189,21 +206,16 @@ impl RetainedFileImport {
             &source,
             cx,
             &mut None,
-            &mut |bytes| {
-                checkpoint(cx, STAGE_ORIGIN)?;
-                let required = origin_read_bytes_charged
-                    .checked_add(bytes)
-                    .ok_or_else(|| demux_refusal(DemuxError::Limit, STAGE_ORIGIN))?;
-                if required > maximum_origin_read_bytes {
-                    return Err(FileIngestError::SpoolCapacityExceeded {
-                        limit: "movie_origin_read_bytes",
-                        required,
-                        available: maximum_origin_read_bytes,
-                    });
-                }
-                origin_read_bytes_charged = required;
-                Ok(())
-            },
+            &mut reserve_origin,
+        )?;
+        rtsp_import::verify_catalog_range_budgeted(
+            deployment,
+            &self.manifest,
+            0,
+            &source,
+            cx,
+            &mut None,
+            &mut reserve_origin,
         )?;
 
         let mut check = || {
@@ -258,7 +270,10 @@ fn source_admission(
 ) -> Result<usize, FileIngestError> {
     let supported_origin = (manifest.adapter_id == ADP_FILE_ROW_ID
         && manifest.adapter_generation == ADP_FILE_GENERATION)
-        || manifest.adapter_id == rtsp_import::ADAPTER;
+        || matches!(
+            manifest.adapter_id.as_str(),
+            rtsp_import::ADAPTER | rtsp_import::catalog::ADAPTER | rtsp_import::pages::ADAPTER
+        );
     if !supported_origin || !matches!(manifest.format.as_str(), "mp4avc" | "mp4hevc") {
         return Err(demux_refusal(DemuxError::Unsupported, STAGE_SOURCE));
     }

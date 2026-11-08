@@ -4,36 +4,42 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Movie review from native RTSP recording imports
+## Movie review across native RTSP windows and pages
 
-Completed native AVC/HEVC single-window recording imports now feed
+Completed native AVC/HEVC window, catalog and catalog-page imports now feed
 `fss-file select-movie` and `export-movie`, including source-timed lossless output.
-Selection reopens the retained native root and all four original objects, replays
-the packet/NAL/index reconstruction, and compares the complete reconstructed MP4
-before releasing any selection. Missing or corrupted originals refuse even when
-the MP4 is intact or the query selects no pictures. Source adapter and generation
-remain explicit. Nonzero decode origins, signed composition offsets, clipped
-presentation intervals and gaps retain the existing native movie semantics.
+One presentation interval can cross native storage boundaries while preserving
+global sample indices, nonzero decode starts, signed composition offsets and
+clipped picture durations. The existing shared native decoders, current privacy
+masks, selected-only luma cache and durable output writer remain the owners.
 
-`--max-origin-read-bytes` separately bounds original-object reads before I/O,
-with a 32 MiB default/hard ceiling for this single-window profile. MP4 source
-reads, subsequent cumulative decode reads/work, current privacy masks and output
-limits keep their existing owners. The library additionally permits a zero origin
-allowance for ordinary files. Catalog/page origins remain outside this checkpoint.
-See [the native recording review workflow](docs/rtsp_recording_import.md#trim-a-native-recording-for-local-review).
+Before releasing any selection, the reader revalidates completed custody, reads
+and hashes the entire retained MP4, replays every original native window plus all
+catalog roots/indexes, and requires the reconstructed MP4 to match byte-for-byte.
+Missing, corrupt or deleted originals refuse even for an unselected later window
+or an empty query. Original adapter/generation identity remains explicit.
+`--max-origin-read-bytes` separately reserves replay reads before I/O: catalog/page
+replay charges a conservative 4 MiB proof plus its complete original closure,
+with a 132 MiB default/hard ceiling. Existing 32 MiB single-window and 128 MiB
+catalog original limits remain unchanged. Subsequent decode reads/work never
+refill at a window, page or random-access boundary. Catalog import still requires
+adjacent decode intervals and identical initialization bytes; disjoint discoveries
+are not combined automatically. See [cross-window review clips](docs/RTSP_CATALOG_IMPORT.md#review-clips-across-windows-and-pages).
 
-**Validation:** four new native component contracts pass using actual AVC/HEVC
-RTP reconstruction, mux/demux, native decoders, the production movie materializer
-and Matroska writer. They check exact luma, reordered pictures, clipped durations,
-nonzero origins and full query gaps. Six retained-custody contracts, four CLI
-process contracts and updated structural/parser coverage are authored but have
-not been compiled or executed. Earlier full CLI checks stopped in unchanged
-Asupersync 0.5.0 metadata compilation with SIGKILL; no new full build was attempted
-for this checkpoint. Source/API review and scoped pinned formatting passed.
-No production dependency or qualification gate changed. This advances VIT-008 /
-FSS-068 and local review under VIT-023; broader beads, reviewer grants, payment-zone
-attestations, retained derivative delivery and release qualification remain open.
-See the [typed native movie handoff](docs/SESSION_HANDOFF_2026-11-07_NATIVE_RTSP_MOVIE.json).
+**Validation:** all six native component contracts pass, including two new
+AVC/HEVC cross-window cases using actual RTP reconstruction, mux/demux, native
+decoders and the production movie materializer/timing/Matroska writer. They check
+exact pixels, global indices, preroll exclusion, clipped durations and full query
+gaps. Fixture concatenation mirrors the four-byte fragment sequence adjustment;
+the private retained catalog joiner is not executed by this lightweight target.
+Fourteen retained-custody contracts and five CLI process contracts, plus updated
+structural/parser coverage, are authored but not compiled or executed. Earlier
+full CLI checks stopped in unchanged Asupersync 0.5.0 metadata compilation with
+SIGKILL; no new full build was attempted for these checkpoints. Independent source
+reviews and scoped pinned formatting passed. No dependency or qualification gate
+changed. Broad VIT-008/FSS-068/VIT-023 beads, remote grants, payment-zone attestations,
+retained derivative delivery and release qualification remain open. See the
+[typed catalog movie handoff](docs/SESSION_HANDOFF_2026-11-07_CATALOG_MOVIE.json).
 
 ## Native transformer normalization and GELU import
 

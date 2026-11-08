@@ -23,6 +23,10 @@ pub const MAX_WINDOWS: usize = MAX_CATALOG_WINDOWS;
 pub const MAX_FRAMES: usize = MAX_WINDOWS * super::MAX_FRAMES;
 /// Catalog plus all complete original windows; shared payloads count conservatively per window.
 pub const MAX_ORIGINAL_BYTES: u64 = 128 * 1024 * 1024;
+/// Maximum conservative replay reservation: all original objects plus one bounded origin proof.
+/// Proof replay reserves its full encoded ceiling before I/O, not just the eventual file length.
+pub const MAX_REPLAY_READ_BYTES: u64 =
+    MAX_ORIGINAL_BYTES + super::catalog_provenance::MAX_PROOF_BYTES as u64;
 /// Complete initialization plus all fragments, never silently truncated to fit.
 pub const MAX_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
 

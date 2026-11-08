@@ -2,6 +2,8 @@
 //! Real approved native RTSP import -> cold retained movie selection -> private timed output.
 //! Synthetic original packets exercise custody and pixel replay; no device is contacted.
 
+#[path = "rtsp_movie_export/catalog.rs"]
+mod catalog;
 #[path = "../../../fss-container/tests/rtsp_movie_support/mod.rs"]
 mod source;
 
@@ -16,6 +18,7 @@ use fss_publication::{LocalPublicationLimits, LocalRootPublisher, NeverCancel, S
 use fss_reference::ingest::privacy_mask::{
     MASK_FILL_LUMA, PrivacyMaskPolicy, declare_mask, preview_mask,
 };
+use fss_reference::ingest::retained::MAX_MOVIE_ORIGIN_READ_BYTES as MAX_ORIGIN;
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::rtsp::recording::hevc::{
     HevcRecordingTiming, PreparedHevcRecording, prepare_hevc_recording,
@@ -33,7 +36,6 @@ use std::process::{Command, Output};
 const SITE: &str = "site:media-cli";
 const SENSOR: &str = "sensor:rtsp-movie-cli";
 const SLOT: &str = "movie-recording";
-const MAX_ORIGIN: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 enum Codec {

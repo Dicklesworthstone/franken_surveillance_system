@@ -140,6 +140,65 @@ canonical identities and its approval bytes remain unchanged. The single-page
 single-page and page-list selectors are mutually exclusive; --max-pages applies
 only to an explicit page list.
 
+## Review clips across windows and pages
+
+After the approved import completes, pass its `import_identity` to
+`fss-file select-movie` or `export-movie`. A half-open movie interval can cross
+any included native window or catalog-page boundary. Original sample indices,
+fragment decode starts and signed composition offsets are preserved across the
+whole import. Selection uses presentation time; the catalog's declared start/end
+are decode-clock coordinates. Inspect the movie timescale and selected intervals
+instead of assuming that the first picture starts at zero or equating either
+clock with UTC.
+
+For example, if a 90,000-tick movie has adjacent pictures across a window boundary
+at tick 104,400, the following interval reviews 60 ms across that boundary:
+
+```sh
+fss-file select-movie --root /absolute/destination/deployment --site site:example \
+  --import-id sha256:IMPORT_ID --start-movie-tick 101700 --end-movie-tick 107100
+
+fss-file export-movie --root /absolute/destination/deployment --site site:example \
+  --import-id sha256:IMPORT_ID --start-movie-tick 101700 --end-movie-tick 107100 \
+  --interpretation ycbcr --output /absolute/review.mkv \
+  --output-format gray-mkv --output-timing movie \
+  --max-origin-read-bytes 138412032 --work-units 1000000000
+```
+
+Replace the identity and coordinates with the completed import's actual values.
+The original archive may be offline; every native original must remain available
+in the destination. Before returning even an empty selection, the reader verifies
+all catalog roots/indexes and every original window, repeats the sequence-only
+remux, and compares the complete reconstructed MP4 against retained source bytes.
+A damaged later, unselected page or window therefore refuses an early clip.
+The exact catalog/page adapter and origin-proof generation appear in the selection
+report instead of being relabelled as an ordinary file source.
+
+Selection reserves one whole-call original-read allowance before I/O. For a
+catalog/page import its charge is **4 MiB for the bounded proof plus all original
+catalog/window bytes**, conservatively counting shared objects again per window.
+The default/hard ceiling is 132 MiB: the existing 128 MiB original closure plus
+the 4 MiB proof reservation. `selection_origin_read_bytes_charged` reports this
+reservation, independently of the reconstructed MP4's
+`selection_source_bytes_read`. Other authority/proof metadata retain their own
+bounds; the reservation is not a measurement of all filesystem traffic.
+
+The subsequent native decode spans share their existing nonrefillable work and
+read allowances. Each span can reconstruct the complete catalog again, and that
+read is charged again; a boundary cannot reset a budget. Export still admits at
+most 1,024 aggregate coded samples including preroll and 1,024 output occurrences,
+even though the import may contain more samples. Current destination masks apply
+before selected luma is cached. All prerequisite decoding must finish before any
+output file is created. Movie-timed lossless output preserves clipped durations
+and the full query envelope, including unrepresented leading/trailing intervals.
+
+This workflow clips an already-approved continuous catalog import. Decode gaps
+or configuration transitions still refuse catalog import; it does not combine
+disjoint discoveries into a newly authorized import. Output is a local screened
+derivative, with the [shared movie export contract](RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection).
+Remote grants, payment-zone attestations, retained derivative custody and delivery
+remain separate work.
+
 ## Bounds
 
 | Limit | Whole-selection maximum and default |
@@ -227,3 +286,13 @@ deletion after a cached read, the maximum64-page CLI argument, and the real CLI'
 single-page and page-list offline verify/decode workflows.
 Synthetic fixtures establish these executable custody and continuity contracts;
 they do not qualify camera hardware or detector accuracy.
+
+The movie-review extension adds eight retained catalog/page contracts and one CLI
+process contract covering both AVC catalog and HEVC page-list exports. These are
+authored but uncompiled and unexecuted in this session. The separate native movie
+target passes all six component contracts, including two cross-window cases with
+exact pixels, clipped timing, global indices and query-envelope gaps. It constructs
+the sequence-normalized fixture directly and does not execute the private retained
+catalog joiner or custody/CLI path. See the
+[typed movie-review handoff](SESSION_HANDOFF_2026-11-07_CATALOG_MOVIE.json) for source
+pins and the existing runtime compilation limitation.

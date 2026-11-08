@@ -3,6 +3,8 @@
 //! These synthetic packets qualify source closure and continuity, not camera or detector accuracy.
 
 mod hevc_recording_support;
+#[path = "rtsp_catalog_import_contract/movie_selection.rs"]
+mod movie_selection;
 #[path = "rtsp_catalog_import_contract/pages.rs"]
 mod pages;
 mod recording_support;

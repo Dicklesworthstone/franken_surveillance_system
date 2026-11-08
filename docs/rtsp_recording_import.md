@@ -144,10 +144,12 @@ an operator capture assumption keeps its original classification.
 Before selection, the existing native packet-to-NAL-to-MP4 verifier replays the
 complete retained original chain and matches the entire reconstructed MP4,
 including unselected samples and container structure. The independent
-`--max-origin-read-bytes` allowance defaults to and is capped at 32 MiB; root and
-four child lengths are reserved before I/O. Ordinary files consume none of this
-allowance. Origin-proof and import-authority metadata have separate existing
-bounds. Reports expose `selection_source_adapter`, its exact generation,
+`--max-origin-read-bytes` allowance defaults to and is capped at 132 MiB, covering
+the largest catalog/page replay. A single window still has its existing 32 MiB
+closure limit, and the example explicitly narrows the allowance to that value.
+Its root and four child lengths are reserved before I/O. Ordinary files consume
+none of this allowance. Single-window origin-proof and import-authority metadata
+have separate existing bounds. Reports expose `selection_source_adapter`, its exact generation,
 `selection_origin_read_bytes_charged` and the maximum reservation.
 
 All prerequisite native decode spans must finish before the output file is
@@ -157,8 +159,8 @@ Only a complete durable output reports `movie_export_complete=true`.
 See [the complete movie export contract](RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection)
 for cache, decode, output and timing bounds. This is a local review derivative;
 FLDT media grants, payment-zone attestations, recipient delivery and derivative
-custody remain separate requirements. Catalog/page movie selection is not yet
-admitted by this single-window checkpoint.
+custody remain separate requirements. Completed catalog/page imports use the
+same selection/export commands; see [clips across native windows and pages](RTSP_CATALOG_IMPORT.md#review-clips-across-windows-and-pages).
 
 ## Bounds and interrupted imports
 

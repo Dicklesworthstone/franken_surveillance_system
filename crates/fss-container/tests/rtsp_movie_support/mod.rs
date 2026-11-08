@@ -55,6 +55,14 @@ pub struct AvcSource {
 }
 
 pub fn avc() -> Test<AvcSource> {
+    avc_window(0)
+}
+
+/// A distinct original packet sequence for each independently assembled native window.
+pub fn avc_window(ordinal: usize) -> Test<AvcSource> {
+    if ordinal >= 64 {
+        return Err("fixture window bound".into());
+    }
     let nals = split_annex_b(include_bytes!(
         "../../../fss-packet/tests/fixtures/avc/baseline.264"
     ));
@@ -67,9 +75,14 @@ pub fn avc() -> Test<AvcSource> {
     let mut pictures = Vec::new();
     let mut packets = Vec::new();
     let mut frame = 0_u32;
-    for (ordinal, nal) in nals.into_iter().enumerate() {
+    for (nal_index, nal) in nals.into_iter().enumerate() {
         let vcl = matches!(nal[0] & 31, 1 | 5);
-        let source = packet(ordinal as u64 + 1, 450_000 + frame * AVC_STEP, vcl, nal);
+        let source = packet(
+            ordinal as u64 * 32 + nal_index as u64 + 1,
+            450_000 + ordinal as u32 * 4 * AVC_STEP + frame * AVC_STEP,
+            vcl,
+            nal,
+        );
         let output = depacketizer.push(
             KEY,
             source.sequence,
@@ -102,12 +115,16 @@ pub fn avc() -> Test<AvcSource> {
 }
 
 pub fn avc_timing(pictures: &[AvcPictureGroup]) -> Vec<TimedAvcPicture<'_>> {
+    avc_timing_at(pictures, BASE)
+}
+
+pub fn avc_timing_at(pictures: &[AvcPictureGroup], decode_start: u64) -> Vec<TimedAvcPicture<'_>> {
     pictures
         .iter()
         .enumerate()
         .map(|(index, picture)| TimedAvcPicture {
             picture,
-            decode_time: BASE + index as u64 * u64::from(AVC_STEP),
+            decode_time: decode_start + index as u64 * u64::from(AVC_STEP),
             duration: AVC_STEP,
             composition_offset: composition(index, AVC_STEP),
         })
@@ -121,6 +138,14 @@ pub struct HevcSource {
 }
 
 pub fn hevc() -> Test<HevcSource> {
+    hevc_window(0)
+}
+
+/// Includes an original EOS per window; no EOF-based source closure is fabricated.
+pub fn hevc_window(ordinal: usize) -> Test<HevcSource> {
+    if ordinal >= 64 {
+        return Err("fixture window bound".into());
+    }
     let nals: Vec<Vec<u8>> =
         include_str!("../../../../tests/fixtures/media/hevc/remux_main8.nals.hex")
             .lines()
@@ -146,10 +171,22 @@ pub fn hevc() -> Test<HevcSource> {
         .into_iter()
         .zip(nals)
         .enumerate()
-        .map(|(index, (time, nal))| packet(65_533 + index as u64, 450_000 + time, true, &nal))
+        .map(|(index, (time, nal))| {
+            packet(
+                65_533 + ordinal as u64 * 32 + index as u64,
+                450_000 + ordinal as u32 * 4 * HEVC_STEP + time,
+                true,
+                &nal,
+            )
+        })
         .collect();
     // Source-observed synthetic EOS; no end-of-input flush invents a closing boundary.
-    packets.push(packet(65_543, 504_000, true, &[0x48, 1, 0x80]));
+    packets.push(packet(
+        65_543 + ordinal as u64 * 32,
+        504_000 + ordinal as u32 * 4 * HEVC_STEP,
+        true,
+        &[0x48, 1, 0x80],
+    ));
     let mut depacketizer = H265Depacketizer::new(KEY, 96, 0, H265Limits::default())?;
     let mut assembler = HevcAssembler::new(KEY, HevcAssemblyLimits::default())?;
     let mut pictures = Vec::new();
@@ -186,12 +223,19 @@ pub fn hevc() -> Test<HevcSource> {
 }
 
 pub fn hevc_timing(pictures: &[HevcPictureGroup]) -> Vec<TimedHevcPicture<'_>> {
+    hevc_timing_at(pictures, BASE)
+}
+
+pub fn hevc_timing_at(
+    pictures: &[HevcPictureGroup],
+    decode_start: u64,
+) -> Vec<TimedHevcPicture<'_>> {
     pictures
         .iter()
         .enumerate()
         .map(|(index, picture)| TimedHevcPicture {
             picture,
-            decode_time: BASE + index as u64 * u64::from(HEVC_STEP),
+            decode_time: decode_start + index as u64 * u64::from(HEVC_STEP),
             duration: HEVC_STEP,
             composition_offset: composition(index, HEVC_STEP),
         })

@@ -22,7 +22,7 @@ use fss_object::ObjectManifest;
 use std::collections::BTreeSet;
 
 const DOMAIN: &str = "fss.rtsp_catalog_import.v1";
-const MAX_PROOF_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_PROOF_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OMISSIONS: usize = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

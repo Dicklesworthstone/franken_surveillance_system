@@ -1,0 +1,213 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "timezone": "America/New_York",
+  "state": "native_catalog_page_movie_review_implemented_native_components_passed_retained_cli_unverified",
+  "mission": {
+    "goal": "Close consequential native footage-review gaps and publish meaningful checkpoints directly to main through GitHub, without PRs.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      "docs/VITTLES_FOOTAGE_PLANE_PLAN.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-07_NATIVE_RTSP_MOVIE.json"
+    ],
+    "previous_checkpoint": "41533a8bcb37982ffba7274e7542253e61bcb5c3",
+    "source_head": "41533a8bcb37982ffba7274e7542253e61bcb5c3",
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "FSS-068 / fss-x4a.13.8",
+      "VIT-023 / fss-vit023-review-export-w8aai: local review output only"
+    ]
+  },
+  "authority": {
+    "git": "User authorized meaningful direct-main GitHub commits. Preserve concurrent edits with non-force expected-head ref updates.",
+    "live_device_execution": false,
+    "policy_activation": false,
+    "external_delivery": false
+  },
+  "completed": [
+    "Completed continuous ADP-RTSP-CATALOG-ARCHIVE-001 and ADP-RTSP-CATALOG-PAGES-001 imports now share retained movie selection and screened local export with single-window native imports and exact ordinary FILE imports.",
+    "One source query can cross included native windows and pages while preserving global source indices, nonzero tfdt and signed composition offsets. Existing selector checks all retained sample offsets and digests before quoting native decoder spans.",
+    "The catalog provenance owner replays every original catalog root/index and each full native window, reconstructs the sequence-normalized complete MP4, and compares it at offset zero against the entire retained source. Unselected and empty-query originals remain mandatory.",
+    "The same checked nonrefillable origin reservation closure feeds mutually exclusive native verifiers. Catalog/page allowance derives from authoritative 128 MiB original closure plus 4 MiB proof ceiling. CLI report and option remain shared across select-movie/export-movie.",
+    "No import proof, adapter generation, approval identity or source bytes are migrated. Existing strict continuity/configuration admission, tombstones, final custody checks, cancellation, current privacy masks, cumulative native decode work/read bounds and output finalization remain active."
+  ],
+  "verification": {
+    "native": {
+      "status": "passed",
+      "toolchain": "nightly-2026-08-31",
+      "command": "cargo test --locked --offline -p fss-container --test rtsp_movie_timeline_contract",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "CARGO_INCREMENTAL": "0"
+      },
+      "passed": 6,
+      "failed": 0,
+      "new_cross_window_tests": 2,
+      "previous_single_window_tests": 4,
+      "scope": "Actual RTP depacketization/picture assembly, independent AVC/HEVC window muxes, demux, native planned-span decode versus independent full-source native decoding, production selected-luma movie cache/timing and Matroska encoder. Fixture joining changes only four mfhd bytes; this target does not execute the private runtime catalog joiner, retained custody, privacy authority, CLI processes or filesystem durability.",
+      "log_sha256": "30a712049737f0c9ef99db7f88e25d96d862d746e37faddd2ad04a4ad5891419",
+      "cross_window_cases": [
+        {
+          "codec": "AVC",
+          "query_ticks": [
+            101700,
+            110700
+          ],
+          "timescale": 90000,
+          "selected_segments": [
+            3,
+            4,
+            6
+          ],
+          "output_intervals_ns": [
+            [
+              0,
+              30000000
+            ],
+            [
+              30000000,
+              70000000
+            ],
+            [
+              70000000,
+              100000000
+            ]
+          ],
+          "prerequisite_exclusion": "Intervening segment 5 is decoded but not emitted."
+        },
+        {
+          "codec": "HEVC",
+          "query_ticks": [
+            148500,
+            193500
+          ],
+          "timescale": 90000,
+          "selected_segments": [
+            3,
+            4,
+            6
+          ],
+          "output_intervals_ns": [
+            [
+              0,
+              150000000
+            ],
+            [
+              150000000,
+              350000000
+            ],
+            [
+              350000000,
+              500000000
+            ]
+          ]
+        }
+      ],
+      "additional_checks": [
+        "All sample source offsets, DTS, PTS, durations and NAL-copy mappings match original fragments.",
+        "Duplicate fragment sequence one refuses; fixture normalization alters only four mfhd bytes.",
+        "Complete eight-picture queries preserve a one-second leading gap and ten-millisecond trailing gap."
+      ]
+    },
+    "reference_contracts": {
+      "status": "authored_not_compiled_or_executed",
+      "new_catalog_page_tests": 8,
+      "previous_single_window_tests": 6,
+      "total_new_native_movie_tests": 14,
+      "coverage": [
+        "AVC and HEVC cross-window clipped presentation selections, global indices and native span drainage",
+        "Nonzero-origin page selections after cold destination reopen and archive unavailability",
+        "Exact 4 MiB proof plus full original closure; separate reconstructed-MP4 limit and empty-query verification",
+        "Nonrenewing aggregate selected decode samples/source bytes/Annex-B bounds",
+        "Missing or corrupt unselected later native packets, page roots or indexes",
+        "Gap or initialization-transition import refusal",
+        "Cancellation during source read, membership, proof reservation, later original reads, selection and completion"
+      ],
+      "structural_unit_coverage": "All three native generation profiles tested; arbitrary adapters and malformed generations remain refused."
+    },
+    "cli_contracts": {
+      "status": "authored_not_compiled_or_executed",
+      "new_catalog_page_process_tests": 1,
+      "previous_single_window_process_tests": 4,
+      "total_new_native_movie_process_tests": 5,
+      "representatives": [
+        "Actual approved AVC catalog import",
+        "Actual approved HEVC ordered page-list import"
+      ],
+      "coverage": [
+        "Separate cold CLI select/export processes after source archive path disappears",
+        "Global presentation order [3,4,6,5], half/full/full/half-step clipping and byte-exact timed Matroska",
+        "Exact origin adapter/proof generation, retained MP4 digest and conservative replay reservation",
+        "One-byte-short original allowance refuses before output, exact allowance succeeds",
+        "Current left-half privacy mask preserves all unmasked luma, original objects, reconstructed chunks and journals"
+      ],
+      "compatibility": "Previous single-window CLI tests now use the public extended selection allowance; native window import ceiling is unchanged."
+    },
+    "full_build": {
+      "status": "not_attempted_this_checkpoint",
+      "prior_evidence": "Earlier standard and supplementary full CLI checks ended with SIGKILL in unchanged Asupersync 0.5.0 metadata compilation before CLI source diagnostics. The cause remains unknown. See SESSION_HANDOFF_2026-11-07_MOVIE_TIMING.json.",
+      "qualification": "No passing full CLI/reference typecheck, process execution or release qualification is claimed; no production dependency, runtime or gate was weakened."
+    },
+    "source_review": {
+      "status": "completed",
+      "scope": "Independent production admission/full-origin/budget/API review, reference contract review and final CLI process test API/timing/pixel review. Corrected an authored-test u64/usize mismatch before publication. No concrete remaining blocker; source review is not compilation or execution."
+    },
+    "source_sha256": {
+      "crates/fss-cli/src/bin/fss-file.rs": "28d4ab908837c1de792bcaa0e7b25e3d86524c036437418e8920a9bf22411450",
+      "crates/fss-cli/tests/decoded_media_cli_contract/rtsp_movie_export.rs": "6886bf57cbb0a9469a3c59289833cf8cfefa23976d93212b0d784b90ed4e8b67",
+      "crates/fss-cli/tests/decoded_media_cli_contract/rtsp_movie_export/catalog.rs": "8015e1c3e7d41a9454fc67085205ad8630b21e18e64ad2428cd6a2f43b65111b",
+      "crates/fss-container/tests/rtsp_movie_support/mod.rs": "2a90f367ebe867a552670fa2b7af3e30c88ae924b5f3e8911480d9114088de18",
+      "crates/fss-container/tests/rtsp_movie_timeline_contract.rs": "2ee2808cf68b9e6d554ce91140e54db871f584fd8c5aad6f582637e90054aebd",
+      "crates/fss-reference/src/ingest/retained/movie.rs": "903c66d9e49e83665001d3a29ef94f26a3f103834156693209847d139a4d0cd8",
+      "crates/fss-reference/src/ingest/retained/movie/tests.rs": "fe18ea456ffb5a6ee7ce4bde079361e9c5f28a54719d325cfc265b0b5d0fe78c",
+      "crates/fss-reference/src/ingest/rtsp_import/catalog.rs": "96e5d2f8be04cb886096afd59810661e6c4c24d909a8fd726fb80c96fb7dd9b8",
+      "crates/fss-reference/src/ingest/rtsp_import/catalog_provenance.rs": "c1bf4a7fad77e47f454d8d7deda9bbb559a3a4e6c7f4109a6a77968d104bb08e",
+      "crates/fss-reference/tests/rtsp_catalog_import_contract.rs": "3cf72e3f1517c8d78152c57443d36b383f725706b91ab7f67b945df8e4fd67b9",
+      "crates/fss-reference/tests/rtsp_catalog_import_contract/movie_selection.rs": "522437adeaa0089d93386d194617ffb49bf94b6180e09022680b4c55c97c43a1"
+    }
+  },
+  "budgets": {
+    "maximum_origin_read_bytes": 138412032,
+    "catalog_original_bytes": 134217728,
+    "catalog_proof_replay_reservation_bytes": 4194304,
+    "single_window_original_bytes": 33554432,
+    "catalog_media_bytes": 67108864,
+    "origin_read_model": "conservative_pre_io_bytes",
+    "metadata_boundary": "Catalog replay reserves one full proof ceiling; other proof/membership/authority reads retain existing bounds and are outside this metric.",
+    "decode_boundary": "Subsequent native ranges can replay the full original catalog again and are charged again against existing shared decode-read allowance. No per-window/page/range refill.",
+    "selection_boundary": "Existing export maxima of 1024 aggregate coded samples and 1024 output occurrences remain unchanged, including preroll."
+  },
+  "important_boundaries": [
+    "Completed approved continuous imports only. Import still refuses decode gaps, overlaps, mixed scope or initialization transitions. No automated query-handle-to-new-import authority is added.",
+    "Movie presentation ticks and archive decode ticks remain distinct; neither establishes capture UTC. Unknown/operator-assumed capture classifications are preserved.",
+    "The old single-window handoff describes its historical checkpoint. This checkpoint supersedes its catalog/pages unsupported limitation and extends selection default/hard origin allowance from 32 to 132 MiB; underlying native import limits are unchanged.",
+    "Output remains a private local screened derivative. FLDT recipient/media grants, payment-zone attestations, retained derivative custody/expiry/revocation and remote delivery remain open.",
+    "Broad feature beads remain open. Native component execution does not qualify unexecuted retained/CLI integration or live camera operation."
+  ],
+  "continuation": {
+    "highest_value_next": [
+      "Run exact-source fss-reference RTSP import/catalog movie contracts and fss-cli decoded_media_cli_contract on a host able to compile the unchanged required runtime.",
+      "Connect discovered recording selections to an explicit approved import and local clip operation, preserving scope and source custody instead of inferring UTC or authority from archive query metadata.",
+      "Implement a coherent VIT-023 reviewer-delivery slice only with explicit recipient/grant, current privacy/payment-zone attestation, derivative custody, expiry and revocation."
+    ],
+    "obligations": [
+      "Do not promote unexecuted retained/CLI code to release-qualified.",
+      "Keep native provenance and current privacy screening on every downstream review path.",
+      "Preserve cumulative budgets and all concurrent main changes; no force pushes or PRs."
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "41533a8bcb37982ffba7274e7542253e61bcb5c3",
+      "change": "Exact local movie review from completed single-window native AVC/HEVC imports."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Movie selections and screened exports across native catalog windows and catalog pages, with complete bounded original provenance."
+    }
+  ]
+}
