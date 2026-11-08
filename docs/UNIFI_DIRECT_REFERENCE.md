@@ -5727,3 +5727,34 @@ reconciliation and the legacy convenience calls still discard their traces.
 The same executable then passed that ignored case separately on a `ts1`
 private interface. It exercised a bound local listener and synthetic camera,
 not the physical G4.
+
+The read-only discovery observation laboratory now continues the same
+task-owned session through a snapshot request and in-memory pure-Rust luma
+decode, after separately checking media-read and decode grants. A disposable
+UDP/TLS fixture passed five cases, including a malformed JPEG with valid
+boundary markers, changed settings, a mismatched discovery claim and a wrong
+certificate pin. The exact stripped executable passed the same five cases.
+Job `30099060530610915` completed Cargo compilation on `ts1`, but its RCH
+wrapper exited 102 after refusing to import a Linux artifact into the macOS
+target; it was acknowledged and released its sources. The Linux executable
+SHA-256 before stripping was
+`843c175f63dd055d22c558fa4f245c977497819c1016fa986729c35fa9e401c0`,
+and the stripped executable was
+`3491c3ddbe26f0cde6d75ec5c83f0d55ff4e6ee5020f1cd48d4e4eeffe5d4ab2`.
+The executable source and independent fixture SHA-256 values were
+`61c28ae749335d9a8936c00e844975fd04b57a2a2bbb5794208baaa51bcb0e01` and
+`6bc533b7520e36375d7c334bebe242286243f96b0de00806a05281f168b0fd02`.
+
+The same stripped binary was hash-verified on `trj` and ran against the
+owner's G4: the bounded unicast discovery claim matched the local neighbor
+claim, TLS 1.3 matched the previously observed camera certificate, login and
+two settings reads completed, and a 640×360 snapshot decoded in memory. The
+printed controller comparison used a deliberately unrelated placeholder and
+does not classify the actual controller. No management write occurred, no
+journal was created, and the image was not persisted. This created a camera
+login session with unknown expiry. The network-observed pin and neighbor claim
+do not independently authenticate physical identity, and the TLS provider
+remains experimental. Afterward the recorder and discovery timer were active,
+the recorder restart count remained 70, and three recent fallback files were
+present. This is direct still-image access, not native video, automatic setup,
+continuous recording, source custody, or 30-day Rust retention.

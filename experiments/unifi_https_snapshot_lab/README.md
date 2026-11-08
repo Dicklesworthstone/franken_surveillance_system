@@ -104,6 +104,20 @@ and include all three reads and decodes in the owner-authorized scope. The
 fixture accepts `--three-snapshots` to verify the repeated request sequence or
 `--disconnect-after-first` to verify the failure boundary.
 
+The separate `discovery_observe_trial` executable performs scoped discovery,
+two matching settings observations and one in-memory snapshot decode in the
+same task-owned session. It uses the experimental TLS provider and does not
+authorize setup or publish a recording. Its independent disposable fixture is:
+
+```text
+python3 experiments/unifi_https_snapshot_lab/discovery_observe_fixture.py BIN CERT_DER CERT_PEM KEY_PEM JPEG_FIXTURE
+```
+
+The fixture checks the request order, invalid image, changed settings,
+discovery mismatch and certificate mismatch. See the
+[UniFi reference notes](../../docs/UNIFI_DIRECT_REFERENCE.md) for the
+physical-camera result and qualification limits.
+
 An experimental `--serializer-inspect` flag may be placed immediately before
 `--owner-authorized` (after `--three-snapshots`, if used). It requests the
 separately authorized serializer-retention operation, temporarily holds the
