@@ -5684,3 +5684,29 @@ longer present, but its output handle was lost; no observation result can be
 claimed from that run. The observer's revised local source SHA-256 was
 `292ff9c27f79cc45ca129dd34f9b76ad8b7949211a46fb6755fb29554a36df69`;
 five synthetic classification checks passed. It is not part of the recorder.
+
+A later passive controller observation ran for 120 seconds and counted 24
+complete smart-audio envelopes, but failed while printing its ordered summary
+because a local variable was reused. After correcting that diagnostic, a
+30-second repeat exited zero and counted six such envelopes, with no startup
+sequence observed. TLS reads are not attributed to an individual socket, and
+split, coalesced and missed frames are outside this observation. The corrected
+observer source SHA-256 is
+`c992a8c8aa99160a656b8787d543ccb5554d1f885f36000dec2357d544f4b05e`.
+Neither observation establishes what the G4 sends during a reconnect.
+
+The working tree has a draft caller-owned setup trace to preserve a committed
+handoff permit while waiting for its HTTP response or settings readback, and
+the bounded response shape once observed. If cancellation occurs inside the
+dispatch future, that future may own the permit; the journal still requires
+reconciliation and automatic replay is not authorized. Legacy setup methods
+use local traces and do not return them after a dropped future. This draft and
+its new cancellation contract are not yet compiled or tested: strict-remote
+job `30099060530610874` stopped on unavailable disk-monitor telemetry and
+reported completion unconfirmed. Two same-ID recoveries timed out. RCH still
+reports the job running, although source release is recorded; its completion
+file was absent and no matching reference compiler process was observed.
+Do not replay the job until its ownership and terminal state are reconciled.
+Draft setup and test source SHA-256 values are respectively
+`be27e8a947fad54c9b594a2df7758fb54e4cbc67cce5779a1fb7c0005b7e24e0`
+and `787ce8054a2e2af61eab6f1fbe27a005067aefc6fce3db978860c0020599ed35`.
