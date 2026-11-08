@@ -75,9 +75,13 @@ rustfmt and source reviews pass. All fourteen MCP tool schemas validate under
 Draft7 and Draft2020-12; 55 query acceptance/refusal cases pass under each draft.
 Native execution remains blocked: the fresh pinned-toolchain baseline build was
 SIGKILLed while compiling unchanged Asupersync0.5.0, before recording targets
-were reached. A separate metadata-only type-checking pass is pending. No native
-pass, live-device validation or release qualification is claimed. VIT-008 remains
-open for broader footage-plane functionality.
+were reached. A separate scoped metadata-only check was stopped during unchanged
+`bincode-next 3.1.1` dependency checking after more than three minutes without
+observable log or artifact progress. That check is inconclusive; none of the
+requested FSS targets completed typechecking and no new native tests executed.
+No live-device validation or release qualification is claimed. See the
+[final verification handoff](docs/SESSION_HANDOFF_2026-11-07_RECORDING_DISCOVERY.json).
+VIT-008 remains open for broader footage-plane functionality.
 
 
 ## Native export of selected MP4/MOV movie intervals

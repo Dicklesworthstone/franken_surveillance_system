@@ -1,7 +1,7 @@
 {
   "format": "engineering-session-handoff",
   "date": "2026-11-07",
-  "state": "integration_implemented_native_execution_blocked_typecheck_pending",
+  "state": "session_complete_scoped_validation_native_blocked",
   "mission": {
     "goal": "Implement consequential retained-footage functionality from the comprehensive plan and beads through meaningful direct-main commits.",
     "basis": [
@@ -45,8 +45,12 @@
       "change": "Namespace observation foundation, native discovery, 27 focused contracts, three domains and native contract guide."
     },
     {
-      "commit": "this_commit",
+      "commit": "9b0370e8e77ad9709fb5418e4fc4a4144c59e2d8",
       "change": "Protected deployment/CLI/MCP discovery integration, 17 further focused contracts, four domains and complete usage guide."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Final verification outcome and engineering handoff; feature source remains unchanged."
     }
   ],
   "verification": {
@@ -72,7 +76,20 @@
       "cargo_lock_unchanged": true,
       "build_flags": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes -Ccodegen-units=256"
     },
-    "metadata_only_typecheck": "pending; a separate lighter native compiler check, not test execution",
+    "metadata_only_typecheck": {
+      "status": "interrupted_inconclusive",
+      "scope": "Primary56146fa plus stable discovery integration, before d40279 dependency/retained-movie changes; no selected FSS target completed checking.",
+      "command": "cargo check --locked --offline -p fss-publication --test pinned_namespace_contract",
+      "dependency_boundary": "bincode-next3.1.1 metadata check",
+      "reason": "Owned session interrupted after 198.8 seconds without log progress and 196.5 seconds without new dependency artifacts; compiler CPU was not exposed across command proc views.",
+      "compiler_exit_code": null,
+      "owned_session_ended": true,
+      "changed_fss_test_targets_checked": 0,
+      "reference_and_cli_stages": "not run after the first dependency-stage interruption",
+      "log_sha256": "ec35a9173b72a2fa70c47ceb40b56829696c7bfa440cb7bf9779520c99056e29",
+      "report_sha256": "dbdbe676792abab40c619d6d5e37c8c3e2711b6166f4c062c270c38e84cf5386",
+      "limitation": "Observed host memory pressure and SIGKILL do not establish a specific resource limit or prove the exact cause. No additional unchanged compiler retry was attempted."
+    },
     "scoped_pinned_rustfmt": "Passed on all new standalone modules/tests and changed small recording/MCP helper tests. No whole-workspace formatting claim.",
     "changed_rust_unsafe_prohibition": {
       "files": 21,
@@ -98,10 +115,18 @@
       "frame_headroom_bytes": 13979,
       "native_json_parser_nodes": 2493,
       "native_json_parser_depth": 15
+    },
+    "github_publication": {
+      "core_file_bodies_verified": 10,
+      "integration_file_bodies_verified": 19,
+      "manifest_scope_commit": "9b0370e8e77ad9709fb5418e4fc4a4144c59e2d8",
+      "manifest_scope_files_verified": 25,
+      "direct_main_ancestry_verified": true,
+      "updates": "non-force with expected head; no PRs"
     }
   },
   "remaining": [
-    "Execute the focused native publication, reference, context, CLI process and MCP targets on a host that can compile the unchanged pinned Asupersync dependency.",
+    "Complete actual typechecking and execution of the focused native publication, reference, context, CLI process and MCP targets; the dependency build failed and the lighter check was inconclusive before those targets.",
     "Namespace discovery uses one exact source/clock scope and native decode ticks; cross-scope/global discovery and multi-page UTC clock coverage are not implemented by this slice.",
     "Unindexed tails require the existing archive writer/recovery owner to index them; the read-only query refuses them.",
     "Source payload availability, physical absence, live coverage and trusted UTC remain unknown; no export or hydration authority was added.",
@@ -112,5 +137,9 @@
     "Use the protected discovery query with actual explicit source/clock pins and narrow native intervals.",
     "Continue from existing clock/retained-output owners without inferring missing clock evidence or media authority."
   ],
-  "preserved_concurrent_commit": "d40279ef32b48bb763072c363083042434c86ce3"
+  "preserved_concurrent_commits": [
+    "d40279ef32b48bb763072c363083042434c86ce3",
+    "299ca4463f67c9c17786e29b15628cfd5120d6b1",
+    "433de1eb3960a386dcc8b6ff1362429634cb065a"
+  ]
 }
