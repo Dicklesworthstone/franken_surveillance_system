@@ -12,6 +12,8 @@ use std::process::{Command, Output};
 mod range;
 #[path = "decoded_media_cli_contract/movie_export.rs"]
 mod movie_export;
+#[path = "decoded_media_cli_contract/rtsp_movie_export.rs"]
+mod rtsp_movie_export;
 
 const JPEG: &[u8] = include_bytes!("../../fss-codec-mjpeg/tests/fixtures/gray.jpg");
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

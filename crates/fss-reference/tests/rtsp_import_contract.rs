@@ -2,6 +2,8 @@
 //! Actual source-closed AVC/HEVC recording import, native decode, privacy and restart contracts.
 
 mod hevc_recording_support;
+#[path = "rtsp_import_contract/movie_selection.rs"]
+mod movie_selection;
 mod recording_support;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};

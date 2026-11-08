@@ -6,7 +6,7 @@ use fss_container::demux::{
     MovieGapKind, MovieInterval, MovieSelection, MovieSelectionLimits, VideoCodec,
 };
 use fss_core::ContentDigest;
-use fss_reference::ingest::retained::RetainedMovieSelection;
+use fss_reference::ingest::retained::{MAX_MOVIE_ORIGIN_READ_BYTES, RetainedMovieSelection};
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use std::io::Write;
@@ -17,6 +17,7 @@ pub(super) struct Action {
     identity: ContentDigest,
     query: Range<u64>,
     limits: MovieSelectionLimits,
+    maximum_origin_read_bytes: u64,
 }
 
 impl Action {
@@ -31,11 +32,12 @@ impl Action {
         read_limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> RunResult<RetainedMovieSelection> {
-        Ok(retained.select_movie_interval(
+        Ok(retained.select_movie_interval_with_origin_limit(
             deployment,
             self.query.clone(),
             read_limits,
             self.limits,
+            self.maximum_origin_read_bytes,
             cx,
         )?)
     }
@@ -52,6 +54,7 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
                 | "--max-decode-samples"
                 | "--max-decode-bytes"
                 | "--max-annex-b-bytes"
+                | "--max-origin-read-bytes"
         )
 }
 
@@ -74,6 +77,16 @@ pub(super) fn parse_with_decode_limit(
     if start >= end {
         return Err(malformed(
             "movie interval must be nonempty: start-movie-tick < end-movie-tick",
+        ));
+    }
+    let maximum_origin_read_bytes = number(
+        values,
+        "--max-origin-read-bytes",
+        Some(MAX_MOVIE_ORIGIN_READ_BYTES),
+    )?;
+    if maximum_origin_read_bytes == 0 || maximum_origin_read_bytes > MAX_MOVIE_ORIGIN_READ_BYTES {
+        return Err(malformed(
+            "movie origin read allowance must be positive and within the native origin bound",
         ));
     }
     let defaults = MovieSelectionLimits::default();
@@ -108,6 +121,7 @@ pub(super) fn parse_with_decode_limit(
         identity,
         query: start..end,
         limits,
+        maximum_origin_read_bytes,
     })
 }
 
@@ -137,6 +151,12 @@ pub(super) fn report(
 ) -> RunResult<()> {
     writeln!(out, "selection_time_basis=container_movie_timeline")?;
     writeln!(out, "selection_interval=half_open")?;
+    writeln!(out, "selection_source_adapter={}", result.source_adapter_id)?;
+    writeln!(
+        out,
+        "selection_source_adapter_generation={}",
+        result.source_adapter_generation
+    )?;
     writeln!(out, "selection_track_id={}", result.track_id)?;
     writeln!(
         out,
@@ -157,6 +177,17 @@ pub(super) fn report(
         "selection_source_bytes_read={}",
         result.source_bytes_read
     )?;
+    writeln!(
+        out,
+        "selection_origin_read_bytes_charged={}",
+        result.origin_read_bytes_charged
+    )?;
+    writeln!(
+        out,
+        "selection_maximum_origin_read_bytes={}",
+        result.maximum_origin_read_bytes
+    )?;
+    writeln!(out, "selection_origin_read_model=conservative_pre_io_bytes")?;
     write_selection(&result.selection, cx, out)?;
     Ok(())
 }

@@ -110,6 +110,56 @@ a prior process's verified flag into current source authority. Current destinati
 privacy masks apply before decoded pixels reach a consumer or export. This workflow retains
 unencrypted original media locally; it does not claim encrypted custody or a remote archive.
 
+## Trim a native recording for local review
+
+The completed single-window import now works with `fss-file select-movie` and
+`export-movie`. This connects exact archived AVC/HEVC window custody to selected,
+current-policy-screened PGM, MJPEG or lossless grayscale Matroska output. The
+capture archive can be offline after import; the retained destination must still
+contain every original source object and its completed import authority.
+
+Use the recording's actual movie timescale and presentation coordinates. For
+example, a native recording with a 90,000-tick timescale and media around tick
+900,000 can select this 300 ms interval:
+
+```sh
+fss-file select-movie \
+  --root /path/to/deployment --site site:home --import-id sha256:IMPORT \
+  --start-movie-tick 927000 --end-movie-tick 954000
+
+fss-file export-movie \
+  --root /path/to/deployment --site site:home --import-id sha256:IMPORT \
+  --start-movie-tick 927000 --end-movie-tick 954000 \
+  --interpretation ycbcr --output /path/to/review.mkv \
+  --output-format gray-mkv --output-timing movie \
+  --max-origin-read-bytes 33554432 --work-units 1000000000
+```
+
+Replace the example identity and ticks with the completed import's values. A
+catalog query selects windows using **decode** intervals; movie selection uses
+the reconstructed track's **presentation** intervals and composition offsets.
+Neither coordinate establishes UTC. Unknown capture time remains unknown, and
+an operator capture assumption keeps its original classification.
+
+Before selection, the existing native packet-to-NAL-to-MP4 verifier replays the
+complete retained original chain and matches the entire reconstructed MP4,
+including unselected samples and container structure. The independent
+`--max-origin-read-bytes` allowance defaults to and is capped at 32 MiB; root and
+four child lengths are reserved before I/O. Ordinary files consume none of this
+allowance. Origin-proof and import-authority metadata have separate existing
+bounds. Reports expose `selection_source_adapter`, its exact generation,
+`selection_origin_read_bytes_charged` and the maximum reservation.
+
+All prerequisite native decode spans must finish before the output file is
+created. Current destination masks apply to selected pixels, and movie-timed
+Matroska preserves clipped frame durations and the full requested timeline.
+Only a complete durable output reports `movie_export_complete=true`.
+See [the complete movie export contract](RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection)
+for cache, decode, output and timing bounds. This is a local review derivative;
+FLDT media grants, payment-zone attestations, recipient delivery and derivative
+custody remain separate requirements. Catalog/page movie selection is not yet
+admitted by this single-window checkpoint.
+
 ## Bounds and interrupted imports
 
 | Option | Default and hard ceiling | Meaning |

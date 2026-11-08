@@ -414,6 +414,16 @@ privacy-screened luma pictures in movie presentation order. Use `select-movie`
 first to inspect the source's movie timescale, exact rational intervals, edits,
 gaps and prerequisite coding spans; that command still returns metadata only.
 
+Completed native AVC/HEVC **single-window RTSP imports** from
+[`fss-import-rtsp`](rtsp_recording_import.md) also support both commands. The
+selector replays the retained recording root, original RTP, packet/NAL index,
+initialization and fragment through the existing native verifier, then compares
+the entire reconstructed MP4 with retained source bytes before selecting any
+picture. Checking the reconstructed MP4 alone is insufficient. Missing, corrupt
+or deleted original custody refuses even when the reconstructed chunks survive.
+The source adapter and its origin-proof generation remain explicit in the report.
+Catalog and catalog-page imports remain outside this first native-window profile.
+
 For a retained file whose movie timescale is 1000, this selects the half-open
 movie interval from 0.45 to 0.75 seconds and preserves its clipped presentation
 timing in a local lossless review clip:
@@ -433,6 +443,9 @@ The tick arguments always use the source's **movie timescale**. They are not
 media ticks, capture timestamps or UTC. A picture whose presentation interval
 overlaps the query is selected with its exact clipped interval in the report;
 the image itself remains a complete native decoded picture.
+Native recordings preserve their original fragment decode start and composition
+offsets. Archive-query decode ticks and movie presentation intervals are distinct;
+do not assume that segment zero starts at movie tick zero or infer UTC from RTP.
 
 The command verifies the complete retained original and its sample index before
 decoding. Each prerequisite span begins at its admitted IDR/IRAP entry point.
@@ -454,6 +467,7 @@ their gaps remain inspectable with `select-movie`.
 | `--max-decode-samples` | Default/max 1024 | Aggregate coded source samples over every span, including preroll |
 | Output occurrences | Hard limit 1024 | Every selected occurrence, including repeated edits |
 | `--max-cached-luma-bytes` | Default 64 MiB, max 256 MiB | Sum of unique selected tight luma planes; chroma is not retained in this cache |
+| `--max-origin-read-bytes` | Default/max 32 MiB | Complete native RTSP root plus four original payloads, reserved before each read during movie selection; zero charge for ordinary files |
 | `--max-decode-read-bytes` | Default 512 MiB, max 4 GiB | Actual custody chunk reads across all decode spans, reserved before I/O; reloads count again |
 | `--work-units` | Default 100 million | One shared native encoded-byte plus coded-luma-capacity allowance |
 | `--max-output-bytes` | Default 64 MiB, max 256 MiB | Whole output, including container/frame headers |
@@ -465,6 +479,11 @@ per-frame pixel/dimension and marker limits also apply. Complete-original
 verification is a separate bounded read reported as `selection_source_bytes_read`;
 `movie_decode_source_bytes_read` accounts for subsequent native decode reads.
 Neither allowance is refreshed by a new random-access span.
+`selection_origin_read_bytes_charged` separately reports the native source-chain
+replay, with `selection_maximum_origin_read_bytes` and the
+`conservative_pre_io_bytes` model. Proof and authority metadata retain their own
+existing bounds. The later decoder's original-source rechecks consume the shared
+decode-read allowance, so selection verification does not grant free later reads.
 
 Output formats are `pgm` (default), `mjpeg`, and `gray-mkv`. PGM and gray-Matroska
 preserve exact screened sample values; MJPEG is a lossy grayscale derivative.

@@ -8,7 +8,7 @@
 mod movie;
 mod root_binding;
 
-pub use movie::RetainedMovieSelection;
+pub use movie::{MAX_MOVIE_ORIGIN_READ_BYTES, RetainedMovieSelection};
 
 use super::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, FILE_IMPORT_MANIFEST_SCHEMA, FileImportManifest,

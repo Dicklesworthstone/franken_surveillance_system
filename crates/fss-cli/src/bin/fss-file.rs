@@ -57,8 +57,12 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
           Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
           Verifies retained source bytes; reports exact rational presentation intervals,\n\
           empty/unrepresented gaps and required decode ranges, without returning media.\n\
+          Original files and completed native RTSP window imports are admitted; native\n\
+          packet/index reconstruction must verify the entire MP4 before selection.\n\
           [--selection-work-units N --max-selection-rows N --max-decode-samples N]\n\
           [--max-decode-bytes N --max-annex-b-bytes N]; source read bounds also apply.\n\
+          [--max-origin-read-bytes N] (default/max 32 MiB) separately bounds native origin\n\
+          reads before I/O. Archive decode ticks and movie presentation ticks are distinct.\n\
   export-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
           --interpretation ycbcr --output FILE [--output-format pgm|mjpeg|gray-mkv]\n\
           Natively decodes the verified MP4/MOV prerequisite spans, then exports only selected\n\
@@ -936,6 +940,7 @@ mod tests {
             "--max-decode-samples",
             "--max-decode-bytes",
             "--max-annex-b-bytes",
+            "--max-origin-read-bytes",
         ] {
             for bad in ["0", "18446744073709551615"] {
                 let mut extra = valid.to_vec();
@@ -973,6 +978,8 @@ mod tests {
             ("--max-cached-luma-bytes", "268435457"),
             ("--max-decode-read-bytes", "0"),
             ("--max-decode-read-bytes", "4294967297"),
+            ("--max-origin-read-bytes", "0"),
+            ("--max-origin-read-bytes", "18446744073709551615"),
             ("--segment", "0"),
             ("--segment-count", "1"),
             ("--receipt-out", "/unused-receipt"),

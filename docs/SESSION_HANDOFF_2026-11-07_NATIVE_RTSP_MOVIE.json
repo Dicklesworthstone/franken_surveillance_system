@@ -1,0 +1,129 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "timezone": "America/New_York",
+  "state": "native_single_window_movie_review_implemented_native_components_passed_retained_cli_unverified",
+  "mission": {
+    "goal": "Close consequential native footage-review gaps and publish meaningful checkpoints directly to main through GitHub, without PRs.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      "docs/VITTLES_FOOTAGE_PLANE_PLAN.md",
+      ".beads/issues.jsonl"
+    ],
+    "source_base": "09338dbb4e0ac4b2e0310ba36be4377f7c4bb4ec",
+    "concurrent_head_preserved": "f0710136b301c2689da297b1b7af1cfa28ddade8",
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "FSS-068 / fss-x4a.13.8",
+      "VIT-023 / fss-vit023-review-export-w8aai: local review output only"
+    ]
+  },
+  "authority": {
+    "git": "User authorized meaningful direct-main GitHub commits; preserve concurrent changes with non-force expected-head ref updates.",
+    "live_device_execution": false,
+    "policy_activation": false,
+    "external_delivery": false
+  },
+  "completed": [
+    "Exact ordinary-file and completed single-window native RTSP imports share retained movie selection and the existing screened export path.",
+    "Before selection, retained completion membership is revalidated, the full retained MP4 is read and hashed, and all native original root/child objects are reread and reconstructed through the existing codec-owned verifier. The complete MP4 must match byte-for-byte, including unselected samples and structure.",
+    "One checked nonrefillable origin-read allowance reserves every original object before I/O. The local verification cache is dropped after the call, and final retained membership and cancellation are checked before releasing results.",
+    "Selection reports exact source adapter/generation, original-read reservations and their independent maximum; source_bytes_read remains exactly the retained MP4 bytes.",
+    "CLI select-movie and export-movie accept --max-origin-read-bytes. Existing cumulative decoding, current privacy masks, selected-only luma caching and durable output finalization remain the shared implementation."
+  ],
+  "verification": {
+    "native": {
+      "status": "passed",
+      "toolchain": "nightly-2026-08-31",
+      "command": "cargo test --locked --offline -p fss-container --test rtsp_movie_timeline_contract",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "CARGO_INCREMENTAL": "0"
+      },
+      "passed": 4,
+      "failed": 0,
+      "scope": "Actual RTP depacketization/picture assembly, AVC/HEVC mux and demux, native decode span adapters, production movie materialization/timing and Matroska encoder. Exact pixels, nonzero tfdt, signed composition reorder, clipped durations and query gaps. No retained-custody, privacy-authority, CLI process, runtime or filesystem durability execution claim.",
+      "log_sha256": "6a25d8c4b7e4623da30b6276be96d0659f3d8eb6d5bec87e2f9e3bc9637a96da"
+    },
+    "reference_contracts": {
+      "status": "authored_not_compiled_or_executed",
+      "new_integration_tests": 6,
+      "coverage": [
+        "Both codecs after archive removal and cold reopen",
+        "Nonzero decode origins and signed presentation offsets",
+        "Exact independent original and reconstructed-MP4 limits; budget refusal before missing-root payload I/O",
+        "Missing root, four children or proof; corrupt packets; empty selection still verifies origins",
+        "Cancellation during original reads and final revalidation",
+        "Already-open handle refuses committed deletion"
+      ],
+      "structural_unit_coverage": "Existing tests updated and one native generation-profile contract added."
+    },
+    "cli_contracts": {
+      "status": "authored_not_compiled_or_executed",
+      "new_process_tests": 4,
+      "coverage": [
+        "Approved actual archive imports and cold CLI selection/export",
+        "Current whole-frame privacy mask without original mutation",
+        "Missing/corrupt each native original fences output; restore succeeds",
+        "Malformed, excessive, insufficient and exact original-read allowances"
+      ],
+      "parser_coverage": "Existing select/export grammar contracts updated."
+    },
+    "full_build": {
+      "status": "not_attempted_this_checkpoint",
+      "prior_evidence": "Earlier standard and single-threaded diagnostic full CLI checks terminated with SIGKILL in unchanged Asupersync 0.5.0 metadata compilation before CLI source. Cause unknown. See SESSION_HANDOFF_2026-11-07_MOVIE_TIMING.json.",
+      "qualification": "No passing full CLI/reference typecheck, process execution or release qualification is claimed; no dependency or gate was weakened."
+    },
+    "source_review": {
+      "status": "completed",
+      "scope": "Independent production custody/API review and root review; no concrete blocker. Not compilation or execution."
+    },
+    "source_sha256": {
+      "crates/fss-cli/src/bin/fss-file.rs": "1205517d7b0d9133da717265fc438b609acddf1d2ce9b9173d9778d319720fb2",
+      "crates/fss-cli/src/bin/fss-file/movie.rs": "7ec5f271dfa685c7f413f08ed3a20561c693456e5971b7267a64f2209b5c7d52",
+      "crates/fss-cli/tests/decoded_media_cli_contract.rs": "649aa7fbf72fe035d0df2fabaeee2de049b39742a02191414a50f172fe3e7489",
+      "crates/fss-cli/tests/decoded_media_cli_contract/rtsp_movie_export.rs": "75b120c935e910f4618492b3846d8010085a56b93aa7230fa86e890472b0de8c",
+      "crates/fss-container/tests/rtsp_movie_support/mod.rs": "804461e98dda6a9da56acc75d75f766ca8d6320361ea0ed6cbc4484ccbbcefc2",
+      "crates/fss-container/tests/rtsp_movie_timeline_contract.rs": "7bb221ee519f8e2cba0aae6a5002a1ae8fc5e361015e132a2e179943df6725e3",
+      "crates/fss-reference/src/ingest/retained.rs": "a593ebcbbe65b7eb6791041ccdfc65c369e43241bb184110af11dcfea1c4c546",
+      "crates/fss-reference/src/ingest/retained/movie.rs": "b19555aff19293aaa350191300c737b89cd4f1fe2717dd8e6b29f4f88fcf9fcc",
+      "crates/fss-reference/src/ingest/retained/movie/tests.rs": "a75f27b3777e5947c82ec7aa14a5cad3484654bbd3b528f0530a7aea626cd8ed",
+      "crates/fss-reference/tests/rtsp_import_contract.rs": "82ab454091169317dfbd8ad46ab74f9e6bf5d22e1705fabe782cc7d2298fbe22",
+      "crates/fss-reference/tests/rtsp_import_contract/movie_selection.rs": "3c982269f332c42183b30bab8ce7f6c7a5a049100065c8cb6391220a1708daa1"
+    }
+  },
+  "budgets": {
+    "maximum_origin_read_bytes": 33554432,
+    "origin_read_model": "conservative_pre_io_bytes",
+    "single_window_success": "Exact original root and four child lengths; proof and import-authority metadata remain separately bounded.",
+    "source_read": "Full retained MP4 under existing RetainedReadLimits.",
+    "decode_read": "Existing shared cumulative allowance includes subsequent replay; no refill per range.",
+    "source_memory": "Existing native recording closure/media limits plus bounded retained MP4 and parser/index allocations."
+  },
+  "important_boundaries": [
+    "Single-window ADP-RTSP-RECORDING-ARCHIVE-001 plus original ADP-FILE-001 only. Catalog/pages remain unsupported in this checkpoint.",
+    "Movie ticks are the container presentation clock; archive query intervals use decode clock. Neither establishes capture time or trusted UTC.",
+    "Outputs remain private local derivatives, subject to current masks. No grant, payment-zone attestation, retained derivative custody/expiry or external delivery is added.",
+    "Broad beads remain open. Current production retained/CLI integration remains uncompiled and unexecuted in this environment."
+  ],
+  "continuation": {
+    "highest_value_next": [
+      "Admit already-approved continuous catalog/page imports through their existing complete provenance verifier, preserving original decode timestamps and one bounded original-read allowance.",
+      "Validate cross-fragment native selection/materialization and authored catalog custody/refusal contracts.",
+      "Run exact-source CLI/reference integration on a host capable of compiling the unchanged required runtime."
+    ],
+    "obligations": [
+      "Keep full CLI/reference execution explicitly unverified until run.",
+      "Preserve complete native provenance, current privacy policy, cumulative decode work/read limits and all concurrent main changes."
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "this_commit",
+      "change": "Select and export exact movie intervals from completed single-window native AVC/HEVC recording imports."
+    }
+  ]
+}
