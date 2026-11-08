@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
+- Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   Gather, ReduceMean, Identity and Flatten.
@@ -71,6 +71,57 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Decomposed normalization and GELU
+
+[Sqrt-13](https://onnx.ai/onnx/operators/onnx__Sqrt.html#sqrt-13) and
+[Erf-13](https://onnx.ai/onnx/operators/onnx__Erf.html#erf-13) accept one static
+F32 tensor, from a scalar through rank eight, and return its exact shape and
+generation. Neither operator accepts attributes. Their native primitives belong
+to **Model IR v2**, with a separate canonical encoding domain and operator-table
+identity. Import selects v2 when either primitive occurs. Graphs using only the
+previous operators, including the constant-power lowering below, keep their
+existing Model IR v1 encoding and frozen identities.
+
+Sqrt is correctly rounded to F32, preserves positive and negative zero, and maps
+negative inputs and every NaN payload to canonical F32 NaN (`0x7fc00000`). Positive
+infinity remains positive infinity. Erf uses a bounded first-party approximation
+with a finite-F32 numerical policy of at most two ULP against independent
+reference oracles. It preserves signed zero and odd symmetry, maps infinities to
+signed one, and canonicalizes NaNs. Its near-zero series avoids subtractive
+cancellation; a bounded tail calculation covers the middle range and values
+with magnitude at least four round to signed one. It does not call a host `erf`
+or a foreign inference runtime.
+
+[Pow-13](https://onnx.ai/onnx/operators/onnx__Pow.html#pow-13) has a deliberately
+smaller admitted profile: the base is static F32, and the exponent is a rank-zero
+embedded F32 initializer or Constant with the exact value **2 or 3**. Squaring
+lowers to `x * x`; cubing lowers to `(x * x) * x`. Each multiplication rounds
+separately to F32. For a cube whose intermediate products and exact result are
+finite and normal, the relative error bound is `2u / (1 - 2u)`, with `u = 2^-24`.
+Signed zero, subnormal rounding and overflow follow native Mul. This profile
+does not promise bitwise equivalence to a general `powf` implementation.
+Runtime or computed exponents, nonscalar exponent tensors, other values or
+dtypes, and attributes refuse. The original exponent remains in source
+provenance and charged import resources; a control-only exponent is omitted
+from runtime weights, while an exponent also used as data remains bound.
+
+These primitives execute exported LayerNorm decompositions built from
+ReduceMean/Sub/Pow/Add/Sqrt/Div and affine Mul/Add, and GELU decompositions built
+from Div/Erf/Add/Mul. Every source arithmetic step keeps its F32 rounding and
+ordering. The importer does not replace these graphs with native LayerNorm or
+GELU, reassociate products, repair reduction overflow, or hide a nonfinite
+intermediate. Generated helpers use the existing checked node, tensor, name,
+parameter and cumulative work limits; import/export cancellation and execution
+budgets remain mandatory.
+
+Model IR v2 identifies the numerical graph contract. It is independent of the
+RGB package's recipe v1/v2/v3 choices and does not change the FMPK envelope.
+Original ONNX bytes and their verified digest remain in the exported artifacts.
+Regression entrypoints are `onnx_normalization_execution` for the decomposed
+graphs, strict import refusals and real graph/Safetensors reload, and
+`unary_math_execution` for primitive numerical and execution contracts. These
+numerical fixtures do not establish a trained model's quality or calibration.
 
 ## Bounded clipping and ReLU6
 
@@ -1070,7 +1121,7 @@ does not activate a trained model.
 
 `export_onnx_artifacts(&imported, OnnxExportLimits::default(), &cancelled)` completes
 the conversion to the existing native file formats. It returns canonical Model IR
-bytes, deterministic F32 Safetensors bytes, their SHA-256 identities, the exact
+bytes for the graph's actual v1 or v2 contract, deterministic F32 Safetensors bytes, their SHA-256 identities, the exact
 borrowed original ONNX source and its independently verified digest. Every embedded
 and generated parameter is included, so Gemm's alpha/beta scalars survive export.
 The caller supplies the preprocessing, detection-head and license contract when
@@ -1084,9 +1135,10 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, constants, static shape programs, structural, Split, Resize, Pad, Gemm and LeakyRelu lowering,
+the exact ONNX parser, constants, static shape programs, structural, Split, Resize, Pad, Gemm, Pow and LeakyRelu lowering,
 artifact exporter and canonical encoder source.
-Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
+Existing Model IR v1 bytes, operator IDs and its operator-table freeze remain unchanged;
+Sqrt/Erf graphs use the separately identified v2 contract.
 
 | Export limit | Hard maximum |
 |---|---:|

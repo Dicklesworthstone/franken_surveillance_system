@@ -318,7 +318,7 @@ use v1 or v2 recipes without a DFL conversion.
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
-Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
+Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
 BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
 Gather, ReduceMean, Identity and Flatten.
@@ -327,6 +327,21 @@ their values are evaluated during import and never require runtime integer execu
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
 profiles outside the explicit v3 DFL contract and unsupported operators refuse explicitly. The command does
 not claim that an arbitrary ONNX detector can be imported.
+
+Sqrt and Erf admit unary static F32 tensors with no attributes and select the
+separate **Model IR v2** numerical contract. Sqrt preserves signed zero, uses
+correctly rounded F32 square root and canonicalizes negative-input/NaN results.
+Erf preserves signed zero and odd symmetry, maps infinities to signed one and
+NaNs to canonical F32 NaN, with a finite-F32 acceptance bound of two ULP against
+independent numerical oracles. Bounded Pow admits only rank-zero embedded F32
+exponents exactly 2 or 3, lowering to `x*x` or `(x*x)*x` with separate F32 rounding.
+Runtime or computed exponents, nonscalar controls, other values/dtypes and
+attributes refuse. These additions permit decomposed LayerNorm and Erf-based
+GELU graphs without fusing or reordering their source arithmetic; overflow
+remains visible. Graphs using only earlier primitives retain Model IR v1.
+The graph version is independent of recipe v1/v2/v3 and the unchanged FMPK
+envelope. See [decomposed normalization and GELU](onnx_import.md#decomposed-normalization-and-gelu)
+for numeric bounds, source provenance and executable regression entrypoints.
 
 Static NCHW ConvTranspose adds learned spatial upsampling with constant grouped
 filters, optional constant/runtime bias, stride, dilation, output padding and
@@ -424,7 +439,8 @@ deterministic operation allowances, not hardware MAC counts, peak RSS or wall-cl
 The existing FMPK archive contains six artifacts:
 
 - `source.onnx`: the exact input bytes, including original metadata;
-- `graph.fssir`: the unchanged canonical Model IR v1 format;
+- `graph.fssir`: canonical Model IR for the actual graph contract, v2 when Sqrt or
+  Erf occurs and the unchanged v1 format otherwise;
 - `weights.safetensors`: all exact finite F32 initializers and generated lowering parameters;
 - `package_spec.bin`: the existing RGB preprocessing/head/provenance contract;
 - `LICENSE` and `NOTICE`: the exact supplied attribution documents.
@@ -432,7 +448,7 @@ The existing FMPK archive contains six artifacts:
 The existing manifest binds every artifact, the immutable model generation, license decision
 inputs and the explicitly uncalibrated calibration generation. A separate source-bound
 importer identity includes the ONNX parser/lowering/export/canonical-encoding sources and
-the package assembler. A v2 transformation is represented by the frozen graph and exact
+the package assembler. A recipe-v2 preprocessing transformation is represented by the frozen graph and exact
 parameter bytes, so changing channel order, mean or standard deviation changes the derived
 model identity. The original ONNX source remains byte-for-byte intact. Existing package wire
 versions, already-provisioned packages and the specialized YOLOX importer remain unchanged;

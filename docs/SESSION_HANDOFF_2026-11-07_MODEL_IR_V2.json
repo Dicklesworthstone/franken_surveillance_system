@@ -1,0 +1,71 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "scope": "First-party execution of exported transformer normalization and GELU decompositions",
+  "state": "implemented_targeted_native_validation_passed_not_qualified",
+  "mission": {
+    "goal": "Remove consequential native model compatibility blockers from the plan and beads through meaningful direct-main commits.",
+    "basis": ["AGENTS.md", "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md", ".beads/issues.jsonl"],
+    "base_commit": "173e0b5934ed7954399261d447fd27a23b6f4fe3",
+    "requirements": ["FSS-138", "FSS-139", "FSS-076", "GATE-050"]
+  },
+  "authority": {
+    "git": "User explicitly authorized direct-main GitHub commits without PRs; expected-head, non-force ref updates.",
+    "live_device_execution": false,
+    "external_notifications": false,
+    "model_activation": false
+  },
+  "published_checkpoints": [
+    {"commit": "235c423a025908d4d9a83f5c9a1d1c910457aed4", "change": "Frozen IR v2, Sqrt/Erf kernels, all three execution backends and version-selected receipt registry identity."},
+    {"commit": "this_commit", "change": "ONNX Sqrt/Erf and bounded constant powers, source-bound artifact export/reload, composed LayerNorm/GELU execution and product documentation."}
+  ],
+  "contracts": {
+    "v1_operator_table": "sha256:ea84259adbccf747c847b53629fe9176dea0f6cc1874bd5379066d32d30211be",
+    "v2_operator_table": "sha256:eaed9b966265f3655bb0053bbf145b6d01799a5fd26d5e39c0d0bcbeca3fe365",
+    "new_operators": ["OP-SQRT-001", "OP-ERF-001"],
+    "source_profile": "ONNX IR 7..9, default-domain opset 13, bounded static positive F32 shapes.",
+    "power_profile": "Rank-zero embedded F32 exponent exactly 2 or 3; x*x or (x*x)*x with separate F32 rounding; other exponents/shapes/dtypes/runtime controls refuse.",
+    "sqrt_work_per_element": 8,
+    "erf_work_per_element": 896,
+    "unary_temporary_payload_bytes_per_element": 8,
+    "unary_output_bytes_per_element": 4,
+    "cancellation": "Owning ScalarExecCx; arithmetic loop polls every 64 elements, input/output materialization bounded by admitted tensor bytes."
+  },
+  "validation": {
+    "toolchain": "nightly-2026-08-31",
+    "native_passed": 176,
+    "new_executable_tests_passed": 22,
+    "repeated_embedded_tests_filtered": 64,
+    "targets": {
+      "fss-model-ir --lib": 22,
+      "model_ir_contract": 64,
+      "model_ir_v2_contract": 8,
+      "memory_plan_contract": 14,
+      "unary_math_execution": 22,
+      "onnx_attention_execution": 13,
+      "onnx_clip_execution": 13,
+      "onnx_hard_sigmoid_execution": 12,
+      "onnx_normalization_execution": 8
+    },
+    "numeric_oracle": "183 exact binary32 inputs evaluated independently with mpmath 1.3.0 at 100 decimal digits; adjacent binary32 nearest-even checks independently reviewed. Erf negative counterparts also checked.",
+    "artifact_path": "Actual canonical v1/v2 codec and production Safetensors reader; actual production scalar, planned-scalar and optimized executor source embedded in native model-ir targets.",
+    "formatting": "Pinned rustfmt and git diff --check completed on changed sources.",
+    "unexecuted": ["Public model_receipt_contract V1/V2 regression", "Modified scalar_executor_contract future-version probes", "Full package/CLI dependency closure"],
+    "reason": "The unchanged Asupersync 0.5.0 dependency previously received SIGKILL during both full and bounded metadata compilation. No new dependency build attempted and no qualification gate weakened."
+  },
+  "open_beads": ["fss-x4a.14", "fss-x4a.14.9", "fss-x4a.14.10", "fss-x4a.15.1", "fss-x4a.2.6"],
+  "active_work": [],
+  "obligations": [
+    {"state": "blocked_on_capable_host", "work": "Run receipt/reference/CLI integration and repository-owned qualification on the pinned toolchain with sufficient compiler capacity."},
+    {"state": "open", "work": "Qualify an exact trained detector/transformer generation against retained labelled real corpora; do not infer quality or completeness from synthetic graph coverage."}
+  ],
+  "unknowns": [
+    "This extends a bounded opset 13 profile, not arbitrary ONNX model support. General Pow, Exp, dynamic shapes, newer opsets and other unadmitted operators still refuse.",
+    "Full package CLI behavior and new public receipt tests are source-reviewed but not executed in this workspace.",
+    "Erf has a fixed first-party numerical policy, not bitwise equivalence to an arbitrary host math library."
+  ],
+  "next_priorities": [
+    "Connect retained native package-track results to held-out event evaluation without hand-authored score/timing TSV.",
+    "Authenticated provider terminal delivery/failure reconciliation remains a separate alert feature gap."
+  ]
+}

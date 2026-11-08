@@ -4,6 +4,39 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native transformer normalization and GELU import
+
+The opset-13 importer now executes decomposed LayerNorm and Erf-based GELU graphs
+through new first-party F32 `Sqrt`/`Erf` primitives and bounded constant `Pow`
+lowering. Square and cube admit only a rank-zero embedded F32 exponent exactly
+two or three. Each source reduction, subtraction, multiplication, square root,
+division and affine operation retains its own rounding and overflow behavior;
+the importer does not replace these graphs with fused binary64 normalization.
+Canonical graph and Safetensors export/reload preserve the original source pin.
+
+The new primitives select a separately frozen **Model IR v2**. V1 graph bytes,
+operator IDs/table, default builders and versionless lookup APIs remain unchanged.
+Decoding rejects mismatched graph domains, versions, tables and operator membership.
+Scalar, planned-scalar and optimized execution preserve the selected graph version;
+receipts bind its actual operator-table identity. Logical work is bounded at eight
+units per Sqrt element and 896 per Erf element, with explicit memory preflight and
+the existing cancellation owner. See [the admitted numerical profile](docs/onnx_import.md#decomposed-normalization-and-gelu)
+and [package import](docs/ONNX_PACKAGE_IMPORT.md).
+
+**Validation:** 176 native tests pass on the pinned nightly: 22 library, 64 V1 IR,
+eight V2 IR, 14 memory-planning, 22 unary execution, 13 attention, 13 Clip,
+12 HardSigmoid and eight normalization/GELU import contracts. The execution tests
+embed the actual production scalar, planned and optimized sources and the actual
+Safetensors reader. Independent 100-digit numerical fixtures cover 183 nonnegative
+F32 inputs and Erf odd symmetry; all backend result bits agree. Sixty-four repeated
+embedded test instances were filtered after their first successful run.
+The separate public receipt regression and modified legacy reference-crate version
+probes are authored/source-reviewed but unexecuted because the unchanged Asupersync
+dependency cannot be built in this workspace; it was not retried. Whole-package CLI
+execution, a trained transformer model, real-corpus quality and production qualification
+remain unverified. Broad FSS-138/FSS-139/FSS-076 and GATE-050 remain open. See the
+[typed handoff](docs/SESSION_HANDOFF_2026-11-07_MODEL_IR_V2.json).
+
 ## Source-timed movie review clips
 
 `fss-file export-movie --output-format gray-mkv --output-timing movie` now embeds

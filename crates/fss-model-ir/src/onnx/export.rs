@@ -8,7 +8,7 @@ use fss_tensor::DType;
 use super::{ImportedOnnx, OnnxError, Result};
 
 const MIB: usize = 1024 * 1024;
-const IMPLEMENTATION: [&[u8]; 26] = [
+const IMPLEMENTATION: [&[u8]; 27] = [
     include_bytes!("../onnx.rs"),
     include_bytes!("gemm.rs"),
     include_bytes!("conv_transpose.rs"),
@@ -21,6 +21,7 @@ const IMPLEMENTATION: [&[u8]; 26] = [
     include_bytes!("batch_normalization.rs"),
     include_bytes!("instance_normalization.rs"),
     include_bytes!("pooling.rs"),
+    include_bytes!("pow.rs"),
     include_bytes!("padding.rs"),
     include_bytes!("pad.rs"),
     include_bytes!("preprocess.rs"),
@@ -107,7 +108,7 @@ impl<'a> OnnxArtifacts<'a> {
     pub fn source_digest(&self) -> ContentDigest {
         self.source_digest
     }
-    /// Existing canonical Model IR v1 representation; no encoding version changes.
+    /// Exact canonical Model IR representation for the graph's admitted version.
     pub fn graph_bytes(&self) -> &[u8] {
         &self.graph
     }

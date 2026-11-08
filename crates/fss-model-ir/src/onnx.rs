@@ -30,6 +30,7 @@ mod leaky_relu;
 mod pad;
 mod padding;
 mod pooling;
+mod pow;
 mod preprocess;
 mod reduce;
 mod resize;
@@ -596,6 +597,8 @@ fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<
         "Relu" => OpCode::Relu,
         "Sigmoid" => OpCode::Sigmoid,
         "Tanh" => OpCode::Tanh,
+        "Sqrt" => OpCode::Sqrt,
+        "Erf" => OpCode::Erf,
         "MatMul" => OpCode::MatMul,
         "Softmax" => OpCode::Softmax,
         "Conv" => OpCode::Conv2d,
@@ -802,6 +805,9 @@ fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
 /// LeakyRelu admits exact finite F32 slopes in [0, 1] through existing native operators.
 /// Clip admits optional scalar F32 bounds, preserving finite values without overflow.
 /// HardSigmoid admits finite coefficients whose full finite F32 affine range cannot overflow.
+/// Pow admits only an embedded scalar F32 exponent of exactly 2 or 3, lowering to
+/// `x * x` or `(x * x) * x` with separate F32 rounding at each multiplication.
+/// Sqrt and Erf select Model IR v2; their surrounding source operations are never fused.
 /// Static shape programs evaluate only metadata and bounded constant INT64 controls;
 /// they never execute runtime integer tensors or read runtime F32 input values.
 /// Source names are reserved before expansion; no helper can alias any source tensor.
@@ -994,6 +1000,8 @@ pub fn import_onnx<'a>(
             clip::lower(source, &mut lowering)?;
         } else if source.op == "LeakyRelu" {
             leaky_relu::lower(source, &mut lowering)?;
+        } else if source.op == "Pow" {
+            pow::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "Expand" | "Tile") {
             broadcast::lower(source, &mut lowering)?;
         } else if source.op == "ReduceMean" {
@@ -1068,15 +1076,19 @@ pub fn import_onnx<'a>(
             .checked_mul(nodes.len() + inputs.len() + 1)
             .ok_or(OnnxError::Limit)?,
     )?;
-    let graph = ModelIrGraph::new_validated(
-        graph_name,
-        ModelIrVersion::V1,
-        generation,
-        inputs,
-        outputs,
-        nodes,
-    )
-    .map_err(|_| OnnxError::Graph)?;
+    // Existing operators keep their exact v1 graph bytes. The new numeric
+    // semantics cannot be smuggled into an older frozen operator table.
+    let version = if nodes
+        .iter()
+        .any(|node| matches!(node.op(), OpCode::Sqrt | OpCode::Erf))
+    {
+        ModelIrVersion::V2
+    } else {
+        ModelIrVersion::V1
+    };
+    let graph =
+        ModelIrGraph::new_validated(graph_name, version, generation, inputs, outputs, nodes)
+            .map_err(|_| OnnxError::Graph)?;
     a.charge(0)?;
     Ok(ImportedOnnx {
         source,
