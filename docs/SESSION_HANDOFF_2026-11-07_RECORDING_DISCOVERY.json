@@ -1,0 +1,116 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "state": "integration_implemented_native_execution_blocked_typecheck_pending",
+  "mission": {
+    "goal": "Implement consequential retained-footage functionality from the comprehensive plan and beads through meaningful direct-main commits.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-07_RECORDING_SET.json"
+    ],
+    "base_commit": "703a66bcde2dd9e7225fe47039607a93b4d85211",
+    "requirement": "VIT-008",
+    "bead": "fss-vit-je36t.8",
+    "bead_state": "remains_open"
+  },
+  "authority": {
+    "git": "User explicitly authorized direct-main GitHub commits without PRs; non-force expected-head updates.",
+    "live_device_execution": false,
+    "deployed_storage_mutation": false
+  },
+  "implemented": [
+    "Complete metadata discovery of one exact canonical AVC/HEVC archive namespace without manual catalog pins.",
+    "Independent large-archive scan and selected-output ceilings; full contiguous window/page verification and unindexed-tail refusal.",
+    "One shared metadata allowance across enumeration, manifests, typed indexes, deletion checks and final membership revalidation; no source-media reads or publisher recovery.",
+    "Protected current deployment context and complete-reference committed-deletion fence, including unselected source leaves.",
+    "CLI --discover-catalogs yes and MCP discover_catalogs true through existing AOP-005 envelopes, exact integer/source pins and fixed launch owners.",
+    "Selected pages/windows receive H0-only handles while all unselected pages remain bound by the complete inventory identity; explicit indexed gaps and unknown physical presence/availability.",
+    "Repaired an array iterator compile defect in the previous catalog-set context test."
+  ],
+  "budgets": {
+    "namespace_root_entries_per_pass": 16384,
+    "archive_windows": 4096,
+    "archive_pages": 1024,
+    "archive_metadata_read_bytes": 67108864,
+    "archive_io_calls": 1000000,
+    "cli_selected_windows": 32,
+    "cli_response_bytes": 262144,
+    "cli_cooperative_deadline_seconds": 60
+  },
+  "published_checkpoints": [
+    {
+      "commit": "56146fab5ec9525d900cc63f59c5d9df408e664c",
+      "change": "Namespace observation foundation, native discovery, 27 focused contracts, three domains and native contract guide."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Protected deployment/CLI/MCP discovery integration, 17 further focused contracts, four domains and complete usage guide."
+    }
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "native_contracts_authored": {
+      "namespace_publication": 9,
+      "native_discovery": 18,
+      "deployment_context": 8,
+      "cli_grammar": 2,
+      "mcp_dispatch": 2,
+      "cli_process": 5,
+      "total": 44
+    },
+    "new_native_contracts_executed": 0,
+    "baseline_native_build": {
+      "command": "test --locked --offline --no-fail-fast -p fss-reference --test agent_recordings_set_contract --test agent_recording_set_context_contract --test agent_recordings_contract --test agent_recordings_utc_contract -- --test-threads=1",
+      "base_commit": "703a66bcde2dd9e7225fe47039607a93b4d85211",
+      "exit_code": 101,
+      "result": "Unchanged Asupersync0.5.0 rustc SIGKILL before recording-target typechecking or test execution; no unchanged full-build retry.",
+      "elapsed_seconds": 287.627,
+      "max_child_rss_kib": 1498232,
+      "log_sha256": "fb88b5a881402857b6a96b0e15eec56ad1b1a36992aea53ca45633b616b3e2ab",
+      "cargo_lock_unchanged": true,
+      "build_flags": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes -Ccodegen-units=256"
+    },
+    "metadata_only_typecheck": "pending; a separate lighter native compiler check, not test execution",
+    "scoped_pinned_rustfmt": "Passed on all new standalone modules/tests and changed small recording/MCP helper tests. No whole-workspace formatting claim.",
+    "changed_rust_unsafe_prohibition": {
+      "files": 21,
+      "missing_forbid": []
+    },
+    "digest_domains": {
+      "new": 7,
+      "registered_once": true
+    },
+    "independent_source_review": "Publication, native discovery, protected deletion/anchor/budget boundaries, CLI/MCP owners and real process fixtures reviewed; no blocking issue found by source inspection.",
+    "mcp_schema": {
+      "tool_schemas": 14,
+      "drafts": [
+        "Draft7",
+        "Draft2020-12"
+      ],
+      "query_cases_per_draft": 55,
+      "query_case_evaluations": 110,
+      "report_sha256": "191efa2dc75573c12c7f67395235533c481e9709c712ba536539dc9483bb4fa4",
+      "scope": "Declarative schema acceptance/refusal only; native parser and execution not established.",
+      "complete_wire_frame_bytes_with_max_id": 51557,
+      "frame_ceiling_bytes": 65536,
+      "frame_headroom_bytes": 13979,
+      "native_json_parser_nodes": 2493,
+      "native_json_parser_depth": 15
+    }
+  },
+  "remaining": [
+    "Execute the focused native publication, reference, context, CLI process and MCP targets on a host that can compile the unchanged pinned Asupersync dependency.",
+    "Namespace discovery uses one exact source/clock scope and native decode ticks; cross-scope/global discovery and multi-page UTC clock coverage are not implemented by this slice.",
+    "Unindexed tails require the existing archive writer/recovery owner to index them; the read-only query refuses them.",
+    "Source payload availability, physical absence, live coverage and trusted UTC remain unknown; no export or hydration authority was added.",
+    "Full repository qualification, live hardware validation and broader VIT-008 completion remain outstanding."
+  ],
+  "next_affordances": [
+    "Run the same focused native contracts after resolving compiler host capacity.",
+    "Use the protected discovery query with actual explicit source/clock pins and narrow native intervals.",
+    "Continue from existing clock/retained-output owners without inferring missing clock evidence or media authority."
+  ],
+  "preserved_concurrent_commit": "d40279ef32b48bb763072c363083042434c86ce3"
+}

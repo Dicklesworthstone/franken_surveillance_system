@@ -16,6 +16,8 @@ mod clock_support;
 mod utc;
 #[path = "recording_query_contract/set.rs"]
 mod set;
+#[path = "recording_query_contract/discover.rs"]
+mod discover;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;

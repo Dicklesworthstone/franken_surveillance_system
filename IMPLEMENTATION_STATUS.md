@@ -4,6 +4,40 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Complete native recording archive discovery
+
+`fss query --target recordings --discover-catalogs yes` and MCP
+`query` with `discover_catalogs: true` now discover every canonical catalog page
+in one explicitly selected AVC/HEVC source and decode-clock namespace. The caller
+no longer needs every catalog slot/root pair. A narrow interval can query an
+archive of up to 4,096 windows and 1,024 pages while selecting at most 32 windows
+through the protected CLI/MCP path. See
+[the archive discovery contract and usage](docs/RECORDING_ARCHIVE_DISCOVERY.md).
+
+The reader verifies the complete contiguous window/page sequence, all member
+metadata and all referenced deletion markers with one shared allowance. An
+unindexed tail, corrupt unselected page, observed membership change, exhausted
+budget or incomplete selected result refuses the whole query. It never invokes
+archive recovery or reads source media. Current deployment reads bracket that
+observation, preserve protected hypotheses/obligations, and apply committed
+deletion restrictions to the complete reference union, including unselected
+sources. The response expands only selected windows and their supporting pages;
+the full inventory remains digest-bound. Empty metadata and indexed gaps retain
+explicit unknown physical presence, source availability and trusted UTC.
+
+**Verification:** 44 focused contracts are authored across namespace publication,
+native discovery, current deployment context, CLI grammar/MCP dispatch and actual
+CLI processes. They include real synthetic AVC/HEVC archives of 130 windows over
+three normal pages and a real authorized fixture import/deletion. Scoped pinned
+rustfmt and source reviews pass. All fourteen MCP tool schemas validate under
+Draft7 and Draft2020-12; 55 query acceptance/refusal cases pass under each draft.
+Native execution remains blocked: the fresh pinned-toolchain baseline build was
+SIGKILLed while compiling unchanged Asupersync0.5.0, before recording targets
+were reached. A separate metadata-only type-checking pass is pending. No native
+pass, live-device validation or release qualification is claimed. VIT-008 remains
+open for broader footage-plane functionality.
+
+
 ## Native export of selected MP4/MOV movie intervals
 
 `fss-file export-movie` now connects authenticated movie-time selection to native

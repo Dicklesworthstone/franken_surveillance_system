@@ -7,6 +7,9 @@ pub mod utc;
 /// One shared decode-clock query over explicitly pinned catalogs.
 pub mod set;
 
+/// Read-only catalog discovery in one explicitly selected archive namespace.
+pub mod discover;
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 

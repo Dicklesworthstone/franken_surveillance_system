@@ -3,6 +3,9 @@
 
 mod collector_support;
 
+#[path = "agent_recording_set_context_contract/discover.rs"]
+mod discover;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,7 +148,7 @@ impl Fixture {
             .collect();
         let source_leaves = earlier_leaves
             .into_iter()
-            .chain(later.children().map(|(_, digest, _)| digest))
+            .chain(later.children().into_iter().map(|(_, digest, _)| digest))
             .collect();
         let fixture = Self {
             directory,

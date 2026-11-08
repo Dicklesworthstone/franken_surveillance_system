@@ -8,6 +8,75 @@ use crate::{FssCommand, parse_fss_args};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+fn discovery_pins() -> Vec<(String, String)> {
+    let mut values = pins();
+    values.retain(|(key, _)| key != "--catalog-slot" && key != "--catalog-root");
+    values.push(("--discover-catalogs".to_owned(), "yes".to_owned()));
+    values
+}
+
+#[test]
+fn discovery_grammar_preserves_exact_source_and_decode_clock_scope() -> TestResult {
+    for codec in ["avc", "hevc"] {
+        let mut values = discovery_pins();
+        values
+            .iter_mut()
+            .find(|(key, _)| key == "--codec")
+            .ok_or("codec fixture")?
+            .1 = codec.to_owned();
+        let command = parse(&values, false)?;
+        assert_eq!(command, parse(&values, true)?);
+        let FssCommand::RecordingDiscoveryQuery(args) = command else {
+            return Err("discovery routed to another recording owner".into());
+        };
+        assert_eq!(args.request.recording.codec.as_str(), codec);
+        assert_eq!(args.request.recording.interval, 0..u64::MAX);
+        assert_eq!(args.request.recording.scope.time_scale, 90_000);
+        assert_eq!(args.request.recording.max_windows, 32);
+        assert_eq!(args.archive_root, PathBuf::from("/owner/archive"));
+    }
+    Ok(())
+}
+
+#[test]
+fn discovery_grammar_refuses_mixed_modes_and_implicit_scope() -> TestResult {
+    let valid = discovery_pins();
+    for (name, value) in [
+        ("--catalogs", "catalog=sha256:bad"),
+        ("--catalog-slot", "catalog"),
+        ("--catalog-root", "sha256:bad"),
+        ("--clock-slot", "clock"),
+        ("--clock-root", "sha256:bad"),
+        ("--start-utc-ns", "0"),
+        ("--end-utc-ns", "1"),
+        ("--from-ns", "0"),
+        ("--at", "latest"),
+        ("--hydrate", "H3"),
+    ] {
+        let mut values = valid.clone();
+        values.push((name.to_owned(), value.to_owned()));
+        assert!(parse(&values, false).is_err(), "accepted {name}");
+    }
+    for value in ["", "no", "true", "1", "YES"] {
+        let mut values = valid.clone();
+        values
+            .iter_mut()
+            .find(|(key, _)| key == "--discover-catalogs")
+            .ok_or("discovery fixture")?
+            .1 = value.to_owned();
+        assert!(parse(&values, false).is_err(), "accepted discovery {value}");
+    }
+    for missing in valid.iter().map(|(key, _)| key) {
+        let values = valid
+            .iter()
+            .filter(|(key, _)| key != missing)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(parse(&values, false).is_err(), "accepted missing {missing}");
+    }
+    Ok(())
+}
+
 fn set_pins() -> Vec<(String, String)> {
     let mut values = pins();
     values.retain(|(key, _)| key != "--catalog-slot" && key != "--catalog-root");

@@ -13,6 +13,9 @@ pub mod utc;
 /// Bounded multi-catalog decode-clock queries with the same protected deployment owner.
 pub mod set;
 
+/// Read-only discovery in one exact historical archive namespace.
+pub mod discover;
+
 use std::path::Path;
 
 use fss_core::{
@@ -123,6 +126,8 @@ pub enum RecordingContextError {
     Deployment(DeploymentReadError),
     /// Native archive custody, scope or budget verification failed.
     Recording(RecordingQueryError),
+    /// Complete source-namespace discovery or index verification refused.
+    Discovery(crate::agent_recordings::discover::RecordingDiscoveryError),
     /// The expected/current deployment prefix or deletion state changed.
     AnchorChanged,
     /// The shared deployment read allowance was exhausted.
@@ -139,6 +144,7 @@ impl std::fmt::Display for RecordingContextError {
             Self::InvalidRequest => "invalid recording query request or allowance",
             Self::Deployment(_) => "deployment metadata verification failed",
             Self::Recording(_) => "native recording metadata verification refused",
+            Self::Discovery(_) => "native recording archive discovery refused",
             Self::AnchorChanged => "deployment authority, layout or deletion state changed",
             Self::OverBudget => "deployment metadata read allowance exhausted",
             Self::Cancelled => "recording query cancelled",

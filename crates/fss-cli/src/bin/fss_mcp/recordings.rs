@@ -19,6 +19,7 @@ pub(super) fn arguments(
             "catalog_slot",
             "catalog_root",
             "catalogs",
+            "discover_catalogs",
             "sensor",
             "stream",
             "generation",
@@ -48,6 +49,23 @@ pub(super) fn arguments(
         .iter()
         .any(|field| fields.contains_key(*field));
     let catalog_set = fields.contains_key("catalogs");
+    let discovery = match fields.get("discover_catalogs") {
+        None => false,
+        Some(Value::Boolean(true)) => true,
+        Some(_) => return Err((-32602, "discover_catalogs must be true when supplied")),
+    };
+    if discovery
+        && (catalog_set
+            || utc
+            || fields.contains_key("catalog_slot")
+            || fields.contains_key("catalog_root"))
+    {
+        return Err((
+            -32602,
+            "Archive discovery requires decode-clock bounds and excludes manual catalog or UTC pins",
+        ));
+    }
+
     if catalog_set
         && (utc || fields.contains_key("catalog_slot") || fields.contains_key("catalog_root"))
     {
@@ -71,6 +89,9 @@ pub(super) fn arguments(
         "--archive-root".into(),
         archive_root.to_os_string(),
     ]);
+    if discovery {
+        argv.push("--discover-catalogs=yes".into());
+    }
     if let Some(value) = fields.get("catalogs") {
         let Value::Array(pins) = value else {
             return Err((-32602, "Expected a bounded array of exact catalog pins"));
@@ -115,8 +136,18 @@ pub(super) fn arguments(
     }
     for (field, option, bound, required) in [
         ("codec", "codec", 4, true),
-        ("catalog_slot", "catalog-slot", 128, !catalog_set),
-        ("catalog_root", "catalog-root", 71, !catalog_set),
+        (
+            "catalog_slot",
+            "catalog-slot",
+            128,
+            !catalog_set && !discovery,
+        ),
+        (
+            "catalog_root",
+            "catalog-root",
+            71,
+            !catalog_set && !discovery,
+        ),
         ("sensor", "sensor", 128, true),
         ("stream", "stream", 128, true),
         ("generation", "generation", 20, true),

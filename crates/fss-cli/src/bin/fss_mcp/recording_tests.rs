@@ -13,6 +13,103 @@ const DECODE: &str = "sha256:444444444444444444444444444444444444444444444444444
 const CLOCK: &str = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
 const ANCHOR: &str = "anchor:aaaaaaaaaaaaaaaa:0:none:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+fn discovery_fields(codec: &str) -> Fields {
+    let mut values = fields(codec);
+    values.remove("catalog_slot");
+    values.remove("catalog_root");
+    values.insert("discover_catalogs", "true".to_owned());
+    values
+}
+
+fn native_discovery(codec: &str) -> Test<FssCommand> {
+    use fss_reference::agent_recording_context::discover::RecordingDiscoveryContextRequest;
+    use fss_reference::agent_recordings::discover::RecordingDiscoveryRequest;
+    let FssCommand::RecordingQuery(base) = native(codec, false)? else {
+        return Err("expected singleton fixture".into());
+    };
+    let source = base.request.recording;
+    Ok(FssCommand::RecordingDiscoveryQuery(
+        fss_cli::recording_query_cmd::discover::RecordingDiscoveryQueryArgs {
+            root: base.root,
+            archive_root: base.archive_root,
+            request: RecordingDiscoveryContextRequest {
+                principal: base.request.principal,
+                expected_anchor: base.request.expected_anchor,
+                recording: RecordingDiscoveryRequest {
+                    codec: source.codec,
+                    scope: source.scope,
+                    interval: source.interval,
+                    max_windows: source.max_windows,
+                    max_hydration_bytes: source.max_hydration_bytes,
+                },
+            },
+        },
+    ))
+}
+
+#[test]
+fn discovery_dispatch_preserves_native_scope_responses_and_archive_owner() -> Test {
+    for codec in ["avc", "hevc"] {
+        let expected = native_discovery(codec)?;
+        let values = discovery_fields(codec);
+        let mut server = ready(true);
+        for exit in [ExitIdentity::SUCCESS, ExitIdentity::AGENT_REFUSED] {
+            let bytes = "{\"inventory\":\"complete\",\"physicalPresence\":\"unknown\"}\n";
+            let mut calls = 0;
+            let answer = server
+                .handle_with(&request(&values), |command| {
+                    calls += 1;
+                    assert_eq!(command, expected);
+                    (bytes.to_owned(), exit)
+                })
+                .ok_or("missing discovery response")?;
+            assert_eq!(calls, 1);
+            assert_eq!(
+                response_text(&answer)?,
+                (bytes.to_owned(), exit != ExitIdentity::SUCCESS)
+            );
+        }
+        refused(&mut ready(false), &values);
+    }
+    Ok(())
+}
+
+#[test]
+fn discovery_mcp_requires_explicit_true_complete_scope_and_one_query_mode() {
+    let valid = discovery_fields("avc");
+    let mut server = ready(true);
+    for value in ["false", "null", "0", "1", "\"true\"", "[]", "{}"] {
+        let mut values = valid.clone();
+        values.insert("discover_catalogs", value.to_owned());
+        refused(&mut server, &values);
+    }
+    for (field, value) in [
+        (
+            "catalogs",
+            format!(r#"[{{"slot":"catalog","root":"{CATALOG}"}}]"#),
+        ),
+        ("catalog_slot", quote("catalog")),
+        ("catalog_root", quote(CATALOG)),
+        ("clock_slot", quote("clock")),
+        ("clock_root", quote(CLOCK)),
+        ("start_utc_ns", quote("0")),
+        ("end_utc_ns", quote("1")),
+        ("archive_root", quote("/other/archive")),
+        ("root", quote("/other")),
+        ("principal", quote("principal:other")),
+        ("from_ns", quote("0")),
+    ] {
+        let mut values = valid.clone();
+        values.insert(field, value);
+        refused(&mut server, &values);
+    }
+    for missing in valid.keys() {
+        let mut values = valid.clone();
+        values.remove(missing);
+        refused(&mut server, &values);
+    }
+}
+
 fn set_fields(codec: &str) -> Fields {
     let mut values = fields(codec);
     values.remove("catalog_slot");
