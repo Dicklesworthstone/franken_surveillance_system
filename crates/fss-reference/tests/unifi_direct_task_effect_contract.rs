@@ -1812,8 +1812,8 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let segment=guard.held_segment().ok_or("missing unknown held source")?;
                                         assert_eq!(ContentDigest::sha256(segment.fragment().bytes()),first_digest);
                                         for source in segment.source() { originals.extend_from_slice(source.bytes()); }
-                                        if late_audio_change==8 {
-                                            use fss_reference::unifi_direct::{source_handoff,source_worker};
+                                        if matches!(late_audio_change,8|9) {
+                                            use fss_reference::unifi_direct::{source_coordinator,source_handoff,source_worker};
                                             use fss_packet::extended_flv::stream::Next;
                                             let source_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?;
                                             let source_deployment=fss_reference::ReferenceDeployment::open(&temp.0.join("separate-source-archive"),"site:worker-guard",&source_replay)?;
@@ -1827,16 +1827,51 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             let mut framer=Framer::new(FlvLimits::default(),1024)?;
                                             framer.append(0,b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00")?;
                                             let record=match framer.take()? {Next::Record(record)=>record,Next::NeedMore=>return Err("source header missing".into())};
-                                            source.offer(source_worker::Input::Original {record,key:SourceKey {connection:1,generation:1},disposition:recording::SourceDisposition::Header,camera_claim:ContentDigest::sha256(b"fixture camera")}).map_err(|_|"source offer refused")?;
-                                            assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourcePending));
-                                            assert_eq!(ContentDigest::sha256(guard.held_segment().ok_or("pending source consumed segment")?.fragment().bytes()),first_digest);
-                                            source.start(task,cx,clock,"fixture:source",&BudgetVector::ZERO).map_err(|e|format!("source start: {e:?}"))?;
-                                            timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"separate source worker did not enter")?;
-                                            control_probe_tx.send(()).map_err(io::Error::other)?;
-                                            assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None})));
-                                            source_access.allow.store(true,Ordering::Release);
-                                            source_access.block.store(false,Ordering::Release);
-                                            let completion=timeout(cx.now(),Duration::from_secs(10),source.join()).await?.ok_or("separate source completion missing")?;
+                                            let key=SourceKey {connection:1,generation:1};
+                                            let claim=ContentDigest::sha256(b"fixture camera");
+                                            let completion=if late_audio_change==8 {
+                                                source.offer(source_worker::Input::Original {record,key,disposition:recording::SourceDisposition::Header,camera_claim:claim}).map_err(|_|"source offer refused")?;
+                                                assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourcePending));
+                                                assert_eq!(ContentDigest::sha256(guard.held_segment().ok_or("pending source consumed segment")?.fragment().bytes()),first_digest);
+                                                source.start(task,cx,clock,"fixture:source",&BudgetVector::ZERO).map_err(|e|format!("source start: {e:?}"))?;
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"separate source worker did not enter")?;
+                                                control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None})));
+                                                source_access.allow.store(true,Ordering::Release);
+                                                source_access.block.store(false,Ordering::Release);
+                                                timeout(cx.now(),Duration::from_secs(10),source.join()).await?.ok_or("separate source completion missing")?
+                                            } else {
+                                                let mut coordinator=source_coordinator::Coordinator::new(source,key,claim);
+                                                let event=unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,disposition:recording::SourceDisposition::Header})))));
+                                                assert!(matches!(coordinator.offer(event),source_handoff::Result::Accepted { .. }));
+                                                assert!(coordinator.authorize_retry().is_err());
+                                                let mut excessive=BudgetVector::ZERO; excessive.bytes=u64::MAX;
+                                                let av=source_coordinator::ArchiveAdmission {resource:"fixture:archive",cost:&BudgetVector::ZERO};
+                                                let denied=source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&excessive};
+                                                let allowed=source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&BudgetVector::ZERO};
+                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,denied).await,source_coordinator::Step::SourceStartRefused(_)));
+                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::SourceRetryRequired));
+                                                coordinator.authorize_retry().map_err(|_|"source retry was not retained")?;
+                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::SourceStarted));
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"coordinated source worker did not enter")?;
+                                                control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None})));
+                                                source_access.allow.store(true,Ordering::Release);
+                                                source_access.block.store(false,Ordering::Release);
+                                                let completion=timeout(cx.now(),Duration::from_secs(10),async {
+                                                    loop {
+                                                        match coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_millis(100),task,cx,clock,av,allowed).await {
+                                                            source_coordinator::Step::SourceArchive(source_handoff::Drive::Completed(completion)) | source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {completion:Some(completion),..})=>break Ok(completion),
+                                                            source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::Idle,completion:None})=>(),
+                                                            _=>break Err("coordinator lost source or controller result"),
+                                                        }
+                                                    }
+                                                }).await??;
+                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::SourceQueued)))));
+                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::ArchiveStarted))));
+                                                source=coordinator.into_worker();
+                                                completion
+                                            };
                                             assert!(completion.runtime.is_ok() && matches!(completion.outcome,source_worker::Outcome::Publication(source_worker::Publication::Published { .. })));
                                             let retired=source.retire().map_err(|_|"separate source retirement refused")?;
                                             assert!(!retired.fenced && retired.pending.is_none());
@@ -2066,10 +2101,14 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             if camera_replay {println!("unknown_scheduler_camera_replay=passed published_segments=2 capture_bounds=unknown controller=simulated");}
                                             return Ok(());
                                         }
-                                        assert!(matches!(guard.step(&mut owner,&operations[6],Duration::from_secs(5)).await,unknown::Step::SourceQueued));
-                                        assert_eq!(guard.archive_state(),av_worker_guard::ArchiveState::Pending);
-                                        assert!(matches!(guard.start_archive(task,cx,other_clock,"fixture:archive",&BudgetVector::ZERO),Err(unknown::StartError::Worker(av_worker::StartError::Context))));
-                                        guard.start_archive(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("unknown archive start: {e:?}"))?;
+                                        if late_audio_change!=9 {
+                                            assert!(matches!(guard.step(&mut owner,&operations[6],Duration::from_secs(5)).await,unknown::Step::SourceQueued));
+                                            assert_eq!(guard.archive_state(),av_worker_guard::ArchiveState::Pending);
+                                            assert!(matches!(guard.start_archive(task,cx,other_clock,"fixture:archive",&BudgetVector::ZERO),Err(unknown::StartError::Worker(av_worker::StartError::Context))));
+                                            guard.start_archive(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("unknown archive start: {e:?}"))?;
+                                        } else {
+                                            assert_eq!(guard.archive_state(),av_worker_guard::ArchiveState::Running);
+                                        }
                                         timeout(cx.now(),Duration::from_secs(5),async {while !access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"unknown worker did not enter")?;
                                         assert!(matches!(guard.step(&mut owner,&operations[6],Duration::from_secs(5)).await,unknown::Step::ArchivePending));
                                         control_probe_tx.send(()).map_err(io::Error::other)?;
@@ -2482,6 +2521,11 @@ fn unknown_time_guard_services_control_while_archive_is_blocked() -> Test {
 #[test]
 fn unknown_time_source_scheduler_keeps_control_live_and_media_held() -> Test {
     conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,8)
+}
+
+#[test]
+fn unknown_time_source_coordinator_starts_and_drains_source() -> Test {
+    conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,9)
 }
 
 #[test]

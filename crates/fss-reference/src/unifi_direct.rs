@@ -84,6 +84,8 @@ pub mod recording;
 pub mod setup;
 /// Exact standalone source-record evidence for separately returned media.
 pub mod source_evidence;
+/// Source-aware session and archive coordination.
+pub mod source_coordinator;
 /// Custody-preserving handoff from session events to standalone source storage.
 pub mod source_handoff;
 /// Task-owned durable publication of separately returned source records.

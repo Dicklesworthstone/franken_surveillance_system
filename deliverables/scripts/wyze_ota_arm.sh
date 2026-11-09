@@ -42,6 +42,15 @@ for pair in "wyze-resmon.sh:wyzeedgeai_cam_v4_test_protocol/14.9.50199.r/res_mon
   cp -f "$src" "$dst" 2>/dev/null || sudo -n cp -f "$src" "$dst"
 done
 
+# Replacement images for the Tapo lane are served from the same tree (tapo_flash_chain.sh
+# pulls them over it). They live in the operator's fw store, not the repo.
+for img in uImage.ssc30kq rootfs.squashfs.ssc30kq uImage.nt98567 rootfs.squashfs.nt98567; do
+  src="$HOME/fss-exploit/fw/$img"
+  [ -f "$src" ] || continue
+  mkdir -p "$CAP_DIR/fw"
+  [ -f "$CAP_DIR/fw/$img" ] || cp "$src" "$CAP_DIR/fw/$img" 2>/dev/null || sudo -n cp "$src" "$CAP_DIR/fw/$img"
+done
+
 # Camera identity: registry.yaml is the single truth. Resolve wyze-51's MAC by
 # id; fall back to the historical hardcoded default if the registry/python is
 # unavailable (the bring-up script itself ARP-sweeps by this MAC, so a moved

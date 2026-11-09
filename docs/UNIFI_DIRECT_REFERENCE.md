@@ -7248,3 +7248,23 @@ publication and retirement. It did not exercise this entry point's
 cancellation branch or a physical camera. Existing callers of `run_slice`
 do not automatically use this source-aware step; an owning recorder still
 needs to route its session through it and handle its returned outcomes.
+
+A source coordinator now connects that step to `source_handoff`: a newly
+accepted separate source arms one archive attempt, admission refusal retains
+the source and requires an explicit retry, and control plus all archive
+completions remain caller-owned. The first coordinator revision passed two
+local-socket session cases in strict-remote job `30101959465763558` at base
+`3b0b34ea0b061e83ec327a383aea08b503928072`, overlay fingerprint
+`4b1f307e765f40ef0b4649dc3a29aacc225fc465011e2ce9dac92cec8e74ac54`.
+Both passed, none failed or ignored, 52 were filtered, the job exited zero,
+was acknowledged, and released sources and its execution pair. One case
+covered a refused admission, explicit retry, and a time-sync exchange while
+publication was blocked. Its source was a synthetic FLV header supplied to
+the coordinator by the fixture, not a physical camera record.
+
+The coordinator has since been changed to accept independently scoped and
+metered admissions for the A/V archive and separate-source archive. The socket
+fixture now also exercises transition back to A/V archival. A test request for
+that revision is queued and has not yet executed. The coordinator is not yet
+wired into an unattended native recorder; cancellation through this
+coordinator and live physical-camera interoperability remain unverified.
