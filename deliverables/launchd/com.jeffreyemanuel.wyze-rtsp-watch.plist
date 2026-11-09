@@ -3,7 +3,7 @@
 <plist version="1.0"><dict>
   <key>Label</key><string>com.jeffreyemanuel.wyze-rtsp-watch</string>
   <key>ProgramArguments</key><array>
-    <string>/opt/homebrew/bin/python3</string>
+    <string>/opt/homebrew/bin/python3</string><string>-u</string>
     <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_rtsp_one_shot.py</string>
     <string>--loop-watch</string>
   </array>
