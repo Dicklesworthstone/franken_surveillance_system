@@ -35,17 +35,26 @@ def serve(port, path, done):
         except OSError as e:
             print(f"{port}: accept failed ({e}) — slot exiting", flush=True)
             return
+        # Open lazily: the fleet gate probes every slot with `nc -z`, i.e. connect and
+        # close. Opening up front left a 0-byte mtdN.bin behind for every probe, which
+        # reads like a truncated backup. Nothing is written until bytes arrive.
         n = 0
-        with open(path, "wb") as fh:
-            while True:
-                d = c.recv(1 << 20)
-                if not d:
-                    break
-                fh.write(d)
-                n += len(d)
-            fh.flush()
-            os.fsync(fh.fileno())
+        fh = None
+        while True:
+            d = c.recv(1 << 20)
+            if not d:
+                break
+            if fh is None:
+                fh = open(path, "wb")
+            fh.write(d)
+            n += len(d)
         c.close()
+        if fh is None:
+            print(f"{port}: connected, no data (file untouched)", flush=True)
+            continue
+        fh.flush()
+        os.fsync(fh.fileno())
+        fh.close()
         print(f"{port}: {n} bytes -> {path}", flush=True)
         done.append((port, n))
 
