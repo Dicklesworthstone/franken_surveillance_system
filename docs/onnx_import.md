@@ -39,14 +39,15 @@ including hand-computed dense and convolution/pooling results.
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers, Constant values and bounded static shape programs
   may supply compile-time shape, axis, slice, partition, repetition and selection controls. They never
-  become runtime integer inputs or exported weights.
+  become runtime integer inputs or exported weights. Generated BOOL comparison
+  controls select INT64 shape values; they never become runtime Boolean tensors.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
-  Shape and INT64 Gather also support the bounded shape programs below; F32 data
+  Shape, INT64 ConstantOfShape, Equal and Where also support the bounded shape programs below; F32 data
   selection uses the separate static Gather profile described below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
@@ -64,7 +65,7 @@ including hand-computed dense and convolution/pooling results.
   Both use the bounded native lowering described below.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-runtime or data-dependent shape inputs/computation, negative Slice strides,
+runtime or data-dependent shape inputs/computation, negative F32-data Slice strides,
 cubic or dynamic Resize and unsupported linear coordinate modes,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
@@ -816,11 +817,17 @@ simplifier or adding integer execution to the frozen runtime IR.
 | [Concat-13](https://onnx.ai/onnx/operators/onnx__Concat.html#concat-13) | Join INT64 vectors, including empty vectors, with an explicit zero or minus-one axis. Scalars are not silently promoted to vectors. |
 | Add, Sub, Mul, [Div-13](https://onnx.ai/onnx/operators/onnx__Div.html#div-13) | Checked INT64 arithmetic with scalar/vector multidirectional broadcasting. Division truncates toward zero; division by zero and signed overflow refuse. |
 | Identity | Copy a bounded INT64 control without changing its scalar/vector shape. |
+| [Slice-13](https://onnx.ai/onnx/operators/onnx__Slice.html#slice-13) | Select an INT64 vector with exact constant start/end/axis/step vectors. Positive and negative nonzero steps, negative indices, empty results and extreme end sentinels are supported; omitted axes select the vector's sole axis. |
+| [ConstantOfShape-9](https://onnx.ai/onnx/operators/onnx__ConstantOfShape.html#constantofshape-9) | Fill an INT64 scalar or vector using an explicit one-element INT64 tensor attribute and a constant shape vector. An empty shape produces a scalar; `[0]` produces an empty control. The absent attribute's F32 default and non-INT64 fills refuse. |
+| [Equal-13](https://onnx.ai/onnx/operators/onnx__Equal.html#equal-13) | Compare exact INT64 controls using scalar/vector multidirectional broadcasting and generate a typed BOOL control. Large integers retain all bits. |
+| [Where-9](https://onnx.ai/onnx/operators/onnx__Where.html#where-9) | Select between INT64 controls using a generated BOOL condition and three-way broadcasting. All operands must be valid compile-time controls, including an unselected branch. |
 
 Every control remains rank zero or one and contains at most eight values. A scalar
 and a length-one vector remain distinct. No runtime tensor values are read, no
-floating-point conversion rounds large integers, and no runtime INT64 graph or
-integer output is emitted. Dynamic controls, symbolic dimensions, mixed dtypes,
+floating-point conversion rounds large integers, and no runtime integer/Boolean
+graph or output is emitted. BOOL value-info witnesses must match the computed
+condition exactly; BOOL graph inputs, outputs and initializers remain unsupported.
+Dynamic controls, symbolic dimensions, mixed dtypes,
 rank-two integer controls, unsupported attributes and out-of-range indices refuse.
 Reshape, Slice, Split, Resize, Pad, Expand and Tile enforce their own admission
 rules when consuming the computed controls.
@@ -829,6 +836,8 @@ Every evaluated result consumes the same cumulative parameter/control byte quota
 per-tensor size limit and named-value limit as an embedded constant. Source operator
 and work limits still apply, and cancellation is checked through evaluation and
 output admission. Controls remain quota-charged after removal from exported weights.
+ConstantOfShape's embedded fill and its generated values both consume the aggregate
+control-byte allowance; generated Boolean values consume their exact one-byte width.
 Shape-only use of an initializer removes its unused payload from runtime parameters;
 a simultaneous data use keeps it bound. Original runtime inputs retain their exact
 binding, dtype, shape and generation checks even when only their shape is consulted.
@@ -846,6 +855,26 @@ no shape-program node or integer tensor is required at inference. The independen
 affine/sigmoid oracle runs through the production scalar executor before export and
 after canonical graph and real Safetensors reload. This untrained numerical fixture
 does not establish detector quality or full package/CLI qualification.
+
+`onnx_attention_execution::shape_selection` adds an exported-style query expansion
+contract: Shape/Slice/Concat constructs `[batch,-1,-1]`, ConstantOfShape/Mul/Equal/Where
+replaces the explicitly preserved dimensions with ones, and native Expand repeats
+the query embeddings over the admitted batch. The resulting MatMul/Softmax/MatMul
+attention remains input-dependent. Only five existing F32 operators and the query
+weights reach inference. The tests exercise both production scalar and optimized
+executors before and after canonical graph and Safetensors reload, compare against
+an independent binary64 attention oracle, and cover integer precision, broadcasting,
+empty/reversed slices, invalid types/attributes, allocation/work bounds and cancellation.
+This fixture establishes the static shape-program path, not compatibility or quality
+qualification for an entire trained detector family.
+
+The 2026-11-09 pinned native run passed all 58 selected tests: 41 attention contracts
+(including ten new shape-selection cases) and 17 earlier shape-program contracts.
+Eighteen unrelated included executor unit tests were filtered; both production
+executors still execute in the applicable feature contracts. The exact command,
+results and resource observations are retained in
+[`validation/2026-11-09-shape-selection-native-tests.log`](validation/2026-11-09-shape-selection-native-tests.log).
+This is component evidence; it does not establish a full reference/CLI build.
 
 ## Detector branches and spatial pyramid pooling
 
