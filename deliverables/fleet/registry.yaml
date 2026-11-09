@@ -115,16 +115,19 @@ cameras:
   mac: 60:d5:61:21:4d:36
   fw_baseline: unknown
   vector: none
-  last_seen_ip: 192.168.4.86
+  last_seen_ip: 192.168.4.126
   ip_history:
   - 192.168.4.126
   - 192.168.4.86
   dhcp_reserve: true
   creds:
     path: null
-  notes: 'SETUP MODE (Tuya AP). Beacon MAC 78:28:ca:92:21:dc seen at .126 earlier;
-    at .86 only an ARP ghost (no ping, no :6667 beacons as of 2026-11-06). Needs fresh
-    Tuya registration (fss-tuya-signer-ci) + activation.
+  notes: 'SETUP MODE (Tuya AP). 2026-11-09: LIVE at .126 — own UDP 6667 broadcast
+    000055aa…00000023 (220B, unencrypted discovery) captured by tuya_lan_find.py, MAC
+    60:d5:61:21:4d:36 confirmed in ARP. Answers no ICMP/TCP and does not stay put (.86
+    earlier). Needs fresh Tuya registration (fss-tuya-signer-ci) + activation. HomeBase
+    (H2E) still not identified on 4.x or 5.x — the 0x23 broadcast is per-camera, so
+    every unit must be located, not just the base.
 
     '
 tombstones:
