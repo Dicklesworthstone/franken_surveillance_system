@@ -511,7 +511,15 @@ fn source_node<'a>(
     let id = format!("onnx-node-{ordinal:04}");
     if !matches!(
         op.as_str(),
-        "Gemm" | "ConvTranspose" | "Squeeze" | "Slice" | "Resize" | "Split" | "Pad" | "Clip"
+        "Gemm"
+            | "ConvTranspose"
+            | "Squeeze"
+            | "Slice"
+            | "Resize"
+            | "Split"
+            | "Pad"
+            | "Clip"
+            | "ReduceSum"
     ) && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
@@ -1004,7 +1012,7 @@ pub fn import_onnx<'a>(
             pow::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "Expand" | "Tile") {
             broadcast::lower(source, &mut lowering)?;
-        } else if source.op == "ReduceMean" {
+        } else if matches!(source.op.as_str(), "ReduceMean" | "ReduceSum" | "ReduceL2") {
             reduce::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
             pooling::lower(source, &mut lowering)?;

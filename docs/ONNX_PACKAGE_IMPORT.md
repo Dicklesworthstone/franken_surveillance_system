@@ -321,7 +321,7 @@ Supported operators and their restrictions are specified in [onnx_import.md](onn
 Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
 BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
-Gather, ReduceMean, Identity and Flatten.
+Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
@@ -372,12 +372,21 @@ feature heads. Gather accepts bounded constant scalar/vector indices and copies
 selected samples exactly. ReduceMean uses deterministic row-major F32
 accumulation followed by division; finite inputs can overflow the intermediate
 sum, and this is not a higher-precision ONNX mean guarantee. Both use existing
-native operators, bounded helpers and ordinary resource limits. All thirteen
-attention contracts now pass in the restored workspace, including real scalar
-and optimized execution, graph/weight reload and empty-axis protobuf encodings.
+native operators, bounded helpers and ordinary resource limits. All twenty-one
+attention and reduction contracts pass on the pinned toolchain, including real
+scalar and optimized execution, graph/weight reload and empty-axis protobuf encodings.
 This does not establish a trained model's quality or deployment qualification. See
 [static attention selection and pooled features](onnx_import.md#static-attention-selection-and-pooled-features)
 for the numerical and shape profile, controls, artifact identity and validation scope.
+
+ReduceSum and ReduceL2 extend these heads to weighted token pooling and L2
+normalization. Sum-13 accepts a bounded compile-time INT64 axes input and the
+opset's exact empty-axis no-op behavior; L2-13 uses the axes attribute and lowers
+to separate F32 square, ordered sum and Sqrt operations. L2 selects Model IR v2.
+Both use existing operators and preflight all generated parameters and nodes.
+F32 overflow/underflow remains explicit; normalization floors must be present in
+the model. See [summed and normalized feature heads](onnx_import.md#summed-and-normalized-feature-heads)
+for the admitted profile and actual scalar/optimized/artifact-reload tests.
 
 Static NCHW Resize also admits `mode="linear"` for bilinear feature maps,
 with `half_pixel`, `pytorch_half_pixel`, `align_corners` and `asymmetric`

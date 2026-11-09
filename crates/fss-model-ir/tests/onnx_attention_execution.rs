@@ -4,6 +4,9 @@
 //! Layout/reduction oracles are independent; the composed attention oracle uses
 //! binary64 math on explicitly bounded ordinary fixtures, not trained weights.
 
+#[path = "onnx_attention_execution/reductions.rs"]
+mod reductions;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 

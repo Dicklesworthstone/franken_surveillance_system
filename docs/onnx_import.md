@@ -45,7 +45,7 @@ including hand-computed dense and convolution/pooling results.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
-  Gather, ReduceMean, Identity and Flatten.
+  Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
   Shape and INT64 Gather also support the bounded shape programs below; F32 data
   selection uses the separate static Gather profile described below.
   Identity/Flatten lower to checked native Reshape
@@ -426,7 +426,7 @@ mean parameters are generation-bound and exported normally. Cancellation is
 checked during import and parameter generation. The importer identity includes
 both implementation sources without changing frozen Model IR IDs or encoding.
 
-The thirteen native cases in `onnx_attention_execution` use the real scalar
+The original attention cases in `onnx_attention_execution` use the real scalar
 and optimized executors, canonical graph reload and the production Safetensors
 parser. They include a two-batch, two-head Q/K/V projection and selection,
 batched attention, residual, pooled features and dense head. Exact layout and
@@ -438,13 +438,65 @@ generation mismatch and cancellation. The empty-attribute case also checks both
 protobuf encodings through graph/weight reload while preserving their distinct
 source provenance.
 
-**Native validation:** all thirteen attention contracts pass on pinned nightly
-`2026-08-31` with locked offline dependencies, together with all ten broadcast
-and nine leaky-activation contracts. The restored workspace exposed and repaired
-the parser's refusal of normally encoded empty INTS attributes; it also corrected
-the practical-token fixture's parameter-byte expectation to include the two Gemm
-scalars. These are native arithmetic, artifact and refusal checks; trained
-detector, embedding quality and full RF-DETR import qualification remain open.
+### Summed and normalized feature heads
+
+[ReduceSum-13](https://onnx.ai/onnx/operators/onnx__ReduceSum.html#reducesum-13)
+and [ReduceL2-13](https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-13)
+extend static F32 reduction to weighted token pooling and L2-normalized feature
+heads. They accept scalar through rank-eight positive shapes, distinct positive
+or negative axes, and `keepdims` zero or one (default one). Axis order does not
+change the original row-major accumulation order. Output shape declarations
+must agree with the reduction.
+
+The opset-13 control forms differ: ReduceSum takes an optional INT64 vector as
+its second input; ReduceL2 takes the `axes` INTS attribute. Sum axes may come from
+an initializer, Constant node or the existing bounded static shape programs.
+They remain compile-time controls, never runtime integer parameters. Runtime
+axes, non-vector or non-INT64 controls, duplicate/out-of-range axes and unsupported
+attributes refuse. Sum's older attribute-axes form and L2's later input-axes and
+`noop_with_empty_axes` forms refuse explicitly.
+
+Omitted or empty axes reduce all dimensions by default. ReduceSum also accepts
+the empty optional-input placeholder and `noop_with_empty_axes=1`. With omitted
+or empty axes, that flag returns the input shape and exact sample bits regardless
+of `keepdims`; the lowering is one Reshape with no generated parameters. This
+preserves negative zero and subnormals. With nonempty axes the flag still performs
+the requested reduction. Ordinary scalar reductions retain the native arithmetic:
+a negative-zero-only sum becomes positive zero, and scalar L2 squares and takes
+the square root.
+
+ReduceSum uses the same ordered F32 sum as ReduceMean, without its final division.
+ReduceL2 separately squares every F32 value, sums the squares, then applies the
+existing correctly rounded F32 Sqrt. The latter selects **Model IR v2**; Sum
+continues to use v1 when its surrounding graph needs no v2 operator. Neither
+changes the frozen operator table or encoding. Generated storage is one exact
+ones column, `4 * reduction_width` bytes; embedded controls also count against
+the aggregate parameter quota. Sum uses one through four native nodes and L2
+three through six. Both preflight the whole expansion and charge import work,
+parameter generation, inference work and intermediate allocation normally.
+
+**L2 follows square/sum/square-root arithmetic, not a scaled robust norm.** Large
+finite inputs can overflow during squaring or accumulation; small squares can
+underflow to zero. The low-level result retains that arithmetic, and existing
+consumer nonfinite-output checks remain necessary. An epsilon floor is an
+explicit model operation (for example Clip before Div), never an importer repair.
+
+The reduction cases in `onnx_attention_execution/reductions.rs` run both actual
+executors before and after canonical graph/Safetensors reload. Independent
+coordinate-based F32 oracles cover every admitted rank, noncontiguous and negative
+axes, axis order, keepdims, scalars, signed zero, rounding, underflow and overflow.
+A composed weighted-token sum, L2 norm, explicit zero-norm floor and dense
+projection checks a normalized feature head. Additional cases cover constant
+and shape-program axes, exact no-op bits, incompatible opset forms, malformed
+controls, full expansion quotas and every import cancellation checkpoint. These
+are execution contracts for bounded fixtures, not trained-model quality evidence.
+
+**Native validation:** all twenty-one attention and reduction contracts pass on
+pinned nightly `2026-08-31` with locked offline dependencies. The original thirteen
+attention cases still pass alongside the eight new sum/L2 cases, including empty
+INTS attribute encodings and exact generated-parameter accounting. These are
+native arithmetic, artifact and refusal checks; trained detector, embedding
+quality and full RF-DETR import qualification remain open.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
