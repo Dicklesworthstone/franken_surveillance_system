@@ -57,9 +57,8 @@ if [ -n "$URLV" ]; then
       && ok "A3c tunnel serves capsule, TLS verified ($WANT bytes, downloaded)" \
       || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 ${WANT:-?} 0')"
   else
-    HDR=$(curl -sS -I -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_header} %{ssl_verify_result} %{header_json}' \
-          --max-time 15 "$URLV" 2>/dev/null)
-    CL=$(printf '%s' "$HDR" | sed -E 's/.*"content-length":\["?([0-9]+).*/\1/')
+    CL=$(curl -sS -I -A fss-probe/readiness --max-time 15 "$URLV" 2>/dev/null \
+         | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2; exit}')
     [ -n "$WANT" ] && [ "$CL" = "$WANT" ] \
       && ok "A3c tunnel serves capsule, TLS verified (Content-Length $WANT)" \
       || bad "A3c tunnel FAILED (content-length=${CL:-?}, want ${WANT:-?})"
