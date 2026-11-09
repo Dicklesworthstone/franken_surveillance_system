@@ -494,7 +494,14 @@ def main() -> int:
                         # launch.sh could never be pulled (measured 2026-11-09, the log shows
                         # dl-loc 'kvsWebrtcClientMaster_t41' -> "version": "14.9.50199.r").
                         fname = req.get("filename") or "launch.sh"
-                        if name == "kvsWebrtcClientMaster_t41":
+                        if name == "fss":
+                            # synthetic process: the component lives at proc/launch.sh,
+                            # not under a version directory. Pointing dl-loc at
+                            # /wyzeedgeai_cam…/1.0.0/launch.sh 404'd 426 answered
+                            # requests without a single fetch.
+                            asked_ver = req.get("version") or "1.0.0"
+                            path = "/proc/launch.sh"
+                        elif name == "kvsWebrtcClientMaster_t41":
                             asked_ver = req.get("version") or kvs_ver
                             path = f"/kvsWebrtcClientMaster_t41/{asked_ver}/{fname}"
                         else:
