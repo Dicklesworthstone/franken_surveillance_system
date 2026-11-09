@@ -6678,6 +6678,15 @@ not execute the fixture or contact the camera. The worker admission preview
 at the time showed competing disk reservations. The fixture and the newer
 runtime fault cases remain unexecuted.
 
+A subsequent process-fixture request, job `30100509981410455` on `hz4`, was
+admitted and transferred the exact `581b5ea7387d8fcfe1e514eaca624571f732e5d3759bbecc2c5f68d8372005d1`
+overlay, but the protected disk monitor refused before Cargo started. It
+exited 120, was acknowledged, and released sources. The fixture did not run.
+A later retry, job `30100509981410457`, failed during `hz4` namespace
+initialization with `RCH_TOPOLOGY_PATHS_PRESENT`, before any source or
+execution grant. RCH recorded terminal acknowledgement and exit 1 for that
+attempt; the wrapper returned 103. The fixture still did not run.
+
 At approximately `2026-11-09 01:40 UTC`, a privileged read-only check found
 the existing recorder and upload/fallback timers active with recorder restart
 count 70. Under `/bulk/unifi_camera_recordings`, 17 MP4s had modification
