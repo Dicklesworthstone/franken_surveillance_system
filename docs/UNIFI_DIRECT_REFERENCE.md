@@ -6972,3 +6972,26 @@ All three hashes matched immediately before and after the job. It exited zero,
 was acknowledged and released its source and execution pair. The disposable
 peer supplied no actual camera media; this does not prove G4 compatibility,
 real stream receipt, or reconciliation of the historical effects.
+
+The laboratory trial now has an opt-in owner-selected MAC discovery path:
+pass `auto` for `CAMERA_IPV4`, supply `--auto-discovery=PREFIX` before
+`--setup-camera=...`, and provide the usual camera certificate pin and
+credential-file path. The prefix is an explicit /8 through /30 network scope;
+the trial sends one directed-broadcast query from the selected listener
+address. It requires a complete discovery window and one unconflicted claim
+with the supplied MAC, then uses the observed source address for the existing
+pinned-TLS and setup path. A MAC or IP claim is not authentication or authority;
+the independently supplied pin, credential authorization, live lease, effect
+journal and setup checks still apply. This is a one-camera laboratory path,
+not automatic enrollment of arbitrary devices, Wi-Fi provisioning, a fleet
+service, or a continuous recorder. The historical G4 effects remain unresolved
+and this option has not been exercised against that camera.
+
+Strict-remote job `30100509981410707` checked the modified trial on `hz3` at
+base `80f11d36e34b4822b1678af5280bcccb83edbf7e`, overlay fingerprint
+`07940594ebd8ecff6da55c475eac24b75b4afa64897790e76ba4f412f46266ca`.
+It exited zero; this was a compile check, not behavior or physical-camera proof.
+The first requested selector test and executable build timed out before worker
+admission, and a separate selector test request was refused for protected disk
+headroom; none of those requests ran a behavioral test. Further remote test
+attempts are in progress.

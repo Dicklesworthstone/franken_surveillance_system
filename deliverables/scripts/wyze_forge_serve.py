@@ -488,9 +488,18 @@ def main() -> int:
                     # bytes; the arm script mirrors those bytes to model_ver paths so
                     # the camera's md5 gate passes.
                     if True:
-                        asked_ver = model_ver
+                        # ECHO the version the device asked for. §20: an answer whose
+                        # data.version differs from the request is rejected silently — and
+                        # the kvs process was always answered with the MODEL version, so its
+                        # launch.sh could never be pulled (measured 2026-11-09, the log shows
+                        # dl-loc 'kvsWebrtcClientMaster_t41' -> "version": "14.9.50199.r").
                         fname = req.get("filename") or "launch.sh"
-                        path = f"/wyzeedgeai_cam_v4_test_protocol/{asked_ver}/{fname}"
+                        if name == "kvsWebrtcClientMaster_t41":
+                            asked_ver = req.get("version") or kvs_ver
+                            path = f"/kvsWebrtcClientMaster_t41/{asked_ver}/{fname}"
+                        else:
+                            asked_ver = req.get("version") or model_ver
+                            path = f"/wyzeedgeai_cam_v4_test_protocol/{asked_ver}/{fname}"
                         out = json.dumps({
                             "code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
                             "data": {"version": asked_ver,
