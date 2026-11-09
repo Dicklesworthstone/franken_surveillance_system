@@ -1169,6 +1169,115 @@ The existing [`fss-infer import-onnx`](ONNX_PACKAGE_IMPORT.md) command packages 
 admitted graphs with explicit preprocessing, head and license contracts. Importing
 does not activate a trained model.
 
+## Separate named box and score outputs
+
+Some detector exports expose boxes and class scores as separate named tensors.
+The explicit `OnnxSplitHeadAssembly` adapter appends a compatible packed head without
+guessing which tensor contains which role, which score slot is background, or
+which source class slot corresponds to each package label. Its public entry point
+is `assemble_onnx_split_head(imported, &assembly, output_name, limits, &cancelled)`.
+
+```rust
+let assembly = OnnxSplitHeadAssembly {
+    boxes_output: "dets".into(),
+    boxes_layout: OnnxHeadLayout::Rows,
+    scores_output: "labels".into(),
+    scores_layout: OnnxHeadLayout::Rows,
+    // Exact source slots for the first and second package labels, respectively.
+    class_indices: vec![2, 0],
+};
+let imported = assemble_onnx_split_head(
+    imported,
+    &assembly,
+    "detections",
+    OnnxLimits::default(),
+    &cancelled,
+)?;
+```
+
+Both roles must name distinct **declared graph outputs**. Inputs, hidden
+intermediates, approximate names and inferred positions do not qualify. Each source
+tensor must be static F32, rank three and batch one. Boxes have exactly four fields;
+scores have 1–257 fields; their row counts must match and be between 1 and 32,768.
+Each source layout is explicit and independent: Rows means `[1, rows, fields]`,
+Channels means `[1, fields, rows]`. The new output has Rows layout
+`[1, rows, 4 + class_indices.len()]`.
+
+The mapping contains 1–256 distinct, in-range, zero-based source score slots.
+Its order is the output label order; it is never sorted. Omitted slots are dropped
+only because the caller omitted them. Keeping slots 1 through 256, for example,
+explicitly omits slot 0; keeping slots 0 through 255 explicitly omits slot 256.
+A sparse or reordered mapping is equally explicit. The adapter does not add
+objectness or interpret confidence, probabilities, logits or box coordinates.
+
+This distinction matters even when both outputs have four fields. The
+[official RF-DETR export documentation](https://rfdetr.roboflow.com/latest/exports/onnx/)
+describes named `dets` boxes and `labels` logits and documents different background
+slot conventions for different label mappings. Four box fields and four score
+fields can therefore have identical tensor shapes. Exact names, class slots,
+box interpretation and score activation must come from the export's actual
+contract. This adapter does not provide a guessed RF-DETR recipe, establish that
+an arbitrary RF-DETR graph fits the admitted operators/bounds, or change the
+package's existing image preprocessing.
+
+Only frozen Transpose, Slice and Concat operators are appended. Consecutive
+ascending selected slots share one Slice. Selecting the entire source score axis
+in its original order adds no Slice. Both source layouts being Rows and all score
+slots being selected therefore requires only the final Concat. A noncontiguous
+mapping with two Channels-layout sources adds at most two Transposes, 256 Slices
+and one Concat. Helper expansion depends on selected class runs, not on row count.
+No parameters are generated and no floating-point arithmetic is introduced: every
+box field and selected score retains its source F32 bits, including signed zero,
+subnormals and finite extrema.
+
+The original ONNX bytes and source digest, every original output, all parameters,
+runtime input bindings, graph generation and Model IR version are retained.
+The new name must not collide with any source tensor or a consumed shape-control
+name. Generated helper names are collision checked, including across repeated
+explicit assembly calls. The separate importer implementation fingerprint includes
+the adapter source; regenerated conversion provenance changes honestly when the
+implementation changes. Existing operator freeze IDs and already provisioned
+package artifacts retain their existing identities.
+
+Complete expanded node/name counts and the packed tensor's byte size are admitted
+before helper construction. Existing input/intermediate limits and already charged
+source/control/parameter allocations remain in force. Import work is cumulative,
+including prior image transformation or lowering; cancellation checks cover the
+adapter's deterministic admission, graph replay, helper construction and final
+validation. A refusal returns no partial converted model. The usual hard bounds
+remain 512 nodes, 4096 names and 64 MiB per logical tensor. Package loading applies
+its additional existing limits, including the aggregate retained-output limit;
+the adapter does not bypass them.
+
+Package integration must bind this assembly to explicit box conventions, score
+semantics and labels, with a Rows-layout packed head and no inferred objectness.
+Sigmoid for a declared logit score, probability handling, box interpretation,
+thresholds and NMS belong to the existing downstream head contract. See the
+[package recipe documentation](ONNX_PACKAGE_IMPORT.md) for the separately
+versioned operator integration; this native adapter alone does not select a recipe.
+
+**Validation scope, 2026-11-09:** nine new cases are added to the existing
+`onnx_attention_execution` target. They exercise the unchanged production scalar
+and optimized executors, canonical graph reload and actual Safetensors parsing:
+all four layout pairs, equal-width role ambiguity, exact sample bits, a shared
+RGB-feature graph with separate MatMul branches and a preserved v2 auxiliary
+output, first/last/interior slot omission, sparse/reordered 256-class mappings,
+compact helper expansion, malformed roles/shapes/mappings, exact cumulative
+admission boundaries, every assembly cancellation checkpoint and reserved-name
+collisions across repeated conversion. These are untrained numerical fixtures,
+not detector accuracy or upstream framework conformance evidence.
+
+The new cases have **not been executed in this session**: the workspace execution
+service became unavailable before the split-head implementation was written.
+The earlier 21-test attention/reduction run described above predates this feature
+and is not a validation claim for it. The pending focused command is:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
+  --test onnx_attention_execution -- \
+  --test-threads=1 --skip scalar_executor:: --skip optimized_executor::
+```
+
 ## Native graph and weight artifact export
 
 `export_onnx_artifacts(&imported, OnnxExportLimits::default(), &cancelled)` completes
@@ -1187,8 +1296,8 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, constants, static shape programs, structural, Split, Resize, Pad, Gemm, Pow and LeakyRelu lowering,
-artifact exporter and canonical encoder source.
+the exact ONNX parser, all lowering and adapter modules (including explicit split-head
+assembly), artifact exporter and canonical encoder source.
 Existing Model IR v1 bytes, operator IDs and its operator-table freeze remain unchanged;
 Sqrt/Erf graphs use the separately identified v2 contract.
 

@@ -42,8 +42,9 @@ pub use memory::{MemoryPlan, MemoryPlanError, MemoryPlanLimits, MemoryStep, Tens
 pub use node::GraphNode;
 pub use onnx::{
     ImportedOnnx, OnnxArtifacts, OnnxChannelOrder, OnnxDflHeadDecode, OnnxError, OnnxExportLimits,
-    OnnxHeadLayout, OnnxImageTransform, OnnxLimits, decode_onnx_dfl_head, export_onnx_artifacts,
-    import_onnx, onnx_importer_identity, transform_onnx_image,
+    OnnxHeadLayout, OnnxImageTransform, OnnxLimits, OnnxSplitHeadAssembly, assemble_onnx_split_head,
+    decode_onnx_dfl_head, export_onnx_artifacts, import_onnx, onnx_importer_identity,
+    transform_onnx_image,
 };
 pub use op::{
     AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS, OPERATOR_SPECS_V2,

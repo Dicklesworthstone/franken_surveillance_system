@@ -6,6 +6,8 @@
 
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
+#[path = "onnx_attention_execution/split_heads.rs"]
+mod split_heads;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
