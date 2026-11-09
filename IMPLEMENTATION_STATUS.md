@@ -1,8 +1,32 @@
 # Implementation status
 
-**As of:** 2026-11-08 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-09 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## UTC review across native recording catalog pages
+
+Native AVC/HEVC capture pages contain at most eight windows, while one retained
+clock index can describe 64. Explicit UTC catalog-set queries now bridge this
+boundary through the native reader, protected deployment context, CLI and MCP.
+One through eight independently pinned catalog pages are validated as a complete
+union against the pinned clock index before the UTC predicate is applied.
+
+Duplicate windows retain every catalog membership and consume one output row and
+hydration quote. Windows without clock evidence remain visible and consume the
+same quotas. A single metadata allowance covers all pages, original window
+descriptors, the clock index and final revalidation. Current deployment authority
+and deletion checks cover the full reference union, including unselected windows.
+No source media is hydrated by a metadata query.
+
+`fss query --target recording --catalogs` accepts the existing exact clock-root
+and UTC interval pins. The native scan supports 64 descriptors; protected output
+retains its 32-window cap. Existing singleton/decode-time query identities remain
+unchanged. This advances VIT-008/FSS-068/GOAL-011 review functionality; automatic
+UTC discovery, trusted physical coverage and production qualification remain open.
+See [the bounded query contract](docs/RECORDING_CLOCK_METADATA_QUERY.md#utc-selection-across-native-capture-pages).
+Twelve native and five CLI/context contracts plus parser/MCP cases are authored
+and source-reviewed. Pinned Rust execution is pending the dependency build.
 
 ## Byte-target cleanup of retained file imports
 

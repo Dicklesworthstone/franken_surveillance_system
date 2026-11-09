@@ -4,6 +4,9 @@
 /// Explicit retained-clock UTC selection, separate from the legacy decode-clock request.
 pub mod utc;
 
+/// Shared UTC selection across explicitly pinned native catalog pages.
+pub mod utc_set;
+
 /// One shared decode-clock query over explicitly pinned catalogs.
 pub mod set;
 

@@ -130,10 +130,24 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         }
         Some((_, target, _)) if target == "recordings" => {
             if take(&values, "--discover-catalogs").is_some() {
-                return crate::recording_query_cmd::discover::parse_recording_discovery_query_args(tokens)
-                    .map(FssCommand::RecordingDiscoveryQuery);
+                return crate::recording_query_cmd::discover::parse_recording_discovery_query_args(
+                    tokens,
+                )
+                .map(FssCommand::RecordingDiscoveryQuery);
             }
             if take(&values, "--catalogs").is_some() {
+                if [
+                    "--clock-slot",
+                    "--clock-root",
+                    "--start-utc-ns",
+                    "--end-utc-ns",
+                ]
+                .iter()
+                .any(|name| take(&values, name).is_some())
+                {
+                    return crate::recording_query_cmd::utc_set::parse_recording_utc_set_query_args(tokens)
+                        .map(FssCommand::RecordingUtcSetQuery);
+                }
                 return crate::recording_query_cmd::set::parse_recording_set_query_args(tokens)
                     .map(FssCommand::RecordingSetQuery);
             }

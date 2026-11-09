@@ -67,7 +67,61 @@ and deployment observations are not an atomic snapshot or proof of source
 registration. CLI/MCP integration uses the same existing `recordings` target with mutually exclusive
 UTC flags; see [the native recording query guide](AGENT_NATIVE_RECORDING_QUERY.md).
 
+## UTC selection across native capture pages
+
+`agent_recordings::utc_set::query_recordings_utc_set` extends the same conditional
+UTC interpretation to an explicit set of one through eight catalog pins. Native
+capture publishes eight windows per catalog page while one retained clock index
+may describe up to 64 windows. Selecting only one of those pages cannot establish
+the clock's complete descriptor universe. The set reader verifies every pinned
+page, then requires every clock entry to match an exact member of their union
+before applying the requested time interval. An omitted clock member refuses the
+whole query, including a query whose interval would otherwise return no rows.
+
+The request pins one codec, source/generation/clock scope, unordered catalog set
+and independently pinned clock index. Pins are sorted canonically; duplicate
+catalog slots or roots refuse. An identical recording appearing in multiple
+catalogs retains every catalog index, root and original ordinal in its result
+row, while its window quota and whole-window byte quote are charged once. A root
+with conflicting descriptors, or a slot naming different roots, refuses. The
+same `clock_unavailable` handling and conditional gap semantics described above
+apply across the complete union.
+
+The shared default allowance supports eight full native capture pages:
+
+| Ceiling | UTC catalog-set read |
+| --- | ---: |
+| Explicit catalogs | 8 |
+| Aggregate catalog descriptors, including repeated memberships | 64 |
+| Pinned publication roots | 73 |
+| Distinct metadata objects read | 82 |
+| Manifest reference edges | 2,048 |
+| Bytes in one metadata object | 16 MiB |
+| Aggregate read bytes, including final revalidation | 64 MiB |
+| Filesystem calls, including final revalidation | 20,000 |
+
+The 82-object allowance covers 64 recording manifests, eight catalog
+manifest/index pairs and one clock manifest/index pair. Recording metadata and
+original payloads remain unopened; their complete references still participate
+in local tombstone checks and the protected caller's deletion-state check. One
+`PinnedMetadataReader` owns the entire request and revalidates early pages and the
+clock after selection. There is no per-page budget refill or partial successful
+result after a bound, cancellation, mutation or deletion refusal.
+
+Set request, row and decision identities use separate
+`fss.agent_recordings.utc_set.*.v1` domains. The original singleton request,
+response and digest identities are unchanged. This entry point requires explicit
+catalog pins; directory discovery does not imply permission to construct a UTC
+catalog universe or obtain a fresh read allowance.
+
 ## Validation scope
+
+The UTC catalog-set extension adds twelve native contracts and five CLI/context
+contracts, plus parser and MCP cases. They cover both codecs, nine- and 64-window
+captures, duplicate memberships, unknown clocks, atomic output/quote ceilings,
+shared read budgets, incomplete page unions, revoked sources and late metadata
+or deployment changes. Source reviews and pinned scoped formatting have passed;
+native execution is pending the pinned dependency build in this session.
 
 The bounded query and its adversarial contracts require the repository's pinned
 native compiler and unchanged locked production dependencies. On 2026-11-07, two

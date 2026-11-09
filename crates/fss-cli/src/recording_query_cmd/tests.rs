@@ -249,6 +249,129 @@ fn utc_pins(codec: &str) -> TestResult<Vec<(String, String)>> {
     Ok(values)
 }
 
+fn utc_set_pins(codec: &str) -> TestResult<Vec<(String, String)>> {
+    let mut values = utc_pins(codec)?;
+    values.retain(|(key, _)| key != "--catalog-slot" && key != "--catalog-root");
+    let catalogs = set_pins()
+        .into_iter()
+        .find(|(key, _)| key == "--catalogs")
+        .ok_or("catalog set fixture")?;
+    values.push(catalogs);
+    Ok(values)
+}
+
+#[test]
+fn utc_set_dispatch_preserves_explicit_pages_clock_pins_and_exact_integers() -> TestResult {
+    for codec in ["avc", "hevc"] {
+        let values = utc_set_pins(codec)?;
+        let command = parse(&values, false)?;
+        assert_eq!(command, parse(&values, true)?);
+        let FssCommand::RecordingUtcSetQuery(args) = command else {
+            return Err("UTC catalog set dispatched through another query owner".into());
+        };
+        assert_eq!(args.request.recording.codec.as_str(), codec);
+        assert_eq!(args.request.recording.catalogs.len(), 2);
+        assert_eq!(
+            args.request.recording.catalogs[0].slot.as_str(),
+            "catalog-b"
+        );
+        assert_eq!(
+            args.request.recording.catalogs[1].root,
+            ContentDigest::sha256(b"catalog a")
+        );
+        assert_eq!(
+            args.request.recording.clock_root,
+            ContentDigest::sha256(b"clock companion")
+        );
+        assert_eq!(
+            args.request.recording.interval,
+            9_007_199_254_740_993..u64::MAX
+        );
+        assert_eq!(args.request.recording.scope.time_scale, 90_000);
+        assert_eq!(args.request.recording.max_windows, 32);
+        assert_eq!(args.archive_root, PathBuf::from("/owner/archive"));
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_set_requires_complete_pins_and_refuses_mixed_modes_or_implicit_discovery() -> TestResult {
+    let valid = utc_set_pins("avc")?;
+    for missing in valid.iter().map(|(key, _)| key) {
+        let reduced = valid
+            .iter()
+            .filter(|(key, _)| key != missing)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            parse(&reduced, false).is_err(),
+            "accepted missing {missing}"
+        );
+    }
+    for (key, value) in [
+        ("--catalog-slot", "catalog"),
+        ("--catalog-root", "sha256:bad"),
+        ("--start-tick", "0"),
+        ("--end-tick", "1"),
+        ("--discover-catalogs", "yes"),
+        ("--from-ns", "0"),
+        ("--at", "latest"),
+        ("--hydrate", "H3"),
+        ("--continuation", "cursor"),
+    ] {
+        let mut mixed = valid.clone();
+        mixed.push((key.to_owned(), value.to_owned()));
+        assert!(parse(&mixed, false).is_err(), "accepted mixed {key}");
+    }
+    for key in [
+        "--catalogs",
+        "--clock-slot",
+        "--clock-root",
+        "--start-utc-ns",
+        "--end-utc-ns",
+    ] {
+        let mut duplicate = valid.clone();
+        duplicate.push(
+            valid
+                .iter()
+                .find(|(name, _)| name == key)
+                .ok_or("fixture pin")?
+                .clone(),
+        );
+        assert!(parse(&duplicate, true).is_err(), "accepted duplicate {key}");
+    }
+    for (key, value) in [
+        ("--clock-slot", "foreign-clock".to_owned()),
+        ("--generation", "2".to_owned()),
+        ("--start-utc-ns", "9007199254740993.0".to_owned()),
+        ("--end-utc-ns", "18446744073709551616".to_owned()),
+        (
+            "--catalogs",
+            format!(
+                "a={},b={}",
+                ContentDigest::sha256(b"same"),
+                ContentDigest::sha256(b"same")
+            ),
+        ),
+        (
+            "--catalogs",
+            (0..9)
+                .map(|i| format!("page-{i}={}", ContentDigest::sha256(&[i])))
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    ] {
+        let mut changed = valid.clone();
+        changed
+            .iter_mut()
+            .find(|(name, _)| name == key)
+            .ok_or("fixture pin")?
+            .1 = value;
+        assert!(parse(&changed, false).is_err(), "accepted invalid {key}");
+    }
+    Ok(())
+}
+
 #[test]
 fn utc_dispatch_preserves_exact_integers_and_never_fabricates_a_tick_query() -> TestResult {
     for codec in ["avc", "hevc"] {

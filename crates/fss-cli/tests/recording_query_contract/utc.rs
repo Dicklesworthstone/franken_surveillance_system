@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Actual CLI/MCP UTC selection with unavailable clocks, protected context and metadata custody.
 
+#[path = "utc_set.rs"]
+mod utc_set;
+
 use super::*;
 use std::io::Write;
 use std::process::Stdio;
@@ -198,6 +201,14 @@ impl UtcFixture {
     }
 
     fn run(&self) -> TestResult<(String, ExitIdentity)> {
+        self.run_fields(self.fields(), false)
+    }
+
+    fn run_fields(
+        &self,
+        fields: Vec<(&str, String)>,
+        catalog_set: bool,
+    ) -> TestResult<(String, ExitIdentity)> {
         let mut args: Vec<OsString> = vec![
             "query".into(),
             "--json".into(),
@@ -208,12 +219,19 @@ impl UtcFixture {
             format!("--principal={}", self.request.principal.as_str()).into(),
         ];
         args.extend(
-            self.fields()
+            fields
                 .into_iter()
                 .map(|(key, value)| OsString::from(format!("--{}={value}", key.replace('_', "-")))),
         );
         let command = parse_fss_args(args.clone())?;
-        assert!(matches!(command, fss_cli::FssCommand::RecordingUtcQuery(_)));
+        if catalog_set {
+            assert!(matches!(
+                command,
+                fss_cli::FssCommand::RecordingUtcSetQuery(_)
+            ));
+        } else {
+            assert!(matches!(command, fss_cli::FssCommand::RecordingUtcQuery(_)));
+        }
         let answer = execute_fss_with_exit(command);
         let process = Command::new(env!("CARGO_BIN_EXE_fss"))
             .args(args)
@@ -242,6 +260,10 @@ impl UtcFixture {
             })
             .collect::<Vec<_>>()
             .join(",");
+        self.mcp_fields(&fields)
+    }
+
+    fn mcp_fields(&self, fields: &str) -> TestResult<(String, bool)> {
         let request = format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{{\"name\":\"query\",\"arguments\":{{{fields}}}}}}}"
         );

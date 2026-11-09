@@ -8,12 +8,14 @@
 //! Neither a catalog interval nor a local root record proves camera coverage, payload
 //! availability, UTC time, a current deployment belief, or disclosure authority.
 
-/// Conditional UTC candidates from independently pinned retained clock metadata.
-pub mod utc;
-/// Bounded discovery over an explicitly pinned catalog set in one decode-clock scope.
-pub mod set;
 /// Bounded metadata discovery within an exact native archive source namespace.
 pub mod discover;
+/// Bounded discovery over an explicitly pinned catalog set in one decode-clock scope.
+pub mod set;
+/// Conditional UTC candidates from independently pinned retained clock metadata.
+pub mod utc;
+/// Conditional UTC candidates across an explicitly pinned catalog set and one clock index.
+pub mod utc_set;
 
 use std::collections::BTreeSet;
 use std::fmt;

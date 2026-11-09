@@ -1,7 +1,7 @@
 # Native recording metadata through the canonical agent query
 
-`fss query --target recordings` exposes one explicitly pinned native AVC or HEVC recording
-catalog through the existing AOP-005 query operation and AVIEW-003 case response. It returns
+`fss query --target recordings` exposes explicitly pinned native AVC or HEVC recording
+catalog metadata through the existing AOP-005 query operation and AVIEW-003 case response. It returns
 metadata handles, either half-open decode-clock overlaps or conditional UTC candidates,
 indexed gaps and a declared whole-window hydration byte quote. The existing event and completed-file `footage` targets retain their
 own grammars.
@@ -21,7 +21,8 @@ publication. A slot alone, a path, a camera name, or a latest-pointer guess is i
 | `--root` | Existing deployment supplying current protected situation context |
 | `--archive-root` | Separately selected existing native object/archive root |
 | `--codec` | Exactly `avc` or `hevc`; no codec guessing |
-| `--catalog-slot`, `--catalog-root` | Exact published slot and immutable catalog SHA-256 |
+| `--catalog-slot`, `--catalog-root` | Exact singleton publication slot and immutable catalog SHA-256 |
+| `--catalogs` | One to eight exact `slot=sha256:digest` pins instead of the singleton flags; usable with decode-tick or retained-clock UTC bounds |
 | `--sensor`, `--stream`, `--generation` | Original source scope; generation is positive |
 | `--source-anchor` | Original recording's authority/metadata digest |
 | `--receive-clock`, `--decode-clock` | Exact original clock identities |
@@ -97,6 +98,14 @@ clock policy and correction interval. H0 handles include clock-index metadata, a
 pointers include both clock identities and its historical approval digest. That digest grants
 no present acquisition, hydration or disclosure authority.
 
+When the clock companion spans several native capture pages, replace the singleton
+catalog flags with `--catalogs "page-one=$ROOT_ONE,page-two=$ROOT_TWO"`. Include every
+page needed to bind all clock descriptors. One native request verifies the complete
+explicit union under one shared allowance, retains every duplicate membership and quotes
+each unique window once. UTC mode does not accept `--discover-catalogs`. See the
+[catalog-set guide](RECORDING_CATALOG_SET_QUERY.md#retained-clock-utc-across-catalog-pages)
+for the CLI and MCP forms.
+
 The native trust model and read ceilings are defined in
 [the retained clock metadata contract](RECORDING_CLOCK_METADATA_QUERY.md).
 
@@ -140,9 +149,11 @@ budget exhaustion also refuse; none becomes a truncated or empty successful sele
 The public native API retains typed reasons. The CLI uses the existing query diagnostic or
 refusal envelopes and invents no authority anchor when deployment verification fails.
 
-The native library admits at most one catalog with 64 indexed members. CLI/MCP return at
-most 32 selected windows; if the interval selects more than its declared limit, narrow the
-interval. This slice has no continuation or cross-catalog discovery.
+The native library admits either one catalog or an explicit set of up to eight catalogs,
+with at most 64 indexed memberships across the set. CLI/MCP return at most 32 selected
+unique windows and have no continuation; a result over the declared bound refuses whole.
+Unknown-clock windows always consume that bound. Separately, [namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md)
+can discover catalog pages using decode-clock bounds.
 
 Decode mode shares 8 MiB of archive read bytes and 10,000 filesystem calls across both
 passes. UTC mode shares 64 MiB and 20,000 calls across catalog, clock, members and final
@@ -175,7 +186,9 @@ CLI parser and preserves semantic response bytes and refusal status.
 For UTC mode, supply `clock_slot`, `clock_root`, `start_utc_ns` and `end_utc_ns`, and omit
 `start_tick` and `end_tick`. UTC endpoints are canonical decimal **strings**, not JSON
 numbers. All four UTC fields are required together; both parser and discovery schema
-reject mixed axes, missing pins and client-supplied roots or principal.
+reject mixed axes, missing pins and client-supplied deployment/archive roots or principal.
+For an explicit UTC catalog set, provide `catalogs: [{"slot": "...", "root": "sha256:..."}]`
+instead of `catalog_slot` and `catalog_root`; all source and clock pins remain mandatory.
 
 ## Focused contracts
 
@@ -185,6 +198,7 @@ Run these with the repository's pinned compiler and locked dependencies:
 cargo test --locked --offline -p fss-publication --test pinned_metadata_contract
 cargo test --locked --offline -p fss-reference --test agent_recordings_contract
 cargo test --locked --offline -p fss-reference --test agent_recordings_utc_contract
+cargo test --locked --offline -p fss-reference --test agent_recordings_utc_set_contract
 cargo test --locked --offline -p fss-cli --lib recording_query_cmd
 cargo test --locked --offline -p fss-cli --test recording_query_contract
 cargo test --locked --offline -p fss-cli --bin fss-mcp

@@ -10,6 +10,9 @@
 /// Conditional UTC metadata queries with the same protected deployment owner.
 pub mod utc;
 
+/// Conditional UTC selection across explicitly pinned native catalog pages.
+pub mod utc_set;
+
 /// Bounded multi-catalog decode-clock queries with the same protected deployment owner.
 pub mod set;
 

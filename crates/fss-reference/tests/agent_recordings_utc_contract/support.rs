@@ -59,12 +59,21 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new(name: &str, codec: RecordingQueryCodec, clocked: &[usize]) -> TestResult<Self> {
+        Self::with_admissions(name, codec, &ADMISSIONS, clocked)
+    }
+
+    pub fn with_admissions(
+        name: &str,
+        codec: RecordingQueryCodec,
+        admissions: &[u64],
+        clocked: &[usize],
+    ) -> TestResult<Self> {
         let scope = match codec {
             RecordingQueryCodec::Avc => clock_support::catalog_scope()?,
             RecordingQueryCodec::Hevc => hevc_catalog_support::scope()?,
         };
         let mut windows = Vec::new();
-        for (ordinal, admission) in ADMISSIONS.into_iter().enumerate() {
+        for (ordinal, admission) in admissions.iter().copied().enumerate() {
             let native = match codec {
                 RecordingQueryCodec::Avc => NativeWindow::Avc(clock_support::window(
                     1 + 2 * ordinal as u64,
@@ -121,7 +130,7 @@ impl Fixture {
         for ordinal in clocked {
             let (slot, window) = windows.get(*ordinal).ok_or("clock member ordinal")?;
             descriptors.push(window.descriptor(slot.clone())?);
-            brackets.push(clock_support::bracket(ADMISSIONS[*ordinal]));
+            brackets.push(clock_support::bracket(admissions[*ordinal]));
         }
         let clock = RecordingClockIndex::prepare(
             scope.clone(),

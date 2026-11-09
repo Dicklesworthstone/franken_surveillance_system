@@ -21,35 +21,11 @@ pub struct RecordingSetQueryArgs {
     pub request: RecordingSetContextRequest,
 }
 
-/// Parse one to eight `slot=sha256:digest` pins without paths, implicit discovery or UTC.
-pub fn parse_recording_set_query_args(
-    tokens: &[ArgToken],
-) -> Result<RecordingSetQueryArgs, CliError> {
-    let values = collect_options(
-        "query",
-        tokens,
-        &[
-            "--target",
-            "--root",
-            "--archive-root",
-            "--principal",
-            "--anchor",
-            "--codec",
-            "--catalogs",
-            "--sensor",
-            "--stream",
-            "--generation",
-            "--source-anchor",
-            "--receive-clock",
-            "--decode-clock",
-            "--time-scale",
-            "--start-tick",
-            "--end-tick",
-            "--max-windows",
-            "--max-hydration-bytes",
-        ],
-    )?;
-    let (text, index) = required(&values, "--catalogs")?;
+/// Decode the shared bounded catalog-pin syntax before either clock-mode validator runs.
+pub(super) fn catalog_pins(
+    values: &[(String, String, usize)],
+) -> Result<Vec<RecordingCatalogPin>, CliError> {
+    let (text, index) = required(values, "--catalogs")?;
     if text.is_empty() || text.len() > MAX_RECORDING_QUERY_CATALOGS * 201 {
         return Err(malformed(
             "--catalogs",
@@ -96,6 +72,38 @@ pub fn parse_recording_set_query_args(
         }
         catalogs.push(RecordingCatalogPin { slot, root });
     }
+    Ok(catalogs)
+}
+
+/// Parse one to eight `slot=sha256:digest` pins without paths, implicit discovery or UTC.
+pub fn parse_recording_set_query_args(
+    tokens: &[ArgToken],
+) -> Result<RecordingSetQueryArgs, CliError> {
+    let values = collect_options(
+        "query",
+        tokens,
+        &[
+            "--target",
+            "--root",
+            "--archive-root",
+            "--principal",
+            "--anchor",
+            "--codec",
+            "--catalogs",
+            "--sensor",
+            "--stream",
+            "--generation",
+            "--source-anchor",
+            "--receive-clock",
+            "--decode-clock",
+            "--time-scale",
+            "--start-tick",
+            "--end-tick",
+            "--max-windows",
+            "--max-hydration-bytes",
+        ],
+    )?;
+    let catalogs = catalog_pins(&values)?;
     let (codec, scope, max_windows, max_hydration_bytes) = recording_source_pins(&values)?;
     let recording = RecordingSetQueryRequest {
         codec,

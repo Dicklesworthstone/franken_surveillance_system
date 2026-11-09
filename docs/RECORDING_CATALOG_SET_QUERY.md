@@ -90,17 +90,62 @@ fss query --json --target recordings \
 
 Use `--codec hevc` for the same HEVC metadata path. Optional `--principal` and
 `--anchor` keep their existing current-deployment meanings. The catalog set
-uses one native decode clock; singleton catalog flags and UTC/clock companion
-flags cannot be mixed into this mode. Existing singleton tick and UTC queries
-retain their grammars and owners.
+keeps one exact source/decode-clock scope. Choose either decode-tick bounds or
+retained-clock UTC bounds; singleton catalog flags cannot accompany `--catalogs`.
+Existing singleton tick and UTC queries retain their grammars and owners.
 
 The MCP `query` tool exposes `catalogs` as an array of one to eight closed
-objects with `slot` and `root` fields. Send the same source pins and tick bounds
-as in the CLI, using decimal strings for exact large integer pins. Its archive
+objects with `slot` and `root` fields. Send the same source pins and selected time
+bounds as in the CLI, using decimal strings for exact large integer pins. Its archive
 root is fixed when the server launches; a request cannot override the deployment
 or archive owner. MCP dispatches through the same native parser, execution and
 response projection as the CLI. Both return the existing AOP-005 envelope,
 not a separate export or media interface.
+
+## Retained-clock UTC across catalog pages
+
+Native capture publishes eight windows per catalog page, while one retained
+clock companion can describe up to 64 windows. Use `--catalogs` to include every
+page needed to bind that complete clock index. The native owner is
+`agent_recordings::utc_set::query_recordings_utc_set`; it verifies the complete
+catalog union and clock descriptor binding before selecting any UTC candidates.
+
+With the same source pins as above, replace the tick bounds with all four UTC
+options:
+
+```bash
+fss query --json --target recordings \
+  --root "$deployment_root" --archive-root "$archive_root" \
+  --codec avc \
+  --catalogs "catalog-one=$catalog_one_root,catalog-two=$catalog_two_root" \
+  --sensor sensor:front-door --stream stream:primary --generation 1 \
+  --source-anchor "$source_anchor" --receive-clock "$receive_clock" \
+  --decode-clock "$decode_clock" --time-scale 90000 \
+  --clock-slot "$clock_slot" --clock-root "$clock_root" \
+  --start-utc-ns "$utc_start_ns" --end-utc-ns "$utc_end_ns" \
+  --max-windows 32 --max-hydration-bytes 67108864
+```
+
+MCP accepts the same `catalogs` array with `clock_slot`, `clock_root`,
+`start_utc_ns` and `end_utc_ns`. Both UTC endpoints are exact decimal strings.
+Tick fields, singleton catalog fields and `discover_catalogs` refuse in this
+mode. The query does not discover additional pages or silently drop clock rows
+whose catalog was omitted.
+
+All pages, clock metadata, member roots and final checks share one archive
+allowance: at most 73 publication bindings, 82 metadata objects, 2,048 manifest
+edges, 64 MiB and 20,000 filesystem calls. The aggregate membership ceiling
+remains 64. Every unannotated window stays `clock_unavailable` regardless of the
+requested interval and consumes the same selected-window and hydration-quote
+limits. Known-clock rows carry conditional node-observation intervals; indexed
+gaps never certify physical absence. See the [retained clock metadata contract](RECORDING_CLOCK_METADATA_QUERY.md)
+for the clock model and native capture-page regressions.
+
+The protected owner is
+`agent_recording_context::utc_set::query_recordings_utc_set_in_deployment`.
+It preserves the current-deployment checks, H0-only handles and complete-or-refuse
+output bounds described below. Each row retains every catalog membership, and
+its whole-window hydration quote is counted once.
 
 ## Current deployment context and output
 
@@ -143,5 +188,7 @@ and late-catalog refusal.
 
 Validation results are recorded in the session handoff. Authored regression cases
 and source review are not substitutes for native execution or deployment
-qualification. VIT-008 remains open for broader archive discovery, cross-clock
-and UTC catalog-set selection, continuous operation and live qualification.
+qualification. VIT-008 remains open for broader cross-clock archive queries,
+continuous operation and live qualification. Explicit UTC catalog sets are
+implemented here; [namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md) remains
+a separate decode-clock mode.

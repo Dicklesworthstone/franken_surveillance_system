@@ -66,13 +66,8 @@ pub(super) fn arguments(
         ));
     }
 
-    if catalog_set
-        && (utc || fields.contains_key("catalog_slot") || fields.contains_key("catalog_root"))
-    {
-        return Err((
-            -32602,
-            "Catalog sets require decode-clock bounds and exclude singleton or UTC pins",
-        ));
+    if catalog_set && (fields.contains_key("catalog_slot") || fields.contains_key("catalog_root")) {
+        return Err((-32602, "Catalog sets exclude singleton catalog pins"));
     }
     if utc
         && ["start_tick", "end_tick"]

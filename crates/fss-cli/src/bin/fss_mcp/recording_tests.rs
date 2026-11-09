@@ -397,6 +397,137 @@ fn utc_fields(codec: &str) -> Test<Fields> {
     Ok(values)
 }
 
+fn utc_set_fields(codec: &str) -> Test<Fields> {
+    let mut values = utc_fields(codec)?;
+    values.remove("catalog_slot");
+    values.remove("catalog_root");
+    values.insert(
+        "catalogs",
+        set_fields(codec).remove("catalogs").ok_or("set fixture")?,
+    );
+    Ok(values)
+}
+
+fn native_utc_set(codec: &str, explicit: bool) -> Test<FssCommand> {
+    use fss_reference::agent_recording_context::utc_set::RecordingUtcSetContextRequest;
+    use fss_reference::agent_recordings::set::RecordingCatalogPin;
+    use fss_reference::agent_recordings::utc_set::RecordingUtcSetQueryRequest;
+    let FssCommand::RecordingUtcQuery(base) = native_utc(codec, explicit)? else {
+        return Err("UTC fixture command".into());
+    };
+    let source = base.request.recording;
+    Ok(FssCommand::RecordingUtcSetQuery(
+        fss_cli::recording_query_cmd::utc_set::RecordingUtcSetQueryArgs {
+            root: base.root,
+            archive_root: base.archive_root,
+            request: RecordingUtcSetContextRequest {
+                principal: base.request.principal,
+                expected_anchor: base.request.expected_anchor,
+                recording: RecordingUtcSetQueryRequest {
+                    codec: source.codec,
+                    scope: source.scope,
+                    clock_slot: source.clock_slot,
+                    clock_root: source.clock_root,
+                    interval: source.interval,
+                    max_windows: source.max_windows,
+                    max_hydration_bytes: source.max_hydration_bytes,
+                    catalogs: vec![
+                        RecordingCatalogPin {
+                            slot: source.catalog_slot,
+                            root: source.catalog_root,
+                        },
+                        RecordingCatalogPin {
+                            slot: fss_publication::SlotName::parse("camera_catalog-2")?,
+                            root: fss_core::ContentDigest::parse(CLOCK)?,
+                        },
+                    ],
+                },
+            },
+        },
+    ))
+}
+
+#[test]
+fn utc_set_dispatch_preserves_native_identity_and_complete_response_bytes() -> Test {
+    for codec in ["avc", "hevc"] {
+        for explicit in [false, true] {
+            let mut values = utc_set_fields(codec)?;
+            if explicit {
+                values.insert("max_windows", "32".to_owned());
+                values.insert("max_hydration_bytes", quote("2147483648"));
+                values.insert("anchor", quote(ANCHOR));
+            }
+            let expected = native_utc_set(codec, explicit)?;
+            let mut server = ready(true);
+            for (bytes, exit) in [
+                (
+                    "{\"catalogs\":2,\"clock\":\"conditional\",\"unannotated\":\"clock_unavailable\"}\n",
+                    ExitIdentity::SUCCESS,
+                ),
+                (
+                    "{\"refusal\":\"retained_clock_unverifiable\",\"selection\":null}\n",
+                    ExitIdentity::AGENT_REFUSED,
+                ),
+            ] {
+                let mut calls = 0;
+                let answer = server
+                    .handle_with(&request(&values), |command| {
+                        calls += 1;
+                        assert_eq!(command, expected);
+                        (bytes.to_owned(), exit)
+                    })
+                    .ok_or("missing UTC-set response")?;
+                assert_eq!(calls, 1);
+                assert_eq!(
+                    response_text(&answer)?,
+                    (bytes.to_owned(), exit != ExitIdentity::SUCCESS)
+                );
+            }
+            refused(&mut ready(false), &values);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_set_mcp_requires_all_pins_and_refuses_discovery_mixed_clocks_and_lossy_numbers() -> Test {
+    let valid = utc_set_fields("avc")?;
+    let mut server = ready(true);
+    for missing in valid.keys() {
+        let mut values = valid.clone();
+        values.remove(missing);
+        refused(&mut server, &values);
+    }
+    for (field, value) in [
+        ("discover_catalogs", "true".to_owned()),
+        ("catalog_slot", quote("single")),
+        ("catalog_root", quote(CATALOG)),
+        ("start_tick", quote("0")),
+        ("end_tick", quote("1")),
+        ("start_utc_ns", "9007199254740993".to_owned()),
+        ("end_utc_ns", quote("18446744073709551616")),
+        ("clock_slot", quote("unbound-clock")),
+        ("archive_root", quote("/other/archive")),
+        ("root", quote("/other")),
+        ("principal", quote("principal:other")),
+        (
+            "catalogs",
+            format!(r#"[{{"slot":"first","root":"{CATALOG}","path":"/other"}}]"#),
+        ),
+        (
+            "catalogs",
+            format!(
+                r#"[{{"slot":"first","root":"{CATALOG}"}},{{"slot":"second","root":"{CATALOG}"}}]"#
+            ),
+        ),
+    ] {
+        let mut values = valid.clone();
+        values.insert(field, value);
+        refused(&mut server, &values);
+    }
+    Ok(())
+}
+
 fn response_text(response: &str) -> Test<(String, bool)> {
     use fss_cli::json_input::{self as input, Value as Input};
 
@@ -917,7 +1048,57 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
             .ok_or("UTC property")?;
         assert_eq!(property.get("type").and_then(Input::text), Some("string"));
     }
-    assert_eq!(modes.len(), 2);
+    assert_eq!(modes.len(), 5);
+    let utc_set = modes
+        .iter()
+        .filter_map(Input::object)
+        .find(|mode| {
+            mode.get("required")
+                .and_then(Input::array)
+                .is_some_and(|required| {
+                    required
+                        .iter()
+                        .any(|value| value.text() == Some("catalogs"))
+                        && required
+                            .iter()
+                            .any(|value| value.text() == Some("start_utc_ns"))
+                })
+        })
+        .ok_or("explicit UTC catalog-set schema branch")?;
+    let set_required = utc_set
+        .get("required")
+        .and_then(Input::array)
+        .ok_or("set pins")?;
+    for name in [
+        "catalogs",
+        "clock_slot",
+        "clock_root",
+        "start_utc_ns",
+        "end_utc_ns",
+    ] {
+        assert!(set_required.iter().any(|value| value.text() == Some(name)));
+    }
+    let exclusions = utc_set
+        .get("not")
+        .and_then(Input::object)
+        .and_then(|not| not.get("anyOf"))
+        .and_then(Input::array)
+        .ok_or("set mode exclusions")?;
+    for name in [
+        "catalog_slot",
+        "catalog_root",
+        "start_tick",
+        "end_tick",
+        "discover_catalogs",
+    ] {
+        assert!(
+            exclusions
+                .iter()
+                .filter_map(Input::object)
+                .filter_map(|branch| branch.get("required").and_then(Input::array))
+                .any(|required| required.iter().any(|value| value.text() == Some(name)))
+        );
+    }
     assert!(!required.iter().any(|value| value.text() == Some("anchor")));
     Ok(())
 }
