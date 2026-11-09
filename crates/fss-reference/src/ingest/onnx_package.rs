@@ -9,10 +9,12 @@ use fss_core::{
     CalibrationGeneration, CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm,
     Generation, ModelGeneration, SchemaId,
 };
-pub use fss_model_ir::{OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform};
+pub use fss_model_ir::{
+    OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform, OnnxSplitHeadAssembly,
+};
 use fss_model_ir::{
-    OnnxError, OnnxExportLimits, OnnxLimits, decode_onnx_dfl_head, export_onnx_artifacts,
-    import_onnx, transform_onnx_image,
+    OnnxError, OnnxExportLimits, OnnxLimits, assemble_onnx_split_head, decode_onnx_dfl_head,
+    export_onnx_artifacts, import_onnx, transform_onnx_image,
 };
 use fss_object::{
     MAX_RESTRICTION_LEN, MAX_RESTRICTIONS_COUNT, MAX_SOURCE_IDENTITY_LEN, MAX_SPDX_LEN,
@@ -61,6 +63,10 @@ pub struct OnnxPackageRecipe {
     /// Optional recipe-v3 static anchor-free DFL decoder. The existing head selects
     /// its new rows/pixel-corner output; the original raw output remains available.
     pub head_decode: Option<OnnxDflHeadDecode>,
+    /// Optional recipe-v4 assembly of named box and score outputs. The explicit class
+    /// indices are in label order; source outputs remain intact. Mutually exclusive
+    /// with DFL decoding, and requires a rows head without an objectness field.
+    pub head_assembly: Option<OnnxSplitHeadAssembly>,
     /// Already-decoded dense detection-head semantics.
     pub head: PackageHeadSpec,
     /// Ordered unique class labels.
@@ -224,6 +230,26 @@ fn spec(
             .validate_rgb_range(recipe.scale_to_unit)
             .map_err(|_| OnnxPackageError::Recipe("invalid or overflowing image normalization"))?;
     }
+    if recipe.head_decode.is_some() && recipe.head_assembly.is_some() {
+        return Err(OnnxPackageError::Recipe(
+            "DFL decoding and split-head assembly are mutually exclusive",
+        ));
+    }
+    if let Some(assembly) = &recipe.head_assembly {
+        assembly
+            .validate()
+            .map_err(|_| OnnxPackageError::Recipe("invalid split-head profile"))?;
+        if recipe.head.layout != HeadLayout::Rows
+            || recipe.head.objectness.is_some()
+            || assembly.class_indices.len() != recipe.labels.len()
+            || assembly.boxes_output == recipe.head.output_port
+            || assembly.scores_output == recipe.head.output_port
+        {
+            return Err(OnnxPackageError::Recipe(
+                "split-head assembly requires a distinct rows output, no objectness, and one explicit source index per label",
+            ));
+        }
+    }
     if let Some(decode) = &recipe.head_decode {
         decode
             .validate()
@@ -363,6 +389,17 @@ pub fn import_onnx_package(
             &spec.head.output_port,
             spec.target,
             spec.labels.len() + usize::from(spec.head.objectness.is_some()),
+            limits.import,
+            &cancelled,
+        )?
+    } else {
+        imported
+    };
+    let imported = if let Some(assembly) = &request.recipe.head_assembly {
+        assemble_onnx_split_head(
+            imported,
+            assembly,
+            &spec.head.output_port,
             limits.import,
             &cancelled,
         )?

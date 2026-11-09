@@ -238,6 +238,10 @@ impl RtpMetadataDocument {
     pub fn source_bytes(&self) -> usize {
         self.bytes.len()
     }
+    /// Borrowed original XML for bounded additive interpretation inside verified source passes.
+    pub(super) fn source_xml(&self) -> &[u8] {
+        &self.bytes
+    }
     /// Deterministic vendor-cognition projection, absent for rejected XML.
     pub fn projection_digest(&self) -> Option<ContentDigest> {
         self.projection

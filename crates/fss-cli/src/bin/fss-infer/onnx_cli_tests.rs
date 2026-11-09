@@ -8,6 +8,8 @@ const RECIPE_V2: &[u8] =
     include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe_v2.json");
 const RECIPE_V3: &[u8] =
     include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe_v3.json");
+const RECIPE_V4: &[u8] =
+    include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe_v4.json");
 
 #[test]
 fn recipe_requires_complete_explicit_choices() -> RunResult<()> {
@@ -19,6 +21,7 @@ fn recipe_requires_complete_explicit_choices() -> RunResult<()> {
     assert!(r.head.objectness.is_none());
     assert!(r.image_transform.is_none());
     assert!(r.head_decode.is_none());
+    assert!(r.head_assembly.is_none());
     let original = std::str::from_utf8(RECIPE)?;
     for text in [
         original.replace("\"resize\": \"nearest\"", "\"resize\": \"automatic\""),
@@ -39,6 +42,7 @@ fn recipe_v2_requires_explicit_order_and_finite_positive_channel_normalization()
     let parsed = recipe(RECIPE_V2)?;
     assert!(parsed.scale_to_unit);
     assert!(parsed.head_decode.is_none());
+    assert!(parsed.head_assembly.is_none());
     assert_eq!(parsed.target, [2, 2]);
     assert_eq!(
         parsed.image_transform,
@@ -119,6 +123,7 @@ fn replace_recipe(value: &mut Value, path: &[&str], replacement: Value) -> RunRe
 #[test]
 fn recipe_v3_preserves_explicit_grid_order_and_decoded_head_conventions() -> RunResult<()> {
     let parsed = recipe(RECIPE_V3)?;
+    assert!(parsed.head_assembly.is_none());
     let decode = parsed.head_decode.as_ref().ok_or("DFL decoder missing")?;
     assert_eq!(parsed.target, [4, 4]);
     assert_eq!(decode.raw_output, "raw_head");
@@ -287,6 +292,7 @@ fn command_creates_verified_package_then_refuses_overwrite() -> RunResult<()> {
         ("tiny_detector.onnx", "recipe.json", "v1.fmpk"),
         ("normalization_detector.onnx", "recipe_v2.json", "v2.fmpk"),
         ("raw_dfl_detector.onnx", "recipe_v3.json", "v3.fmpk"),
+        ("split_head_detector.onnx", "recipe_v4.json", "v4.fmpk"),
     ] {
         let output = cleanup.0.join(output_name);
         let mut a = Vec::new();
@@ -312,6 +318,46 @@ fn command_creates_verified_package_then_refuses_overwrite() -> RunResult<()> {
             std::str::from_utf8(&report)?.contains(&ContentDigest::sha256(&package).to_string())
         );
         assert!(std::str::from_utf8(&report)?.contains("\"activated\":false"));
+        let report_json = json_input::parse(std::str::from_utf8(&report)?)?;
+        let report_fields = report_json.object().ok_or("report object")?;
+        assert_eq!(
+            string(report_fields, "recipe")?,
+            ContentDigest::sha256(&fs::read(fixtures.join(recipe_name))?).to_string()
+        );
+        assert_eq!(
+            string(report_fields, "format")?,
+            "fss.onnx_rgb_package_import.v1"
+        );
+        if recipe_name == "recipe_v4.json" {
+            // The receipt pins exact recipe bytes; the archive freezes executable
+            // semantics. Harmless JSON whitespace changes only the former.
+            let mut spaced_recipe = fs::read(fixtures.join(recipe_name))?;
+            spaced_recipe.push(b'\n');
+            let spaced_path = cleanup.0.join("v4-spaced.json");
+            fs::write(&spaced_path, &spaced_recipe)?;
+            let spaced_output = cleanup.0.join("v4-spaced.fmpk");
+            let mut spaced_options = parse(&a)?.ok_or("options")?;
+            spaced_options.recipe = spaced_path;
+            spaced_options.recipe_digest = ContentDigest::sha256(&spaced_recipe);
+            spaced_options.output = spaced_output.clone();
+            let mut spaced_report = Vec::new();
+            run(spaced_options, &mut spaced_report)?;
+            assert_eq!(fs::read(spaced_output)?, package);
+            let spaced_json = json_input::parse(std::str::from_utf8(&spaced_report)?)?;
+            let spaced_fields = spaced_json.object().ok_or("report object")?;
+            assert_eq!(
+                string(spaced_fields, "recipe")?,
+                ContentDigest::sha256(&spaced_recipe).to_string()
+            );
+            assert_ne!(
+                string(report_fields, "recipe")?,
+                string(spaced_fields, "recipe")?
+            );
+            assert_eq!(
+                string(report_fields, "package")?,
+                string(spaced_fields, "package")?
+            );
+        }
         assert!(run(parse(&a)?.ok_or("options")?, &mut Vec::new()).is_err());
         assert_eq!(fs::read(&output)?, package);
         // A wrong independent pin cannot create another file.
@@ -323,3 +369,6 @@ fn command_creates_verified_package_then_refuses_overwrite() -> RunResult<()> {
     }
     Ok(())
 }
+
+#[path = "onnx_cli_tests/split_head.rs"]
+mod split_head;

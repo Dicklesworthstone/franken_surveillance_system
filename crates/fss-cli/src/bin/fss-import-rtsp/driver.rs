@@ -146,7 +146,7 @@ fn authority_boundary(
     Ok(())
 }
 
-fn preflight_source_paths(
+pub(super) fn preflight_source_paths(
     options: &Options,
     authority: &ContextAuthority,
     start: Instant,

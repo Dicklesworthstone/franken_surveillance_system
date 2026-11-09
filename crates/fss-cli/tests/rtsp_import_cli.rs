@@ -5,6 +5,9 @@
 #[path = "../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod hevc_recording_support;
 
+#[path = "rtsp_import_cli/query.rs"]
+mod query;
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -65,23 +68,45 @@ fn arguments(directory: &Directory, recording: &PreparedHevcRecording) -> Test<V
     let scope = recording.summary().scope.clone();
     Ok([
         "--archive",
-        directory.0.join("source archive").to_str().ok_or("UTF-8 archive")?,
+        directory
+            .0
+            .join("source archive")
+            .to_str()
+            .ok_or("UTF-8 archive")?,
         "--root",
-        directory.0.join("destination").to_str().ok_or("UTF-8 destination")?,
-        "--site", "site:rtsp-import-cli",
-        "--window-slot", "hevc-recording-cli",
-        "--window-root", &recording.manifest().root().to_text(),
-        "--codec", "hevc",
-        "--sensor-id", scope.sensor.as_str(),
-        "--stream-id", scope.stream.as_str(),
-        "--generation", &scope.generation.to_string(),
-        "--anchor", &scope.anchor.to_text(),
-        "--receive-clock", &scope.receive_clock.to_text(),
-        "--receive-time-ns", "5000000000",
-        "--owner-authorized", "yes",
-        "--read-originals", "yes",
-        "--retain-originals", "yes",
-        "--timeout-ms", "600000",
+        directory
+            .0
+            .join("destination")
+            .to_str()
+            .ok_or("UTF-8 destination")?,
+        "--site",
+        "site:rtsp-import-cli",
+        "--window-slot",
+        "hevc-recording-cli",
+        "--window-root",
+        &recording.manifest().root().to_text(),
+        "--codec",
+        "hevc",
+        "--sensor-id",
+        scope.sensor.as_str(),
+        "--stream-id",
+        scope.stream.as_str(),
+        "--generation",
+        &scope.generation.to_string(),
+        "--anchor",
+        &scope.anchor.to_text(),
+        "--receive-clock",
+        &scope.receive_clock.to_text(),
+        "--receive-time-ns",
+        "5000000000",
+        "--owner-authorized",
+        "yes",
+        "--read-originals",
+        "yes",
+        "--retain-originals",
+        "yes",
+        "--timeout-ms",
+        "600000",
     ]
     .into_iter()
     .map(OsString::from)
@@ -92,7 +117,10 @@ fn publish(directory: &Directory, recording: &PreparedHevcRecording) -> Test {
     let mut source = LocalRootPublisher::open(
         directory.0.join("source archive"),
         LocalPublicationLimits::new(
-            8, 16, 8, 64,
+            8,
+            16,
+            8,
+            64,
             SpoolLimits::new(64, 4 * 1024 * 1024, 1024 * 1024, 64),
         ),
     )?;
@@ -128,7 +156,9 @@ fn cold_hevc_import_reconciles_and_decodes_without_the_source_archive() -> Test 
     let mut wrong = args.clone();
     wrong.extend([
         "--approve".into(),
-        ContentDigest::sha256(b"wrong exact import approval").to_text().into(),
+        ContentDigest::sha256(b"wrong exact import approval")
+            .to_text()
+            .into(),
     ]);
     let refused = run(&wrong)?;
     assert!(!refused.status.success());
@@ -156,14 +186,24 @@ fn cold_hevc_import_reconciles_and_decodes_without_the_source_archive() -> Test 
     assert!(retried.contains("\"reused\":true"));
     assert_eq!(field(&retried, "import_identity")?, identity);
     assert_eq!(field(&retried, "origin_proof")?, origin);
-    assert_eq!(snapshot()?, committed, "exact retry appended authority or effects");
+    assert_eq!(
+        snapshot()?,
+        committed,
+        "exact retry appended authority or effects"
+    );
 
     fs::rename(&archive, directory.0.join("offline archive"))?;
     let common: Vec<OsString> = [
-        "--root", root.to_str().ok_or("UTF-8 root")?,
-        "--site", "site:rtsp-import-cli",
-        "--import-id", &identity,
-    ].into_iter().map(OsString::from).collect();
+        "--root",
+        root.to_str().ok_or("UTF-8 root")?,
+        "--site",
+        "site:rtsp-import-cli",
+        "--import-id",
+        &identity,
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
     let verified = good(
         Command::new(env!("CARGO_BIN_EXE_fss-file"))
             .arg("verify")
@@ -179,20 +219,33 @@ fn cold_hevc_import_reconciles_and_decodes_without_the_source_archive() -> Test 
             .arg("decode")
             .args(&common)
             .args([
-                "--segment", "0", "--segment-count", "4",
-                "--interpretation", "ycbcr", "--work-units", "1000000000",
+                "--segment",
+                "0",
+                "--segment-count",
+                "4",
+                "--interpretation",
+                "ycbcr",
+                "--work-units",
+                "1000000000",
             ])
             .output()?,
     )?;
     assert!(!decoded.is_empty());
-    assert_eq!(snapshot()?.1, committed.1, "offline import/decode dispatched an effect");
+    assert_eq!(
+        snapshot()?.1,
+        committed.1,
+        "offline import/decode dispatched an effect"
+    );
     let after_decode = snapshot()?;
     let missing = run(&args)?;
     assert!(!missing.status.success());
     assert!(missing.stdout.is_empty());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("ERR-RTSP-IMPORT-SOURCE-001"));
     assert_eq!(snapshot()?, after_decode);
-    assert!(!archive.exists(), "missing-source refusal recreated the archive");
+    assert!(
+        !archive.exists(),
+        "missing-source refusal recreated the archive"
+    );
     Ok(())
 }
 
@@ -202,7 +255,10 @@ fn exact_preview_and_missing_archive_refusal_do_not_create_either_store() -> Tes
     let recording = hevc_recording_support::fixture()?;
     let mut args = arguments(&directory, &recording)?;
     let preview = good(run(&args)?)?;
-    args.extend(["--approve".into(), field(&preview, "approval_digest")?.into()]);
+    args.extend([
+        "--approve".into(),
+        field(&preview, "approval_digest")?.into(),
+    ]);
     let refused = run(&args)?;
     assert!(!refused.status.success());
     assert!(refused.stdout.is_empty());
@@ -220,12 +276,18 @@ fn source_and_destination_preflight_refusals_never_materialize_destination_paths
     fs::create_dir_all(archive.join("spool"))?;
     let mut args = arguments(&directory, &recording)?;
     let preview = good(run(&args)?)?;
-    args.extend(["--approve".into(), field(&preview, "approval_digest")?.into()]);
+    args.extend([
+        "--approve".into(),
+        field(&preview, "approval_digest")?.into(),
+    ]);
     let refused = run(&args)?;
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-RTSP-IMPORT-SOURCE-001"));
     assert!(!directory.0.join("destination").exists());
-    assert!(!archive.join("roots").exists(), "preflight repaired the archive");
+    assert!(
+        !archive.join("roots").exists(),
+        "preflight repaired the archive"
+    );
 
     fs::create_dir(archive.join("roots"))?;
     fs::create_dir(archive.join("tombstones"))?;
@@ -239,10 +301,16 @@ fn source_and_destination_preflight_refusals_never_materialize_destination_paths
     roots.push(directory.0.join("missing parent").join("destination"));
     for root in roots {
         let mut args = arguments(&directory, &recording)?;
-        let root_index = args.iter().position(|arg| arg == "--root").ok_or("root argument")?;
+        let root_index = args
+            .iter()
+            .position(|arg| arg == "--root")
+            .ok_or("root argument")?;
         args[root_index + 1] = root.as_os_str().to_owned();
         let preview = good(run(&args)?)?;
-        args.extend(["--approve".into(), field(&preview, "approval_digest")?.into()]);
+        args.extend([
+            "--approve".into(),
+            field(&preview, "approval_digest")?.into(),
+        ]);
         let refused = run(&args)?;
         assert!(!refused.status.success());
         assert!(refused.stdout.is_empty());
