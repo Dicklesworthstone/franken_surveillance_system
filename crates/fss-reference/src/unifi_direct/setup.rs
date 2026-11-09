@@ -357,7 +357,7 @@ fn valid_digest(digest: ContentDigest) -> bool {
         && digest.bytes() != [0; 32]
 }
 fn valid_claims(report: &discovery::Report, index: usize) -> bool {
-    report.stop == discovery::Stop::WindowElapsed
+    report.valid_completed()
         && report
             .assess_claims(index)
             .is_some_and(|v| v == discovery::ClaimAssessment::default())

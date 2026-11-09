@@ -309,6 +309,19 @@ pub struct ClaimAssessment {
 }
 
 impl Report {
+    // Each distinct candidate needs a datagram separate from malformed and
+    // out-of-scope datagrams. Other valid datagrams need not be candidates.
+    fn valid_counts(&self, limit: usize) -> bool {
+        self.datagrams <= limit
+            && self.malformed.checked_add(self.out_of_scope)
+                .and_then(|count| count.checked_add(self.cameras.len()))
+                .is_some_and(|count| count <= self.datagrams)
+    }
+
+    pub(crate) fn valid_completed(&self) -> bool {
+        self.stop == Stop::WindowElapsed && self.valid_counts(MAX_PACKETS * MAX_COMBINED_WINDOWS)
+    }
+
     /// Locate one owner-specified MAC claim in a completed discovery report.
     /// The returned index is meaningful only for this exact report; the claim
     /// remains unauthenticated and grants no setup, credential, or network
@@ -317,12 +330,7 @@ impl Report {
         if mac == [0; 6] || mac[0] & 1 != 0 {
             return Err(SelectionError::InvalidMac);
         }
-        if self.stop != Stop::WindowElapsed
-            || self.datagrams > MAX_PACKETS * MAX_COMBINED_WINDOWS
-            || self.cameras.len() > self.datagrams
-            || self.malformed.checked_add(self.out_of_scope)
-                .is_none_or(|count| count > self.datagrams)
-        {
+        if !self.valid_completed() {
             return Err(SelectionError::IncompleteReport);
         }
         let mut matches = self.cameras.iter().enumerate().filter(|(_, c)| c.mac == Some(mac));
@@ -357,13 +365,7 @@ impl Report {
             if window.stop != Stop::WindowElapsed {
                 return Err(CombineError::Incomplete);
             }
-            if window.datagrams > MAX_PACKETS
-                || window.cameras.len() > window.datagrams
-                || window
-                    .malformed
-                    .checked_add(window.out_of_scope)
-                    .is_none_or(|count| count > window.datagrams)
-            {
+            if !window.valid_counts(MAX_PACKETS) {
                 return Err(CombineError::InvalidReport);
             }
             combined.datagrams += window.datagrams;
@@ -683,6 +685,15 @@ mod tests {
         report.stop = Stop::WindowElapsed;
         report.datagrams = 0;
         assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        report.datagrams = 1;
+        report.malformed = 1;
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        assert_eq!(Report::combine_completed(&[&report]).unwrap_err(), CombineError::InvalidReport);
+        report.malformed = usize::MAX;
+        report.out_of_scope = 1;
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        report.malformed = 0;
+        report.out_of_scope = 0;
         report.datagrams = 2;
         report.cameras.push(candidate(5, Some(mac), true));
         assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
