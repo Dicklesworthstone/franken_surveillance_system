@@ -48,3 +48,23 @@ This is a from-source build, so it does not run on the same turn as the exploit;
   ```
 - `/Volumes/USB_NVME` was not mounted, so `TARGET` stayed at the default `<tree>/output`
   (`/tmp/oi/output`, ~2.5 GB and growing). Mount the NVMe or set `TARGET` deliberately.
+
+### The path that works here: build in a Linux container
+
+macOS host-tool portability is a long fight (`host-makedevs` needs `fgetgrent`, which macOS
+libc lacks). Build in a container instead; the tree and output are bind-mounted:
+
+```sh
+open -a Docker   # the daemon was not running
+docker run --rm -v /tmp/oi:/work -w /work debian:12 bash -lc \
+  'apt-get update -qq && apt-get install -y -qq build-essential git wget curl cpio unzip \
+   rsync bc libncurses-dev python3 file bzip2 xz-utils zstd perl && \
+   make BOARD=nt98567_lite TARGET=/work/out-linux'
+```
+
+Two downloads need pre-seeding because their upstreams are broken from here:
+
+- `libevent-openipc` — `sources.buildroot.net` 404s it (see above);
+- `uboot-tools-2021.07` — `ftp.denx.de` accepts the connection and then stalls. Fetched from
+  GitHub's tag archive instead (`u-boot/u-boot@v2021.07`) and the local `uboot-tools.hash`
+  updated to those bytes; GNU tar detects the gzip regardless of the `.tar.bz2` name.
