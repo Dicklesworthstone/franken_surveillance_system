@@ -19,7 +19,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 - `root_proof.py` looked for its SSH key at `~/.ssh` which is `/var/root` under launchd — now falls back to the repo owner's key (verified as root). `plist_doctor.sh` crashed while printing findings (f-string backslashes on system python) — fixed, so findings are visible. The duplicate GUI agent for the RTSP watcher was retired to a `.retired` suffix; the label had been loaded in both domains.
 
 ### What WORKS right now
-- 9/9 fleet planes green (broker, forge 443+8443, backups, tftp, pf, doctor, no duplicates, rtsp-watch)
+- 18/18 fleet planes green (broker, forge 443+8443, backups, tftp, pf, doctor, no duplicates, rtsp-watch + 8 watcher jobs)
 - Fleet self-heals every 15 min via `com.jeffreyemanuel.fleet-readiness` LaunchDaemon
 - **Every lane watcher is a gate plane** (c460 fire/burst, c660 sweep/tftp/convert, owlet relay, yi listener, wyze rtsp). Four of them used to be unsupervised nohup children; a dead watcher now fails the gate instead of being noticed days later
 - Chain-watch daemon auto-captures root proof when the Wyze OTA completes
