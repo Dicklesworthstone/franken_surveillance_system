@@ -6698,3 +6698,41 @@ fallback-recorder observations, not Rust direct-video proof, gap-free coverage,
 or a demonstrated 30-day retention outcome. An initial unprivileged scan
 missed root-protected recording directories and must not be treated as an
 absence finding.
+
+The runtime fault suite was subsequently executed by strict-remote job
+`30100509981410424` on `trj` at base
+`3f7e4770025aaf3a1e0261d9c5741e94eef90415`, overlay fingerprint
+`784425b170a9bed73eb0cab29356e0d9650cda08283209e84affa789e5d693b5`.
+All 16 tests passed; the job exited zero, was acknowledged, and released its
+source and execution resources. These are in-memory fault fixtures, not a
+physical-camera test or proof that the stores occupy independent failure
+domains. The synthetic process fixture described above remains a separate test.
+Another `hz4` attempt, job `30100509981410474`, transferred the same process
+overlay but was refused before Cargo started because active reservations and
+the protected disk floor exceeded available space. It exited 120, was
+acknowledged, and released its source and execution resources; it did not
+execute the fixture.
+The same request on `vmi1153651`, job `30100509981410478`, was also refused
+before Cargo started by its protected disk budget. It exited 120, was
+acknowledged, and released source and execution resources; no fixture ran.
+
+The local UniFi discovery configuration now also rejects public destinations
+even when a broad configured prefix contains them, and excludes public-source
+replies from a broadcast window. The limited broadcast address and local
+directed broadcasts remain available; local replies still remain
+unauthenticated. Focused tests have been added for these boundaries but have
+not yet been executed. Strict-remote job `30100509981410510` on `hz4`
+transferred base `6cf50ed7e91752c2859fa8dad238cad93f536a15` with overlay
+`0cc9e01ed8752838c7d0beb04ead16171e9691054b6c4b712181d30e934d701d`, but
+the disk budget refused it before Cargo started. It exited 120, was
+acknowledged, and released source and execution resources; no tests ran.
+
+Strict-remote job `30100509981410499` on `hz2` subsequently ran the synthetic
+`direct_trial_reopens_anchored_effects_only_for_reconciliation` fixture:
+1 passed, none failed, and 22 were filtered out. It used base
+`3f7e4770025aaf3a1e0261d9c5741e94eef90415` and process overlay
+`581b5ea7387d8fcfe1e514eaca624571f732e5d3759bbecc2c5f68d8372005d1`;
+the job exited zero, was acknowledged, and released source and execution
+resources. The fixture uses a synthetic loopback peer and test-directory
+stores; it does not settle either historical camera effect, establish
+independent failure domains, or prove live-camera operation.

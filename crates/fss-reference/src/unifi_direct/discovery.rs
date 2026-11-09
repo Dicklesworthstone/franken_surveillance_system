@@ -23,6 +23,30 @@ const MAX_COMBINED_WINDOWS: usize = 4;
 const MAX_WINDOW: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
 
+fn local_address(ip: Ipv4Addr) -> bool {
+    ip.is_private() || ip.is_loopback() || ip.is_link_local()
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn local_discovery_rejects_public_sources_in_broadcast_scope() {
+        let config = Config::new(
+            Ipv4Addr::new(10, 1, 2, 3),
+            1,
+            SocketAddrV4::new(Ipv4Addr::BROADCAST, unifi_discovery::PORT),
+            "fixture:discovery",
+            Duration::from_secs(1),
+            8,
+        )
+        .expect("local broadcast scope");
+        assert!(config.in_scope(Ipv4Addr::new(10, 1, 2, 4)));
+        assert!(!config.in_scope(Ipv4Addr::new(8, 8, 8, 8)));
+    }
+}
+
 /// Payload-free discovery refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -71,9 +95,10 @@ impl fmt::Debug for Config {
 }
 impl Config {
     /// Construct one scoped query. The destination is a unicast address in
-    /// the interface subnet, its directed broadcast, or the limited broadcast
-    /// address; no subnet sweep
-    /// is performed. The owner must authorize this particular interface and
+    /// the interface subnet, a local-range directed broadcast, or the limited
+    /// broadcast address. Unicast targets and observed sources must be private,
+    /// loopback, or link-local even when the configured subnet is broader.
+    /// No subnet sweep is performed. The owner must authorize this interface and
     /// network resource before invoking the probe.
     pub fn new(
         bind: Ipv4Addr,
@@ -99,7 +124,7 @@ impl Config {
         max_packets: usize,
     ) -> Result<Self, Error> {
         if !(1..=32).contains(&prefix)
-            || !(bind.is_private() || bind.is_loopback() || bind.is_link_local())
+            || !local_address(bind)
             || bind.is_unspecified()
             || bind.is_multicast()
             || targets.is_empty()
@@ -121,6 +146,7 @@ impl Config {
                 || target.ip().is_unspecified()
                 || target.ip().is_multicast()
                 || targets[..i].contains(target)
+                || (*target.ip() != Ipv4Addr::BROADCAST && !local_address(*target.ip()))
                 || (*target.ip() != Ipv4Addr::BROADCAST
                     && (u32::from(*target.ip()) & mask) != (u32::from(bind) & mask))
             {
@@ -146,7 +172,8 @@ impl Config {
         })
     }
     fn in_scope(&self, ip: Ipv4Addr) -> bool {
-        (u32::from(ip) & self.mask) == (u32::from(self.bind) & self.mask)
+        local_address(ip)
+            && (u32::from(ip) & self.mask) == (u32::from(self.bind) & self.mask)
             && (self.broadcast || self.targets.iter().any(|target| ip == *target.ip()))
     }
 }

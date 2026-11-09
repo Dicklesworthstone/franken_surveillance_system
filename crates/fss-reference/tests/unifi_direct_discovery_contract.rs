@@ -683,6 +683,52 @@ fn invalid_scope_and_unbounded_windows_are_rejected() {
 }
 
 #[test]
+fn local_discovery_rejects_public_targets_even_in_broad_subnet() {
+    let local = Ipv4Addr::new(10, 1, 2, 3);
+    let local_target = SocketAddrV4::new(Ipv4Addr::new(10, 1, 2, 4), 10001);
+    let public_target = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 10001);
+    // Both addresses share the configured /1, but only one is local.
+    assert!(Config::new(local, 1, public_target, "r", Duration::from_secs(1), 8).is_err());
+    // A directed broadcast may also fall outside the local address ranges.
+    let public_broadcast = SocketAddrV4::new(Ipv4Addr::new(11, 255, 255, 255), 10001);
+    assert!(Config::new(local, 7, public_broadcast, "r", Duration::from_secs(1), 8).is_err());
+    assert!(
+        Config::new_many(
+            local,
+            1,
+            &[local_target, public_target],
+            "r",
+            Duration::from_secs(1),
+            8,
+        )
+        .is_err()
+    );
+    assert!(Config::new(local, 1, local_target, "r", Duration::from_secs(1), 8).is_ok());
+    assert!(
+        Config::new(
+            local,
+            8,
+            SocketAddrV4::new(Ipv4Addr::new(10, 255, 255, 255), 10001),
+            "r",
+            Duration::from_secs(1),
+            8,
+        )
+        .is_ok()
+    );
+    assert!(
+        Config::new(
+            local,
+            1,
+            SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001),
+            "r",
+            Duration::from_secs(1),
+            8,
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 #[ignore = "owner-authorized live LAN probe; requires explicit interface and destination"]
 fn owner_camera_live_discovery() -> TestResult {
     let bind: Ipv4Addr = std::env::var("FSS_UNIFI_TEST_BIND")?.parse()?;
