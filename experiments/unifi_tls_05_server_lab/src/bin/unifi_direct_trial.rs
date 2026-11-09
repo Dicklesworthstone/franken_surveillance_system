@@ -65,7 +65,7 @@ use unifi_tls_05_server_lab::server::Server;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -74,7 +74,8 @@ const MAX_IO_WAIT: Duration = Duration::from_secs(30);
 
 struct Options {
     listen: SocketAddrV4,
-    camera: Ipv4Addr,
+    camera: Option<Ipv4Addr>,
+    discovery_prefix: Option<u8>,
     mac: [u8; 6],
     cert: PathBuf,
     key: PathBuf,
@@ -148,6 +149,16 @@ fn options() -> ResultBox<Options> {
         let paths = (PathBuf::from(keeper), PathBuf::from(root));
         args.pop();
         Some(paths)
+    } else {
+        None
+    };
+    let discovery_prefix = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--auto-discovery=")) {
+        let prefix = value.parse::<u8>()?;
+        if !(8..=30).contains(&prefix) {
+            return Err("automatic discovery prefix must be 8 to 30".into());
+        }
+        args.pop();
+        Some(prefix)
     } else {
         None
     };
@@ -233,11 +244,16 @@ fn options() -> ResultBox<Options> {
         return Err(USAGE.into());
     }
     let listen: SocketAddrV4 = args[0].parse()?;
-    let camera: Ipv4Addr = args[1].parse()?;
+    let camera: Option<Ipv4Addr> = if args[1] == "auto" { None } else { Some(args[1].parse()?) };
     if listen.port() == 0
-        || !(camera.is_private() || camera.is_loopback() || camera.is_link_local())
+        || camera.is_some_and(|ip| !(ip.is_private() || ip.is_loopback() || ip.is_link_local()))
     {
         return Err("invalid scoped addresses".into());
+    }
+    if camera.is_none() != discovery_prefix.is_some()
+        || (discovery_prefix.is_some() && (setup.is_none() || !cfg!(target_os = "linux")))
+    {
+        return Err("automatic discovery requires auto, a scope prefix and Linux camera setup".into());
     }
     let raw = args[2].as_bytes();
     if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
@@ -288,6 +304,7 @@ fn options() -> ResultBox<Options> {
     Ok(Options {
         listen,
         camera,
+        discovery_prefix,
         mac,
         cert,
         key,
@@ -641,6 +658,19 @@ fn run(args: Options) -> ResultBox<()> {
                 task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
                 let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
                 let config=ServerConfig::builder_with_provider(Arc::new(rustls_pure::provider())).with_protocol_versions(&[&rustls::version::TLS13])?.with_no_client_auth().with_single_cert(vec![CertificateDer::from(cert)],PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))?;
+                #[cfg(target_os="linux")]
+                let discovered=if let Some(prefix)=args.discovery_prefix {
+                    let setup_args=args.setup.as_ref().ok_or("automatic discovery requires setup")?;
+                    let broadcast=Ipv4Addr::from(u32::from(*args.listen.ip()) | (u32::MAX >> prefix));
+                    let cfg=discovery::Config::new(*args.listen.ip(),prefix,SocketAddrV4::new(broadcast,setup_args.discovery_port),"unifi:discovery",Duration::from_secs(2),64)?;
+                    let report=discovery::discover(task,cx,clock.now()?,&cfg).await?;
+                    let index=report.select_mac_claim(args.mac)?;
+                    Some((report,index))
+                } else { None };
+                #[cfg(target_os="linux")]
+                let camera_address=args.camera.or_else(|| discovered.as_ref().map(|(report,index)| *report.cameras[*index].source().ip())).ok_or("camera address unavailable")?;
+                #[cfg(not(target_os="linux"))]
+                let camera_address=args.camera.ok_or("camera address unavailable")?;
                 let journal:Box<dyn fss_runtime::effect_journal::EffectJournalStore>=if let Some((keeper,root))=&args.anchored_journal {
                     for path in [&args.journal,keeper,root] {
                         task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&BudgetVector::ZERO)?;
@@ -652,7 +682,7 @@ fn run(args: Options) -> ResultBox<()> {
                     Box::new(FileEffectJournal::create(&args.journal,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?)
                 };
                 let mut effects=EffectCoordinator::with_journal(journal)?;
-                let mut binding=Vec::from(args.mac); binding.extend_from_slice(&args.camera.octets());
+                let mut binding=Vec::from(args.mac); binding.extend_from_slice(&camera_address.octets());
                 let camera=ContentDigest::sha256(&binding); let resource=format!("camera:{}",camera.to_text());
                 let mut leases=LeaseRegistry::new();
                 let fence=leases.acquire(&resource,"region:unifi-direct-trial",None,clock.now()?)?.fence;
@@ -661,7 +691,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let admission=match &camera_pin {Some(pin)=>ContentDigest::sha256(pin),None=>ContentDigest::sha256(b"owner-selected network address and camera MAC; not cryptographic identity")};
                 let management=management::Preconditions {camera,peer_admission:admission,session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
                 let stream_conditions=intent::Preconditions {camera,peer_admission:admission,stream_generation:1,previous_settings:None,lease_fence:fence};
-                let policy=Policy {local:*args.listen.ip(),camera:args.camera,mac:args.mac};
+                let policy=Policy {local:*args.listen.ip(),camera:camera_address,mac:args.mac};
                 let mut controller_listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
                 println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                 let config=Arc::new(config);
@@ -669,14 +699,17 @@ fn run(args: Options) -> ResultBox<()> {
                 let wall=Wall {task,clock};
                 #[cfg(target_os="linux")]
                 let mut setup_session=if let Some(setup_args)=&args.setup {
-                    let prefix=(u32::from(*args.listen.ip()) ^ u32::from(args.camera)).leading_zeros().min(32) as u8;
-                    if prefix==0 {return Err("camera and listener are outside the scoped discovery network".into());}
-                    let discovery_config=discovery::Config::new(*args.listen.ip(),prefix,SocketAddrV4::new(args.camera,setup_args.discovery_port),"unifi:discovery",Duration::from_secs(2),64)?;
-                    let report=discovery::discover(task,cx,clock.now()?,&discovery_config).await?;
-                    let matching:Vec<_>=report.cameras.iter().enumerate().filter(|(_,c)| *c.source().ip()==args.camera && c.mac()==Some(args.mac)).map(|(i,_)| i).collect();
-                    if matching.len()!=1 || report.stop!=discovery::Stop::WindowElapsed || report.assess_claims(matching[0])!=Some(discovery::ClaimAssessment::default()) {return Err("selected discovery claim unavailable or conflicted".into());}
+                    let (report,index)=if let Some(found)=discovered {found} else {
+                        let prefix=(u32::from(*args.listen.ip()) ^ u32::from(camera_address)).leading_zeros().min(32) as u8;
+                        if prefix==0 {return Err("camera and listener are outside the scoped discovery network".into());}
+                        let discovery_config=discovery::Config::new(*args.listen.ip(),prefix,SocketAddrV4::new(camera_address,setup_args.discovery_port),"unifi:discovery",Duration::from_secs(2),64)?;
+                        let report=discovery::discover(task,cx,clock.now()?,&discovery_config).await?;
+                        let index=report.select_mac_claim(args.mac)?;
+                        if *report.cameras[index].source().ip()!=camera_address {return Err("selected discovery address mismatch".into());}
+                        (report,index)
+                    };
                     let pin=camera_pin.as_ref().ok_or("missing camera certificate pin")?;
-                    let tls=camera_tls::connect(cx,task,clock,SocketAddrV4::new(args.camera,setup_args.https_port),pin,&resource,Duration::from_secs(10)).await?;
+                    let tls=camera_tls::connect(cx,task,clock,SocketAddrV4::new(camera_address,setup_args.https_port),pin,&resource,Duration::from_secs(10)).await?;
                     let check_auth=||->Result<(), &'static str> {
                         cx.checkpoint().map_err(|_| "runtime cancelled")?;
                         task.checkpoint_for(RuntimeGrant::AdapterAuth,&resource,clock.now().map_err(|_| "clock unavailable")?,&BudgetVector::ZERO).map_err(|_| "camera authorization unavailable")
@@ -684,9 +717,9 @@ fn run(args: Options) -> ResultBox<()> {
                     let lease=auth::Lease::load(&setup_args.credential,&check_auth)?;
                     let setup_policy=SetupPolicy {base:&policy,lease:&lease,check:check_auth,camera,peer_admission:admission,fence};
                     let plaintext=MeteredIo::with_clock(tls,clock,&resource,4096)?;
-                    let mut http=camera_http::Owner::new(plaintext,task,cx,clock,&setup_policy,args.camera,1,&resource)?;
+                    let mut http=camera_http::Owner::new(plaintext,task,cx,clock,&setup_policy,camera_address,1,&resource)?;
                     let operation=OperationId::parse("operation:unifi-trial-handoff")?;
-                    let setup_config=setup::Config {report:&report,index:matching[0],camera,peer_admission:admission,generation:1,fence,destination:*args.listen.ip(),operation:&operation,credential:&lease.secret.0,wait:Duration::from_secs(20)};
+                    let setup_config=setup::Config {report:&report,index,camera,peer_admission:admission,generation:1,fence,destination:*args.listen.ip(),operation:&operation,credential:&lease.secret.0,wait:Duration::from_secs(20)};
                     let mut trace=setup::AcceptTrace::default();
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let mut setup_owner=setup::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&setup_approval,admission:&setup_policy,handoff_authority:&setup_policy};

@@ -6945,3 +6945,30 @@ The full controller-contract suite subsequently ran against that same base
 and overlay as strict-remote job `30100509981410688`: 30 passed, none failed,
 ignored or filtered. It exited zero, was acknowledged, and released its
 sources and execution pair. These remain synthetic state-machine tests.
+
+The controller contracts were also run at newer base
+`3233be12bc53d7d05054285267931fa341cf1caa`, including the current selected
+controller and BlueZ registry/packet edits, as strict-remote job
+`30100509981410697`, overlay fingerprint
+`b9df25406c97d37143f3a288a5b354b8a97a441e7d5c00c225ad71c05d660d12`.
+All 30 passed, none failed, ignored or filtered; it exited zero, was
+acknowledged, and released its sources and execution pair.
+
+The standalone trial was built remotely from base
+`9d28fb61569415dcab2fc1551e9aa44b8eed9833` with the selected clock-mode and
+trial edits, job `30100509981410692`. Cargo finished successfully and the
+remote execution exited zero, but the wrapper returned 102 because it refused
+to copy a Linux binary to the Mac. The acknowledged remote binary had SHA-256
+`d5eeb8173a7a9c6c492622b23b810a1fd1eb473dcf5aa27b799bde912e5e79ad`.
+Strict-remote job `30100509981410700` then ran the independent loopback TLS
+fixture against that binary: eight scenarios passed, including 12 fresh
+requests with stale and unknown correlations followed by hello,
+agreement and a stream request, and a separate 32-reply quota stop. The
+fixture SHA-256 was
+`2fc8f06bcf03f8fd9b7797c95e382d3ed843f5570b461d55ea02e29bc4c3a63a`;
+the imported framing helper was
+`6f9807a2c71e4ac95a6891d83c23677d84865ecc2405a4efddfe33a5f626599d`.
+All three hashes matched immediately before and after the job. It exited zero,
+was acknowledged and released its source and execution pair. The disposable
+peer supplied no actual camera media; this does not prove G4 compatibility,
+real stream receipt, or reconciliation of the historical effects.

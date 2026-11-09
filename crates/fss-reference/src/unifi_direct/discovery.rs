@@ -269,6 +269,26 @@ impl fmt::Display for CombineError {
 }
 impl std::error::Error for CombineError {}
 
+/// Payload-free refusal to select an owner-specified hardware claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionError {
+    /// The requested hardware address is not a usable unicast address.
+    InvalidMac,
+    /// The window did not finish naturally or its counters are inconsistent.
+    IncompleteReport,
+    /// No candidate asserted the requested address; absence is not proven.
+    NotObserved,
+    /// More than one candidate asserted the address or another claim conflicts.
+    Conflicted,
+}
+
+impl fmt::Display for SelectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi discovery selection refused: {self:?}")
+    }
+}
+impl std::error::Error for SelectionError {}
+
 /// Potential inconsistencies among untrusted claims in one bounded window.
 /// Absence of a conflict does not authenticate a device or authorize setup.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -289,6 +309,30 @@ pub struct ClaimAssessment {
 }
 
 impl Report {
+    /// Locate one owner-specified MAC claim in a completed discovery report.
+    /// The returned index is meaningful only for this exact report; the claim
+    /// remains unauthenticated and grants no setup, credential, or network
+    /// authority. Callers must separately authenticate and admit the peer.
+    pub fn select_mac_claim(&self, mac: [u8; 6]) -> Result<usize, SelectionError> {
+        if mac == [0; 6] || mac[0] & 1 != 0 {
+            return Err(SelectionError::InvalidMac);
+        }
+        if self.stop != Stop::WindowElapsed
+            || self.datagrams > MAX_PACKETS * MAX_COMBINED_WINDOWS
+            || self.cameras.len() > self.datagrams
+            || self.malformed.checked_add(self.out_of_scope)
+                .is_none_or(|count| count > self.datagrams)
+        {
+            return Err(SelectionError::IncompleteReport);
+        }
+        let mut matches = self.cameras.iter().enumerate().filter(|(_, c)| c.mac == Some(mac));
+        let (index, _) = matches.next().ok_or(SelectionError::NotObserved)?;
+        if matches.next().is_some() || self.assess_claims(index) != Some(ClaimAssessment::default()) {
+            return Err(SelectionError::Conflicted);
+        }
+        Ok(index)
+    }
+
     /// Combine completed bounded windows so claims can be checked across
     /// interfaces before setup. The caller retains the original per-interface
     /// reports and must independently bind their network scopes and authority.
@@ -612,6 +656,43 @@ pub async fn discover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_mac_selection_preserves_missing_conflicted_and_incomplete_states() {
+        let mac = [0x10, 2, 3, 4, 5, 6];
+        let candidate = |last, mac, advertised| CameraCandidate {
+            source: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, last), 10001),
+            platform: "UVC G4".into(),
+            firmware: None,
+            mac,
+            source_advertised: advertised,
+        };
+        let mut report = Report {
+            cameras: vec![candidate(4, Some(mac), true)],
+            datagrams: 1,
+            malformed: 0,
+            out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        };
+        assert_eq!(report.select_mac_claim(mac), Ok(0));
+        assert_eq!(report.select_mac_claim([0; 6]), Err(SelectionError::InvalidMac));
+        assert_eq!(report.select_mac_claim([1, 2, 3, 4, 5, 6]), Err(SelectionError::InvalidMac));
+        assert_eq!(report.select_mac_claim([0x12, 2, 3, 4, 5, 6]), Err(SelectionError::NotObserved));
+        report.stop = Stop::PacketLimit;
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        report.stop = Stop::WindowElapsed;
+        report.datagrams = 0;
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        report.datagrams = 2;
+        report.cameras.push(candidate(5, Some(mac), true));
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
+        report.cameras[1] = candidate(4, None, true);
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
+        report.cameras[1] = candidate(5, Some([0x12, 2, 3, 4, 5, 6]), true);
+        assert_eq!(report.select_mac_claim(mac), Ok(0));
+        report.cameras[0].source_advertised = false;
+        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
+    }
 
     #[test]
     fn directed_broadcast_and_point_to_point_scopes_are_distinct() -> Result<(), Error> {
