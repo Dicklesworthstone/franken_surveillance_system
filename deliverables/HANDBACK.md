@@ -32,7 +32,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 
 | Camera | Blocker | Unblock action | Who |
 |---|---|---|---|
-| **Wyze .39/.51** | No root: assis still hasn't pulled a capsule. **Both rtspd are wedged** — `.51` served real 2.5k video for ~40 min (proof retained) and then stopped answering under a DESCRIBE storm; `.39` never came back after provisioning | **Power-cycle `.39` (now REQUIRED, not optional) and `.51`** — the served capsule was found *unrendered* (`@HOST@` placeholders, installer would have died at backup step 2) and has been rebuilt rendered, with readiness A9/A10 asserting it | Operator (5 sec) |
+| **Wyze .39/.51** | **The OTA downloads but never installs.** `.51` pulled `.100` (02:54Z) and `.101` (05:52Z) complete — then nothing: no backup stream, no shell, no beacon. The upgrade handler lives in **iCamera**, and iCamera is the thing that is wedged (DTLS login and `0x29e8` still answer; `exec_shell_sync` and rtspd do not). `.39` is wedged the same way. | **Power-cycle `.39` and `.51`** — it is now the *only* thing that revives iCamera, which is what has to run the installer. The capsule is armed in the canonical shape with a stage beacon on every step | Operator (5 sec) |
 | **Tapo C660** | ROP fired 3× with verified gadgets but camera went back to sleep before telnetd could bind | **Walk past the C660** to trigger a PIR wake while the sweep is armed. The DS-readiness gate ensures the fire only happens when the camera can actually execute | Operator (walk by it) |
 | **Tapo C460** | Offset 1060 borrowed from C660, DIFFERENT SoC. 121 instrumented fires with identical no-shell-port-closed signature | **USB-serial UART connection** (3.3V, 115200 8N1) → extract `/bin/main` from the SXZ partition → derive the correct offset | Operator + UART adapter |
 | **Owlet .163** | Vendor 0x2041 grant never fires outside the app. H3/H4/H5 closed-negative. The en1 pcap can't see phone↔camera unicast | **Open the Owlet app's live view** while capturing from the ROUTER (not en1 — the AP forwards unicast only to the target MAC) | Operator + router capture |
@@ -51,9 +51,11 @@ causes are fixed, plus a third that would have burned a third:
    download would have succeeded and the installer would have died at backup step 2.
    Rebuilt rendered *with the static busybox* (`4.52.17.101.tar`, md5 `ba76c2c1…`); A9/A11/A10 now assert it.
 
-The cameras served authenticated RTSP (`stream0`/`stream1`) for a while and are both
-wedged now — the power-cycle restores that too; the watcher re-fires the config frame
-within minutes of boot and retries every 180 s. The flash is what removes the vendor
+Both cameras are wedged in iCamera: delta injections are PUBACKed but nothing acts on
+them, and the upgrade handler lives there. The power-cycle restores RTSP and the OTA path
+at once; the watcher re-fires the config frame within minutes of boot and retries every
+180 s. The armed installer beacons every stage to `/tmp/fss_beacons.log` (`stage=`), so the
+next attempt names the line that dies instead of ending in silence. The flash is what removes the vendor
 cloud, the MITM and the assis dependency for good.
 
 Watch it land:

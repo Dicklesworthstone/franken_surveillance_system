@@ -27,7 +27,8 @@ class H(http.server.SimpleHTTPRequestHandler):
             uid = q.get("uid", ["?"])[0]; via = q.get("via", ["?"])[0]
             arch = q.get("arch", ["?"])[0]; mtd = q.get("mtd", ["?"])[0]
             with open(LOG, "a") as f:
-                f.write(f'{time.strftime("%H:%M:%S")} BEACON {p} uid={uid} via={via} arch={arch} mtd={mtd} from={self.client_address[0]}\n')
+                stage = (q.get("stage") or ["-"])[0]
+                f.write(f'{time.strftime("%H:%M:%S")} BEACON {p} stage={stage} uid={uid} via={via} arch={arch} mtd={mtd} from={self.client_address[0]}\n')
             self.send_response(200)
             self.send_header("Content-Length", "2")
             self.end_headers()
