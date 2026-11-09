@@ -720,3 +720,52 @@ fixes. The MQTT proxy (51593) exec'd with the complete code: NO_UPSTREAM (local 
 accepted-rewrite (4 fires), firmware_ver in all paths, incrementing delta version (292
 arms). The camera's MQTT backoff decays → it connects → the chain completes → the root
 proof arrives via watchdog v2. The operator's power-cycles accelerate the backoff decay.
+
+## 2026-11-09 01:30Z — the tunnel became a real leg, and the witness caught up
+
+The forged eMudhra chain is rejected by the OTA downloader (strict VERIFYHOST=2 with
+its own CAINFO), so the capsule is served over a trycloudflare quick tunnel with a real
+Let's Encrypt cert. That moved the download off the forge and *silently blinded the
+witness*: `wyze_chain_watch.sh` matched `forge.log` for a camera IP, but cloudflared
+connects from 127.0.0.1. A successful flash would have produced no proof sweep at all.
+
+Fixes (sixth/seventh chain defects — observability, not delivery):
+- `fw_serve_logged.py` replaces `python -m http.server` on :9443 and logs
+  `ts, method, path, ua, probe, range, status, bytes_sent, complete, dur_ms` to
+  `/tmp/ota/fwserve_access.jsonl`; `complete:false` names a hang-up mid-body, which is
+  what a TLS rejection looks like from this side.
+- chain-watch triggers on any non-probe GET of a capsule (or 4xx), runs the proof
+  sweep, and records the ledger row. Verified end-to-end with a synthetic tunnel GET
+  (1→2, sweep fired) instead of trusting the code.
+- `com.jeffreyemanuel.wyze-capsule-serve` + `com.jeffreyemanuel.wyze-tunnel` are
+  KeepAlive daemons. The supervisor re-injects the freshly minted hostname into the
+  broker plist and **bootout+bootstrap**s the broker — `kickstart` does not re-read a
+  plist, so the proxy came back holding the previous URL (measured, not theorised).
+- readiness: 11 asserts. A3b rejects a delta URL that is not a `*.trycloudflare.com`
+  host (i.e. the forged-cert s3 origin), A3c fetches the capsule through the public URL
+  and requires `200 16783360 0` (0 = TLS verified), A8 proves the access log actually
+  records a request. Each assert corresponds to a failure that already burned a cycle.
+- `forge_ok()` required `--iot-cert` on :8443, but only :443 is spawned with it, so
+  every broker reload killed the healthy 8443 forge and could exit with no listener
+  (~2 min stall). It now matches our script + live cert material + the port.
+
+Also landed: `.39` vendor RTSP is enabled and proven (`OPTIONS` 200,
+`192_168_4_39-rtsp-enable-20261109T011815Z.json`) — an interim ingest path that does
+not need the flash. `.51` remains dark on 554.
+
+## 2026-11-09 01:40Z — TFTP was wedged, and it wedges itself by design
+
+`fleet_status --gate` went red on `tftp:69` while the daemon reported `running` with
+the socket bound. Cause: the listener was strictly serial and retried a silent block
+5×3 s, so **every client that vanished before ACKing cost 15 s of the only receive
+loop**. The liveness probe deliberately never ACKs, so a burst of dead probes
+(30 × 15 s) blocked the listener for minutes and made the C660 exfil channel read as
+dead. Reproduced: 30 unacked RRQs → next probe timed out at 20 s.
+
+`tftp_serve.py` now runs transfers on capped worker threads (MAX_TX=32, inline above
+that) with 3×0.7 s retries. Same burst: next probe answered in 0.02 s. WRQ verified
+end-to-end (ACK 0 → DATA → ACK 1 → file landed), so the C660 exfil path is intact.
+
+`fleet_status.py` also stopped calling a camera ROOTED off any passing proof: vendor
+`rtsp-enable` is served by the vendor rtspd, so only `telnet9999`/`dropbear22`/
+`beacon-uid0` may upgrade the state. `.39` is ARMED with a green rtsp cell, not ROOTED.

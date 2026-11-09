@@ -229,9 +229,23 @@ free_port() {
 # Rule: a holder whose command line already carries the iot-cert contract is adopted, not killed;
 # only a stale/bare forge (the liberation2-worktree failure mode) is replaced.
 forge_ok() {
-  local pids; pids=$(port_pids "$1")
+  # Contract-complete = OUR script, serving OUR live cert material, on this port.
+  # Only :443 is spawned with --iot-cert, so demanding it here made every :8443
+  # listener look non-contract: each bring-up killed the healthy plane, burned
+  # 3x15 s of doomed retries and could exit with no listener at all (measured
+  # 2026-11-08, ~2 min stall on every broker reload).
+  local pids cmd want_iocert=0
+  [ "$1" = 443 ] && want_iocert=1
+  pids=$(port_pids "$1")
   [ -n "$pids" ] || return 1
-  sudo ps -o command= -p $pids 2>/dev/null | grep -q -- '--iot-cert'
+  cmd=$(sudo ps -o command= -p $pids 2>/dev/null)
+  echo "$cmd" | grep -q -- "$HERE/wyze_forge_serve.py" || return 1
+  echo "$cmd" | grep -q -- '--cert /tmp/iot2.pem' || return 1
+  echo "$cmd" | grep -qE -- "--port '?$1'?([[:space:]]|$)" || return 1
+  if [ "$want_iocert" = 1 ]; then
+    echo "$cmd" | grep -q -- '--iot-cert' || return 1
+  fi
+  return 0
 }
 for port in 443 8443 8883 8080 9101; do
   # same adoption rule as the TLS loop below: never kill a contract-complete forge — the

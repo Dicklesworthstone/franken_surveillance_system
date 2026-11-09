@@ -35,13 +35,51 @@ PFCOUNT51=$(sudo -n pfctl -a fss -s nat 2>/dev/null | grep -c '192.168.4.51.*66.
 BK=0; for p in 444 445 446 447 448 449; do nc -z -G 1 127.0.0.1 $p 2>/dev/null && BK=$((BK+1)); done
 [ "$BK" -eq 6 ] && ok "A5 backup receivers 444-449 all listening" || bad "A5 backup receivers only $BK/6 — installer step 2 would die"
 
+# A3b: the delta URL must be the cert-valid tunnel host, not the forged-cert s3 origin.
+# The OTA downloader verifies strictly (VERIFYHOST=2 + own CAINFO) and rejects the
+# forged eMudhra chain, so an s3 URL here is a silently dead flash.
+URLV=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:OTA_URL' /Library/LaunchDaemons/com.jeffreyemanuel.wyze-broker.plist 2>/dev/null)
+case "$URLV" in
+  https://*.trycloudflare.com/*) ok "A3b delta URL is the LE-cert tunnel host" ;;
+  *) bad "A3b delta URL is not the tunnel ($URLV) — camera would hit the forged-cert s3 origin" ;;
+esac
+
+# A3c: that exact URL must serve the capsule over real TLS end-to-end through cloudflared
+if [ -n "$URLV" ]; then
+  E2E=$(curl -sS -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_download} %{ssl_verify_result}' \
+        --max-time 120 "$URLV" 2>/dev/null)
+  [ "$E2E" = "200 16783360 0" ] \
+    && ok "A3c tunnel serves capsule, TLS verified (${E2E%% *} bytes ok)" \
+    || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 16783360 0')"
+else
+  bad "A3c cannot test (no OTA_URL)"
+fi
+
 # A6: bootwatch or chain-watch daemon alive (captures the proof on boot)
 CW=$(pgrep -f 'wyze_chain_watch' | head -1)
 [ -n "$CW" ] && ok "A6 chain-watch daemon alive (pid $CW)" || bad "A6 chain-watch daemon NOT running — proof would be lost"
 
 # A7: forge serving the exact capsule bytes
-FORGE_OK=$(curl -sk https://127.0.0.1:443/wuv2/upgrade/HL_CAM4/firmware/4.52.17.99.tar 2>/dev/null | md5 -q)
+FORGE_OK=$(curl -sk -A fss-probe/readiness https://127.0.0.1:443/wuv2/upgrade/HL_CAM4/firmware/4.52.17.99.tar 2>/dev/null | md5 -q)
 [ "$FORGE_OK" = "$MD5V" ] && ok "A7 forge serves capsule byte-verified" || bad "A7 forge capsule md5 mismatch (${FORGE_OK:-no-response})"
+
+# A8: :9443 is the UA-logging server, and it actually witnesses requests. Without this
+# the camera's GET through the tunnel leaves no attributable record and chain-watch
+# can never fire (a plain `python -m http.server` fails this).
+ACC=/tmp/ota/fwserve_access.jsonl
+if nc -z -G 2 127.0.0.1 9443 2>/dev/null; then
+  PRE=$(grep -c 'fss-probe/a8' "$ACC" 2>/dev/null)
+  curl -sS -A fss-probe/a8 -o /dev/null -I --max-time 10 http://127.0.0.1:9443/4.52.17.99.tar 2>/dev/null
+  sleep 1
+  POST=$(grep -c 'fss-probe/a8' "$ACC" 2>/dev/null)
+  if [ "${POST:-0}" -gt "${PRE:-0}" ]; then
+    ok "A8 :9443 access log witnesses requests (probe recorded)"
+  else
+    bad "A8 :9443 up but access log records nothing — chain-watch is blind"
+  fi
+else
+  bad "A8 :9443 capsule server NOT listening — tunnel would 502 and the flash never starts"
+fi
 
 echo "== readiness: $FAIL failures =="
 exit $FAIL

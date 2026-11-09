@@ -4,13 +4,22 @@
 Root 7 owner-owned cameras (2 Wyze v4, 2 Tapo, 1 Owlet, 1 Yi, 4 AOSU behind 1 HomeBase)
 so FSS ingests real footage from real sensors. All owner-authorized, all on our LAN.
 
-## Current State (2026-11-08)
+## Current State (2026-11-08, hardened 2026-11-09T01:30Z)
+
+### Hardening since the last handback (agent work, no operator action needed)
+- **The watcher could not see the new download leg.** `wyze_chain_watch.sh` grepped `forge.log` for a camera IP; through the tunnel cloudflared connects from 127.0.0.1, so a successful flash would have produced *no* proof sweep. The capsule server is now `fw_serve_logged.py`, which records UA/bytes/completion per request to `/tmp/ota/fwserve_access.jsonl`; the watcher triggers on any non-probe GET and proof-captures.
+- **Both tunnel legs are KeepAlive LaunchDaemons** (`wyze-capsule-serve`, `wyze-tunnel`). The supervisor re-injects the minted hostname into the broker plist and bootout+bootstraps the broker — `kickstart` alone leaves the proxy holding the previous URL (measured).
+- **Readiness grew from 7 to 11 asserts**: A3b (URL must be a `*.trycloudflare.com` host), A3c (that URL serves the exact capsule over verified TLS end-to-end), A8 (the access log actually witnesses requests). Each of these catches a failure that already cost a power-cycle.
+- `forge_ok()` required `--iot-cert` on :8443, which only :443 is ever spawned with — every broker reload killed the healthy 8443 forge, burned 3×15 s of doomed retries and could end with no listener. Fixed to match on our script + live cert material + port.
+- **The TFTP plane wedged itself.** The listener was serial and burned 15 s on every client that vanished before ACKing; the liveness probe never ACKs, so a burst of dead probes blocked the only receive loop for minutes and the C660 exfil channel read as dead. Transfers now run on capped workers with 3×0.7 s retries (30-request burst: probe answered in 0.02 s; WRQ verified end-to-end).
+- `fleet_status.py` no longer calls a camera ROOTED off any passing proof — vendor `rtsp-enable` is served by the vendor rtspd. Only `telnet9999`/`dropbear22`/`beacon-uid0` upgrade the state, so `.39` reads ARMED with a green rtsp cell.
 
 ### What WORKS right now
 - 8/8 fleet planes green (broker, forge 443+8443, backups, tftp, pf, doctor, no duplicates)
 - Fleet self-heals every 15 min via `com.jeffreyemanuel.fleet-readiness` LaunchDaemon
 - Chain-watch daemon auto-captures root proof when the Wyze OTA completes
 - Wyze cameras CONNECTed to OUR broker (636+ connects), PUBACKing our deltas
+- **192.168.4.39 vendor RTSP is live** (`OPTIONS` → `200`, proof `192_168_4_39-rtsp-enable-20261109T011815Z.json`) — an interim ingest path that needs no flash. `.51`'s rtspd is off; the same one-shot enabler covers it
 - C660 re-provisioned via Tapo app, live at 192.168.5.76 (en0)
 - 7 beads closed on hard evidence
 
@@ -31,10 +40,20 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 1. The delta went to wyze-secure but the rewrite only handled wyze-service (FIXED)
 2. The OTA URL used the forged eMudhra cert which the camera's OTA downloader rejects (FIXED with tunnel)
 
-Now the delta carries `https://cigarettes-dispatched-partnerships-assessments.trycloudflare.com/4.52.17.99.tar`
-with a valid Let's Encrypt cert. The camera's OTA downloader (CURLOPT_SSL_VERIFYHOST=2,
-CURLOPT_CAINFO=local/cacert.pem) will accept this cert. assis will download the 16.7MB
-capsule, verify the md5, extract, and run `upgraderun.sh` as root.
+Now the delta carries the tunnel URL with a valid Let's Encrypt cert. The camera's OTA
+downloader (CURLOPT_SSL_VERIFYHOST=2, CURLOPT_CAINFO=local/cacert.pem) will accept this
+cert. assis will download the 16.7MB capsule, verify the md5, extract, and run
+`upgraderun.sh` as root.
+
+Current URL (minted by the supervised tunnel, re-injected into the broker on every start):
+
+```
+https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.99.tar
+```
+
+Read it live, never from this doc: `wyze_flash_readiness.sh` A3b/A3c assert the plist
+carries a `*.trycloudflare.com` URL and that it serves the exact capsule over verified
+TLS. 11/11 must be green immediately before a power-cycle.
 
 **After the flash: thingino gives SSH + RTSP + ONVIF. No vendor cloud needed. No MITM needed.
 The camera becomes a standard ONVIF device that FSS ingests from directly.**
@@ -45,11 +64,13 @@ The camera becomes a standard ONVIF device that FSS ingests from directly.**
 |---|---|---|
 | `fleet_status.py --gate` | One-command fleet health | ✅ 8/8 planes |
 | `fleet_reconcile.py --execute` | Auto-heal drift (runs every 15 min via launchd) | ✅ self-healing |
-| `root_proof.py` | Machine-checkable root evidence | ✅ 25 proof artifacts |
-| `wait_ledger.py` | Negative-evidence for all armed waits | ✅ 3 open / 12 closed |
-| `plist_doctor.sh` | Launchd plist validation | ✅ 0 findings / 25 plists |
-| `wyze_flash_readiness.sh` | 7 hard asserts before power-cycle | ✅ 7/7 green |
-| `wyze_chain_watch.sh` | Auto-capture root proof on capsule GET | ✅ running (LaunchDaemon) |
+| `root_proof.py` | Machine-checkable root evidence | ✅ 25 proof artifacts (fresh .39 rtsp-enable PASS 2026-11-09) |
+| `wait_ledger.py` | Negative-evidence for all armed waits | ✅ 3 open / 13 closed (1 cancelled as superseded) |
+| `plist_doctor.sh` | Launchd plist validation | ✅ 0 findings / 28 plists |
+| `wyze_flash_readiness.sh` | 11 hard asserts before power-cycle (incl. tunnel TLS + access-log witness) | ✅ 11/11 green |
+| `wyze_chain_watch.sh` | Auto-capture root proof on a camera GET (UA-witnessed via the access log) | ✅ running (LaunchDaemon) |
+| `fw_serve_logged.py` | Capsule server that records UA/bytes/completeness per request | ✅ LaunchDaemon `wyze-capsule-serve` |
+| `wyze_tunnel_supervise.sh` | Mints the tunnel, re-injects the URL into the broker plist, reloads it | ✅ LaunchDaemon `wyze-tunnel` |
 | `c660_sweep_watch.sh` | C660 ROP with DS-readiness gate | ✅ running |
 | `sweeper_telemetry.py` | C460 wake/fire classification | ✅ 12.6k events imported |
 | `registry.py` | Camera identity single-source | ✅ 7 cameras registered |
@@ -67,11 +88,20 @@ The camera becomes a standard ONVIF device that FSS ingests from directly.**
 - `DUELING_WIZARDS_REPORT.md` — multi-model adversarial plan review
 - `FLEET_LIBERATION_STATUS.md` — the master liberation doc
 
-## Trycloudflare Tunnel (EPHEMERAL — will die on reboot)
+## Trycloudflare Tunnel (supervised, but still quick-tunnel)
+
 ```
-URL: https://cigarettes-dispatched-partnerships-assessments.trycloudflare.com/4.52.17.99.tar
-Local HTTP: :9443 serving /tmp/fwserve/wuv2/upgrade/HL_CAM4/firmware/
-Restart: cloudflared tunnel --url http://localhost:9443 > /tmp/cloudflared_tunnel.log 2>&1 &
+URL:       /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:OTA_URL' \
+             /Library/LaunchDaemons/com.jeffreyemanuel.wyze-broker.plist
+Local HTTP :9443 → /tmp/fwserve/wuv2/upgrade/HL_CAM4/firmware/  (fw_serve_logged.py)
+Access log :/tmp/ota/fwserve_access.jsonl  (UA + bytes + completed flag per request)
+Reload     :launchctl kickstart -k system/com.jeffreyemanuel.wyze-tunnel
 ```
-If the tunnel dies, the OTA reverts to the s3-us-west-2 URL (forged cert, which the OTA
-downloader rejects). Restart the tunnel and update the broker plist OTA_URL.
+
+Both legs are KeepAlive LaunchDaemons. On every start the supervisor mints a new
+hostname, writes it into the broker plist, **bootout+bootstrap**s the broker (kickstart
+alone does not re-read a plist — the proxy would return with the previous URL) and then
+waits on cloudflared so a crash loops back through a fresh injection.
+
+An s3-us-west-2 URL in the plist is always a regression: that origin serves the forged
+eMudhra chain the OTA downloader rejects. A3b fails the gate on it.

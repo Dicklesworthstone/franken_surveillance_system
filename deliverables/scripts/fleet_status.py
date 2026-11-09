@@ -160,7 +160,10 @@ def camera_state(cam, table, proofs, waits):
     present = bool(ip) or (ip is None and cam.get("last_seen_ip") and ping_probe(cam["last_seen_ip"]))
     vector = cam.get("vector", "none")
     cam_proofs = proofs.get(cam["id"], {})
-    rooted = any(ok for ok, _ in cam_proofs.values())
+    # rtsp-enable is served by the VENDOR rtspd — passing it does not mean root,
+    # so only a shell/installer beacon may upgrade the state to ROOTED.
+    ROOT_VECTORS = ("telnet9999", "dropbear22", "beacon-uid0")
+    rooted = any(ok and vec in ROOT_VECTORS for vec, (ok, _) in cam_proofs.items())
     # derive state from evidence, not aspiration
     if vector == "fss":
         state = "INGESTING"

@@ -17,29 +17,56 @@ BEACON_LOG=/tmp/fss_beacons.log
 STATE=/tmp/wyze_chain_watch.state
 PROOF=/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/root_proof.py
 PY=/opt/homebrew/bin/python3
+# The camera reaches the capsule through the trycloudflare tunnel, so cloudflared
+# connects from 127.0.0.1 and forge.log shows no camera IP. fw_serve_logged.py
+# records every request with its User-Agent, and our own probes send fss-probe.
+# Camera-sourced = probe:false request for a .tar that either moved bytes or 4xx'd.
+ACCESS=/tmp/ota/fwserve_access.jsonl
 
 log() { echo "$(date '+%H:%M:%S') $*"; }
 
+camera_hits() {
+  $PY - "$ACCESS" <<'EOF' 2>/dev/null || echo 0
+import json, sys
+n = 0
+try:
+    for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("probe") or not r.get("path", "").endswith(".tar"):
+            continue
+        if r.get("method") == "GET" and (r.get("bytes_sent", 0) > 0 or r.get("status", 0) >= 400):
+            n += 1
+except FileNotFoundError:
+    pass
+print(n)
+EOF
+}
+
 # marker: camera-sourced capsule GET not yet counted
-base=$(grep -cE '192\.168\.4\.(39|51).*GET.*(4\.52\.17\.99|4\.52\.17\.32)\.tar' "$FORGE_LOG" 2>/dev/null)
-[ -n "$base" ] || base=0
+base=$(camera_hits)
+case "$base" in ''|*[!0-9]*) base=0 ;; esac
 echo "$base" > "$STATE"
-log "armed: baseline camera-capsule GETs = $base"
+log "armed: baseline camera-capsule hits = $base (tunnel access log)"
+prev_hits=$base
 
 while :; do
   sleep 60
-  now=$(grep -cE '192\.168\.4\.(39|51).*GET.*(4\.52\.17\.99|4\.52\.17\.32)\.tar' "$FORGE_LOG" 2>/dev/null)
-  [ -n "$now" ] || now=0
+  now=$(camera_hits)
+  case "$now" in ''|*[!0-9]*) now=$prev_hits ;; esac
+  prev_hits=$now
   prev=$(cat "$STATE" 2>/dev/null)
   [ -n "$prev" ] || prev=0
   if [ "$now" -gt "$prev" ]; then
-    log "*** CAMERA FETCHED THE CAPSULE ($prev -> $now) ***"
-    grep -E '192\.168\.4\.(39|51).*GET.*tar' "$FORGE_LOG" | tail -3
+    log "*** CAMERA REACHED THE CAPSULE ($prev -> $now) ***"
+    grep -v '"probe":true' "$ACCESS" 2>/dev/null | tail -3
     echo "$now" > "$STATE"
 
     # ledger: the wait is OBSERVED
     $PY "/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wait_ledger.py" record \
-      --cam "wyze-.39/.51" --expectation "assis GET for 4.52.17.99.tar from camera IP" \
+      --cam "wyze-.39/.51" --expectation "camera GET for 4.52.17.99.tar over the trycloudflare tunnel" \
       --state observed --observations "$now" \
       --note "chain completed; capture started $(date '+%F %T')" 2>/dev/null
 
