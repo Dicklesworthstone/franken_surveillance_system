@@ -7014,6 +7014,19 @@ datagrams cannot together exceed the observed datagram count; overflow is
 also refused. Both MAC selection and direct setup now apply this check.
 Focused unit job `30101959465763427` is testing those uncommitted changes;
 its outcome remains pending here. Neither job changes the physical camera.
+The committed revision's trial built successfully on Linux, but its wrapper
+returned 102 because the Linux executable could not be transferred to macOS;
+the remote execution exited zero, was acknowledged and released its resources.
+The Linux executable, SHA-256
+`613f7f9baea2c4261e995c40b4a9d18c537f4a355121a0a4421633aff7f174c2`,
+then ran with disposable fixture SHA-256
+`b3f6cc22b424524276002f11a823b4c8fdfa2dfaee1e2a4e5e46e4ffae80c471`
+as strict-remote job `30101959465763446`. Four of four scenarios passed:
+unknown MAC, conflicting claims, wrong certificate pin, and matching pin
+followed by expected refusal of an absent credential file. Binary and fixture
+hashes matched before and after; the job exited zero, was acknowledged and
+released resources. The fixture supplied no real camera and did not test the
+subsequent settings write, controller stream, or new counter-validation edits.
 
 At the later read-only check, the fallback recorder was active with restart
 count 78. Its log recorded connection timeouts and subsequent restart of
