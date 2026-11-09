@@ -65,7 +65,7 @@ use unifi_tls_05_server_lab::server::Server;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -222,6 +222,10 @@ fn options() -> ResultBox<Options> {
         Some("--bounded-prehello-clock") => {
             args.pop();
             TimeSyncPolicy::BoundedPreHelloClockExchange
+        }
+        Some("--bounded-any-prehello-clock") => {
+            args.pop();
+            TimeSyncPolicy::BoundedAnyPreHelloClockExchange
         }
         _ => TimeSyncPolicy::UncorrelatedOnly,
     };
@@ -719,7 +723,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let event_ops:Vec<_>=(0..64).map(|i|OperationId::parse(format!("operation:unifi-trial-event-{i:04}"))).collect::<Result<_,_>>()?;
                 let event_replies=conversation::StartupEventReplies {operations:&event_ops};
                 let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(8,8*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
-                let startup_sync_limit=if args.time_sync_policy==TimeSyncPolicy::BoundedPreHelloClockExchange { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
+                let startup_sync_limit=if matches!(args.time_sync_policy, TimeSyncPolicy::BoundedPreHelloClockExchange | TimeSyncPolicy::BoundedAnyPreHelloClockExchange) { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
                 let (session,started,event_trace,startup_trace)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));

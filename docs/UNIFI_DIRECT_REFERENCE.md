@@ -6745,6 +6745,203 @@ coverage or a Rust-owned recording.
 The discovery test attempt on `hz2`, job `30100509981410524`, compiled its
 dependencies but failed before tests because the committed retention-policy
 code passed `u64` limits to a `usize` API. It exited 101, was acknowledged, and
-released source and execution resources. The working tree now uses checked
+released source and execution resources. Commit `9d28fb61` uses checked
 conversions for those two limits; this repair and the discovery tests still
-require execution.
+require execution. A retry on `hz2` was refused before admission under
+critical memory pressure. A further request on `vmi1227854`, job
+`30100509981410574`, transferred base `9d28fb61569415dcab2fc1551e9aa44b8eed9833`
+but was refused before Cargo started by the disk-reservation budget. It exited
+120, was acknowledged, and released its source and execution resources.
+
+At approximately `2026-11-09 04:13 UTC`, a read-only inventory of both
+original effect journals and the forensic copy found five regular files in
+each. Their sorted `(relative path, byte length, SHA-256)` manifest digests
+matched the respective late post-test observations above; the copy also
+matched the time-sync original. This confirms no detected file change since
+those observations, not pre-effect continuity, independent pin custody, or
+the outcome of either physical-camera effect.
+The original `ts1` time-sync journal is under `/tmp`, which was observed to be
+a `tmpfs` mount on 2026-11-09; a reboot can therefore remove the original
+namespace. The byte-matched copy on `trj` preserves forensic bytes but cannot
+stand in for the original namespace or supply the missing pre-effect pin.
+
+The BlueZ registry now invalidates its observation epoch when the selected
+adapter's `Adapter1` interface is removed or unexpectedly added again, or its
+`Powered` property changes or is invalidated. Without this, cached camera
+claims could remain current after adapter loss or a power transition. The
+parser reports only that power was touched, not its value; all such changes
+require a fresh snapshot.
+Focused synthetic signal tests cover selected and unrelated adapters. These
+changes do not implement Bluetooth provisioning or authenticate any device.
+An `hz2` request for the initial removal test
+timed out in the queue before admission. A later request covering both removal
+and power handling also timed out before admission; neither ran a test or
+fell back to a local build. A separate packet-level test now covers power
+signals in both byte orders. Its `hz3` request, job `30100509981410602`, was
+refused before Cargo started because protected disk reservations left
+insufficient headroom. It exited 120, was acknowledged, and released source
+and execution resources. No test ran in that request.
+
+Strict-remote job `30100509981410605` subsequently ran `cargo check --lib`
+for `fss-reference` on `hz3` at base
+`9d28fb61569415dcab2fc1551e9aa44b8eed9833`, overlay
+`477d37fedd07ca81469ed5e66c5ada15449f3dbdfcba21fd6e17f04a8400ad31`.
+It compiled the production registry, packet parser and checked retention-limit
+conversions successfully. Separate job `30100509981410607` checked the
+`fss-packet` library and its test targets at the same base, overlay
+`c439cb28d99a43dd7b86995eed8474269eba249e0c12dc2c253aa1a38de34960`.
+Both exited zero, were acknowledged, and released source and execution
+resources. These are compile checks: neither executed a test, and the
+reference-crate unit tests were not checked by the library-only command.
+
+Subsequently, strict-remote `rustc --test` build `30100509981410609` compiled
+the standalone `dbus_object_manager.rs` at base
+`9d28fb61569415dcab2fc1551e9aa44b8eed9833`, overlay
+`c439cb28d99a43dd7b86995eed8474269eba249e0c12dc2c253aa1a38de34960`.
+The SHA-256-matched binary ran as RCH job `30100509981410611` and passed all
+10 module tests, including the adapter power cases. An independent strict-
+remote `rustc --test` build of the complete `fss-packet` library at the same
+base and overlay, job `30100509981410616`, produced a binary that ran as job
+`30100509981410617` and passed all 42 library unit tests. Both builds and runs
+exited zero, were acknowledged, and released their source and execution
+resources. Binary hashes matched before and after execution. These are
+synthetic Rust unit tests, not Cargo integration tests, BlueZ registry tests,
+or a physical-camera result; the full Cargo registry suite remained unexecuted.
+A subsequent attempt to execute the registry suite on `hz4`, job
+`30100509981410620`, was refused before Cargo started because other active
+disk reservations left insufficient protected headroom. It exited 120, was
+acknowledged, and released source and execution resources.
+
+The existing registry tests were subsequently run in the explicitly isolated
+[`bluez_registry_isolated_contract.rs`](../experiments/unifi_https_snapshot_lab/bluez_registry_isolated_contract.rs)
+fixture, which uses the actual registry and packet-parser sources but supplies
+test-only bus data types and frame wrapper. Strict-remote `rustc` jobs
+`30100509981410622` and `30100509981410624` built the packet library and
+fixture respectively; the latter used base
+`9d28fb61569415dcab2fc1551e9aa44b8eed9833` and overlay
+`7cb1916cdebd6b5bbf1b40300a0455f8f04350cea97115ba7208d9fba7102762`.
+Job `30100509981410628` ran all six registry tests: six passed, none failed or
+filtered. All three jobs exited zero, were acknowledged, and released source
+and execution resources; the packet library and test binary fingerprints
+matched before and after the run. This synthetic fixture does not test the
+production bus owner, native Bluetooth adapter, camera, or full Cargo suite.
+
+Strict-remote Cargo job `30100509981410666` subsequently built and executed
+the reference crate's registry unit-test selection at base
+`9d28fb61569415dcab2fc1551e9aa44b8eed9833` and overlay
+`477d37fedd07ca81469ed5e66c5ada15449f3dbdfcba21fd6e17f04a8400ad31`.
+It exited zero, was acknowledged, and released its source and execution
+resources. Because its test-output display was truncated, the retained Cargo
+test binary was run again as RCH job `30100509981410668`: six passed, none
+failed or ignored, and 2,346 were filtered out. The binary fingerprint matched
+before and after the second run; that job also exited zero, was acknowledged,
+and released its resources. These are synthetic unit tests, not a native
+Bluetooth adapter or physical-camera qualification.
+
+Strict-remote job `30100509981410670` then ran the two focused LAN discovery
+scope tests at the same base and overlay. The library test passed (one passed,
+2,351 filtered), and the integration test passed (one passed, 11 filtered).
+The job exited zero, was acknowledged, and released source and execution
+resources. These synthetic address checks do not contact a camera or prove
+automatic setup.
+
+On 2026-11-09, a read-only remote-head check found that the two reference
+projects still pointed at the previously analyzed commits:
+[`scrypted-unifi-direct` `2920ce88`](https://github.com/xuio/scrypted-unifi-direct/blob/2920ce8896aadd603e2847d17554905592d155e8/src/controller-emulator.ts)
+and [`cuckoo` `2e18666e`](https://github.com/rjmotion/cuckoo/blob/2e18666e9d9998b31d908e3a8f1d9ebb658c467f/controller.py).
+Both reference implementations respond to time-sync frames, whereas the
+experimental Rust pre-hello policy additionally applies bounded correlation
+and replay checks. This is a source-level distinction, not evidence that the
+G4 needs either behavior. A payload-free count of the most recent 1,000
+existing Scrypted container log lines found no time-sync or emulator-receive
+entries; this absence cannot explain the earlier G4 disconnect.
+The reference's optional debug logger writes `/tmp/unifi-direct.log` and
+suppresses time-sync receive logs; that file was not readable in the running
+Scrypted container during a later read-only check. No debug setting was changed
+and no process was restarted. This does not establish whether plugin logs exist
+elsewhere or reveal the G4's time-sync correlation pattern.
+
+The retained-pin interface used by this laboratory is synchronous, and the
+file-backed trusted root relies on operator-selected local storage. Neither
+provides a task-owned Asupersync network witness or proves that two stores
+have independent failure domains. A production handoff still needs a durable,
+independent commitment with cancellation and ambiguous-acknowledgement
+fencing before dispatch; adding such a witness cannot retroactively establish
+the missing pre-effect pins for the historical trials.
+
+The Rust retention cohort policy suite was attempted on `vmi1153651` as
+strict-remote job `30100509981410634` at base
+`9d28fb61569415dcab2fc1551e9aa44b8eed9833`. It compiled the library but failed
+before tests because an existing test directly accessed the now-private
+authority capability list. The job exited 101, was acknowledged, and released
+source and execution resources. The test now uses the public monotone-narrowing
+API to remove the commit capability. A retry, job `30100509981410650`, was
+refused before Cargo started by the protected disk budget; it exited 120, was
+acknowledged, and released its resources; it did not run the corrected test.
+Strict-remote job `30100509981410652` subsequently checked the corrected
+`retention_cohort_contract` test target at the same base, overlay
+`db457380e2371f9ce5771c0fcbcf18d1b28a373a78c68256c98a9ffc640a133d`.
+It exited zero, was acknowledged, and released source and execution resources.
+This proves compilation of that target, not execution of its tests or
+retention behavior on the live recorder.
+Strict-remote job `30100509981410656` subsequently executed the `policy::`
+subset of `retention_cohort_contract` on `vmi1227854` at the same base and
+overlay: eight passed, none failed or ignored, and 17 were filtered out. The
+job exited zero, was acknowledged, and released source and execution
+resources. This tests the policy and authority behavior with synthetic
+fixtures; it does not establish 30 days of live camera coverage or deployment
+of that Rust policy to the existing recorder.
+An attempt to run the remaining 17 cohort tests via Cargo, job
+`30100509981410672`, was refused before Cargo started by the protected disk
+budget. It exited 120, was acknowledged, and released its resources. A
+subsequent test-only request for the retained binary was refused before
+admission because the worker's capacity sample required refresh; no remaining
+cohort test ran. The binary path and a post-build fingerprint were observed,
+but no fingerprint was retained at the original build boundary.
+After the worker's live capacity refresh succeeded, the retained test binary
+ran as strict-remote job `30100509981410674`: 16 passed and one failed, with
+eight policy tests filtered out. The failing oldest-first byte-budget fixture
+supplied a negative capture timestamp, which the current ingest API rejects
+before retention planning. The test was changed to use a valid zero timestamp,
+still earlier than the other two captures. A full Cargo rerun on that revised
+fixture, job `30100509981410676`, was refused before Cargo started by the
+protected disk budget. Both jobs reached acknowledged terminal states and
+released their resources; the corrected fixture has not yet been executed.
+The corrected full suite subsequently ran as strict-remote job
+`30100509981410680` at the same base, overlay fingerprint
+`f3928a3835ee7ecac78dfe457aae43ebb2fc21a3dd8d99c799e1fa3828c54fcb`:
+25 passed, none failed, ignored or filtered. The job exited zero, was
+acknowledged, and released its sources and execution pair. These are synthetic
+retention contracts; the Rust policy is not deployed to the live recorder and
+this does not prove 30 days of coverage.
+
+An additional, explicit `--bounded-any-prehello-clock` laboratory option is
+under test. It admits fresh pre-hello time-sync messages even when their
+correlation is not the latest locally written reply, closer to the two
+reference implementations' broader handling. It still requires separate
+effect admission for each reply and retains the 32-reply ceiling, duplicate
+request rejection and single pending reply. The default remains conservative.
+This is a source-level experiment: the earlier G4 trace did not record the
+correlation relationship, so it does not establish that this policy is needed
+or that the G4 will complete the handshake. It does not resolve the historical
+handoff or time-sync obligations, and it has not been tested on the camera.
+Strict-remote job `30100509981410685` checked the trial executable with this
+option at base `9d28fb61569415dcab2fc1551e9aa44b8eed9833`, clean-overlay
+fingerprint `ace9cc53547cb0942500f71e8cce6f44d8eb1a73ed77512530bec26ccc4e1fb4`.
+It exited zero, was acknowledged and released its sources and execution pair.
+This is a compilation check, not a behavioral or device interoperability test.
+The first controller-contract request, job `30100509981410684`, was refused
+before execution because the selected source changed after admission. Its
+resources were released; it is not a test result.
+The exact corrected source then ran as strict-remote job `30100509981410687`
+with overlay fingerprint
+`042e86a6a70533d1acac05f1a5e34ee0113b2efe5f56933cc3dc5a741a76fb22`:
+one focused synthetic contract passed, none failed or ignored, 29 filtered.
+It exited zero, was acknowledged, and released sources and its execution pair.
+That contract exercises nonlatest correlations, pending-reply exclusion,
+duplicate rejection, the reply ceiling and the pre-hello boundary; it is not
+physical-camera proof.
+The full controller-contract suite subsequently ran against that same base
+and overlay as strict-remote job `30100509981410688`: 30 passed, none failed,
+ignored or filtered. It exited zero, was acknowledged, and released its
+sources and execution pair. These remain synthetic state-machine tests.
