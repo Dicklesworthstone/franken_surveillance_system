@@ -1,0 +1,184 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-09",
+  "scope": "Retained ONVIF analytics to bounded source-linked vendor tracklets and native CLI JSON",
+  "state": "implemented_pure_production_contracts_passed_native_owner_and_cli_unexecuted_not_qualified",
+  "mission": {
+    "goal": "Make retained XML and RTP analytics useful as inspectable temporal observations without inventing physical identity or event authority.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl"
+    ],
+    "requirements": [
+      "FSS-046",
+      "FSS-077"
+    ],
+    "initial_main": "6cf50ed7e91752c2859fa8dad238cad93f536a15"
+  },
+  "authority": {
+    "git": "User authorized meaningful direct-main GitHub commits, without PRs. Expected-head non-force ref updates preserve concurrent work.",
+    "live_device_execution": false,
+    "external_notifications": false,
+    "model_or_calibration_activation": false,
+    "query": "Existing retained sources only; normal exclusive publisher opening/recovery may perform housekeeping. No missing deployment initialization or pending-effect reconciliation."
+  },
+  "situation_roots": {
+    "preserved_concurrent_main": "18185236057afbdaf14dbdb2b2e37c2596ceed47",
+    "production_projection": "crates/fss-reference/src/onvif/metadata/tracks/contract.rs",
+    "retained_owner": "crates/fss-reference/src/onvif/metadata/tracks.rs",
+    "native_command": "crates/fss-cli/src/bin/fss-onvif-metadata/tracks.rs",
+    "source_custody": "Exact XML/RTP import identities and publication roots, frozen source interpretations, native originals when present, current deletion closure and durable authority.",
+    "assumptions": "Vendor ObjectIds, module names, timestamps and geometry remain vendor claims. Caller source order is explicit context."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "8f0adab328d7a73c8d0a6d5eeb7aa46cfe2e0315",
+      "change": "Pure projector, shared wire helpers, retained XML/RTP owner, contracts, architecture record and source integrity manifest."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Native tracks command, bounded JSON/schema, tested production renderer, process fixtures, user documentation and scoped validation handoff."
+    }
+  ],
+  "cases": [
+    {
+      "question": "Can retained analytics form temporal groups without a hand-authored tracking input?",
+      "finding": "Yes: deterministic named-module/integer-ObjectId runs retain every exact source occurrence and explicit break reason.",
+      "evidence": [
+        "crates/fss-core/tests/onvif_tracklet_contract.rs",
+        "crates/fss-core/tests/onvif_tracklet_json_contract.rs"
+      ],
+      "qualification": "Actual production parser/projector/renderer contracts executed; retained source owner and complete CLI not executed.",
+      "stop_rule": "Never infer identity, geometry calibration, coverage, absence, corroboration or event/effect authority."
+    },
+    {
+      "question": "Can a later empty, changed or deleted source escape aggregate query verification?",
+      "finding": "Both complete ordered source sets and projections are reconstructed and compared under one nonrefillable budget, followed by durable-head/effect-store verification.",
+      "evidence": [
+        "crates/fss-reference/tests/onvif_metadata_tracks_custody.rs"
+      ],
+      "qualification": "Thirteen real-owner regressions authored and independently source-reviewed, not executed.",
+      "stop_rule": "Any observed source/custody/deletion/authority mismatch, limit or cancellation refuses the entire report."
+    }
+  ],
+  "contracts": {
+    "command": "fss-onvif-metadata tracks",
+    "source_flags": "Ordered repeatable --xml-source ID@ROOT and --rtp-source ID@ROOT; exact distinct nonzero SHA256 pins required.",
+    "schema": "fss.onvif_vendor_tracklets_report.v1",
+    "generation": "gen:fss1:onvif-vendor-tracklets-v1",
+    "provenance": "Derived association with vendor_claimed original leaves.",
+    "barriers": "Independent source pins, generation/locator discontinuity, missing/opaque modules or lifecycle, missing objects, time regression/gap and transformation changes.",
+    "rtp": "Inter-document continuation requires complete processing and adjacent exact packet-boundary evidence; empty/rejected/opaque documents interrupt continuity.",
+    "privacy": "Raw module/ObjectId/vendor UTC fields are null unless --include-values yes; exact digests/handles remain. Debug excludes vendor strings.",
+    "time": "Existing UTC-Z grammar, exact i128 nanoseconds and lexical preservation; JSON uses decimal strings for interpreted vendor nanoseconds.",
+    "output": "All accepted frames and objects, complete source receipts, tracklet indices and break reasons; no successful prefix on refusal.",
+    "compatibility": "Original XML, event, parser and RTP source encodings remain unchanged. No dependency or lockfile change."
+  },
+  "budgets": {
+    "source_pins": 32,
+    "frames": 1024,
+    "object_occurrences": 4096,
+    "tracklets": 4096,
+    "canonical_projection_bytes": 4194304,
+    "complete_json_bytes": 16777216,
+    "default_cumulative_stored_bytes": 67108864,
+    "hard_cumulative_stored_bytes": 1073741824,
+    "default_indexed_read_attempts": 8192,
+    "hard_indexed_read_attempts": 65536,
+    "default_outer_work": 8388608,
+    "hard_outer_work": 67108864,
+    "default_work_reserved_per_projection": 2000000,
+    "source_validation_passes": 2,
+    "default_vendor_gap_ns": 5000000000,
+    "hard_vendor_gap_ns": 60000000000,
+    "exclusions": "Opening recovery, directory traversal and metadata/open syscalls retain existing deployment limits and are outside indexed-read counters. Work units are deterministic/conservative admission accounting, not CPU time.",
+    "cancellation": "ReplayCx and native runtime own admission, cancellation, deadline and drain. Pure grouping polls cooperatively; bounded serialization remains inside the original native request."
+  },
+  "validation": {
+    "toolchain": "nightly-2026-08-31",
+    "baseline_at_initial_main": {
+      "fss-core_lib": 193,
+      "fss-model-ir_lib": 22
+    },
+    "passed_targets": {
+      "fss-core --test onvif_tracklet_contract": {
+        "passed": 26,
+        "new": 22,
+        "embedded_wire": 4
+      },
+      "fss-core --test onvif_tracklet_json_contract": {
+        "passed": 12,
+        "new": 8,
+        "embedded_wire": 4
+      },
+      "onvif_analytics_metadata_contract standalone actual production wire": 24,
+      "onvif_wire_contract standalone actual production wire": 32
+    },
+    "proof_scope": "Real production parser, projector, JSON primitives and projection renderer with genuine fss-core contracts. Namespace adapters expose actual included modules; no replacement parser, retained owner or runtime is supplied. Embedded wire tests overlap between targets.",
+    "unexecuted_tests": {
+      "onvif_metadata_tracks_custody": 13,
+      "tracks_cli_parser": 2,
+      "onvif_metadata_tracks_cli_process": 3
+    },
+    "native_attempts": [
+      {
+        "command": "cargo build --locked --offline -j1 -p fss-runtime --lib",
+        "result": "rustc SIGKILL in unchanged genuine Asupersync 0.5.0 under shared-host memory pressure; no FSS source diagnostic."
+      },
+      {
+        "command": "cargo check --locked --offline -j1 -p fss-reference --lib",
+        "result": "Same dependency SIGKILL even without code generation; no FSS source diagnostic. Further heavy attempts stopped."
+      }
+    ],
+    "source_review": "Independent owner/API, RTP boundary, resource accounting, parser/runtime and real-process fixture review completed. Review fixes cover final authority check ordering, early aggregate shape refusal and once-per-document hashing.",
+    "repository_gates": "Repository-wide semantic-plane and architecture consistency gates are not clean: unrelated missing module declarations/cross-plane imports and unknown QSR stable-ID family remain. New feature modules and report schema are explicitly registered; broad cleanup is outside this feature.",
+    "qualification": "No native custody/CLI execution, physical-camera/Profile M conformance or release qualification claimed.",
+    "scoped_clippy": "cargo clippy --locked --offline -j1 -p fss-core --test onvif_tracklet_json_contract exited 0; nonfatal included-source style/dead-code warnings remain.",
+    "source_formatting": "Pinned rustfmt --check for every changed Rust file and git diff --check passed."
+  },
+  "findings": [
+    "Open bead status alone was not a reliable implementation map; substantial native ingestion, replay, tracking and evaluation already exist.",
+    "Retained analytics lacked the direct temporal source-linked query implemented here.",
+    "Unknown lifecycle and transport content must remain explicit association barriers rather than invented continuity.",
+    "Default JSON presentation can preserve navigable evidence references without disclosing raw vendor labels."
+  ],
+  "active_work": [],
+  "open_beads": [
+    "fss-x4a.11.4",
+    "fss-x4a.15.2"
+  ],
+  "plans": [],
+  "obligations": [
+    {
+      "state": "blocked_on_capable_host",
+      "work": "Execute pinned native retained-owner, CLI parser and actual-process tests against the unchanged genuine dependency closure."
+    },
+    {
+      "state": "open",
+      "work": "Qualify physical-device/Profile M interoperability and complete the broader metadata and scene/event requirements."
+    }
+  ],
+  "unknowns": [
+    "Native integrated compilation/execution is not established by passing production-source pure tests or static review.",
+    "ObjectTree merge/split/delete semantics, cross-source continuity and calibrated scene/event interpretation are deliberately not inferred.",
+    "A completed retained processing report is not a coverage or physical-absence witness."
+  ],
+  "invalidations": [
+    "Missing/changed/deleted source custody, conflicting pins, source/report drift, authority drift or exhausted budgets refuse the current query.",
+    "A successful historical snapshot cannot authorize later access or effects without fresh custody and authority checks.",
+    "Broad FSS-046/FSS-077 beads remain open pending their full registered evidence."
+  ],
+  "continuations": [
+    {
+      "action": "Run cargo test --locked -p fss-reference --test onvif_metadata_tracks_custody and cargo test --locked -p fss-cli --bin fss-onvif-metadata --test onvif_metadata_tracks_cli on a capable host.",
+      "authority": "Local synthetic fixtures only.",
+      "expected_proof": "Executed native custody, import-to-track, no-initialization, redaction and refusal contracts."
+    },
+    {
+      "action": "Qualify exact authorized camera generations and their metadata lifecycle/transport behavior before scene/event integration.",
+      "authority": "Requires the existing explicit device scope and retained source evidence.",
+      "expected_proof": "Reproducible source-linked device observations, conservative lifecycle handling and separately qualified scene/event semantics."
+    }
+  ]
+}

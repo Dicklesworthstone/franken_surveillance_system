@@ -2,7 +2,40 @@
 
 `fss-onvif-metadata` captures a finite live ONVIF PullPoint event session or an explicitly selected RTSP/TCP metadata track, imports one complete owner-supplied PullMessages SOAP response or MetadataStream XML document, or reconstructs metadata from an owner-supplied RTP packet file. It retains the declared source representation, a deterministic vendor-event/analytics projection and the explicit source binding in an immutable, ledgered publication. New imports interpret the supported `VideoAnalytics` frame, object, coarse shape, classification and transformation fields alongside event notifications.
 
-This implements bounded native PullPoint acquisition with opt-in finite renewal, stable owner-operation fencing, durable control recovery, finite native RTSP metadata acquisition and the local XML/RTP import/replay subset of FSS-046. These are finite capture commands, not a continuous acquisition service. Automatic reconnect, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work; FSS-046 remains open.
+This implements bounded native PullPoint acquisition with opt-in finite renewal, stable owner-operation fencing, durable control recovery, finite native RTSP metadata acquisition, local XML/RTP import/replay and source-verified vendor tracklets within FSS-046. These are finite capture and query commands. Automatic reconnect, semantic object lifecycle interpretation, calibrated scene interpretation and physical-device/Profile M qualification remain separate work; FSS-046 remains open.
+
+## Group retained vendor object claims
+
+`tracks` reconstructs existing XML imports or RTP/capture roots and groups consecutive object claims from the same named vendor analytics module. Select the exact identity **and** publication root from the import/capture receipt. Source flags may repeat in the desired order:
+
+```sh
+target/debug/fss-onvif-metadata tracks \
+  --root /srv/fss/site --site site:home \
+  --xml-source "$XML_IMPORT_ID@$XML_PUBLICATION_ROOT" \
+  --rtp-source "$RTP_IMPORT_ID@$RTP_PUBLICATION_ROOT"
+```
+
+The result is one closed `fss.onvif_vendor_tracklets_report.v1` JSON document. It includes every source receipt, accepted analytics frame and object occurrence, stable advisory tracklet identities, exact source/document/frame/object handles and explicit grouping break reasons. `provenance="derived"` describes the grouping; `source_provenance="vendor_claimed"` preserves the original observations' status. A run records repeated vendor claims and does not establish physical identity, authenticated origin, coverage, absence, calibrated geometry, events or effect permission.
+
+Raw module names, ObjectIds and vendor timestamps are `null` by default. Add `--include-values yes` to disclose their original spellings to local stdout. Classes, shapes and transformations remain in the original XML and can be hydrated through the exact handles using `inspect` or `inspect-rtp`; the grouping does not normalize geometry or classify people.
+
+The grouping requires the same generation scope and named module, an equal XML integer ObjectId, strictly increasing vendor UTC and a gap no larger than `--max-vendor-gap-ms` (default 5000). Integer aliases such as `+001` and `1` retain their lexical spellings but share a vendor key. Missing objects/modules, opaque lifecycle content, clock regressions and changes to frame or object transformations end a run. Different named modules may interleave. Independent source pins always start separate segments, including separate XML files from the same camera.
+
+Within one clean RTP source, adjacent XML documents can continue a run only when their retained packet-boundary provenance agrees exactly. Empty/rejected/opaque documents break linkage. Any incomplete transport or native acquisition conservatively disables all inter-document linkage for that source while preserving useful within-document claims. Completed processing and zero returned tracks never establish scene coverage or absence.
+
+The owner verifies every selected source, exact root, frozen parser/transport generation, publication and current deletion state twice. Both passes share one nonrenewing indexed-read and work allowance; a later missing, deleted, changed, over-budget or cancelled source refuses the entire report, including sources with no analytics. Query opening requires a complete existing deployment and leaves pending external effects unreconciled. Normal publisher recovery and the exclusive deployment lock still apply, so opening can perform local housekeeping.
+
+| Bound | Default | Hard maximum |
+|---|---:|---:|
+| Ordered distinct source pins | 32 | 32 |
+| Indexed stored-envelope bytes, both passes | 64 MiB | 1 GiB |
+| Indexed read attempts, both passes | 8192 | 65,536 |
+| Shared conservative work reservation | 8,388,608 | 67,108,864 |
+| Work reserved for each pure projection | 2,000,000 | 16,777,216 |
+| Frames / object occurrences / tracklets | 1024 / 4096 / 4096 | 1024 / 4096 / 4096 |
+| Canonical projection / complete JSON | 4 MiB / 16 MiB | 4 MiB / 16 MiB |
+
+Indexed bytes include envelope overhead, provenance and deletion-plan reads; opening recovery, directory scans and metadata/open syscalls remain under the existing deployment-open capacity contract. Each of the two projections reserves its full declared work allowance from the shared balance before running. The report separates conservative reserved work from actual deterministic projector work. See the [tracklet contract](onvif-vendor-tracklets-contract.md), [closed JSON schema](../schemas/onvif_vendor_tracklets_report.v1.json), and `tracks --help` for option names and exact limitations.
 
 ## Capture live PullPoint events
 

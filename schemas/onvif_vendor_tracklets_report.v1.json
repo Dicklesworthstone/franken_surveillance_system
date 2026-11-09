@@ -1,0 +1,709 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/onvif_vendor_tracklets_report.v1.json",
+  "title": "Retained ONVIF vendor tracklets report",
+  "description": "Complete two-pass source-verified derived cognition over vendor_claimed leaves. Exact integer ObjectId runs are advisory vendor-module associations, never physical identity, authenticated origin, coverage, absence, calibration, event authority or permission. Ordered independent pins and opaque/empty/rejected/transport/clock/transform boundaries prevent linkage. Native owners enforce cross-array handle consistency, exact digests, cumulative resource limits and the final authority check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "plane",
+    "provenance",
+    "source_provenance",
+    "tracklet_generation",
+    "vendor_values_included",
+    "snapshot_digest",
+    "report_digest",
+    "input_digest",
+    "policy_digest",
+    "authority",
+    "limits",
+    "usage",
+    "sources",
+    "frames",
+    "occurrences",
+    "tracklets",
+    "claims"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.onvif_vendor_tracklets_report.v1"
+    },
+    "status": {
+      "const": "verified"
+    },
+    "plane": {
+      "const": "cognition"
+    },
+    "provenance": {
+      "const": "derived"
+    },
+    "source_provenance": {
+      "const": "vendor_claimed"
+    },
+    "tracklet_generation": {
+      "const": "gen:fss1:onvif-vendor-tracklets-v1"
+    },
+    "vendor_values_included": {
+      "type": "boolean"
+    },
+    "snapshot_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anchor_digest",
+        "commit_sequence"
+      ],
+      "properties": {
+        "anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "commit_sequence": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_sources",
+        "max_stored_bytes",
+        "max_indexed_reads",
+        "max_work_units",
+        "max_frames",
+        "max_objects",
+        "max_tracklets",
+        "max_projection_work_units",
+        "max_projection_bytes",
+        "max_vendor_gap_ns",
+        "max_json_bytes"
+      ],
+      "properties": {
+        "max_sources": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_stored_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "max_indexed_reads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "max_work_units": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "max_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "max_objects": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "max_tracklets": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "max_projection_work_units": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "max_projection_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "max_vendor_gap_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000000000
+        },
+        "max_json_bytes": {
+          "const": 16777216
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_validation_passes",
+        "indexed_read_bytes",
+        "indexed_read_attempts",
+        "reserved_work_units",
+        "projection_work_units_per_pass",
+        "projection_bytes",
+        "opening_recovery_included"
+      ],
+      "properties": {
+        "source_validation_passes": {
+          "const": 2
+        },
+        "indexed_read_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824
+        },
+        "indexed_read_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "reserved_work_units": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "projection_work_units_per_pass": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        },
+        "projection_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194304
+        },
+        "opening_recovery_included": {
+          "const": false
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "frames": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/frame"
+      }
+    },
+    "occurrences": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/occurrence"
+      }
+    },
+    "tracklets": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/tracklet"
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physical_identity",
+        "authenticated_origin",
+        "coverage",
+        "physical_absence",
+        "calibrated_geometry",
+        "event_authority",
+        "effect_permission"
+      ],
+      "properties": {
+        "physical_identity": {
+          "const": false
+        },
+        "authenticated_origin": {
+          "const": false
+        },
+        "coverage": {
+          "const": false
+        },
+        "physical_absence": {
+          "const": false
+        },
+        "calibrated_geometry": {
+          "const": false
+        },
+        "event_authority": {
+          "const": false
+        },
+        "effect_permission": {
+          "const": false
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "vendor_values_included": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "frames": {
+            "items": {
+              "properties": {
+                "values": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "occurrences": {
+            "items": {
+              "properties": {
+                "values": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "frames": {
+            "items": {
+              "properties": {
+                "values": {
+                  "$ref": "#/$defs/frame_values"
+                }
+              }
+            }
+          },
+          "occurrences": {
+            "items": {
+              "properties": {
+                "values": {
+                  "$ref": "#/$defs/occurrence_values"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reason": {
+      "enum": [
+        "new_occurrence",
+        "source_boundary",
+        "generation_changed",
+        "missing_occurrence",
+        "missing_module",
+        "uninterpreted_content",
+        "vendor_time_not_increasing",
+        "vendor_time_gap",
+        "frame_transform_changed",
+        "object_transform_changed",
+        "end_of_input"
+      ]
+    },
+    "frame_values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module_source",
+        "vendor_utc_time",
+        "vendor_time_ns"
+      ],
+      "properties": {
+        "module_source": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 256
+            }
+          ]
+        },
+        "vendor_utc_time": {
+          "type": "string",
+          "maxLength": 30,
+          "minLength": 20
+        },
+        "vendor_time_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$",
+          "maxLength": 21
+        }
+      }
+    },
+    "occurrence_values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vendor_object_id",
+        "module_source",
+        "vendor_utc_time"
+      ],
+      "properties": {
+        "vendor_object_id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[+-]?[0-9]+$"
+        },
+        "module_source": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 256
+            }
+          ]
+        },
+        "vendor_utc_time": {
+          "type": "string",
+          "maxLength": 30,
+          "minLength": 20
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "kind",
+        "identity",
+        "root",
+        "scope",
+        "source_digest",
+        "native_source_digest",
+        "interpretation_digest",
+        "parser_generation",
+        "source_mode",
+        "publication_anchor_digest",
+        "documents",
+        "analytics_frames",
+        "empty_analytics_documents",
+        "rejected_documents",
+        "uninterpreted_documents",
+        "source_processing_complete"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31
+        },
+        "kind": {
+          "enum": [
+            "xml",
+            "rtp"
+          ]
+        },
+        "identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "root": {
+          "$ref": "#/$defs/digest"
+        },
+        "scope": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "native_source_digest": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "interpretation_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "parser_generation": {
+          "enum": [
+            "gen:fss1:onvif-vendor-events-v1",
+            "gen:fss1:onvif-vendor-analytics-v2"
+          ]
+        },
+        "source_mode": {
+          "enum": [
+            "owner_supplied_file",
+            "onvif_pullpoint",
+            "owner_supplied_rtpdump",
+            "native_rtsp_tcp"
+          ]
+        },
+        "publication_anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "documents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "analytics_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "empty_analytics_documents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "rejected_documents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "uninterpreted_documents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "source_processing_complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "scope",
+        "source_identity",
+        "source_root",
+        "source_digest",
+        "frame_digest",
+        "document_index",
+        "frame_index",
+        "module_digest",
+        "transformation_digest",
+        "occurrence_start",
+        "occurrence_count",
+        "barriers",
+        "values"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1023
+        },
+        "scope": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "frame_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "document_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "frame_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "module_digest": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "transformation_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "occurrence_start": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "occurrence_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "barriers": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 11,
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
+        },
+        "values": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/frame_values"
+            }
+          ]
+        }
+      }
+    },
+    "occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "tracklet_identity",
+        "frame_ordinal",
+        "object_index",
+        "transformation_digest",
+        "values"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "tracklet_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "frame_ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1023
+        },
+        "object_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "transformation_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "values": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/occurrence_values"
+            }
+          ]
+        }
+      }
+    },
+    "tracklet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "scope",
+        "module_digest",
+        "vendor_key_digest",
+        "occurrence_indices",
+        "start_reasons",
+        "end_reasons"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "scope": {
+          "$ref": "#/$defs/digest"
+        },
+        "module_digest": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "vendor_key_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "occurrence_indices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          }
+        },
+        "start_reasons": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 11,
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
+        },
+        "end_reasons": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 11,
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
+        }
+      }
+    }
+  }
+}

@@ -36,9 +36,12 @@ mod control;
 mod rtp;
 #[path = "fss-onvif/runtime.rs"]
 mod runtime;
+#[path = "fss-onvif-metadata/tracks.rs"]
+mod tracks;
 
-const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp> [options]
+const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp|tracks> [options]
   RTP metadata: capture-rtp/import-rtp/inspect-rtp/verify-rtp --help
+  tracks: see fss-onvif-metadata tracks --help for source-verified vendor tracklet JSON.
   capture: see fss-onvif-metadata capture --help for explicit live subscription options.
   control: see fss-onvif-metadata control --help for cold discovery, operation inspection and explicit cleanup.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
@@ -901,7 +904,9 @@ fn write_output(
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(101).collect();
-    let result = if args.first().is_some_and(|arg| arg == "capture-rtp") {
+    let result = if args.first().is_some_and(|arg| arg == "tracks") {
+        tracks::run_args(&args)
+    } else if args.first().is_some_and(|arg| arg == "capture-rtp") {
         capture_rtp::run_args(&args)
     } else if args.first().is_some_and(|arg| arg == "capture") {
         capture::run_args(&args[1..]).map(|(report, complete)| {

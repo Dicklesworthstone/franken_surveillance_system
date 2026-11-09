@@ -6351,3 +6351,36 @@ integrated execution or physical-device qualification. See `docs/onvif-metadata.
 The underlying explicit-authority Prepare transition is additive tag 6 under current V3 journal records; prior tags/default preparation behavior remain unchanged. Explicit retries bind the complete intent, authority, obligation and terminal predicate before append. Runtime recovery continues to reject generic preparations outside its richer bound-preparation envelope.
 
 Validation: the pinned compiler built the complete actual fss-core crate and all 169 unit tests passed, including 13 effect tests. The current production-source PullPoint wire target also passed all 24 tests. New real-file durable authority, source-free fence/deletion/cancellation, runtime envelope, CLI argument and native custody-hook tests were added and statically reviewed. Those reference/runtime/CLI targets remain unexecuted: the genuine Asupersync dependency build was killed previously, no usable compiled dependency artifacts exist, and this session's ordinary filesystem remains full. No dependency facades, camera/Profile M qualification or full integrated release pass is claimed.
+
+## Retained ONVIF vendor tracklets (2026-11-09, scoped implementation)
+
+`fss-onvif-metadata tracks` now connects exact retained XML and RTP/native-capture
+pins to bounded temporal groups of vendor ObjectId observations. Every accepted
+frame and object retains its original source, document and position handles.
+Named modules remain independent; source/generation changes, transport gaps,
+missing observations, unknown lifecycle content, nonincreasing vendor timestamps,
+excessive time gaps and coordinate changes split groups. Derived grouping never
+upgrades vendor claims into physical identity, coverage, absence or event authority.
+
+The existing-store owner reconstructs every requested source and the complete
+projection twice under one cumulative indexed-read/work allowance, including
+zero-analytics sources and current deletion checks. It checks the final durable
+authority without reconciling pending effects. The CLI emits closed, bounded JSON
+inside its original deadline/cancellation owner. Raw vendor strings are withheld
+by default and require `--include-values yes`; exact source handles remain present.
+No acquisition, model activation, event publication or external effect is added.
+
+Executed with the pinned compiler: the production-source projector target passed
+26 tests (22 focused cases plus four embedded wire tests), the production-source
+JSON target passed 12 (eight focused cases plus four embedded wire tests), and
+the existing analytics and wire parser targets passed 24 and 32 respectively.
+Thirteen retained-owner tests, two CLI parser cases and three actual-process
+tests are authored and source-reviewed but unexecuted. Both a genuine runtime
+build and the smaller reference metadata check were killed by SIGKILL while
+compiling unchanged Asupersync 0.5.0 under shared-host memory pressure, before
+FSS source diagnostics. These results do not establish integrated execution or
+physical-device/Profile M qualification. FSS-046 / `fss-x4a.11.4` and the broader
+FSS-077 / `fss-x4a.15.2` remain open. See the
+[command workflow](docs/onvif-metadata.md#group-retained-vendor-object-claims),
+[contract](docs/onvif-vendor-tracklets-contract.md) and
+[session handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_TRACKLETS.json).
