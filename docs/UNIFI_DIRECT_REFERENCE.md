@@ -6440,6 +6440,15 @@ These are late observations, useful for detecting subsequent changes. They
 are not the runtime's independently retained minimum journal pins, do not
 prove that no earlier history was lost, and do not settle either effect.
 
+The five-file `ts1` time-sync journal was also copied, without altering the
+original, to the root-restricted forensic location `/data/unifi-g4-recorder/fss-rust-recovery-AsLXQ1Vg/forensic-timesync-copy`
+on `trj`. Its file inventory matched the recorded post-test manifest, and
+the copied regular files and directories were synchronized before reporting
+success. The original still matched afterward. This is a byte-preservation
+copy, not a reopened journal: the journal binds its original physical
+namespace, so this copy cannot be substituted for the original or used to
+manufacture an independent pre-effect pin.
+
 The local controller revision now counts, without retaining message payloads
 or IDs in its output, whether a correlated time-sync claim refers to the most
 recent locally written time-sync reply, and whether that claim also requests a
@@ -6454,3 +6463,75 @@ queues for `vmi1152480` and `hz4`, respectively, before admission. Neither
 compiled or ran the revised code. The earlier 15/15 result applies to the
 preceding revision only. The diagnostic and its controller/process fixtures
 remain unqualified, and the two physical-trial journals remain unresolved.
+
+Strict-remote job `30100509981410070` subsequently ran `cargo check` for the
+diagnostic trial binary and its process-test target on `hz4`. It exited zero,
+was acknowledged and released sources. The committed base was
+`a40812bd2652b404dcfc7de3479cd76ffc7d3d9d`; the controller source, trial
+source and process fixture matched their worker copies at SHA-256
+`888d1e7c7f1143e0e2cce959f8b65d995e62cca53144558b75617b7406a3435c`,
+`6decaa40e6b69994ebecfc506bdd01bc0a06994e74f6376e1b5639eead33ffae`, and
+`0a580648c84ba44013954ec659899faac648cf3cba6bb3f452a33a99d9d415ed`.
+This is a successful compile check; no test was executed, the separate
+controller contract target was not checked, and the physical journals remain
+unreconciled.
+
+A separate metadata-only request for `unifi_direct_controller_contract`, job
+`30100509981410074`, transferred the pinned source but was refused before Cargo
+started because active worker disk reservations left insufficient protected
+headroom. It exited 120, was acknowledged and released source custody. No
+controller-contract compile or test result is implied.
+
+A subsequent strict-remote check of `unifi_direct_controller_contract` on
+`hz2`, job `30100509981410077`, compiled successfully at the same pinned base
+and clean-overlay fingerprint. It exited zero; this checks the controller
+contract target's compilation but does not execute its tests or change either
+live effect's reconciliation state.
+
+The subsequent strict-remote request to execute the `time_sync`-filtered
+controller-contract tests exited 103 on queue timeout before admission. It
+did not execute the tests or fall back to the local machine. The revised
+diagnostic still needed an executed controller contract and process fixture.
+An explicit request to the worker that completed the compile check was also
+refused before admission: its reported free disk was below the test build's
+required headroom. No disk reservation or worker policy was changed.
+
+Strict-remote job `30100509981410297` subsequently executed the controller
+contract filtered by `time_sync` on `ovh-b` at base
+`a40812bd2652b404dcfc7de3479cd76ffc7d3d9d`: 8 passed, 21 filtered, no
+failures. It exited zero, was acknowledged, and released sources. This covers
+the controller diagnostic fixture, not the process fixture or a real camera.
+
+For a future trial, durable effect records alone are insufficient: a separate
+trust domain must retain an acknowledged journal prefix before an operation's
+dispatch is admitted, and retention failure or an ambiguous acknowledgement
+must fence dispatch. Recovery must verify the original journal namespace and
+the independently retained minimum, replay the complete history in
+reconciliation-only mode, and obtain operation-specific outcome evidence.
+An initial retained prefix detects rollback only before that prefix; protecting
+later acknowledged transitions requires advancing the independent commitment.
+This is a design requirement, not an implementation or proof that either
+existing physical-trial effect can be settled.
+
+The working tree now has a first runtime building block for future trials:
+`PinRetainedEffectJournal` couples each effect-journal append to a supplied
+`EffectPinRetainer` and fences ambiguous retention. Its fixture uses an
+in-memory retainer. This does not implement independent durable custody, wire
+the trial to such custody, recover the old effects, or authorize another live
+handoff.
+
+The first strict-remote test attempt for that building block, job
+`30100509981410102`, was stopped before Cargo started by the worker's disk
+reservation policy and exited 120 with source custody released. A subsequent
+strict-remote `cargo check` of `durable_effect_contract`, job
+`30100509981410104`, compiled the wrapper and test target successfully at base
+`a40812bd2652b404dcfc7de3479cd76ffc7d3d9d` with overlay fingerprint
+`d5f152df4dc2174c67353319983ee7afae0279caa8727b28bf77f25220601df2`;
+it exited zero, was acknowledged, and released source custody. No test was
+executed by that check.
+
+Strict-remote job `30100509981410291` then executed the complete
+`durable_effect_contract` target on `ovh-b`: 11 passed, none failed or
+filtered, at the same base and overlay fingerprint. It exited zero, was
+acknowledged, and released its source. The checkpoint retainer in those tests
+is in memory; the result does not qualify a durable independent backend.

@@ -7,6 +7,9 @@
 
 use fss_core::ContentDigest;
 
+/// Journal-backed checkpoint custody with an independently retained bootstrap.
+pub mod keeper;
+
 /// Hard ceiling for one canonical runtime effect record, before storage framing.
 pub const MAX_EFFECT_RECORD_BYTES: usize = 512 * 1024;
 /// Hard ceiling for the complete replay history. No automatic pruning is allowed.
@@ -79,4 +82,143 @@ pub trait EffectJournalStore: std::fmt::Debug + Send + Sync {
         expected: Option<EffectJournalPin>,
         record: &[u8],
     ) -> Result<EffectJournalPin, EffectPersistenceError>;
+}
+
+/// Separately owned custody for acknowledged effect-journal prefixes.
+///
+/// An implementation must use an explicitly supplied storage authority and a
+/// failure domain suitable for the owner's threat model. It must durably retain
+/// and read back `next` before `retain` succeeds, and must compare `expected`
+/// against the current retained value. An error may follow a successful write;
+/// the caller must then stop and recover rather than retry. Neither this trait
+/// nor the runtime can establish that a supplied implementation is independent
+/// of the effect journal, protected from rollback, or available after a crash.
+pub trait EffectPinRetainer: std::fmt::Debug + Send + Sync {
+    /// Read the currently retained commitment from the owner's custody domain.
+    fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError>;
+
+    /// Refuse insufficient capacity before writing; this must not change custody.
+    fn reserve_capacity(&mut self, additional_pins: usize) -> Result<(), EffectPersistenceError>;
+
+    /// Compare, durably retain and verify the next commitment.
+    fn retain(
+        &mut self,
+        expected: Option<EffectJournalPin>,
+        next: EffectJournalPin,
+    ) -> Result<(), EffectPersistenceError>;
+}
+
+/// An initially empty journal whose acknowledgements require separate pin custody.
+///
+/// An append that may have reached either custody domain fences this owner on
+/// *any* failure. A recovered coordinator still needs the independently retained
+/// pin, the original journal, operation-specific evidence, and reconciliation;
+/// this wrapper never recreates a permit or proves an external effect occurred.
+#[derive(Debug)]
+pub struct PinRetainedEffectJournal {
+    journal: Box<dyn EffectJournalStore>,
+    retainer: Box<dyn EffectPinRetainer>,
+    retained: Option<EffectJournalPin>,
+    poisoned: bool,
+}
+
+impl PinRetainedEffectJournal {
+    /// Bind two empty, exclusively owned custody domains for a new history.
+    /// Existing history must be handled by the explicit recovery path.
+    pub fn new(
+        journal: Box<dyn EffectJournalStore>,
+        mut retainer: Box<dyn EffectPinRetainer>,
+    ) -> Result<Self, EffectPersistenceError> {
+        if journal.head().is_some() || !journal.records().is_empty() {
+            return Err(EffectPersistenceError::InvalidHistory(
+                "new retained journal requires empty effect history",
+            ));
+        }
+        if retainer.retained_pin()?.is_some() {
+            return Err(EffectPersistenceError::InvalidHistory(
+                "new retained journal requires empty pin custody",
+            ));
+        }
+        Ok(Self {
+            journal,
+            retainer,
+            retained: None,
+            poisoned: false,
+        })
+    }
+}
+
+impl EffectJournalStore for PinRetainedEffectJournal {
+    fn head(&self) -> Option<EffectJournalPin> {
+        self.journal.head()
+    }
+
+    fn records(&self) -> &[Vec<u8>] {
+        self.journal.records()
+    }
+
+    fn contains(&self, pin: EffectJournalPin) -> bool {
+        self.journal.contains(pin)
+    }
+
+    fn reserve_capacity(
+        &mut self,
+        additional_records: usize,
+        max_record_bytes: usize,
+    ) -> Result<(), EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        self.journal
+            .reserve_capacity(additional_records, max_record_bytes)?;
+        self.retainer.reserve_capacity(additional_records)
+    }
+
+    fn append(
+        &mut self,
+        expected: Option<EffectJournalPin>,
+        record: &[u8],
+    ) -> Result<EffectJournalPin, EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        if expected != self.retained || self.journal.head() != self.retained {
+            self.poisoned = true;
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        // Callers of the store trait are not required to preflight separately.
+        // Capacity refusals leave both domains untouched and do not fence.
+        self.reserve_capacity(1, record.len())?;
+        let result = (|| {
+            if self.retainer.retained_pin()? != self.retained {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            let next = self.journal.append(expected, record)?;
+            if Some(next.sequence) != expected.map_or(Some(1), |pin| pin.sequence.checked_add(1))
+                || next.root.is_laboratory()
+                || self.journal.head() != Some(next)
+                || !self.journal.contains(next)
+                || self.journal.records().last().map(Vec::as_slice) != Some(record)
+            {
+                return Err(EffectPersistenceError::InvalidHistory(
+                    "retained journal append receipt",
+                ));
+            }
+            self.retainer.retain(expected, next)?;
+            if self.retainer.retained_pin()? != Some(next) {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            Ok(next)
+        })();
+        match result {
+            Ok(next) => {
+                self.retained = Some(next);
+                Ok(next)
+            }
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
+    }
 }

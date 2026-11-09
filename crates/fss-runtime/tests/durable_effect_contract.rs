@@ -13,7 +13,10 @@ use fss_runtime::effect::{
     CommitApproval, EffectCoordError, EffectCoordinator, PrepareSpec, PreparedEffect,
     Reconciliation,
 };
-use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
+use fss_runtime::effect_journal::{
+    EffectJournalPin, EffectJournalStore, EffectPersistenceError, EffectPinRetainer,
+    PinRetainedEffectJournal,
+};
 use fss_runtime::lease::LeaseRegistry;
 
 type Test<T = ()> = Result<T, Box<dyn Error>>;
@@ -41,6 +44,60 @@ struct MemoryStore {
     disk: Arc<Mutex<Disk>>,
     records: Vec<Vec<u8>>,
     pins: Vec<EffectJournalPin>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum RetainFault {
+    #[default]
+    None,
+    BeforeWrite,
+    AfterWrite,
+    OmitWrite,
+}
+
+#[derive(Debug, Default)]
+struct RetainedPins {
+    pin: Option<EffectJournalPin>,
+    fault: RetainFault,
+    full: bool,
+}
+
+#[derive(Debug)]
+struct MemoryPinRetainer(Arc<Mutex<RetainedPins>>);
+
+impl EffectPinRetainer for MemoryPinRetainer {
+    fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> {
+        Ok(self.0.lock().expect("retainer lock").pin)
+    }
+
+    fn reserve_capacity(&mut self, _: usize) -> Result<(), EffectPersistenceError> {
+        if self.0.lock().expect("retainer lock").full {
+            return Err(EffectPersistenceError::Capacity);
+        }
+        Ok(())
+    }
+
+    fn retain(
+        &mut self,
+        expected: Option<EffectJournalPin>,
+        next: EffectJournalPin,
+    ) -> Result<(), EffectPersistenceError> {
+        let mut pins = self.0.lock().expect("retainer lock");
+        if pins.pin != expected {
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        let fault = std::mem::take(&mut pins.fault);
+        if matches!(fault, RetainFault::BeforeWrite) {
+            return Err(EffectPersistenceError::Storage("before retention".into()));
+        }
+        if !matches!(fault, RetainFault::OmitWrite) {
+            pins.pin = Some(next);
+        }
+        if matches!(fault, RetainFault::AfterWrite) {
+            return Err(EffectPersistenceError::Storage("after retention".into()));
+        }
+        Ok(())
+    }
 }
 
 impl MemoryStore {
@@ -231,6 +288,164 @@ impl Fixture {
         )?;
         Ok((owner, authority, tree))
     }
+}
+
+fn retained_fixture() -> Test<(Fixture, Arc<Mutex<RetainedPins>>)> {
+    let mut fixture = Fixture::new()?;
+    let pins = Arc::new(Mutex::new(RetainedPins::default()));
+    let journal = PinRetainedEffectJournal::new(
+        Box::new(MemoryStore::open(&fixture.disk)),
+        Box::new(MemoryPinRetainer(pins.clone())),
+    )?;
+    fixture.owner = EffectCoordinator::with_journal(Box::new(journal))?;
+    Ok((fixture, pins))
+}
+
+#[test]
+fn retained_store_direct_append_reserves_both_domains_before_writing() -> Test {
+    let disk = Arc::new(Mutex::new(Disk::default()));
+    let pins = Arc::new(Mutex::new(RetainedPins {
+        full: true,
+        ..RetainedPins::default()
+    }));
+    let mut journal = PinRetainedEffectJournal::new(
+        Box::new(MemoryStore::open(&disk)),
+        Box::new(MemoryPinRetainer(pins.clone())),
+    )?;
+    assert_eq!(
+        journal.append(None, b"preparation"),
+        Err(EffectPersistenceError::Capacity)
+    );
+    assert!(disk.lock().expect("disk lock").records.is_empty());
+    pins.lock().expect("retainer lock").full = false;
+    let pin = journal.append(None, b"preparation")?;
+    assert_eq!(pins.lock().expect("retainer lock").pin, Some(pin));
+    Ok(())
+}
+
+#[test]
+fn retained_checkpoint_advances_before_each_effect_transition_is_acknowledged() -> Test {
+    let (mut fixture, pins) = retained_fixture()?;
+    let prepared = fixture.prepare("retained-success")?;
+    let first = fixture.owner.durable_pin().expect("prepared pin");
+    assert_eq!(pins.lock().expect("retainer lock").pin, Some(first));
+    let approved = approval(&prepared);
+    let _permit = fixture.owner.commit(
+        &fixture.authority,
+        &fixture.tree,
+        &mut fixture.leases,
+        prepared,
+        TimestampNs(4),
+        approved,
+    )?;
+    let second = fixture.owner.durable_pin().expect("committed pin");
+    assert_eq!(second.sequence, first.sequence + 1);
+    assert_eq!(pins.lock().expect("retainer lock").pin, Some(second));
+    Ok(())
+}
+
+#[test]
+fn retention_ambiguity_refuses_dispatch_and_recovery_cannot_issue_a_permit() -> Test {
+    for fault in [
+        RetainFault::BeforeWrite,
+        RetainFault::AfterWrite,
+        RetainFault::OmitWrite,
+    ] {
+        let (mut fixture, pins) = retained_fixture()?;
+        let prepared = fixture.prepare("retention-ambiguity")?;
+        let minimum = pins
+            .lock()
+            .expect("retainer lock")
+            .pin
+            .expect("prepared pin");
+        let operation = prepared.operation().clone();
+        let original_digest = prepared.digest();
+        pins.lock().expect("retainer lock").fault = fault;
+        let approved = approval(&prepared);
+        let refused = fixture
+            .owner
+            .commit(
+                &fixture.authority,
+                &fixture.tree,
+                &mut fixture.leases,
+                prepared,
+                TimestampNs(4),
+                approved,
+            )
+            .expect_err("unconfirmed retention cannot grant a dispatch permit");
+        assert!(matches!(
+            refused.error(),
+            EffectCoordError::Persistence { .. }
+        ));
+        assert!(fixture.owner.persistence_needs_recovery());
+        let handle = refused.into_token();
+        let retry = fixture.owner.commit(
+            &fixture.authority,
+            &fixture.tree,
+            &mut fixture.leases,
+            handle.clone(),
+            TimestampNs(5),
+            approval(&handle),
+        );
+        assert!(matches!(
+            retry.expect_err("owner fenced").error(),
+            EffectCoordError::Persistence {
+                error: EffectPersistenceError::Poisoned,
+                ..
+            }
+        ));
+        let (mut recovered, authority, mut tree) = fixture.recover(minimum)?;
+        assert!(recovered.is_reconciliation_only());
+        let handle = recovered.adopt_recovered(
+            &authority,
+            &mut tree,
+            &operation,
+            original_digest,
+            TimestampNs(6),
+        )?;
+        assert_eq!(recovered.state(&handle)?, EffectState::Committed);
+        let result = recovered.commit(
+            &authority,
+            &tree,
+            &mut fixture.leases,
+            handle.clone(),
+            TimestampNs(7),
+            approval(&handle),
+        );
+        assert!(matches!(
+            result.expect_err("recovery cannot dispatch").error(),
+            EffectCoordError::RecoveryOnly { .. }
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn stale_or_full_pin_custody_refuses_before_dispatch() -> Test {
+    let (mut fixture, pins) = retained_fixture()?;
+    pins.lock().expect("retainer lock").full = true;
+    assert!(fixture.prepare("retainer-full").is_err());
+    assert!(fixture.disk.lock().expect("disk lock").records.is_empty());
+    assert!(!fixture.owner.persistence_needs_recovery());
+    pins.lock().expect("retainer lock").full = false;
+    let prepared = fixture.prepare("retainer-full")?;
+    pins.lock().expect("retainer lock").pin = None;
+    let approved = approval(&prepared);
+    let result = fixture.owner.commit(
+        &fixture.authority,
+        &fixture.tree,
+        &mut fixture.leases,
+        prepared,
+        TimestampNs(4),
+        approved,
+    );
+    assert!(matches!(
+        result.expect_err("changed pin is fenced").error(),
+        EffectCoordError::Persistence { .. }
+    ));
+    assert_eq!(fixture.disk.lock().expect("disk lock").records.len(), 1);
+    assert!(fixture.owner.persistence_needs_recovery());
+    Ok(())
 }
 
 #[test]

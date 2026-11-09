@@ -23,7 +23,10 @@ use fss_runtime::authority::AuthorityCx;
 use fss_runtime::effect::{
     CommitApproval, EffectCoordError, EffectCoordinator, PrepareSpec, Reconciliation,
 };
-use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
+use fss_runtime::effect_journal::{
+    EffectJournalPin, EffectJournalStore, EffectPersistenceError, EffectPinRetainer,
+    PinRetainedEffectJournal, keeper::JournalPinRetainer,
+};
 use fss_runtime::lease::LeaseRegistry;
 
 type Test = Result<(), Box<dyn std::error::Error>>;
@@ -70,6 +73,68 @@ fn seed(root: &Path) -> Result<(FileEffectJournal, EffectJournalPin), Box<dyn st
     let mut journal = FileEffectJournal::create(root, limits(), Arc::new(HostSpoolIo))?;
     let pin = journal.append(None, b"preparation")?;
     Ok((journal, pin))
+}
+
+#[test]
+fn separate_disk_keeper_reopens_and_identifies_the_exact_effect_prefix() -> Test {
+    let directory = Directory::new()?;
+    let effect_root = directory.0.join("effects");
+    let keeper_root = directory.0.join("keeper");
+    let scope = ContentDigest::sha256(b"dedicated fixture effect scope");
+    let keeper_store = FileEffectJournal::create(&keeper_root, limits(), Arc::new(HostSpoolIo))?;
+    let (keeper, bootstrap) = JournalPinRetainer::create(Box::new(keeper_store), scope)?;
+    let effect_store = FileEffectJournal::create(&effect_root, limits(), Arc::new(HostSpoolIo))?;
+    let mut owner = PinRetainedEffectJournal::new(Box::new(effect_store), Box::new(keeper))?;
+    let first = owner.append(None, b"prepared")?;
+    let second = owner.append(Some(first), b"committed")?;
+    drop(owner);
+
+    let keeper_store =
+        FileEffectJournal::open(&keeper_root, limits(), Arc::new(HostSpoolIo), bootstrap)?;
+    let mut keeper = JournalPinRetainer::reopen(Box::new(keeper_store), scope, bootstrap)?;
+    assert_eq!(keeper.retained_pin()?, Some(second));
+    let advanced = keeper.anchor();
+    assert_eq!(advanced.sequence, bootstrap.sequence + 2);
+    let effects = FileEffectJournal::open(&effect_root, limits(), Arc::new(HostSpoolIo), second)?;
+    assert!(effects.contains(first));
+    assert_eq!(effects.head(), Some(second));
+    drop(keeper);
+    let keeper_store =
+        FileEffectJournal::open(&keeper_root, limits(), Arc::new(HostSpoolIo), advanced)?;
+    assert!(
+        JournalPinRetainer::reopen(
+            Box::new(keeper_store),
+            ContentDigest::sha256(b"other scope"),
+            advanced,
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn keeper_stale_compare_fences_the_existing_owner() -> Test {
+    let directory = Directory::new()?;
+    let root = directory.0.join("keeper");
+    let scope = ContentDigest::sha256(b"dedicated stale compare fixture");
+    let store = FileEffectJournal::create(&root, limits(), Arc::new(HostSpoolIo))?;
+    let (mut keeper, bootstrap) = JournalPinRetainer::create(Box::new(store), scope)?;
+    let first = EffectJournalPin {
+        sequence: 1,
+        root: ContentDigest::sha256(b"effect prefix one"),
+    };
+    keeper.retain(None, first)?;
+    let latest = keeper.anchor();
+    assert_eq!(
+        keeper.retain(None, first),
+        Err(EffectPersistenceError::PinMismatch)
+    );
+    assert_eq!(keeper.retained_pin(), Err(EffectPersistenceError::Poisoned));
+    drop(keeper);
+    let store = FileEffectJournal::open(&root, limits(), Arc::new(HostSpoolIo), latest)?;
+    let mut recovered = JournalPinRetainer::reopen(Box::new(store), scope, bootstrap)?;
+    assert_eq!(recovered.retained_pin()?, Some(first));
+    Ok(())
 }
 
 fn object_path(root: &Path, digest: ContentDigest) -> Result<PathBuf, Box<dyn std::error::Error>> {
