@@ -80,3 +80,10 @@ Two downloads need pre-seeding because their upstreams are broken from here:
 - Bind mounts into Docker Desktop also break `chmod` from inside the container (`Permission
   denied` on extracted files) — build into a **named volume**, not a host directory, and copy
   sources in once.
+
+### WireGuard is off for the first build
+
+Both `wireguard-tools-1.0.20210914.tar.xz` and `wireguard-linux-compat` download with a hash
+mismatch from the mirror (a different body than the pinned one), and the kernel-module build
+costs time the first image does not need. The defconfig here drops them; re-enable once the
+mirror serves the pinned bytes again.
