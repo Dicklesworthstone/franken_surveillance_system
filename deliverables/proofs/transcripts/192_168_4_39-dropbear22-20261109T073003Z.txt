@@ -1,0 +1,5 @@
+$ ssh -i /var/root/.ssh/id_ed25519 -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o BatchMode=yes root@192.168.4.39 'id && cat /proc/mtd'
+rc=255
+Warning: Identity file /var/root/.ssh/id_ed25519 not accessible: No such file or directory.
+ssh: connect to host 192.168.4.39 port 22: Host is down
+

@@ -1,0 +1,17 @@
+{
+ "camera": "192.168.4.39",
+ "ip": "192.168.4.39",
+ "vector": "telnet9999",
+ "timestamp_utc": "20261109T073003Z",
+ "pass": false,
+ "checks": [
+  {
+   "name": "tcp9999-expect:uid=0\\(",
+   "expect": "uid=0\\(",
+   "got": "[Errno 64] Host is down",
+   "pass": false
+  }
+ ],
+ "notes": "",
+ "tool": "root_proof.py"
+}
