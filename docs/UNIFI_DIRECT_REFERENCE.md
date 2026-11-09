@@ -7232,5 +7232,19 @@ cancelled-but-pending and published transitions. The job used base
 `472aeed9489c2c59692468e9b03eebd365d75f1e`, overlay fingerprint
 `849a29a97a0cc2b40c9474477af8794d216754d8e95d1916af9ac00560a1fce2`, exited
 zero, was acknowledged, and released its sources and execution pair. A
-separate socket-based controller/session fixture was added and is awaiting
-execution; this source-worker test does not qualify that fixture or a camera.
+separate socket-based controller/session fixture reached its final cleanup
+assertion but failed there under strict-remote job `30101959465763548`: the
+existing fixture treated the new scenario as an audio-error scenario. The job
+exited 101, was acknowledged, and released sources and its execution pair.
+After correcting the fixture condition, strict-remote job
+`30101959465763551` passed that scenario: one passed, none failed or ignored,
+and 52 were filtered. Its overlay fingerprint was
+`1cb676f0c260b5e8c39f4228f5a874956f072f89da368de84950e0b9ee30ca5b` at the
+same base. The job exited zero, was acknowledged, and released sources and its
+execution pair. The local-socket fixture observed a pending separate source
+blocking session advancement, a blocked archival attempt allowing a real
+simulated-controller time-sync exchange, retained A/V data, and source
+publication and retirement. It did not exercise this entry point's
+cancellation branch or a physical camera. Existing callers of `run_slice`
+do not automatically use this source-aware step; an owning recorder still
+needs to route its session through it and handle its returned outcomes.

@@ -2131,7 +2131,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         assert_eq!(retired.supervisor.media.pending_audio.is_some(),late_audio_change==2);
                                         assert!(retired.held.is_none());
                                         let pending=retired.worker.parts.sink.retire().pending;
-                                        if late_audio_change!=0 {assert!(pending.is_none());} else {
+                                        if matches!(late_audio_change,1|2) {assert!(pending.is_none());} else {
                                             let segment=pending.ok_or("unknown guard lost next source")?;
                                             for source in segment.source() { originals.extend_from_slice(source.bytes()); }
                                         }
