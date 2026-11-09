@@ -6534,3 +6534,35 @@ and now pass. No native or release qualification is claimed, and broad
 FSS-046/FSS-077 beads remain open. See
 [the zone guide](docs/onvif-vendor-zones.md) and
 [the consolidated handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_ANALYSIS.json).
+
+## 2026-11-09 — canonical read-only ONVIF analysis owner
+
+`agent_onvif::query_onvif_in_deployment` now connects retained XML and RTP sources
+to the existing AOP-005 query context for tracks, lifecycle and raw-coordinate
+zones. Shared frozen reconstruction preserves original source recipes, parser
+generations and retained-owner output identities. One genuine `PinnedClosureReader`
+verifies every selected root and child in two complete passes under cumulative
+read/work limits, including empty or rejected sources; metadata-only deployment
+observations bracket the source analysis and require matching history, effects,
+layout and committed deletion authority. The path takes no writer lock, performs
+no publisher recovery and can coexist with an active deployment writer.
+
+The complete semantic projection preserves original source/frame/object/tracklet
+handles, lifecycle endpoint/support/conflict evidence and zone uncertainty. Raw
+vendor strings, timestamps, UUIDs and coordinates are withheld. Every selected
+data row is counted; a result exceeding the requested 1..32 rows refuses as a
+whole. Recomputed digests do not imply a retained publication, physical identity,
+absence, calibrated occupancy, source hydration or an external effect grant.
+
+Pinned genuine native execution passed all 12 new public-API tests and seven shared-source custody unit tests, plus the
+existing retained tracks/lifecycle/zones suites (13/14/7): 53 tests total,
+including actual XML/RTP parity, writer coexistence/no writes, pending effects,
+selected-source deletion/tampering, complete-row refusal, exact/minus-one bounds,
+cancellation admission and callback-induced authority changes. Canonical CLI/MCP checks are recorded separately in the
+[typed handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_AGENT_QUERY.json).
+Developer serial compiler/MIR settings and package codegen256 enabled this
+native run under host memory limits; they are not release qualification.
+The final synchronous metadata reconstruction is bounded but not interruptible;
+direct callers apply late-cancellation delivery gating. Broad FSS-046, FSS-210,
+FSS-235 and FSS-242 beads remain open. See the
+[read-only query guide](docs/ONVIF_AGENT_QUERY.md).

@@ -1,0 +1,190 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-09",
+  "scope": "Canonical read-only ONVIF analysis integration",
+  "state": "native_integration_passed_transport_validation_in_progress_not_qualified",
+  "mission": {
+    "goal": "Connect exact retained XML/RTP tracks, lifecycle and vendor-zone analysis to canonical AOP-005 queries through a real read-only source owner.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-09_ONVIF_ANALYSIS.json"
+    ],
+    "requirements": [
+      "FSS-046",
+      "FSS-210",
+      "FSS-235",
+      "FSS-242"
+    ]
+  },
+  "authority": {
+    "git": "User explicitly authorized meaningful frequent direct-main GitHub commits, no PRs; preserve concurrent main with expected-head updates.",
+    "live_devices": false,
+    "external_effects": false,
+    "read_owner": "Existing operator-selected deployment only; exact immutable source roots, metadata-only history, no publisher recovery/writer lock/repair/acquisition/derived publication/effect reconciliation."
+  },
+  "situation_roots": {
+    "previous_analysis_commit": "437f5c980322e3d3d4bae42779298e3613081c67",
+    "base": "94a7b92744e856b98dfa7036f971985caf5defc2",
+    "source": "crates/fss-reference/src/onvif/metadata/read_source.rs",
+    "read_view": "crates/fss-reference/src/onvif/metadata/read_view.rs",
+    "context": "crates/fss-reference/src/agent_onvif.rs",
+    "projection": "crates/fss-reference/src/agent_onvif/projection.rs"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "this_commit",
+      "change": "Shared frozen source reconstruction, genuine read-only two-pass analysis, canonical AOP-005 context and complete redacted semantic rows."
+    }
+  ],
+  "contracts": {
+    "operation": "AOP-005 query",
+    "payload": "existing AgentCognitiveEnvelope v1, query/case",
+    "modes": [
+      "tracks",
+      "lifecycle",
+      "zones"
+    ],
+    "pins": "ordered exact XML/RTP identity/root pairs, duplicate identities refused, each independent source a continuity barrier",
+    "privacy": "Raw lexical vendor values/UUIDs/source bytes withheld; original handles, barriers, uncertainty and explicit operator zone policy retained. No source hydration grant.",
+    "compatibility": "Old source bytes/generations, projection identities, public retained-owner APIs and original read/callback order preserved; new query domains bind its different read owner and accounting.",
+    "complete_rows": "All source/frame/occurrence/tracklet rows plus all selected lifecycle document/operation/endpoint/support/behaviour/reuse rows or zone policy/cell/frame/transition rows; 1..32 or whole-query refusal."
+  },
+  "budgets": {
+    "source_pins": 32,
+    "root_observations": 64,
+    "source_bytes_default": 268435456,
+    "source_io_calls_default": 131072,
+    "per_source_object_bytes": 8388608,
+    "objects_default": 16384,
+    "edges_default": 65536,
+    "shared_work_default": 33554432,
+    "deployment_bytes_default": 268435456,
+    "deployment_payload_reads_default": 65536,
+    "separate_histories": 2,
+    "complete_source_projection_passes": 2,
+    "source_checks": "All initial reads and finish-root payload rehashes in both passes use one real reader; no allowance refill.",
+    "cancellation": "Phase/source-I/O checkpoints. The final checkpoint admits bounded synchronous history reconstruction followed by pure assembly without caller callbacks. Cancellation/deadline during this finalization requires caller delivery gating; canonical CLI gates after rendering. No interruptible final-history claim."
+  },
+  "cases": [
+    {
+      "question": "Can existing ONVIF interpretations be used without writable publisher recovery?",
+      "finding": "A shared frozen verifier runs behind either the original owner or PinnedClosureReader, preserving bytes/generations; current history/deletion authority brackets the repeated source/analysis passes.",
+      "evidence": [
+        "crates/fss-reference/src/onvif/metadata/read_source/tests.rs",
+        "crates/fss-reference/tests/agent_onvif_contract.rs"
+      ],
+      "qualification": "All 53 genuine native checks passed: 12 public API integration, seven shared-source custody unit and 34 existing retained-owner regression tests."
+    }
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31",
+    "baseline_passed": {
+      "core_library": 193,
+      "model_ir_library": 22,
+      "lifecycle_wire": 28,
+      "lifecycle_contract": 32,
+      "tracklets": 26,
+      "tracklet_json": 12,
+      "zones": 24
+    },
+    "genuine_native_dependency": "Pinned Asupersync compiled successfully using repository-recorded developer-only serial frontend/backend/linker, MIR0/fewer-names and package codegen256 settings; no dependency/source/feature/panic changes.",
+    "native_tests": {
+      "agent_onvif_contract": 12,
+      "onvif_metadata_tracks_custody": 13,
+      "onvif_metadata_lifecycle_custody": 14,
+      "onvif_metadata_zones_custody": 7
+    },
+    "source_review": "Shared original-source read order and no-write owner reviewed; explicit bounded finalization contract preserves final authority checks after last callback.",
+    "qualification": "No complete release matrix, live-device/Profile M, physical-world truth or release qualification.",
+    "native_execution": {
+      "argv": [
+        "cargo",
+        "--config",
+        "profile.dev.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.test.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.dev.package.fss-reference.codegen-units=256",
+        "--config",
+        "profile.test.package.fss-reference.codegen-units=256",
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast",
+        "-p",
+        "fss-reference",
+        "--test",
+        "agent_onvif_contract",
+        "--test",
+        "onvif_metadata_tracks_custody",
+        "--test",
+        "onvif_metadata_lifecycle_custody",
+        "--test",
+        "onvif_metadata_zones_custody"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 70.928,
+      "child_max_rss_kib": 3232612,
+      "log_sha256": "198cd071a2fd34a235a3cd62430a3db7e1e6adc5aa834bebd483e30b8e0c2d8c",
+      "rustflags": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes",
+      "debug_info": false,
+      "incremental": false,
+      "qualification": "Developer native execution only; these settings do not replace the release lane.",
+      "source_parent": "3b0b34ea0b061e83ec327a383aea08b503928072",
+      "concurrent_upstream": "Native source tests executed before six disjoint upstream commits; these are preserved unchanged in the publication parent. Canonical transport build includes the current parent."
+    },
+    "source_helper_unit_tests": {
+      "passed": 7,
+      "unrelated_tests_filtered": 2353,
+      "log_sha256": "6a0492053cfef2f035001b605ef454d3a6638d70c53a594118ed20bdda7723b5",
+      "wall_seconds": 97.36,
+      "child_max_rss_kib": 4158108
+    }
+  },
+  "findings": [
+    "Exact retained source ownership can be reused without reopening a writer.",
+    "Canonical queries need complete uncertainty-preserving rows and existing envelopes, not parallel MCP tools.",
+    "A late arbitrary callback after captured authority is unsafe; finalization admission and transport delivery gating remain distinct."
+  ],
+  "active_work": [
+    "Execute canonical CLI/MCP and separate-process equivalence, then publish a second meaningful commit."
+  ],
+  "open_beads": [
+    "fss-x4a.11.4",
+    "fss-x4a.24.10",
+    "fss-x4a.24.35",
+    "fss-x4a.24.42"
+  ],
+  "obligations": [
+    {
+      "state": "open",
+      "work": "Complete canonical CLI/MCP tests and publish exact evidence."
+    },
+    {
+      "state": "open",
+      "work": "Continuous metadata capture requires a provisional-to-durable identity contract."
+    },
+    {
+      "state": "open",
+      "work": "Qualified calibration, class mapping, scene/event integration and physical-device requirements remain separate."
+    }
+  ],
+  "unknowns": [
+    "Repeated filesystem/history observations do not form an atomic snapshot or availability lease.",
+    "Vendor claims and derived geometry/lineage do not establish physical identity, occupancy, absence, trusted time or effects."
+  ],
+  "invalidations": [
+    "Changed root/closure/source generation/site/history/effect prefix/deletion state, cancellation at admission or exhausted read/work/output capacity refuses the query.",
+    "No missing root initialization, repair, acquisition or policy activation occurs."
+  ],
+  "continuations": [
+    {
+      "action": "Run the recorded native owner/public API and canonical CLI/MCP fixture targets with genuine pinned dependencies.",
+      "authority": "Local synthetic sources only.",
+      "expected_proof": "Source parity, bounded/no-write behavior, complete typed output and transport equivalence."
+    }
+  ]
+}

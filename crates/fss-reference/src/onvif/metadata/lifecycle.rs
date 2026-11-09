@@ -7,6 +7,7 @@
 //! nor initializes a deployment, acquires data, publishes derived roots or reconciles effects.
 //! Existing-store opening may still perform bounded publisher housekeeping under its lock.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::path::Path;
 
@@ -327,10 +328,10 @@ impl RetainedLifecycle {
 }
 
 #[derive(Eq, PartialEq)]
-struct Pass {
-    report: LifecycleReport,
-    documents: Vec<LifecycleDocumentReceipt>,
-    documents_digest: ContentDigest,
+pub(super) struct Pass {
+    pub(super) report: LifecycleReport,
+    pub(super) documents: Vec<LifecycleDocumentReceipt>,
+    pub(super) documents_digest: ContentDigest,
 }
 struct ParsedDocument {
     receipt_index: usize,
@@ -343,6 +344,24 @@ fn project_sources(
     work: &mut WorkBudget,
     cx: &ReplayCx<impl ReplayAdmission>,
     limits: LifecycleReadLimits,
+) -> Result<Pass> {
+    project_verified_sources(
+        input,
+        work,
+        limits,
+        &|stage| checkpoint(cx, stage),
+        |digest, maximum| super::read(deployment, digest, maximum, cx).map(Cow::Owned),
+    )
+}
+
+/// Identical lifecycle semantics over source bytes admitted by either genuine custody owner.
+/// A borrowed XML buffer avoids reopening a completed read-only source closure.
+pub(super) fn project_verified_sources<'a>(
+    input: ProjectionInput<'_>,
+    work: &mut WorkBudget,
+    limits: LifecycleReadLimits,
+    check: &dyn Fn(&'static str) -> Result<()>,
+    mut read_xml: impl FnMut(ContentDigest, usize) -> std::result::Result<Cow<'a, [u8]>, MetadataError>,
 ) -> Result<Pass> {
     if input.sources.len() != input.receipts.len() {
         return Err(RetainedLifecycleError::Mismatch);
@@ -359,10 +378,10 @@ fn project_sources(
     let mut references = 0_usize;
     for (source_ordinal, (source, original)) in input.sources.iter().zip(input.receipts).enumerate()
     {
-        checkpoint(cx, "onvif_lifecycle:source")?;
+        check("onvif_lifecycle:source")?;
         match source {
             Source::Xml(source) => {
-                checkpoint(cx, "onvif_lifecycle:document")?;
+                check("onvif_lifecycle:document")?;
                 let mut receipt = receipt(
                     source_ordinal,
                     original.pin,
@@ -380,20 +399,16 @@ fn project_sources(
                     receipt.state = LifecycleDocumentState::NonAnalyticsSoap;
                     require_no_analytics(source.document())?;
                 } else {
-                    // Precharge the additive parse before the extra original XML read. That
-                    // indexed read independently consumes the same installed spool byte cap.
+                    // Precharge before obtaining original XML. The retained-owner adapter
+                    // meters a fresh indexed read; the read-only adapter borrows bytes already
+                    // charged and verified within this pass's complete source closure.
                     let parse_limits = reserve_parse(source.source_bytes(), limits.parse, work)?;
-                    let bytes = super::read(
-                        deployment,
-                        source.source_digest(),
-                        source.source_bytes(),
-                        cx,
-                    )?;
+                    let bytes = read_xml(source.source_digest(), source.source_bytes())?;
                     if bytes.len() != source.source_bytes() {
                         return Err(RetainedLifecycleError::Mismatch);
                     }
                     let value = parse_metadata_lifecycle_document(&bytes, parse_limits, || {
-                        checkpoint(cx, "onvif_lifecycle:parse").is_ok()
+                        check("onvif_lifecycle:parse").is_ok()
                     })?;
                     admit_parsed(
                         &input,
@@ -416,7 +431,7 @@ fn project_sources(
             }
             Source::Rtp(source) => {
                 if source.documents().is_empty() {
-                    checkpoint(cx, "onvif_lifecycle:document")?;
+                    check("onvif_lifecycle:document")?;
                     push(
                         &mut documents,
                         receipt(
@@ -432,7 +447,7 @@ fn project_sources(
                     )?;
                 }
                 for document in source.documents() {
-                    checkpoint(cx, "onvif_lifecycle:document")?;
+                    check("onvif_lifecycle:document")?;
                     // This accessor hashes the complete XML. Reserve and compute it once
                     // per document, including rejected and empty candidates, never per frame.
                     work.reserve(document.source_bytes())?;
@@ -466,7 +481,7 @@ fn project_sources(
                             let value = parse_metadata_lifecycle_document(
                                 document.source_xml(),
                                 parse_limits,
-                                || checkpoint(cx, "onvif_lifecycle:parse").is_ok(),
+                                || check("onvif_lifecycle:parse").is_ok(),
                             )?;
                             admit_parsed(
                                 &input,
@@ -504,7 +519,7 @@ fn project_sources(
             .source_digest
             .ok_or(RetainedLifecycleError::Mismatch)?;
         for (offset, frame) in document.value.frames.iter().enumerate() {
-            checkpoint(cx, "onvif_lifecycle:frame")?;
+            check("onvif_lifecycle:frame")?;
             overlays.push(LifecycleFrameInput {
                 frame_ordinal: receipt.frame_start + offset,
                 source_digest,
@@ -513,7 +528,7 @@ fn project_sources(
             });
         }
     }
-    checkpoint(cx, "onvif_lifecycle:project")?;
+    check("onvif_lifecycle:project")?;
     work.reserve(
         usize::try_from(limits.projection.max_work_units)
             .map_err(|_| RetainedLifecycleError::Limit)?,
@@ -523,9 +538,9 @@ fn project_sources(
         input.tracks,
         &overlays,
         limits.projection,
-        || checkpoint(cx, "onvif_lifecycle:group").is_ok(),
+        || check("onvif_lifecycle:group").is_ok(),
     )?;
-    let documents_digest = document_digest(&documents, limits.parse, work, cx)?;
+    let documents_digest = document_digest(&documents, limits.parse, work, check)?;
     Ok(Pass {
         report,
         documents,
@@ -665,7 +680,7 @@ fn document_digest(
     documents: &[LifecycleDocumentReceipt],
     limits: LifecycleParseLimits,
     work: &mut WorkBudget,
-    cx: &ReplayCx<impl ReplayAdmission>,
+    check: &dyn Fn(&'static str) -> Result<()>,
 ) -> Result<ContentDigest> {
     let maximum = documents
         .len()
@@ -694,7 +709,7 @@ fn document_digest(
     encoded.u64(limits.max_work_units);
     encoded.u64(documents.len() as u64);
     for document in documents {
-        checkpoint(cx, "onvif_lifecycle:receipt")?;
+        check("onvif_lifecycle:receipt")?;
         if document.parser_generation.len() > 256
             || document
                 .original_parse_error

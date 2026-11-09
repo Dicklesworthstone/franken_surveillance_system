@@ -426,12 +426,24 @@ impl WorkBudget {
             .ok_or(RetainedTrackError::Limit)?;
         Ok(())
     }
+    pub(super) fn new(maximum: usize) -> Self {
+        Self { maximum, used: 0 }
+    }
+    pub(super) const fn used(&self) -> usize {
+        self.used
+    }
     fn reader(&mut self, deployment: &ReferenceDeployment, pin: TrackSourcePin) -> Result<()> {
+        self.source(deployment.ledger().batches(), pin)
+    }
+    pub(super) fn source(
+        &mut self,
+        batches: &[fss_core::EvidenceDeltaBatch],
+        pin: TrackSourcePin,
+    ) -> Result<()> {
         // Reserve before the source owner can scan. Six full (batch + delta) passes cover
         // deletion candidate/proof searches and the reverse publication search. Decoding and
         // sorting deletion-plan structures are independently bounded by their canonical byte
         // ceiling and this request's cumulative indexed read allowance.
-        let batches = deployment.ledger().batches();
         if batches.len() > super::MAX_HISTORY_BATCHES {
             return Err(RetainedTrackError::Limit);
         }
@@ -460,7 +472,7 @@ impl WorkBudget {
     }
 }
 
-pub(super) enum Source {
+pub(crate) enum Source {
     Xml(RetainedMetadata),
     Rtp(RetainedRtpMetadata),
 }
@@ -536,17 +548,45 @@ where
         }
         sources.push(source);
     }
+    project_loaded(
+        deployment.site_lineage(),
+        pins,
+        &sources,
+        limits,
+        work,
+        &|stage| checkpoint(cx, stage),
+        |input, work| extension(input, deployment, work, cx),
+    )
+}
+
+/// Shared deterministic frame mapping and grouping after an actual owner verifies each source.
+/// Caller must enforce aggregate frame/object shape while accumulating source inputs.
+pub(super) fn project_loaded<T, E>(
+    site_lineage: &str,
+    pins: &[TrackSourcePin],
+    sources: &[Source],
+    limits: TrackReadLimits,
+    work: &mut WorkBudget,
+    check: &dyn Fn(&'static str) -> Result<()>,
+    extension: impl FnOnce(ProjectionInput<'_>, &mut WorkBudget) -> Result<T, E>,
+) -> Result<(Vec<TrackSourceReceipt>, TrackletReport, T), E>
+where
+    E: From<RetainedTrackError> + From<MetadataError> + From<TrackError>,
+{
+    if sources.len() != pins.len() {
+        return Err(RetainedTrackError::Mismatch.into());
+    }
     let mut frames = Vec::new();
     let mut receipts = Vec::new();
     receipts
         .try_reserve_exact(pins.len())
         .map_err(|_| RetainedTrackError::Limit)?;
-    for (pin, source) in pins.iter().copied().zip(&sources) {
-        checkpoint(cx, "onvif_tracks:frames")?;
+    for (pin, source) in pins.iter().copied().zip(sources) {
+        check("onvif_tracks:frames")?;
         match source {
             Source::Xml(source) => {
                 let scope = scope_digest(
-                    deployment.site_lineage(),
+                    site_lineage,
                     source.binding(),
                     source.parser_generation(),
                     None,
@@ -591,7 +631,7 @@ where
             }
             Source::Rtp(source) => {
                 let scope = scope_digest(
-                    deployment.site_lineage(),
+                    site_lineage,
                     source.binding(),
                     source.parser_generation(),
                     Some(source.config()),
@@ -678,25 +718,23 @@ where
             }
         }
     }
-    checkpoint(cx, "onvif_tracks:project")?;
+    check("onvif_tracks:project")?;
     // Reserve the full declared algorithm allowance before starting each projection. Both
     // passes consume the same outer balance even when the actual grouping happens to be cheap.
     work.reserve(
         usize::try_from(limits.projection.max_work_units).map_err(|_| RetainedTrackError::Limit)?,
     )?;
     let report = project_tracklets(&frames, limits.projection, || {
-        checkpoint(cx, "onvif_tracks:group").is_ok()
+        check("onvif_tracks:group").is_ok()
     })?;
     let projected = extension(
         ProjectionInput {
-            sources: &sources,
+            sources,
             receipts: &receipts,
             frames: &frames,
             tracks: &report,
         },
-        deployment,
         work,
-        cx,
     )?;
     Ok((receipts, report, projected))
 }

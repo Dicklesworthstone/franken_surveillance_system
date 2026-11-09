@@ -9,6 +9,10 @@
 
 /// Additive source-verified vendor lifecycle relationships over unchanged tracklets.
 pub mod lifecycle;
+/// Shared frozen source reconstruction through an explicitly supplied read capability.
+pub(crate) mod read_source;
+/// Immutable, source-verified projections used by canonical agent queries.
+pub(crate) mod read_view;
 mod record;
 /// Original-packet custody and deterministic replay of bounded ONVIF metadata RTP dumps.
 pub mod rtp;
@@ -23,8 +27,8 @@ pub use source::PullPointAcquisition;
 use std::fmt;
 
 use fss_core::{
-    CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DigestAlgorithm, LedgerAnchor,
-    Plane, ProvenanceClass, SensorId,
+    CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DigestAlgorithm,
+    EvidenceDeltaBatch, LedgerAnchor, Plane, ProvenanceClass, SensorId,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{LocalPublicationState, SlotName};
@@ -297,49 +301,33 @@ impl RetainedMetadata {
             .publisher()
             .require_durable_record(&slot)
             .map_err(|_| MetadataError::Custody)?;
-        let encoded = read(deployment, identity, MAX_RECIPE_BYTES, cx)?;
-        let recipe = record::decode(&encoded)?;
-        if recipe.site != deployment.site_lineage() {
-            return Err(MetadataError::Custody);
-        }
-        let manifest = manifest(identity, &recipe)?;
-        let root = manifest.root();
-        check_deleted(
-            &deletions,
+        let reconstructed = reconstruct_xml(
             identity,
-            std::iter::once(root).chain(manifest.children().iter().copied()),
+            deployment.site_lineage(),
+            |digest, maximum| read(deployment, digest, maximum, cx),
+            |stage| checkpoint(cx, stage),
+            |manifest| {
+                check_deleted(
+                    &deletions,
+                    identity,
+                    std::iter::once(manifest.root()).chain(manifest.children().iter().copied()),
+                )?;
+                if visible.root != manifest.root()
+                    || read(deployment, manifest.root(), MAX_RECIPE_BYTES, cx)?
+                        != manifest.canonical_bytes()
+                {
+                    return Err(MetadataError::Custody);
+                }
+                Ok(())
+            },
         )?;
-        if visible.root != root
-            || read(deployment, root, MAX_RECIPE_BYTES, cx)? != manifest.canonical_bytes()
-        {
-            return Err(MetadataError::Custody);
-        }
-        let source = read(deployment, recipe.source, recipe.source_bytes, cx)?;
-        if source.len() != recipe.source_bytes {
-            return Err(MetadataError::Custody);
-        }
-        checkpoint(cx, "onvif_metadata:parse_retained")?;
-        let document = if recipe.acquisition.is_some() {
-            super::wire::parse_pull_messages_response(&source)?
-        } else {
-            recipe.interpretation.parse(&source)?
-        };
-        if let Some(acquisition) = &recipe.acquisition {
-            let subscription = read(
-                deployment,
-                acquisition.subscription_source,
-                acquisition.subscription_source_bytes,
-                cx,
-            )?;
-            acquisition.validate_sources(&source, &subscription)?;
-        }
-        let projection = record::projection(&document, recipe.interpretation)?;
-        if ContentDigest::sha256(&projection) != recipe.projection
-            || read(deployment, recipe.projection, MAX_PROJECTION_BYTES, cx)? != projection
-        {
-            return Err(MetadataError::Custody);
-        }
-        let anchor = check_publication(deployment, &slot, &manifest, &recipe.binding, cx)?;
+        let anchor = check_publication(
+            deployment,
+            &slot,
+            reconstructed.manifest(),
+            reconstructed.binding(),
+            cx,
+        )?;
         deployment
             .publisher()
             .require_durable_record(&slot)
@@ -349,13 +337,7 @@ impl RetainedMetadata {
             .verify_durable_head()
             .map_err(|_| MetadataError::Custody)?;
         checkpoint(cx, "onvif_metadata:verified")?;
-        Ok(Self {
-            identity,
-            root,
-            recipe,
-            document,
-            anchor,
-        })
+        Ok(reconstructed.finish(anchor).0)
     }
 
     /// Immutable import identity; it binds site, owner pins, source and interpretation.
@@ -454,6 +436,88 @@ impl RetainedMetadata {
             .ok_or(MetadataError::InvalidBinding)?;
         record::analytics_frame_identity(&self.recipe, frame, index)
     }
+}
+
+/// Frozen reconstruction before a caller attaches the independently verified publication anchor.
+/// Source bytes are retained for additive interpretation, never exposed by the public owner.
+pub(super) struct ReconstructedMetadata {
+    identity: ContentDigest,
+    manifest: ObjectManifest,
+    recipe: record::Recipe,
+    document: EventDocument,
+    source: Vec<u8>,
+}
+
+impl ReconstructedMetadata {
+    pub(super) fn manifest(&self) -> &ObjectManifest {
+        &self.manifest
+    }
+
+    pub(super) fn binding(&self) -> &SourceBinding {
+        &self.recipe.binding
+    }
+
+    pub(super) fn finish(self, anchor: LedgerAnchor) -> (RetainedMetadata, Vec<u8>) {
+        (
+            RetainedMetadata {
+                identity: self.identity,
+                root: self.manifest.root(),
+                recipe: self.recipe,
+                document: self.document,
+                anchor,
+            },
+            self.source,
+        )
+    }
+}
+
+/// Common recipe/source/projection verifier for both genuine storage capabilities.
+/// `read` supplies bounded, digest-verified bytes. The manifest callback executes at the
+/// original owner's exact cut, before source hydration; no publication or I/O is invented here.
+pub(super) fn reconstruct_xml(
+    identity: ContentDigest,
+    site: &str,
+    mut read: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>, MetadataError>,
+    mut admitted: impl FnMut(&'static str) -> Result<(), MetadataError>,
+    mut check_manifest: impl FnMut(&ObjectManifest) -> Result<(), MetadataError>,
+) -> Result<ReconstructedMetadata, MetadataError> {
+    let encoded = read(identity, MAX_RECIPE_BYTES)?;
+    let recipe = record::decode(&encoded)?;
+    if recipe.site != site {
+        return Err(MetadataError::Custody);
+    }
+    let manifest = manifest(identity, &recipe)?;
+    check_manifest(&manifest)?;
+    let source = read(recipe.source, recipe.source_bytes)?;
+    if source.len() != recipe.source_bytes {
+        return Err(MetadataError::Custody);
+    }
+    admitted("onvif_metadata:parse_retained")?;
+    let document = if recipe.acquisition.is_some() {
+        super::wire::parse_pull_messages_response(&source)?
+    } else {
+        recipe.interpretation.parse(&source)?
+    };
+    if let Some(acquisition) = &recipe.acquisition {
+        let subscription = read(
+            acquisition.subscription_source,
+            acquisition.subscription_source_bytes,
+        )?;
+        acquisition.validate_sources(&source, &subscription)?;
+    }
+    let projection = record::projection(&document, recipe.interpretation)?;
+    if ContentDigest::sha256(&projection) != recipe.projection
+        || read(recipe.projection, MAX_PROJECTION_BYTES)? != projection
+    {
+        return Err(MetadataError::Custody);
+    }
+    Ok(ReconstructedMetadata {
+        identity,
+        manifest,
+        recipe,
+        document,
+        source,
+    })
 }
 
 /// Parse and retain one complete owner-attributed document with analytics v2 semantics.
@@ -766,13 +830,43 @@ pub(super) fn check_publication(
     binding: &SourceBinding,
     cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<LedgerAnchor, MetadataError> {
-    if deployment.ledger().batches().len() > MAX_HISTORY_BATCHES {
+    check_publication_in_batches(
+        deployment.ledger().batches(),
+        slot,
+        expected,
+        binding,
+        || {
+            let mut closure: Vec<_> = deployment
+                .publisher()
+                .root_closure(slot)
+                .ok_or(MetadataError::Custody)?
+                .into_iter()
+                .filter(|digest| *digest != expected.root())
+                .collect();
+            closure.sort_unstable();
+            Ok(closure)
+        },
+        || checkpoint(cx, "onvif_metadata:history"),
+    )
+}
+
+/// Shared immutable publication witness. The selected manifest's flat closure must already
+/// have been verified by the caller's genuine storage owner; no root record alone suffices.
+pub(super) fn check_publication_in_batches(
+    batches: &[EvidenceDeltaBatch],
+    slot: &SlotName,
+    expected: &ObjectManifest,
+    binding: &SourceBinding,
+    mut closure: impl FnMut() -> Result<Vec<ContentDigest>, MetadataError>,
+    mut admitted: impl FnMut() -> Result<(), MetadataError>,
+) -> Result<LedgerAnchor, MetadataError> {
+    if batches.len() > MAX_HISTORY_BATCHES {
         return Err(MetadataError::Limit);
     }
     let object = format!("object:local-root:{}", slot.as_str());
     let mut work = 0_usize;
-    for batch in deployment.ledger().batches().iter().rev() {
-        checkpoint(cx, "onvif_metadata:history")?;
+    for batch in batches.iter().rev() {
+        admitted()?;
         work = work
             .checked_add(batch.deltas.len())
             .ok_or(MetadataError::Limit)?;
@@ -783,14 +877,7 @@ pub(super) fn check_publication(
             if delta.object_id.as_str() != object {
                 continue;
             }
-            let mut closure: Vec<_> = deployment
-                .publisher()
-                .root_closure(slot)
-                .ok_or(MetadataError::Custody)?
-                .into_iter()
-                .filter(|digest| *digest != expected.root())
-                .collect();
-            closure.sort_unstable();
+            let closure = closure()?;
             if batch.batch_id.as_str() != format!("batch:local-root:{}", slot.as_str())
                 || batch.deltas.len() != 1
                 || delta.family != "local_root_reachability"

@@ -44,7 +44,7 @@ pub const MAX_DOCUMENTS: usize = 64;
 pub const STAGE_RTP_METADATA_PUBLISH: &str = "onvif_rtp_metadata:publish";
 const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PROJECTION_BYTES: usize = 8 * 1024 * 1024;
-const MAX_MANIFEST_BYTES: usize = 16 * 1024;
+pub(super) const MAX_MANIFEST_BYTES: usize = 16 * 1024;
 
 /// Independent finite-file work limits; a hit is retained as incomplete processing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -424,83 +424,34 @@ impl RetainedRtpMetadata {
             .publisher()
             .require_durable_record(&slot)
             .map_err(|_| MetadataError::Custody)?;
-        let encoded = super::read(deployment, identity, super::MAX_RECIPE_BYTES, cx)?;
-        let recipe = record::decode(&encoded)?;
-        if recipe.site != deployment.site_lineage() {
-            return Err(MetadataError::Custody);
-        }
-        check_deleted(&deletions, identity, [recipe.source, recipe.report])?;
-        let source = super::read(deployment, recipe.source, recipe.source_bytes, cx)?;
-        if source.len() != recipe.source_bytes {
-            return Err(MetadataError::Custody);
-        }
-        let native_source = if let Some((digest, length)) = recipe.native_source {
-            check_deleted(&deletions, identity, [digest])?;
-            let bytes = super::read(deployment, digest, length, cx)?;
-            if bytes.len() != length || length > MAX_NATIVE_SOURCE_BYTES {
-                return Err(MetadataError::Custody);
-            }
-            super::checkpoint(cx, "onvif_rtp_metadata:native_replay")?;
-            let native =
-                NativeMetadataSource::decode(&bytes).map_err(|_| MetadataError::Custody)?;
-            validate_native_binding(&native, &recipe.binding, &recipe.config)
-                .map_err(|_| MetadataError::Custody)?;
-            if native
-                .canonical_bytes()
-                .map_err(|_| MetadataError::Custody)?
-                != bytes
-                || native.rtpdump().map_err(|_| MetadataError::Custody)? != source
-            {
-                return Err(MetadataError::Custody);
-            }
-            Some(native)
-        } else {
-            None
-        };
-        let replay = replay::analyze(&source, recipe.config, || {
-            super::checkpoint(cx, "onvif_rtp_metadata:replay")
-        })?;
-        let report_bytes = record::report(&replay.report, &replay.documents)?;
-        if ContentDigest::sha256(&report_bytes) != recipe.report
-            || super::read(deployment, recipe.report, MAX_REPORT_BYTES, cx)? != report_bytes
-        {
-            return Err(MetadataError::Custody);
-        }
-        let manifest = manifest(identity, &recipe, &replay.documents)?;
-        check_deleted(
-            &deletions,
+        let reconstructed = reconstruct_rtp(
             identity,
-            std::iter::once(manifest.root()).chain(manifest.children().iter().copied()),
-        )?;
-        if manifest.root() != visible.root
-            || super::read(deployment, manifest.root(), MAX_MANIFEST_BYTES, cx)?
-                != manifest.canonical_bytes()
-        {
-            return Err(MetadataError::Custody);
-        }
-        for document in &replay.documents {
-            if super::read(
-                deployment,
-                document.source_digest(),
-                document.bytes.len(),
-                cx,
-            )? != document.bytes
-            {
-                return Err(MetadataError::Custody);
-            }
-            if let Some(projection) = &document.projection {
-                if super::read(
-                    deployment,
-                    ContentDigest::sha256(projection),
-                    projection.len(),
-                    cx,
-                )? != *projection
+            deployment.site_lineage(),
+            |digest, maximum| super::read(deployment, digest, maximum, cx),
+            |stage| super::checkpoint(cx, stage),
+            |digests| check_deleted(&deletions, identity, digests.iter().copied()),
+            |manifest| {
+                check_deleted(
+                    &deletions,
+                    identity,
+                    std::iter::once(manifest.root()).chain(manifest.children().iter().copied()),
+                )?;
+                if manifest.root() != visible.root
+                    || super::read(deployment, manifest.root(), MAX_MANIFEST_BYTES, cx)?
+                        != manifest.canonical_bytes()
                 {
                     return Err(MetadataError::Custody);
                 }
-            }
-        }
-        let anchor = super::check_publication(deployment, &slot, &manifest, &recipe.binding, cx)?;
+                Ok(())
+            },
+        )?;
+        let anchor = super::check_publication(
+            deployment,
+            &slot,
+            reconstructed.manifest(),
+            reconstructed.binding(),
+            cx,
+        )?;
         deployment
             .publisher()
             .require_durable_record(&slot)
@@ -510,16 +461,113 @@ impl RetainedRtpMetadata {
             .verify_durable_head()
             .map_err(|_| MetadataError::Custody)?;
         super::checkpoint(cx, "onvif_rtp_metadata:verified")?;
-        Ok(Self {
-            identity,
-            root: manifest.root(),
-            recipe,
-            native_source,
-            report: replay.report,
-            documents: replay.documents,
-            anchor,
-        })
+        Ok(reconstructed.finish(anchor))
     }
+}
+
+/// Frozen replay awaiting its independently verified original publication anchor.
+pub(super) struct ReconstructedRtpMetadata {
+    identity: ContentDigest,
+    manifest: ObjectManifest,
+    recipe: record::Recipe,
+    native_source: Option<NativeMetadataSource>,
+    report: RtpMetadataReport,
+    documents: Vec<RtpMetadataDocument>,
+}
+
+impl ReconstructedRtpMetadata {
+    pub(super) fn manifest(&self) -> &ObjectManifest {
+        &self.manifest
+    }
+
+    pub(super) fn binding(&self) -> &SourceBinding {
+        &self.recipe.binding
+    }
+
+    pub(super) fn finish(self, anchor: LedgerAnchor) -> RetainedRtpMetadata {
+        RetainedRtpMetadata {
+            identity: self.identity,
+            root: self.manifest.root(),
+            recipe: self.recipe,
+            native_source: self.native_source,
+            report: self.report,
+            documents: self.documents,
+            anchor,
+        }
+    }
+}
+
+/// Shared deterministic native/source replay. Both callers supply genuine bounded,
+/// digest-verifying reads; deletion and manifest checks keep the old owner's original order.
+pub(super) fn reconstruct_rtp(
+    identity: ContentDigest,
+    site: &str,
+    mut read: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>, MetadataError>,
+    mut admitted: impl FnMut(&'static str) -> Result<(), MetadataError>,
+    mut check_references: impl FnMut(&[ContentDigest]) -> Result<(), MetadataError>,
+    mut check_manifest: impl FnMut(&ObjectManifest) -> Result<(), MetadataError>,
+) -> Result<ReconstructedRtpMetadata, MetadataError> {
+    let encoded = read(identity, super::MAX_RECIPE_BYTES)?;
+    let recipe = record::decode(&encoded)?;
+    if recipe.site != site {
+        return Err(MetadataError::Custody);
+    }
+    check_references(&[recipe.source, recipe.report])?;
+    let source = read(recipe.source, recipe.source_bytes)?;
+    if source.len() != recipe.source_bytes {
+        return Err(MetadataError::Custody);
+    }
+    let native_source = if let Some((digest, length)) = recipe.native_source {
+        check_references(&[digest])?;
+        let bytes = read(digest, length)?;
+        if bytes.len() != length || length > MAX_NATIVE_SOURCE_BYTES {
+            return Err(MetadataError::Custody);
+        }
+        admitted("onvif_rtp_metadata:native_replay")?;
+        let native = NativeMetadataSource::decode(&bytes).map_err(|_| MetadataError::Custody)?;
+        validate_native_binding(&native, &recipe.binding, &recipe.config)
+            .map_err(|_| MetadataError::Custody)?;
+        if native
+            .canonical_bytes()
+            .map_err(|_| MetadataError::Custody)?
+            != bytes
+            || native.rtpdump().map_err(|_| MetadataError::Custody)? != source
+        {
+            return Err(MetadataError::Custody);
+        }
+        Some(native)
+    } else {
+        None
+    };
+    let replay = replay::analyze(&source, recipe.config, || {
+        admitted("onvif_rtp_metadata:replay")
+    })?;
+    let report_bytes = record::report(&replay.report, &replay.documents)?;
+    if ContentDigest::sha256(&report_bytes) != recipe.report
+        || read(recipe.report, MAX_REPORT_BYTES)? != report_bytes
+    {
+        return Err(MetadataError::Custody);
+    }
+    let manifest = manifest(identity, &recipe, &replay.documents)?;
+    check_manifest(&manifest)?;
+    for document in &replay.documents {
+        if read(document.source_digest(), document.bytes.len())? != document.bytes {
+            return Err(MetadataError::Custody);
+        }
+        if let Some(projection) = &document.projection {
+            if read(ContentDigest::sha256(projection), projection.len())? != *projection {
+                return Err(MetadataError::Custody);
+            }
+        }
+    }
+    Ok(ReconstructedRtpMetadata {
+        identity,
+        manifest,
+        recipe,
+        native_source,
+        report: replay.report,
+        documents: replay.documents,
+    })
 }
 
 /// Retain the complete original dump and a bounded deterministic replay, even when no usable XML
@@ -744,7 +792,7 @@ pub(crate) fn lifecycle_sensor(
         .clone())
 }
 
-fn slot(identity: ContentDigest) -> Result<SlotName, MetadataError> {
+pub(super) fn slot(identity: ContentDigest) -> Result<SlotName, MetadataError> {
     SlotName::parse(&format!("onvif-rtp-metadata-{}", &identity.to_text()[7..]))
         .map_err(|_| MetadataError::InvalidBinding)
 }
