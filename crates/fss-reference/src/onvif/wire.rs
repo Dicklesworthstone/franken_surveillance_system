@@ -14,6 +14,8 @@ use std::fmt;
 mod analytics;
 #[path = "wire/events.rs"]
 mod events;
+#[path = "wire/lifecycle.rs"]
+mod lifecycle;
 #[path = "wire/media2.rs"]
 mod media2;
 #[path = "wire/pullpoint.rs"]
@@ -34,6 +36,13 @@ pub use events::{
     EventDocument, EventDocumentFormat, EventItems, EventNotification, EventTopic, MAX_EVENT_ITEMS,
     MAX_EVENT_NOTIFICATIONS, MAX_EVENT_VALUE_BYTES, PropertyOperation, SimpleItem,
     parse_event_document, parse_metadata_document,
+};
+pub use lifecycle::{
+    LIFECYCLE_PARSER_GENERATION, LifecycleBehaviour, LifecycleDocument, LifecycleFrame,
+    LifecycleObject, LifecycleOperation, LifecycleOperationKind, LifecycleParseLimits,
+    LifecycleReference, LifecycleWireError, MAX_LIFECYCLE_LABEL_BYTES, MAX_LIFECYCLE_OPERATIONS,
+    MAX_LIFECYCLE_PARSE_WORK_UNITS, MAX_LIFECYCLE_REFERENCES, lifecycle_parse_work_bound,
+    parse_metadata_lifecycle_document,
 };
 pub use media2::{
     MAX_ONVIF_SERVICES, Media2Service, Media2StreamUri, ServiceVersion,
