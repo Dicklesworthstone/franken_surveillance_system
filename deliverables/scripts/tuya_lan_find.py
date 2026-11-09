@@ -54,30 +54,29 @@ def probe_device(ip: str, secs: float = 3.0) -> None:
 
 
 def _probe_once(ip: str, port: int, secs: float) -> None:
-    if True:
-        for cmd_len in (b"\x00\x00\x00\x04", b"\x00\x00\x00\x00"):
-            frame = PREFIX + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x23" + cmd_len + b"\x00\x00\x00\x00"
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(0.7)
-            try:
-                sock.sendto(frame, (ip, port))
-            except OSError as e:
-                print(f"  {ip}:{port} send failed ({e})")
-                sock.close()
-                continue
-            end = time.time() + secs
-            while time.time() < end:
-                try:
-                    data, peer = sock.recvfrom(2048)
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-                printable = "".join(chr(c) if 32 <= c < 127 else "." for c in data)
-                print(f"  reply {ip}:{peer[1]} {len(data)}B {data[:48].hex()}")
-                print(f"        {printable[:120]}")
-                break
+    for cmd_len in (b"\x00\x00\x00\x04", b"\x00\x00\x00\x00"):
+        frame = PREFIX + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x23" + cmd_len + b"\x00\x00\x00\x00"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.7)
+        try:
+            sock.sendto(frame, (ip, port))
+        except OSError as e:
+            print(f"  {ip}:{port} send failed ({e})")
             sock.close()
+            continue
+        end = time.time() + secs
+        while time.time() < end:
+            try:
+                data, peer = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            printable = "".join(chr(c) if 32 <= c < 127 else "." for c in data)
+            print(f"  reply {ip}:{peer[1]} {len(data)}B {data[:48].hex()}")
+            print(f"        {printable[:120]}")
+            break
+        sock.close()
 
 
 def arp_table() -> dict[str, str]:
