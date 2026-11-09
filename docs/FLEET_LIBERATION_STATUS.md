@@ -814,3 +814,20 @@ Wyze server *accepting* TCP and answering nothing: `nc -z` says open, `ffprobe` 
   are created with `create(2)` semantics so neither may pre-exist (ROOT-001 before the
   socket even opens), and the approval binds the args, so a retry re-plans against its
   own fresh root instead of replaying a stale digest.
+
+## 2026-11-09 02:35Z — building arm64 binaries from this box (rch notes)
+
+`fss-cli` artifacts are arm64-macOS. Every Linux worker builds them fine and then rch
+rejects the download (`RCH-E327 … incompatible with aarch64-apple-darwin`, exit 102), so a
+remote build is worthless here. The only Darwin workers are `wsurf` (draining) and
+`mminiold`; `mminiold` was operator-disabled, was enabled for this work, and still reports
+`⚠ Rust: unknown` in `rch workers capabilities` (`RCH-I006 missing_runtime`) although the
+pinned `nightly-2026-08-31` with rust-src/clippy/rustfmt is installed and `rch workers
+probe` passes — its capability detector does not see the toolchain on a Mac.
+
+Working escape hatch, in order of preference:
+1. `rch exec --worker hz4 -- cargo build -j 2 …` when only *checking* compilation on
+   Linux is enough (artifact cannot be run locally);
+2. `/Users/jemanuel/.rustup/toolchains/nightly-2026-08-31-aarch64-apple-darwin/bin/cargo
+   build …` directly for a usable arm64 binary — this bypasses the shim, so run it alone
+   and mind the disk.
