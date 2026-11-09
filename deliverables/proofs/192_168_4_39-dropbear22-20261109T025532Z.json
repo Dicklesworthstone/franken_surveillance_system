@@ -1,0 +1,17 @@
+{
+ "camera": "192.168.4.39",
+ "ip": "192.168.4.39",
+ "vector": "dropbear22",
+ "timestamp_utc": "20261109T025532Z",
+ "pass": false,
+ "checks": [
+  {
+   "name": "dropbear22-uid0",
+   "expect": "uid=0\\(",
+   "got": "Warning: Identity file /var/root/.ssh/id_ed25519 not accessible: No such file or directory.\nssh: connect to host 192.168.4.39 port 22: Connection refused\n",
+   "pass": false
+  }
+ ],
+ "notes": "",
+ "tool": "root_proof.py"
+}

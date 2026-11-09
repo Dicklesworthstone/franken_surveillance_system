@@ -37,6 +37,49 @@ KNOWN = {
 ARP_SNAPSHOT = "/tmp/fleet_arp_snapshot.txt"
 
 
+PREFIX = bytes.fromhex("000055aa")
+
+
+def probe_device(ip: str, secs: float = 3.0) -> None:
+    """Unicast a 0x23 DP_QUERY-style frame and print whatever comes back.
+
+    Nothing here is authenticated: 0x23 is the pre-key discovery command, so a reply
+    (even AES-ECB encrypted with the device-id-derived key) proves the unit is reachable
+    and talking. The payload, when it decrypts, carries the gwId.
+    """
+    for port in (6667, 6666):
+        for _round in range(3):
+            _probe_once(ip, port, secs)
+            time.sleep(1.2)
+
+
+def _probe_once(ip: str, port: int, secs: float) -> None:
+    if True:
+        for cmd_len in (b"\x00\x00\x00\x04", b"\x00\x00\x00\x00"):
+            frame = PREFIX + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x23" + cmd_len + b"\x00\x00\x00\x00"
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(0.7)
+            try:
+                sock.sendto(frame, (ip, port))
+            except OSError as e:
+                print(f"  {ip}:{port} send failed ({e})")
+                sock.close()
+                continue
+            end = time.time() + secs
+            while time.time() < end:
+                try:
+                    data, peer = sock.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                printable = "".join(chr(c) if 32 <= c < 127 else "." for c in data)
+                print(f"  reply {ip}:{peer[1]} {len(data)}B {data[:48].hex()}")
+                print(f"        {printable[:120]}")
+                break
+            sock.close()
+
+
 def arp_table() -> dict[str, str]:
     """ip -> mac. Under this harness's inherited environment `arp -an` prints a single
     entry regardless of interpreter, so the fleet's own snapshot file is preferred
@@ -44,11 +87,10 @@ def arp_table() -> dict[str, str]:
     out = {}
     try:
         age = time.time() - __import__("os").path.getmtime(ARP_SNAPSHOT)
-        if age < 600:
-            lines = open(ARP_SNAPSHOT, encoding="utf-8", errors="replace").read().splitlines()
-        else:
+        # a stale snapshot still beats `arp -an` here, which returns one line
+        if age > 600:
             print(f"arp snapshot is {age / 60:.0f} min old — refresh it", file=sys.stderr)
-            lines = []
+        lines = open(ARP_SNAPSHOT, encoding="utf-8", errors="replace").read().splitlines()
     except OSError:
         lines = []
     if not lines:
@@ -111,6 +153,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--subnet", default="192.168.4")
     ap.add_argument("--listen", type=float, default=8.0)
+    ap.add_argument("--probe", help="unicast a discovery frame at this IP (4.x camera)")
     a = ap.parse_args()
 
     arp = arp_table()
@@ -135,6 +178,11 @@ def main() -> int:
             if f.result():
                 hits[futs[f]] = "tcp6668"
     print(f"tcp6668 listeners: {sorted(hits) or 'none'}")
+
+    if a.probe:
+        print(f"probing {a.probe} …")
+        probe_device(a.probe)
+        hits.setdefault(a.probe, "probe")
 
     print(f"listening udp 6666/6667 for {a.listen:.0f}s …")
     for port in (6666, 6667):
