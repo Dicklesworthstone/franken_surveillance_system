@@ -324,3 +324,193 @@ fn required_root_duplicate_source_and_tiny_budget_refuse_without_partial_json() 
     assert!(!missing.exists());
     Ok(())
 }
+
+fn lifecycle_document(frames: &[bool]) -> Vec<u8> {
+    let frames: String = frames.iter().map(|renamed| {
+        if *renamed {
+            format!(r#"<t:Frame UtcTime="2026-10-28T00:00:01Z" Source="private&quot;module\canary"><t:Object ObjectId="8675310"/><t:ObjectTree><t:Rename><t:from ObjectId="{PRIVATE_OBJECT}"/><t:to ObjectId="8675310"/></t:Rename></t:ObjectTree></t:Frame>"#)
+        } else {
+            format!(r#"<t:Frame UtcTime="2026-10-28T00:00:00Z" Source="private&quot;module\canary"><t:Object ObjectId="{PRIVATE_OBJECT}"/></t:Frame>"#)
+        }
+    }).collect();
+    format!(r#"<t:MetadataStream xmlns:t="http://www.onvif.org/ver10/schema"><t:VideoAnalytics>{frames}</t:VideoAnalytics></t:MetadataStream>"#).into_bytes()
+}
+fn lifecycle_args(root: &Path, source_flag: &str, receipt: &str) -> Test<Vec<OsString>> {
+    let mut args = tracks_args(root, source_flag, receipt)?;
+    args[0] = "lifecycle".into();
+    Ok(args)
+}
+
+#[test]
+fn lifecycle_xml_explains_original_runs_without_relabeling_or_default_disclosure() -> Test {
+    let directory = Directory::new("lifecycle-xml")?;
+    let input = directory.0.join("source.xml");
+    fs::write(&input, lifecycle_document(&[false, true]))?;
+    let receipt = success(run(&import_args(&directory.root(), &input, false))?)?;
+    fs::remove_file(input)?;
+    let original = parse(&success(run(&tracks_args(
+        &directory.root(),
+        "--xml-source",
+        &receipt,
+    )?)?)?)?;
+    let args = lifecycle_args(&directory.root(), "--xml-source", &receipt)?;
+    let hidden_text = success(run(&args)?)?;
+    assert!(!hidden_text.contains("private"));
+    assert!(!hidden_text.contains(PRIVATE_OBJECT));
+    assert!(!hidden_text.contains("8675310"));
+    assert!(!hidden_text.contains("2026-10-28"));
+    let hidden = parse(&hidden_text)?;
+    assert_eq!(
+        field(&hidden, "schema")?.text(),
+        Some("fss.onvif_vendor_lifecycle_report.v1")
+    );
+    let tracks = field(&hidden, "tracklets")?;
+    assert_eq!(
+        field(tracks, "report_digest")?,
+        field(&original, "report_digest")?
+    );
+    for name in ["frames", "occurrences", "tracklets"] {
+        assert_eq!(field(tracks, name)?, field(&original, name)?);
+    }
+    let analysis = field(&hidden, "analysis")?;
+    assert_eq!(
+        field(analysis, "tracklet_report_digest")?,
+        field(tracks, "report_digest")?
+    );
+    assert_eq!(list(analysis, "frames")?.len(), 2);
+    let operations = list(analysis, "operations")?;
+    assert_eq!(operations.len(), 1);
+    assert_eq!(field(&operations[0], "kind")?.text(), Some("rename"));
+    assert_eq!(field(&operations[0], "state")?.text(), Some("observed"));
+    let from = &list(&operations[0], "from")?[0];
+    let from_observation = &list(from, "observations")?[0];
+    assert_eq!(
+        field(from_observation, "basis")?.text(),
+        Some("previous_module_frame")
+    );
+    assert_eq!(
+        field(from_observation, "occurrence_identity")?,
+        field(&list(tracks, "occurrences")?[0], "identity")?
+    );
+    assert_eq!(field(field(from, "reference")?, "values")?, &Value::Null);
+    let documents = list(&hidden, "documents")?;
+    assert_eq!(documents.len(), 1);
+    assert_eq!(field(&documents[0], "state")?.text(), Some("parsed"));
+    assert_eq!(field(&documents[0], "frames")?.integer(), Some(2));
+
+    let mut revealed_args = args.clone();
+    revealed_args.extend(["--include-values".into(), "yes".into()]);
+    let revealed = parse(&success(run(&revealed_args)?)?)?;
+    let revealed_analysis = field(&revealed, "analysis")?;
+    let revealed_from = &list(&list(revealed_analysis, "operations")?[0], "from")?[0];
+    assert_eq!(
+        field(
+            field(field(revealed_from, "reference")?, "values")?,
+            "object_id"
+        )?
+        .text(),
+        Some(PRIVATE_OBJECT)
+    );
+    assert_eq!(
+        field(&hidden, "snapshot_digest")?,
+        field(&revealed, "snapshot_digest")?
+    );
+    assert_eq!(
+        field(analysis, "report_digest")?,
+        field(revealed_analysis, "report_digest")?
+    );
+    assert_eq!(success(run(&args)?)?, hidden_text);
+    Ok(())
+}
+
+#[test]
+fn lifecycle_rtp_keeps_rejected_and_empty_documents_with_exact_original_handles() -> Test {
+    let directory = Directory::new("lifecycle-rtp")?;
+    let input = directory.0.join("source.rtpdump");
+    let documents = [
+        lifecycle_document(&[false]),
+        lifecycle_document(&[true]),
+        b"<invalid/>".to_vec(),
+        lifecycle_document(&[]),
+    ];
+    fs::write(&input, dump(&documents))?;
+    let receipt = success(run(&import_args(&directory.root(), &input, true))?)?;
+    fs::remove_file(input)?;
+    let report = parse(&success(run(&lifecycle_args(
+        &directory.root(),
+        "--rtp-source",
+        &receipt,
+    )?)?)?)?;
+    let receipts = list(&report, "documents")?;
+    assert_eq!(receipts.len(), 4);
+    for (index, expected) in ["parsed", "parsed", "rejected_xml", "parsed_empty"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(field(&receipts[index], "state")?.text(), Some(*expected));
+        assert_eq!(
+            field(&receipts[index], "document_index")?.integer(),
+            Some(index as i128)
+        );
+        assert_eq!(
+            field(&receipts[index], "source_digest")?.text(),
+            Some(ContentDigest::sha256(&documents[index]).to_text().as_str())
+        );
+    }
+    let analysis = field(&report, "analysis")?;
+    assert_eq!(list(analysis, "frames")?.len(), 2);
+    assert_eq!(list(analysis, "operations")?.len(), 1);
+    let original_frames = list(field(&report, "tracklets")?, "frames")?;
+    for (index, frame) in list(analysis, "frames")?.iter().enumerate() {
+        for name in [
+            "source_identity",
+            "source_root",
+            "source_digest",
+            "frame_digest",
+            "document_index",
+            "frame_index",
+        ] {
+            assert_eq!(field(frame, name)?, field(&original_frames[index], name)?);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn lifecycle_preserves_frozen_v1_and_refuses_limits_or_missing_store_without_json() -> Test {
+    let directory = Directory::new("lifecycle-v1")?;
+    let input = directory.0.join("source.xml");
+    fs::write(&input, lifecycle_document(&[false, true]))?;
+    let mut import = import_args(&directory.root(), &input, false);
+    import.extend(["--interpretation".into(), "events-v1".into()]);
+    let receipt = success(run(&import)?)?;
+    let args = lifecycle_args(&directory.root(), "--xml-source", &receipt)?;
+    let report = parse(&success(run(&args)?)?)?;
+    assert_eq!(
+        field(&list(&report, "documents")?[0], "state")?.text(),
+        Some("frozen_events_v1")
+    );
+    assert!(list(field(&report, "analysis")?, "frames")?.is_empty());
+    assert!(list(field(&report, "analysis")?, "operations")?.is_empty());
+    assert!(list(field(&report, "tracklets")?, "occurrences")?.is_empty());
+    for extra in [
+        ["--max-read-bytes", "1"],
+        ["--max-analysis-work", "2000000"],
+        ["--max-work-units", "10000000"],
+    ] {
+        let mut limited = args.clone();
+        limited.extend(extra.into_iter().map(OsString::from));
+        let output = run(&limited)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(PRIVATE_OBJECT));
+    }
+    let missing = directory.0.join("missing-lifecycle");
+    let mut absent = args;
+    absent[2] = missing.as_os_str().into();
+    let output = run(&absent)?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!missing.exists());
+    Ok(())
+}

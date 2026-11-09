@@ -6,6 +6,74 @@ rename, merge, split and delete claims, plus separate idle and removed flags.
 These remain statements made by the vendor analytics module. They do not establish
 physical identity, movement, departure, coverage or effect authority.
 
+## Native command
+
+Use exact existing import identities and publication roots from retained XML,
+PullPoint, RTP-file or finite native RTP capture receipts:
+
+```sh
+fss-onvif-metadata lifecycle \
+  --root /absolute/path/to/deployment \
+  --site site:lab \
+  --xml-source "${IMPORT_ID}@${PUBLICATION_ROOT}"
+```
+
+Use `--rtp-source "${IMPORT_ID}@${PUBLICATION_ROOT}"` for an RTP source. Repeat
+either flag in the intended order for up to 32 distinct source identities.
+Each independently supplied pin is a continuity boundary. A source file used for
+the original import is not needed: the query verifies the retained originals.
+
+The complete result uses
+[`fss.onvif_vendor_lifecycle_report.v1`](../schemas/onvif_vendor_lifecycle_report.v1.json).
+Its main fields are:
+
+| Field | Meaning |
+|---|---|
+| `tracklets` | Complete original tracks-v1 JSON, including exact source handles, current authority, original groups and cumulative read/work usage |
+| `documents` | Every pinned source/document, including frozen-v1, SOAP, rejected, empty and zero-document dispositions |
+| `analysis.frames` | Original frame coordinates, declaration positions, row ranges and explicit lifecycle boundaries |
+| `analysis.operations` | Ordered Rename/Split/Merge/Delete claims with observed, unresolved or conflicted endpoints and exact supporting occurrences |
+| `analysis.behaviours` | Separate Idle/Removed declarations with original object references |
+| `analysis.reuses` | Observations of an integer following an explicit vendor Delete claim |
+| `snapshot_digest` | Commitment to the complete source-verified query, parser policy, document receipts and analysis |
+
+The original tracklet report digest, groups and occurrence identities remain
+unchanged. The enclosing retained snapshot and its usage include the additional
+lifecycle work, so they need not equal a standalone `tracks` query's accounting.
+
+Raw module names, integer ObjectIds and vendor UTC strings are null by default.
+`--include-values yes` explicitly discloses those values in both nested reports;
+UUID strings remain withheld. Digest/source references remain available in either
+mode. Output is one complete JSON document bounded to 32 MiB; a query, budget,
+cancellation or encoding refusal returns no successful partial result.
+
+All `tracks` source/grouping options are accepted. The lifecycle default shared
+`--max-work-units` is 33,554,432; the independent `--max-analysis-work` default is
+4,000,000 and `--max-analysis-bytes` defaults to 4,194,304 canonical bytes.
+`--max-projection-work` still controls the original tracks projector.
+Both declared projection allowances must fit both source passes in the same
+outer balance, with additional balance needed for source history, parsing and
+receipt work. The lifecycle allowance must also cover genuine tracklet replay
+plus the additional interpretation. Invalid or impossible policies fail before
+source I/O. The existing request timeout, cancellation and finalization owner
+also covers report serialization.
+
+```sh
+fss-onvif-metadata lifecycle --help
+cargo test --locked --offline -j1 -p fss-cli --bin fss-onvif-metadata
+cargo test --locked --offline -j1 -p fss-cli --test onvif_metadata_tracks_cli
+```
+
+Two new command-parser tests and three real import-to-lifecycle process tests
+are authored. The process fixtures cover unchanged original rows and disclosure,
+RTP rejected/empty source receipts, frozen-v1 non-upgrade, limits and missing-store
+refusal. These new native tests, the outer JSON envelope and full command remain
+**unexecuted** after the genuine Asupersync dependency builds were killed before
+FSS diagnostics. The temporary execution outage was recovered; pinned rustfmt,
+whitespace checks and a fresh32-test lineage rerun passed. Independent source review
+and static JSON/schema-shape checks passed. These do not replace native integration,
+standard JSON Schema validation or release qualification.
+
 ## Supported interpretation
 
 The parser follows the bounded integer-reference subset of the official
@@ -136,9 +204,9 @@ tampering/deletion, cancellation, final authority checks and no effect reconcili
 Those native contracts are **not executed**. Genuine Asupersync compilation was
 previously killed before FSS diagnostics; the execution environment subsequently
 went offline. This checkpoint is not native integration or release qualification.
-Final rustfmt verification was also interrupted; recovered validated pure source
-bytes and independently reviewed owner code are preserved without claiming that
-gate passed.
+After execution recovered, all lifecycle sources passed pinned rustfmt and
+whitespace checks, and the actual-source lineage target was rebuilt and passed
+32/32 again. Native custody and full CLI tests remain unexecuted.
 
 ```sh
 cargo test --locked --offline -j1 -p fss-core --test onvif_lifecycle_contract

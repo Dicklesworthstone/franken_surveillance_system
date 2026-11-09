@@ -24,6 +24,8 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-onvif-metadata/admission.rs"]
 mod admission;
+#[path = "fss-onvif-metadata/analysis.rs"]
+mod analysis;
 #[path = "fss-capture-rtsp/authentication.rs"]
 mod authentication;
 #[path = "fss-onvif-metadata/capture.rs"]
@@ -39,9 +41,10 @@ mod runtime;
 #[path = "fss-onvif-metadata/tracks.rs"]
 mod tracks;
 
-const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp|tracks> [options]
+const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp|tracks|lifecycle> [options]
   RTP metadata: capture-rtp/import-rtp/inspect-rtp/verify-rtp --help
   tracks: see fss-onvif-metadata tracks --help for source-verified vendor tracklet JSON.
+  lifecycle: see fss-onvif-metadata lifecycle --help for additive source-linked vendor relationships.
   capture: see fss-onvif-metadata capture --help for explicit live subscription options.
   control: see fss-onvif-metadata control --help for cold discovery, operation inspection and explicit cleanup.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
@@ -906,6 +909,8 @@ fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(101).collect();
     let result = if args.first().is_some_and(|arg| arg == "tracks") {
         tracks::run_args(&args)
+    } else if args.first().is_some_and(|arg| arg == "lifecycle") {
+        analysis::run_args(&args)
     } else if args.first().is_some_and(|arg| arg == "capture-rtp") {
         capture_rtp::run_args(&args)
     } else if args.first().is_some_and(|arg| arg == "capture") {

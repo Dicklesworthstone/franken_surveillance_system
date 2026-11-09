@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! Actual additive wire, frozen tracks-v1 and lineage production source, with no custody facade.
 
-extern crate self as fss_reference;
 extern crate self as fss_cli;
+extern crate self as fss_reference;
 
 #[path = "../../fss-reference/src/onvif/metadata/tracks/contract.rs"]
 pub mod tracks;
@@ -18,7 +18,9 @@ pub mod onvif {
             pub use crate::tracks as contract;
         }
         /// Actual lifecycle overlay contract.
-        pub mod lifecycle { pub use crate::lifecycle as contract; }
+        pub mod lifecycle {
+            pub use crate::lifecycle as contract;
+        }
     }
 }
 #[path = "../../fss-reference/src/onvif/metadata/lifecycle/contract.rs"]
@@ -785,11 +787,22 @@ fn json(report: &LifecycleReport, include_values: bool) -> Result<String, std::f
     lifecycle_json::write_json(&mut output, report, include_values)?;
     Ok(output)
 }
-fn json_field<'a>(value: &'a fss_core::json_input::Value, key: &str) -> Checked<&'a fss_core::json_input::Value> {
-    value.object().and_then(|value| value.get(key)).ok_or_else(|| format!("missing JSON field {key}").into())
+fn json_field<'a>(
+    value: &'a fss_core::json_input::Value,
+    key: &str,
+) -> Checked<&'a fss_core::json_input::Value> {
+    value
+        .object()
+        .and_then(|value| value.get(key))
+        .ok_or_else(|| format!("missing JSON field {key}").into())
 }
-fn json_rows<'a>(value: &'a fss_core::json_input::Value, key: &str) -> Checked<&'a [fss_core::json_input::Value]> {
-    json_field(value, key)?.array().ok_or_else(|| "expected JSON array".into())
+fn json_rows<'a>(
+    value: &'a fss_core::json_input::Value,
+    key: &str,
+) -> Checked<&'a [fss_core::json_input::Value]> {
+    json_field(value, key)?
+        .array()
+        .ok_or_else(|| "expected JSON array".into())
 }
 
 #[test]
@@ -798,49 +811,127 @@ fn actual_json_renderer_defaults_to_private_values_and_closed_source_references(
     let (tracks, report) = project(&parsed)?;
     let output = json(&report, false)?;
     let value = fss_core::json_input::parse(&output)?;
-    assert_eq!(value.object().ok_or("object")?.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), ["generation", "report_digest", "policy_digest", "input_digest", "tracklet_report_digest", "work_units", "encoded_bytes", "limits", "frames", "operations", "behaviours", "reuses"].into_iter().collect());
-    assert_eq!(json_field(&value, "tracklet_report_digest")?.text(), Some(tracks.report_digest.to_text().as_str()));
+    assert_eq!(
+        value
+            .object()
+            .ok_or("object")?
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "generation",
+            "report_digest",
+            "policy_digest",
+            "input_digest",
+            "tracklet_report_digest",
+            "work_units",
+            "encoded_bytes",
+            "limits",
+            "frames",
+            "operations",
+            "behaviours",
+            "reuses"
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(
+        json_field(&value, "tracklet_report_digest")?.text(),
+        Some(tracks.report_digest.to_text().as_str())
+    );
     let frames = json_rows(&value, "frames")?;
     assert_eq!(frames.len(), 2);
-    assert!(matches!(json_field(&frames[0], "values")?, fss_core::json_input::Value::Null));
-    assert_eq!(json_field(&frames[0], "source_digest")?.text(), Some(parsed.digest.to_text().as_str()));
+    assert!(matches!(
+        json_field(&frames[0], "values")?,
+        fss_core::json_input::Value::Null
+    ));
+    assert_eq!(
+        json_field(&frames[0], "source_digest")?.text(),
+        Some(parsed.digest.to_text().as_str())
+    );
     let operation = &json_rows(&value, "operations")?[0];
     let from = &json_rows(operation, "from")?[0];
     let reference = json_field(from, "reference")?;
-    assert!(matches!(json_field(reference, "values")?, fss_core::json_input::Value::Null));
+    assert!(matches!(
+        json_field(reference, "values")?,
+        fss_core::json_input::Value::Null
+    ));
     let observed = &json_rows(from, "observations")?[0];
-    assert_eq!(json_field(observed, "occurrence_identity")?.text(), Some(tracks.occurrences[0].identity.to_text().as_str()));
-    assert_eq!(json_field(observed, "tracklet_identity")?.text(), Some(tracks.occurrences[0].tracklet_identity.to_text().as_str()));
-    assert!(!output.contains("+002") && !output.contains("2026-11-09T01:00:01Z") && !output.contains("motion"));
+    assert_eq!(
+        json_field(observed, "occurrence_identity")?.text(),
+        Some(tracks.occurrences[0].identity.to_text().as_str())
+    );
+    assert_eq!(
+        json_field(observed, "tracklet_identity")?.text(),
+        Some(tracks.occurrences[0].tracklet_identity.to_text().as_str())
+    );
+    assert!(
+        !output.contains("+002")
+            && !output.contains("2026-11-09T01:00:01Z")
+            && !output.contains("motion")
+    );
     Ok(())
 }
 
 #[test]
 fn disclosed_json_escapes_modules_preserves_integer_spellings_and_never_discloses_uuid() -> Test {
     let module = "private-module &quot;quoted&quot; \\ 路線&#x2028;";
-    let operation = tree(r#"<t:Rename><t:from ObjectId="+000123456789" UUID="private-uuid-canary"/><t:to ObjectId="987654321"/></t:Rename>"#);
+    let operation = tree(
+        r#"<t:Rename><t:from ObjectId="+000123456789" UUID="private-uuid-canary"/><t:to ObjectId="987654321"/></t:Rename>"#,
+    );
     let parsed = parse(&at(0, module, &(object("987654321") + &operation)))?;
     let (_, report) = project(&parsed)?;
     let hidden = json(&report, false)?;
     let shown = json(&report, true)?;
-    assert!(!hidden.contains("private-module") && !hidden.contains("123456789") && !hidden.contains("987654321"));
+    assert!(
+        !hidden.contains("private-module")
+            && !hidden.contains("123456789")
+            && !hidden.contains("987654321")
+    );
     assert!(!hidden.contains("private-uuid-canary") && !shown.contains("private-uuid-canary"));
     let value = fss_core::json_input::parse(&shown)?;
     let frame = &json_rows(&value, "frames")?[0];
-    assert_eq!(json_field(json_field(frame, "values")?, "module_source")?.text(), Some("private-module \"quoted\" \\ 路線\u{2028}"));
-    let reference = json_field(&json_rows(&json_rows(&value, "operations")?[0], "from")?[0], "reference")?;
-    assert_eq!(json_field(json_field(reference, "values")?, "object_id")?.text(), Some("+000123456789"));
-    assert!(matches!(json_field(reference, "uuid_present")?, fss_core::json_input::Value::Bool(true)));
+    assert_eq!(
+        json_field(json_field(frame, "values")?, "module_source")?.text(),
+        Some("private-module \"quoted\" \\ 路線\u{2028}")
+    );
+    let reference = json_field(
+        &json_rows(&json_rows(&value, "operations")?[0], "from")?[0],
+        "reference",
+    )?;
+    assert_eq!(
+        json_field(json_field(reference, "values")?, "object_id")?.text(),
+        Some("+000123456789")
+    );
+    assert!(matches!(
+        json_field(reference, "uuid_present")?,
+        fss_core::json_input::Value::Bool(true)
+    ));
     assert_eq!(reference.object().ok_or("object")?.len(), 4);
     Ok(())
 }
 
-struct FiniteWriter { value: String, maximum: usize, calls: usize, cancel_at: Option<usize> }
+struct FiniteWriter {
+    value: String,
+    maximum: usize,
+    calls: usize,
+    cancel_at: Option<usize>,
+}
 impl std::fmt::Write for FiniteWriter {
     fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        let call = self.calls; self.calls += 1;
-        if self.cancel_at == Some(call) || self.value.len().checked_add(text.len()).is_none_or(|total| total > self.maximum) { return Err(std::fmt::Error); }
-        self.value.push_str(text); Ok(())
+        let call = self.calls;
+        self.calls += 1;
+        if self.cancel_at == Some(call)
+            || self
+                .value
+                .len()
+                .checked_add(text.len())
+                .is_none_or(|total| total > self.maximum)
+        {
+            return Err(std::fmt::Error);
+        }
+        self.value.push_str(text);
+        Ok(())
     }
 }
 
@@ -849,16 +940,33 @@ fn renderer_propagates_capacity_and_admission_refusals_without_success() -> Test
     let (_, report) = project(&rename_fixture()?)?;
     let expected = json(&report, true)?;
     for maximum in [0, 1, 256, expected.len() - 1, expected.len()] {
-        let mut writer = FiniteWriter { value: String::new(), maximum, calls: 0, cancel_at: None };
+        let mut writer = FiniteWriter {
+            value: String::new(),
+            maximum,
+            calls: 0,
+            cancel_at: None,
+        };
         let result = lifecycle_json::write_json(&mut writer, &report, true);
         assert_eq!(result.is_ok(), maximum == expected.len());
         assert!(writer.value.len() <= maximum);
-        if result.is_ok() { assert_eq!(writer.value, expected); }
+        if result.is_ok() {
+            assert_eq!(writer.value, expected);
+        }
     }
-    let mut complete = FiniteWriter { value: String::new(), maximum: expected.len(), calls: 0, cancel_at: None };
+    let mut complete = FiniteWriter {
+        value: String::new(),
+        maximum: expected.len(),
+        calls: 0,
+        cancel_at: None,
+    };
     lifecycle_json::write_json(&mut complete, &report, true)?;
     for cut in [0, complete.calls / 2, complete.calls - 1] {
-        let mut writer = FiniteWriter { value: String::new(), maximum: expected.len(), calls: 0, cancel_at: Some(cut) };
+        let mut writer = FiniteWriter {
+            value: String::new(),
+            maximum: expected.len(),
+            calls: 0,
+            cancel_at: Some(cut),
+        };
         assert!(lifecycle_json::write_json(&mut writer, &report, true).is_err());
     }
     Ok(())
@@ -866,14 +974,30 @@ fn renderer_propagates_capacity_and_admission_refusals_without_success() -> Test
 
 #[test]
 fn renderer_keeps_deletion_reuse_and_both_behaviour_flags_separate() -> Test {
-    let parsed = parse(&(at(0, "m", &tree(r#"<t:Delete ObjectId="5"/>"#)) + &at(1, "m", r#"<t:Object ObjectId="5"><t:Behaviour><t:Idle/><t:Removed/></t:Behaviour></t:Object>"#)))?;
+    let parsed = parse(
+        &(at(0, "m", &tree(r#"<t:Delete ObjectId="5"/>"#))
+            + &at(
+                1,
+                "m",
+                r#"<t:Object ObjectId="5"><t:Behaviour><t:Idle/><t:Removed/></t:Behaviour></t:Object>"#,
+            )),
+    )?;
     let (_, report) = project(&parsed)?;
     let value = fss_core::json_input::parse(&json(&report, false)?)?;
     let behaviour = &json_rows(&value, "behaviours")?[0];
-    assert!(matches!(json_field(behaviour, "idle")?, fss_core::json_input::Value::Bool(true)));
-    assert!(matches!(json_field(behaviour, "removed")?, fss_core::json_input::Value::Bool(true)));
+    assert!(matches!(
+        json_field(behaviour, "idle")?,
+        fss_core::json_input::Value::Bool(true)
+    ));
+    assert!(matches!(
+        json_field(behaviour, "removed")?,
+        fss_core::json_input::Value::Bool(true)
+    ));
     assert_eq!(json_field(behaviour, "state")?.text(), Some("conflicted"));
     let reuse = &json_rows(&value, "reuses")?[0];
-    assert_eq!(json_field(reuse, "deleted_by_operation")?.text(), Some(report.operations[0].identity.to_text().as_str()));
+    assert_eq!(
+        json_field(reuse, "deleted_by_operation")?.text(),
+        Some(report.operations[0].identity.to_text().as_str())
+    );
     Ok(())
 }

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Existing-source vendor tracklet query; no capture, publication or event/effect reconciliation.
 
-mod report;
+pub(super) mod report;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -58,15 +58,15 @@ Original classes, shapes and transformations remain available through the exact 
 document, frame and object handles and the existing inspect/inspect-rtp commands.
 ";
 
-struct Options {
-    root: PathBuf,
-    site: String,
-    principal: String,
-    pins: Vec<TrackSourcePin>,
-    limits: TrackReadLimits,
-    include_values: bool,
-    timeout_ns: u64,
-    approval: ContentDigest,
+pub(super) struct Options {
+    pub(super) root: PathBuf,
+    pub(super) site: String,
+    pub(super) principal: String,
+    pub(super) pins: Vec<TrackSourcePin>,
+    pub(super) limits: TrackReadLimits,
+    pub(super) include_values: bool,
+    pub(super) timeout_ns: u64,
+    pub(super) approval: ContentDigest,
 }
 
 fn number(
@@ -91,7 +91,7 @@ fn number(
     Ok(value)
 }
 
-fn parse(args: &[OsString]) -> Result<Options, &'static str> {
+pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     if args.is_empty()
         || args.len() > 99
         || args.len() % 2 != 1

@@ -924,7 +924,9 @@
     "crates/fss-reference/src/onvif/metadata/lifecycle/contract.rs": "cognition",
     "crates/fss-core/tests/onvif_lifecycle_contract.rs": "support",
     "crates/fss-reference/tests/onvif_metadata_lifecycle_custody.rs": "support",
-    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/lifecycle_json.rs": "cognition"
+    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/lifecycle_json.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/report.rs": "cognition"
   },
   "types": {
     "AlertEffectRecord": {

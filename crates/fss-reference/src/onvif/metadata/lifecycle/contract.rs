@@ -1149,8 +1149,12 @@ pub fn project_lifecycle<F: FnMut() -> bool>(
     let mut source_objects = 0usize;
     for source in sources {
         meter.charge(1)?;
-        source_objects = source_objects.checked_add(source.frame.objects.len()).ok_or(LifecycleError::Limit)?;
-        if source_objects > limits.max_objects { return Err(LifecycleError::Limit); }
+        source_objects = source_objects
+            .checked_add(source.frame.objects.len())
+            .ok_or(LifecycleError::Limit)?;
+        if source_objects > limits.max_objects {
+            return Err(LifecycleError::Limit);
+        }
     }
     let policy_digest = limits.digest()?;
     tracks

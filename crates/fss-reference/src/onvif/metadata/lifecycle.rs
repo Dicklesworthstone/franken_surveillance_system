@@ -13,8 +13,8 @@ use std::path::Path;
 use fss_core::{CanonicalEncoder, ContentDigest, Plane, ProvenanceClass};
 
 use super::tracks::{
-    ProjectionInput, RetainedTrackError, RetainedTracklets, Source, TrackReadLimits, TrackSourcePin,
-    WorkBudget,
+    ProjectionInput, RetainedTrackError, RetainedTracklets, Source, TrackReadLimits,
+    TrackSourcePin, WorkBudget,
 };
 use super::{Interpretation, MetadataError};
 use crate::onvif::wire::{
@@ -64,7 +64,10 @@ impl LifecycleReadLimits {
         self.source.validate()?;
         self.projection.validate()?;
         self.parse.validate()?;
-        let minimum_work = self.source.projection.max_work_units
+        let minimum_work = self
+            .source
+            .projection
+            .max_work_units
             .checked_add(self.projection.max_work_units)
             .and_then(|value| value.checked_mul(2))
             .ok_or(RetainedLifecycleError::Limit)?;
@@ -354,8 +357,7 @@ fn project_sources(
     let mut frame_start = 0;
     let mut operations = 0_usize;
     let mut references = 0_usize;
-    for (source_ordinal, (source, original)) in
-        input.sources.iter().zip(input.receipts).enumerate()
+    for (source_ordinal, (source, original)) in input.sources.iter().zip(input.receipts).enumerate()
     {
         checkpoint(cx, "onvif_lifecycle:source")?;
         match source {
@@ -454,9 +456,7 @@ fn project_sources(
                                     .ok_or(RetainedLifecycleError::Mismatch)?,
                             );
                         }
-                        Some(original)
-                            if original.format == EventDocumentFormat::PullMessages =>
-                        {
+                        Some(original) if original.format == EventDocumentFormat::PullMessages => {
                             receipt.state = LifecycleDocumentState::NonAnalyticsSoap;
                             require_no_analytics(original)?;
                         }

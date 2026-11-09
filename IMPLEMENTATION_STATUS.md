@@ -6435,3 +6435,26 @@ FSS-077 / `fss-x4a.15.2` remain open. See the
 [command workflow](docs/onvif-metadata.md#group-retained-vendor-object-claims),
 [contract](docs/onvif-vendor-tracklets-contract.md) and
 [session handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_TRACKLETS.json).
+
+## 2026-11-09 — additive retained ONVIF lifecycle lineage and query
+
+FSS-046/FSS-077 now have an independent bounded ObjectTree/Behaviour interpretation,
+source-linked lifecycle relationships over unchanged tracks-v1, and the native
+`fss-onvif-metadata lifecycle` JSON command. Rename/Split/Merge/Delete endpoints
+retain exact original occurrence handles and explicit observed/unresolved/conflicted
+states. Idle/Removed and deletion/reuse remain separate vendor claims; frozen-v1,
+SOAP, empty, rejected and zero-document sources are all retained in receipts.
+Both complete source/analysis passes share the original read/work allowance and
+final authority checks. Existing parser and tracklet encodings remain unchanged.
+
+The production parser target passed 28/28 (24 new plus four embedded); the actual
+production-source lineage/JSON target passed 32/32 (28 new plus four embedded).
+Fourteen native owner, two CLI parser and three actual-process regressions are
+authored but unexecuted. Genuine Asupersync compilation had received SIGKILL,
+then a temporary execution outage was recovered. Pinned rustfmt/whitespace checks
+and a fresh lifecycle32-test rerun passed; native integration, standard JSON Schema
+validation and release qualification are not claimed. The native
+owner/seam/CLI and process fixtures received independent source review. Full
+FSS-046/FSS-077 beads remain open. See
+[the lifecycle guide](docs/onvif-vendor-lifecycle.md) and
+[the session handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_ANALYSIS.json).
