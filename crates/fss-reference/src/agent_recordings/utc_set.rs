@@ -276,6 +276,10 @@ pub(super) struct UtcWindow {
 }
 
 impl UtcWindow {
+    pub(super) fn entry(&self) -> &CatalogEntry {
+        &self.entry
+    }
+
     pub(super) fn new(entry: CatalogEntry, locations: Vec<RecordingSetLocation>) -> Self {
         Self {
             entry,
@@ -322,85 +326,12 @@ pub fn query_recordings_utc_set(
 ) -> Result<RecordingUtcSetQuery> {
     let request_digest = request.request_digest(limits)?;
     let mut reader = PinnedMetadataReader::new(io, root, limits.metadata, cancelled)?;
-    let mut catalogs = bounded_vec(request.catalogs.len())?;
-    let mut references = BTreeSet::new();
-    let mut by_root = BTreeMap::<ContentDigest, UtcWindow>::new();
-    let mut by_slot = BTreeMap::<SlotName, ContentDigest>::new();
-    let mut scanned_windows = 0_usize;
-
-    for pin in request.ordered_pins()? {
-        check_cancelled(cancelled)?;
-        let manifest = reader.manifest(&pin.slot, pin.root)?;
-        if manifest.kind() != request.codec.catalog_kind() {
-            return Err(CatalogError::Malformed.into());
-        }
-        let metadata_digest = manifest.metadata_digest().ok_or(CatalogError::Malformed)?;
-        let metadata = reader.metadata(&manifest)?;
-        let entries = match request.codec {
-            RecordingQueryCodec::Avc => {
-                let catalog = verify_catalog(&manifest, &metadata, &request.scope)?;
-                let mut entries = bounded_vec(catalog.entries().len())?;
-                entries.extend_from_slice(catalog.entries());
-                entries
-            }
-            RecordingQueryCodec::Hevc => {
-                let catalog = verify_hevc_catalog(&manifest, &metadata, &request.scope)?;
-                let mut entries = bounded_vec(catalog.entries().len())?;
-                entries.extend_from_slice(catalog.entries());
-                entries
-            }
-        };
-        scanned_windows = scanned_windows
-            .checked_add(entries.len())
-            .filter(|count| *count <= limits.max_scanned_windows)
-            .ok_or(CatalogError::Limit)?;
-        references.insert(manifest.root());
-        references.insert(metadata_digest);
-        references.extend(manifest.children().iter().copied());
-        for (ordinal, entry) in entries.iter().enumerate() {
-            check_cancelled(cancelled)?;
-            if by_slot
-                .get(entry.slot())
-                .is_some_and(|root| *root != entry.root())
-                || by_root
-                    .get(&entry.root())
-                    .is_some_and(|prior| prior.entry != *entry)
-            {
-                return Err(CatalogError::WindowMismatch.into());
-            }
-            let member = reader.manifest(entry.slot(), entry.root())?;
-            if member.kind() != request.codec.window_kind() {
-                return Err(CatalogError::WindowMismatch.into());
-            }
-            references.insert(member.root());
-            references.extend(member.children().iter().copied());
-            if let Some(metadata) = member.metadata_digest() {
-                references.insert(metadata);
-            }
-            let location = RecordingSetLocation {
-                catalog_index: catalogs.len(),
-                catalog_root: pin.root,
-                ordinal,
-            };
-            if let Some(prior) = by_root.get_mut(&entry.root()) {
-                prior
-                    .locations
-                    .try_reserve(1)
-                    .map_err(|_| CatalogError::Limit)?;
-                prior.locations.push(location);
-            } else {
-                let mut locations = bounded_vec(1)?;
-                locations.push(location);
-                by_slot.insert(entry.slot().clone(), entry.root());
-                by_root.insert(entry.root(), UtcWindow::new(entry.clone(), locations));
-            }
-        }
-        catalogs.push(RecordingSetCatalog {
-            pin: pin.clone(),
-            metadata_digest,
-            scanned_windows: entries.len(),
-        });
-    }
+    let VerifiedUtcCatalogs {
+        catalogs,
+        references,
+        by_root,
+        scanned_windows,
+    } = read_catalogs(&mut reader, request, limits.max_scanned_windows, cancelled)?;
 
     let unique_windows = by_root.len();
     let VerifiedUtcSelection {
@@ -488,6 +419,109 @@ pub fn query_recordings_utc_set(
         scanned_windows,
         unique_windows,
         read_usage,
+    })
+}
+
+/// Complete explicit catalog union under the caller's original metadata-read allowance.
+pub(super) struct VerifiedUtcCatalogs {
+    pub catalogs: Vec<RecordingSetCatalog>,
+    pub references: BTreeSet<ContentDigest>,
+    pub by_root: BTreeMap<ContentDigest, UtcWindow>,
+    pub scanned_windows: usize,
+}
+
+/// Verify one bounded source universe without opening, refilling or finishing a read owner.
+pub(super) fn read_catalogs<F: Fn() -> bool + Sync>(
+    reader: &mut PinnedMetadataReader<'_, F>,
+    request: &RecordingUtcSetQueryRequest,
+    max_scanned_windows: usize,
+    cancelled: &F,
+) -> Result<VerifiedUtcCatalogs> {
+    let mut catalogs = bounded_vec(request.catalogs.len())?;
+    let mut references = BTreeSet::new();
+    let mut by_root = BTreeMap::<ContentDigest, UtcWindow>::new();
+    let mut by_slot = BTreeMap::<SlotName, ContentDigest>::new();
+    let mut scanned_windows = 0_usize;
+
+    for pin in request.ordered_pins()? {
+        check_cancelled(cancelled)?;
+        let manifest = reader.manifest(&pin.slot, pin.root)?;
+        if manifest.kind() != request.codec.catalog_kind() {
+            return Err(CatalogError::Malformed.into());
+        }
+        let metadata_digest = manifest.metadata_digest().ok_or(CatalogError::Malformed)?;
+        let metadata = reader.metadata(&manifest)?;
+        let entries = match request.codec {
+            RecordingQueryCodec::Avc => {
+                let catalog = verify_catalog(&manifest, &metadata, &request.scope)?;
+                let mut entries = bounded_vec(catalog.entries().len())?;
+                entries.extend_from_slice(catalog.entries());
+                entries
+            }
+            RecordingQueryCodec::Hevc => {
+                let catalog = verify_hevc_catalog(&manifest, &metadata, &request.scope)?;
+                let mut entries = bounded_vec(catalog.entries().len())?;
+                entries.extend_from_slice(catalog.entries());
+                entries
+            }
+        };
+        scanned_windows = scanned_windows
+            .checked_add(entries.len())
+            .filter(|count| *count <= max_scanned_windows)
+            .ok_or(CatalogError::Limit)?;
+        references.insert(manifest.root());
+        references.insert(metadata_digest);
+        references.extend(manifest.children().iter().copied());
+        for (ordinal, entry) in entries.iter().enumerate() {
+            check_cancelled(cancelled)?;
+            if by_slot
+                .get(entry.slot())
+                .is_some_and(|root| *root != entry.root())
+                || by_root
+                    .get(&entry.root())
+                    .is_some_and(|prior| prior.entry != *entry)
+            {
+                return Err(CatalogError::WindowMismatch.into());
+            }
+            let member = reader.manifest(entry.slot(), entry.root())?;
+            if member.kind() != request.codec.window_kind() {
+                return Err(CatalogError::WindowMismatch.into());
+            }
+            references.insert(member.root());
+            references.extend(member.children().iter().copied());
+            if let Some(metadata) = member.metadata_digest() {
+                references.insert(metadata);
+            }
+            let location = RecordingSetLocation {
+                catalog_index: catalogs.len(),
+                catalog_root: pin.root,
+                ordinal,
+            };
+            if let Some(prior) = by_root.get_mut(&entry.root()) {
+                prior
+                    .locations
+                    .try_reserve(1)
+                    .map_err(|_| CatalogError::Limit)?;
+                prior.locations.push(location);
+            } else {
+                let mut locations = bounded_vec(1)?;
+                locations.push(location);
+                by_slot.insert(entry.slot().clone(), entry.root());
+                by_root.insert(entry.root(), UtcWindow::new(entry.clone(), locations));
+            }
+        }
+        catalogs.push(RecordingSetCatalog {
+            pin: pin.clone(),
+            metadata_digest,
+            scanned_windows: entries.len(),
+        });
+    }
+
+    Ok(VerifiedUtcCatalogs {
+        catalogs,
+        references,
+        by_root,
+        scanned_windows,
     })
 }
 
@@ -610,7 +644,10 @@ pub(super) fn clock_codec(codec: RecordingQueryCodec) -> RecordingClockCodec {
     }
 }
 
-fn declared_gaps(query: Range<u64>, mut intervals: Vec<Range<u64>>) -> Result<Vec<Range<u64>>> {
+pub(super) fn declared_gaps(
+    query: Range<u64>,
+    mut intervals: Vec<Range<u64>>,
+) -> Result<Vec<Range<u64>>> {
     intervals.sort_unstable_by_key(|interval| (interval.start, interval.end));
     let mut gaps = bounded_vec(intervals.len() + 1)?;
     let mut cursor = query.start;

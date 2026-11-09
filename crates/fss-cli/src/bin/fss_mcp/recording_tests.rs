@@ -1165,7 +1165,7 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
             .ok_or("UTC property")?;
         assert_eq!(property.get("type").and_then(Input::text), Some("string"));
     }
-    assert_eq!(modes.len(), 6);
+    assert_eq!(modes.len(), 7);
     let utc_set = modes
         .iter()
         .filter_map(Input::object)
@@ -1271,5 +1271,468 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
         );
     }
     assert!(!required.iter().any(|value| value.text() == Some("anchor")));
+    Ok(())
+}
+
+fn session_json_fields(
+    pin: &fss_reference::agent_recordings::utc_sessions::RecordingUtcSessionPin,
+) -> Fields {
+    [
+        ("codec", quote(pin.codec.as_str())),
+        ("sensor", quote(pin.scope.recording.sensor.as_str())),
+        ("stream", quote(pin.scope.recording.stream.as_str())),
+        (
+            "generation",
+            quote(&pin.scope.recording.generation.to_string()),
+        ),
+        (
+            "source_anchor",
+            quote(&pin.scope.recording.anchor.to_text()),
+        ),
+        (
+            "receive_clock",
+            quote(&pin.scope.recording.receive_clock.to_text()),
+        ),
+        ("decode_clock", quote(&pin.scope.decode_clock.to_text())),
+        ("time_scale", pin.scope.time_scale.to_string()),
+        (
+            "catalogs",
+            format!(
+                "[{}]",
+                pin.catalogs
+                    .iter()
+                    .map(|catalog| {
+                        format!(
+                            "{{\"slot\":{},\"root\":{}}}",
+                            quote(catalog.slot.as_str()),
+                            quote(&catalog.root.to_text())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ),
+        ("clock_slot", quote(pin.clock_slot.as_str())),
+        ("clock_root", quote(&pin.clock_root.to_text())),
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn session_json(fields: &Fields) -> String {
+    format!(
+        "{{{}}}",
+        fields
+            .iter()
+            .map(|(key, value)| format!("\"{key}\":{value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn utc_sessions_fixture(codec: &str, explicit: bool) -> Test<(Fields, FssCommand)> {
+    use fss_core::ContentDigest;
+    use fss_publication::SlotName;
+    use fss_reference::agent_recording_context::utc_sessions::RecordingUtcSessionsContextRequest;
+    use fss_reference::agent_recordings::RecordingQueryCodec;
+    use fss_reference::agent_recordings::set::RecordingCatalogPin;
+    use fss_reference::agent_recordings::utc_sessions::{
+        RecordingUtcSessionPin, RecordingUtcSessionsRequest,
+    };
+    use fss_reference::rtsp::recording_clock::{RecordingClockCodec, clock_slot};
+    let FssCommand::RecordingUtcQuery(base) = native_utc(codec, explicit)? else {
+        return Err("UTC source fixture".into());
+    };
+    let r = base.request.recording;
+    let first = RecordingUtcSessionPin {
+        codec: r.codec,
+        scope: r.scope,
+        clock_slot: r.clock_slot,
+        clock_root: r.clock_root,
+        catalogs: vec![RecordingCatalogPin {
+            slot: r.catalog_slot,
+            root: r.catalog_root,
+        }],
+    };
+    let mut second = first.clone();
+    second.codec = match first.codec {
+        RecordingQueryCodec::Avc => RecordingQueryCodec::Hevc,
+        RecordingQueryCodec::Hevc => RecordingQueryCodec::Avc,
+    };
+    second.scope.recording.generation = 9_007_199_254_740_993;
+    second.scope.recording.anchor = ContentDigest::sha256(b"second MCP source anchor");
+    second.scope.recording.receive_clock = ContentDigest::sha256(b"second MCP receive epoch");
+    second.scope.decode_clock = ContentDigest::sha256(b"second MCP decode epoch");
+    second.scope.time_scale = 90_000;
+    second.catalogs = vec![RecordingCatalogPin {
+        slot: SlotName::parse("mcp-session-two-page")?,
+        root: ContentDigest::sha256(b"second MCP session catalog"),
+    }];
+    second.clock_slot = clock_slot(
+        match second.codec {
+            RecordingQueryCodec::Avc => RecordingClockCodec::Avc,
+            RecordingQueryCodec::Hevc => RecordingClockCodec::Hevc,
+        },
+        &second.scope,
+    )?;
+    second.clock_root = ContentDigest::sha256(b"second MCP session clock");
+    let sessions = vec![first, second];
+    let mut values: Fields = [
+        ("target", quote("recordings")),
+        (
+            "sessions",
+            format!(
+                "[{}]",
+                sessions
+                    .iter()
+                    .map(|pin| session_json(&session_json_fields(pin)))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ),
+        ("start_utc_ns", quote(&r.interval.start.to_string())),
+        ("end_utc_ns", quote(&r.interval.end.to_string())),
+    ]
+    .into_iter()
+    .collect();
+    if explicit {
+        values.insert("max_windows", r.max_windows.to_string());
+        values.insert(
+            "max_hydration_bytes",
+            quote(&r.max_hydration_bytes.to_string()),
+        );
+        values.insert("anchor", quote(ANCHOR));
+    }
+    Ok((
+        values,
+        FssCommand::RecordingUtcSessionsQuery(
+            fss_cli::recording_query_cmd::utc_sessions::RecordingUtcSessionsQueryArgs {
+                root: base.root,
+                archive_root: base.archive_root,
+                request: RecordingUtcSessionsContextRequest {
+                    principal: base.request.principal,
+                    expected_anchor: base.request.expected_anchor,
+                    recording: RecordingUtcSessionsRequest {
+                        sessions,
+                        interval: r.interval,
+                        max_windows: r.max_windows,
+                        max_hydration_bytes: r.max_hydration_bytes,
+                    },
+                },
+            },
+        ),
+    ))
+}
+
+#[test]
+fn utc_sessions_mcp_preserves_each_scope_exact_request_and_native_response() -> Test {
+    for codec in ["avc", "hevc"] {
+        for explicit in [false, true] {
+            let (values, expected) = utc_sessions_fixture(codec, explicit)?;
+            let FssCommand::RecordingUtcSessionsQuery(expected) = expected else {
+                return Err("session fixture command".into());
+            };
+            let limits =
+                fss_reference::agent_recordings::utc_sessions::RecordingUtcSessionsLimits::default(
+                );
+            let expected_digest = expected.request.recording.request_digest(limits)?;
+            let mut server = ready(true);
+            for (bytes, exit) in [
+                (
+                    "{\"sessions\":2,\"clockProvenance\":\"separate\",\"unknownWindows\":2}\n",
+                    ExitIdentity::SUCCESS,
+                ),
+                (
+                    "{\"refusal\":\"recording_sessions_over_budget\",\"selection\":null}\n",
+                    ExitIdentity::AGENT_REFUSED,
+                ),
+            ] {
+                let mut calls = 0;
+                let answer = server
+                    .handle_with(&request(&values), |command| {
+                        calls += 1;
+                        let FssCommand::RecordingUtcSessionsQuery(actual) = command else {
+                            panic!("MCP session request escaped its native command owner");
+                        };
+                        assert_eq!(actual.root, expected.root);
+                        assert_eq!(actual.archive_root, expected.archive_root);
+                        assert_eq!(actual.request.principal, expected.request.principal);
+                        assert_eq!(
+                            actual.request.expected_anchor,
+                            expected.request.expected_anchor
+                        );
+                        assert_eq!(
+                            actual
+                                .request
+                                .recording
+                                .request_digest(limits)
+                                .expect("valid sessions"),
+                            expected_digest
+                        );
+                        (bytes.to_owned(), exit)
+                    })
+                    .ok_or("missing session response")?;
+                assert_eq!(calls, 1);
+                assert_eq!(
+                    response_text(&answer)?,
+                    (bytes.to_owned(), exit != ExitIdentity::SUCCESS)
+                );
+            }
+            refused(&mut ready(false), &values);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_sessions_mcp_refuses_mixed_modes_partial_items_lossy_numbers_and_owner_overrides() -> Test {
+    let (valid, expected) = utc_sessions_fixture("avc", false)?;
+    let FssCommand::RecordingUtcSessionsQuery(expected) = expected else {
+        return Err("session fixture command".into());
+    };
+    let first = session_json_fields(&expected.request.recording.sessions[0]);
+    let second = session_json(&session_json_fields(
+        &expected.request.recording.sessions[1],
+    ));
+    let mut server = ready(true);
+    for missing in valid.keys() {
+        let mut fields = valid.clone();
+        fields.remove(missing);
+        refused(&mut server, &fields);
+    }
+    for missing in first.keys() {
+        let mut session = first.clone();
+        session.remove(missing);
+        let mut fields = valid.clone();
+        fields.insert(
+            "sessions",
+            format!("[{},{}]", session_json(&session), second),
+        );
+        refused(&mut server, &fields);
+    }
+    for (key, value) in [
+        ("target", quote("events")),
+        ("target", quote("footage")),
+        ("codec", quote("avc")),
+        ("sensor", quote("sensor:register")),
+        ("stream", quote("stream:main")),
+        ("generation", quote("1")),
+        ("source_anchor", quote(SOURCE)),
+        ("receive_clock", quote(RECEIVE)),
+        ("decode_clock", quote(DECODE)),
+        ("time_scale", "90000".to_owned()),
+        ("clock_slot", quote("clock")),
+        ("clock_root", quote(CLOCK)),
+        ("catalog_slot", quote("catalog")),
+        ("catalog_root", quote(CATALOG)),
+        (
+            "catalogs",
+            format!(r#"[{{"slot":"catalog","root":"{CATALOG}"}}]"#),
+        ),
+        ("discover_catalogs", "true".to_owned()),
+        ("start_tick", quote("0")),
+        ("end_tick", quote("1")),
+        ("start_utc_ns", "9007199254740993".to_owned()),
+        ("max_windows", "33".to_owned()),
+        ("max_hydration_bytes", "2147483648".to_owned()),
+        ("root", quote("/other")),
+        ("archive_root", quote("/other/archive")),
+        ("principal", quote("principal:other")),
+        ("continuation", quote("cursor")),
+    ] {
+        let mut fields = valid.clone();
+        fields.insert(key, value);
+        refused(&mut server, &fields);
+    }
+    for (key, value) in [
+        ("generation", "9007199254740993".to_owned()),
+        ("generation", quote("01")),
+        ("generation", quote("18446744073709551616")),
+        ("time_scale", quote("90000")),
+        ("time_scale", "0".to_owned()),
+        ("time_scale", "9e4".to_owned()),
+        ("sensor", quote("sensor:foreign")),
+        ("stream", quote("stream:foreign")),
+        ("clock_slot", quote("foreign-clock")),
+        ("clock_root", quote("sha256:bad")),
+        ("catalogs", "[]".to_owned()),
+        ("catalogs", "null".to_owned()),
+        (
+            "catalogs",
+            format!(r#"[{{"slot":"catalog","root":"{CATALOG}","path":"/escape"}}]"#),
+        ),
+        (
+            "catalogs",
+            format!(r#"[{{"slot":"a","root":"{CATALOG}"}},{{"slot":"b","root":"{CATALOG}"}}]"#),
+        ),
+        ("principal", quote("principal:injected")),
+        ("unknown", "true".to_owned()),
+    ] {
+        let mut session = first.clone();
+        session.insert(key, value);
+        let mut fields = valid.clone();
+        fields.insert(
+            "sessions",
+            format!("[{},{}]", session_json(&session), second),
+        );
+        refused(&mut server, &fields);
+    }
+    let item = session_json(&first);
+    for sessions in [
+        "[]".to_owned(),
+        "{}".to_owned(),
+        "null".to_owned(),
+        quote(&format!("[{item}]")),
+        format!("[{item},{item}]"),
+        format!("[{}]", vec![item.clone(); 9].join(",")),
+        format!("[{{\"generation\":\"1\",{}}}]", &item[1..item.len() - 1]),
+    ] {
+        let mut fields = valid.clone();
+        fields.insert("sessions", sessions);
+        refused(&mut server, &fields);
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_sessions_schema_has_bounded_closed_items_and_an_exclusive_mode() -> Test {
+    use fss_cli::json_input::{self as input, Value as Input};
+    let tools = input::parse(&tools_list())?;
+    let schema = tools
+        .object()
+        .and_then(|v| v.get("tools"))
+        .and_then(Input::array)
+        .ok_or("tools")?
+        .iter()
+        .filter_map(Input::object)
+        .find(|tool| tool.get("name").and_then(Input::text) == Some("query"))
+        .and_then(|tool| tool.get("inputSchema"))
+        .and_then(Input::object)
+        .ok_or("query schema")?;
+    let sessions = schema
+        .get("properties")
+        .and_then(Input::object)
+        .and_then(|properties| properties.get("sessions"))
+        .and_then(Input::object)
+        .ok_or("sessions schema")?;
+    assert_eq!(sessions.get("type").and_then(Input::text), Some("array"));
+    assert_eq!(sessions.get("minItems").and_then(Input::integer), Some(1));
+    assert_eq!(sessions.get("maxItems").and_then(Input::integer), Some(8));
+    let item = sessions
+        .get("items")
+        .and_then(Input::object)
+        .ok_or("session item")?;
+    assert_eq!(item.get("additionalProperties"), Some(&Input::Bool(false)));
+    let required = item
+        .get("required")
+        .and_then(Input::array)
+        .ok_or("session pins")?;
+    let properties = item
+        .get("properties")
+        .and_then(Input::object)
+        .ok_or("session properties")?;
+    assert_eq!(required.len(), 11);
+    for key in [
+        "codec",
+        "sensor",
+        "stream",
+        "generation",
+        "source_anchor",
+        "receive_clock",
+        "decode_clock",
+        "time_scale",
+        "catalogs",
+        "clock_slot",
+        "clock_root",
+    ] {
+        assert!(
+            required.iter().any(|v| v.text() == Some(key)),
+            "required {key}"
+        );
+    }
+    let generation = properties
+        .get("generation")
+        .and_then(Input::object)
+        .ok_or("generation")?;
+    assert_eq!(generation.get("type").and_then(Input::text), Some("string"));
+    assert_eq!(
+        generation.get("maxLength").and_then(Input::integer),
+        Some(20)
+    );
+    let catalogs = properties
+        .get("catalogs")
+        .and_then(Input::object)
+        .ok_or("catalogs")?;
+    assert_eq!(catalogs.get("minItems").and_then(Input::integer), Some(1));
+    assert_eq!(catalogs.get("maxItems").and_then(Input::integer), Some(8));
+    let branch = schema
+        .get("oneOf")
+        .and_then(Input::array)
+        .ok_or("query modes")?
+        .iter()
+        .filter_map(Input::object)
+        .find(|branch| {
+            branch
+                .get("properties")
+                .and_then(Input::object)
+                .and_then(|props| props.get("target"))
+                .and_then(Input::object)
+                .and_then(|target| target.get("const"))
+                .and_then(Input::text)
+                == Some("recordings")
+        })
+        .ok_or("recordings mode")?;
+    let mode = branch
+        .get("oneOf")
+        .and_then(Input::array)
+        .ok_or("recording modes")?
+        .iter()
+        .filter_map(Input::object)
+        .find(|mode| {
+            mode.get("required")
+                .and_then(Input::array)
+                .is_some_and(|required| required.iter().any(|v| v.text() == Some("sessions")))
+        })
+        .ok_or("sessions mode")?;
+    let required = mode
+        .get("required")
+        .and_then(Input::array)
+        .ok_or("session bounds")?;
+    for key in ["sessions", "start_utc_ns", "end_utc_ns"] {
+        assert!(required.iter().any(|v| v.text() == Some(key)));
+    }
+    let exclusions = mode
+        .get("not")
+        .and_then(Input::object)
+        .and_then(|v| v.get("anyOf"))
+        .and_then(Input::array)
+        .ok_or("session mode exclusions")?;
+    for key in [
+        "codec",
+        "sensor",
+        "stream",
+        "generation",
+        "source_anchor",
+        "receive_clock",
+        "decode_clock",
+        "time_scale",
+        "clock_slot",
+        "clock_root",
+        "catalogs",
+        "catalog_slot",
+        "catalog_root",
+        "discover_catalogs",
+        "start_tick",
+        "end_tick",
+    ] {
+        assert!(
+            exclusions
+                .iter()
+                .filter_map(Input::object)
+                .filter_map(|item| item.get("required").and_then(Input::array))
+                .any(|required| required.iter().any(|v| v.text() == Some(key))),
+            "excluded {key}"
+        );
+    }
     Ok(())
 }

@@ -16,6 +16,9 @@ pub mod utc_set;
 /// Conditional UTC discovery across one complete historical archive namespace.
 pub mod utc_discover;
 
+/// Conditional UTC candidates across independently pinned capture sessions.
+pub mod utc_sessions;
+
 /// Bounded multi-catalog decode-clock queries with the same protected deployment owner.
 pub mod set;
 

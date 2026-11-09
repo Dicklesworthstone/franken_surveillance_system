@@ -3,6 +3,8 @@
 
 #[path = "utc_discover.rs"]
 mod utc_discover;
+#[path = "utc_sessions.rs"]
+mod utc_sessions;
 #[path = "utc_set.rs"]
 mod utc_set;
 
@@ -25,6 +27,7 @@ enum UtcFixtureMode {
     Singleton,
     CatalogSet,
     Discovery,
+    Sessions,
 }
 
 struct UtcFixture {
@@ -244,6 +247,9 @@ impl UtcFixture {
             ) | (
                 fss_cli::FssCommand::RecordingUtcDiscoveryQuery(_),
                 UtcFixtureMode::Discovery
+            ) | (
+                fss_cli::FssCommand::RecordingUtcSessionsQuery(_),
+                UtcFixtureMode::Sessions
             )
         ));
         let answer = execute_fss_with_exit(command);

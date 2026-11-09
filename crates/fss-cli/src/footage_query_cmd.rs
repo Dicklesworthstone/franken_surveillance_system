@@ -104,6 +104,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--catalog-slot",
             "--catalog-root",
             "--catalogs",
+            "--sessions",
             "--discover-catalogs",
             "--generation",
             "--source-anchor",
@@ -129,6 +130,10 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             parse_footage_query_args(tokens).map(FssCommand::FootageQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
+            if take(&values, "--sessions").is_some() {
+                return crate::recording_query_cmd::utc_sessions::parse_recording_utc_sessions_query_args(tokens)
+                    .map(FssCommand::RecordingUtcSessionsQuery);
+            }
             if take(&values, "--discover-catalogs").is_some() {
                 if [
                     "--clock-slot",

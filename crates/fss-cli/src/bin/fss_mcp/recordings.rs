@@ -19,6 +19,7 @@ pub(super) fn arguments(
             "catalog_slot",
             "catalog_root",
             "catalogs",
+            "sessions",
             "discover_catalogs",
             "sensor",
             "stream",
@@ -45,6 +46,9 @@ pub(super) fn arguments(
         -32602,
         "Recording queries require an operator-bound archive root at launch",
     ))?;
+    if fields.contains_key("sessions") {
+        return session_arguments(fields, archive_root, argv);
+    }
     let utc = ["clock_slot", "clock_root", "start_utc_ns", "end_utc_ns"]
         .iter()
         .any(|field| fields.contains_key(*field));
@@ -192,6 +196,108 @@ pub(super) fn arguments(
             return Err((-32602, "Recording integer is outside the admitted range"));
         }
         argv.push(format!("--{option}={text}").into());
+    }
+    Ok(argv)
+}
+
+// The MCP parser has already bounded depth, nodes, strings and the complete frame.
+// Preserve exact numeric spellings when passing a structured selector to the shared
+// CLI parser; no floating-point conversion or file indirection is introduced.
+fn literal(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_owned(),
+        Value::Boolean(value) => value.to_string(),
+        Value::Number(value) => value.clone(),
+        Value::Text(value) => fss_cli::json_output::string(value),
+        Value::Array(values) => {
+            fss_cli::json_output::array(&values.iter().map(literal).collect::<Vec<_>>())
+        }
+        Value::Object(fields) => format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|(key, value)| format!(
+                    "{}:{}",
+                    fss_cli::json_output::string(key),
+                    literal(value)
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
+}
+
+fn session_arguments(
+    fields: &BTreeMap<String, Value>,
+    archive_root: &OsStr,
+    mut argv: Vec<OsString>,
+) -> Result<Vec<OsString>, (i32, &'static str)> {
+    if fields.keys().any(|key| {
+        ![
+            "target",
+            "sessions",
+            "start_utc_ns",
+            "end_utc_ns",
+            "max_windows",
+            "max_hydration_bytes",
+            "anchor",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err((
+            -32602,
+            "Capture sessions exclude top-level source/catalog/clock and legacy selector fields",
+        ));
+    }
+    let Some(Value::Array(sessions)) = fields.get("sessions") else {
+        return Err((-32602, "Expected an array of exact capture-session pins"));
+    };
+    if !(1..=8).contains(&sessions.len()) {
+        return Err((-32602, "Expected one to eight capture sessions"));
+    }
+    let value = fields
+        .get("sessions")
+        .ok_or((-32602, "Missing capture sessions"))?;
+    let selector = literal(value);
+    if selector.len() > fss_cli::recording_query_cmd::utc_sessions::MAX_SESSIONS_JSON_BYTES {
+        return Err((-32602, "Capture-session selector exceeds 64 KiB"));
+    }
+    argv.extend([
+        "--target=recordings".into(),
+        "--archive-root".into(),
+        archive_root.to_os_string(),
+        format!("--sessions={selector}").into(),
+    ]);
+    for (field, option, bound, required) in [
+        ("start_utc_ns", "start-utc-ns", 20, true),
+        ("end_utc_ns", "end-utc-ns", 20, true),
+        ("max_hydration_bytes", "max-hydration-bytes", 20, false),
+        ("anchor", "anchor", 256, false),
+    ] {
+        let Some(value) = fields.get(field) else {
+            if required {
+                return Err((-32602, "Missing aggregate UTC interval"));
+            }
+            continue;
+        };
+        let text = value
+            .text()
+            .filter(|text| !text.is_empty() && text.len() <= bound)
+            .ok_or((-32602, "Expected a bounded exact decimal or anchor string"))?;
+        argv.push(format!("--{option}={text}").into());
+    }
+    if let Some(value) = fields.get("max_windows") {
+        let Value::Number(text) = value else {
+            return Err((-32602, "Expected an integer max_windows"));
+        };
+        if !text.bytes().all(|byte| byte.is_ascii_digit())
+            || !text
+                .parse::<usize>()
+                .is_ok_and(|value| (1..=32).contains(&value))
+        {
+            return Err((-32602, "max_windows must be in 1..32"));
+        }
+        argv.push(format!("--max-windows={text}").into());
     }
     Ok(argv)
 }

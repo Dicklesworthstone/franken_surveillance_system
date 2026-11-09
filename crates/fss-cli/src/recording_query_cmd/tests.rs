@@ -774,3 +774,307 @@ fn foreign_targets_predicates_unpinned_clocks_and_effect_options_do_not_fall_thr
     }
     Ok(())
 }
+
+fn utc_session_json_fields(
+    pin: &fss_reference::agent_recordings::utc_sessions::RecordingUtcSessionPin,
+) -> std::collections::BTreeMap<&'static str, String> {
+    let quote = |value: &str| format!("\"{}\"", crate::escape_json_str(value));
+    [
+        ("codec", quote(pin.codec.as_str())),
+        ("sensor", quote(pin.scope.recording.sensor.as_str())),
+        ("stream", quote(pin.scope.recording.stream.as_str())),
+        (
+            "generation",
+            quote(&pin.scope.recording.generation.to_string()),
+        ),
+        (
+            "source_anchor",
+            quote(&pin.scope.recording.anchor.to_text()),
+        ),
+        (
+            "receive_clock",
+            quote(&pin.scope.recording.receive_clock.to_text()),
+        ),
+        ("decode_clock", quote(&pin.scope.decode_clock.to_text())),
+        ("time_scale", pin.scope.time_scale.to_string()),
+        (
+            "catalogs",
+            format!(
+                "[{}]",
+                pin.catalogs
+                    .iter()
+                    .map(|catalog| {
+                        format!(
+                            "{{\"slot\":{},\"root\":{}}}",
+                            quote(catalog.slot.as_str()),
+                            quote(&catalog.root.to_text())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ),
+        ("clock_slot", quote(pin.clock_slot.as_str())),
+        ("clock_root", quote(&pin.clock_root.to_text())),
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn utc_session_json(fields: &std::collections::BTreeMap<&str, String>) -> String {
+    format!(
+        "{{{}}}",
+        fields
+            .iter()
+            .map(|(key, value)| format!("\"{key}\":{value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn utc_sessions_pins(
+    codec: &str,
+) -> TestResult<(
+    Vec<(String, String)>,
+    Vec<fss_reference::agent_recordings::utc_sessions::RecordingUtcSessionPin>,
+)> {
+    use fss_reference::agent_recordings::set::RecordingCatalogPin;
+    use fss_reference::agent_recordings::utc_sessions::RecordingUtcSessionPin;
+    use fss_reference::rtsp::recording_clock::{RecordingClockCodec, clock_slot};
+    let mut values = utc_pins(codec)?;
+    let FssCommand::RecordingUtcQuery(base) = parse(&values, false)? else {
+        return Err("UTC source fixture".into());
+    };
+    let r = base.request.recording;
+    let first = RecordingUtcSessionPin {
+        codec: r.codec,
+        scope: r.scope,
+        clock_slot: r.clock_slot,
+        clock_root: r.clock_root,
+        catalogs: vec![RecordingCatalogPin {
+            slot: r.catalog_slot,
+            root: r.catalog_root,
+        }],
+    };
+    let mut second = first.clone();
+    second.codec = match first.codec {
+        RecordingQueryCodec::Avc => RecordingQueryCodec::Hevc,
+        RecordingQueryCodec::Hevc => RecordingQueryCodec::Avc,
+    };
+    second.scope.recording.generation = 9_007_199_254_740_993;
+    second.scope.recording.anchor = ContentDigest::sha256(b"second retained source anchor");
+    second.scope.recording.receive_clock = ContentDigest::sha256(b"second receive epoch");
+    second.scope.decode_clock = ContentDigest::sha256(b"second decode epoch");
+    second.scope.time_scale = u32::MAX;
+    second.catalogs = vec![RecordingCatalogPin {
+        slot: SlotName::parse("session-two-page")?,
+        root: ContentDigest::sha256(b"second session catalog"),
+    }];
+    second.clock_slot = clock_slot(
+        match second.codec {
+            RecordingQueryCodec::Avc => RecordingClockCodec::Avc,
+            RecordingQueryCodec::Hevc => RecordingClockCodec::Hevc,
+        },
+        &second.scope,
+    )?;
+    second.clock_root = ContentDigest::sha256(b"second session clock");
+    let sessions = vec![first, second];
+    values.retain(|(key, _)| {
+        matches!(
+            key.as_str(),
+            "--target"
+                | "--root"
+                | "--archive-root"
+                | "--principal"
+                | "--anchor"
+                | "--start-utc-ns"
+                | "--end-utc-ns"
+                | "--max-windows"
+                | "--max-hydration-bytes"
+        )
+    });
+    values.push((
+        "--sessions".to_owned(),
+        format!(
+            "[{}]",
+            sessions
+                .iter()
+                .map(|pin| utc_session_json(&utc_session_json_fields(pin)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ));
+    Ok((values, sessions))
+}
+
+#[test]
+fn utc_sessions_grammar_preserves_distinct_capture_clocks_generations_and_codecs() -> TestResult {
+    for codec in ["avc", "hevc"] {
+        let (values, expected) = utc_sessions_pins(codec)?;
+        let command = parse(&values, false)?;
+        assert!(command.is_json());
+        assert_eq!(command, parse(&values, true)?);
+        let FssCommand::RecordingUtcSessionsQuery(args) = command else {
+            return Err("session set routed to a different recording owner".into());
+        };
+        assert_eq!(args.request.recording.sessions.len(), 2);
+        for pin in &expected {
+            assert!(args.request.recording.sessions.contains(pin));
+        }
+        assert_eq!(
+            args.request.recording.interval,
+            9_007_199_254_740_993..u64::MAX
+        );
+        assert_eq!(args.request.recording.max_windows, 32);
+        assert_eq!(args.root, PathBuf::from("/owner/deployment"));
+        assert_eq!(args.archive_root, PathBuf::from("/owner/archive"));
+        let mut reversed = values.clone();
+        reversed
+            .iter_mut()
+            .find(|(key, _)| key == "--sessions")
+            .ok_or("sessions")?
+            .1 = format!(
+            "[{}]",
+            expected
+                .iter()
+                .rev()
+                .map(|pin| utc_session_json(&utc_session_json_fields(pin)))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let FssCommand::RecordingUtcSessionsQuery(reversed) = parse(&reversed, false)? else {
+            return Err("reversed sessions changed owner".into());
+        };
+        let limits =
+            fss_reference::agent_recordings::utc_sessions::RecordingUtcSessionsLimits::default();
+        assert_eq!(
+            args.request.recording.request_digest(limits)?,
+            reversed.request.recording.request_digest(limits)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_sessions_grammar_refuses_implicit_mixed_scope_and_noncanonical_session_json() -> TestResult {
+    let (valid, pins) = utc_sessions_pins("avc")?;
+    let first = utc_session_json_fields(&pins[0]);
+    let second = utc_session_json(&utc_session_json_fields(&pins[1]));
+    let with_sessions = |body: String| {
+        let mut values = valid.clone();
+        values
+            .iter_mut()
+            .find(|(key, _)| key == "--sessions")
+            .expect("fixture sessions")
+            .1 = body;
+        values
+    };
+    for missing in valid.iter().map(|(key, _)| key) {
+        let values = valid
+            .iter()
+            .filter(|(key, _)| key != missing)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(parse(&values, false).is_err(), "missing {missing}");
+    }
+    for target in ["events", "footage"] {
+        let mut values = valid.clone();
+        values
+            .iter_mut()
+            .find(|(key, _)| key == "--target")
+            .ok_or("target")?
+            .1 = target.to_owned();
+        assert!(
+            parse(&values, false).is_err(),
+            "session selector escaped into {target}"
+        );
+    }
+    for missing in first.keys() {
+        let mut fields = first.clone();
+        fields.remove(missing);
+        assert!(
+            parse(
+                &with_sessions(format!("[{},{}]", utc_session_json(&fields), second)),
+                false
+            )
+            .is_err(),
+            "missing session field {missing}"
+        );
+    }
+    for (field, value) in [
+        ("codec", "\"vp9\""),
+        ("sensor", "\"sensor:other\""),
+        ("stream", "\"stream:other\""),
+        ("generation", "9007199254740993"),
+        ("generation", "\"01\""),
+        ("generation", "\"+1\""),
+        ("generation", "\"0\""),
+        ("generation", "\"18446744073709551616\""),
+        ("time_scale", "\"90000\""),
+        ("time_scale", "0"),
+        ("time_scale", "4294967296"),
+        ("time_scale", "9e4"),
+        ("source_anchor", "null"),
+        ("receive_clock", "\"sha256:bad\""),
+        ("decode_clock", "\"sha256:bad\""),
+        ("clock_slot", "\"unbound-clock\""),
+        ("clock_root", "\"sha256:bad\""),
+        ("catalogs", "[]"),
+        ("catalogs", "{}"),
+        ("unknown", "true"),
+        ("root", "\"/other/archive\""),
+    ] {
+        let mut fields = first.clone();
+        fields.insert(field, value.to_owned());
+        assert!(
+            parse(
+                &with_sessions(format!("[{},{}]", utc_session_json(&fields), second)),
+                false
+            )
+            .is_err(),
+            "accepted {field}={value}"
+        );
+    }
+    let item = utc_session_json(&first);
+    for body in [
+        "[]".to_owned(),
+        "{}".to_owned(),
+        "null".to_owned(),
+        format!("[\"{item}\"]"),
+        format!("[{item},{item}]"),
+        format!("[{}]", vec![item.clone(); 9].join(",")),
+        format!("[{{\"generation\":\"1\",{}}}]", &item[1..item.len() - 1]),
+        format!("[{item}] trailing"),
+        format!("[{}]", " ".repeat(65_536)),
+    ] {
+        assert!(parse(&with_sessions(body), false).is_err());
+    }
+    for (key, value) in [
+        ("--codec", "avc"),
+        ("--sensor", "sensor:front-door"),
+        ("--stream", "stream:primary"),
+        ("--generation", "1"),
+        ("--source-anchor", "sha256:bad"),
+        ("--receive-clock", "sha256:bad"),
+        ("--decode-clock", "sha256:bad"),
+        ("--time-scale", "90000"),
+        ("--clock-slot", "clock"),
+        ("--clock-root", "sha256:bad"),
+        ("--catalogs", "catalog=sha256:bad"),
+        ("--catalog-slot", "catalog"),
+        ("--catalog-root", "sha256:bad"),
+        ("--discover-catalogs", "yes"),
+        ("--start-tick", "0"),
+        ("--end-tick", "1"),
+        ("--from-ns", "0"),
+        ("--continuation", "cursor"),
+        ("--hydrate", "H1"),
+        ("--sessions", "[]"),
+        ("--max-windows", "33"),
+    ] {
+        let mut mixed = valid.clone();
+        mixed.push((key.to_owned(), value.to_owned()));
+        assert!(parse(&mixed, false).is_err(), "accepted mixed {key}");
+    }
+    Ok(())
+}

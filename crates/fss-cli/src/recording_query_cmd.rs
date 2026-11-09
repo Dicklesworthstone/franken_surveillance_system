@@ -10,6 +10,9 @@ pub mod utc_set;
 /// Conditional UTC selection after complete bounded namespace discovery.
 pub mod utc_discover;
 
+/// One bounded UTC union across independently pinned capture sessions.
+pub mod utc_sessions;
+
 /// One shared decode-clock query over explicitly pinned catalogs.
 pub mod set;
 

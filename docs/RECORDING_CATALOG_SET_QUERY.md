@@ -188,6 +188,41 @@ If those required unknowns exceed the selected-window or quote limit, the query
 refuses. An explicit catalog-set query remains available when the caller intends
 a smaller, independently pinned scope. See [the complete discovery contract](RECORDING_ARCHIVE_DISCOVERY.md).
 
+## UTC across independently pinned capture sessions
+
+The set modes above deliberately retain one exact source generation and clock
+scope. For a UTC interval spanning capture sessions, use
+`agent_recordings::utc_sessions::query_recordings_utc_sessions` and the existing
+`recordings` target's `--sessions` selector. Each of at most eight inputs supplies
+its own codec, original source scope, one to eight catalog pins and exact retained
+clock pin. All inputs must identify the same sensor and stream. Decode ticks are
+never compared across clocks or normalized into an inferred common epoch.
+
+The session union reuses the same catalog and complete clock-join verifiers with
+one shared reader. Per-input admission remains at most 64 descriptors; the whole
+union admits at most 512, with 584 publication roots, 656 metadata objects,
+16,384 manifest edges, 64 MiB total read bytes and 160,000 filesystem calls.
+Every unknown-time member remains a candidate and consumes the aggregate output
+and hydration-quote limits. A complete empty contribution from a later session
+is allowed after the selected-row or quote budget reaches zero, provided that
+its full catalog/clock and custody checks succeed.
+
+Canonical session-pin digests determine source ordering; native decode ticks
+determine ordering only within each source. Rows preserve the session index,
+source identity and all catalog memberships. Every session's independent clock
+policy, uncertainty and conditional gaps remain visible, alongside the
+conditional union's gaps. Duplicate scopes or publication pins refuse before
+I/O, and a window root or slot shared by distinct source scopes refuses rather
+than being silently merged. The final global pass covers early sessions and
+unselected references after all inputs have been admitted.
+
+The protected caller retains current deployment context and checks the entire
+reference union against current deletion authority. Its 32-row response bound
+applies across all sessions. The request grants no source hydration or disclosure
+authority, and independent retained UTC assertions do not establish synchronized
+clocks or physical continuity. See [the capture-session UTC contract and
+CLI/MCP syntax](RECORDING_SESSION_UTC_QUERY.md).
+
 ## Current deployment context and output
 
 The protected reader is
@@ -229,7 +264,8 @@ and late-catalog refusal.
 
 Validation results are recorded in the session handoff. Authored regression cases
 and source review are not substitutes for native execution or deployment
-qualification. VIT-008 remains open for broader cross-clock archive queries,
-continuous operation and live qualification. Explicit UTC catalog sets are
-implemented here; [namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md) also admits
-an exact retained-clock UTC query through its own request and decision identities.
+qualification. VIT-008 remains open for automatic cross-session discovery,
+stronger clock/source qualification, continuous operation and live qualification.
+Explicit UTC catalog sets and bounded pinned-session unions are implemented;
+[namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md) also admits an exact
+retained-clock UTC query through its own request and decision identities.

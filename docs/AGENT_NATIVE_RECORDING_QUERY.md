@@ -234,3 +234,20 @@ one Cargo job, zero debug information and metadata-only emission.
 VIT-008, VIT-015 and VIT-019 remain open for broader cross-clock discovery, source replay
 through this agent surface, continuous recording, media hydration and quality/coverage
 qualification. Exact-namespace UTC discovery is implemented with the bounded scope above.
+
+
+## UTC review spanning capture sessions
+
+`fss query --target recordings --sessions '<JSON array>'` and MCP `sessions` combine one
+UTC interval across up to eight independently pinned capture scopes of the same sensor and
+stream. Each session carries its own codec, generation, source/receive/decode identities,
+up to eight catalog pins and exact retained clock companion. Mixed AVC/HEVC sessions are
+supported. All inputs share one archive budget and complete final revalidation; the protected
+context checks the current deployment and full deletion-reference union around that read.
+
+The session array is literal closed JSON. Legacy top-level source/catalog/clock selectors
+cannot be mixed with it. Exact decimal strings preserve 64-bit values, unknown-time windows
+remain required candidates, and complete output is bounded to 32 windows and 256 KiB.
+Per-session clock provenance and conditional gaps remain visible; the union does not claim
+clock equivalence, physical continuity or absence. See the
+[complete command, input shape and bounds](RECORDING_SESSION_UTC_QUERY.md).

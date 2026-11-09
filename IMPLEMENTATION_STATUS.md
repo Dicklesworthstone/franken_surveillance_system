@@ -4,6 +4,51 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## UTC review across capture sessions and source generations
+
+`fss query --target recordings --sessions '<JSON array>'` and MCP `sessions` now
+combine one UTC interval across one through eight independently pinned capture
+sessions of the same exact sensor and stream. Inputs may use different native
+AVC/HEVC codecs, source generations, historical anchors, receive/decode clocks
+and clock-correlation policies. Each source retains its complete catalog and
+clock provenance, its own conditional gaps and its share of the output quote.
+Session and catalog input order does not change canonical identity.
+
+The existing catalog and UTC selectors now share one reader across the complete
+union, with one final revalidation. Defaults admit 512 indexed descriptors,
+64 catalogs and eight clocks within 64 MiB of total archive metadata reads;
+individual sessions retain the eight-catalog/64-descriptor ceiling. Output and
+whole-window hydration quotes are aggregate, never replenished between sources.
+Every unavailable-clock window remains required under every interval. Repeated
+scopes/publication pins and aliased window roots or slots across distinct
+sessions refuse, including aliases outside the selected output.
+
+Protected context checks current authority/effect history, layout and deletion
+state around the native read under one cumulative deployment allowance. Current
+deletion restrictions cover the complete reference union, including sources that
+return no rows. CLI/MCP output retains its 32-window and 256 KiB ceilings. The
+literal closed JSON selector preserves exact 64-bit decimal strings and cannot
+mix with legacy source/catalog/clock options or override MCP launch bindings.
+
+This advances VIT-008 and the recording portion of VIT-015. It preserves
+independent conditional node-clock observations; it does not establish clock
+equivalence, camera exposure time, physical continuity or absence. Unpinned
+sessions/catalogs are outside the query. See the
+[complete session-query contract](docs/RECORDING_SESSION_UTC_QUERY.md).
+
+**Validation:** 31 new contracts are authored and independently source-reviewed:
+14 native union cases, seven protected-context cases, two parser cases, three
+MCP/schema cases and five CLI/MCP process integrations. They include the full
+512-descriptor default input, eight-session/64-catalog/32-row protected projection,
+zero remaining output/quote with a verified empty later source, late mutation,
+and committed deletion of an unselected source. Pinned scoped formatting and
+whitespace checks passed. The Python schema suite ran 64 cases: 63 passed and
+one existing case was skipped. An exhaustive structural check of 524,288
+selector-presence combinations admitted exactly seven complete recording modes
+with no overlaps; it is not a native execution result. No Cargo retry was made:
+the unchanged Asupersync compiler SIGKILL documented below still prevents a
+verified native build or executed integration result on this host.
+
 ## Durable per-sensor retention policies and exact cleanup
 
 `fss-event delete policy-plan`, `policy-commit` and `policy-show` now preview,

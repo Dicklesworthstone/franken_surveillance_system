@@ -144,6 +144,74 @@ context remain attached. See [native archive discovery](
 RECORDING_ARCHIVE_DISCOVERY.md#utc-discovery-with-a-retained-clock) for all limits,
 canonical identities, mode grammar and validation scope.
 
+## UTC candidates across capture sessions
+
+`agent_recordings::utc_sessions::query_recordings_utc_sessions` accepts one
+through eight explicitly pinned capture sessions for the same exact sensor and
+stream. Each `RecordingUtcSessionPin` retains its own codec, source generation,
+historical anchor, receive clock, decode clock, tick rate, catalog pins and
+independently pinned clock companion. This supports a UTC interval spanning
+capture restarts or codec changes without relabelling decode ticks or requiring
+independent queries with replenished budgets.
+
+Each session uses the existing complete catalog-set verification: one through
+eight catalogs, at most 64 admitted descriptors including repeated memberships,
+and every clock row joined to that session's exact catalog universe before time
+filtering. Duplicate source scopes, publication slots or publication roots refuse
+before I/O. A recording root or window slot reused across distinct sessions
+refuses during verification, including an unselected member; incompatible source
+provenance cannot be merged by deduplication.
+
+The result is ordered by canonical session-pin digest, then by native decode
+order within each session. Input session and catalog ordering does not change
+its identity. This ordering makes no claim about synchronized physical events.
+Every row keeps its session index and digest, complete original catalog
+memberships, decode coordinates and optional conditional UTC envelope. Each
+session exposes its own clock approval, policy, uncertainty interval, counts,
+conditional indexed gaps and hydration quote. Another session's clock envelopes
+cannot erase those per-session gaps. The aggregate `indexed_gaps` additionally
+describes the conditional union; unknown-time windows may overlap any gap.
+
+Unknown-clock windows from every session remain explicit under every UTC
+predicate. The complete union shares a native 64-row ceiling, protected 32-row
+ceiling and one whole-window hydration-quote bound. Exhaustion refuses the
+complete result. A session that selects no windows must still pass its complete
+catalog/clock and custody verification, even when earlier sessions consumed the
+entire output or quote allowance.
+
+| Ceiling | UTC capture-session union |
+| --- | ---: |
+| Explicit independently pinned sessions | 8 |
+| Catalogs per session / across the union | 8 / 64 |
+| Admitted descriptors per session / across the union | 64 / 512 |
+| Pinned publication roots | 584 |
+| Distinct metadata objects read | 656 |
+| Manifest reference edges | 16,384 |
+| Bytes in one metadata object | 16 MiB |
+| Aggregate read bytes, including final revalidation | 64 MiB |
+| Filesystem calls, including final revalidation | 160,000 |
+
+The aggregate byte allowance remains 64 MiB; adding sessions never refills it.
+One `PinnedMetadataReader` admits all catalogs, recording manifests and retained
+clock metadata, then performs one complete final revalidation. All reference
+closures, including unselected source leaves and early-session clocks, remain
+subject to local tombstone checks and current deployment deletion checks. No
+recovering publisher, writer lock, original media read or namespace discovery is
+introduced. Archive and deployment observations remain independently verified,
+not an atomic snapshot.
+
+Session, request, row and decision identities use the separate
+`fss.agent_recordings.utc_sessions.*.v1` domains. Existing singleton, set and
+namespace-discovery identities and bounds are unchanged. Fourteen native
+contracts cover mixed AVC/HEVC generations, the complete 512-descriptor default
+universe, canonical ordering, shared quotas, unknown clocks, independent gaps,
+incomplete inactive-session clock joins, cross-session aliases, cancellation,
+late early-session mutation and single-session equivalence with the existing
+set reader. They are authored and statically reviewed; native execution remains
+blocked by the unchanged dependency build failure recorded below. See the
+[capture-session UTC guide](RECORDING_SESSION_UTC_QUERY.md) for the protected
+context, CLI/MCP grammar and current validation scope.
+
 ## Validation scope
 
 The UTC catalog-set extension adds twelve native contracts and five CLI/context

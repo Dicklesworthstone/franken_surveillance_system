@@ -16,6 +16,8 @@ pub mod set;
 pub mod utc;
 /// Conditional UTC candidates discovered within one complete source namespace.
 pub mod utc_discover;
+/// Conditional UTC candidates across independently pinned capture sessions of one source.
+pub mod utc_sessions;
 /// Conditional UTC candidates across an explicitly pinned catalog set and one clock index.
 pub mod utc_set;
 
