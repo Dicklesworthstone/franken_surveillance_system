@@ -33,6 +33,7 @@ exit: 0 describe accepted (or dry-run mock matched), 1 no listener, 2
 import argparse
 import hashlib
 import os
+import signal
 import socket
 import struct
 import subprocess  # nosec B404 - ping only, fixed argv, no shell
@@ -393,10 +394,20 @@ def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
     """One real attempt: login, frame, 554 poll, one DESCRIBE.
 
     Returns (listened, describe_status)."""
+    def _bound(_s, _f):
+        raise TimeoutError("login bound")
     try:
         cam = W.Cam(ip, mac, uid, enr)
-        cam.full_login()
-    except (RuntimeError, OSError) as e:  # dtls/ioctl layers raise RuntimeError
+        # a wedged iCamera retransmits DTLS for minutes and starves the next unit's
+        # turn; the fire itself must be bounded
+        prev = signal.signal(signal.SIGALRM, _bound)
+        signal.alarm(45)
+        try:
+            cam.full_login()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, prev)
+    except (RuntimeError, OSError, TimeoutError) as e:  # dtls/ioctl raise RuntimeError
         print(f"{ip}: session failed: {e}")
         return False, None
     frame = build_frame(cmd, a.ra, a.ra_off, a.cmd_off,

@@ -1,0 +1,17 @@
+{
+ "camera": "192.168.4.51",
+ "ip": "192.168.4.51",
+ "vector": "telnet9999",
+ "timestamp_utc": "20261109T022436Z",
+ "pass": false,
+ "checks": [
+  {
+   "name": "tcp9999-expect:uid=0\\(",
+   "expect": "uid=0\\(",
+   "got": "[Errno 61] Connection refused",
+   "pass": false
+  }
+ ],
+ "notes": "",
+ "tool": "root_proof.py"
+}
