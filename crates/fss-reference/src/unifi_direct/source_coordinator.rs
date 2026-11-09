@@ -147,6 +147,29 @@ pub enum BootstrapStop {
     ObserverRefused(BootstrapStep),
 }
 
+/// A refused transition returns every source, session and archive owner.
+#[must_use]
+pub enum TransitionRefusal<'scope, 'task, IO> {
+    /// Separate-source custody must be completed or reconciled first.
+    Source {
+        /// Why the separate-source owner could not transition.
+        status: source_worker::Status,
+        /// Unchanged bootstrap driver.
+        driver: av_bootstrap_driver::Driver<'scope, 'task, IO>,
+        /// Unchanged A/V archive owners.
+        resources: av_unknown_worker_guard::BootstrapResources,
+    },
+    /// Bootstrap was not ready or could not validate its original inputs.
+    Bootstrap {
+        /// Refusal retaining the bootstrap and controller owners.
+        refusal: av_bootstrap_driver::HandoffRefusal<'scope, 'task, IO>,
+        /// Unchanged A/V archive owners.
+        resources: av_unknown_worker_guard::BootstrapResources,
+    },
+    /// The A/V guard refused and retained all transferred owners.
+    Guard(av_unknown_worker_guard::BootstrapRefusal<'scope, 'task, IO>),
+}
+
 /// Resource and metered cost for one archive owner.
 #[derive(Clone, Copy)]
 pub struct ArchiveAdmission<'a> {
@@ -212,6 +235,24 @@ impl Coordinator {
     /// Return the exact worker and its retained work to the session owner.
     pub fn into_worker(self) -> source_worker::Worker {
         self.worker
+    }
+
+    /// Transition a ready bootstrap into an A/V guard without abandoning a
+    /// separate source. Every refusal returns the original owners for recovery.
+    pub fn into_recording_guard<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        driver: av_bootstrap_driver::Driver<'scope, 'task, IO>,
+        resources: av_unknown_worker_guard::BootstrapResources,
+    ) -> Result<av_unknown_worker_guard::BootstrapStarted<'scope, 'task, IO>, TransitionRefusal<'scope, 'task, IO>> {
+        let status = self.worker.status();
+        if status != source_worker::Status::Idle {
+            return Err(TransitionRefusal::Source { status, driver, resources });
+        }
+        let handoff = match driver.bootstrap() {
+            Ok(handoff) => handoff,
+            Err(refusal) => return Err(TransitionRefusal::Bootstrap { refusal, resources }),
+        };
+        Guard::from_bootstrap(handoff, resources).map_err(TransitionRefusal::Guard)
     }
 
     /// Advance bootstrap while retaining separately returned source records.

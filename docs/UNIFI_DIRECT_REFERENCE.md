@@ -7341,8 +7341,35 @@ A bounded bootstrap loop was added after those results. Strict-remote job
 `30101959465763627` passed the source-worker test, but the bootstrap fixture
 overflowed its default test-thread stack before its assertions. The job exited
 101, was acknowledged, and released its sources and execution pair. The loop
-now boxes its nested step future to reduce its own retained async state; this
-revision still needs a completed default-stack test.
+now boxes its nested step future to reduce its own retained async state.
+Strict-remote job `30101959465763629` then passed seven source-related socket
+tests on the default test-thread stack, with none failed or ignored and 48
+filtered. Its source-worker output was truncated in this record; the job
+exited zero, was acknowledged, and released sources and its execution pair.
+Strict-remote job `30101959465763630` separately ran the exact source-worker
+test and repeated the bootstrap socket test 20 times; every run passed. The
+bootstrap executable SHA-256 was
+`8d054fc1924e0011e8ec979b6527273f56c14f016fe742a02632a9446f99592d`
+and the source-worker executable SHA-256 was
+`d6e2cfe53424738bfca6657c0f47fc67ed218c1f060000e290a025b3c28f45d8`
+before and after the job. That job also exited zero, was acknowledged, and
+released its sources and execution pair. These bounds do not rule out every
+race or qualify a physical camera.
+
+The bootstrap socket fixture now also deliberately refuses the first accepted
+source event at its observer boundary, then checks that the returned event
+still contains its paired audio, that the original source is published, and
+that its recovered bytes match the simulated input. Strict-remote job
+`30101959465763632` passed that focused test: one passed, none failed or were
+ignored, and 54 were filtered. It used base
+`e9be6da13d30bd9daaf42409c461f9100c7895ee` and overlay fingerprint
+`284de627a8fbc05bf8bc99faa7a1107ef26674e991dc0c88dce2eb5e30f13e0e`,
+exited zero, was acknowledged, and released sources and its execution pair.
+Strict-remote job `30101959465763633` repeated that exact test ten times; all
+ten passed. The binary SHA-256 was
+`1e7950a36b59dff66e9d377df6126b96d355305851bef485311ac972cb07d3c8`
+before and after. The job exited zero, was acknowledged, and released sources
+and its execution pair. This remains a simulated-controller qualification.
 
 At a later read-only check, the fallback recorder was active with restart count
 80, up from 79. Thirteen archive files had been modified in the preceding 15

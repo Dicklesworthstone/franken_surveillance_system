@@ -39,6 +39,7 @@ ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp -an}"
 PY="${PY:-/opt/homebrew/bin/python3}"
 PING="${PING:-ping}"
 GUARD="${GUARD:-$HERE/tapo_connectap_sc.py}"
+REACH="${REACH:-$HERE/tapo_reach.py}"
 POSTSHELL="${POSTSHELL:-$HERE/c460_postshell.sh}"
 
 log() {
@@ -105,7 +106,6 @@ sleep "$GUARD_GAP"
 # state before the shot: a crash mid-fire must not produce a second payload
 echo "fired $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 
-REACH="${REACH:-$HERE/tapo_reach.py}"
 ds_ready() { # wake the unit and prove the DS accepts a login — the only "can it execute"
   timeout 90 "$PY" "$REACH" "$ip" --wake-mac "$MAC" --tries 4 >/dev/null 2>&1
 }
