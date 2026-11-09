@@ -575,10 +575,16 @@ def main() -> int:
                             "processname": "fss",
                             "entrypoint": "sh /tmp/fss/launch.sh",
                             "maxstartuptime": 60, "version": "1.0.0",
-                            "components": [{"checksum": md5_of("/proc/launch.sh"),
-                                            "filename": "launch.sh",
-                                            "localpath": "/tmp/fss/launch.sh",
-                                            "type": None, "version": "1.0.0"}]})
+                            # VERSION is part of every stock process descriptor; without it
+                            # the installer may never consider the set complete.
+                            "components": [
+                                {"checksum": md5_of("/proc/VERSION"), "filename": "VERSION",
+                                 "localpath": "/tmp/fss/VERSION", "type": None,
+                                 "version": "1.0.0"},
+                                {"checksum": md5_of("/proc/launch.sh"),
+                                 "filename": "launch.sh",
+                                 "localpath": "/tmp/fss/launch.sh",
+                                 "type": None, "version": "1.0.0"}]})
                     if name:
                         procs = [x for x in procs if x["processname"] == name] or procs
                     out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "v2",
