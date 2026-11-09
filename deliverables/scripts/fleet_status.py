@@ -61,7 +61,7 @@ def sh(cmd, timeout=15):
         return 1, ""
 
 
-def forge_serving(port, secs=4):
+def forge_serving(port, secs=6):
     """A wedged forge still accepts TCP — the :443 one did on 2026-11-09 and every port
     check called it green while nothing was served. Ask for a real response."""
     code = sh(f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time {secs} https://127.0.0.1:{port}/")[1]
@@ -117,6 +117,24 @@ def fleet_planes():
     # the RTSP watcher is the only thing that re-enables a unit that rebooted
     # without rtspd; dead means a vendor reset silently costs ingest again
     planes["rtsp-watch"] = bool(sh("pgrep -f wyze_rtsp_one_shot.py")[1].strip())
+    # the flash chain pins image md5s; if the files drift, the chain dies on the camera
+    # *after* a shell was won. Single source of truth is the chain script itself.
+    chain = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tapo_flash_chain.sh")
+    pins = {}
+    try:
+        text = open(chain).read()
+        for kind, name, val in re.findall(r"(IMG|MD5)_(ROOTFS|KERNEL)=([^;\s]+)", text):
+            pins[(kind, name)] = val
+    except OSError:
+        pins = {}
+    okimgs = bool(pins)
+    for (kind, name), val in list(pins.items()):
+        if kind != "IMG":
+            continue
+        want = pins.get(("MD5", name), "")
+        got = sh(f"md5 -q {os.path.expanduser('~/fss-exploit/fw/' + val)} 2>/dev/null")[1].strip()
+        okimgs = okimgs and bool(want) and got == want
+    planes["images:tapo"] = okimgs
     for label in WATCHERS:
         key = "watch:" + label.rsplit(".", 1)[-1]
         planes[key] = "state = running" in sh(f"sudo -n launchctl print system/{label} 2>/dev/null")[1]
