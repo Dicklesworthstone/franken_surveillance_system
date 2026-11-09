@@ -21,6 +21,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 ### What WORKS right now
 - 9/9 fleet planes green (broker, forge 443+8443, backups, tftp, pf, doctor, no duplicates, rtsp-watch)
 - Fleet self-heals every 15 min via `com.jeffreyemanuel.fleet-readiness` LaunchDaemon
+- **Every lane watcher is a gate plane** (c460 fire/burst, c660 sweep/tftp/convert, owlet relay, yi listener, wyze rtsp). Four of them used to be unsupervised nohup children; a dead watcher now fails the gate instead of being noticed days later
 - Chain-watch daemon auto-captures root proof when the Wyze OTA completes
 - Wyze cameras CONNECTed to OUR broker (636+ connects), PUBACKing our deltas
 - **RTSP worked and is machine-proven once**: `.51` gave 150 decoded frames in 10 s on `stream1` (640×360) and a 2560×1440 grab on `stream0` — `root_proof.py rtsp-capture` PASS, no flash, no cloud. Both servers are now wedged (TCP accepts, nothing answers) after a DESCRIBE storm; a port check lies, so `wyze_rtsp_one_shot.py` requires a real OPTIONS round-trip and re-fires with an execution beacon. **The power-cycle clears it.**
@@ -84,7 +85,7 @@ The camera becomes a standard ONVIF device that FSS ingests from directly.**
 
 | Tool | Purpose | Status |
 |---|---|---|
-| `fleet_status.py --gate` | One-command fleet health | ✅ 8/8 planes |
+| `fleet_status.py --gate` | One-command fleet health | ✅ 18/18 planes |
 | `fleet_reconcile.py --execute` | Auto-heal drift (runs every 15 min via launchd) | ✅ self-healing |
 | `root_proof.py` | Machine-checkable root evidence | ✅ 25 proof artifacts (fresh .39 rtsp-enable PASS 2026-11-09) |
 | `wait_ledger.py` | Negative-evidence for all armed waits | ✅ 3 open / 13 closed (1 cancelled as superseded) |
