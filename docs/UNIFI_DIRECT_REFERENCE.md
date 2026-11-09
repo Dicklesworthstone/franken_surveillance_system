@@ -6741,3 +6741,10 @@ At approximately `2026-11-09 03:58 UTC`, a further read-only check found the
 fallback recorder active with restart count 70 and 17 MP4 files modified in
 the preceding 20 minutes. This observes recent fallback activity, not gap-free
 coverage or a Rust-owned recording.
+
+The discovery test attempt on `hz2`, job `30100509981410524`, compiled its
+dependencies but failed before tests because the committed retention-policy
+code passed `u64` limits to a `usize` API. It exited 101, was acknowledged, and
+released source and execution resources. The working tree now uses checked
+conversions for those two limits; this repair and the discovery tests still
+require execution.

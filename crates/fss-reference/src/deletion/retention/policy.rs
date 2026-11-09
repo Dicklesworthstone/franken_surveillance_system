@@ -465,10 +465,12 @@ impl PolicyIndex {
                 let remaining = MAX_POLICY_READ_BYTES
                     .checked_sub(bytes_read)
                     .ok_or(PolicyError::Limit)?;
+                let limit = usize::try_from(MAX_POLICY_RECORD_BYTES.min(remaining))
+                    .map_err(|_| PolicyError::Limit)?;
                 let bytes = deployment
                     .publisher()
                     .spool()
-                    .read_bounded(delta.payload_digest, MAX_POLICY_RECORD_BYTES.min(remaining))?;
+                    .read_bounded(delta.payload_digest, limit)?;
                 bytes_read = bytes_read
                     .checked_add(bytes.len() as u64)
                     .ok_or(PolicyError::Limit)?;
@@ -488,10 +490,9 @@ impl PolicyIndex {
                     let remaining = MAX_POLICY_READ_BYTES
                         .checked_sub(bytes_read)
                         .ok_or(PolicyError::Limit)?;
-                    let bytes = deployment
-                        .publisher()
-                        .spool()
-                        .read_bounded(digest, (MAX_DELETION_RECORD_BYTES as u64).min(remaining))?;
+                    let limit = usize::try_from((MAX_DELETION_RECORD_BYTES as u64).min(remaining))
+                        .map_err(|_| PolicyError::Limit)?;
+                    let bytes = deployment.publisher().spool().read_bounded(digest, limit)?;
                     bytes_read = bytes_read
                         .checked_add(bytes.len() as u64)
                         .ok_or(PolicyError::Limit)?;
