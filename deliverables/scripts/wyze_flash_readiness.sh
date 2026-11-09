@@ -48,7 +48,7 @@ esac
 if [ -n "$URLV" ]; then
   WANT=$(stat -f %z "/tmp/fwserve/$CAP" 2>/dev/null)
   E2E=$(curl -sS -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_download} %{ssl_verify_result}' \
-        --max-time 120 "$URLV" 2>/dev/null)
+        --max-time 30 "$URLV" 2>/dev/null)
   [ -n "$WANT" ] && [ "$E2E" = "200 $WANT 0" ] \
     && ok "A3c tunnel serves capsule, TLS verified ($WANT bytes)" \
     || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 ${WANT:-?} 0')"
