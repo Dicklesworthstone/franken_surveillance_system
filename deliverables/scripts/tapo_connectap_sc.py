@@ -72,6 +72,10 @@ def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b"", bare=Fals
     return base64.b64encode(filler + pc + body * max(1, units)).decode()
 
 
+USERNAME = os.environ.get("TAPO_USER", "admin")
+PASSWORD = os.environ.get("TAPO_PASS", "fss12345")
+
+
 def sha(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -86,6 +90,38 @@ def post(host, path, body, hdrs=None, timeout=6):
     return p.stdout
 
 
+def _rsa_device_confirm(host, d):
+    """Modern firmware answers -40401 with an RSA key + nonce instead of device_confirm.
+
+    The app answers with a `securePassthrough` frame whose request is RSA-PKCS1(login_device)
+    under that key; the device replies with device_confirm + a fresh nonce. Digests are
+    md5(password) / md5(user + hash1) then sha256(hash2 + cnonce), as in the legacy path.
+    """
+    import base64, hashlib, random, string, subprocess, tempfile
+    key, nonce = d.get("key"), d.get("nonce")
+    if not key or not nonce:
+        return None
+    h1 = hashlib.md5(PASSWORD.encode()).hexdigest()
+    h2 = hashlib.md5((USERNAME + h1).encode()).hexdigest()
+    cn = "".join(random.choice(string.ascii_letters + string.digits) for _ in range(8))
+    inner = json.dumps({"method": "login_device",
+                        "params": {"cnonce": cn, "encrypt_type": "3",
+                                   "digest": hashlib.sha256((h2 + cn).encode()).hexdigest(),
+                                   "username": USERNAME}}).encode()
+    pem = "-----BEGIN PUBLIC KEY-----\n" + key + "\n-----END PUBLIC KEY-----\n"
+    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as fh:
+        fh.write(pem)
+        path = fh.name
+    ct = subprocess.run(["openssl", "pkeyutl", "-encrypt", "-pubin", "-inkey", path,
+                         "-pkeyopt", "rsa_padding_mode:pkcs1"], input=inner, capture_output=True).stdout
+    r = json.loads(post(host, "/", {"method": "securePassthrough",
+                                    "params": {"request": base64.b64encode(ct).decode()}}, timeout=4))
+    dd = (r.get("result") or {}).get("data") or {}
+    if not dd.get("device_confirm"):
+        return None
+    return dd["device_confirm"], dd.get("nonce") or nonce, h1, h2
+
+
 def login(host, tries=90):
     for i in range(tries):
         try:
@@ -94,10 +130,14 @@ def login(host, tries=90):
             time.sleep(1)
             continue
         d = (j.get("result") or {}).get("data") or {}
-        if not d.get("device_confirm"):
-            time.sleep(1)
-            continue
-        dc, nonce = d["device_confirm"], d["nonce"]
+        nonce = d.get("nonce")
+        dc = d.get("device_confirm")
+        if not dc:
+            got = _rsa_device_confirm(host, d)
+            if not got:
+                time.sleep(1)
+                continue
+            dc, nonce, _h1, _h2 = got
         try:
             j2 = json.loads(post(host, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "digest_passwd": dc, "username": "admin"}}, timeout=3))
         except Exception:
@@ -105,7 +145,7 @@ def login(host, tries=90):
             continue
         if j2.get("error_code") == 0:
             hk = dc[:64]
-            print("login ok (%d tries)" % i)
+            print("login ok (%d tries%s)" % (i, ", rsa" if d.get("key") else ""))
             return {"stok": j2["result"]["stok"], "seq": j2["result"]["start_seq"],
                     "lsk": sha("lsk" + nonce + hk)[:32], "ivb": sha("ivb" + nonce + hk)[:32]}
         time.sleep(2)

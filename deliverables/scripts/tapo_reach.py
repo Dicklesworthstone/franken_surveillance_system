@@ -32,12 +32,20 @@ def main() -> int:
     ap.add_argument("ip")
     ap.add_argument("--wake-mac")
     ap.add_argument("--tries", type=int, default=6)
+    ap.add_argument("--wake-tries", type=int, default=3, help="full wake rounds before giving up")
     ap.add_argument("--wait", type=float, default=45.0)
     a = ap.parse_args()
 
-    if a.wake_mac and not wake(a.wake_mac, a.ip, a.wait):
-        print("WAKE-FAILED")
-        return 1
+    if a.wake_mac:
+        woke = False
+        for _ in range(a.wake_tries):
+            if wake(a.wake_mac, a.ip, a.wait):
+                woke = True
+                break
+            time.sleep(1)
+        if not woke:
+            print("WAKE-FAILED")
+            return 1
     import tapo_connectap_sc as ds
     try:
         sess = ds.login(a.ip, tries=a.tries)
