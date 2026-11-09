@@ -26,6 +26,22 @@ for pair in "wyzeedgeai_cam_v4_test_protocol:14.9.50039.r" "kvsWebrtcClientMaste
   done
 done
 
+# Root payloads live in the repo but are served from /tmp: mirror them into the tree the
+# forge/beacon server already uses, so a broker restart (or a new boot) never serves a
+# stale or missing component. `res_monitor.sh` is fetched by the device on its own; the
+# kvs/model `launch.sh` is the entrypoint body; both end in /fss/stage2.sh.
+HERE_PAY="$(cd "$(dirname "$0")" && pwd)/../payloads"
+for pair in "wyze-resmon.sh:wyzeedgeai_cam_v4_test_protocol/14.9.50199.r/res_monitor.sh" \
+            "wyze-launch.sh:kvsWebrtcClientMaster_t41/2.1.2.571/launch.sh" \
+            "wyze-launch.sh:kvsWebrtcClientMaster_t41/2.1.2.573/launch.sh" \
+            \"wyze-stage2.sh:fss/stage2.sh\" \
+            "wyze-launch.sh:proc/launch.sh"; do
+  src="$HERE_PAY/${pair%%:*}"; dst="$CAP_DIR/${pair##*:}"
+  [ -f "$src" ] || continue
+  mkdir -p "$(dirname "$dst")"
+  cp -f "$src" "$dst" 2>/dev/null || sudo -n cp -f "$src" "$dst"
+done
+
 # Camera identity: registry.yaml is the single truth. Resolve wyze-51's MAC by
 # id; fall back to the historical hardcoded default if the registry/python is
 # unavailable (the bring-up script itself ARP-sweeps by this MAC, so a moved

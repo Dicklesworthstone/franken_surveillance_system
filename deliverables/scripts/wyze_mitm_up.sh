@@ -240,6 +240,16 @@ forge_ok() {
   [ -n "$pids" ] || return 1
   cmd=$(sudo ps -o command= -p $pids 2>/dev/null)
   echo "$cmd" | grep -q -- "$HERE/wyze_forge_serve.py" || return 1
+  # ...and it must be NEWER than the script. Adoption otherwise hides every code edit:
+  # the :443 listener from 2026-11-05 was still serving six-day-old code while the file
+  # changed underneath it (measured 2026-11-09).
+  local p start mtime
+  for p in $pids; do
+    start=$(sudo ps -o lstart= -p "$p" 2>/dev/null)
+    start=$(date -j -f "%a %b %d %T %Y" "$start" +%s 2>/dev/null) || continue
+    mtime=$(stat -f %m "$HERE/wyze_forge_serve.py" 2>/dev/null) || continue
+    [ "$start" -ge "$mtime" ] || return 1
+  done
   echo "$cmd" | grep -q -- '--cert /tmp/iot2.pem' || return 1
   echo "$cmd" | grep -qE -- "--port '?$1'?([[:space:]]|$)" || return 1
   if [ "$want_iocert" = 1 ]; then
@@ -298,7 +308,8 @@ for port in 443 8443; do
     # The redirect must happen in the ROOT shell: /tmp/ota/tls.log keeps getting recreated
     # root-owned by an unidentified root writer, and a user-shell redirection fails with
     # EACCES, silently killing the spawn (measured: 8443 plane dead, no log line anywhere).
-    sudo sh -c "exec '$PY' '$HERE/wyze_forge_serve.py' --dir '$CAP_DIR' --port '$port' \
+    # sudo resets the environment, so every forge flag must be passed explicitly
+    sudo FSS_PROC="${FSS_PROC:-}" NO_UPSTREAM="${NO_UPSTREAM:-}" sh -c "exec '$PY' '$HERE/wyze_forge_serve.py' --dir '$CAP_DIR' --port '$port' \
       --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate '$CERTS/emudhra/ev-ca-aaa-cross.pem' \
       --sni s3-us-west-2.amazonaws.com $extra >> /tmp/ota/tls.log 2>&1" &
     # python + ssl cert load takes 2-4 s; a single 1 s check raced the bind and
