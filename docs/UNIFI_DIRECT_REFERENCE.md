@@ -7265,9 +7265,14 @@ the coordinator by the fixture, not a physical camera record.
 The coordinator has since been changed to accept independently scoped and
 metered admissions for the A/V archive and separate-source archive. The socket
 fixture now also exercises transition back to A/V archival. A test request for
-that revision is queued and has not yet executed. The coordinator is not yet
-wired into an unattended native recorder; cancellation through this
-coordinator and live physical-camera interoperability remain unverified.
+that revision ran as strict-remote job `30101959465763565` but aborted with a
+test-thread stack overflow before producing a test verdict. The job exited 101,
+was acknowledged, and released its source and execution pair. The fixture's
+coordinator futures have since been boxed to reduce the size of its very large
+enclosing async state; whether that resolves the overflow remains under test.
+The coordinator is not yet wired into an unattended native recorder;
+cancellation through this coordinator and live physical-camera interoperability
+remain unverified.
 
 A later ten-second, process-scoped diagnostic counted eight TLS reads and two
 writes in the running reference plugin without recording message contents. It

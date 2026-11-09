@@ -1849,26 +1849,26 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                                 let av=source_coordinator::ArchiveAdmission {resource:"fixture:archive",cost:&BudgetVector::ZERO};
                                                 let denied=source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&excessive};
                                                 let allowed=source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&BudgetVector::ZERO};
-                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,denied).await,source_coordinator::Step::SourceStartRefused(_)));
-                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::SourceRetryRequired));
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,denied)).await,source_coordinator::Step::SourceStartRefused(_)));
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed)).await,source_coordinator::Step::SourceRetryRequired));
                                                 coordinator.authorize_retry().map_err(|_|"source retry was not retained")?;
-                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::SourceStarted));
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed)).await,source_coordinator::Step::SourceStarted));
                                                 timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"coordinated source worker did not enter")?;
                                                 control_probe_tx.send(()).map_err(io::Error::other)?;
-                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None})));
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,av,allowed)).await,source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None})));
                                                 source_access.allow.store(true,Ordering::Release);
                                                 source_access.block.store(false,Ordering::Release);
                                                 let completion=timeout(cx.now(),Duration::from_secs(10),async {
                                                     loop {
-                                                        match coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_millis(100),task,cx,clock,av,allowed).await {
+                                                        match Box::pin(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_millis(100),task,cx,clock,av,allowed)).await {
                                                             source_coordinator::Step::SourceArchive(source_handoff::Drive::Completed(completion)) | source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {completion:Some(completion),..})=>break Ok(completion),
                                                             source_coordinator::Step::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::Idle,completion:None})=>(),
                                                             _=>break Err("coordinator lost source or controller result"),
                                                         }
                                                     }
                                                 }).await??;
-                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::SourceQueued)))));
-                                                assert!(matches!(coordinator.step(&mut guard,&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,allowed).await,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::ArchiveStarted))));
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,allowed)).await,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::SourceQueued)))));
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,allowed)).await,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::ArchiveStarted))));
                                                 source=coordinator.into_worker();
                                                 completion
                                             };

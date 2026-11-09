@@ -47,11 +47,23 @@ esac
 # A3c: that exact URL must serve the capsule over real TLS end-to-end through cloudflared
 if [ -n "$URLV" ]; then
   WANT=$(stat -f %z "/tmp/fwserve/$CAP" 2>/dev/null)
-  E2E=$(curl -sS -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_download} %{ssl_verify_result}' \
-        --max-time 30 "$URLV" 2>/dev/null)
-  [ -n "$WANT" ] && [ "$E2E" = "200 $WANT 0" ] \
-    && ok "A3c tunnel serves capsule, TLS verified ($WANT bytes)" \
-    || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 ${WANT:-?} 0')"
+  # HEAD by default: host + verified TLS + the exact Content-Length is what A3c is for, and a
+  # download through a quick tunnel can take minutes. FULL=1 pulls the bytes (A7 already md5s
+  # them over the forge leg).
+  if [ "${FULL:-0}" = 1 ]; then
+    E2E=$(curl -sS -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_download} %{ssl_verify_result}' \
+          --max-time 60 "$URLV" 2>/dev/null)
+    [ -n "$WANT" ] && [ "$E2E" = "200 $WANT 0" ] \
+      && ok "A3c tunnel serves capsule, TLS verified ($WANT bytes, downloaded)" \
+      || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 ${WANT:-?} 0')"
+  else
+    HDR=$(curl -sS -I -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_header} %{ssl_verify_result} %{header_json}' \
+          --max-time 15 "$URLV" 2>/dev/null)
+    CL=$(printf '%s' "$HDR" | sed -E 's/.*"content-length":\["?([0-9]+).*/\1/')
+    [ -n "$WANT" ] && [ "$CL" = "$WANT" ] \
+      && ok "A3c tunnel serves capsule, TLS verified (Content-Length $WANT)" \
+      || bad "A3c tunnel FAILED (content-length=${CL:-?}, want ${WANT:-?})"
+  fi
 else
   bad "A3c cannot test (no OTA_URL)"
 fi
