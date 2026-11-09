@@ -226,6 +226,15 @@ fn cli(
     now: i128,
     approval: Option<(ContentDigest, ContentDigest)>,
 ) -> TestResult<Output> {
+    cli_with_budget(root, verb, now, None, approval)
+}
+fn cli_with_budget(
+    root: &Path,
+    verb: &str,
+    now: i128,
+    source_bytes: Option<u64>,
+    approval: Option<(ContentDigest, ContentDigest)>,
+) -> TestResult<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fss-event"));
     command.args(["delete", verb, "--root"]).arg(root).args([
         "--site",
@@ -237,6 +246,9 @@ fn cli(
         "--attested-now-ns",
         &format!("{now}:{now}"),
     ]);
+    if let Some(bytes) = source_bytes {
+        command.args(["--max-retained-source-bytes", &bytes.to_string()]);
+    }
     if let Some((plan, approval)) = approval {
         command.args(["--plan", &plan.to_text(), "--approve", &approval.to_text()]);
     }
@@ -270,6 +282,167 @@ fn hold(
         command.args(["--approve", &approval.to_text()]);
     }
     output(&mut command)
+}
+
+#[test]
+fn byte_target_is_read_only_oldest_first_and_bound_to_exact_cold_retry() -> TestResult {
+    let dir = Directory::new("byte-target")?;
+    let oldest_bytes = movie(40)?;
+    let newer_bytes = movie(60)?;
+    let recent_bytes = movie(80)?;
+    let oldest = import(&dir, "oldest", SENSOR, Some(1_000_000_000), &oldest_bytes)?;
+    let newer = import(&dir, "newer", SENSOR, Some(2_000_000_000), &newer_bytes)?;
+    let recent = import(&dir, "recent", SENSOR, Some(9_000_000_000), &recent_bytes)?;
+    let root = dir.root();
+    let target = (newer_bytes.len() + recent_bytes.len()) as u64;
+    let total = target + oldest_bytes.len() as u64;
+    let before = files(&root)?;
+
+    let within = cli_with_budget(&root, "retention-plan", NOW, Some(total), None)?;
+    success(&within);
+    let within_json = std::str::from_utf8(&within.stdout)?;
+    assert!(within_json.contains("\"deletion_plan\":null"));
+    assert!(within_json.contains("\"disposition\":\"budget_retained\""));
+    assert!(within_json.contains("\"projected_target_met\":true"));
+    assert!(!within_json.contains("approval_digest"));
+
+    let preview = cli_with_budget(&root, "retention-plan", NOW, Some(target), None)?;
+    success(&preview);
+    let text = std::str::from_utf8(&preview.stdout)?;
+    assert!(text.contains("\"format\":\"fss.retention_selection.v3\""));
+    assert!(text.contains(&format!("--max-retained-source-bytes {target}")));
+    assert!(text.contains(&format!("\"before_source_bytes\":\"{total}\"")));
+    assert!(text.contains(&format!(
+        "\"projected_remaining_source_bytes\":\"{target}\""
+    )));
+    assert!(text.contains("\"unmet_source_bytes\":\"0\""));
+    assert!(text.contains("\"accounting_scope\":\"distinct_completed_same_sensor_input_files\""));
+    assert!(text.contains("\"physical_disk_reclamation\":\"see_exact_deletion_plan\""));
+    let digest = digest_field(&preview, "plan_digest")?;
+    let approval = digest_field(&preview, "approval_digest")?;
+    {
+        let cx = context(&root)?;
+        let deployment = open(&root, &cx)?;
+        let planned = plan_retention(
+            &deployment,
+            &request(NOW)?.with_source_byte_budget(target),
+            &cx,
+        )?
+        .deletion
+        .ok_or("missing byte-budget plan")?;
+        assert_eq!(planned.imports, vec![oldest]);
+        assert_eq!(planned.digest()?, digest);
+        assert_eq!(planned.approval_digest(PRINCIPAL)?, approval);
+    }
+    refused(
+        &cli(&root, "retention-commit", NOW, Some((digest, approval)))?,
+        "ERR-DELETION-PLAN-STALE-001",
+    );
+    refused(
+        &cli_with_budget(
+            &root,
+            "retention-commit",
+            NOW,
+            Some(target + 1),
+            Some((digest, approval)),
+        )?,
+        "ERR-DELETION-PLAN-STALE-001",
+    );
+    assert_eq!(
+        before,
+        files(&root)?,
+        "preview and changed targets cannot mutate custody"
+    );
+
+    let committed = cli_with_budget(
+        &root,
+        "retention-commit",
+        NOW,
+        Some(target),
+        Some((digest, approval)),
+    )?;
+    success(&committed);
+    {
+        let cx = context(&root)?;
+        let deployment = open(&root, &cx)?;
+        let index = DeletionIndex::read(&deployment)?;
+        assert!(index.import(oldest).is_some());
+        for retained in [newer, recent] {
+            assert!(index.import(retained).is_none());
+            RetainedFileImport::open(&deployment, retained, RetainedReadLimits::default(), &cx)?;
+        }
+    }
+    let after = files(&root)?;
+    let retry = cli_with_budget(
+        &root,
+        "retention-commit",
+        NOW,
+        Some(target),
+        Some((digest, approval)),
+    )?;
+    success(&retry);
+    assert!(std::str::from_utf8(&retry.stdout)?.contains("\"outcome\":\"already_complete\""));
+    assert_eq!(
+        after,
+        files(&root)?,
+        "exact retry cannot enlarge the cohort"
+    );
+    Ok(())
+}
+
+#[test]
+fn byte_target_reports_unmet_floor_and_holds_while_allowing_safe_progress() -> TestResult {
+    let dir = Directory::new("byte-deficit")?;
+    let protected_bytes = movie(35)?;
+    let recent_bytes = movie(85)?;
+    let protected = import(
+        &dir,
+        "protected",
+        SENSOR,
+        Some(1_000_000_000),
+        &protected_bytes,
+    )?;
+    let removable = import(&dir, "removable", SENSOR, Some(2_000_000_000), &movie(65)?)?;
+    let recent = import(&dir, "recent", SENSOR, Some(9_000_000_000), &recent_bytes)?;
+    let root = dir.root();
+    let hold_preview = hold(&root, "place", protected, None)?;
+    success(&hold(
+        &root,
+        "place",
+        protected,
+        Some(digest_field(&hold_preview, "approval_digest")?),
+    )?);
+    let before = files(&root)?;
+    let preview = cli_with_budget(&root, "retention-plan", NOW, Some(0), None)?;
+    success(&preview);
+    let text = std::str::from_utf8(&preview.stdout)?;
+    let deficit = protected_bytes.len() + recent_bytes.len();
+    assert!(text.contains("\"status\":\"planned\""));
+    assert!(text.contains("\"disposition\":\"closure_blocked\""));
+    assert!(text.contains("\"disposition\":\"not_due\""));
+    assert!(text.contains(&format!("\"unmet_source_bytes\":\"{deficit}\"")));
+    assert!(text.contains("\"projected_target_met\":false"));
+    assert!(text.contains("\"holds_released\":false"));
+    let digest = digest_field(&preview, "plan_digest")?;
+    let approval = digest_field(&preview, "approval_digest")?;
+    assert_eq!(before, files(&root)?);
+    success(&cli_with_budget(
+        &root,
+        "retention-commit",
+        NOW,
+        Some(0),
+        Some((digest, approval)),
+    )?);
+    let cx = context(&root)?;
+    let deployment = open(&root, &cx)?;
+    let index = DeletionIndex::read(&deployment)?;
+    assert!(index.import(removable).is_some());
+    assert_eq!(index.entries().len(), 1);
+    for retained in [protected, recent] {
+        assert!(index.import(retained).is_none());
+        RetainedFileImport::open(&deployment, retained, RetainedReadLimits::default(), &cx)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -464,29 +637,30 @@ fn member_hold_retains_protected_import_and_invalidates_old_approval() -> TestRe
         )?,
         "ERR-DELETION-PLAN-STALE-001",
     );
-    let selected = {
-        let cx = context(&root)?;
-        let deployment = open(&root, &cx)?;
-        let preview = plan_retention(&deployment, &request(NOW)?, &cx)?;
-        assert_eq!(
-            preview.assessment.selection.domain(),
-            "fss.retention_selection.v2"
-        );
-        let candidates = preview.assessment.selection.candidates();
-        let retained = candidates
-            .iter()
-            .find(|candidate| candidate.import_identity() == second)
-            .ok_or("missing held candidate")?;
-        assert_eq!(retained.disposition(), RetentionDisposition::ClosureBlocked);
-        assert!(retained.closure_witness().is_some());
-        assert!(retained.blockers().iter().any(|blocker| {
-            blocker.kind == "evidence_hold" && blocker.subject == "incident"
-        }));
-        let selected = preview.deletion.ok_or("missing independent cleanup")?;
-        assert_eq!(selected.imports, vec![first]);
-        assert!(selected.blockers.is_empty());
-        selected
-    };
+    let selected =
+        {
+            let cx = context(&root)?;
+            let deployment = open(&root, &cx)?;
+            let preview = plan_retention(&deployment, &request(NOW)?, &cx)?;
+            assert_eq!(
+                preview.assessment.selection.domain(),
+                "fss.retention_selection.v2"
+            );
+            let candidates = preview.assessment.selection.candidates();
+            let retained = candidates
+                .iter()
+                .find(|candidate| candidate.import_identity() == second)
+                .ok_or("missing held candidate")?;
+            assert_eq!(retained.disposition(), RetentionDisposition::ClosureBlocked);
+            assert!(retained.closure_witness().is_some());
+            assert!(retained.blockers().iter().any(|blocker| {
+                blocker.kind == "evidence_hold" && blocker.subject == "incident"
+            }));
+            let selected = preview.deletion.ok_or("missing independent cleanup")?;
+            assert_eq!(selected.imports, vec![first]);
+            assert!(selected.blockers.is_empty());
+            selected
+        };
     let rendered = cli(&root, "retention-plan", NOW, None)?;
     success(&rendered);
     let text = std::str::from_utf8(&rendered.stdout)?;

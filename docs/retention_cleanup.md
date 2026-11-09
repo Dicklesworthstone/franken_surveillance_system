@@ -1,14 +1,17 @@
-# Owner-approved age-based recording cleanup
+# Owner-approved recording cleanup by age and source-byte target
 
 `fss-event delete retention-plan` selects an exact cohort of completed file imports for one
 sensor. `retention-commit` executes one sealed union-closure deletion under its exact approval,
 using the existing tombstone-first, local unlink, verification and completion protocol.
 
-This implements one-shot age-based cleanup, not a standing retention policy, daemon, automatic
+An optional source-byte target selects the oldest safe age-eligible imports first. The default
+remains cleanup of every safely deletable expired import.
+
+This implements one-shot cleanup, not a standing retention policy, daemon, automatic
 hold release, or remote archive deletion. The policy-change work packages remain open. It is a
-reference implementation, **not production-qualified**. Native Rust execution and formatting
-were not available when the initial implementation was committed; the focused checks are
-executable but their presence is not proof that they passed.
+reference implementation, **not production-qualified**. The source-byte additions have passed
+source review and pinned formatting. Native contract execution is pending the pinned dependency
+build; the presence of executable checks is not proof that they passed.
 
 ## Preview before any deletion
 
@@ -46,6 +49,53 @@ latest_possible_last_capture + retain_for_ns <= earliest_attested_current_time
 It never uses receive time, the first frame's time, a midpoint, or filesystem modification time
 as a substitute. If even the latest current-time assertion precedes the earliest possible
 deadline, the result is `not_due`; overlapping uncertainty gives `age_uncertain`.
+
+## Plan toward a source-byte target
+
+Add `--max-retained-source-bytes BYTES` to request a deterministic oldest-first sequence
+of safely deletable, age-eligible recordings that stops once it meets the target:
+
+```sh
+fss-event delete retention-plan \
+  --root /path/to/deployment --site site:home \
+  --sensor-id sensor:front \
+  --retain-for-ns 86400000000000 \
+  --attested-now-ns "${EARLIEST_NOW_NS:?supply earliest current time}:${LATEST_NOW_NS:?supply latest current time}" \
+  --max-retained-source-bytes 1073741824
+```
+
+Here the source-byte target is 1 GiB. The minimum age remains one day: storage pressure never
+makes a recent, uncertain, gap-containing or held recording eligible. A zero-byte target is
+valid but still cannot override those exclusions. Candidates are considered by latest possible
+capture end, then immutable import identity. Every proposed union passes the existing deletion
+and hold checks before it can join the selected cohort. Once the target is reached, other
+age-eligible imports receive `budget_retained`; they are not selected for deletion.
+
+The accounting is **distinct completed input files for the named sensor**, using the verified
+manifest's input digest and byte length. If several imports reference the same input, that
+input is counted once and leaves the projected total only when all its same-sensor imports
+are selected. Recent, unknown-time, blocked and otherwise retained completed imports still
+count. Incomplete imports are reported separately and are outside this bounded total.
+
+This total is different from physical disk usage. Other sensors may share source objects;
+derivatives, authority history, original input files, remote copies and filesystem overhead
+also have their own lifetimes. The nested deletion plan lists the exact local objects and
+bytes it can unlink. Neither this logical target nor an upload acknowledgement proves freed
+disk capacity.
+
+The selection's `source_byte_budget` reports `before_source_bytes`, `selected_source_bytes`,
+`projected_remaining_source_bytes` and `unmet_source_bytes`, along with the exact limit and
+accounting scope. `selected_source_bytes` counts distinct inputs with no retained same-sensor
+member after the proposed cleanup. An unmet target remains explicit; independently safe
+progress may still have an approval command. A blocked final deletion plan remains blocked,
+even when its hypothetical selected cohort would meet the target. An already satisfied
+target returns no deletion plan or approval. No byte-total field implies that a cleanup has
+already executed.
+
+Follow the exact `approve_command` from the preview. It includes the byte target. Omitting or
+changing that target, even to a more permissive value, cannot reuse the approval; neither can
+changing the source inventory, hold state, minimum age or time assertion. Interrupted commits
+resume the sealed original cohort and never enlarge it to make up a newly observed deficit.
 
 ## Exact approval, one transaction, safe restart
 
@@ -125,6 +175,14 @@ is refused. Readers check that the plan's member list equals precisely the eligi
 Old readers reject an unknown inner domain. Existing v1 durable deletions retain their exact
 retry semantics; there is no down-conversion or rewriting of retained approvals.
 
+Requests with a source-byte target use `fss.retention_selection.v3` inside the same deletion
+v3 envelopes. This inner format binds the optional request target, each candidate's source
+digest and length, every selection/exclusion and closure witness, and the recomputable byte
+accounting. The decoder rejects inconsistent source lengths, forged totals or eligibility,
+and noncanonical ordering. Neither age-only v1 nor blocker-aware v2 bytes change. Old readers
+refuse the unknown selection version instead of interpreting a byte-limited approval as an
+unlimited age-based deletion.
+
 ## Focused regression checks
 
 ```sh
@@ -138,6 +196,12 @@ The new tests cover real retained MJPEG imports, old versus recent and unknown-t
 shared source preservation, derived-frame deletion, holds, stale requests, version/member
 forgery, explicit no-op results, all six deletion interruption points, and cold exact retry.
 The optional hosted workflow invokes this same script and does not replace local DSR gates.
+
+The source-byte contracts additionally exercise oldest-first stopping, complete-input
+deduplication, shared inputs across sensors, holds and union-only effect blockers, unknown-time
+accounting, unattainable targets, stale inventory and holds, exact-budget CLI approvals, and
+every interruption cut with cold retry. Canonical decoder cases reject forged totals,
+inconsistent source lengths, missing v3 fields, overflow and skipped older candidates.
 
 Related contracts: FSS-037, GOAL-009, GOAL-010, CAP-DELETE-PREPARE-001 and
 CAP-DELETE-COMMIT-001. Standing `EFFECT-RETENTION-001` policy adoption, encrypted storage,

@@ -4,6 +4,26 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Byte-target cleanup of retained file imports
+
+`fss-event delete retention-plan` and `retention-commit` accept
+`--max-retained-source-bytes` alongside the existing positive minimum age. Verified
+complete input-file digests supply duplicate-aware accounting for one sensor.
+Eligible imports are considered by latest possible capture end, then import
+identity, and every proposed union passes existing hold, effect and deletion
+admission checks. Unknown timing, source gaps, substantive omissions, recent
+imports and blocked closures remain explicit. A target that cannot be reached
+safely produces an unmet-byte deficit rather than expanding deletion authority.
+
+The v3 selection binds source metadata, recomputable accounting and the exact
+request for approval and durable retry; v1/v2 bytes remain unchanged. This
+advances VIT-006's bounded cleanup requirement. Continuous recording rings,
+automatic scheduling, live-capture retention and physical disk-space guarantees
+remain open. See [the command and accounting scope](docs/retention_cleanup.md).
+New native codec, cohort and CLI contracts are authored and source-reviewed;
+execution is pending the pinned dependency build. No release qualification is
+claimed.
+
 ## Native retained-package quality evaluation
 
 `fss-evaluate retained-package` now connects retained native package detections

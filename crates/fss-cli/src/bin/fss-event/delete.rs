@@ -4,6 +4,8 @@
 //! Legacy plan/commit retain their semantics. `retention-plan` and `retention-commit` additionally
 //! require a sensor, a positive --retain-for-ns and --attested-now-ns EARLIEST:LATEST. They select
 //! whole recordings by conservative capture bounds, then use one existing union deletion.
+//! An explicit --max-retained-source-bytes target selects oldest eligible recordings until
+//! completed same-sensor logical input bytes fit; it never overrides the minimum age or holds.
 //! Source gaps and unknown time retain recordings. Held or otherwise blocked additions remain
 //! explicit exclusions, so independent expired closures can proceed under their exact approval.
 //! No standing policy changes, host clock reads, automatic hold releases or remote erasure.
@@ -99,7 +101,13 @@ pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
             || (command == "plan" && matches!(key, "--import-id" | "--sensor-id" | "--event-id"))
             || (!is_plan && matches!(key, "--plan" | "--approve"))
             || (is_retention
-                && matches!(key, "--sensor-id" | "--retain-for-ns" | "--attested-now-ns"));
+                && matches!(
+                    key,
+                    "--sensor-id"
+                        | "--retain-for-ns"
+                        | "--attested-now-ns"
+                        | "--max-retained-source-bytes"
+                ));
         if !allowed {
             return Err("unknown or inapplicable option".to_owned());
         }
@@ -138,9 +146,18 @@ pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
             .map_err(|_| "invalid latest attested time")?;
         let now = CaptureInterval::new(TimestampNs(first), TimestampNs(last))
             .map_err(|_| "attested current-time bounds are inverted")?;
+        let request = RetentionRequest::new(sensor, duration, now)
+            .map_err(|_| "retention duration must be positive and time bounds ordered")?;
         Some(
-            RetentionRequest::new(sensor, duration, now)
-                .map_err(|_| "retention duration must be positive and time bounds ordered")?,
+            match values
+                .iter()
+                .find(|(key, _)| key == "--max-retained-source-bytes")
+            {
+                Some((_, value)) => request.with_source_byte_budget(value.parse::<u64>().map_err(
+                    |_| "--max-retained-source-bytes requires nonnegative integer bytes",
+                )?),
+                None => request,
+            },
         )
     } else {
         None
@@ -219,11 +236,26 @@ fn retention_json(selection: &RetentionSelection) -> String {
         let blocked = c.closure_witness().map_or_else(String::new, |witness| {
             format!(",\"trial_plan_digest\":\"{witness}\",\"blockers\":{}", findings(c.blockers()))
         });
-        format!("{{\"import_identity\":\"{}\",\"manifest_digest\":\"{}\",\"timing_digest\":\"{}\",\"capture_end\":{},\"disposition\":\"{}\"{blocked}}}",
+        let source = match (c.source_digest(), c.source_bytes()) {
+            (Some(digest), Some(bytes)) => format!(",\"source_digest\":\"{digest}\",\"source_bytes\":\"{bytes}\""),
+            _ => String::new(),
+        };
+        format!("{{\"import_identity\":\"{}\",\"manifest_digest\":\"{}\",\"timing_digest\":\"{}\",\"capture_end\":{},\"disposition\":\"{}\"{source}{blocked}}}",
             c.import_identity(), c.manifest_digest(), c.timing_digest(), end, c.disposition().as_str())
     }).collect();
+    let budget = selection.byte_accounting().map_or_else(String::new, |accounting| {
+        format!(
+            ",\"source_byte_budget\":{{\"max_retained_source_bytes\":\"{}\",\"before_source_bytes\":\"{}\",\"selected_source_bytes\":\"{}\",\"projected_remaining_source_bytes\":\"{}\",\"unmet_source_bytes\":\"{}\",\"projected_target_met\":{},\"accounting_scope\":\"distinct_completed_same_sensor_input_files\",\"selection_order\":\"latest_capture_end_then_import_identity\",\"physical_disk_reclamation\":\"see_exact_deletion_plan\"}}",
+            accounting.max_retained_source_bytes,
+            accounting.before_source_bytes,
+            accounting.selected_source_bytes,
+            accounting.projected_remaining_source_bytes,
+            accounting.unmet_source_bytes,
+            accounting.unmet_source_bytes == 0,
+        )
+    });
     format!(
-        "{{\"format\":\"{}\",\"sensor_id\":{},\"retain_for_ns\":\"{}\",\"attested_now\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}},\"time_provenance\":\"owner_assertions_not_observed_clock\",\"eligibility\":\"latest_capture_plus_retention_not_after_earliest_attested_now\",\"candidates\":[{}],\"standing_policy_changed\":false,\"holds_released\":false}}",
+        "{{\"format\":\"{}\",\"sensor_id\":{},\"retain_for_ns\":\"{}\",\"attested_now\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}},\"time_provenance\":\"owner_assertions_not_observed_clock\",\"eligibility\":\"latest_capture_plus_retention_not_after_earliest_attested_now\",\"candidates\":[{}]{budget},\"standing_policy_changed\":false,\"holds_released\":false}}",
         selection.domain(),
         quote(request.sensor().as_str()),
         request.retain_for_ns(),
@@ -283,10 +315,15 @@ fn plan_json(action: &DeleteAction, plan: &DeletionPlan) -> RunResult<String> {
             DeletionScope::Retention(selection) => {
                 let request = selection.request();
                 let now = request.attested_now();
+                let budget = request
+                    .source_byte_budget()
+                    .map_or_else(String::new, |bytes| {
+                        format!(" --max-retained-source-bytes {bytes}")
+                    });
                 (
                     "retention-commit",
                     format!(
-                        " --sensor-id {} --retain-for-ns {} --attested-now-ns {}:{}",
+                        " --sensor-id {} --retain-for-ns {} --attested-now-ns {}:{}{budget}",
                         quote_arg(request.sensor().as_str()),
                         request.retain_for_ns(),
                         now.earliest.0,
@@ -434,7 +471,14 @@ fn retention_preview(
     let status = match &preview.deletion {
         Some(plan) if !plan.blockers.is_empty() => "blocked",
         Some(_) => "planned",
-        None if assessment.selection.candidates().iter().any(|c| !c.blockers().is_empty()) => "blocked",
+        None if assessment
+            .selection
+            .candidates()
+            .iter()
+            .any(|c| !c.blockers().is_empty()) =>
+        {
+            "blocked"
+        }
         None => "nothing_eligible",
     };
     let plan = match &preview.deletion {
@@ -577,6 +621,50 @@ mod tests {
         args.extend(["--approve".into(), digest.into()]);
         assert!(matches!(parse(&args)?.operation, Operation::Commit { .. }));
         Ok(())
+    }
+    #[test]
+    fn source_byte_target_is_explicit_and_allows_zero_without_relaxing_age() -> Result<(), String> {
+        for target in [0, 4096, u64::MAX] {
+            let mut args = retention_arguments("retention-plan");
+            args.extend([
+                "--max-retained-source-bytes".into(),
+                target.to_string().into(),
+            ]);
+            let request = parse(&args)?.retention.ok_or("missing request")?;
+            assert_eq!(request.source_byte_budget(), Some(target));
+            assert_eq!(request.retain_for_ns(), 10);
+            assert_eq!(request.attested_now().earliest.0, -10);
+            assert_eq!(request.attested_now().latest.0, 20);
+        }
+        assert_eq!(
+            parse(&retention_arguments("retention-plan"))?
+                .retention
+                .ok_or("missing age request")?
+                .source_byte_budget(),
+            None
+        );
+        Ok(())
+    }
+    #[test]
+    fn invalid_duplicate_and_legacy_byte_targets_refuse_before_io() {
+        for value in ["-1", "1.5", "18446744073709551616", "NaN"] {
+            let mut args = retention_arguments("retention-plan");
+            args.extend(["--max-retained-source-bytes".into(), value.into()]);
+            assert!(parse(&args).is_err());
+        }
+        let mut duplicate = retention_arguments("retention-plan");
+        duplicate.extend([
+            "--max-retained-source-bytes".into(),
+            "0".into(),
+            "--max-retained-source-bytes".into(),
+            "100".into(),
+        ]);
+        assert!(parse(&duplicate).is_err());
+        for verb in ["plan", "commit"] {
+            let mut args = arguments(verb);
+            args.extend(["--max-retained-source-bytes".into(), "0".into()]);
+            assert!(parse(&args).is_err());
+        }
     }
     #[test]
     fn legacy_commands_do_not_silently_accept_retention_semantics() -> Result<(), String> {

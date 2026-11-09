@@ -913,7 +913,10 @@ class TestSchemaConstitution(unittest.TestCase):
         # Current registry, including five evidence-bound fusion and supervisor transcript domains.
         # Three explicit source-once fusion and three supervisor accounting domains.
         # Three offline fusion sequence checkpoint/raw/transcript domains.
-        self.assertEqual(result["digestDomainCount"], 665)
+        # Reconciled baseline: 700 distinct digest-only domains after merging eight
+        # duplicate schema registrations; table headers are not declarations. Add one
+        # source-byte retention domain.
+        self.assertEqual(result["digestDomainCount"], 701)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1475,7 +1478,10 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # Current registry, including five evidence-bound fusion and supervisor transcript domains.
         # Three explicit source-once fusion and three supervisor accounting domains.
         # Three offline fusion sequence checkpoint/raw/transcript domains.
-        self.assertEqual(result["digestDomainCount"], 665)
+        # Reconciled baseline: 700 distinct digest-only domains after merging eight
+        # duplicate schema registrations; table headers are not declarations. Add one
+        # source-byte retention domain.
+        self.assertEqual(result["digestDomainCount"], 701)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1502,7 +1508,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # fss.evidence_delta_batch.v1 (owner EvidenceDeltaBatch): typed SCHEMA constants
         # landed 2026-10-10 (fss-x4a.30.51/30.18 realization, camera-ingest lane).
         # 53 = 52 + fss.experiment_receipt.v1 (owner ExperimentReceipt, FSS-196/fss-x4a.26.16).
-        self.assertEqual(result["implementedCount"], 54)
+        # Current named Rust owners after reconciling the complete schema inventory.
+        self.assertEqual(result["implementedCount"], 55)
 
         unreg_findings = [
             f for f in validator.findings

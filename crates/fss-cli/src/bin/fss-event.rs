@@ -347,6 +347,19 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     sensors whose single loss leaves it without any retained witness, cut vertices, bridges,\n\
     and the fss.graph_algorithm_witness.v1 witness (counters checked against the registered\n\
     bound). Structural over retained history: not current observability, never absence.\n\
+  delete retention-plan: --sensor-id ID --retain-for-ns POSITIVE_NS\n\
+          --attested-now-ns EARLIEST:LATEST [--max-retained-source-bytes BYTES]\n\
+    Read-only cleanup preview for completed imports from one sensor. Age is established from\n\
+    the last possible capture and earliest owner-attested current time. Without a byte target,\n\
+    selects every safely deletable expired import. With a target (zero permitted), selects\n\
+    oldest eligible imports until distinct completed same-sensor input bytes fit. The minimum\n\
+    age, unknown timing, holds and shared-evidence blockers still apply. Reports any remaining\n\
+    deficit; logical source bytes are distinct from physical space freed by the deletion plan.\n\
+    No standing policy changes. Follow the preview's exact retention-commit approve_command;\n\
+    it binds the same sensor, age, current-time assertion and optional byte target.\n\
+  delete retention-commit: same selection options plus --plan sha256:PLAN --approve sha256:APPROVAL\n\
+    Revalidates one union closure, records deletion before unlinking and supports exact cold\n\
+    retry after interruption. A changed request or deployment requires a fresh approval.\n\
   delete plan (read-only, graph-complete deletion closure of one scope), exactly one of:\n\
           --import-id sha256:HEX (one retained import)\n\
           --sensor-id ID (every retained import whose capsules name the sensor)\n\
