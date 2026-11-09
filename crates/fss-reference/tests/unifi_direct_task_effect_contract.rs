@@ -1812,8 +1812,38 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let segment=guard.held_segment().ok_or("missing unknown held source")?;
                                         assert_eq!(ContentDigest::sha256(segment.fragment().bytes()),first_digest);
                                         for source in segment.source() { originals.extend_from_slice(source.bytes()); }
-                                        control_probe_tx.send(()).map_err(io::Error::other)?;
-                                        assert!(matches!(guard.service_control(&mut owner,&operations[7],Duration::from_secs(5)).await,supervisor::Step::TimeSyncWritten { .. }));
+                                        if late_audio_change==8 {
+                                            use fss_reference::unifi_direct::{source_handoff,source_worker};
+                                            use fss_packet::extended_flv::stream::Next;
+                                            let source_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?;
+                                            let source_deployment=fss_reference::ReferenceDeployment::open(&temp.0.join("separate-source-archive"),"site:worker-guard",&source_replay)?;
+                                            let store=FileEffectJournal::create(temp.0.join("separate-source-intent"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+                                            let journal=archive::journal::UnknownTimeJournal::create(Box::new(store),ContentDigest::sha256(b"separate source scope"),&source_replay)?;
+                                            let store=FileEffectJournal::create(temp.0.join("separate-source-anchor"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+                                            let keeper=archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store),&journal,&source_replay)?;
+                                            let source_access=Arc::new(Retention {block:AtomicBool::new(true),entered:AtomicBool::new(false),allow:AtomicBool::new(false)});
+                                            let _unblock_source=Unblock(Arc::clone(&source_access));
+                                            let mut source=source_worker::Worker::new(source_worker::Parts {deployment:source_deployment,journal,keeper,replay:source_replay,authority:source_access.clone(),retention:ContentDigest::sha256(b"separate source retention"),limits:archive::Limits::default(),max_source_bytes:1024,work_limit:4_000_000_000}).map_err(|_|"separate source worker configuration")?;
+                                            let mut framer=Framer::new(FlvLimits::default(),1024)?;
+                                            framer.append(0,b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00")?;
+                                            let record=match framer.take()? {Next::Record(record)=>record,Next::NeedMore=>return Err("source header missing".into())};
+                                            source.offer(source_worker::Input::Original {record,key:SourceKey {connection:1,generation:1},disposition:recording::SourceDisposition::Header,camera_claim:ContentDigest::sha256(b"fixture camera")}).map_err(|_|"source offer refused")?;
+                                            assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourcePending));
+                                            assert_eq!(ContentDigest::sha256(guard.held_segment().ok_or("pending source consumed segment")?.fragment().bytes()),first_digest);
+                                            source.start(task,cx,clock,"fixture:source",&BudgetVector::ZERO).map_err(|e|format!("source start: {e:?}"))?;
+                                            timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"separate source worker did not enter")?;
+                                            control_probe_tx.send(()).map_err(io::Error::other)?;
+                                            assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None})));
+                                            source_access.allow.store(true,Ordering::Release);
+                                            source_access.block.store(false,Ordering::Release);
+                                            let completion=timeout(cx.now(),Duration::from_secs(10),source.join()).await?.ok_or("separate source completion missing")?;
+                                            assert!(completion.runtime.is_ok() && matches!(completion.outcome,source_worker::Outcome::Publication(source_worker::Publication::Published { .. })));
+                                            let retired=source.retire().map_err(|_|"separate source retirement refused")?;
+                                            assert!(!retired.fenced && retired.pending.is_none());
+                                        } else {
+                                            control_probe_tx.send(()).map_err(io::Error::other)?;
+                                            assert!(matches!(guard.service_control(&mut owner,&operations[7],Duration::from_secs(5)).await,supervisor::Step::TimeSyncWritten { .. }));
+                                        }
                                         assert_eq!(ContentDigest::sha256(guard.held_segment().ok_or("unknown control consumed source")?.fragment().bytes()),first_digest);
                                         if late_audio_change==7 {
                                             use fss_reference::unifi_direct::av_session_inbox::Inbox;
@@ -2447,6 +2477,11 @@ fn known_time_guard_retains_withheld_audio_on_revocation() -> Test {
 #[test]
 fn unknown_time_guard_services_control_while_archive_is_blocked() -> Test {
     conversation_scenario_with_worker_guard_mode(false, false, false, false, false, false, 0, false, true, true, false, false, true, None, 0)
+}
+
+#[test]
+fn unknown_time_source_scheduler_keeps_control_live_and_media_held() -> Test {
+    conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,8)
 }
 
 #[test]

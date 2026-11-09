@@ -23,7 +23,8 @@ use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 use super::{
     AudioCodec, VideoChannel, archive, av_bootstrap_driver, av_owned_sink, av_recording, av_sink,
     av_worker, av_worker_guard::ArchiveState, conversation, events, intent, management,
-    metered::MeteredClock, motion, pipeline, receive, recording, supervisor,
+    metered::MeteredClock, motion, pipeline, receive, recording, source_handoff, source_worker,
+    supervisor,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -162,6 +163,26 @@ pub enum Advance {
     RecoveryRequired,
     /// Cancellation was requested and a running worker has drained.
     Cancelled(Option<av_worker::UnknownTimeCompletion>),
+}
+
+/// A scheduling decision that also accounts for separately archived source.
+#[must_use]
+pub enum SourceAdvance {
+    /// The task, owner, or clock do not describe the same session.
+    Context,
+    /// No separate source was held; the normal session decision is returned.
+    Session(Advance),
+    /// A running separate-source attempt was driven alongside control only.
+    SourceArchive(source_handoff::Drive),
+    /// A separate source is held; start, retry, or retire it explicitly.
+    SourcePending,
+    /// A separate source requires reconciliation before media can continue.
+    SourceFenced,
+    /// Source custody could not be inspected; media was not polled.
+    SourceUnavailable,
+    /// Cancellation was observed and any separate-source attempt was drained.
+    /// The guard remains owned and any A/V archive must still be drained.
+    Cancelled(Option<source_worker::Completion>),
 }
 
 /// A source, control, archive, or audio observation transferred to the session owner.
@@ -455,6 +476,20 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         self.supervisor.step_control(owner, operation, wait).await
     }
 
+    /// Service control while a separately owned original source is archived.
+    ///
+    /// This does not poll camera media. The returned value retains both the
+    /// controller result and any completed source publication attempt.
+    pub async fn drive_source_control(
+        &mut self,
+        worker: &mut source_worker::Worker,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> source_handoff::Drive {
+        source_handoff::drive_control(worker, self.service_control(owner, operation, wait)).await
+    }
+
     /// Admit the queued source to the region-owned archival worker.
     pub fn start_archive<'a, 'b>(
         &mut self,
@@ -577,6 +612,51 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 Advance::Archive(self.drive_archive(owner, operation, wait).await)
             }
             ArchiveState::Recovery => Advance::RecoveryRequired,
+        }
+    }
+
+    /// Advance the session without reading media past an outstanding source.
+    ///
+    /// The caller owns both the worker and every returned result. A refused
+    /// source remains pending until an explicit retry or retirement; this
+    /// method never silently retries publication. On cancellation, it drains
+    /// the separate worker and returns its exact completion, while leaving the
+    /// guard and any A/V archive for the caller to drain separately.
+    pub async fn advance_with_source<'a, 'b>(
+        &mut self,
+        worker: &mut source_worker::Worker,
+        owner: &mut conversation::Owner<'_, 'a, 'b>,
+        operation: &OperationId,
+        wait: Duration,
+        task: &'a TaskCx<'b>,
+        cx: &'a Cx,
+        clock: MeteredClock<'a, 'b>,
+        resource: &str,
+        cost: &BudgetVector,
+    ) -> SourceAdvance {
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !owner.clock.matches(task, cx)
+            || !self.supervisor.matches_clock(&owner.clock)
+            || !self.supervisor.matches_clock(&clock)
+        {
+            return SourceAdvance::Context;
+        }
+        if owner.cx.checkpoint().is_err() {
+            worker.abort();
+            return SourceAdvance::Cancelled(worker.join().await);
+        }
+        match worker.status() {
+            source_worker::Status::Idle => SourceAdvance::Session(
+                self.advance(owner, operation, wait, task, cx, clock, resource, cost)
+                    .await,
+            ),
+            source_worker::Status::Running => SourceAdvance::SourceArchive(
+                self.drive_source_control(worker, owner, operation, wait)
+                    .await,
+            ),
+            source_worker::Status::Pending => SourceAdvance::SourcePending,
+            source_worker::Status::Fenced => SourceAdvance::SourceFenced,
+            source_worker::Status::Unavailable => SourceAdvance::SourceUnavailable,
         }
     }
 

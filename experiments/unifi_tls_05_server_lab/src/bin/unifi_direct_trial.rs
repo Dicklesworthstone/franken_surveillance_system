@@ -65,7 +65,7 @@ use unifi_tls_05_server_lab::server::Server;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -76,6 +76,9 @@ struct Options {
     listen: SocketAddrV4,
     camera: Option<Ipv4Addr>,
     discovery_prefix: Option<u8>,
+    discovery_hint: Option<Ipv4Addr>,
+    observe_only: bool,
+    observe_snapshot: bool,
     mac: [u8; 6],
     cert: PathBuf,
     key: PathBuf,
@@ -149,6 +152,17 @@ fn options() -> ResultBox<Options> {
         let paths = (PathBuf::from(keeper), PathBuf::from(root));
         args.pop();
         Some(paths)
+    } else {
+        None
+    };
+    let observe_snapshot = args.last().is_some_and(|s| s == "--observe-snapshot");
+    if observe_snapshot { args.pop(); }
+    let observe_only = args.last().is_some_and(|s| s == "--observe-only");
+    if observe_only { args.pop(); }
+    let discovery_hint = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--discovery-hint=")) {
+        let ip = value.parse::<Ipv4Addr>()?;
+        args.pop();
+        Some(ip)
     } else {
         None
     };
@@ -252,8 +266,15 @@ fn options() -> ResultBox<Options> {
     }
     if camera.is_none() != discovery_prefix.is_some()
         || (discovery_prefix.is_some() && (setup.is_none() || !cfg!(target_os = "linux")))
+        || (discovery_hint.is_some() && discovery_prefix.is_none())
     {
         return Err("automatic discovery requires auto, a scope prefix and Linux camera setup".into());
+    }
+    if observe_only && (setup.is_none() || anchored_journal.is_some()) {
+        return Err("read-only observation requires camera setup and no effect journal".into());
+    }
+    if observe_snapshot && !observe_only {
+        return Err("snapshot observation requires --observe-only".into());
     }
     let raw = args[2].as_bytes();
     if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
@@ -305,6 +326,9 @@ fn options() -> ResultBox<Options> {
         listen,
         camera,
         discovery_prefix,
+        discovery_hint,
+        observe_only,
+        observe_snapshot,
         mac,
         cert,
         key,
@@ -610,18 +634,23 @@ fn run(args: Options) -> ResultBox<()> {
     budget.network_bytes = 128 * 1024 * 1024;
     budget.bytes = 128 * 1024 * 1024;
     budget.storage_operations = 5;
-    let caps = [
+    let mut caps = vec![
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
         RuntimeGrant::ObserveStatus,
-        RuntimeGrant::ReadMedia,
-        RuntimeGrant::MediaDecode,
-        RuntimeGrant::ObjectStage,
-        RuntimeGrant::CameraManagementPrepare,
-        RuntimeGrant::CameraManagementCommit,
-        RuntimeGrant::CameraSettingPrepare,
-        RuntimeGrant::CameraSettingCommit,
     ];
+    if !args.observe_only || args.observe_snapshot {
+        caps.extend([RuntimeGrant::ReadMedia, RuntimeGrant::MediaDecode]);
+    }
+    if !args.observe_only {
+        caps.extend([
+            RuntimeGrant::ObjectStage,
+            RuntimeGrant::CameraManagementPrepare,
+            RuntimeGrant::CameraManagementCommit,
+            RuntimeGrant::CameraSettingPrepare,
+            RuntimeGrant::CameraSettingCommit,
+        ]);
+    }
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:unifi-direct-trial".into(),
@@ -655,14 +684,18 @@ fn run(args: Options) -> ResultBox<()> {
             let setup_approval=Approval(Cell::new(false));
             let approval=Approval(Cell::new(false));
             let output:ResultBox<()> = async {
-                task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
-                let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
-                let config=ServerConfig::builder_with_provider(Arc::new(rustls_pure::provider())).with_protocol_versions(&[&rustls::version::TLS13])?.with_no_client_auth().with_single_cert(vec![CertificateDer::from(cert)],PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))?;
+                let config=if args.observe_only {None} else {
+                    task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
+                    let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
+                    Some(Arc::new(ServerConfig::builder_with_provider(Arc::new(rustls_pure::provider())).with_protocol_versions(&[&rustls::version::TLS13])?.with_no_client_auth().with_single_cert(vec![CertificateDer::from(cert)],PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))?))
+                };
                 #[cfg(target_os="linux")]
                 let discovered=if let Some(prefix)=args.discovery_prefix {
                     let setup_args=args.setup.as_ref().ok_or("automatic discovery requires setup")?;
                     let broadcast=Ipv4Addr::from(u32::from(*args.listen.ip()) | (u32::MAX >> prefix));
-                    let cfg=discovery::Config::new(*args.listen.ip(),prefix,SocketAddrV4::new(broadcast,setup_args.discovery_port),"unifi:discovery",Duration::from_secs(2),64)?;
+                    let mut targets=vec![SocketAddrV4::new(broadcast,setup_args.discovery_port),SocketAddrV4::new(Ipv4Addr::BROADCAST,setup_args.discovery_port)];
+                    if let Some(hint)=args.discovery_hint {targets.push(SocketAddrV4::new(hint,setup_args.discovery_port));}
+                    let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,&targets,"unifi:discovery",Duration::from_secs(2),64)?;
                     let report=discovery::discover(task,cx,clock.now()?,&cfg).await?;
                     let index=report.select_mac_claim(args.mac)?;
                     Some((report,index))
@@ -671,6 +704,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let camera_address=args.camera.or_else(|| discovered.as_ref().map(|(report,index)| *report.cameras[*index].source().ip())).ok_or("camera address unavailable")?;
                 #[cfg(not(target_os="linux"))]
                 let camera_address=args.camera.ok_or("camera address unavailable")?;
+                let mut effects=if args.observe_only {EffectCoordinator::new()} else {
                 let journal:Box<dyn fss_runtime::effect_journal::EffectJournalStore>=if let Some((keeper,root))=&args.anchored_journal {
                     for path in [&args.journal,keeper,root] {
                         task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&BudgetVector::ZERO)?;
@@ -681,7 +715,8 @@ fn run(args: Options) -> ResultBox<()> {
                 } else {
                     Box::new(FileEffectJournal::create(&args.journal,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?)
                 };
-                let mut effects=EffectCoordinator::with_journal(journal)?;
+                EffectCoordinator::with_journal(journal)?
+                };
                 let mut binding=Vec::from(args.mac); binding.extend_from_slice(&camera_address.octets());
                 let camera=ContentDigest::sha256(&binding); let resource=format!("camera:{}",camera.to_text());
                 let mut leases=LeaseRegistry::new();
@@ -692,9 +727,11 @@ fn run(args: Options) -> ResultBox<()> {
                 let management=management::Preconditions {camera,peer_admission:admission,session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
                 let stream_conditions=intent::Preconditions {camera,peer_admission:admission,stream_generation:1,previous_settings:None,lease_fence:fence};
                 let policy=Policy {local:*args.listen.ip(),camera:camera_address,mac:args.mac};
-                let mut controller_listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
-                println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
-                let config=Arc::new(config);
+                let mut controller_listener=if args.observe_only {None} else {
+                    let listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
+                    println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
+                    Some(listener)
+                };
                 let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events,reply_startup_requests:args.reply_startup_requests};
                 let wall=Wall {task,clock};
                 #[cfg(target_os="linux")]
@@ -723,8 +760,25 @@ fn run(args: Options) -> ResultBox<()> {
                     let mut trace=setup::AcceptTrace::default();
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let mut setup_owner=setup::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&setup_approval,admission:&setup_policy,handoff_authority:&setup_policy};
+                    if args.observe_only {
+                        let observed=setup_owner.observe(&mut http,&setup_config).await?;
+                        if setup_owner.effects.journal().operations().next().is_some() {return Err("read-only observation unexpectedly prepared an effect".into());}
+                        println!("trial_observation=complete settings_consistent=true controller_port={:?} controller_claim={:?} identity=network_claim journal=none",observed.status.controller_port,observed.settings.controller);
+                        if args.observe_snapshot {
+                            task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
+                            let snapshot=http.snapshot(Duration::from_secs(10)).await?;
+                            task.checkpoint_for(RuntimeGrant::MediaDecode,&resource,clock.now()?,&BudgetVector::ZERO)?;
+                            let limits=fss_codec_mjpeg::DecodeLimits {maximum_bytes:4*1024*1024,..Default::default()};
+                            let mut budget=fss_codec_mjpeg::DecodeBudget::new(limits.luma_work_bound().min(1_500_000_000));
+                            let image=fss_codec_mjpeg::decode_luma(snapshot.bytes(),snapshot.digest().bytes(),fss_codec_mjpeg::ComponentInterpretation::YCbCr,limits,&mut budget)?;
+                            let [width,height]=image.dimensions();
+                            if usize::try_from(width)?.checked_mul(usize::try_from(height)?)!=Some(image.pixels().len()) {return Err("decoded snapshot dimensions inconsistent".into());}
+                            println!("trial_snapshot=decoded width={width} height={height} media_persisted=false");
+                        }
+                        return Ok(());
+                    }
                     let framing=if setup_args.chunked {handoff::Framing::Chunked} else {handoff::Framing::ContentLength};
-                    let setup_result=setup_upgrade::setup_and_upgrade_with_retries(cx,&mut setup_owner,&mut controller_listener,args.listen.port(),&mut http,&setup_config,framing,16*1024,args.wait.min(MAX_IO_WAIT),Duration::from_secs(20),MAX_INITIAL_CONNECTIONS,&mut trace,config.clone(),ProtocolPolicy::RequireOffer,&policy,controller).await;
+                    let setup_result=setup_upgrade::setup_and_upgrade_with_retries(cx,&mut setup_owner,controller_listener.as_mut().ok_or("controller listener unavailable")?,args.listen.port(),&mut http,&setup_config,framing,16*1024,args.wait.min(MAX_IO_WAIT),Duration::from_secs(20),MAX_INITIAL_CONNECTIONS,&mut trace,config.as_ref().ok_or("controller TLS unavailable")?.clone(),ProtocolPolicy::RequireOffer,&policy,controller).await;
                     let outcome=match trace.outcome() {
                         None=>"unavailable",
                         Some(setup::Outcome::AlreadyAssociated {..})=>"already_associated",
@@ -766,14 +820,14 @@ fn run(args: Options) -> ResultBox<()> {
                         session
                     } else {
                     if args.setup.is_some() && approval.0.get() {return Err("controller effect started; reconcile before another attempt".into());}
-                    let (raw,gate)=match controller_listener.accept_next(16*1024,remaining.min(MAX_IO_WAIT)).await {
+                    let (raw,gate)=match controller_listener.as_mut().ok_or("controller listener unavailable")?.accept_next(16*1024,remaining.min(MAX_IO_WAIT)).await {
                         Ok(connection)=>connection,
                         Err(listener::Error::Deadline) if cx.now()<deadline=>{println!("trial_stage=accept_window_elapsed"); continue},
                         Err(error)=>return Err(error.into()),
                     };
                     attempts+=1;
                     println!("trial_stage=tcp_accepted");
-                    let tls=match timeout_at(deadline,Server::new(ServerConnection::new(config.clone())?,raw).handshake(cx)).await {
+                    let tls=match timeout_at(deadline,Server::new(ServerConnection::new(config.as_ref().ok_or("controller TLS unavailable")?.clone())?,raw).handshake(cx)).await {
                         Ok(Ok(tls))=>tls,
                         Ok(Err(error)) if error.kind()==std::io::ErrorKind::UnexpectedEof && attempts<MAX_INITIAL_CONNECTIONS=>{println!("trial_stage=handshake_eof_retry"); continue},
                         Ok(Err(error))=>return Err(error.into()),

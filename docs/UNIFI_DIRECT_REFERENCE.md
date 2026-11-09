@@ -7031,8 +7031,206 @@ followed by expected refusal of an absent credential file. Binary and fixture
 hashes matched before and after; the job exited zero, was acknowledged and
 released resources. The fixture supplied no real camera and did not test the
 subsequent settings write, controller stream, or new counter-validation edits.
+The setup-level regression was added to the synthetic discovered-camera
+handoff fixture to require `Claims` before login when counters contradict the
+candidate. Jobs `30101959465763452` and `30101959465763453` were both refused
+at protected disk admission before executing; each exited 120, was acknowledged
+and released its sources and execution pair. A further request was refused
+before admission due to critical memory pressure. The setup-level regression
+has not yet run; the focused selector test above is the available behavioral
+evidence for the new validation.
 
 At the later read-only check, the fallback recorder was active with restart
 count 78. Its log recorded connection timeouts and subsequent restart of
 recording; recent fallback archive runs reported successful copies without
 errors. This confirms neither gap-free coverage nor 30-day retention.
+
+On a subsequent owner-authorized, read-only G4 probe, the committed automatic
+MAC-selected trial ran on `trj` in the existing authorized `/22` scope. It
+discovered the selected camera once and reached its HTTPS handshake using a
+deliberately different generated pin, where the handshake stopped before the
+nonexistent credential file could be read. A separate TLS certificate read
+confirmed that the generated pin differed from the camera's presented
+certificate, but the trial's generic handshake error does not uniquely prove
+why that handshake stopped. Two subsequent automatic directed-broadcast-only
+attempts returned `NotObserved` before creating a journal; these are failures
+to observe, not proof that the camera was absent.
+
+A separate explicit-target trial using the same stripped Rust executable
+discovered the G4 by unicast, completed HTTPS using its network-observed pin,
+and stopped at the intentionally absent credential file before login or
+settings writes. The pin and MAC were observed on the same network and are not
+independent proof of physical camera identity. The executable SHA-256 was
+`f2a3ea9a06dfc30eccdcf5b922d944b7d9572c95bc45828ec3decf43f9c6857c`.
+The existing recorder remained active with restart count 79; a recent fallback
+archive invocation reported a copied recording and no errors. These probes
+did not attempt a controller handoff, obtain a stream or settle the older
+unresolved effect journals. The trial's automatic discovery has since been
+revised to send both directed and limited broadcasts. Strict-remote build job
+`30101959465763465` completed on Linux and its wrapper returned 102 because
+it refused foreign artifact transfer; remote execution exited zero and was
+acknowledged. The resulting binary SHA-256
+`cd772bad2679897b58ef82ae972bff64c275436ab1434305d74c92929f80519a`
+passed four of four disposable process-fixture cases in strict-remote job
+`30101959465763472`, fixture SHA-256
+`f0e52ccfbf2d69aa3c908516ab332133232b86d279e2ebcf37a725ab37e06862`.
+The fixture intentionally did not answer the first broadcast. Both hashes
+matched before and after; the fixture job exited zero, was acknowledged and
+released its sources and execution pair. Its stripped counterpart SHA-256
+`477dbc28165713ad002638f2f158584e51889ebc512e3cc2cb8ef1b45f16dbc8`
+returned `NotObserved` in one further real G4 automatic-discovery attempt,
+before creating a journal or touching credentials. The two-broadcast
+fixture is evidence of process behavior, not G4 discovery reliability.
+
+A further working-tree revision supplies an optional scoped last-known IP
+hint as a third query, while retaining MAC claim checks and pinned HTTPS. Its
+fixture drops both broadcasts before answering the unicast hint. Strict-remote
+job `30101959465763482` built this trial on Linux from base
+`6ea4972b53d2cb28b7bf0ce57e5a597b94d2f3f0` plus the trial source overlay;
+the remote execution exited zero, was acknowledged and released resources.
+The local trial source SHA-256 at the recorded run was
+`5acfc7094df417b9ff2f6c13e0e4bc78b816bb7d3cee067d72b3a42c58a324ca`;
+the selected overlay was not independently hash-read on the worker.
+The wrapper exited 102 because it refused Linux artifact transfer to macOS.
+The Linux binary SHA-256 was
+`fa65c173e45385de5bf59e6fed4498e6be3b9643f2aed8627c8a885441fa71a7`.
+Strict-remote job `30101959465763503` ran five disposable process-fixture
+scenarios against it, including the unicast-hint case: all five passed. The
+fixture SHA-256 was
+`40573c45e96b1731aef9dfd228b9e691269c57aa49a75f791ef00e8a38952354`;
+both hashes matched before and after. The job exited zero, was acknowledged
+and released resources.
+
+The stripped binary SHA-256
+`9f8fe9c9b9a2406140afcb7daf674778fe335d40be022b2943ceec96d724227e`
+then ran on `trj` with the owner's known G4 MAC and last-known IP hint in the
+authorized interface scope. The trial discovered the matching claim, completed
+HTTPS against the separately network-observed certificate and stopped at an
+intentionally absent credential file, before login or settings writes. The
+observation does not distinguish which of the three queries got the reply;
+the certificate and MAC remain network observations, not independent physical
+identity proof. The recorder remained active with restart count 79 and a
+subsequent archive run reported a successful copy without errors. This is
+discovery and TLS evidence, not a controller handoff, real stream, continuous
+Rust recording, or resolution of the earlier uncertain effects.
+
+The laboratory trial has since gained `--observe-only`, which uses the same
+selected discovery claim, pinned HTTPS transport and existing credential lease
+to log in and read status and settings twice. It returns before preparing or
+dispatching a camera-management effect and uses no effect journal. Login can
+create a camera session; the expiry of that session is not observed. A
+disposable fixture verified the exact login, status and two settings reads,
+connection closure and absence of a settings write. The six-case fixture ran
+as strict-remote job `30101959465763514`, exited zero, was acknowledged, and
+released resources. The Linux binary SHA-256 was
+`dd9f26e6189e7869833698ed1d36147720dfa06bc27e55ad24b98b1d49ff041f`,
+fixture SHA-256 was
+`e4bdb3701bc200f3d4d9770bfb0d24ade7fd2ad29c799baa3faa203f880db608`,
+and stripped executable SHA-256 was
+`cf2fa53c53b44370cf113c24de7ae5202c1df91a9f7210efaa3996fc8e902da4`.
+That stripped executable then ran on `trj` against the owner's G4 with its
+existing private credential file, network-observed pin and last-known IP hint.
+It reported successful authentication and consistent settings reads, a
+reported controller address and port, no effect journal, and no camera-setting
+write. Network claims and a network-observed pin do not independently prove
+physical identity. The recorder remained active with restart count 79.
+
+An optional `--observe-snapshot` mode extends that path with a bounded JPEG
+request and in-memory first-party Rust luma decode. Seven of seven disposable
+process-fixture scenarios passed as strict-remote job `30101959465763519`,
+including an actual synthetic JPEG response and no subsequent settings write.
+The Linux executable SHA-256 was
+`15301dbb6456767affc943896fe1863e6f6194a20d0a8a39fa5c2d724c62078d`,
+fixture SHA-256 was
+`a7ca3a57f48381ee23b27d6b6db059040dec7a3847e80684d2448d3bd2b9fc7f`,
+and synthetic JPEG SHA-256 was
+`d9470ede0234592f82ef448f1a3f01d0691b1528ad000aad8011fa9e9685b448`;
+all matched before and after. The job exited zero, was acknowledged and
+released resources. Its stripped counterpart SHA-256
+`c72b52be629333e1d2619363d6ca139cd2b87296a97dac5abeb341351ffc9f55`
+then ran against the G4 on `trj` and decoded a 640×360 snapshot in memory;
+no image or effect journal was persisted and no camera settings were changed.
+The recorder remained active at restart count 79, and a recent fallback
+archive reported copied files without errors. This proves a bounded still
+image through the Rust trial, not Rust-owned streaming, continuous recording,
+independent camera identity, or resolution of the earlier uncertain effects.
+
+The working-tree observation path now removes camera-management, camera-setting
+and object-stage grants from its root authority and does not bind a controller
+listener. Read-media and decode grants are added only when snapshot observation
+is requested. Strict-remote build job `30101959465763522` completed on Linux;
+the wrapper returned 102 when it refused foreign artifact transfer to macOS,
+while the remote execution exited zero, was acknowledged and released its
+resources. The Linux binary SHA-256 was
+`0a6e5ae3ef06653b6674c72bcf745b34880f04ac5add16d9f6056d46f33dad90`.
+Strict-remote job `30101959465763523` passed seven disposable process cases
+against that binary. For observation and snapshot cases the fixture occupied
+the controller port for the entire run, checked the expected read-only HTTP
+sequence, and refused an additional request. Fixture SHA-256 was
+`817998395d18baab4dc5724f8ab072ec424dc9ec076933725ec1baca030d669d`;
+binary and fixture hashes matched before and after. The job exited zero, was
+acknowledged and released resources. This is a behavioral check of the absent
+listener and network requests; the narrower grant set is also visible in the
+source, not independently attested by that fixture.
+
+The stripped executable SHA-256
+`eaf9e0e8ff5a2b115837e76dd02d545d5388fb2b8e0bf7d29bce54eaa101c155`
+was then run against the G4 using its private credential file and
+network-observed certificate. It decoded one 640×360 snapshot in memory,
+without saving media or creating an effect journal. Login may create a camera
+session of unknown duration. The recorder was still active with restart count
+79 afterward. This remains a bounded still-image observation; it does not
+settle the historical effects or qualify the controller or recorder.
+
+Observation now also avoids reading or parsing a controller TLS certificate
+and private key. The positional paths remain required by the experimental
+CLI, but need not exist in `--observe-only` mode; the separately supplied
+camera certificate pin is still required. Strict-remote job
+`30101959465763526` built this revision on Linux and exited zero remotely;
+its wrapper returned 102 because it refused foreign artifact transfer. It was
+acknowledged and released resources. Its binary SHA-256 was
+`859b655f2b7c58756715e7b1f5778aa3301df2050fdd694d615031bad75c6d7f`.
+Strict-remote job `30101959465763527` passed seven disposable cases, including
+observation and snapshot with an occupied controller port and nonexistent
+controller certificate and key paths. The fixture SHA-256 was
+`b7e76303c56a5a64dddf9e3499eb8f98a0cee2b7c432e3c4248a5a9fca551af9`;
+binary and fixture hashes matched before and after. The job exited zero, was
+acknowledged and released resources. The stripped binary SHA-256
+`a07b47ba8850295811be10b733e035c3b2b251e7f25b154572652381f60b5867`
+then decoded a 640×360 G4 snapshot in memory on `trj` with nonexistent
+controller certificate and key paths, the existing private camera credential,
+and a network-observed camera certificate. No camera-setting write, image or
+effect journal was produced. The recorder remained active at restart count 79.
+This does not prove independently authenticated identity or a live Rust stream.
+
+The source-worker bridge now has a bounded control-driving operation. It
+retains a completed original-source publication result alongside the control
+step, and the unknown-time guard offers a control-only entry point that does
+not poll more camera media. A focused source-worker fixture exercises the
+idle case, control while a publication is blocked, cancellation, and retry.
+Strict-remote test job `30101959465763531` exited 101, was acknowledged and
+released its sources and execution pair; its compiler output was not retained
+in this record. It was submitted before the guard entry point, a discovered
+naming-collision fix, and a later fixture adjustment. Strict-remote job
+`30101959465763541`, using base `9dcc4e4d189136eaa6883668ac76660bdca2c1f1`
+and overlay fingerprint `e8eca662866e6be02c31d467ea48c597fe783ce687a5d344e5af713ab749ed0c`,
+then passed the corrected focused fixture: one test passed, none failed or
+ignored, and one was filtered. The job exited zero, was acknowledged, and
+released its sources and execution pair. The fixture's control result is
+synthetic: the guard entry point compiled, but it has not been tested against
+a real controller or camera. There is still no assembled native continuous
+recorder, verified 30-day retention, or complete automatic camera setup.
+
+The unknown-time guard also exposes a source-aware scheduling step. It will
+not poll further media while a separately returned source is pending, running,
+fenced or unavailable; it services control while an attempt is running and
+drains that separate attempt on cancellation. Its caller must still explicitly
+start or retry pending work, handle every returned result, and drain any A/V
+archive owned by the guard. Strict-remote job `30101959465763542` passed one
+focused source-worker test with one filtered; it checked idle, pending, running,
+cancelled-but-pending and published transitions. The job used base
+`472aeed9489c2c59692468e9b03eebd365d75f1e`, overlay fingerprint
+`849a29a97a0cc2b40c9474477af8794d216754d8e95d1916af9ac00560a1fce2`, exited
+zero, was acknowledged, and released its sources and execution pair. A
+separate socket-based controller/session fixture was added and is awaiting
+execution; this source-worker test does not qualify that fixture or a camera.

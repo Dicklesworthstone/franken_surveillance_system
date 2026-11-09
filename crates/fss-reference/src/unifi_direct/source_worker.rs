@@ -143,6 +143,21 @@ pub struct Completion {
     pub outcome: Outcome,
 }
 
+/// Whether a separate source must be dealt with before polling more media.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Status {
+    /// No original source or attempt is held.
+    Idle,
+    /// A source is held without a running publication attempt.
+    Pending,
+    /// A publication attempt must be joined or drained.
+    Running,
+    /// An uncertain outcome requires reconciliation.
+    Fenced,
+    /// The source state could not be inspected; do not resume media.
+    Unavailable,
+}
+
 /// Exclusive storage and any unresolved original source returned at retirement.
 #[must_use]
 pub struct Retirement {
@@ -180,6 +195,28 @@ impl archive::RetainAuthority for CurrentRetention<'_> {
 }
 
 impl Worker {
+    /// Whether an archive attempt still needs to be joined or drained.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// Inspect custody without waiting for the archival worker's lock.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        if self.fenced {
+            return Status::Fenced;
+        }
+        if self.running.is_some() {
+            return Status::Running;
+        }
+        match self.state.try_lock() {
+            Ok(state) if state.pending.is_some() => Status::Pending,
+            Ok(_) => Status::Idle,
+            Err(_) => Status::Unavailable,
+        }
+    }
+
     /// Construct without I/O; invalid limits return all owners unchanged.
     pub fn new(parts: Parts) -> Result<Self, Parts> {
         if !(1..=100_000_000_000).contains(&parts.work_limit)

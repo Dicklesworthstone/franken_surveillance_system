@@ -222,6 +222,9 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
         work_limit: 4_000_000_000,
     })
     .map_err(|_| "worker configuration")?;
+    if worker.status() != source_worker::Status::Idle {
+        return Err("new source worker was not idle".into());
+    }
     let mut inbox = Inbox::new("operation:source-handoff", 1, 4, MAX_BUFFER_BYTES)
         .map_err(|_| "inbox configuration refused")?;
     inbox
@@ -241,6 +244,9 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
         }
     ) {
         return Err("first source handoff refused".into());
+    }
+    if worker.status() != source_worker::Status::Pending {
+        return Err("accepted source did not withhold media".into());
     }
     if !matches!(
         source_handoff::offer(
@@ -299,6 +305,13 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
                         .storage_operations(1000)
                         .build()
                         .map_err(|e| e.to_string())?;
+                    let control_polled = std::cell::Cell::new(false);
+                    if !matches!(source_handoff::drive_control(&mut worker, async {
+                        control_polled.set(true);
+                        supervisor::Step::Idle
+                    }).await, source_handoff::Drive::NotRunning) || control_polled.get() {
+                        return Err("idle source worker was treated as running".into());
+                    }
                     let other = cx.clone();
                     if !matches!(
                         worker.start(task, &other, clock, "fixture:source", &cost),
@@ -316,6 +329,15 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
                     })
                     .await
                     .map_err(|_| "source worker not entered")?;
+                    if worker.status() != source_worker::Status::Running {
+                        return Err("active publication did not withhold media".into());
+                    }
+                    if !matches!(
+                        source_handoff::drive_control(&mut worker, async { supervisor::Step::Idle }).await,
+                        source_handoff::Drive::Control { step: supervisor::Step::Idle, completion: None }
+                    ) {
+                        return Err("blocked source publication prevented control service".into());
+                    }
                     inbox.observe(source_event(second_record, true)).map_err(|_| "inbox refused second source")?;
                     let second = match source_handoff::offer(&mut worker, inbox.take().ok_or("second event missing")?, key(2), claim) {
                         source_handoff::Result::Refused {origin: source_handoff::Origin::Control { completion: None }, refusal: source_worker::OfferRefusal::Busy(input)} => input,
@@ -356,11 +378,23 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
                     {
                         return Err("unexpected cancellation outcome".into());
                     }
+                    if worker.status() != source_worker::Status::Pending {
+                        return Err("cancelled source did not remain pending".into());
+                    }
                     access.allow.store(true, Ordering::Release);
                     worker
                         .start(task, cx, clock, "fixture:source", &cost)
                         .map_err(|e| format!("retry: {e:?}"))?;
-                    let first = worker.join().await.ok_or("first receipt missing")?;
+                    let first = timeout(cx.now(), Duration::from_secs(10), async {
+                        loop {
+                            match source_handoff::drive_control(&mut worker, async { supervisor::Step::Idle }).await {
+                                source_handoff::Drive::Completed(completion)
+                                | source_handoff::Drive::Control { completion: Some(completion), .. } => break Ok(completion),
+                                source_handoff::Drive::Control { step: supervisor::Step::Idle, completion: None } => yield_now().await,
+                                _ => break Err("source drive lost its running attempt"),
+                            }
+                        }
+                    }).await.map_err(|_| "source drive timed out")??;
                     if first.runtime.is_err() {
                         return Err("first runtime failure".into());
                     }
@@ -370,6 +404,9 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
                         ) => pin,
                         _ => return Err("first source not published".into()),
                     };
+                    if worker.status() != source_worker::Status::Idle {
+                        return Err("published source did not release media".into());
+                    }
                     if worker.offer(second).is_err() {
                         return Err("second source refused".into());
                     }
