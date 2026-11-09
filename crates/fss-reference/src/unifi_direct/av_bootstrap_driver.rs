@@ -89,6 +89,13 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Driver<'scope, 'task, IO
         self.parts.supervisor.matches_clock(clock)
     }
 
+    pub(super) fn ready_for_handoff(&self) -> bool {
+        self.parts.pending.is_none()
+            && !self.parts.fenced
+            && !self.parts.supervisor.has_pending_audio()
+            && self.parts.collector.ready()
+    }
+
     /// Attach only to an active audio interpreter with no unmatched event.
     /// On refusal the supervisor and collector are returned unchanged.
     pub fn attach(
@@ -119,11 +126,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Driver<'scope, 'task, IO
     pub fn bootstrap(
         self,
     ) -> Result<Handoff<'scope, 'task, IO>, HandoffRefusal<'scope, 'task, IO>> {
-        if self.parts.pending.is_some()
-            || self.parts.fenced
-            || self.parts.supervisor.has_pending_audio()
-            || !self.parts.collector.ready()
-        {
+        if !self.ready_for_handoff() {
             return Err(HandoffRefusal::NotReady(self));
         }
         let Parts {

@@ -7371,6 +7371,28 @@ ten passed. The binary SHA-256 was
 before and after. The job exited zero, was acknowledged, and released sources
 and its execution pair. This remains a simulated-controller qualification.
 
+The coordinator now has a source-aware transition from the bootstrap driver to
+the A/V recording guard. The fixture tests refusal with an incomplete driver or
+pending source, followed by source publication and A/V publication. Its first
+strict-remote run, `30101959465763635`, aborted on the default test-thread
+stack before a test verdict. A diagnostic run of that exact executable with
+an 8 MiB test stack passed under `30101959465763636`; this is not default-stack
+qualification. Both jobs were acknowledged and released their resources. The
+fixture's A/V stage was separated into a boxed async state, but the subsequent
+default-stack run `30101959465763642` also overflowed and exited 101; it was
+acknowledged and released its sources and execution pair. Additional
+payload-free stage markers are being tested to identify where the overflow
+occurs. The transition remains unqualified. No physical camera was contacted.
+
+The stage diagnostic reached the incomplete-bootstrap refusal and overflowed
+inside that transition. The measured original driver, archive resources and
+largest refusal values were 4,992, 3,024 and 9,008 bytes respectively; those
+value sizes alone do not explain the whole call stack. Splitting the ready path
+from the refusal path did not eliminate the failure. The transition boundary
+has since been changed to carry its returned owners in boxes and is under a
+new default-stack test. These are synthetic-test observations, not a claim
+that the production stack has been qualified.
+
 At a later read-only check, the fallback recorder was active with restart count
 80, up from 79. Thirteen archive files had been modified in the preceding 15
 minutes. This shows recent archive activity, not uninterrupted coverage.
@@ -7382,3 +7404,20 @@ planned message-metadata diagnostic was rejected before execution by the
 command safety hook, which reported that it could not verify shell syntax; it
 did not attach a probe or collect plaintext. The recorder remained active at
 the subsequent check.
+
+The bootstrap-to-recording transition now stages the sink and worker
+construction while retaining their owners, and holds an immutable coordinator
+borrow through the transition. The A/V scheduling path boxes nested futures to
+bound its retained stack state. Strict-remote job `30101959465763667` passed
+all seven source-related socket tests on the default test-thread stack: seven
+passed, none failed or were ignored, and 48 were filtered. The clean-overlay
+base was `bd890dad953e0be4f7a036b72ba4b785adc8aae0` and its fingerprint was
+`9b4be028893d35860f2a0d8960e9ba6cd262536facfed9d9567d093b27d30a6a`.
+Job `30101959465763668` then passed the archive-blocked control guard test and
+repeated the bootstrap-to-A/V publication test ten times, all passing, using
+the same executable SHA-256 before and after:
+`b9b89dc08a152a68c993c5e5f2b2ae143908138f4e0c50adc87c1a14ad61de59`.
+Both jobs exited zero, were acknowledged, and released their sources and
+execution pairs. This qualifies the exercised simulated-controller path only;
+it does not establish a working Rust recorder on the physical G4, automatic
+camera setup, or 30 days of recording.

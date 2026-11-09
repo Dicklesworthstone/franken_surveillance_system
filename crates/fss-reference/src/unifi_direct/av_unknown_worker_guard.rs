@@ -85,6 +85,19 @@ pub enum BootstrapRefusal<'scope, 'task, IO> {
     },
 }
 
+/// Converted A/V sink and all owners awaiting worker construction.
+#[must_use = "finish construction or recover all original owners"]
+pub struct PreparedBootstrap<'scope, 'task, IO> {
+    /// Original controller and media owner.
+    pub supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    /// Exclusive source, storage, journal and policy owners.
+    pub parts: av_worker::UnknownTimeParts,
+    /// Exact first segment retained until the worker accepts it.
+    pub first_segment: recording::Segment,
+    /// Sender-clock hypothesis, not a physical capture-time observation.
+    pub origin: av_recording::SenderClockOrigin,
+}
+
 /// A refused transfer leaves the original segment held by the guard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueueError {
@@ -285,13 +298,30 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         handoff: av_bootstrap_driver::Handoff<'scope, 'task, IO>,
         resources: BootstrapResources,
     ) -> Result<BootstrapStarted<'scope, 'task, IO>, BootstrapRefusal<'scope, 'task, IO>> {
+        let prepared = Self::prepare_bootstrap(Box::new(handoff), Box::new(resources))
+            .map_err(|refusal| *refusal)?;
+        Self::finish_bootstrap(prepared)
+            .map(|started| *started)
+            .map_err(|refusal| *refusal)
+    }
+
+    /// Convert a bootstrap sink, returning all owners intact on refusal.
+    #[inline(never)]
+    pub fn prepare_bootstrap(
+        handoff: Box<av_bootstrap_driver::Handoff<'scope, 'task, IO>>,
+        resources: Box<BootstrapResources>,
+    ) -> Result<Box<PreparedBootstrap<'scope, 'task, IO>>, Box<BootstrapRefusal<'scope, 'task, IO>>>
+    {
         if !handoff.supervisor.audio_tracking_active() || handoff.supervisor.has_pending_audio() {
-            return Err(BootstrapRefusal::Audio { handoff, resources });
+            return Err(Box::new(BootstrapRefusal::Audio {
+                handoff: *handoff,
+                resources: *resources,
+            }));
         }
         let av_bootstrap_driver::Handoff {
             supervisor,
             bootstrap,
-        } = handoff;
+        } = *handoff;
         let av_owned_sink::Bootstrap {
             sink,
             first_segment,
@@ -300,7 +330,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         let sink = match sink.into_unknown_time() {
             Ok(sink) => sink,
             Err(sink) => {
-                return Err(BootstrapRefusal::Sink {
+                return Err(Box::new(BootstrapRefusal::Sink {
                     handoff: av_bootstrap_driver::Handoff {
                         supervisor,
                         bootstrap: av_owned_sink::Bootstrap {
@@ -309,10 +339,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                             origin,
                         },
                     },
-                    resources,
-                });
+                    resources: *resources,
+                }));
             }
         };
+        let resources = *resources;
         let parts = av_worker::UnknownTimeParts {
             sink,
             deployment: resources.deployment,
@@ -323,18 +354,38 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             limits: resources.limits,
             work_limit: resources.work_limit,
         };
+        Ok(Box::new(PreparedBootstrap {
+            supervisor,
+            parts,
+            first_segment,
+            origin,
+        }))
+    }
+
+    /// Construct a worker from a previously converted bootstrap.
+    #[inline(never)]
+    pub fn finish_bootstrap(
+        prepared: Box<PreparedBootstrap<'scope, 'task, IO>>,
+    ) -> Result<Box<BootstrapStarted<'scope, 'task, IO>>, Box<BootstrapRefusal<'scope, 'task, IO>>>
+    {
+        let PreparedBootstrap {
+            supervisor,
+            parts,
+            first_segment,
+            origin,
+        } = *prepared;
         let worker = match av_worker::UnknownTimeWorker::new(parts) {
             Ok(worker) => worker,
             Err(parts) => {
-                return Err(BootstrapRefusal::Worker {
+                return Err(Box::new(BootstrapRefusal::Worker {
                     supervisor,
                     parts,
                     first_segment,
                     origin,
-                });
+                }));
             }
         };
-        Ok(BootstrapStarted {
+        Ok(Box::new(BootstrapStarted {
             guard: Self {
                 supervisor,
                 worker,
@@ -344,7 +395,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 retry_required: false,
             },
             origin,
-        })
+        }))
     }
 
     /// Attach only an idle worker; refusal returns both original owners.
@@ -449,7 +500,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         if self.archive != ArchiveState::Idle {
             return Step::ArchivePending;
         }
-        match self.supervisor.step(owner, operation, wait).await {
+        match Box::pin(self.supervisor.step(owner, operation, wait)).await {
             supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(
                 segment,
             ))) => {
@@ -599,7 +650,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             });
         }
         match self.archive {
-            ArchiveState::Idle => Advance::Source(self.step(owner, operation, wait).await),
+            ArchiveState::Idle => {
+                Advance::Source(Box::pin(self.step(owner, operation, wait)).await)
+            }
             ArchiveState::Pending if self.retry_required => Advance::RetryRequired,
             ArchiveState::Pending => match self.start_archive(task, cx, clock, resource, cost) {
                 Ok(()) => Advance::ArchiveStarted,
@@ -609,7 +662,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 }
             },
             ArchiveState::Running => {
-                Advance::Archive(self.drive_archive(owner, operation, wait).await)
+                Advance::Archive(Box::pin(self.drive_archive(owner, operation, wait)).await)
             }
             ArchiveState::Recovery => Advance::RecoveryRequired,
         }
@@ -647,12 +700,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         }
         match worker.status() {
             source_worker::Status::Idle => SourceAdvance::Session(
-                self.advance(owner, operation, wait, task, cx, clock, resource, cost)
+                Box::pin(self.advance(owner, operation, wait, task, cx, clock, resource, cost))
                     .await,
             ),
             source_worker::Status::Running => SourceAdvance::SourceArchive(
-                self.drive_source_control(worker, owner, operation, wait)
-                    .await,
+                Box::pin(self.drive_source_control(worker, owner, operation, wait)).await,
             ),
             source_worker::Status::Pending => SourceAdvance::SourcePending,
             source_worker::Status::Fenced => SourceAdvance::SourceFenced,

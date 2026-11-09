@@ -1193,6 +1193,85 @@ fn conversation_scenario_with_worker_guard(revoke_stream: bool, revoke_after_sta
     conversation_scenario_with_worker_guard_mode(revoke_stream, revoke_after_start, revoke_audio_pending, reply_after_media, never_reply, early_reply, stop_mode, emit_event, archive_guard, async_archive, cancel_archive, audio_change, false, None, 0)
 }
 
+fn bootstrap_av_transition<'run, 'owner, 'scope, 'task, IO>(
+    coordinator: &'run mut fss_reference::unifi_direct::source_coordinator::Coordinator,
+    driver: Box<fss_reference::unifi_direct::av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+    resources: Box<fss_reference::unifi_direct::av_unknown_worker_guard::BootstrapResources>,
+    owner: &'run mut conversation::Owner<'owner, 'scope, 'task>,
+    operations: &'run [OperationId],
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    source_admission: fss_reference::unifi_direct::source_coordinator::ArchiveAdmission<'run>,
+) -> std::pin::Pin<Box<dyn Future<Output = Test> + 'run>>
+where
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin + 'run,
+    'owner: 'run,
+    'scope: 'run,
+    'task: 'run,
+{
+    Box::pin(async move {
+        let prepared=coordinator.prepare_recording_guard(driver,resources).map_err(|_|"coordinated A/V preparation refused")?;
+        let prepared=prepared.prepare_guard().map_err(|_|"coordinated sink conversion refused")?;
+        let started=prepared.finish().map_err(|_|"coordinated A/V transition refused")?;
+        assert_eq!(started.origin.audio_ticks,1024);
+        drive_bootstrap_guard(coordinator,Box::new(started.guard),owner,operations,task,cx,clock,source_admission).await
+    })
+}
+
+fn drive_bootstrap_guard<'run, 'owner, 'scope, 'task, IO>(
+    coordinator: &'run mut fss_reference::unifi_direct::source_coordinator::Coordinator,
+    mut guard: Box<fss_reference::unifi_direct::av_unknown_worker_guard::Guard<'scope, 'task, IO>>,
+    owner: &'run mut conversation::Owner<'owner, 'scope, 'task>,
+    operations: &'run [OperationId],
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    source_admission: fss_reference::unifi_direct::source_coordinator::ArchiveAdmission<'run>,
+) -> std::pin::Pin<Box<dyn Future<Output = Test> + 'run>>
+where
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin + 'run,
+    'owner: 'run,
+    'scope: 'run,
+    'task: 'run,
+{
+    use fss_reference::unifi_direct::{av_unknown_worker_guard as unknown, av_worker, source_coordinator};
+    Box::pin(async move {
+        struct GuardObserver {operation:OperationId,event:Option<source_coordinator::Step>}
+        impl source_coordinator::Observer for GuardObserver {
+            fn next_operation(&mut self)->Option<OperationId>{Some(self.operation.clone())}
+            fn observe(&mut self,event:source_coordinator::Step)->Result<source_coordinator::Decision,source_coordinator::Step>{
+                if matches!(&event,source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Control {step:supervisor::Step::Idle,completion:None})))) {return Ok(source_coordinator::Decision::Continue);}
+                if self.event.is_some(){return Err(event);}
+                self.event=Some(event);Ok(source_coordinator::Decision::Yield)
+            }
+        }
+        let mut observer=GuardObserver {operation:operations[6].clone(),event:None};
+        let av_admission=source_coordinator::ArchiveAdmission {resource:"fixture:bootstrap-av",cost:&BudgetVector::ZERO};
+        assert!(matches!(Box::pin(coordinator.run_slice(&mut guard,owner,Duration::from_secs(5),1,task,cx,clock,av_admission,source_admission,&mut observer)).await,source_coordinator::SliceStop::ObserverYielded));
+        assert!(matches!(observer.event.take(),Some(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::SourceQueued))))));
+        assert!(matches!(Box::pin(coordinator.run_slice(&mut guard,owner,Duration::from_secs(5),1,task,cx,clock,av_admission,source_admission,&mut observer)).await,source_coordinator::SliceStop::ObserverYielded));
+        assert!(matches!(observer.event.take(),Some(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::ArchiveStarted)))));
+        let completion=timeout(cx.now(),Duration::from_secs(10),async {
+            loop {
+                match Box::pin(coordinator.run_slice(&mut guard,owner,Duration::from_millis(100),32,task,cx,clock,av_admission,source_admission,&mut observer)).await {
+                    source_coordinator::SliceStop::ObserverYielded=>match observer.event.take(){
+                        Some(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Archive(completion))))) | Some(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Control {completion:Some(completion),..}))))=>break Ok(completion),
+                        _=>break Err("unexpected A/V archive event"),
+                    },
+                    source_coordinator::SliceStop::Yielded=>(),
+                    _=>break Err("A/V archive slice stopped"),
+                }
+            }
+        }).await??;
+        if completion.runtime.is_err() || !matches!(completion.outcome,av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))) {return Err("bootstrap A/V publication failed".into());}
+        let retired=(*guard).retire().map_err(|_|"bootstrap A/V guard did not retire")?;
+        if retired.held.is_some() || retired.worker.parts.sink.retire().pending.is_some(){return Err("bootstrap A/V source remained pending".into());}
+        drop(retired.supervisor);
+        Ok(())
+    })
+}
+
 fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8, emit_event: bool, archive_guard: bool, async_archive: bool, cancel_archive: bool, audio_change: bool, unknown_archive: bool, replay_wire: Option<Vec<u8>>, late_audio_change: u8) -> Test {
     let camera_replay = replay_wire.is_some();
     static NEXT_SCENARIO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1739,6 +1818,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                     if late_audio_change==10 {
                                         return Box::pin(async {
                                         use fss_reference::unifi_direct::{av_unknown_worker_guard as unknown,source_coordinator,source_handoff,source_worker};
+                                        let mut driver=Box::new(driver);
                                         let authority=fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
                                             trace_id:"trace:bootstrap-source-replay".into(), operation_id:OperationId::parse("operation:bootstrap-source-replay")?,
                                             principal:"principal:fixture".into(), capabilities:vec!["ADP-REPLAY-001".into()], deadline:None, priority:1,
@@ -1760,9 +1840,9 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let av_journal=archive::journal::UnknownTimeJournal::create(Box::new(store),ContentDigest::sha256(b"bootstrap av scope"),&av_replay)?;
                                         let store=FileEffectJournal::create(temp.0.join("bootstrap-av-anchor"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
                                         let av_keeper=archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store),&av_journal,&av_replay)?;
-                                        let mut av_resources=unknown::BootstrapResources {deployment:av_deployment,journal:av_journal,keeper:av_keeper,replay:av_replay,authority:source_access.clone(),limits:archive::Limits::default(),work_limit:4_000_000_000};
-                                        (driver,av_resources)=match coordinator.into_recording_guard(driver,av_resources) {
-                                            Err(source_coordinator::TransitionRefusal::Bootstrap {refusal:av_bootstrap_driver::HandoffRefusal::NotReady(driver),resources})=>(driver,resources),
+                                        let mut av_resources=Box::new(unknown::BootstrapResources {deployment:av_deployment,journal:av_journal,keeper:av_keeper,replay:av_replay,authority:source_access.clone(),limits:archive::Limits::default(),work_limit:4_000_000_000});
+                                        (driver,av_resources)=match coordinator.prepare_recording_guard(driver,av_resources) {
+                                            Err(source_coordinator::TransitionRefusal::NotReady {driver,resources})=>(driver,resources),
                                             _=>return Err("incomplete bootstrap transition was not retained".into()),
                                         };
                                         let source_admission=source_coordinator::ArchiveAdmission {resource:"fixture:bootstrap-source",cost:&BudgetVector::ZERO};
@@ -1797,7 +1877,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                                 source_coordinator::BootstrapStep::SourceOffered(source_handoff::BootstrapResult::Accepted {audio,..})=>{
                                                     offered+=1;
                                                     if matches!(audio,Some(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::UnconfiguredSample {..}))){paired_audio+=1;}
-                                                    (driver,av_resources)=match coordinator.into_recording_guard(driver,av_resources) {
+                                                    (driver,av_resources)=match coordinator.prepare_recording_guard(driver,av_resources) {
                                                         Err(source_coordinator::TransitionRefusal::Source {status:source_worker::Status::Pending,driver,resources})=>(driver,resources),
                                                         _=>return Err("pending bootstrap source did not block transition".into()),
                                                     };
@@ -1838,6 +1918,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             }
                                         }
                                         if !ready || offered==0 || paired_audio==0 || observer.refused!=1 || pins.len()!=offered {return Err("bootstrap source or paired audio was not fully accounted".into());}
+                                        bootstrap_av_transition(&mut coordinator,driver,av_resources,&mut owner,&operations,task,cx,clock,source_admission).await?;
                                         let retired=coordinator.into_worker().retire().map_err(|_|"bootstrap worker retirement refused")?;
                                         if retired.fenced || retired.pending.is_some(){return Err("bootstrap source custody remained unresolved".into());}
                                         let mut parts=retired.parts;
@@ -1846,8 +1927,6 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             let start=usize::try_from(recovered.offset())?;let end=start.checked_add(recovered.bytes().len()).ok_or("source offset overflow")?;
                                             if expected.get(start..end)!=Some(recovered.bytes()){return Err("recovered bootstrap source differs from input".into());}
                                         }
-                                        let handoff=driver.bootstrap().map_err(|_|"coordinated bootstrap handoff refused")?;
-                                        let retired=handoff.supervisor.retire();drop(retired);drop(handoff.bootstrap);
                                         peer.join().map_err(|_|"bootstrap source peer panic")??;
                                         Ok::<(),Box<dyn std::error::Error>>(())
                                         }).await;

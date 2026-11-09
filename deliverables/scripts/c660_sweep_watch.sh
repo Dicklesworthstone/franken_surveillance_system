@@ -32,6 +32,7 @@ PC_OFFSET="${PC_OFFSET:-1060}"    # buffer -> saved pc, derived from the C660 /b
 POLL="${POLL:-10}"
 MAX_WAIT="${MAX_WAIT:-0}"         # seconds to wait for the unit; 0 = forever
 HERE="$(cd "$(dirname "$0")" && pwd)"
+WK="${WK:-$HERE/tapo_wake.py}"
 HARNESS="${HARNESS:-$HERE/tapo_connectap_sc.py}"
 ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"   # overridable for the self-test
 PING_CMD="${PING_CMD:-ping}"
@@ -75,6 +76,13 @@ log "watch armed for $MAC from $(printf 0x%x "$ADDR") down to $END, $STEP steps,
 while :; do
   case "$(cat "$PHASE_FILE" 2>/dev/null)" in DONE|EXHAUSTED) break;; esac
   ip="${HOST_OVERRIDE:-$(lookup)}"
+  if ! present "$ip"; then
+    # a sleeping unit has no ARP entry, so the gate below would never be reached:
+    # send the WoWLAN magic first and look again on the same pass (absent branch)
+    log "absent — WoWLAN wake"
+    timeout 70 "$WK" "$MAC" --broadcast "${BCAST:-192.168.5.255}" ${ip:+--ip "$ip"} --rounds 50 --wait 20 >/dev/null 2>&1 || true
+    ip="${HOST_OVERRIDE:-$(lookup)}"
+  fi
   if present "$ip"; then
     # a cold sudo timestamp would make every batch a silent no-op *and* advance the walk
     if ! sudo -n true 2>/dev/null; then

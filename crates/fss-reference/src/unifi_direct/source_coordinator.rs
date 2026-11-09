@@ -155,19 +155,92 @@ pub enum TransitionRefusal<'scope, 'task, IO> {
         /// Why the separate-source owner could not transition.
         status: source_worker::Status,
         /// Unchanged bootstrap driver.
-        driver: av_bootstrap_driver::Driver<'scope, 'task, IO>,
+        driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
         /// Unchanged A/V archive owners.
-        resources: av_unknown_worker_guard::BootstrapResources,
+        resources: Box<av_unknown_worker_guard::BootstrapResources>,
     },
-    /// Bootstrap was not ready or could not validate its original inputs.
+    /// The driver is not ready to transfer its original inputs.
+    NotReady {
+        /// Unchanged bootstrap driver.
+        driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+        /// Unchanged A/V archive owners.
+        resources: Box<av_unknown_worker_guard::BootstrapResources>,
+    },
+    /// Bootstrap could not validate its original inputs.
     Bootstrap {
         /// Refusal retaining the bootstrap and controller owners.
-        refusal: av_bootstrap_driver::HandoffRefusal<'scope, 'task, IO>,
+        refusal: Box<av_bootstrap_driver::HandoffRefusal<'scope, 'task, IO>>,
         /// Unchanged A/V archive owners.
-        resources: av_unknown_worker_guard::BootstrapResources,
+        resources: Box<av_unknown_worker_guard::BootstrapResources>,
     },
     /// The A/V guard refused and retained all transferred owners.
-    Guard(av_unknown_worker_guard::BootstrapRefusal<'scope, 'task, IO>),
+    Guard(Box<av_unknown_worker_guard::BootstrapRefusal<'scope, 'task, IO>>),
+}
+
+/// A validated bootstrap and A/V archive owners awaiting guard construction.
+#[must_use = "finish or explicitly recover the bootstrap and archive owners"]
+pub struct PreparedTransition<'coordinator, 'scope, 'task, IO> {
+    coordinator: &'coordinator Coordinator,
+    handoff: Box<av_bootstrap_driver::Handoff<'scope, 'task, IO>>,
+    resources: Box<av_unknown_worker_guard::BootstrapResources>,
+}
+
+impl<'coordinator, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
+    PreparedTransition<'coordinator, 'scope, 'task, IO>
+{
+    /// Convert the A/V sink; a refusal retains all transferred owners.
+    #[inline(never)]
+    pub fn prepare_guard(
+        self,
+    ) -> Result<
+        PreparedGuardTransition<'coordinator, 'scope, 'task, IO>,
+        TransitionRefusal<'scope, 'task, IO>,
+    > {
+        let prepared = Guard::prepare_bootstrap(self.handoff, self.resources)
+            .map_err(TransitionRefusal::Guard)?;
+        Ok(PreparedGuardTransition {
+            coordinator: self.coordinator,
+            prepared,
+        })
+    }
+
+    /// Return the validated bootstrap and archive owners without constructing a guard.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Box<av_bootstrap_driver::Handoff<'scope, 'task, IO>>,
+        Box<av_unknown_worker_guard::BootstrapResources>,
+    ) {
+        (self.handoff, self.resources)
+    }
+}
+
+/// Converted A/V sink and worker owners awaiting guard construction.
+#[must_use = "finish or explicitly recover the prepared A/V owners"]
+pub struct PreparedGuardTransition<'coordinator, 'scope, 'task, IO> {
+    coordinator: &'coordinator Coordinator,
+    prepared: Box<av_unknown_worker_guard::PreparedBootstrap<'scope, 'task, IO>>,
+}
+
+impl<'coordinator, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
+    PreparedGuardTransition<'coordinator, 'scope, 'task, IO>
+{
+    /// Construct the A/V guard, preserving every owner on refusal.
+    #[inline(never)]
+    pub fn finish(
+        self,
+    ) -> Result<
+        Box<av_unknown_worker_guard::BootstrapStarted<'scope, 'task, IO>>,
+        TransitionRefusal<'scope, 'task, IO>,
+    > {
+        let _coordinator = self.coordinator;
+        Guard::finish_bootstrap(self.prepared).map_err(TransitionRefusal::Guard)
+    }
+
+    /// Recover the converted source and archive owners without starting a guard.
+    pub fn into_parts(self) -> Box<av_unknown_worker_guard::PreparedBootstrap<'scope, 'task, IO>> {
+        self.prepared
+    }
 }
 
 /// Resource and metered cost for one archive owner.
@@ -237,22 +310,33 @@ impl Coordinator {
         self.worker
     }
 
-    /// Transition a ready bootstrap into an A/V guard without abandoning a
+    /// Prepare a ready bootstrap for an A/V guard without abandoning a
     /// separate source. Every refusal returns the original owners for recovery.
-    pub fn into_recording_guard<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
-        &self,
-        driver: av_bootstrap_driver::Driver<'scope, 'task, IO>,
-        resources: av_unknown_worker_guard::BootstrapResources,
-    ) -> Result<av_unknown_worker_guard::BootstrapStarted<'scope, 'task, IO>, TransitionRefusal<'scope, 'task, IO>> {
+    pub fn prepare_recording_guard<
+        'coordinator,
+        'scope,
+        'task,
+        IO: AsyncRead + AsyncWrite + Unpin,
+    >(
+        &'coordinator self,
+        driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+        resources: Box<av_unknown_worker_guard::BootstrapResources>,
+    ) -> Result<
+        PreparedTransition<'coordinator, 'scope, 'task, IO>,
+        TransitionRefusal<'scope, 'task, IO>,
+    > {
         let status = self.worker.status();
         if status != source_worker::Status::Idle {
-            return Err(TransitionRefusal::Source { status, driver, resources });
+            return Err(TransitionRefusal::Source {
+                status,
+                driver,
+                resources,
+            });
         }
-        let handoff = match driver.bootstrap() {
-            Ok(handoff) => handoff,
-            Err(refusal) => return Err(TransitionRefusal::Bootstrap { refusal, resources }),
-        };
-        Guard::from_bootstrap(handoff, resources).map_err(TransitionRefusal::Guard)
+        if !driver.ready_for_handoff() {
+            return Err(TransitionRefusal::NotReady { driver, resources });
+        }
+        prepare_transition(self, driver, resources)
     }
 
     /// Advance bootstrap while retaining separately returned source records.
@@ -379,19 +463,18 @@ impl Coordinator {
         av_archive: ArchiveAdmission<'_>,
         source_archive: ArchiveAdmission<'_>,
     ) -> Step {
-        match guard
-            .advance_with_source(
-                &mut self.worker,
-                owner,
-                operation,
-                wait,
-                task,
-                cx,
-                clock,
-                av_archive.resource,
-                av_archive.cost,
-            )
-            .await
+        match Box::pin(guard.advance_with_source(
+            &mut self.worker,
+            owner,
+            operation,
+            wait,
+            task,
+            cx,
+            clock,
+            av_archive.resource,
+            av_archive.cost,
+        ))
+        .await
         {
             SourceAdvance::Context => Step::Context,
             SourceAdvance::Session(advance) => match self.offer(SessionEvent::Advance(advance)) {
@@ -479,6 +562,29 @@ impl Coordinator {
         }
         SliceStop::Yielded
     }
+}
+
+#[inline(never)]
+fn prepare_transition<'coordinator, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
+    coordinator: &'coordinator Coordinator,
+    driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+    resources: Box<av_unknown_worker_guard::BootstrapResources>,
+) -> Result<PreparedTransition<'coordinator, 'scope, 'task, IO>, TransitionRefusal<'scope, 'task, IO>>
+{
+    let handoff = match (*driver).bootstrap() {
+        Ok(handoff) => handoff,
+        Err(refusal) => {
+            return Err(TransitionRefusal::Bootstrap {
+                refusal: Box::new(refusal),
+                resources,
+            });
+        }
+    };
+    Ok(PreparedTransition {
+        coordinator,
+        handoff: Box::new(handoff),
+        resources,
+    })
 }
 
 fn bootstrap_is_terminal(step: &BootstrapStep) -> bool {
