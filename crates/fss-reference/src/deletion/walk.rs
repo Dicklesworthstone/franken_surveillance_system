@@ -61,6 +61,7 @@ const AUTHORITY_HISTORY_FAMILIES: &[&str] = &[
     FAMILY_ALERT_EFFECT_OUTCOME,
     FAMILY_PRIVACY_MASK_POLICY,
     crate::reference_deployment::FAMILY_EVIDENCE_HOLD,
+    crate::reference_deployment::FAMILY_RETENTION_POLICY,
     crate::reference_deployment::FAMILY_TWIN_LOCALIZATION_RECEIPT,
     crate::reference_deployment::FAMILY_CALIBRATION_INVALIDATION,
 ];
@@ -493,6 +494,7 @@ impl Universe {
             let bytes = spool.read(*digest)?;
             if DeletionPlan::is_plan_bytes(&bytes)
                 || DeletionCompletion::is_completion_bytes(&bytes)
+                || super::retention::policy::is_policy_record_bytes(&bytes, *digest)?
             {
                 records.insert(*digest);
                 continue;

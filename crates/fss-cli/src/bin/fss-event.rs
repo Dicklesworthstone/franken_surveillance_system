@@ -355,11 +355,27 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     oldest eligible imports until distinct completed same-sensor input bytes fit. The minimum\n\
     age, unknown timing, holds and shared-evidence blockers still apply. Reports any remaining\n\
     deficit; logical source bytes are distinct from physical space freed by the deletion plan.\n\
-    No standing policy changes. Follow the preview's exact retention-commit approve_command;\n\
+    Follow the preview's exact retention-commit approve_command;\n\
     it binds the same sensor, age, current-time assertion and optional byte target.\n\
   delete retention-commit: same selection options plus --plan sha256:PLAN --approve sha256:APPROVAL\n\
     Revalidates one union closure, records deletion before unlinking and supports exact cold\n\
     retry after interruption. A changed request or deployment requires a fresh approval.\n\
+  delete policy-plan: --sensor-id ID --state enabled|disabled --retain-for-ns POSITIVE_NS\n\
+          [--max-retained-source-bytes BYTES] --expected-policy none|sha256:CURRENT\n\
+          --attested-now-ns EARLIEST:LATEST --reason TEXT\n\
+    Read-only prospective per-sensor policy revision and current inventory impact. Use none\n\
+    only for first adoption; updates pin the exact predecessor. The returned approve_command\n\
+    adopts these settings against this authority head and impact, never deletes evidence.\n\
+  delete policy-commit: same policy options plus --approve sha256:APPROVAL\n\
+    Retains one immutable policy generation. Exact reruns return already_current. Policy\n\
+    changes are refused while a durable deletion is incomplete. No automatic cleanup grant.\n\
+  delete policy-show: [--sensor-id ID]\n\
+    Lists current retained policies, including disabled generations, without changing them.\n\
+  delete retention-plan/retention-commit may instead use --policy sha256:POLICY\n\
+          --attested-now-ns EARLIEST:LATEST (plus the exact plan/approval for commit).\n\
+    Sensor, minimum age and optional byte target are inherited; inline overrides are refused.\n\
+    Fresh cleanup requires the current enabled generation and its own exact deletion approval.\n\
+    Once deletion starts durably, its exact policy-bound plan remains resumable after restart.\n\
   delete plan (read-only, graph-complete deletion closure of one scope), exactly one of:\n\
           --import-id sha256:HEX (one retained import)\n\
           --sensor-id ID (every retained import whose capsules name the sensor)\n\
@@ -850,10 +866,13 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         }
     }
     if let Action::Delete(request) = &options.action {
-        capabilities.push(delete::CAP_DELETE_PREPARE.to_owned());
-        if matches!(request.operation, delete::Operation::Commit { .. }) {
-            capabilities.push(delete::CAP_DELETE_COMMIT.to_owned());
-        }
+        capabilities.extend(
+            request
+                .operation
+                .capabilities()
+                .into_iter()
+                .map(str::to_owned),
+        );
     }
     let dispatch_deadline_ms = match &options.action {
         Action::Alert(request) if request.dispatch.is_some() => Some(request.deadline_ms),
@@ -1353,6 +1372,8 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_monitor::MonitorError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::deletion::DeletionError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::deletion::retention::policy::PolicyError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
                 eprintln!(

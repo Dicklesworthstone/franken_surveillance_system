@@ -148,6 +148,8 @@ pub enum DeletionError {
     Spool(SpoolError),
     /// Hold state cannot be verified; no deletion may assume it is absent.
     Hold(Box<holds::HoldError>),
+    /// A pinned retention policy is stale, disabled, missing or inconsistent.
+    RetentionPolicy(Box<retention::policy::PolicyError>),
 }
 
 impl DeletionError {
@@ -164,6 +166,7 @@ impl DeletionError {
             Self::Bound { .. } => "ERR-DELETION-BOUND-001",
             Self::Cancelled { .. } | Self::Incomplete { .. } => "ERR-DELETION-INCOMPLETE-001",
             Self::Hold(error) => error.stable_id(),
+            Self::RetentionPolicy(error) => error.stable_id(),
             Self::RecordMismatch
             | Self::Contract(_)
             | Self::Reference(_)
@@ -225,6 +228,7 @@ impl fmt::Display for DeletionError {
             Self::Publication(error) => write!(f, "publication error: {error}"),
             Self::Spool(error) => write!(f, "spool error: {error}"),
             Self::Hold(error) => write!(f, "evidence hold: {error}"),
+            Self::RetentionPolicy(error) => write!(f, "retention policy: {error}"),
         }
     }
 }
@@ -253,6 +257,11 @@ impl From<SpoolError> for DeletionError {
 impl From<holds::HoldError> for DeletionError {
     fn from(value: holds::HoldError) -> Self {
         Self::Hold(Box::new(value))
+    }
+}
+impl From<retention::policy::PolicyError> for DeletionError {
+    fn from(value: retention::policy::PolicyError) -> Self {
+        Self::RetentionPolicy(Box::new(value))
     }
 }
 

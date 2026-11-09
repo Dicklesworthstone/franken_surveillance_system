@@ -116,6 +116,7 @@
 | `SCHEMA-AGENT-COGNITIVE-ENVELOPE-002` | `fss.agent_cognitive_envelope.v2` | `schemas/agent_cognitive_envelope.v2.json` | semantic response | Owner: fss-core::AgentCognitiveEnvelopeV2. Explicit version carrying unchanged v1 cognition plus the complete registered contextPack and compressionReceipt. Exact contract basis, anchor, view, receipt/output digest and cognitive item/provenance membership must agree; complete response bytes and token quote include both actual proof objects. Existing v1 bytes and closed schema remain unchanged. The packaging receipt does not certify upstream/native/source projections as lossless or grant source/effect authority. Canonical digest registration (alias `SCHEMA-DOMAIN-AGENT-COGNITIVE-ENVELOPE-002`): Additive explicit version containing unchanged v1 cognition and required actual SemanticContextPack plus SemanticCompressionReceipt, verified together against the exact contract, anchor, view and delivered propositions. V1 bytes and closed schema remain unchanged; full serialized response overhead is bounded and priced. |
 | `SCHEMA-AGENT-RESPONSE-001` | `fss.agent_response_envelope.v1` | `schemas/agent_response_envelope.v1.json` | transport response | operation, session, anchors, outcome, payload, errors, budgets, proof, continuation, and safe retry remain explicit |
 | `SCHEMA-NEGATIVE-EVIDENCE-REPORT-001` | `fss.negative_evidence_report.v1` | `schemas/negative_evidence_report.v1.json` | cli report | ledger entries, verification result, epistemic state derived from entry knowledge states, and degradation stay explicit; not an agent response envelope |
+| `SCHEMA-RETENTION-POLICY-CLI-001` | `fss.retention_policy_cli.v1` | `CLI output` | owner-approved retention settings; no automatic deletion | Owner: fss-cli::fss-event::delete::policy. Complete bounded JSON for policy-plan, policy-commit and policy-show: immutable sensor settings, enabled state, generation/predecessor, principal/site/basis, attested preview time, rationale and exact policy/impact identities. A proposal includes the full affected selection and a shell-quoted exact adoption command; committed and already_current outcomes return the bounded record and retained impact identities. Inspection includes disabled generations in sensor order. Policy adoption reports media_deleted=false and automatic_deletion_authorized=false; source deletion requires a separately planned and approved policy-pinned cleanup. Complete output is bounded by the existing 64 MiB retention report ceiling; changed meaning requires a new schema. |
 | `SCHEMA-CAPABILITIES-001` | `fss.capabilities.v1` | `CLI output` | product boundary | additions compatible; changed meaning requires new schema |
 | `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | diagnostics | bounded and secret-free |
 | `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | product boundary | status fields cannot imply unsupported readiness |
@@ -181,6 +182,27 @@
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.
 
+
+## Retention policy and cleanup projections
+
+`fss.retention_policy_cli.v1` projects the canonical authority record registered as
+`fss.retention_policy.v1` in `DIGEST_DOMAINS.md`; JSON spelling is not its identity.
+Policy adoption records settings and their exact affected-inventory preview. It never
+deletes media, releases holds, supplies an observed clock or authorizes future imports
+for automatic cleanup. Policy inspection returns current generations, including disabled
+ones; incomplete or damaged policy history refuses instead of returning an empty list.
+
+A policy-pinned cleanup projects `fss.retention_selection.v4` inside the existing
+retention plan/completion envelopes. It preserves the v1/v2/v3 candidate, timing,
+blocker and optional byte-accounting fields and adds `policy_digest` plus
+`fresh_policy_must_be_current_and_enabled: true`. The corresponding canonical v4
+domain is registered once in `DIGEST_DOMAINS.md` and wraps the exact retained policy
+digest around the unchanged inner selection. The printed cleanup command supplies
+the policy pin and new owner-attested time; inline sensor, age and byte overrides
+are refused. Separate exact deletion approval remains required. Fresh work rejects
+superseded or disabled policies, while an already durable exact deletion can resume
+without reinterpretation or deleted source bytes. Existing unpinned selections and
+their JSON projections remain unchanged.
 
 ## Process-local canonical interpretation domains
 

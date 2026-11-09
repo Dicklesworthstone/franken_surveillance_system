@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 //! Owner-requested retention selection over completed file imports.
 //!
-//! This is a one-shot cleanup request, not a standing policy or a clock service. Only an
+//! Every cleanup remains an exact one-shot request, optionally using a durable policy revision.
+//! A policy supplies settings, never a clock service or standing deletion authority. Only an
 //! entire recording whose latest possible capture plus the requested retention duration is
 //! no later than the earliest owner-attested current time is eligible. Unknown capture time,
 //! source gaps and substantive omissions retain the recording. Holds are not expired here.
@@ -24,6 +25,8 @@ use crate::{ReferenceDeployment, ReplayCx};
 
 mod budget;
 pub use budget::RetentionByteAccounting;
+/// Durable owner-approved policies; adoption never authorizes automatic deletion.
+pub mod policy;
 
 /// Stable selection encoding embedded in retention deletion plans.
 pub const RETENTION_SELECTION_DOMAIN: &str = "fss.retention_selection.v1";
@@ -31,6 +34,8 @@ pub const RETENTION_SELECTION_DOMAIN: &str = "fss.retention_selection.v1";
 pub const RETENTION_BLOCKER_SELECTION_DOMAIN: &str = "fss.retention_selection.v2";
 /// Age-constrained, oldest-first byte-budget selection. V1 and V2 bytes stay unchanged.
 pub const RETENTION_BYTE_SELECTION_DOMAIN: &str = "fss.retention_selection.v3";
+/// Exact retained policy pin wrapping an unchanged v1, v2 or v3 selection.
+pub const RETENTION_POLICY_SELECTION_DOMAIN: &str = "fss.retention_selection.v4";
 /// Maximum import identities inspected in one request, including unfinished imports.
 pub const MAX_RETENTION_IMPORTS: usize = 256;
 /// Maximum capsule records read across the complete inventory, not per import.
@@ -63,6 +68,7 @@ pub struct RetentionRequest {
     now_earliest_ns: i128,
     now_latest_ns: i128,
     source_byte_budget: Option<u64>,
+    policy: Option<ContentDigest>,
 }
 
 impl RetentionRequest {
@@ -82,6 +88,7 @@ impl RetentionRequest {
             now_earliest_ns: attested_now.earliest.0,
             now_latest_ns: attested_now.latest.0,
             source_byte_budget: None,
+            policy: None,
         })
     }
 
@@ -112,6 +119,12 @@ impl RetentionRequest {
     #[must_use]
     pub const fn source_byte_budget(&self) -> Option<u64> {
         self.source_byte_budget
+    }
+
+    /// Exact adopted policy whose settings supplied this request. It grants no deletion.
+    #[must_use]
+    pub const fn policy_digest(&self) -> Option<ContentDigest> {
+        self.policy
     }
 
     /// Owner assertion of current time, not calibrated or independently observed time.
@@ -319,6 +332,13 @@ impl RetentionSelection {
     /// Exact canonical format. V2 is used only when at least one closure is excluded.
     #[must_use]
     pub const fn domain(&self) -> &'static str {
+        if self.request.policy.is_some() {
+            return RETENTION_POLICY_SELECTION_DOMAIN;
+        }
+        self.inner_domain()
+    }
+
+    const fn inner_domain(&self) -> &'static str {
         match self.version {
             SelectionVersion::Age => RETENTION_SELECTION_DOMAIN,
             SelectionVersion::Blockers => RETENTION_BLOCKER_SELECTION_DOMAIN,
@@ -341,7 +361,15 @@ impl RetentionSelection {
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
     pub(super) fn encode(&self, e: &mut CanonicalEncoder) {
-        e.text(self.domain());
+        if let Some(policy) = self.request.policy {
+            e.text(RETENTION_POLICY_SELECTION_DOMAIN);
+            e.digest(policy);
+        }
+        self.encode_inner(e);
+    }
+
+    fn encode_inner(&self, e: &mut CanonicalEncoder) {
+        e.text(self.inner_domain());
         self.request.encode(e);
         if self.version == SelectionVersion::ByteBudget {
             e.bool(self.request.source_byte_budget.is_some());
@@ -388,13 +416,29 @@ impl RetentionSelection {
         }
     }
     pub(super) fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, DeletionError> {
-        let version = match d.text()? {
+        let mut domain = d.text()?;
+        let policy = if domain == RETENTION_POLICY_SELECTION_DOMAIN {
+            if d.remaining() > super::MAX_DELETION_RECORD_BYTES {
+                return Err(DeletionError::Bound {
+                    limit: "retention_policy_selection_bytes",
+                });
+            }
+            let policy = read_digest(d)?;
+            domain = d.text()?;
+            Some(policy)
+        } else {
+            None
+        };
+        // The wrapper is deliberately one level deep. The original inner encoding is
+        // consumed directly, without a recursive parser or changed legacy bytes.
+        let version = match domain {
             RETENTION_SELECTION_DOMAIN => SelectionVersion::Age,
             RETENTION_BLOCKER_SELECTION_DOMAIN => SelectionVersion::Blockers,
             RETENTION_BYTE_SELECTION_DOMAIN => SelectionVersion::ByteBudget,
             _ => return Err(DeletionError::RecordMismatch),
         };
         let mut request = RetentionRequest::decode(d)?;
+        request.policy = policy;
         if version == SelectionVersion::ByteBudget {
             if !d.bool()? {
                 return Err(DeletionError::RecordMismatch);
@@ -621,6 +665,9 @@ fn assess_age_retention(
     checkpoint(cx)?;
     if cx.root_dir() != deployment.root() {
         return Err(DeletionError::RecordMismatch);
+    }
+    if request.policy.is_some() {
+        policy::validate_current_request(deployment, request, cx)?;
     }
     let deletions = DeletionIndex::read(deployment)?;
     let mut usage = Usage::default();
@@ -1260,6 +1307,82 @@ mod tests {
         assert_eq!(import_identity(&text)?, Some((digest, "manifest")));
         assert!(import_identity("batch:file-import:bad:manifest").is_err());
         assert_eq!(import_identity("batch:other:manifest")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn policy_wrapper_preserves_each_legacy_inner_encoding_and_binds_the_revision() -> TestResult {
+        let age = RetentionSelection {
+            request: request(100, 110)?,
+            version: SelectionVersion::Age,
+            candidates: Vec::new(),
+            byte_accounting: None,
+        };
+        let budget = RetentionSelection {
+            request: request(100, 110)?.with_source_byte_budget(0),
+            version: SelectionVersion::ByteBudget,
+            candidates: Vec::new(),
+            byte_accounting: Some(RetentionByteAccounting {
+                max_retained_source_bytes: 0,
+                before_source_bytes: 0,
+                selected_source_bytes: 0,
+                projected_remaining_source_bytes: 0,
+                unmet_source_bytes: 0,
+            }),
+        };
+        for inner in [age, blocked_selection()?, budget] {
+            let mut original = CanonicalEncoder::new();
+            inner.encode(&mut original);
+            let original = original.finish_checked()?;
+            let mut wrapped = inner.clone();
+            wrapped.request.policy = Some(ContentDigest::sha256(b"policy:first"));
+            assert_eq!(wrapped.domain(), RETENTION_POLICY_SELECTION_DOMAIN);
+            assert_eq!(decoded(&wrapped)?, wrapped);
+            let mut e = CanonicalEncoder::new();
+            wrapped.encode(&mut e);
+            let bytes = e.finish_checked()?;
+            let mut d = CanonicalDecoder::new(&bytes);
+            assert_eq!(d.text()?, RETENTION_POLICY_SELECTION_DOMAIN);
+            assert_eq!(d.digest()?, wrapped.request.policy.ok_or("policy pin")?);
+            assert_eq!(&bytes[bytes.len() - d.remaining()..], original);
+            assert_ne!(wrapped.digest()?, inner.digest()?);
+            let before = wrapped.digest()?;
+            wrapped.request.policy = Some(ContentDigest::sha256(b"policy:second"));
+            assert_ne!(wrapped.digest()?, before);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn policy_wrapper_rejects_nesting_unknown_inner_formats_and_oversized_input() -> TestResult {
+        for inner in [
+            RETENTION_POLICY_SELECTION_DOMAIN,
+            "fss.retention_selection.v99",
+        ] {
+            let mut e = CanonicalEncoder::new();
+            e.text(RETENTION_POLICY_SELECTION_DOMAIN);
+            e.digest(ContentDigest::sha256(b"policy"));
+            e.text(inner);
+            // No inner fields are supplied. Rejection happens at the domain dispatch;
+            // nested wrappers never enter a recursive decode or consume another pin.
+            assert!(matches!(
+                RetentionSelection::decode(&mut CanonicalDecoder::new(&e.finish())),
+                Err(DeletionError::RecordMismatch)
+            ));
+        }
+        let mut e = CanonicalEncoder::new();
+        e.text(RETENTION_POLICY_SELECTION_DOMAIN);
+        let mut oversized = e.finish();
+        oversized.resize(
+            oversized.len() + super::super::MAX_DELETION_RECORD_BYTES + 1,
+            0,
+        );
+        assert!(matches!(
+            RetentionSelection::decode(&mut CanonicalDecoder::new(&oversized)),
+            Err(DeletionError::Bound {
+                limit: "retention_policy_selection_bytes"
+            })
+        ));
         Ok(())
     }
 }

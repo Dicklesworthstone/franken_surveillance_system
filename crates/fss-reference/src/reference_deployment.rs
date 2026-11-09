@@ -91,6 +91,8 @@ pub const FAMILY_PRIVACY_MASK_POLICY: &str = "privacy_mask_policy";
 /// Reserved retention authority: an indefinite import-closure hold and its explicit release.
 /// Only [`crate::deletion::holds::commit_hold`] may publish this family or its object namespace.
 pub const FAMILY_EVIDENCE_HOLD: &str = "evidence_hold";
+/// Reserved per-sensor retention settings; only the exact approved policy owner may mutate them.
+pub const FAMILY_RETENTION_POLICY: &str = "retention_policy";
 /// Registered ledger delta family: the sealed deletion plan of one retained import
 /// ([`crate::deletion`]), appended before any byte is removed; plane authority. Reserved.
 pub const FAMILY_DELETION_RECORD: &str = "deletion_record";
@@ -117,6 +119,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_COVERAGE_WITNESS,
     FAMILY_PRIVACY_MASK_POLICY,
     FAMILY_EVIDENCE_HOLD,
+    FAMILY_RETENTION_POLICY,
     FAMILY_DELETION_RECORD,
     FAMILY_DELETION_TOMBSTONE,
     FAMILY_DELETION_COMPLETION,
@@ -193,6 +196,7 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         }
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
         FAMILY_EVIDENCE_HOLD => Some("deletion::holds::commit_hold"),
+        FAMILY_RETENTION_POLICY => Some("deletion::retention::policy::commit_policy_change"),
         FAMILY_DELETION_RECORD
         | FAMILY_DELETION_TOMBSTONE
         | FAMILY_DELETION_COMPLETION
@@ -1717,6 +1721,17 @@ impl ReferenceDeployment {
             delta
                 .object_id
                 .as_str()
+                .starts_with(crate::deletion::retention::policy::POLICY_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: FAMILY_RETENTION_POLICY.to_owned(),
+                entry_point: "deletion::retention::policy::commit_policy_change",
+            });
+        }
+        if deltas.iter().any(|delta| {
+            delta
+                .object_id
+                .as_str()
                 .starts_with(crate::ingest::calibration_invalidation::INVALIDATION_OBJECT_PREFIX)
         }) {
             return Err(ReferenceError::ReservedDeltaFamily {
@@ -1897,6 +1912,37 @@ impl ReferenceDeployment {
             })
         {
             return Err(ReferenceError::InvalidSpec("invalid evidence hold batch"));
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Guarded writer for one exact policy revision validated by the retention policy owner.
+    pub(crate) fn append_retention_policy_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                delta.family != FAMILY_RETENTION_POLICY
+                    || delta.plane != Plane::Authority
+                    || !delta
+                        .object_id
+                        .as_str()
+                        .starts_with(crate::deletion::retention::policy::POLICY_OBJECT_PREFIX)
+            })
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "invalid retention policy batch",
+            ));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }

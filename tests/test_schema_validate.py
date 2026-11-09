@@ -915,8 +915,9 @@ class TestSchemaConstitution(unittest.TestCase):
         # Three offline fusion sequence checkpoint/raw/transcript domains.
         # Reconciled baseline: 700 distinct digest-only domains after merging eight
         # duplicate schema registrations; table headers are not declarations. Add one
-        # source-byte retention domain, seven UTC-set domains and six UTC-discovery domains.
-        self.assertEqual(result["digestDomainCount"], 714)
+        # source-byte retention domain, seven UTC-set domains, six UTC-discovery domains
+        # and four durable retention-policy domains.
+        self.assertEqual(result["digestDomainCount"], 718)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1480,8 +1481,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # Three offline fusion sequence checkpoint/raw/transcript domains.
         # Reconciled baseline: 700 distinct digest-only domains after merging eight
         # duplicate schema registrations; table headers are not declarations. Add one
-        # source-byte retention domain, seven UTC-set domains and six UTC-discovery domains.
-        self.assertEqual(result["digestDomainCount"], 714)
+        # source-byte retention domain, seven UTC-set domains, six UTC-discovery domains
+        # and four durable retention-policy domains.
+        self.assertEqual(result["digestDomainCount"], 718)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

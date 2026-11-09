@@ -2,6 +2,9 @@
 //! Real imported media, durable holds and graph-aware partial retention cleanup.
 //! No camera, host clock, network effect or automatically released hold is involved.
 
+#[path = "retention_cohort_contract/policy.rs"]
+mod policy;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;

@@ -1,16 +1,18 @@
-# Owner-approved recording cleanup by age and source-byte target
+# Owner-approved retention policies and recording cleanup
 
 `fss-event delete retention-plan` selects an exact cohort of completed file imports for one
 sensor. `retention-commit` executes one sealed union-closure deletion under its exact approval,
 using the existing tombstone-first, local unlink, verification and completion protocol.
 
 An optional source-byte target selects the oldest safe age-eligible imports first. The default
-remains cleanup of every safely deletable expired import.
+remains cleanup of every safely deletable expired import. Settings can be supplied explicitly
+for one cleanup or inherited from one exact, durably adopted per-sensor policy revision.
 
-This implements one-shot cleanup, not a standing retention policy, daemon, automatic
-hold release, or remote archive deletion. The policy-change work packages remain open. It is a
-reference implementation, **not production-qualified**. The source-byte additions have passed
-source review and pinned formatting. Native compilation and execution remain blocked by a
+Policy adoption and each cleanup have separate approvals. This implements durable settings
+and exact one-shot deletion, without a daemon, standing authority over future evidence,
+automatic hold release, or remote archive deletion. Continuous ring recording and automatic
+enforcement remain open. It is a reference implementation, **not production-qualified**.
+Native compilation and execution remain blocked by a
 compiler SIGKILL in unchanged Asupersync; the presence of executable checks is not proof that
 they passed.
 
@@ -152,6 +154,88 @@ Original input files, exports, backups, replicas and device remanence remain exp
 this proof. Event revision history is preserved, with deleted evidence availability kept
 orthogonal to conclusions about the physical world.
 
+## Adopt and use durable per-sensor settings
+
+`policy-plan` previews a complete prospective policy generation and the current inventory
+affected by those settings. A policy stores an enabled/disabled state, positive minimum age,
+optional logical source-byte target, exact sensor and bounded owner rationale. It preserves
+the same exclusions, age floor and logical accounting described above. Every revision also
+binds the current authority head, the prior revision, the owner-attested time used for its
+impact assessment, and the affected selection and optional deletion-plan identities.
+
+First adoption explicitly says `--expected-policy none`:
+
+```sh
+fss-event delete policy-plan \
+  --root /path/to/deployment --site site:home \
+  --sensor-id sensor:front --state enabled \
+  --retain-for-ns 86400000000000 \
+  --max-retained-source-bytes 1073741824 \
+  --expected-policy none \
+  --attested-now-ns "${EARLIEST_NOW_NS:?supply earliest current time}:${LATEST_NOW_NS:?supply latest current time}" \
+  --reason 'Owner reviewed front-camera file retention'
+```
+
+The `fss.retention_policy_cli.v1` response includes the exact prospective record, generation,
+approval digest, `approve_command`, and `settings_impact_if_enabled`. That impact lists the
+selection, number of selected imports, quoted local deletable bytes and blockers; its
+`deletion_authorized` flag is false. A disabled proposal still previews the supplied settings
+as an explicit hypothetical impact. `policy-commit` with the exact returned command stages
+the impact plan when one exists and the policy record, then commits one guarded authority
+revision. **Adopting a policy does not delete any recording or approve its impact plan.**
+The adoption itself changes the authority head, so cleanup requires a new preview.
+
+Read current settings, including disabled generations, with:
+
+```sh
+fss-event delete policy-show \
+  --root /path/to/deployment --site site:home --sensor-id sensor:front
+```
+
+Omit `--sensor-id` to list all current policies in sensor order. To update or disable a
+policy, repeat the complete `policy-plan` request with the desired `--state` and settings,
+and put its current `policy_digest` in `--expected-policy`. A stale predecessor is refused.
+A new import, changed hold or authority head between preview and adoption changes the
+approval; the original command cannot silently adopt against different evidence.
+An exact retry of the current adopted request returns `already_current` without a write.
+Policy history is immutable, and revision numbers increase rather than reusing old records.
+
+To prepare cleanup from an enabled policy, use its exact digest and a fresh owner time
+assertion:
+
+```sh
+fss-event delete retention-plan \
+  --root /path/to/deployment --site site:home \
+  --policy "${POLICY_DIGEST:?use the adopted policy digest}" \
+  --attested-now-ns "${EARLIEST_NOW_NS}:${LATEST_NOW_NS}"
+```
+
+The sensor, minimum age and optional byte target are inherited. `--sensor-id`,
+`--retain-for-ns` and `--max-retained-source-bytes` cannot be combined with `--policy`.
+The preview's exact `retention-commit` command includes the policy pin, asserted time,
+deletion-plan digest and deletion approval. Fresh planning and commit require that the
+pin names the sensor's **current enabled** policy and that every inherited setting matches
+the retained record. Policy approval is not deletion approval. Explicit inline cleanup
+requests retain their existing separately approved semantics; the stored configuration is
+not a new restriction on those owner requests.
+
+Policy adoption/show use `CAP-RETENTION-PREPARE-001`; adoption additionally requires
+`CAP-RETENTION-COMMIT-001`. Cleanup continues to use the existing deletion capabilities.
+Missing or corrupt records, damaged retained impact plans, forged generations, shadowed
+namespaces and broken predecessor chains fail closed. A generic ledger append cannot write
+the policy authority family or its reserved object namespace.
+
+The deployment lock serializes updates with cleanup. No new policy revision can be adopted
+while a durable deletion is incomplete. Cancellation after staging the impact plan or policy
+object leaves no effective revision: both are verified audit metadata, and reopening permits
+the original adoption approval to be retried exactly. After the policy batch commits, a
+post-commit cancellation does not report the completed adoption as a failure.
+
+Once a cleanup's deletion record is durable, its original policy pin and exact request remain
+resumable without the removed media. A completed cleanup can still return `already_complete`
+after a later policy revision disables future use of its old pin. Such a retry cannot add
+new imports, change the byte target or extend deletion authority to later evidence.
+
 ## Bounds, formats and compatibility
 
 The selector admits at most 256 nondeleted import identities (including incomplete imports),
@@ -184,6 +268,20 @@ and noncanonical ordering. Neither age-only v1 nor blocker-aware v2 bytes change
 refuse the unknown selection version instead of interpreting a byte-limited approval as an
 unlimited age-based deletion.
 
+Policy-driven cleanup uses `fss.retention_selection.v4`, a single policy digest followed by
+the unchanged inner v1, v2 or v3 encoding. Its decoder rejects nested v4 wrappers and unknown
+inner domains before decoding their fields. The normal deletion-record byte bound remains
+in force. Legacy selection bytes and their approvals do not change. Policy revisions use
+`fss.retention_policy.v1`, `fss.retention_policy_id.v1` and
+`fss.retention_policy_approval.v1` for record, stable object and approval identities.
+
+Policy history is bounded to 256 sensors, 1,024 lifetime revisions, 8 KiB per record, and
+64 MiB of aggregate record and retained-impact bytes per history pass. Each pass examines at
+most one million ledger batch/delta entries and checks cancellation throughout. Adoption
+checks that its new record and impact fit the future replay budget before staging anything.
+Resolving a pinned request and validating its freshness are separate bounded history passes.
+History is never evicted or truncated to make a new policy fit.
+
 ## Focused regression checks
 
 ```sh
@@ -195,7 +293,7 @@ The script runs selector/codec and CLI unit tests, `retention_cli_contract`,
 then formatting checks.
 The new tests cover real retained MJPEG imports, old versus recent and unknown-time recordings,
 shared source preservation, derived-frame deletion, holds, stale requests, version/member
-forgery, explicit no-op results, all six deletion interruption points, and cold exact retry.
+forgery, explicit no-op results, all seven deletion interruption points, and cold exact retry.
 The optional hosted workflow invokes this same script and does not replace local DSR gates.
 
 On 2026-11-09, a linked native UTC test build and a metadata-only check that included
@@ -213,9 +311,19 @@ every interruption cut with cold retry. Canonical decoder cases reject forged to
 inconsistent source lengths, missing v3 fields, overflow and skipped older candidates.
 
 Related contracts: FSS-037, GOAL-009, GOAL-010, CAP-DELETE-PREPARE-001 and
-CAP-DELETE-COMMIT-001. Standing `EFFECT-RETENTION-001` policy adoption, encrypted storage,
-automatic scheduling, live-capture archive selection, replica deletion and large-inventory
-pagination are not implemented by this slice.
+CAP-DELETE-COMMIT-001, plus CAP-RETENTION-PREPARE-001 and CAP-RETENTION-COMMIT-001 for
+policy adoption. The VIT-006 continuous per-source/class ring, standing authorization for
+future automatic deletion, encrypted storage, automatic scheduling, live-capture archive
+selection, replica deletion and large-inventory pagination remain open.
+
+The durable-policy extension adds 16 executable contracts: canonical policy/wrapper refusal,
+unchanged inner formats, real-import adoption without deletion, current enabled pins, zero
+budget with preserved holds/young/unknown sources, stale inventory/holds/authority, policy
+staging cancellation, all seven cleanup cut points with cold retry, guarded authority and
+damaged custody, CLI parsing and actual policy/cleanup command processes. These new cases
+have not run: the metadata-only retry also received SIGKILL while compiling unchanged
+Asupersync before it reached FSS code. Authored tests and source review are not a passing
+native test result.
 
 The cohort additions include nine real-import contracts for independent and shared holds,
 union-only effect blockers, unchanged v1 selections, stale approval, cancellation, all deletion

@@ -4,6 +4,44 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Durable per-sensor retention policies and exact cleanup
+
+`fss-event delete policy-plan`, `policy-commit` and `policy-show` now preview,
+adopt, inspect, replace and disable immutable per-sensor retention settings.
+Each generation stores a positive minimum age, optional distinct-source byte
+target, predecessor, principal, authority basis and the affected current inventory.
+The exact adoption approval binds that complete record and its retained impact
+plan. A policy mutation writes authority metadata without deleting media.
+
+`retention-plan` and `retention-commit --policy sha256:...` inherit those exact
+settings. Fresh cleanup requires the current enabled generation and forbids
+inline overrides. The v4 selection binds the policy digest around unchanged
+v1/v2/v3 selection bytes; nested wrappers refuse. Holds, young recordings,
+unknown capture time, shared-evidence blockers and unmet byte targets preserve
+the existing cleanup behavior. Each actual deletion still needs its own exact
+approval. Interrupted deletion resumes its sealed original request, and completed
+cleanup remains idempotent after a later policy revision.
+
+The guarded `retention_policy` family and reserved object namespace prevent
+generic writes from shadowing authority. Full history replay verifies every
+revision and retained impact plan within explicit limits: 256 sensors, 1,024
+revisions, 8 KiB per policy record, 64 MiB aggregate record/impact bytes and one
+million ledger batch/delta entries per pass. Policy changes refuse during an
+unfinished durable deletion. Cancellation while staging metadata leaves the
+authority head unchanged and preserves the exact approval for cold retry.
+
+This advances VIT-006 and FSS-037 for completed local file imports. It does not
+supply continuous per-source/class rings, automatic enforcement or standing
+authority over future evidence; those remain open. See the
+[policy adoption and cleanup commands](docs/retention_cleanup.md#adopt-and-use-durable-per-sensor-settings).
+
+**Validation:** sixteen new contracts are authored and independently source-reviewed:
+eight real-import policy cases, four canonical policy/wrapper cases, two CLI parser
+cases and two CLI process cases. Pinned formatting and whitespace checks passed
+on the complete staged sources. The schema suite ran 64 cases: 63 passed and
+one existing case was skipped. Native compilation/execution remain blocked by
+the unchanged Asupersync SIGKILL described below; no native pass is claimed.
+
 ## UTC discovery across a complete native archive namespace
 
 `fss query --target recordings --discover-catalogs yes` and MCP's

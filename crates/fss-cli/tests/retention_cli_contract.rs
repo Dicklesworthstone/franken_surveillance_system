@@ -3,6 +3,9 @@
 //! Synthetic JPEG bytes are retained, not a hand-built ledger or mocked selector. These tests
 //! assert the actual cohort, surviving bytes, exact approvals and every deletion cut point.
 
+#[path = "retention_cli_contract/policy.rs"]
+mod policy;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;

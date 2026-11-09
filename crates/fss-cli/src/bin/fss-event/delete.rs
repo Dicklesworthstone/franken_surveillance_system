@@ -8,7 +8,9 @@
 //! completed same-sensor logical input bytes fit; it never overrides the minimum age or holds.
 //! Source gaps and unknown time retain recordings. Held or otherwise blocked additions remain
 //! explicit exclusions, so independent expired closures can proceed under their exact approval.
-//! No standing policy changes, host clock reads, automatic hold releases or remote erasure.
+//! Durable policy revisions supply reusable settings through an explicit --policy pin. Their
+//! adoption needs separate approval and never grants automatic deletion authority. No host
+//! clock reads, automatic hold releases or remote erasure are performed.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -29,6 +31,8 @@ use fss_reference::deletion::{
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 use super::RunResult;
+
+mod policy;
 
 /// Capability of `delete plan` and `delete retention-plan`.
 pub(super) const CAP_DELETE_PREPARE: &str = "CAP-DELETE-PREPARE-001";
@@ -51,6 +55,42 @@ pub(super) enum Operation {
         /// Exact approval digest.
         approve: ContentDigest,
     },
+    /// Preview a prospective policy revision; no deletion authority is granted.
+    PolicyPlan(fss_reference::deletion::retention::policy::PolicyChangeRequest),
+    /// Commit one exactly approved policy revision.
+    PolicyCommit {
+        request: fss_reference::deletion::retention::policy::PolicyChangeRequest,
+        approve: ContentDigest,
+    },
+    /// Read current policy generations, optionally restricted to one exact sensor.
+    PolicyShow(Option<SensorId>),
+    /// Resolve a pinned policy and prepare exact cleanup under its current settings.
+    PolicyRetentionPlan {
+        policy: ContentDigest,
+        now: CaptureInterval,
+    },
+    /// Execute or resume the exact cleanup request pinned to one retained policy.
+    PolicyRetentionCommit {
+        policy: ContentDigest,
+        now: CaptureInterval,
+        plan: ContentDigest,
+        approve: ContentDigest,
+    },
+}
+
+impl Operation {
+    /// The local process supplies only capabilities required by the explicit operation.
+    pub(super) fn capabilities(&self) -> Vec<&'static str> {
+        use fss_reference::deletion::holds::{CAP_HOLD_COMMIT, CAP_HOLD_PREPARE};
+        match self {
+            Self::PolicyPlan(_) | Self::PolicyShow(_) => vec![CAP_HOLD_PREPARE],
+            Self::PolicyCommit { .. } => vec![CAP_HOLD_PREPARE, CAP_HOLD_COMMIT],
+            Self::Commit { .. } | Self::PolicyRetentionCommit { .. } => {
+                vec![CAP_DELETE_PREPARE, CAP_DELETE_COMMIT]
+            }
+            Self::Plan { .. } | Self::PolicyRetentionPlan { .. } => vec![CAP_DELETE_PREPARE],
+        }
+    }
 }
 
 /// Fully parsed request; no I/O occurs until all retention arguments are valid.
@@ -73,15 +113,17 @@ fn sha256(value: &str, key: &str) -> Result<ContentDigest, String> {
 
 /// Parses the arguments after `delete`.
 pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
-    let command = args
-        .first()
-        .and_then(|a| a.to_str())
-        .ok_or("delete requires plan, commit, retention-plan or retention-commit")?;
+    let command = args.first().and_then(|a| a.to_str()).ok_or(
+        "delete requires plan, commit, retention-plan, retention-commit or policy-plan/commit/show",
+    )?;
+    if matches!(command, "policy-plan" | "policy-commit" | "policy-show") {
+        return policy::parse(args);
+    }
     if !matches!(
         command,
         "plan" | "commit" | "retention-plan" | "retention-commit"
     ) {
-        return Err("delete requires plan, commit, retention-plan or retention-commit".to_owned());
+        return Err("delete requires plan, commit, retention-plan, retention-commit or policy-plan/commit/show".to_owned());
     }
     let is_retention = matches!(command, "retention-plan" | "retention-commit");
     let is_plan = matches!(command, "plan" | "retention-plan");
@@ -107,6 +149,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
                         | "--retain-for-ns"
                         | "--attested-now-ns"
                         | "--max-retained-source-bytes"
+                        | "--policy"
                 ));
         if !allowed {
             return Err("unknown or inapplicable option".to_owned());
@@ -130,22 +173,43 @@ pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
     let principal =
         text("--principal").map_or_else(|_| "principal:local-operator".to_owned(), str::to_owned);
     PrincipalId::parse(&principal).map_err(|_| "invalid principal ID")?;
+    if is_retention && values.iter().any(|(key, _)| key == "--policy") {
+        if values.iter().any(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "--sensor-id" | "--retain-for-ns" | "--max-retained-source-bytes"
+            )
+        }) {
+            return Err(
+                "--policy cannot be combined with inline sensor, age or byte settings".to_owned(),
+            );
+        }
+        let policy = sha256(text("--policy")?, "--policy")?;
+        let now = attested_time(text("--attested-now-ns")?)?;
+        let operation = if is_plan {
+            Operation::PolicyRetentionPlan { policy, now }
+        } else {
+            Operation::PolicyRetentionCommit {
+                policy,
+                now,
+                plan: sha256(text("--plan")?, "--plan")?,
+                approve: sha256(text("--approve")?, "--approve")?,
+            }
+        };
+        return Ok(DeleteAction {
+            root: PathBuf::from(text("--root")?),
+            site,
+            principal,
+            operation,
+            retention: None,
+        });
+    }
     let retention = if is_retention {
         let sensor = SensorId::parse(text("--sensor-id")?).map_err(|_| "invalid sensor ID")?;
         let duration = text("--retain-for-ns")?
             .parse::<u64>()
             .map_err(|_| "--retain-for-ns requires positive integer nanoseconds")?;
-        let (first, last) = text("--attested-now-ns")?
-            .split_once(':')
-            .ok_or("--attested-now-ns requires EARLIEST:LATEST signed nanoseconds")?;
-        let first = first
-            .parse::<i128>()
-            .map_err(|_| "invalid earliest attested time")?;
-        let last = last
-            .parse::<i128>()
-            .map_err(|_| "invalid latest attested time")?;
-        let now = CaptureInterval::new(TimestampNs(first), TimestampNs(last))
-            .map_err(|_| "attested current-time bounds are inverted")?;
+        let now = attested_time(text("--attested-now-ns")?)?;
         let request = RetentionRequest::new(sensor, duration, now)
             .map_err(|_| "retention duration must be positive and time bounds ordered")?;
         Some(
@@ -207,6 +271,20 @@ pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
     })
 }
 
+fn attested_time(text: &str) -> Result<CaptureInterval, String> {
+    let (first, last) = text
+        .split_once(':')
+        .ok_or("--attested-now-ns requires EARLIEST:LATEST signed nanoseconds")?;
+    let first = first
+        .parse::<i128>()
+        .map_err(|_| "invalid earliest attested time")?;
+    let last = last
+        .parse::<i128>()
+        .map_err(|_| "invalid latest attested time")?;
+    CaptureInterval::new(TimestampNs(first), TimestampNs(last))
+        .map_err(|_| "attested current-time bounds are inverted".to_owned())
+}
+
 fn quote(text: &str) -> String {
     format!("\"{}\"", escape_json_str(text))
 }
@@ -254,8 +332,11 @@ fn retention_json(selection: &RetentionSelection) -> String {
             accounting.unmet_source_bytes == 0,
         )
     });
+    let policy = request.policy_digest().map_or_else(String::new, |digest| {
+        format!(",\"policy_digest\":\"{digest}\",\"fresh_policy_must_be_current_and_enabled\":true")
+    });
     format!(
-        "{{\"format\":\"{}\",\"sensor_id\":{},\"retain_for_ns\":\"{}\",\"attested_now\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}},\"time_provenance\":\"owner_assertions_not_observed_clock\",\"eligibility\":\"latest_capture_plus_retention_not_after_earliest_attested_now\",\"candidates\":[{}]{budget},\"standing_policy_changed\":false,\"holds_released\":false}}",
+        "{{\"format\":\"{}\",\"sensor_id\":{},\"retain_for_ns\":\"{}\",\"attested_now\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}},\"time_provenance\":\"owner_assertions_not_observed_clock\",\"eligibility\":\"latest_capture_plus_retention_not_after_earliest_attested_now\",\"candidates\":[{}]{budget}{policy},\"standing_policy_changed\":false,\"holds_released\":false}}",
         selection.domain(),
         quote(request.sensor().as_str()),
         request.retain_for_ns(),
@@ -315,21 +396,31 @@ fn plan_json(action: &DeleteAction, plan: &DeletionPlan) -> RunResult<String> {
             DeletionScope::Retention(selection) => {
                 let request = selection.request();
                 let now = request.attested_now();
-                let budget = request
-                    .source_byte_budget()
-                    .map_or_else(String::new, |bytes| {
-                        format!(" --max-retained-source-bytes {bytes}")
-                    });
-                (
-                    "retention-commit",
-                    format!(
-                        " --sensor-id {} --retain-for-ns {} --attested-now-ns {}:{}{budget}",
-                        quote_arg(request.sensor().as_str()),
-                        request.retain_for_ns(),
-                        now.earliest.0,
-                        now.latest.0
-                    ),
-                )
+                if let Some(policy) = request.policy_digest() {
+                    (
+                        "retention-commit",
+                        format!(
+                            " --policy {policy} --attested-now-ns {}:{}",
+                            now.earliest.0, now.latest.0
+                        ),
+                    )
+                } else {
+                    let budget = request
+                        .source_byte_budget()
+                        .map_or_else(String::new, |bytes| {
+                            format!(" --max-retained-source-bytes {bytes}")
+                        });
+                    (
+                        "retention-commit",
+                        format!(
+                            " --sensor-id {} --retain-for-ns {} --attested-now-ns {}:{}{budget}",
+                            quote_arg(request.sensor().as_str()),
+                            request.retain_for_ns(),
+                            now.earliest.0,
+                            now.latest.0
+                        ),
+                    )
+                }
             }
             _ => ("commit", String::new()),
         };
@@ -509,16 +600,41 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    let required = match action.operation {
-        Operation::Plan { .. } => CAP_DELETE_PREPARE,
-        Operation::Commit { .. } => CAP_DELETE_COMMIT,
-    };
-    if !authority.has_capability(required) {
-        return Err(
-            std::io::Error::other(format!("ERR-AUTH-DENIED-001: {required} not granted")).into(),
-        );
+    for required in action.operation.capabilities() {
+        if !authority.has_capability(required) {
+            return Err(std::io::Error::other(format!(
+                "ERR-AUTH-DENIED-001: {required} not granted"
+            ))
+            .into());
+        }
     }
     let json = match (&action.operation, &action.retention) {
+        (
+            Operation::PolicyPlan(_) | Operation::PolicyCommit { .. } | Operation::PolicyShow(_),
+            _,
+        ) => policy::run(action, deployment, authority, cx)?,
+        (Operation::PolicyRetentionPlan { policy, now }, _) => {
+            let request = fss_reference::deletion::retention::policy::request_from_policy(
+                deployment, *policy, *now, cx,
+            )?;
+            retention_preview(action, deployment, &request, cx)?
+        }
+        (
+            Operation::PolicyRetentionCommit {
+                policy,
+                now,
+                plan,
+                approve,
+            },
+            _,
+        ) => {
+            let request = fss_reference::deletion::retention::policy::request_from_policy(
+                deployment, *policy, *now, cx,
+            )?;
+            let receipt =
+                commit_retention(deployment, &request, *plan, *approve, &action.principal, cx)?;
+            completion_json(&receipt)
+        }
         (Operation::Plan { .. }, Some(request)) => {
             retention_preview(action, deployment, request, cx)?
         }
@@ -536,7 +652,13 @@ pub(super) fn run(
             completion_json(&receipt)
         }
     };
-    if action.retention.is_some() && json.len() > MAX_RETENTION_REPORT_BYTES {
+    if (action.retention.is_some()
+        || !matches!(
+            action.operation,
+            Operation::Plan { .. } | Operation::Commit { .. }
+        ))
+        && json.len() > MAX_RETENTION_REPORT_BYTES
+    {
         return Err(DeletionError::Bound {
             limit: "retention_report_bytes",
         }
@@ -673,6 +795,97 @@ mod tests {
         assert!(parse(&args)?.retention.is_none());
         args.extend(["--retain-for-ns".into(), "10".into()]);
         assert!(parse(&args).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn policy_cleanup_requires_explicit_pin_and_time_and_forbids_inline_overrides()
+    -> Result<(), String> {
+        let pin = ContentDigest::sha256(b"policy").to_text();
+        let mut args = arguments("retention-plan");
+        args.extend([
+            "--policy".into(),
+            pin.clone().into(),
+            "--attested-now-ns".into(),
+            "-10:20".into(),
+        ]);
+        let action = parse(&args)?;
+        assert!(
+            matches!(action.operation, Operation::PolicyRetentionPlan { policy, now }
+            if policy.to_text() == pin && now.earliest.0 == -10 && now.latest.0 == 20)
+        );
+        assert!(action.retention.is_none());
+        for (key, value) in [
+            ("--sensor-id", "sensor:a"),
+            ("--retain-for-ns", "10"),
+            ("--max-retained-source-bytes", "0"),
+        ] {
+            let mut override_args = args.clone();
+            override_args.extend([key.into(), value.into()]);
+            assert!(parse(&override_args).is_err());
+        }
+        args[0] = "retention-commit".into();
+        assert!(parse(&args).is_err());
+        args.extend([
+            "--plan".into(),
+            ContentDigest::sha256(b"plan").to_text().into(),
+            "--approve".into(),
+            ContentDigest::sha256(b"approval").to_text().into(),
+        ]);
+        assert!(matches!(
+            parse(&args)?.operation,
+            Operation::PolicyRetentionCommit { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn policy_adoption_requires_explicit_state_predecessor_age_time_and_reason()
+    -> Result<(), String> {
+        let mut args = retention_arguments("policy-plan");
+        args.extend([
+            "--state".into(),
+            "enabled".into(),
+            "--expected-policy".into(),
+            "none".into(),
+            "--reason".into(),
+            "Owner review".into(),
+            "--max-retained-source-bytes".into(),
+            "0".into(),
+        ]);
+        let action = parse(&args)?;
+        assert!(matches!(action.operation, Operation::PolicyPlan(request)
+            if request.enabled && request.max_retained_source_bytes == Some(0)
+                && request.expected_policy.is_none() && request.retain_for_ns == 10));
+        for (key, value) in [
+            ("--state", "automatic"),
+            ("--retain-for-ns", "0"),
+            ("--expected-policy", "current"),
+            ("--reason", " "),
+            ("--attested-now-ns", "20:10"),
+        ] {
+            let mut bad = args.clone();
+            let at = bad.iter().position(|arg| arg == key).ok_or("option")?;
+            bad[at + 1] = value.into();
+            assert!(parse(&bad).is_err(), "{key}");
+        }
+        args[0] = "policy-commit".into();
+        assert!(parse(&args).is_err());
+        args.extend([
+            "--approve".into(),
+            ContentDigest::sha256(b"approval").to_text().into(),
+        ]);
+        assert!(matches!(
+            parse(&args)?.operation,
+            Operation::PolicyCommit { .. }
+        ));
+        let mut show = arguments("policy-show");
+        assert!(matches!(
+            parse(&show)?.operation,
+            Operation::PolicyShow(None)
+        ));
+        show.extend(["--state".into(), "enabled".into()]);
+        assert!(parse(&show).is_err());
         Ok(())
     }
 }
