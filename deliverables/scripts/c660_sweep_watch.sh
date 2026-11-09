@@ -87,18 +87,11 @@ while :; do
     $ROUTE_CMD -host "$ip" "$GW" >/dev/null 2>&1 || true
     # DS-READINESS GATE (OMP review / C460 lesson): fire only when the camera's login
     # succeeds — a pingable-but-sleeping camera has no main process to overflow.
-    DS_READY=0
-    for _try in 1 2 3; do
-      _login_out=$(curl -s --connect-timeout 3 -m 5 \
-        -d '{"method":"login","params":{"cnonce":"","encrypt_type":"3","username":"admin"}}' \
-        "http://${ip}/" 2>/dev/null | head -1)
-      if echo "$_login_out" | grep -q 'stok'; then
-        DS_READY=1; break
-      fi
-      sleep 2
-    done
-    if [ "$DS_READY" != "1" ]; then
-      log "DS not ready at $ip (camera asleep) — skipping fire, will retry next presence"
+    # wake + prove a real DS login (the plain cnonce-only POST never returns a stok on
+    # this firmware; the apps wake a sleeping unit with a WoWLAN magic packet — so do we)
+    if ! timeout 100 /opt/homebrew/bin/python3 "$HERE/../scripts/tapo_reach.py" "$ip" --wake-mac "$MAC" --tries 4 \
+          > /tmp/c660_reach.log 2>&1; then
+      log "DS not reachable at $ip — skipping fire, will retry"
       phase WAITING
       sleep "$POLL"
       continue

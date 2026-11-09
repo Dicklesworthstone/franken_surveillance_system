@@ -16,7 +16,7 @@ import sys
 import time
 
 
-def send(mac: str, dst_ip: str, broadcast: bool, rounds: int = 6, gap: float = 0.4) -> None:
+def send(mac: str, dst_ip: str, broadcast: bool, rounds: int = 70, gap: float = 0.5) -> None:
     raw = bytes.fromhex(mac.replace(":", "").replace("-", ""))
     if len(raw) != 6:
         sys.exit(f"bad mac {mac}")
@@ -40,9 +40,9 @@ def main() -> int:
     ap.add_argument("mac")
     ap.add_argument("--broadcast", default="192.168.4.255")
     ap.add_argument("--ip", help="also unicast here")
-    ap.add_argument("--rounds", type=int, default=6)
-    ap.add_argument("--gap", type=float, default=0.4)
-    ap.add_argument("--wait", type=float, default=0.0, help="seconds to wait for the port to open")
+    ap.add_argument("--rounds", type=int, default=70)   # a deep-sleep unit needed 24 s of frames
+    ap.add_argument("--gap", type=float, default=0.5)
+    ap.add_argument("--wait", type=float, default=45.0, help="seconds to keep sending and probing")
     ap.add_argument("--port", type=int, default=443)
     a = ap.parse_args()
 

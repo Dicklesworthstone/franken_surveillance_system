@@ -20,7 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 
-def wake(mac: str, ip: str, wait: float = 12.0) -> bool:
+def wake(mac: str, ip: str, wait: float = 45.0) -> bool:
     r = subprocess.run([sys.executable, os.path.join(HERE, "tapo_wake.py"), mac,
                         "--ip", ip, "--wait", str(wait), "--port", "443"],
                        capture_output=True, text=True)
@@ -32,7 +32,7 @@ def main() -> int:
     ap.add_argument("ip")
     ap.add_argument("--wake-mac")
     ap.add_argument("--tries", type=int, default=6)
-    ap.add_argument("--wait", type=float, default=12.0)
+    ap.add_argument("--wait", type=float, default=45.0)
     a = ap.parse_args()
 
     if a.wake_mac and not wake(a.wake_mac, a.ip, a.wait):
