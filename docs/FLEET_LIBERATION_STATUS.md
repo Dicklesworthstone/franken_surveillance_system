@@ -912,3 +912,26 @@ Still unproven: **execution**. `via=entry` has never appeared in the beacon log,
 entrypoint runner has never run on either unit, and `stop`/`start`/`restartprocess`/`reboot`
 over MQTT are accepted with no effect. Everything is staged on the device side and waits for
 a process start — which is the same physical step as before.
+
+## 2026-11-09 12:25Z — we can plant root-owned files on both units; they are not run
+
+The synthetic `fss` process works as an implant channel. Both units asked `dl-loc` for it
+(426 answered requests), and once the answer stopped pointing at a non-existent version
+directory and named `/proc/launch.sh` instead, **both fetched our payload**:
+
+```
+192.168.4.39 ua='-' "GET /proc/launch.sh HTTP/1.1" 200 -
+192.168.4.51 ua='-' "GET /proc/launch.sh HTTP/1.1" 200 -
+```
+
+That is arbitrary file placement on the device through a channel that does not need the
+cloud, an account, or iCamera's upgrade handler — and the files land under `/tmp/fss/` at
+root.
+
+It stops one step short: nothing executes. `start` and `restartprocess` for `fss` are
+accepted and inert, `res_monitor.sh` (which iCamera would run itself, if it ran anything) is
+replaced and refetched, and no `9999` appears. The payloads open telnetd before they beacon,
+so a port is the signal, not an HTTP call — nothing opens.
+
+Two unknowns remain, both device-side: whether the process supervisor is alive at all, and
+what makes it run an entrypoint. Everything in front of that is staged and self-reporting.
