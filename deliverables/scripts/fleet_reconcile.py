@@ -7,7 +7,7 @@ launchd) and repairs the drift classes measured in the 2026-11-06 outage:
   R1  broker plist OTA_MD5 != md5(live capsule)      → rewrite env from manifest
   R2  pf anchor fss missing Wyze rdr rules           → restore from pf-expected set
   R3  backup receivers not listening (444-449)       → kickstart fss-backup-recv
-  R4  forge :8443/:443 not listening                 → kickstart the forge daemons
+  R4  forge :8443/:443 not SERVING (a wedged forge still accepts) → kill + respawn
 
 Safety contract (each rule is a measured lesson):
   - ADOPT-DON'T-KILL: never kill a plane that is UP (KeepAlive supervisors
@@ -171,17 +171,32 @@ def r3_backups(plan):
     action("R3-backups", f"ports down {missing} → kickstart (bootstrap fallback)", fix)
 
 
+def serving(port, path="/", secs=4):
+    """Listening is not serving: the :443 forge wedged on 2026-11-09 — TCP accepted, TLS
+    handshake fine, then nothing. A port check said green throughout."""
+    r = sh(f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time {secs} https://127.0.0.1:{port}{path}")
+    return r is not None and r.stdout.strip() == "200"
+
+
 def r4_forge(plan):
-    down = [p for p in (443, 8443) if not port_open(p)]
+    down = [p for p in (443, 8443) if not serving(p)]
     if not down:
-        action("R4-forge", "converged (443+8443 listening)", None)
+        action("R4-forge", "converged (443+8443 serving)", None)
         return
     label = {443: "wyze-forge", 8443: "wyze-forge-8443"}
 
     def fix():
         for p in down:
+            # the listener may belong to the broker's bring-up generation, not the launchd
+            # job, so kickstart alone can miss it — kill the pid that holds the port first
+            pids = (sh(f"sudo -n lsof -nP -iTCP:{p} -sTCP:LISTEN -t") or subprocess.run(["true"])).stdout.split()
+            for pid in pids:
+                sh(f"sudo -n kill {pid}")
             sh(f"sudo -n launchctl kickstart -k system/com.jeffreyemanuel.{label[p]}")
-    action("R4-forge", f"ports down {down} → kickstart forge daemons", fix)
+        time.sleep(8)
+        if [p for p in down if not serving(p)]:
+            sh("sudo -n launchctl kickstart -k system/com.jeffreyemanuel.wyze-broker")
+    action("R4-forge", f"forge not serving on {down} → kill listener + respawn", fix)
 
 
 def main():

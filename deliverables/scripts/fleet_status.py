@@ -61,6 +61,13 @@ def sh(cmd, timeout=15):
         return 1, ""
 
 
+def forge_serving(port, secs=4):
+    """A wedged forge still accepts TCP — the :443 one did on 2026-11-09 and every port
+    check called it green while nothing was served. Ask for a real response."""
+    code = sh(f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time {secs} https://127.0.0.1:{port}/")[1]
+    return code.strip() == "200"
+
+
 def port_open(port, host="127.0.0.1"):
     try:
         with socket.create_connection((host, port), timeout=1.5):
@@ -75,14 +82,14 @@ PLANE_DETAILS = {}
 def fleet_planes():
     planes = {}
     planes["broker:8883"] = port_open(8883)
-    planes["forge:443"] = port_open(443)
-    planes["forge:8443"] = port_open(8443)
+    planes["forge:443"] = forge_serving(443)
+    planes["forge:8443"] = forge_serving(8443)
     planes["backup:444-449"] = all(port_open(p) for p in range(444, 450))
     # session-lineage quirk (see registry.py): netstat under this harness's
     # python returns 0 lines; port_open sockets are lineage-independent, so
     # every check that CAN be a socket probe IS one; the two netstat-only
     # checks (udp tftp, LISTEN count) use per-port socket probes instead.
-    planes["forge:8443"] = port_open(8443)
+    planes["forge:8443"] = forge_serving(8443)
     # UDP has no connect probe; a real RRQ round-trip is the honest check.
     try:
         marker = f"fleet_probe_{int(time.time())}.txt"
