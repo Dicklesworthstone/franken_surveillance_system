@@ -152,6 +152,7 @@ fn every_native_origin_requires_its_exact_generation_profile() -> Test {
             rtsp_import::catalog::GENERATION,
         ),
         (rtsp_import::pages::ADAPTER, rtsp_import::pages::GENERATION),
+        (rtsp_import::gaps::ADAPTER, rtsp_import::gaps::GENERATION),
     ] {
         native.adapter_id = adapter.to_owned();
         for generation in [

@@ -8,6 +8,8 @@
 
 pub mod catalog;
 mod catalog_provenance;
+/// Explicit gap-preserving native catalog import profile.
+pub mod gaps;
 pub mod pages;
 mod provenance;
 mod publication;

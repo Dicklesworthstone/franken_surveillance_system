@@ -4,6 +4,41 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Interrupted recording review and normalized feature heads
+
+`fss-import-rtsp --decode-gaps preserve` now selects a distinct approved native
+catalog/page import profile for interrupted recordings. It keeps original decode
+and presentation coordinates, retains and replays every original, and binds each
+gap into both the retained segment and source capsule. Overlaps, changed decoder
+initialization and reordered pages still refuse. The default continuous profile's
+canonical bytes, identities and approvals remain unchanged.
+
+`fss-file select-movie` and `export-movie --output-timing movie` accept the new
+retained profile. They reopen the complete original closure, quote separate native
+decoder runs and keep presentation holes in the requested output envelope. No
+frame is stretched across a gap. Current destination privacy masks apply before
+selected pixels are cached. A query inside missing footage reports no pictures;
+it cannot establish event absence or camera coverage. See
+[native catalog review](docs/RTSP_CATALOG_IMPORT.md#preserve-a-known-gap-explicitly).
+This advances VIT-008, FSS-068 and the local-review portion of VIT-023; remote
+reviewer grants, derivative custody and delivery remain open.
+
+The ONNX importer now supports opset-13 `ReduceSum` and `ReduceL2` through existing
+native operations, enabling weighted pooling and normalized feature heads.
+Static axes, keepdims and Sum's empty-axis no-op follow their precise opset forms.
+All helper nodes and parameters are admitted under the existing quotas; L2 uses
+the existing Model IR v2 Sqrt. No dependency or frozen operator contract changed.
+See [summed and normalized feature heads](docs/onnx_import.md#summed-and-normalized-feature-heads).
+This advances FSS-139 without qualifying a trained model.
+
+**Validation on 2026-11-09:** the exact pinned nightly and locked offline closure
+passed all 21 attention/reduction feature contracts (eight new), executing both
+production executors and canonical graph/Safetensors reload. Sixteen unrelated
+embedded executor unit tests were explicitly filtered in that target. All seven
+native RTP/movie component contracts also passed, including gap-preserving AVC
+and HEVC output. These component results do not execute retained custody or CLI
+processes; full reference/CLI validation is still in progress at this checkpoint.
+
 ## UTC review across capture sessions and source generations
 
 `fss query --target recordings --sessions '<JSON array>'` and MCP `sessions` now

@@ -5,7 +5,7 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use fss_cli::agent_json::{object, string};
+use fss_cli::agent_json::{array, object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_geometry::WorkBudget;
@@ -13,6 +13,9 @@ use fss_object::{MAX_MANIFEST_CHILDREN, SpoolLimits};
 use fss_publication::{LocalPublicationLimits, LocalRootPublisher};
 use fss_reference::ingest::rtsp_import::catalog::{
     RtspCatalogImportAuthority, RtspCatalogImportRequest, import_rtsp_catalog,
+};
+use fss_reference::ingest::rtsp_import::gaps::{
+    RtspGappedCatalogImportAuthority, RtspGappedCatalogImportRequest, import_rtsp_gapped_catalog,
 };
 use fss_reference::ingest::rtsp_import::pages::{
     RtspCatalogPagesImportAuthority, RtspCatalogPagesImportRequest, import_rtsp_catalog_pages,
@@ -22,7 +25,7 @@ use fss_reference::ingest::rtsp_import::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-use super::plan::{CAPS, CATALOG_FORMAT, FORMAT, Options, PAGES_FORMAT, page_selection_json};
+use super::plan::{CAPS, Options, page_selection_json};
 
 struct Owner<'a> {
     options: &'a Options,
@@ -34,6 +37,7 @@ impl RtspImportAuthority for Owner<'_> {
     fn permit(&self, request: &RtspImportRequest, destination: &ReferenceDeployment) -> bool {
         self.options.catalog.is_none()
             && self.options.pages.is_none()
+            && !self.options.preserve_decode_gaps
             && request
                 .digest()
                 .is_ok_and(|digest| self.options.request.digest().ok() == Some(digest))
@@ -53,10 +57,12 @@ impl RtspCatalogImportAuthority for Owner<'_> {
         request: &RtspCatalogImportRequest,
         destination: &ReferenceDeployment,
     ) -> bool {
-        self.options
-            .catalog
-            .as_ref()
-            .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
+        !self.options.preserve_decode_gaps
+            && self
+                .options
+                .catalog
+                .as_ref()
+                .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
             && request.digest().is_ok()
             && destination.root() == self.options.root
             && destination.site_lineage() == self.options.site
@@ -74,11 +80,33 @@ impl RtspCatalogPagesImportAuthority for Owner<'_> {
         request: &RtspCatalogPagesImportRequest,
         destination: &ReferenceDeployment,
     ) -> bool {
-        self.options
-            .pages
-            .as_ref()
-            .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
+        !self.options.preserve_decode_gaps
+            && self
+                .options
+                .pages
+                .as_ref()
+                .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
             && request.digest().is_ok()
+            && destination.root() == self.options.root
+            && destination.site_lineage() == self.options.site
+            && self.authority.cancellation_reason.is_none()
+            && CAPS
+                .iter()
+                .all(|capability| self.authority.has_capability(capability))
+            && boundary(self.options, self.cx, self.start).is_ok()
+    }
+}
+
+impl RtspGappedCatalogImportAuthority for Owner<'_> {
+    fn permit(
+        &self,
+        request: &RtspGappedCatalogImportRequest,
+        destination: &ReferenceDeployment,
+    ) -> bool {
+        self.options.preserve_decode_gaps
+            && request
+                .digest()
+                .is_ok_and(|digest| self.options.request_digest().ok() == Some(digest))
             && destination.root() == self.options.root
             && destination.site_lineage() == self.options.site
             && self.authority.cancellation_reason.is_none()
@@ -195,7 +223,18 @@ fn execute_authorized(
         start,
     };
     let mut work = WorkBudget::new(options.work);
-    let (receipt, catalog_result) = if let Some(request) = &options.pages {
+    let mut decode_gaps = None;
+    let (receipt, catalog_result) = if options.preserve_decode_gaps {
+        let request = options.gapped_request()?;
+        let result =
+            import_rtsp_gapped_catalog(&source, &mut destination, &request, &owner, cx, &mut work)
+                .map_err(|error| error.stable_id())?;
+        decode_gaps = Some(result.decode_gaps);
+        (
+            result.catalog.import,
+            Some((result.catalog.windows, result.catalog.decode_interval)),
+        )
+    } else if let Some(request) = &options.pages {
         let result =
             import_rtsp_catalog_pages(&source, &mut destination, request, &owner, cx, &mut work)
                 .map_err(|error| error.stable_id())?;
@@ -224,16 +263,7 @@ fn execute_authorized(
     };
     // Durable completion remains reportable even if the cooperative deadline expires now.
     let mut fields = vec![
-        (
-            "format",
-            string(if options.pages.is_some() {
-                PAGES_FORMAT
-            } else if options.catalog.is_some() {
-                CATALOG_FORMAT
-            } else {
-                FORMAT
-            }),
-        ),
+        ("format", string(options.format())),
         ("kind", string("imported")),
         ("approval_digest", string(&options.approval()?.to_text())),
         (
@@ -299,6 +329,29 @@ fn execute_authorized(
             ("pages", request.pages.len().to_string()),
             ("catalog_pages", page_selection_json(request)),
             ("destination_contains_complete_catalog_pages", "true".into()),
+        ]);
+    }
+    if let Some(gaps) = decode_gaps {
+        fields.extend([
+            ("composition", string(options.composition())),
+            ("decode_gaps", string("preserve")),
+            ("decode_gap_count", gaps.len().to_string()),
+            (
+                "decode_gap_intervals",
+                array(
+                    &gaps
+                        .iter()
+                        .map(|gap| {
+                            object(&[
+                                ("start", string(&gap.start.to_string())),
+                                ("end", string(&gap.end.to_string())),
+                            ])
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            ("continuity_certified", "false".into()),
+            ("absence_certifiable", "false".into()),
         ]);
     }
     Ok(object(&fields))

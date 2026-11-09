@@ -1,0 +1,102 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-09",
+  "timezone": "UTC",
+  "state": "two_functional_features_implemented_native_components_passed_reference_validation_in_progress",
+  "mission": {
+    "goal": "Implement consequential remaining functionality after reading the comprehensive plan and beads; publish meaningful checkpoints directly to main through GitHub without PRs.",
+    "initial_source_head": "6cf50ed7e91752c2859fa8dad238cad93f536a15",
+    "concurrent_main_preserved": "8f0adab328d7a73c8d0a6d5eeb7aa46cfe2e0315",
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "FSS-068 / fss-x4a.13.8",
+      "VIT-023 / fss-vit023-review-export-w8aai: local screened review only",
+      "FSS-139 / fss-x4a.14.10: bounded native model operator support"
+    ]
+  },
+  "delivered": {
+    "interrupted_recording_review": [
+      "Distinct ADP-RTSP-GAPPED-CATALOG-001 retained-origin profile for complete ordered catalog or page-list selections, exposed by fss-import-rtsp --decode-gaps preserve.",
+      "Separate request, identity, proof and CLI-approval domains; explicit reject and the omitted default preserve old continuous request/preview/approval bytes.",
+      "Replay all native catalogs and original packet windows; preserve tfdt, DTS, PTS, durations and original objects; normalize only derived fragment sequence numbers.",
+      "Derive discontinuity positions independently from catalog descriptors and reconstructed native sample timing; bind exact flags into both retained segments and source capsules.",
+      "Cold movie selection and local masked export retain independent decoder runs and exact presentation holes. Retained native decode ranges crossing a gap still refuse.",
+      "Full original replay applies even to empty, gap-only or early queries. No unselected-original integrity bypass, quota refill, timestamp repair, coverage or scene-absence inference."
+    ],
+    "normalized_model_heads": [
+      "ReduceSum-13 with static optional INT64 input axes, keepdims and exact noop_with_empty_axes semantics, including omitted/empty placeholder controls.",
+      "ReduceL2-13 with static attribute axes, ordinary F32 square and ordered sum followed by the existing v2 Sqrt.",
+      "Existing operators, frozen encoding and dependency closure retained; full lowering expansion is preflighted against node, tensor, byte and work limits.",
+      "Composed weighted token pooling, L2 normalization with an explicit epsilon floor, and dense projection execute through both production executors and serialized graph/weight reload."
+    ]
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31 / rustc 1.100.0-nightly 90850177249efe0321573c569aec5d12b257f8d6",
+    "environment": {
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "dependency_resolution": "actual Cargo.lock closure fetched, then --locked --offline"
+    },
+    "model": {
+      "status": "passed",
+      "command": "cargo test --locked --offline -j 1 -p fss-model-ir --test onnx_attention_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
+      "passed": 21,
+      "failed": 0,
+      "new_tests": 8,
+      "filtered": 16,
+      "filter_scope": "Unrelated embedded executor unit tests; both actual production executors run in every applicable feature contract.",
+      "log_sha256": "0b7ef96ef65b9c6f8f4a801ff3455303246484658a50d22988a5316adac97014"
+    },
+    "movie_components": {
+      "status": "passed",
+      "command": "cargo test --locked --offline -j 1 -p fss-container --test rtsp_movie_timeline_contract",
+      "passed": 7,
+      "failed": 0,
+      "new_tests": 1,
+      "scope": "Actual native AVC/HEVC packet/window muxing, movie selection, independently bootstrapped decoders, selected pixel comparisons, exact timed Matroska bytes and gap-only selection. Does not execute retained custody or CLI processes.",
+      "log_sha256": "a06c00a9a3db92db97d641a91582daab486b26286a8bdc1a1773a2055c04e9c1",
+      "corrected_expectation": "Raw Annex-B extraction may cross a timing gap because elementary bytes carry no timeline. The retained range barrier and separate movie decoder runs are the relevant contracts."
+    },
+    "reference": {
+      "status": "standard_check_blocked_lower_memory_retry_pending",
+      "command": "cargo check --locked --offline -j 1 -p fss-reference --lib",
+      "observed_failure": "rustc compiling unchanged asupersync v0.5.0 metadata was killed by signal 9/SIGKILL before project diagnostics; exit 101 after 121.23 seconds.",
+      "exact_host_limit": "not established",
+      "new_contracts": 5,
+      "test_filter": "movie_selection::gaps",
+      "coverage": "Cold replay, exact gap markers/capture offsets, retained decoder barrier, gap-only selection, damaged unselected original, identity separation, exact authority, cumulative bounds, configuration/order/pin refusal."
+    },
+    "cli": {
+      "status": "authored_source_reviewed_not_executed",
+      "coverage": "Distinct pure previews and approvals; catalog/page AVC/HEVC imports; cold select/export after archive disappearance; exact gapped Matroska bytes, origin reservation limits, privacy masks, unchanged originals and journals."
+    },
+    "source_review": "Independent model, CLI and gap-provenance reviews found no remaining concrete defect; review is not execution.",
+    "broader_checks": {
+      "whitespace": "git diff --check passed",
+      "policy": "Repository-wide policy check did not pass: existing import/adapter/dependency-registry drift, unregistered domains and documentation links; rustup is unavailable to that audit although the exact standalone compiler is installed. No gate was weakened.",
+      "stable_ids": "Existing QSR-OBS-COUNT-001 uses a QSR family unknown to stable_id_audit.py; no change to the stable-ID gate."
+    },
+    "release_qualification": "not claimed"
+  },
+  "boundaries": [
+    "No live camera connection, policy activation, continuous recorder or remote media delivery is added.",
+    "Gap preservation admits complete nonoverlapping native windows under one exact source/clock scope with identical initialization; it does not admit broken windows, mixed codecs or configuration changes.",
+    "Native movie/decode clocks are not UTC or proof of physical coverage. Missing footage cannot certify event absence.",
+    "Local review still requires current destination privacy screening. FLDT reviewer grants, payment-zone attestation, retained derivative custody, expiry/revocation and delivery remain open.",
+    "Model admission remains static positive-shape F32 through rank eight. L2 can overflow or underflow in ordinary F32 arithmetic; normalization floors must be explicit model operations.",
+    "ReduceMean graph lowering remains unchanged; importer implementation provenance naturally changes with the implementation. No trained-model accuracy or full RF-DETR qualification follows from fixture execution.",
+    "Broad beads remain open; no blanket feature completion or release qualification is inferred."
+  ],
+  "published_checkpoints": [
+    {
+      "commit": "7b54a32c40fbbfe2e9800494d2588ab790412182",
+      "change": "Bounded ONNX sum and L2 feature heads with 21 passing native feature contracts."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Explicit gap-preserving native catalog/page import and local timed movie review with complete original provenance."
+    }
+  ]
+}

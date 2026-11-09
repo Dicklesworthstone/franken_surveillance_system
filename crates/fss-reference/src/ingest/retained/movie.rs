@@ -91,7 +91,8 @@ impl RetainedFileImport {
     /// index, catalog and remux object, then match the complete MP4 byte-for-byte before selection.
     /// Their independent read allowance defaults to [`MAX_MOVIE_ORIGIN_READ_BYTES`]; use
     /// [`Self::select_movie_interval_with_origin_limit`] to narrow it. Native catalog admission
-    /// still requires continuous decode intervals and identical initialization bytes. No page
+    /// requires identical initialization bytes. Only the separately authorized gap-preserving
+    /// profile admits decode gaps; selection keeps those gaps and separate decoder runs. No page
     /// boundary rebases the timeline or refills a budget. Movie ticks never imply UTC or a capture origin.
     pub fn select_movie_interval(
         &self,
@@ -272,7 +273,10 @@ fn source_admission(
         && manifest.adapter_generation == ADP_FILE_GENERATION)
         || matches!(
             manifest.adapter_id.as_str(),
-            rtsp_import::ADAPTER | rtsp_import::catalog::ADAPTER | rtsp_import::pages::ADAPTER
+            rtsp_import::ADAPTER
+                | rtsp_import::catalog::ADAPTER
+                | rtsp_import::pages::ADAPTER
+                | rtsp_import::gaps::ADAPTER
         );
     if !supported_origin || !matches!(manifest.format.as_str(), "mp4avc" | "mp4hevc") {
         return Err(demux_refusal(DemuxError::Unsupported, STAGE_SOURCE));
@@ -309,11 +313,24 @@ fn verify_sample_index(
         .enumerate()
     {
         check()?;
+        let expected_gap = if manifest.adapter_id == rtsp_import::gaps::ADAPTER && index > 0 {
+            let previous = &movie.samples()[index - 1];
+            let end = previous
+                .decode_time
+                .checked_add(u64::from(previous.duration))
+                .ok_or_else(|| invalid("movie sample decode interval overflow"))?;
+            if end > sample.decode_time {
+                return Err(invalid("native movie samples overlap in decode time"));
+            }
+            end < sample.decode_time
+        } else {
+            false
+        };
         if sample.index != index
             || segment.segment_index != index
             || sample.source.start as u64 != segment.offset
             || sample.source.len() as u64 != segment.len
-            || segment.gap_before
+            || segment.gap_before != expected_gap
         {
             return Err(invalid(
                 "movie sample index or range differs from retained segment",

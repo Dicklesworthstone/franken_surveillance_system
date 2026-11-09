@@ -11,6 +11,7 @@ use fss_core::{
 };
 use fss_publication::{MAX_SLOT_NAME_BYTES, SlotName};
 use fss_reference::ingest::rtsp_import::catalog::{self, RtspCatalogImportRequest};
+use fss_reference::ingest::rtsp_import::gaps::RtspGappedCatalogImportRequest;
 use fss_reference::ingest::rtsp_import::pages::{
     self, RtspCatalogPage, RtspCatalogPagesImportRequest,
 };
@@ -24,7 +25,8 @@ use fss_reference::rtsp::recording_catalog::CatalogScope;
 pub(super) const FORMAT: &str = "fss.rtsp_recording_import_operator.v1";
 pub(super) const CATALOG_FORMAT: &str = "fss.rtsp_catalog_import_operator.v1";
 pub(super) const PAGES_FORMAT: &str = "fss.rtsp_catalog_pages_import_operator.v1";
-pub(super) const MAX_ARGUMENTS: usize = 64;
+pub(super) const GAPPED_FORMAT: &str = "fss.rtsp_gapped_catalog_import_operator.v1";
+pub(super) const MAX_ARGUMENTS: usize = 66;
 // SlotName excludes '@' and ','. Every admitted list fits one bounded argv value, including
 // 64 maximum-length slots, full SHA-256 roots and separators (12,863 ASCII bytes).
 pub(super) const MAX_PAGE_ARGUMENT_BYTES: usize =
@@ -44,6 +46,7 @@ pub(super) struct Options {
     pub request: RtspImportRequest,
     pub catalog: Option<RtspCatalogImportRequest>,
     pub pages: Option<RtspCatalogPagesImportRequest>,
+    pub preserve_decode_gaps: bool,
     pub work: u64,
     pub timeout_ms: u64,
     pub approve: Option<ContentDigest>,
@@ -113,6 +116,7 @@ impl Options {
             "--time-scale",
             "--max-windows",
             "--max-pages",
+            "--decode-gaps",
             "--codec",
             "--sensor-id",
             "--stream-id",
@@ -324,6 +328,14 @@ impl Options {
         } else {
             None
         };
+        let preserve_decode_gaps = match values.get("--decode-gaps").copied() {
+            None => false,
+            Some("reject") if catalog_selected => false,
+            Some("preserve") if catalog_selected => true,
+            Some(_) => {
+                return Err("decode-gaps requires a catalog selection and reject or preserve");
+            }
+        };
         let archive = path(required("--archive")?)?;
         let root = path(required("--root")?)?;
         if archive.starts_with(&root) || root.starts_with(&archive) {
@@ -352,6 +364,7 @@ impl Options {
             request,
             catalog,
             pages,
+            preserve_decode_gaps,
             work: number("--max-work", 1_000_000_000_000, 1_000_000_000_000_000)?,
             timeout_ms: number("--timeout-ms", 30_000, 600_000)?,
             approve: values
@@ -362,6 +375,12 @@ impl Options {
     }
 
     pub fn request_digest(&self) -> Result<ContentDigest, &'static str> {
+        if self.preserve_decode_gaps {
+            return self
+                .gapped_request()?
+                .digest()
+                .map_err(|_| "invalid gap-preserving catalog selection");
+        }
         if let Some(request) = &self.pages {
             return request
                 .digest()
@@ -376,9 +395,42 @@ impl Options {
         }
     }
 
+    pub fn gapped_request(&self) -> Result<RtspGappedCatalogImportRequest, &'static str> {
+        if !self.preserve_decode_gaps {
+            return Err("gap preservation was not selected");
+        }
+        match (&self.catalog, &self.pages) {
+            (Some(request), None) => Ok(RtspGappedCatalogImportRequest::Catalog(request.clone())),
+            (None, Some(request)) => Ok(RtspGappedCatalogImportRequest::Pages(request.clone())),
+            _ => Err("exactly one catalog selection is required"),
+        }
+    }
+
+    pub fn format(&self) -> &'static str {
+        if self.preserve_decode_gaps {
+            GAPPED_FORMAT
+        } else if self.pages.is_some() {
+            PAGES_FORMAT
+        } else if self.catalog.is_some() {
+            CATALOG_FORMAT
+        } else {
+            FORMAT
+        }
+    }
+
+    pub fn composition(&self) -> &'static str {
+        if self.preserve_decode_gaps {
+            "ordered_nonoverlapping_decode_intervals_gaps_preserved_identical_initialization"
+        } else {
+            "adjacent_decode_intervals_identical_initialization"
+        }
+    }
+
     pub fn approval(&self) -> Result<ContentDigest, &'static str> {
         let mut encoded = CanonicalEncoder::new();
-        encoded.text(if self.pages.is_some() {
+        encoded.text(if self.preserve_decode_gaps {
+            "fss.rtsp_gapped_catalog_import_cli_plan.v1"
+        } else if self.pages.is_some() {
             "fss.rtsp_catalog_pages_import_cli_plan.v1"
         } else if self.catalog.is_some() {
             "fss.rtsp_catalog_import_cli_plan.v1"
@@ -399,16 +451,7 @@ impl Options {
     pub fn preview(&self) -> Result<String, &'static str> {
         let request = &self.request;
         let mut fields = vec![
-            (
-                "format",
-                string(if self.pages.is_some() {
-                    PAGES_FORMAT
-                } else if self.catalog.is_some() {
-                    CATALOG_FORMAT
-                } else {
-                    FORMAT
-                }),
-            ),
+            ("format", string(self.format())),
             ("kind", string("plan")),
             ("approval_digest", string(&self.approval()?.to_text())),
             (
@@ -509,10 +552,7 @@ impl Options {
                 ("time_scale", catalog.scope.time_scale.to_string()),
                 ("maximum_windows", catalog.max_windows.to_string()),
                 ("selection", string("complete_catalog_page")),
-                (
-                    "composition",
-                    string("adjacent_decode_intervals_identical_initialization"),
-                ),
+                ("composition", string(self.composition())),
             ]);
         }
         if let Some(pages) = &self.pages {
@@ -524,10 +564,14 @@ impl Options {
                 ("time_scale", pages.scope.time_scale.to_string()),
                 ("maximum_windows", pages.max_windows.to_string()),
                 ("selection", string("complete_ordered_catalog_pages")),
-                (
-                    "composition",
-                    string("adjacent_decode_intervals_identical_initialization"),
-                ),
+                ("composition", string(self.composition())),
+            ]);
+        }
+        if self.preserve_decode_gaps {
+            fields.extend([
+                ("decode_gaps", string("preserve")),
+                ("continuity_certified", "false".into()),
+                ("absence_certifiable", "false".into()),
             ]);
         }
         Ok(object(&fields))

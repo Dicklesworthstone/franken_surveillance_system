@@ -202,6 +202,7 @@ impl FileImportManifest {
         if self.adapter_id == super::rtsp_import::ADAPTER
             || self.adapter_id == super::rtsp_import::catalog::ADAPTER
             || self.adapter_id == super::rtsp_import::pages::ADAPTER
+            || self.adapter_id == super::rtsp_import::gaps::ADAPTER
             || self.adapter_id == super::rtsp_jpeg_import::ADAPTER
         {
             return Err(invalid(
@@ -303,6 +304,17 @@ impl FileImportManifest {
                                 .bytes()
                                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                     })
+        } else if self.adapter_id == super::rtsp_import::gaps::ADAPTER {
+            matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
+                && self
+                    .adapter_generation
+                    .strip_prefix(super::rtsp_import::gaps::GENERATION)
+                    .is_some_and(|hex| {
+                        hex.len() == 64
+                            && hex
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
         } else {
             false
         };
@@ -346,14 +358,16 @@ impl FileImportManifest {
         {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
         }
-        // MP4 and Matroska samples are separated by container structure, never by lost media;
-        // each family's structure carries its own reason prefix.
+        // Container bytes are structure, not lost media. Only the separately verified native
+        // gap-preserving profile may mark time discontinuities on samples; its original-packet
+        // proof binds every flag to exact catalog boundaries and reconstructed decode times.
         let structure_prefix = match self.format.as_str() {
             "mp4avc" | "mp4hevc" => Some(super::MP4_STRUCTURE_REASON_PREFIX),
             "mkvavc" | "mkvhevc" => Some(super::MKV_STRUCTURE_REASON_PREFIX),
             _ => None,
         };
         let container = structure_prefix.is_some();
+        let native_decode_gaps = self.adapter_id == super::rtsp_import::gaps::ADAPTER;
         let mut previous_end = 0;
         let mut ids = BTreeSet::new();
         for (index, segment) in self.segment_spans.iter().enumerate() {
@@ -366,7 +380,8 @@ impl FileImportManifest {
                 || end > self.input_bytes
                 || segment.offset < previous_end
                 || (segment.offset > previous_end && !segment.gap_before && !container)
-                || (container && segment.gap_before)
+                || (container && segment.gap_before && !native_decode_gaps)
+                || (native_decode_gaps && index == 0 && segment.gap_before)
                 || segment.capsule_id != self.capsule_ids[index]
                 || !ids.insert(segment.capsule_id.clone())
                 || segment.segment_sha256.algorithm() != DigestAlgorithm::Sha256
@@ -879,6 +894,7 @@ impl VerifiedChunkCache {
         }
         if manifest.adapter_id != super::rtsp_import::catalog::ADAPTER
             && manifest.adapter_id != super::rtsp_import::pages::ADAPTER
+            && manifest.adapter_id != super::rtsp_import::gaps::ADAPTER
         {
             self.rtsp_catalog_origin = None;
         }

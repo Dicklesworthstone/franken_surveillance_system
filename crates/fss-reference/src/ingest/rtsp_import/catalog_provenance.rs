@@ -70,6 +70,7 @@ impl CatalogTable {
     pub(super) fn entries(
         &self,
         request: &RtspCatalogImportRequest,
+        preserve_gaps: bool,
     ) -> Result<Vec<CatalogEntry>, FileIngestError> {
         if self
             .root
@@ -108,9 +109,11 @@ impl CatalogTable {
             || entries.len() > request.max_windows
             || frames > request.max_frames
             || original_bytes > request.max_original_bytes
-            || entries
-                .windows(2)
-                .any(|w| w[0].decode_interval().end != w[1].decode_interval().start)
+            || entries.windows(2).any(|w| {
+                let end = w[0].decode_interval().end;
+                let start = w[1].decode_interval().start;
+                end > start || (!preserve_gaps && end != start)
+            })
         {
             return Err(corrupt(
                 "complete catalog exceeds bounds or contains a decode gap",
@@ -176,9 +179,11 @@ pub(super) fn selection_entries(
         originals = originals
             .checked_add(metadata as u64)
             .ok_or_else(|| corrupt("catalog original byte overflow"))?;
-        for entry in table.entries(&request.page_request(index)?)? {
-            if end.is_some_and(|previous| previous != entry.decode_interval().start)
-                || !roots.insert(entry.root())
+        for entry in table.entries(&request.page_request(index)?, request.preserves_gaps())? {
+            if end.is_some_and(|previous| {
+                previous > entry.decode_interval().start
+                    || (!request.preserves_gaps() && previous != entry.decode_interval().start)
+            }) || !roots.insert(entry.root())
                 || !slots.insert(entry.slot().clone())
             {
                 return Err(corrupt(
@@ -214,9 +219,10 @@ pub(super) fn selection_entries(
     prefix.text(match request {
         CatalogRequest::Single(_) => DOMAIN,
         CatalogRequest::Pages { .. } => pages::PROOF_DOMAIN,
+        CatalogRequest::Gapped(_) => super::gaps::PROOF_DOMAIN,
     });
     request.encode(&mut prefix);
-    if matches!(request, CatalogRequest::Pages { .. }) {
+    if request.multiple_page_profile() {
         prefix.u64(tables.len() as u64);
     }
     let maximum = prefix
@@ -335,6 +341,11 @@ impl CatalogProof {
             omissions: scan.omission_spans.clone(),
         };
         value.validate()?;
+        super::gaps::verify_scan(
+            &value.request,
+            &selection_entries(&value.request, &value.tables, true)?,
+            scan,
+        )?;
         Ok(value)
     }
     pub(super) fn encode(&self) -> Result<Vec<u8>, FileIngestError> {
@@ -343,9 +354,10 @@ impl CatalogProof {
         e.text(match &self.request {
             CatalogRequest::Single(_) => DOMAIN,
             CatalogRequest::Pages { .. } => pages::PROOF_DOMAIN,
+            CatalogRequest::Gapped(_) => super::gaps::PROOF_DOMAIN,
         });
         self.request.encode(&mut e);
-        if matches!(&self.request, CatalogRequest::Pages { .. }) {
+        if self.request.multiple_page_profile() {
             e.u64(self.tables.len() as u64);
         }
         for table in &self.tables {
@@ -387,15 +399,24 @@ impl CatalogProof {
             return Err(corrupt("catalog proof byte ceiling"));
         }
         let mut d = CanonicalDecoder::new(bytes);
-        let multiple = match d.text()? {
-            DOMAIN => false,
-            pages::PROOF_DOMAIN => true,
-            _ => return Err(corrupt("unknown catalog proof")),
+        let domain = d.text()?;
+        let gapped = domain == super::gaps::PROOF_DOMAIN;
+        let mut request_domain = d.text()?;
+        if gapped {
+            if request_domain != super::gaps::REQUEST_DOMAIN {
+                return Err(corrupt("unknown gapped catalog request"));
+            }
+            request_domain = d.text()?;
+        }
+        let multiple = match (domain, request_domain) {
+            (DOMAIN, "fss.rtsp_catalog_import_request.v1") => false,
+            (pages::PROOF_DOMAIN, pages::REQUEST_DOMAIN) => true,
+            (super::gaps::PROOF_DOMAIN, "fss.rtsp_catalog_import_request.v1") => false,
+            (super::gaps::PROOF_DOMAIN, pages::REQUEST_DOMAIN) => true,
+            _ => return Err(corrupt("unknown catalog proof or request")),
         };
-        if (multiple && d.text()? != pages::REQUEST_DOMAIN)
-            || d.text()? != "fss.rtsp_catalog_import_request.v1"
-        {
-            return Err(corrupt("unknown catalog proof or request"));
+        if multiple && d.text()? != "fss.rtsp_catalog_import_request.v1" {
+            return Err(corrupt("unknown catalog page request"));
         }
         let codec = match d.text()? {
             "avc" => RtspImportCodec::Avc,
@@ -454,6 +475,11 @@ impl CatalogProof {
             }
         } else {
             CatalogRequest::Single(request)
+        };
+        let request = if gapped {
+            CatalogRequest::Gapped(Box::new(request))
+        } else {
+            request
         };
         request.validate().map_err(|_| corrupt("catalog request"))?;
         let table_count = if multiple {
@@ -707,7 +733,7 @@ impl CatalogProof {
             return Err(corrupt("reconstructed catalog MP4"));
         }
         let scan = self.request.scan(&media, cx)?;
-        if scan.truncated_frames != 0 || scan.segment_spans.iter().any(|s| s.gap_before) {
+        if scan.truncated_frames != 0 {
             return Err(corrupt("catalog source sample continuity"));
         }
         let rebuilt = Self::new(
@@ -756,6 +782,7 @@ fn selected_digest(
     let prefix = match manifest.adapter_id.as_str() {
         catalog::ADAPTER => catalog::GENERATION,
         pages::ADAPTER => pages::GENERATION,
+        super::gaps::ADAPTER => super::gaps::GENERATION,
         _ => return Ok(None),
     };
     let hex = manifest
@@ -921,6 +948,8 @@ pub(crate) fn verify_membership(
     {
         return Err(corrupt("retained catalog origin binding"));
     }
+    let gap_samples =
+        super::gaps::sample_indices(&selection_entries(&proof.request, &proof.tables, true)?)?;
     for (index, (span, frame)) in manifest.segment_spans.iter().zip(&proof.frames).enumerate() {
         checkpoint(cx)?;
         let expected_id = CapsuleId::parse(format!("capsule:{import_hex}:{index:06}"))?;
@@ -931,7 +960,7 @@ pub(crate) fn verify_membership(
                 len: frame.bytes,
                 segment_sha256: frame.digest,
                 capsule_id: expected_id.clone(),
-                gap_before: false,
+                gap_before: gap_samples.contains(&index),
             })
         {
             return Err(corrupt("catalog sample map"));
@@ -946,7 +975,7 @@ pub(crate) fn verify_membership(
             clock_basis: ClockBasis::Estimated,
             source_digest: frame.digest,
             source_bytes: frame.bytes,
-            gap_before: false,
+            gap_before: gap_samples.contains(&index),
             frame_count: 1,
         };
         let object = format!("object:capsule:{}", span.capsule_id.as_str());

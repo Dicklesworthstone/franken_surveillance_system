@@ -163,17 +163,26 @@ pub(super) enum CatalogRequest {
         following: Vec<RtspCatalogPage>,
         max_pages: usize,
     },
+    // One wrapper only: old selection bytes remain unchanged and cannot borrow this authority.
+    Gapped(Box<CatalogRequest>),
 }
 impl Deref for CatalogRequest {
     type Target = RtspCatalogImportRequest;
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Single(request) | Self::Pages { first: request, .. } => request,
+            Self::Gapped(inner) => inner.as_ref().deref(),
         }
     }
 }
 impl CatalogRequest {
     pub(super) fn validate(&self) -> Result<(), RtspImportError> {
+        if let Self::Gapped(inner) = self {
+            if matches!(inner.as_ref(), Self::Gapped(_)) {
+                return Err(RtspImportError::Invalid("nested gapped catalog request"));
+            }
+            return inner.validate();
+        }
         self.deref().validate()?;
         if let Self::Pages {
             following,
@@ -207,12 +216,26 @@ impl CatalogRequest {
         match self {
             Self::Single(_) => 1,
             Self::Pages { following, .. } => following.len() + 1,
+            Self::Gapped(inner) => inner.page_count(),
+        }
+    }
+    pub(super) fn preserves_gaps(&self) -> bool {
+        matches!(self, Self::Gapped(_))
+    }
+    pub(super) fn multiple_page_profile(&self) -> bool {
+        match self {
+            Self::Single(_) => false,
+            Self::Pages { .. } => true,
+            Self::Gapped(inner) => inner.multiple_page_profile(),
         }
     }
     pub(super) fn page_request(
         &self,
         index: usize,
     ) -> Result<RtspCatalogImportRequest, FileIngestError> {
+        if let Self::Gapped(inner) = self {
+            return inner.page_request(index);
+        }
         let mut request = self.deref().clone();
         if index > 0 {
             let Self::Pages { following, .. } = self else {
@@ -243,6 +266,10 @@ impl CatalogRequest {
                     e.digest(page.root);
                 }
             }
+            Self::Gapped(inner) => {
+                e.text(super::gaps::REQUEST_DOMAIN);
+                inner.encode(e);
+            }
         }
     }
     pub(super) fn digest(&self) -> Result<ContentDigest, RtspImportError> {
@@ -257,6 +284,12 @@ impl CatalogRequest {
             Self::Pages { .. } => {
                 let mut e = CanonicalEncoder::new();
                 e.text("fss.rtsp_catalog_pages_import_identity.v1");
+                e.digest(self.digest()?);
+                Ok(ContentDigest::sha256(&e.finish_checked()?))
+            }
+            Self::Gapped(_) => {
+                let mut e = CanonicalEncoder::new();
+                e.text(super::gaps::IDENTITY_DOMAIN);
                 e.digest(self.digest()?);
                 Ok(ContentDigest::sha256(&e.finish_checked()?))
             }
@@ -281,24 +314,43 @@ impl CatalogRequest {
                     .map_err(|_| corrupt("catalog pages identity"))?,
                 cx,
             ),
+            Self::Gapped(_) => {
+                let mut scan = scan_media(
+                    media,
+                    self.codec,
+                    &self.scope.recording,
+                    self.receive_time,
+                    self.capture_origin,
+                    self.max_frames,
+                    self.max_media_bytes,
+                    self.identity()
+                        .map_err(|_| corrupt("gapped catalog identity"))?,
+                    cx,
+                )?;
+                super::gaps::mark_scan(self, media, &mut scan, cx)?;
+                Ok(scan)
+            }
         }
     }
     pub(super) fn adapter(&self) -> &'static str {
         match self {
             Self::Single(_) => catalog::ADAPTER,
             Self::Pages { .. } => ADAPTER,
+            Self::Gapped(_) => super::gaps::ADAPTER,
         }
     }
     pub(super) fn generation(&self) -> &'static str {
         match self {
             Self::Single(_) => catalog::GENERATION,
             Self::Pages { .. } => GENERATION,
+            Self::Gapped(_) => super::gaps::GENERATION,
         }
     }
     pub(super) fn evidence(&self) -> &'static str {
         match self {
             Self::Single(_) => catalog::EVIDENCE,
             Self::Pages { .. } => EVIDENCE,
+            Self::Gapped(_) => super::gaps::EVIDENCE,
         }
     }
     pub(super) fn catalog_work(&self) -> Result<u64, RtspImportError> {
@@ -307,6 +359,7 @@ impl CatalogRequest {
         let per_page = match self {
             Self::Single(_) => super::MAX_ORIGINAL_BYTES,
             Self::Pages { .. } => super::MAX_ORIGINAL_BYTES + MAX_CATALOG_BYTES as u64,
+            Self::Gapped(inner) => return inner.catalog_work(),
         };
         per_page
             .checked_mul(self.page_count() as u64)
@@ -318,6 +371,7 @@ impl CatalogRequest {
         let per_window = match self {
             Self::Single(_) => super::MAX_ORIGINAL_BYTES,
             Self::Pages { .. } => 2 * super::MAX_ORIGINAL_BYTES,
+            Self::Gapped(inner) => return inner.window_work(count),
         };
         per_window
             .checked_mul(count as u64)

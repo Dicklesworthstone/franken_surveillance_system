@@ -14,7 +14,8 @@ mod stream;
 mod video_access_unit;
 
 use fss_container::demux::{
-    AvcMp4, DemuxLimits, MovieSelection, MovieSelectionLimits, VideoCodec, length_prefixed_nals,
+    AvcMp4, DemuxLimits, MovieGapKind, MovieSelection, MovieSelectionLimits, VideoCodec,
+    length_prefixed_nals,
 };
 use fss_container::matroska_gray::TimedGrayMatroskaConfig;
 use fss_container::{AvcMuxer, HevcMuxer, Mp4Limits, NalTarget};
@@ -189,6 +190,27 @@ fn export(
     intervals: &[(u64, u64)],
     duration_ns: u64,
 ) -> Test {
+    let oracle = rtsp_movie_support::native_images(source)?;
+    export_with_oracle(
+        source,
+        source_samples,
+        query,
+        expected_indices,
+        intervals,
+        duration_ns,
+        &oracle,
+    )
+}
+
+fn export_with_oracle(
+    source: &[u8],
+    source_samples: usize,
+    query: Range<u64>,
+    expected_indices: &[usize],
+    intervals: &[(u64, u64)],
+    duration_ns: u64,
+    oracle: &BTreeMap<usize, Image>,
+) -> Test {
     let parsed = AvcMp4::parse(source, None, DemuxLimits::default())?;
     assert_eq!(parsed.samples().len(), source_samples);
     assert_eq!(parsed.samples()[0].decode_time, BASE);
@@ -204,7 +226,6 @@ fn export(
         expected_indices
     );
     let native = selected_decode(&parsed, &selection)?;
-    let oracle = rtsp_movie_support::native_images(source)?;
     for (segment, image) in &native {
         assert_eq!(oracle.get(segment), Some(image));
     }
@@ -356,7 +377,7 @@ fn append_independent_fragment(out: &mut Vec<u8>, fragment: &[u8], ordinal: usiz
     start
 }
 
-fn joined_avc_mp4() -> Test<Vec<u8>> {
+fn joined_avc_mp4(gap: u64) -> Test<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut initialization = Vec::new();
     let mut fragments = Vec::new();
@@ -375,7 +396,7 @@ fn joined_avc_mp4() -> Test<Vec<u8>> {
             SCALE,
             Mp4Limits::default(),
         )?;
-        let decode_start = BASE + ordinal as u64 * 4 * u64::from(AVC_STEP);
+        let decode_start = BASE + ordinal as u64 * (4 * u64::from(AVC_STEP) + gap);
         let fragment = mux.fragment(&rtsp_movie_support::avc_timing_at(
             &source.pictures,
             decode_start,
@@ -426,7 +447,7 @@ fn joined_avc_mp4() -> Test<Vec<u8>> {
     Ok(bytes)
 }
 
-fn joined_hevc_mp4() -> Test<Vec<u8>> {
+fn joined_hevc_mp4(gap: u64) -> Test<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut initialization = Vec::new();
     let mut fragments = Vec::new();
@@ -438,7 +459,7 @@ fn joined_hevc_mp4() -> Test<Vec<u8>> {
         }
         previous_packet = Some(source.packets.last().ok_or("last packet")?.sequence);
         let mut mux = HevcMuxer::new(KEY, source.configuration, SCALE, Mp4Limits::default())?;
-        let decode_start = BASE + ordinal as u64 * 4 * u64::from(HEVC_STEP);
+        let decode_start = BASE + ordinal as u64 * (4 * u64::from(HEVC_STEP) + gap);
         let fragment = mux.fragment(&rtsp_movie_support::hevc_timing_at(
             &source.pictures,
             decode_start,
@@ -487,7 +508,7 @@ fn joined_hevc_mp4() -> Test<Vec<u8>> {
 
 #[test]
 fn adjacent_independent_avc_windows_export_cross_fragment_clip_and_complete_envelope() -> Test {
-    let bytes = joined_avc_mp4()?;
+    let bytes = joined_avc_mp4(0)?;
     let parsed = AvcMp4::parse(&bytes, None, DemuxLimits::default())?;
     let selection =
         parsed.select_movie_interval(101_700..110_700, MovieSelectionLimits::default())?;
@@ -539,7 +560,7 @@ fn adjacent_independent_avc_windows_export_cross_fragment_clip_and_complete_enve
 
 #[test]
 fn adjacent_independent_hevc_windows_export_cross_fragment_clip_and_complete_envelope() -> Test {
-    let bytes = joined_hevc_mp4()?;
+    let bytes = joined_hevc_mp4(0)?;
     let parsed = AvcMp4::parse(&bytes, None, DemuxLimits::default())?;
     let selection =
         parsed.select_movie_interval(148_500..193_500, MovieSelectionLimits::default())?;
@@ -585,4 +606,76 @@ fn adjacent_independent_hevc_windows_export_cross_fragment_clip_and_complete_env
         ],
         2_610_000_000,
     )
+}
+
+#[test]
+fn gapped_native_windows_keep_exact_holes_and_restart_decoders_without_stretching_frames() -> Test {
+    let gap = u64::from(SCALE);
+    for codec in [VideoCodec::Avc, VideoCodec::Hevc] {
+        let (bytes, independent, step) = match codec {
+            VideoCodec::Avc => (joined_avc_mp4(gap)?, avc_mp4()?, u64::from(AVC_STEP)),
+            VideoCodec::Hevc => (joined_hevc_mp4(gap)?, hevc_mp4()?, u64::from(HEVC_STEP)),
+        };
+        let parsed = AvcMp4::parse(&bytes, None, DemuxLimits::default())?;
+        let query = BASE + 3 * step + step / 2..BASE + 6 * step + step / 2 + gap;
+        let selection =
+            parsed.select_movie_interval(query.clone(), MovieSelectionLimits::default())?;
+        assert_eq!(selection.gaps.len(), 1);
+        let hole = &selection.gaps[0];
+        assert_eq!(hole.kind, MovieGapKind::Unrepresented);
+        assert_eq!(hole.interval.denominator, SCALE);
+        assert_eq!(
+            hole.interval.start_numerator,
+            u128::from(BASE + 4 * step) * u128::from(SCALE)
+        );
+        assert_eq!(
+            hole.interval.end_numerator,
+            u128::from(BASE + 4 * step + gap) * u128::from(SCALE)
+        );
+        // Elementary bytes carry no timing. Movie review independently bootstraps each
+        // planned span on one side; no retained decoder state crosses the discontinuity.
+        assert!(
+            selection.decode_spans.iter().all(|span| {
+                span.first_sample >= 4 || span.first_sample + span.sample_count <= 4
+            })
+        );
+        let first = rtsp_movie_support::native_images(&independent)?;
+        let mut oracle = first.clone();
+        oracle.extend(first.into_iter().map(|(index, image)| (index + 4, image)));
+        let half_ns = step * 1_000_000_000 / u64::from(SCALE) / 2;
+        let gap_ns = 1_000_000_000;
+        export_with_oracle(
+            &bytes,
+            8,
+            query,
+            &[3, 4, 6, 5],
+            &[
+                (0, half_ns),
+                (half_ns + gap_ns, 3 * half_ns + gap_ns),
+                (3 * half_ns + gap_ns, 5 * half_ns + gap_ns),
+                (5 * half_ns + gap_ns, 6 * half_ns + gap_ns),
+            ],
+            6 * half_ns + gap_ns,
+            &oracle,
+        )?;
+        let empty_query = BASE + 4 * step + step / 2..BASE + 4 * step + gap - step / 2;
+        let empty =
+            parsed.select_movie_interval(empty_query.clone(), MovieSelectionLimits::default())?;
+        assert!(empty.samples.is_empty());
+        assert!(empty.decode_spans.is_empty());
+        assert_eq!(empty.gaps.len(), 1);
+        assert_eq!(empty.gaps[0].kind, MovieGapKind::Unrepresented);
+        assert_eq!(
+            (
+                empty.gaps[0].interval.start_numerator,
+                empty.gaps[0].interval.end_numerator
+            ),
+            (
+                u128::from(empty_query.start) * u128::from(SCALE),
+                u128::from(empty_query.end) * u128::from(SCALE)
+            )
+        );
+        assert!(MovieTiming::new(&empty, &mut || Ok(())).is_err());
+    }
+    Ok(())
 }

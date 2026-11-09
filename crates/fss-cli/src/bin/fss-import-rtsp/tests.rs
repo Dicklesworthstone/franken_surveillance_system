@@ -291,6 +291,69 @@ fn incomplete_mixed_or_oversized_catalog_selection_refuses_before_io() {
     assert!(Options::parse(&window).is_err());
 }
 
+#[test]
+fn gap_preservation_requires_distinct_exact_approval_for_catalogs_and_pages()
+-> Result<(), &'static str> {
+    for mut input in [catalog_args(), page_args()] {
+        let continuous = Options::parse(&input)?;
+        let original_approval = continuous.approval()?;
+        let original_request = continuous.request_digest()?;
+        set(&mut input, "--decode-gaps", "reject");
+        let explicit_rejection = Options::parse(&input)?;
+        assert_eq!(explicit_rejection.approval()?, original_approval);
+        assert_eq!(explicit_rejection.request_digest()?, original_request);
+        assert_eq!(explicit_rejection.preview()?, continuous.preview()?);
+
+        set(&mut input, "--decode-gaps", "preserve");
+        let mut preserving = Options::parse(&input)?;
+        assert_ne!(preserving.approval()?, original_approval);
+        assert_ne!(preserving.request_digest()?, original_request);
+        let preview = preserving.preview()?;
+        for expected in [
+            "\"format\":\"fss.rtsp_gapped_catalog_import_operator.v1\"",
+            "\"decode_gaps\":\"preserve\"",
+            "\"continuity_certified\":false",
+            "\"absence_certifiable\":false",
+            "\"writes\":\"none\"",
+            "\"network\":\"none\"",
+            "ordered_nonoverlapping_decode_intervals_gaps_preserved_identical_initialization",
+        ] {
+            assert!(preview.contains(expected), "{expected}");
+        }
+        assert!(preview.len() < 64 * 1024);
+        preserving.approve = Some(original_approval);
+        assert_eq!(
+            driver::execute(&preserving).err(),
+            Some("ERR-RTSP-IMPORT-APPROVAL-001")
+        );
+        let mut old_plan = continuous;
+        old_plan.approve = Some(preserving.approval()?);
+        assert_eq!(
+            driver::execute(&old_plan).err(),
+            Some("ERR-RTSP-IMPORT-APPROVAL-001")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn gap_mode_refuses_single_windows_unknown_values_and_duplicates_before_io() {
+    for mode in ["preserve", "reject", "yes", "ignore"] {
+        let mut input = args();
+        set(&mut input, "--decode-gaps", mode);
+        assert!(Options::parse(&input).is_err());
+    }
+    for mode in ["yes", "ignore", "PRESERVE", ""] {
+        let mut input = catalog_args();
+        set(&mut input, "--decode-gaps", mode);
+        assert!(Options::parse(&input).is_err());
+    }
+    let mut input = page_args();
+    set(&mut input, "--decode-gaps", "preserve");
+    input.extend(["--decode-gaps".into(), "reject".into()]);
+    assert!(Options::parse(&input).is_err());
+}
+
 fn page_args() -> Vec<OsString> {
     let mut input = catalog_args();
     for key in ["--catalog-slot", "--catalog-root"] {

@@ -165,14 +165,16 @@ pub trait RtspCatalogImportAuthority {
     -> bool;
 }
 
-/// One completed retained import spanning all verified adjacent windows in the page.
+/// One completed retained import spanning every verified native window in the selection.
 #[derive(Debug)]
 pub struct RtspCatalogImportReceipt {
     /// Existing retained-media identity and exact publication/retry result.
     pub import: RtspImportReceipt,
     /// Number of complete original native recording windows retained.
     pub windows: usize,
-    /// Declared continuous decode interval; not capture continuity or scene observability.
+    /// Native decode interval hull; not capture continuity or scene observability.
+    /// The original catalog/page APIs require adjacency. The explicit gap-preserving wrapper
+    /// reports every internal hole separately in its receipt.
     pub decode_interval: Range<u64>,
 }
 
@@ -219,6 +221,19 @@ pub(super) fn import_selection(
     cx: &ReplayCx,
     work: &mut WorkBudget<'_>,
 ) -> Result<RtspCatalogImportReceipt, RtspImportError> {
+    import_selection_with_gaps(publisher, destination, request, permit, cx, work)
+        .map(|(receipt, _)| receipt)
+}
+
+/// Shared publication owner; the separately authorized gapped profile retains its gap report.
+pub(super) fn import_selection_with_gaps(
+    publisher: &LocalRootPublisher,
+    destination: &mut ReferenceDeployment,
+    request: &CatalogRequest,
+    permit: &dyn Fn(&ReferenceDeployment) -> bool,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+) -> Result<(RtspCatalogImportReceipt, Vec<Range<u64>>), RtspImportError> {
     let prepared = prepare_selection(publisher, destination, request, permit, cx, work)?;
     let authorize = |current: &ReferenceDeployment| {
         checkpoint(cx)?;
@@ -237,11 +252,14 @@ pub(super) fn import_selection(
         prepared.payloads,
         &authorize,
     )?;
-    Ok(RtspCatalogImportReceipt {
-        import: imported,
-        windows: prepared.windows,
-        decode_interval: prepared.decode_interval,
-    })
+    Ok((
+        RtspCatalogImportReceipt {
+            import: imported,
+            windows: prepared.windows,
+            decode_interval: prepared.decode_interval,
+        },
+        prepared.decode_gaps,
+    ))
 }
 
 /// Observation from the complete existing native verifier. It grants no publication authority
@@ -296,6 +314,7 @@ struct PreparedSelection {
     payloads: BTreeMap<ContentDigest, Vec<u8>>,
     windows: usize,
     decode_interval: Range<u64>,
+    decode_gaps: Vec<Range<u64>>,
 }
 
 fn prepare_selection(
@@ -427,21 +446,24 @@ fn prepare_selection(
     }
     drop(access);
     authorize(destination)?;
-    work.charge((media.len() as u64).saturating_mul(2))
+    // The explicit gap profile independently reparses decode timing after the existing scan.
+    // Preserve the original continuous-profile work charge and account for that extra pass.
+    let scan_passes = if request.preserves_gaps() { 3 } else { 2 };
+    work.charge((media.len() as u64).saturating_mul(scan_passes))
         .map_err(source_error)?;
     let scan = request.scan(&media, cx)?;
     if scan.capsules.len() != frames
         || scan.truncated_frames != 0
-        || scan.segment_spans.iter().any(|s| s.gap_before)
         || scan
             .omission_spans
             .iter()
             .any(|s| !s.is_container_structure())
     {
         return Err(RtspImportError::Invalid(
-            "complete continuous catalog sample map",
+            "complete native catalog sample map",
         ));
     }
+    super::gaps::verify_scan(request, &entries, &scan)?;
     let proof = CatalogProof::new(request.clone(), tables, windows, &media, &scan)?;
     Ok(PreparedSelection {
         input: PublicationInput {
@@ -460,6 +482,7 @@ fn prepare_selection(
         payloads,
         windows: entries.len(),
         decode_interval: interval,
+        decode_gaps: super::gaps::intervals(&entries),
     })
 }
 

@@ -14,6 +14,9 @@ use fss_reference::ingest::rtsp_import::pages::{
 use fss_reference::ingest::{FileIngestError, RetainedMovieSelection};
 use std::ops::Range;
 
+#[path = "gaps.rs"]
+mod gaps;
+
 #[allow(dead_code)]
 #[path = "../support/import_integrity.rs"]
 mod integrity;

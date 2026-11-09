@@ -17,8 +17,9 @@ To import a finite ordered collection of windows, catalogs or page selections an
 run independent whole-recording watch in one approved operation, use
 [`fss-watch-rtsp-selected`](RTSP_SELECTED_WATCH.md).
 
-The original single-page retained-origin profile is ADP-RTSP-CATALOG-ARCHIVE-001;
-the explicit page-list profile is ADP-RTSP-CATALOG-PAGES-001. These do not register
+The original continuous single-page retained-origin profile is ADP-RTSP-CATALOG-ARCHIVE-001;
+the continuous explicit page-list profile is ADP-RTSP-CATALOG-PAGES-001. An explicitly
+approved gap-preserving selection uses ADP-RTSP-GAPPED-CATALOG-001. These do not register
 or promote device adapters, qualify a camera, or change the frozen device-admission
 registry. The original single-page and single-window identities, proof bytes and
 CLI approvals remain unchanged.
@@ -42,8 +43,11 @@ Before any destination object is staged, the importer:
 3. Replays every original recording window through its native AVC or HEVC
    verifier and matches the root, sensor/stream/generation, time scale, decode
    interval, packet/sample/NAL counts and byte length to its catalog descriptor.
-4. Requires each preceding decode interval to end exactly where the next starts,
-   and requires byte-identical MP4 initialization across all windows.
+4. By default, requires each preceding decode interval to end exactly where the next
+   starts. The separately approved `--decode-gaps preserve` profile instead accepts
+   ordered nonoverlapping intervals, records every positive gap, and requires an
+   independent random-access restart after each gap. Both profiles require
+   byte-identical MP4 initialization across all windows.
 5. Constructs one MP4 from the first initialization and every media fragment.
    Each independently sealed native fragment starts with movie-fragment sequence
    one, so the derived MP4 renumbers only the four-byte `mfhd` sequence field to
@@ -55,9 +59,10 @@ Before any destination object is staged, the importer:
 
 Original archived fragments are retained byte for byte; sequence renumbering is
 only a deterministic container remux in the derived MP4. There is no transcoding,
-padding, gap repair or per-window tracker restart.
-A valid archive catalog or page selection containing a decode gap or a
-configuration transition is refused as a whole; its original archive remains
+padding or gap repair. The continuous profile has no per-window tracker restart.
+A valid archive catalog or page selection containing a decode gap is refused by
+the default profile. Configuration transitions, overlaps and reordered windows
+are refused by both profiles as a whole; the original archive remains
 independently readable. The common scope includes sensor, stream, generation,
 source anchor, receive-clock identity, decode-clock identity and time scale.
 
@@ -142,6 +147,48 @@ only to an explicit page list.
 
 ## Review clips across windows and pages
 
+### Preserve a known gap explicitly
+
+Add the following option to either complete catalog selection before obtaining
+its approval digest:
+
+```sh
+--decode-gaps preserve
+```
+
+The default is `--decode-gaps reject`; spelling that default explicitly preserves
+the existing request digest, preview and approval bytes. `preserve` selects a
+different request identity, authority trait, origin proof and operator approval.
+An approval for the continuous import cannot approve the gap-preserving import,
+or vice versa. The option applies to catalog/page selections, not single windows.
+
+The completed gap-preserving import reports `decode_gap_count` and
+`decode_gap_intervals` in the supplied decode clock's ticks. These are verified
+from the complete native catalog descriptors and independently from the combined
+MP4 sample timing. Retained capsules and segments mark the first sample after each
+gap, and cold provenance replay must reproduce those exact flags. Original
+`tfdt`, DTS, PTS, durations and source packets remain intact. No samples are
+inserted and no timestamps are rebased to conceal missing footage.
+
+Use the returned import identity with the movie commands below. Each selected
+decoder span remains on one side of a discontinuity and independently starts from
+an admitted AVC IDR or HEVC IRAP. A direct native decode range crossing the gap
+still refuses. Movie selection reports presentation gaps separately: signed
+composition offsets mean the presentation intervals should not be inferred from
+the catalog's decode envelope. `--output-timing movie` preserves those exact
+presentation holes and the whole query duration without inventing gap frames or
+extending the preceding frame's duration. Player display during a hole is not
+certified. A gap-only selection reports zero pictures; movie export cannot create
+a picture-bearing clip from it.
+
+The new origin uses adapter generation `gen:rtsp-gapped-catalog:v1:PROOF_DIGEST`.
+It retains the same original closure, bounds, current privacy masks, tombstone
+checks and replay requirements as the continuous catalog profiles. Neither this
+profile nor its gap report certifies camera coverage, UTC synchronization, or
+the absence of an event.
+
+### Select and export a local review
+
 After the approved import completes, pass its `import_identity` to
 `fss-file select-movie` or `export-movie`. A half-open movie interval can cross
 any included native window or catalog-page boundary. Original sample indices,
@@ -190,11 +237,11 @@ most 1,024 aggregate coded samples including preroll and 1,024 output occurrence
 even though the import may contain more samples. Current destination masks apply
 before selected luma is cached. All prerequisite decoding must finish before any
 output file is created. Movie-timed lossless output preserves clipped durations
-and the full query envelope, including unrepresented leading/trailing intervals.
+and the full query envelope, including unrepresented leading, internal and trailing intervals.
 
-This workflow clips an already-approved continuous catalog import. Decode gaps
-or configuration transitions still refuse catalog import; it does not combine
-disjoint discoveries into a newly authorized import. Output is a local screened
+This workflow clips an already-approved continuous or gap-preserving catalog import.
+It does not combine disjoint discoveries into a newly authorized import, and
+configuration transitions still refuse. Output is a local screened
 derivative, with the [shared movie export contract](RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection).
 Remote grants, payment-zone attestations, retained derivative custody and delivery
 remain separate work.
@@ -273,6 +320,22 @@ zero-I/O path.
     cargo test --locked --offline -p fss-cli --bin fss-import-rtsp
     cargo test --locked --offline -p fss-reference --test rtsp_import_contract
     cargo test --locked --offline -p fss-cli --test rtsp_import_cli
+
+The explicit gap profile adds five reference contracts under
+`rtsp_catalog_import_contract::movie_selection::gaps`, plus distinct-approval CLI
+contracts. They cover cold reopen, source-capsule and segment gap witnesses,
+decoder barriers, gap-only queries, corruption of an unselected original,
+identity separation, cumulative limits, scope and configuration refusal. The
+movie CLI fixture covers both codecs and both catalog forms with a one-second
+hole, byte-exact timed output, offline original archives and current masks.
+
+On 2026-11-09, the exact pinned nightly passed all seven tests in
+`cargo test --locked --offline -p fss-container --test rtsp_movie_timeline_contract`.
+The new component case exercises actual native AVC/HEVC window muxes, independent
+decoder spans, selected pixels and timed Matroska bytes across an internal gap,
+plus a query wholly inside the gap. This component target does not execute the
+retained importer, custody authority or CLI processes; those checks are recorded
+separately in the session handoff.
 
 The contracts exercise a real 320-frame AVC packet catalog and a separate
 320-frame capture-sized selection of ten windows across an eight-window page and
