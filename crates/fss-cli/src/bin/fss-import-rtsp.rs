@@ -14,6 +14,8 @@ mod driver;
 mod jpeg;
 #[path = "fss-import-rtsp/plan.rs"]
 mod plan;
+#[path = "fss-import-rtsp/query.rs"]
+mod query;
 
 use plan::{MAX_ARGUMENTS, Options};
 
@@ -50,6 +52,7 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   Source and destination must be distinct, non-nested stores. No network connection is opened.\n\
   Opening the archive uses its exclusive publisher lock and can complete publication recovery.\n\
   The timeout is cooperative at custody boundaries; one bounded native verifier is not preempted.\n\
+  Acquire only queried windows: fss-import-rtsp query --help.\n\
   Import independent epochs together: fss-import-rtsp batch --help.\n\
   Import retained RTP/JPEG originals: fss-import-rtsp jpeg --help.\n";
 
@@ -83,10 +86,18 @@ fn emit(text: &str) -> io::Result<()> {
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
-        .take(MAX_ARGUMENTS.max(jpeg::MAX_ARGUMENTS) + 2)
+        .take(
+            MAX_ARGUMENTS
+                .max(jpeg::MAX_ARGUMENTS)
+                .max(query::MAX_ARGUMENTS)
+                + 2,
+        )
         .collect();
     if args.first().and_then(|arg| arg.to_str()) == Some("jpeg") {
         return jpeg::main(&args[1..]);
+    }
+    if args.first().and_then(|arg| arg.to_str()) == Some("query") {
+        return query::main(&args[1..]);
     }
     if args.first().and_then(|arg| arg.to_str()) == Some("batch") {
         return batch::main(&args[1..]);

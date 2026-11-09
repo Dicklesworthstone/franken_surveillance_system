@@ -1,0 +1,104 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-09",
+  "timezone": "UTC",
+  "state": "functional_checkpoints_published_native_model_passed_reference_cli_execution_pending",
+  "mission": {
+    "goal": "Implement the most consequential remaining functionality from the comprehensive plan and beads; publish meaningful checkpoints directly to main through GitHub without PRs.",
+    "initial_source_head": "36bc8f1384a3c0fb503109980c419789af171ae9",
+    "concurrent_main_preserved": [
+      "401b61f42fde45d6b0df4de78e45d91441536855"
+    ],
+    "bead_scope": [
+      "FSS-139 / fss-x4a.14.10",
+      "VIT-008 / fss-vit-je36t.8",
+      "FSS-068 / fss-x4a.13.8"
+    ],
+    "authority": "User explicitly authorized implementation and direct main commits; no PR, deployment, live-device action or external communication was authorized or performed."
+  },
+  "delivered": {
+    "split_detector_heads": [
+      "Bounded named boxes/scores assembler with independent layouts and ordered unique source class indices; source outputs, original ONNX, parameters, generation and Model IR version preserved.",
+      "Only existing Transpose/Slice/Concat operations; contiguous runs coalesce, complete-score selection avoids slices, expansion and original allocations remain under cumulative quotas/cancellation.",
+      "Strict package recipe v4 and CLI integration, exact recipe-byte pins, no objectness or DFL mixing, explicit box/logit/probability/class/NMS semantics, existing privacy/license/provisioning contracts preserved.",
+      "Input-dependent two-head ONNX fixture and exact source/provenance preservation through actual native execution and artifact reload."
+    ],
+    "query_selected_acquisition": [
+      "Protected metadata preview over one exact catalog and existing deployment, with explicit native decode interval, gaps, selected full-window pins, prices, current context and aggregate bounds.",
+      "Exact approval before writer recovery; full protected revalidation under opened owners before native imports; complete descriptor equality and added rehash work charged before child publication.",
+      "Each selected native window retained under its unchanged source-closed profile and identity; no partial catalog root, capture-time inference, tracking continuity, physical absence or network authority.",
+      "Existing-only destination wrapper preserves unrelated pending effects. Failures retain completed receipts and an explicit possible-durability flag for the current window.",
+      "Changed context requires a fresh preview/approval; deterministic child identities reconcile already completed imports."
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "d26d9133a49ef2fc6f6b9c90af9b2bc7ee68b786",
+      "change": "Native split-head assembler, provenance fingerprint and nine initial contracts; written while runner unavailable."
+    },
+    {
+      "commit": "28e12b0c1952f586d4f162e9c1d18917ac2a487c",
+      "change": "Strict recipe-v4 package/CLI integration, actual fixture, schema, regression contracts and 31 passing native cases after runner restoration."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Protected query-selected acquisition core and CLI, failure/retry contracts, exact domains and this handoff."
+    }
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31 / rustc 1.100.0-nightly 90850177249efe0321573c569aec5d12b257f8d6",
+    "native_model": {
+      "status": "passed",
+      "command": "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
+      "passed": 31,
+      "failed": 0,
+      "new_split_head_cases": 10,
+      "filtered": 16,
+      "filter_scope": "Unrelated embedded executor unit tests; both real production executors execute in applicable feature contracts.",
+      "wall_seconds": 19.45,
+      "peak_child_rss_kib": 292060,
+      "retained_log": "docs/validation/2026-11-09-split-head-native-tests.log",
+      "log_sha256": "31b3a758fd2dd750abf3f138fb42e8586175261f9e1d73124f45e441449f21f6",
+      "fixture_sha256": "9f38352f183e7f2f4748e254a29d121e3f3531c9137dce2750095b009e7d1f29"
+    },
+    "formatting_and_schema": {
+      "scoped_pinned_rustfmt": "passed",
+      "git_diff_check": "passed",
+      "v4_schema_and_recipe_fixture": "Draft202012Validator schema and instance validation passed"
+    },
+    "full_reference_and_cli": {
+      "status": "authored_source_reviewed_not_typechecked_or_executed",
+      "new_model_package_tests": 5,
+      "new_model_parser_suites": 2,
+      "new_recording_reference_tests": 12,
+      "new_recording_cli_parser_cases": 4,
+      "new_recording_cli_process_cases": 1,
+      "blocking_evidence": "Earlier exact pinned full-reference checks received SIGKILL in unchanged asupersync 0.5.0 metadata before project diagnostics; see SESSION_HANDOFF_2026-11-09_GAPS_REDUCTIONS.json. No further unchanged-runtime retry was made.",
+      "exact_external_kill_mechanism": "not established"
+    },
+    "release_qualification": "not claimed",
+    "native_builds_still_running": false
+  },
+  "limitations_and_unknowns": [
+    "Existing archive publisher open performs verified recovery and can read/rehash all spool objects. CLI caps spool payload at 1 GiB and 65536 objects. Selected-byte quotes are retained-original sizes, not total I/O or hashing estimates.",
+    "The acquisition profile is one exact catalog in native decode ticks. UTC session/discovery selection is not yet connected to acquisition; movie presentation ticks remain a separate interpretation.",
+    "A complete RF-DETR/trained model may exceed admitted graph operators, static shapes, source/output size limits or package bounds. No model-family guessing, quality qualification or model activation was added.",
+    "VIT-023 remote grants, payment-zone attestation, retained derivative custody, expiry/revocation and delivery remain open.",
+    "No broad bead was closed and no deployment, native release qualification or physical-world coverage claim follows from these changes."
+  ],
+  "continuation": {
+    "required_validation": [
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-reference --test onnx_package_import",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-cli --bin fss-infer onnx_cli::tests",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-reference --test rtsp_catalog_import_contract query_acquisition::",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-cli --bin fss-import-rtsp",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-cli --test rtsp_import_cli query::"
+    ],
+    "execution_requirement": "A controlled host able to compile the unchanged pinned reference/runtime closure. Do not weaken runtime/dependency/feature or semantic gates to obtain a pass.",
+    "next_functional_work": [
+      "Read-only pinned native window loading without archive-wide publisher recovery",
+      "Explicit UTC/discovered-selection acquisition while preserving independent time provenance",
+      "Grant-bound retained screened review derivatives with independent expiry/revocation and delivery"
+    ]
+  }
+}

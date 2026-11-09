@@ -7,6 +7,8 @@ mod hevc_recording_support;
 mod movie_selection;
 #[path = "rtsp_catalog_import_contract/pages.rs"]
 mod pages;
+#[path = "rtsp_catalog_import_contract/query_acquisition.rs"]
+mod query_acquisition;
 mod recording_support;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};

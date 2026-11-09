@@ -13,6 +13,8 @@ pub mod gaps;
 pub mod pages;
 mod provenance;
 mod publication;
+/// Protected metadata query followed by exact selected-window native acquisition.
+pub mod query;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -407,6 +409,37 @@ pub fn import_rtsp<'cx>(
     cx: &ReplayCx,
     work: &mut WorkBudget<'cx>,
 ) -> Result<RtspImportReceipt, RtspImportError> {
+    let mut publication_started = false;
+    import_rtsp_checked(
+        publisher,
+        destination,
+        request,
+        authority,
+        cx,
+        work,
+        &mut |_, _| Ok(()),
+        &mut publication_started,
+    )
+}
+
+/// Shared native owner with an additional exact descriptor/admission check after source replay.
+/// The hook cannot replace source verification, change bytes, or alter native proof identities.
+/// Its publication flag records only whether the existing root-last publisher was entered.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn import_rtsp_checked<'cx>(
+    publisher: &LocalRootPublisher,
+    destination: &mut ReferenceDeployment,
+    request: &RtspImportRequest,
+    authority: &dyn RtspImportAuthority,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'cx>,
+    check_window: &mut dyn FnMut(
+        &crate::rtsp::recording::PreparedRecording,
+        &mut WorkBudget<'cx>,
+    ) -> Result<(), RtspImportError>,
+    publication_started: &mut bool,
+) -> Result<RtspImportReceipt, RtspImportError> {
+    *publication_started = false;
     request.digest()?;
     if cx.root_dir() != destination.root()
         || publisher.root_dir().starts_with(destination.root())
@@ -437,6 +470,7 @@ pub fn import_rtsp<'cx>(
                     &access,
                 )
                 .map_err(source_error)?;
+                check_window(&plan, work)?;
                 provenance::Window::from_verified(&plan, request)?
             }
             RtspImportCodec::Hevc => {
@@ -448,6 +482,7 @@ pub fn import_rtsp<'cx>(
                     &access,
                 )
                 .map_err(source_error)?;
+                check_window(plan.publication_plan(), work)?;
                 provenance::Window::from_verified(plan.publication_plan(), request)?
             }
         }
@@ -473,6 +508,7 @@ pub fn import_rtsp<'cx>(
     for (digest, bytes) in window.payloads() {
         payloads.insert(digest, bytes.to_vec());
     }
+    *publication_started = true;
     publication::publish(
         destination,
         request,

@@ -158,7 +158,11 @@ impl CatalogEntry {
             objects: recording.children().map(|(_, digest, _)| digest),
         }
     }
-    fn verify_window(&self, scope: &CatalogScope, recording: &PreparedRecording) -> Result<()> {
+    pub(crate) fn verify_window(
+        &self,
+        scope: &CatalogScope,
+        recording: &PreparedRecording,
+    ) -> Result<()> {
         if recording.summary().scope != scope.recording
             || recording.summary().time_scale != scope.time_scale
         {

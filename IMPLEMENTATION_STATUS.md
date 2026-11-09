@@ -4,6 +4,51 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Explicit split detector heads and query-selected recording acquisition
+
+`fss-infer import-onnx` now accepts strict recipe v4 for detector exports with
+separate named boxes and class-score outputs. Both layouts, the ordered source
+class slots, box interpretation and probability/logit semantics are explicit.
+The native assembler preserves original source bytes, outputs, parameters and IR
+version, using only existing Transpose/Slice/Concat operations. Contiguous class
+runs share slices; a complete score axis needs only the final concatenation when
+both outputs already use rows layout. Objectness and simultaneous DFL assembly
+refuse. Existing v1-v3 recipe behavior and package/report wire formats remain.
+See [the complete v4 package contract](docs/ONNX_PACKAGE_IMPORT.md).
+
+`fss-import-rtsp query` now turns one protected, pinned decode-clock catalog query
+into a read-only metadata preview and an exact approved acquisition. It imports
+only selected whole windows under their existing native source-closed identities,
+checks the complete catalog descriptor before publication, and shares cumulative
+frame, original/media-byte and native-work allowances. It retains every indexed
+gap without copying an incomplete catalog root. Current authority is rechecked,
+and existing-only destination opening preserves unrelated pending effects.
+A failure reports completed imports and any uncertain current publication.
+A changed deployment prefix requires fresh approval; unchanged child identities
+reuse completed imports. Capture time stays unknown, and later review still
+requires current privacy screening. See [query-selected acquisition](docs/RTSP_QUERY_IMPORT.md).
+
+The archive's existing verified publisher recovery still rehashes unselected
+spool objects. The selected-byte quote describes retained originals, not total
+disk I/O; a separately qualified read-only native loader remains a performance
+gap. The new command is one exact catalog in native decode ticks, not UTC session
+or namespace-discovery acquisition. Remote reviewer grants, payment-zone
+attestation, retained derivative custody/expiry/revocation and delivery remain open.
+
+**Validation on 2026-11-09:** after the runner recovered, the pinned nightly passed
+all 31 focused model contracts, including ten new split-head cases and the actual
+pixel-dependent package fixture through both production executors and canonical
+graph/Safetensors reload. Sixteen unrelated embedded executor unit tests were
+filtered; both backends execute within the feature contracts. Scoped rustfmt,
+whitespace and v4 JSON schema/fixture validation pass. The full package/parser/CLI
+and twelve new recording reference contracts plus five recording CLI cases are
+source-reviewed but not typechecked/executed here: the previously observed
+Asupersync 0.5.0 metadata compiler SIGKILL remains the full-reference boundary.
+No runtime, dependency, feature or qualification gate was weakened. See the
+[retained native log](docs/validation/2026-11-09-split-head-native-tests.log) and
+[current typed handoff](docs/SESSION_HANDOFF_2026-11-09_SPLIT_QUERY.json).
+This advances FSS-139, VIT-008 and FSS-068; broad beads remain open.
+
 ## Interrupted recording review and normalized feature heads
 
 `fss-import-rtsp --decode-gaps preserve` now selects a distinct approved native
