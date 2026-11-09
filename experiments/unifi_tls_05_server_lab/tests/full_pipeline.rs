@@ -55,6 +55,9 @@ use std::{
 };
 use unifi_tls_05_server_lab::server::Server;
 
+#[path = "../src/bin/trial_checkpoint/mod.rs"]
+mod trial_checkpoint;
+
 type Test = Result<(), Box<dyn Error>>;
 fn connect_fixture_from(
     source: Ipv4Addr,
@@ -1542,6 +1545,125 @@ fn direct_trial_no_camera_reports_deadline_without_claiming_an_effect() -> Test 
 }
 
 #[test]
+fn direct_trial_rejects_overlapping_anchored_custody_before_creating_files() -> Test {
+    use std::{os::unix::fs::DirBuilderExt, process::Command};
+    let root =
+        std::env::temp_dir().join(format!("fss-direct-overlap-custody-{}", std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let temp = Temp(root);
+    let journal = temp.0.join("journal");
+    let keeper = journal.join("keeper");
+    let anchor = temp.0.join("anchor");
+    let output = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+        .args(["127.0.0.1:12345", "127.0.0.1", "001122aabbcc"])
+        .arg(temp.0.join("unused-cert"))
+        .arg(temp.0.join("unused-key"))
+        .arg(&journal)
+        .arg(temp.0.join("clip.mp4"))
+        .arg("12345678-1234-4abc-9abc-123456789abc")
+        .arg(format!(
+            "--anchored-journal={},{}",
+            keeper.display(),
+            anchor.display()
+        ))
+        .arg("--owner-authorized")
+        .output()?;
+    assert!(!output.status.success());
+    assert!(!journal.exists());
+    assert!(!anchor.exists());
+    assert!(String::from_utf8(output.stderr)?.contains("anchored journal and output paths"));
+    Ok(())
+}
+
+#[test]
+fn direct_trial_recovery_inspection_requires_owner_authorization() -> Test {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+        .args([
+            "--inspect-anchored",
+            "/nonexistent/journal",
+            "/nonexistent/keeper",
+            "/nonexistent/root",
+            "12345678-1234-4abc-9abc-123456789abc",
+            "001122aabbcc",
+        ])
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)?.contains("usage: unifi_direct_trial --inspect-anchored")
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_initializes_anchored_custody_before_listening() -> Test {
+    use std::{
+        os::unix::fs::DirBuilderExt,
+        process::{Command, Stdio},
+        time::Instant,
+    };
+    let root =
+        std::env::temp_dir().join(format!("fss-direct-rooted-custody-{}", std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let temp = Temp(root);
+    let reserve = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let port = reserve.local_addr()?.port();
+    drop(reserve);
+    let journal = temp.0.join("journal");
+    let keeper = temp.0.join("keeper");
+    let anchor = temp.0.join("anchor");
+    let clip = temp.0.join("clip.mp4");
+    let child = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+        .arg(format!("127.0.0.1:{port}"))
+        .args(["127.0.0.1", "001122aabbcc"])
+        .arg(std::env::var("FSS_LAB_CERT_DER")?)
+        .arg(std::env::var("FSS_LAB_KEY_DER")?)
+        .arg(&journal)
+        .arg(&clip)
+        .args(["12345678-1234-4abc-9abc-123456789abc", "1"])
+        .arg(format!(
+            "--anchored-journal={},{}",
+            keeper.display(),
+            anchor.display()
+        ))
+        .arg("--owner-authorized")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut child = TrialChild(Some(child));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if child
+            .0
+            .as_mut()
+            .ok_or("missing child")?
+            .try_wait()?
+            .is_some()
+        {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("anchored trial did not terminate".into());
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let output = child.0.take().ok_or("missing child")?.wait_with_output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(!output.status.success());
+    assert!(
+        stdout.contains(
+            "trial_journal=anchored root_trust=operator_selected independence=unverified"
+        )
+    );
+    assert!(stdout.contains("controller_listener_ready"));
+    assert!(stderr.contains("Deadline"));
+    assert!(journal.is_dir() && keeper.is_dir() && anchor.is_dir());
+    assert!(!clip.exists());
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires disposable TLS certificate and key; takes at least 30 seconds"]
 fn direct_trial_waits_across_a_single_accept_window() -> Test {
     use std::{
@@ -1677,6 +1799,17 @@ fn direct_trial_reports_correlated_request_to_its_written_clock_reply() -> Test 
 }
 
 #[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_reopens_anchored_effects_only_for_reconciliation() -> Test {
+    direct_trial_retirement_case(
+        "anchored-effect",
+        &[],
+        "SessionRetired { reason: TransportDetail(Io(UnexpectedEof)), phase: AwaitHello, rejected_message: None }",
+        true,
+    )
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_setup_does_not_retry_after_a_clock_effect() -> Test {
@@ -1760,6 +1893,13 @@ fn direct_trial_retirement_case(
     }
     if case == "short-deadline" {
         command.arg("10");
+    }
+    if case == "anchored-effect" {
+        command.arg(format!(
+            "--anchored-journal={},{}",
+            temp.0.join("keeper").display(),
+            temp.0.join("root").display()
+        ));
     }
     if let Some(fixture) = &setup_fixture {
         use std::os::unix::fs::OpenOptionsExt;
@@ -1903,6 +2043,61 @@ fn direct_trial_retirement_case(
     }
     if let Some(fixture) = setup_fixture {
         fixture.finish()?;
+    }
+    if case == "anchored-effect" {
+        let (journal, minimum) = trial_checkpoint::reopen(
+            &temp.0.join("journal"),
+            &temp.0.join("keeper"),
+            &temp.0.join("root"),
+            "12345678-1234-4abc-9abc-123456789abc",
+            [0, 0x11, 0x22, 0xaa, 0xbb, 0xcc],
+        )?;
+        let recovered = EffectCoordinator::recover(journal, minimum)?;
+        assert!(recovered.is_reconciliation_only());
+        assert!(recovered.journal().operations().count() > 0);
+        drop(recovered);
+        let inspection = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+            .arg("--inspect-anchored")
+            .arg(temp.0.join("journal"))
+            .arg(temp.0.join("keeper"))
+            .arg(temp.0.join("root"))
+            .args([
+                "12345678-1234-4abc-9abc-123456789abc",
+                "001122aabbcc",
+                "--owner-authorized",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut inspection = TrialChild(Some(inspection));
+        let inspect_deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if inspection
+                .0
+                .as_mut()
+                .ok_or("missing inspection child")?
+                .try_wait()?
+                .is_some()
+            {
+                break;
+            }
+            if Instant::now() > inspect_deadline {
+                return Err("recovery inspection did not terminate".into());
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let output = inspection
+            .0
+            .take()
+            .ok_or("missing inspection child")?
+            .wait_with_output()?;
+        let stdout = String::from_utf8(output.stdout)?;
+        if !output.status.success()
+            || !stdout.contains("trial_recovery=reconciliation_only")
+            || !stdout.contains("root_trust=operator_selected independence=unverified")
+        {
+            return Err("anchored recovery inspection failed".into());
+        }
     }
     Ok(())
 }

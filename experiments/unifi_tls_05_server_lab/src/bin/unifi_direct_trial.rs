@@ -7,6 +7,8 @@ use asupersync::{runtime::RuntimeBuilder, time::timeout_at};
 #[cfg(target_os = "linux")]
 #[path = "../../../unifi_https_snapshot_lab/src/auth.rs"]
 mod auth;
+#[path = "trial_checkpoint/mod.rs"]
+mod trial_checkpoint;
 use fss_container::{
     Mp4Limits,
     demux::{AvcMp4, DemuxLimits},
@@ -63,7 +65,8 @@ use unifi_tls_05_server_lab::server::Server;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
@@ -76,6 +79,7 @@ struct Options {
     cert: PathBuf,
     key: PathBuf,
     journal: PathBuf,
+    anchored_journal: Option<(PathBuf, PathBuf)>,
     output: PathBuf,
     uuid: String,
     wait: Duration,
@@ -130,6 +134,20 @@ fn options() -> ResultBox<Options> {
         };
         args.pop();
         Some(value)
+    } else {
+        None
+    };
+    let anchored_journal = if let Some(value) = args
+        .last()
+        .and_then(|s| s.strip_prefix("--anchored-journal="))
+    {
+        let (keeper, root) = value.split_once(',').ok_or(USAGE)?;
+        if keeper.is_empty() || root.is_empty() || root.contains(',') {
+            return Err(USAGE.into());
+        }
+        let paths = (PathBuf::from(keeper), PathBuf::from(root));
+        args.pop();
+        Some(paths)
     } else {
         None
     };
@@ -238,6 +256,23 @@ fn options() -> ResultBox<Options> {
     if output.exists() || journal.exists() {
         return Err("output and journal paths must not exist".into());
     }
+    if let Some((keeper, root)) = &anchored_journal {
+        let paths = [&journal, keeper, root, &output];
+        if paths
+            .iter()
+            .any(|path| !path.is_absolute() || std::fs::symlink_metadata(path).is_ok())
+            || paths.iter().enumerate().any(|(i, path)| {
+                paths
+                    .iter()
+                    .skip(i + 1)
+                    .any(|other| path.starts_with(other) || other.starts_with(path))
+            })
+        {
+            return Err(
+                "anchored journal and output paths must be distinct, absolute and absent".into(),
+            );
+        }
+    }
     let wait_seconds = if args.len() == 9 {
         args[8].parse::<u64>()?
     } else {
@@ -253,6 +288,7 @@ fn options() -> ResultBox<Options> {
         cert,
         key,
         journal,
+        anchored_journal,
         output,
         uuid: args[7].clone(),
         wait: Duration::from_secs(wait_seconds),
@@ -601,8 +637,17 @@ fn run(args: Options) -> ResultBox<()> {
                 task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
                 let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
                 let config=ServerConfig::builder_with_provider(Arc::new(rustls_pure::provider())).with_protocol_versions(&[&rustls::version::TLS13])?.with_no_client_auth().with_single_cert(vec![CertificateDer::from(cert)],PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))?;
-                let journal=FileEffectJournal::create(&args.journal,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
-                let mut effects=EffectCoordinator::with_journal(Box::new(journal))?;
+                let journal:Box<dyn fss_runtime::effect_journal::EffectJournalStore>=if let Some((keeper,root))=&args.anchored_journal {
+                    for path in [&args.journal,keeper,root] {
+                        task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&BudgetVector::ZERO)?;
+                    }
+                    let journal=trial_checkpoint::create(&args.journal,keeper,root,&args.uuid,args.mac)?;
+                    println!("trial_journal=anchored root_trust=operator_selected independence=unverified");
+                    journal
+                } else {
+                    Box::new(FileEffectJournal::create(&args.journal,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?)
+                };
+                let mut effects=EffectCoordinator::with_journal(journal)?;
                 let mut binding=Vec::from(args.mac); binding.extend_from_slice(&args.camera.octets());
                 let camera=ContentDigest::sha256(&binding); let resource=format!("camera:{}",camera.to_text());
                 let mut leases=LeaseRegistry::new();
@@ -925,8 +970,102 @@ fn run(args: Options) -> ResultBox<()> {
         result.output
     })
 }
+fn inspect_anchored_journal(args: &[String]) -> ResultBox<()> {
+    if args.len() != 7 || args[0] != "--inspect-anchored" || args[6] != "--owner-authorized" {
+        return Err(RECOVERY_USAGE.into());
+    }
+    let paths = [
+        PathBuf::from(&args[1]),
+        PathBuf::from(&args[2]),
+        PathBuf::from(&args[3]),
+    ];
+    if paths.iter().any(|path| !path.is_absolute())
+        || paths.iter().enumerate().any(|(i, path)| {
+            paths
+                .iter()
+                .skip(i + 1)
+                .any(|other| path.starts_with(other) || other.starts_with(path))
+        })
+    {
+        return Err("recovery paths must be distinct and absolute".into());
+    }
+    let uuid = &args[4];
+    Identity::new("FSS", uuid, "1.20.0")?;
+    let raw = args[5].as_bytes();
+    if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
+        return Err("MAC must be twelve hexadecimal digits".into());
+    }
+    let mut mac = [0u8; 6];
+    for (index, byte) in mac.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&args[5][index * 2..index * 2 + 2], 16)?;
+    }
+    let (start, _) = epoch()?;
+    let deadline = TimestampNs(
+        start
+            .0
+            .checked_add(30_000_000_000)
+            .ok_or("deadline overflow")?,
+    );
+    let mut budget = BudgetVector::ZERO;
+    budget.storage_operations = 32;
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:unifi-recovery-inspection".into(),
+            operation_id: OperationId::parse("operation:unifi-recovery-inspection")?,
+            principal: "principal:owner".into(),
+            capabilities: vec![RuntimeGrant::ObjectStage.as_str().into()],
+            deadline: Some(deadline),
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:owner".into(),
+            retention_scope: "retention:trial".into(),
+            anchor_universe: ContentDigest::sha256(b"owner-authorized unifi recovery inspection"),
+            generation: 1,
+        },
+        RegionId::new("region:unifi-recovery-inspection")?,
+        RegionKind::Process,
+        budget,
+        start,
+    )?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let task_start = TimestampNs(start.0 + 1);
+        let result = run_owned_async(&mut authority, &mut tree, TaskSpec {
+            task_id: TaskId::new("task:unifi-recovery-inspection")?,
+            started_at: task_start,
+        }, &cx, async |task, cx| {
+            let clock = match MeteredClock::new(task, cx, TimestampNs(start.0 + 2)) {
+                Ok(clock) => clock,
+                Err(error) => return TaskCompletion { output: Err(Box::new(error) as Box<dyn Error>), outcome: TaskOutcome::Failed("recovery clock unavailable".into()), completed_at: task_start },
+            };
+            let output: ResultBox<()> = (|| {
+                for path in &paths {
+                    task.checkpoint_for(RuntimeGrant::ObjectStage, &path.to_string_lossy(), clock.now()?, &BudgetVector::ZERO)?;
+                }
+                let (journal, minimum) = trial_checkpoint::reopen(&paths[0], &paths[1], &paths[2], uuid, mac)?;
+                let recovered = EffectCoordinator::recover(journal, minimum)?;
+                let total = recovered.journal().operations().count();
+                let unresolved = recovered.journal().operations().filter(|receipt| !receipt.state.is_terminal()).count();
+                println!("trial_recovery=reconciliation_only operations={total} unresolved={unresolved} root_trust=operator_selected independence=unverified");
+                Ok(())
+            })();
+            let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("recovery inspection refused".into()) };
+            TaskCompletion { output, outcome, completed_at: clock.now().unwrap_or(deadline) }
+        }).await?;
+        result.receipt?;
+        result.output
+    })
+}
+
 fn main() {
-    if let Err(error) = options().and_then(run) {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let result = if args.first().is_some_and(|arg| arg == "--inspect-anchored") {
+        inspect_anchored_journal(&args)
+    } else {
+        options().and_then(run)
+    };
+    if let Err(error) = result {
         eprintln!("trial stopped: {error}; effect journal may require reconciliation");
         std::process::exit(1);
     }

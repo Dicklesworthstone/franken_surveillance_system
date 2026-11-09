@@ -6501,6 +6501,8 @@ contract filtered by `time_sync` on `ovh-b` at base
 `a40812bd2652b404dcfc7de3479cd76ffc7d3d9d`: 8 passed, 21 filtered, no
 failures. It exited zero, was acknowledged, and released sources. This covers
 the controller diagnostic fixture, not the process fixture or a real camera.
+The later strict-remote request for the process fixture on `hz4` timed out
+before admission; no process fixture was run by that request.
 
 For a future trial, durable effect records alone are insufficient: a separate
 trust domain must retain an acknowledged journal prefix before an operation's
@@ -6516,7 +6518,7 @@ existing physical-trial effect can be settled.
 The working tree now has a first runtime building block for future trials:
 `PinRetainedEffectJournal` couples each effect-journal append to a supplied
 `EffectPinRetainer` and fences ambiguous retention. Its fixture uses an
-in-memory retainer. This does not implement independent durable custody, wire
+in-memory retainer. This does not establish independent durable custody, wire
 the trial to such custody, recover the old effects, or authorize another live
 handoff.
 
@@ -6535,3 +6537,155 @@ Strict-remote job `30100509981410291` then executed the complete
 filtered, at the same base and overlay fingerprint. It exited zero, was
 acknowledged, and released its source. The checkpoint retainer in those tests
 is in memory; the result does not qualify a durable independent backend.
+
+`JournalPinRetainer` now supplies a journal-backed keeper with an explicit
+bootstrap anchor and bounded, scoped checkpoint history. The caller must
+retain the bootstrap independently before use and retain later keeper anchors
+independently to detect rollback beyond that minimum. The implementation does
+not itself provide those independent commitments or establish independent
+failure domains. A file-backed reopen test and verification against the
+original effect history are present but have not yet been executed; the test
+request to `hz4` timed out before admission. No keeper has been wired into a
+camera trial and neither historical effect has been resolved.
+
+The later strict-remote `cargo check` of `effect_journal_contract`, job
+`30100509981410315`, compiled the then-current keeper and disk-backed test
+target on `hz4` at base `a40812bd2652b404dcfc7de3479cd76ffc7d3d9d` and
+overlay fingerprint
+`cc95018502c2938e332e6469f82df9dac5e7114b178817266303361955c52335`.
+It exited zero, was acknowledged, and released source custody. This check did
+not execute the disk-backed tests, and the test target was subsequently
+extended for the reconciliation reopen path.
+
+An earlier compile of a superseded keeper snapshot on `trj`, job
+`30100509981410307` (wrapper `rchw-a8672ffb-f4be-4c34-b832-3abf4d8aa991`),
+was deliberately cancelled after the newer check completed. The worker reported
+interruption but source-namespace teardown is not confirmed; the same-ID RCH
+recovery reported `RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED`. Do not replay the
+job or manually remove its retained source/lock records. Its retained RCH
+journal was subsequently observed terminal and acknowledged with exit 255,
+source and pair released, and the source tree retired. This settles the
+previously unconfirmed source custody; it is not a compile pass.
+
+The working tree also adds `PinRetainedEffectJournal::for_reconciliation`,
+which requires the reopened effect head to exactly match the retained target.
+The resulting store is intended for `EffectCoordinator::recover`, whose owner
+does not recreate dispatch permits. The corresponding reconciliation and
+mismatch test target compiled in strict-remote job `30100509981410323` on
+`hz4`, base `a40812bd2652b404dcfc7de3479cd76ffc7d3d9d`, overlay fingerprint
+`1f295354b109adcff09cf468915e35311f2aa30e7444de63fc6ab9b0283ba9da`.
+That job exited zero, was acknowledged, and released source custody. Its new
+tests have not yet executed, and this path does not resolve the old trials.
+
+The reconciliation constructor now also asks its pin retainer to verify the
+reopened effect history. The journal-backed retainer checks every stored target,
+not just the newest: a new disk-backed counterexample supplies an earlier wrong
+target followed by a matching head and requires refusal. This additional
+validation and counterexample still need remote execution; they neither supply
+an independent keeper anchor nor settle either existing camera effect.
+Strict-remote job `30100509981410333` compiled the updated runtime contract
+target on `hz4` at base `3f7e4770025aaf3a1e0261d9c5741e94eef90415`, overlay
+fingerprint `1ac8196c8143e918624f20fd23540ddd1dec37288e27374e947d83ae6a824fe5`.
+It exited zero, was acknowledged, and released sources. `cargo check` did not
+execute those tests. The separate object-store compile, job
+`30100509981410334` on `hz2`, used the same base and overlay fingerprint
+`b776537b102bddc061f5dc613034eb8f60779b0c352c23b018b60dd253376a87`.
+Cargo reported exit zero and source retirement, but the initial daemon release
+was unconfirmed. Same-ID recovery subsequently reported exit zero and terminal
+acknowledgement; its retained journal records source and pair release. This
+also was a compile check, not an executed disk-backed test.
+
+Strict-remote job `30100509981410343` subsequently executed the complete
+`fss-object` `effect_journal_contract` target on `hz4` at the same base and
+overlay fingerprint: 15 passed, none failed or filtered. The executed cases
+include file-backed keeper reopening, an unrelated effect history, and an
+earlier mismatched keeper target followed by a matching head. The job exited
+zero, was acknowledged and released sources. This establishes those disk
+fixtures, not an independently managed deployment anchor or a camera result.
+An attempt to execute the newer `fss-runtime` `durable_effect_contract`
+target, job `30100509981410352`, reached `hz4` but the protected disk-budget
+monitor refused admission before Cargo started. It exited 120, was acknowledged,
+and released sources. A retry after an offload-positive admission preview,
+job `30100509981410354`, was likewise refused before Cargo started after disk
+reservations changed; it also exited 120, was acknowledged and released
+sources. The newer runtime test cases remain unexecuted.
+
+The runtime now also has `RootAnchoredJournalPinRetainer`, which composes a
+journal-backed keeper with an explicitly supplied root retainer and requires
+both acknowledgements before acknowledging a checkpoint. A strict-remote
+`cargo check` of the runtime test target, job `30100509981410360`, compiled
+this composition and its in-memory fault cases on `hz2` at base
+`3f7e4770025aaf3a1e0261d9c5741e94eef90415`, overlay fingerprint
+`784425b170a9bed73eb0cab29356e0d9650cda08283209e84affa789e5d693b5`; it
+exited zero, was acknowledged, and released sources. Those new fault cases
+have not yet executed. A separate file-backed trusted-root retainer and
+three-directory reopen fixture are in development and are not yet qualified
+or wired to a camera trial. The supplied root remains an explicit trust
+boundary: its own rollback and physical independence are not established by
+the code.
+
+Strict-remote job `30100509981410379` executed the complete file-backed
+`effect_journal_contract` target with the trusted-root backend: 17 passed,
+none failed or filtered. It included three-directory custody reopening and
+missing, copied, or wrong-scope root refusal. The job used base
+`3f7e4770025aaf3a1e0261d9c5741e94eef90415`, overlay fingerprint
+`bbf66dfecbfe75fdc1aa13144dd94f78a2364360b8d8c4c7d481dbac80a8692b`,
+exited zero, was acknowledged, and released sources. The directories in the
+fixture were on one worker; this is not proof of independent failure domains.
+
+The working tree now includes an explicit file-backed trusted-root pin
+retainer, a composition that advances the root before acknowledging a keeper
+checkpoint, and an opt-in `--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR`
+laboratory trial path. The selected root storage is the operator's trust
+boundary: the code does not prove that it is physically independent or detect
+rollback of that root itself. A trial helper can reopen the three stores for
+reconciliation only, and a synthetic process fixture exercises that intended
+path. These additions are not yet qualified by executed tests, have not been
+deployed, and do not resolve the earlier physical trial's effects.
+
+Strict-remote job `30100509981410364` compiled the initial anchored trial and
+fixture on `hz4`, and job `30100509981410373` compiled the later version with
+the reopen helper and synthetic recovery fixture on `hz2`. Both exited zero,
+were acknowledged, and released sources. Their clean-overlay fingerprints
+were `7617bf0c3db827b881ce57fce8a10257fdee10aae78747b39eceeefe38141477`
+and `8408c239fadf3fb2c3925d9dda0808c22e9e3669ccd77551ab5c50c26631ebe9`,
+respectively, at base `3f7e4770025aaf3a1e0261d9c5741e94eef90415`. These
+checks compiled the targets; neither executed a process fixture or contacted
+the camera.
+
+The trial also has an owner-authorized `--inspect-anchored` mode which
+reopens the three stores under task authority and reports only aggregate
+reconciliation state; it makes no camera connection or settings write. Its
+synthetic effect-and-reopen fixture has not yet executed. Strict-remote job
+`30100509981410402` compiled this later binary and process-test target on
+`hz2` at base `3f7e4770025aaf3a1e0261d9c5741e94eef90415`, overlay
+fingerprint `f132c2a39e9b951a6eebd3f77380ea6e627018fa139b61aa4e541edf386a1a7b`;
+it exited zero, was acknowledged and released sources. A later request to
+execute the new runtime fault cases, job `30100509981410401`, was refused by
+the protected disk budget before Cargo started and exited 120. It did not
+execute tests.
+
+The subsequent source snapshot adds an owner-authorization refusal fixture
+for the inspection command. Strict-remote job `30100509981410409` compiled
+the trial binary and full process-test target on `hz2` at the same base,
+overlay fingerprint `581b5ea7387d8fcfe1e514eaca624571f732e5d3759bbecc2c5f68d8372005d1`;
+it exited zero, was acknowledged, and released sources. No fixture was
+executed by that check.
+
+A strict-remote request for the ignored synthetic anchored-effect reopen
+fixture on `hz4` later exited 103 on queue timeout before admission; it did
+not execute the fixture or contact the camera. The worker admission preview
+at the time showed competing disk reservations. The fixture and the newer
+runtime fault cases remain unexecuted.
+
+At approximately `2026-11-09 01:40 UTC`, a privileged read-only check found
+the existing recorder and upload/fallback timers active with recorder restart
+count 70. Under `/bulk/unifi_camera_recordings`, 17 MP4s had modification
+times within 20 minutes; the newest was approximately 201 seconds old. An
+eligible recent file probed as 60.005 seconds of 1280-by-720 H.264, and a
+separately selected newest eligible file decoded one video frame successfully.
+The existing fallback script specifies a 30-day threshold. These are current
+fallback-recorder observations, not Rust direct-video proof, gap-free coverage,
+or a demonstrated 30-day retention outcome. An initial unprivileged scan
+missed root-protected recording directories and must not be treated as an
+absence finding.
