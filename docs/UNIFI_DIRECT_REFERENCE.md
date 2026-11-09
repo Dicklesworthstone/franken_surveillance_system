@@ -6995,3 +6995,12 @@ The first requested selector test and executable build timed out before worker
 admission, and a separate selector test request was refused for protected disk
 headroom; none of those requests ran a behavioral test. Further remote test
 attempts are in progress.
+Strict-remote job `30100509981410722` subsequently ran the selected MAC
+contract at the same base, overlay fingerprint
+`b4f078abf296a2126e9d5a4c2556c77803eb99f4a25c3865c2a266d2b9ff4b6f`:
+one passed, none failed or ignored, and 2,352 other unit tests were filtered.
+It exited zero, was acknowledged, and released its source and execution pair.
+Job `30100509981410715` completed the Linux trial build, but the wrapper
+returned 102 when it refused to transfer the Linux executable to the Mac. The
+remote execution exited zero and was acknowledged with its resources released.
+The independent process fixture remains pending at this point.
