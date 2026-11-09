@@ -33,6 +33,7 @@ POLL="${POLL:-10}"
 MAX_WAIT="${MAX_WAIT:-0}"         # seconds to wait for the unit; 0 = forever
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WK="${WK:-$HERE/tapo_wake.py}"
+WAKE_IP="${WAKE_IP:-192.168.5.76}"   # registry address: unicast wakes this unit, broadcast alone does not
 HARNESS="${HARNESS:-$HERE/tapo_connectap_sc.py}"
 ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"   # overridable for the self-test
 PING_CMD="${PING_CMD:-ping}"
@@ -80,7 +81,7 @@ while :; do
     # a sleeping unit has no ARP entry, so the gate below would never be reached:
     # send the WoWLAN magic first and look again on the same pass (absent branch)
     log "absent — WoWLAN wake"
-    timeout 70 "$WK" "$MAC" --broadcast "${BCAST:-192.168.5.255}" ${ip:+--ip "$ip"} --rounds 50 --wait 20 >/dev/null 2>&1 || true
+    timeout 70 "$WK" "$MAC" --broadcast "${BCAST:-192.168.5.255}" --ip "${ip:-$WAKE_IP}" --rounds 50 --wait 20 >/dev/null 2>&1 || true
     ip="${HOST_OVERRIDE:-$(lookup)}"
   fi
   if present "$ip"; then
