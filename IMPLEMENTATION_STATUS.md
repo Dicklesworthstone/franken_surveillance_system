@@ -6511,3 +6511,26 @@ owner/seam/CLI and process fixtures received independent source review. Full
 FSS-046/FSS-077 beads remain open. See
 [the lifecycle guide](docs/onvif-vendor-lifecycle.md) and
 [the session handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_ANALYSIS.json).
+
+## 2026-11-09 — source-verified raw vendor zones
+
+Added `RetainedZones` and `fss-onvif-metadata zones`: explicit raw-coordinate
+rectangles pinned to exact source scope, module and both transformation declarations.
+Exact decimal outward rounding, declared margins and complete occurrence×zone and
+frame×zone matrices preserve boundary/unavailable evidence. Observed side changes
+name original tracklet/occurrence handles; they imply no calibration, capture clock,
+dwell, coverage, absence or physical identity. Policy JSON and report schemas are
+closed; semantic policy and exact input bytes have separate committed identities.
+Both source/projection passes share the existing indexed-read/work allowance.
+
+The pinned actual production-source zone/parser/geometry/renderer target passed
+24/24 (20 new plus four embedded wire tests). Seven native owner, two CLI argument
+and three actual-process tests are authored/source-reviewed; both zones and
+tracks/lifecycle process harnesses typechecked against genuine core. Native
+owner/complete CLI execution remains unestablished after the earlier genuine
+Asupersync dependency SIGKILLs. Recursive pinned formatting/module-resolution
+checks found and fixed explicit child paths in tracks/lifecycle/zones wrappers
+and now pass. No native or release qualification is claimed, and broad
+FSS-046/FSS-077 beads remain open. See
+[the zone guide](docs/onvif-vendor-zones.md) and
+[the consolidated handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_ANALYSIS.json).

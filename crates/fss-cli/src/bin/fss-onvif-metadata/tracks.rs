@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Existing-source vendor tracklet query; no capture, publication or event/effect reconciliation.
 
+#[path = "tracks/report.rs"]
 pub(super) mod report;
 
 use std::collections::BTreeMap;

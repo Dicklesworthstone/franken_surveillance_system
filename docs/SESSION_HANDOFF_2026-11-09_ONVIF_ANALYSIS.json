@@ -1,10 +1,10 @@
 {
   "format": "engineering-session-handoff",
   "date": "2026-11-09",
-  "scope": "Source-verified additive ONVIF lifecycle lineage and native JSON query",
+  "scope": "Source-verified ONVIF lifecycle lineage and raw vendor-coordinate zone queries",
   "state": "implemented_pure_contracts_passed_native_integration_unexecuted_not_qualified",
   "mission": {
-    "goal": "Make retained vendor ObjectTree and Behaviour claims usable as exact source-linked relationships while preserving original tracklets and frozen source generations.",
+    "goal": "Turn retained vendor metadata into exact source-linked lifecycle and zone observations without rewriting frozen source/tracklet generations or promoting them to physical or effect authority.",
     "basis": [
       "AGENTS.md",
       "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
@@ -27,11 +27,14 @@
       "8f0adab328d7a73c8d0a6d5eeb7aa46cfe2e0315",
       "46d17dace97fff1132921ce2ac56290800586b24"
     ],
-    "preserved_concurrent_main": "f10a39cc8d4b3ad97113627946726fec7a9429b5",
+    "preserved_concurrent_main": "b3a4fd7cd25f94b68216c4352aaa1ae724879539",
     "parser": "crates/fss-reference/src/onvif/wire/lifecycle.rs",
     "projector": "crates/fss-reference/src/onvif/metadata/lifecycle/contract.rs",
     "owner": "crates/fss-reference/src/onvif/metadata/lifecycle.rs",
-    "command": "crates/fss-cli/src/bin/fss-onvif-metadata/analysis.rs"
+    "command": "crates/fss-cli/src/bin/fss-onvif-metadata/analysis.rs",
+    "zone_projector": "crates/fss-reference/src/onvif/metadata/zones/contract.rs",
+    "zone_owner": "crates/fss-reference/src/onvif/metadata/zones.rs",
+    "zone_command": "crates/fss-cli/src/bin/fss-onvif-metadata/zones.rs"
   },
   "published_checkpoints": [
     {
@@ -43,8 +46,12 @@
       "change": "Source-linked lineage and retained two-pass owner, complete document receipts, actual-source contracts and inner JSON renderer."
     },
     {
-      "commit": "this_commit",
+      "commit": "c8752df9bb094a783262f29bcc1cad7b1ea9e661",
       "change": "Native lifecycle command, bounded complete JSON/schema, process fixtures, restored formatting checks and usage documentation."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Exact raw vendor-zone policy/geometry, retained two-pass owner and zones command, complete matrices/transitions/JSON/schema, genuine process fixtures, and explicit child-module path fixes for all metadata query wrappers."
     }
   ],
   "cases": [
@@ -63,6 +70,16 @@
         "crates/fss-reference/tests/onvif_metadata_lifecycle_custody.rs"
       ],
       "qualification": "Fourteen genuine native tests authored and independently reviewed; native execution remains unestablished."
+    },
+    {
+      "question": "Can complete vendor boxes yield useful zone observations while preserving unknown geometry?",
+      "finding": "Yes: exact decimal outward intervals and explicit pinned raw-coordinate rectangles produce complete inside/outside/boundary/unavailable matrices and original-occurrence endpoint transitions. Wrong or missing basis never counts as outside or physical absence.",
+      "evidence": [
+        "crates/fss-core/tests/onvif_vendor_zones_contract.rs",
+        "crates/fss-reference/tests/onvif_metadata_zones_custody.rs",
+        "crates/fss-cli/tests/onvif_metadata_zones_cli.rs"
+      ],
+      "qualification": "Twenty new pure actual-source contracts plus four embedded tests executed. Seven genuine native owner and three process tests authored/reviewed; process harness typechecked but native behavior not executed."
     }
   ],
   "contracts": {
@@ -80,7 +97,13 @@
       "parsed_empty",
       "parsed"
     ],
-    "semantics": "Idle/Removed are separate from Delete; repeated/competing/sequential declarations and integer reuse remain explicit. No physical identity, departure, coverage, absence, calibrated geometry, event or effect authority."
+    "semantics": "Idle/Removed are separate from Delete; repeated/competing/sequential declarations and integer reuse remain explicit. No physical identity, departure, coverage, absence, calibrated geometry, event or effect authority.",
+    "zone_command": "fss-onvif-metadata zones",
+    "zone_policy_schema": "fss.onvif_vendor_zone_policy.v1",
+    "zone_report_schema": "fss.onvif_vendor_zones_report.v1",
+    "zone_generation": "gen:fss1:onvif-vendor-zones-v1",
+    "zone_semantics": "Exact outward-rounded raw boxes with declared margins; four exact coordinate-domain pins; inside/outside/boundary/unavailable; complete matrices and original-tracklet endpoint transitions; no transform, calibration, interpolation, capture clock or dwell.",
+    "zone_policy_identity": "Semantic ordered policy is separate from exact policy-file SHA/length. Operator annotations/coordinates are always reported; original vendor values remain opt-in."
   },
   "budgets": {
     "sources": 32,
@@ -96,7 +119,16 @@
     "source_validation_passes": 2,
     "work": "Same cumulative source/history/parse/projector/receipt allowance across both passes; each lifecycle projection reserves the complete genuine tracklet replay allowance.",
     "exclusions": "Opening recovery and metadata/open syscalls remain outside indexed-source read counters under existing deployment limits; deterministic work units are not CPU time.",
-    "cancellation": "Explicit ReplayCx/native request ownership, drain on success and refusal, final authority verification after last callback, serialization inside ordinary runtime::run."
+    "cancellation": "Explicit ReplayCx/native request ownership, drain on success and refusal, final authority verification after last callback, serialization inside ordinary runtime::run.",
+    "zone_count": 16,
+    "zone_cells": 65536,
+    "zone_frame_samples": 16384,
+    "zone_transitions": 65536,
+    "zone_canonical_bytes": 8388608,
+    "zone_json_bytes": 33554432,
+    "zone_policy_bytes": 65536,
+    "zone_policy_read_reservation": 65537,
+    "zone_wrapper_commitment_reservation_per_pass": 512
   },
   "validation": {
     "toolchain": "nightly-2026-08-31",
@@ -114,42 +146,48 @@
         "new": 28,
         "embedded_wire": 4,
         "method": "Fresh pinned rustc actual-production-source target, linked to genuine current fss-core; rerun after final formatting"
+      },
+      {
+        "target": "onvif_vendor_zones_contract",
+        "passed": 24,
+        "new": 20,
+        "embedded_wire": 4,
+        "method": "Pinned rustc actual production-source XML/parser/tracklet/decimal geometry/zone policy/projector/renderer target with genuine fss-core."
       }
     ],
     "scoped_clippy": "Parser target exited zero; existing included-wire warnings only.",
     "unexecuted_tests": {
       "retained_lifecycle_custody": 14,
       "lifecycle_cli_parser": 2,
-      "lifecycle_cli_process": 3
+      "lifecycle_cli_process": 3,
+      "retained_zone_custody": 7,
+      "zones_cli_parser": 2,
+      "zones_cli_process": 3
     },
     "native_build_attempts": "Genuine unchanged Asupersync 0.5.0 rustc was SIGKILLed during both runtime build and reference metadata check before FSS diagnostics. No replacement runtime/owner/dependency was introduced.",
     "source_formatting": "Pinned rustfmt --check for all 13 lifecycle-related changed Rust files and git diff --check passed after environment recovery.",
-    "schema": "JSON parsing, 15 closed-object definitions, 40 resolved references, actual row keys/enums/bounds and envelope format literals inspected; no installed standard JSON Schema validator, so formal schema validation not executed.",
-    "independent_review": "Retained owner/seam, CLI/envelope, and actual-process fixtures received separate source reviews with no remaining blocking finding.",
+    "schema": "Lifecycle JSON/closed-object/40-ref/source-shape review passed. Zone policy/report JSON/10-closed-object/33-ref checks and actual parser/renderer template comparison passed. No installed standard JSON Schema validator; formal schema validation unexecuted.",
+    "independent_review": "Separate reviewers checked lifecycle and zone pure contracts, exact decimal math, retained owners/shared budgets, native CLI wrappers, policy identities, schemas and real process fixtures. No remaining blocking source finding; native execution remains unestablished.",
     "infrastructure": "Shared disk pressure and temporary environment loss were recovered; tested source bytes were preserved and read-back verified through GitHub. Execution is available again.",
-    "qualification": "No native integrated execution, physical-device/Profile M conformance or release qualification claimed."
+    "qualification": "No native integrated execution, physical-device/Profile M conformance or release qualification claimed.",
+    "process_harness_typechecks": {
+      "onvif_metadata_tracks_cli": "passed pinned rustc --test --emit=metadata with genuine fss-core; no CLI execution",
+      "onvif_metadata_zones_cli": "passed pinned rustc --test --emit=metadata with genuine fss-core; no CLI execution"
+    },
+    "module_resolution": "Recursive pinned rustfmt checks passed for root metadata CLI and reference metadata. The checks exposed and fixed explicit child-path annotations in analysis, tracks/report, report/projection and zones/report; these are parse/module-resolution checks, not full native typechecking."
   },
   "findings": [
     "Frozen tracks-v1 can coexist with an independent explainable lifecycle graph.",
     "All source dispositions and strict ambiguity must remain visible; a successful empty report does not certify absence.",
-    "Source custody and derived semantics must share cumulative request limits and final authority checks."
+    "Source custody and derived semantics must share cumulative request limits and final authority checks.",
+    "Exact source-linked lifecycle and zone reports can share the same original tracklet digest and occurrence references while keeping their independent policies, unknowns and provenance explicit."
   ],
-  "active_work": [
-    {
-      "state": "pure_contracts_passed_integration_in_progress",
-      "work": "Explicit raw vendor-coordinate zones: actual-source geometry/projector/policy/renderer target passed24/24, with retained owner/CLI integration still in progress at this checkpoint."
-    }
-  ],
+  "active_work": [],
   "open_beads": [
     "fss-x4a.11.4",
     "fss-x4a.15.2"
   ],
-  "plans": [
-    {
-      "work": "Finish source-verified finite vendor zone query with explicit coordinate-domain policy and unknown/boundary states.",
-      "authority": "Existing retained sources only; no calibration, coverage or event promotion."
-    }
-  ],
+  "plans": [],
   "obligations": [
     {
       "state": "open",
@@ -158,11 +196,24 @@
     {
       "state": "open",
       "work": "Complete broader FSS-046/FSS-077 device qualification, continuous capture and calibrated scene/event requirements."
+    },
+    {
+      "state": "open",
+      "work": "Continuous metadata capture needs an explicit provisional-to-durable identity contract before streaming derived output can reuse finite-source handles."
+    },
+    {
+      "state": "open",
+      "work": "Canonical agent/MCP integration needs a shared metadata read view that does not acquire writable publisher recovery; do not wrap the existing exclusive retained owner as a no-write query."
+    },
+    {
+      "state": "open",
+      "work": "Physical scene geometry, calibration, class mapping and event/effect integration require their separately qualified owners; raw vendor zones grant none of them."
     }
   ],
   "unknowns": [
     "Passing pure production-source contracts does not establish native owner or CLI execution.",
-    "Vendor lifecycle references do not establish physical identity or exact movement."
+    "Vendor lifecycle references do not establish physical identity or exact movement.",
+    "Raw-coordinate rectangles do not establish a pixel/image/world basis or physical occupancy. Unknown lifecycle and coordinate material remains explicit under each frozen interpretation."
   ],
   "invalidations": [
     "Any source/root/deletion/authority mismatch, changed replay, exhausted shared limit or cancellation refuses the entire query.",
@@ -174,6 +225,11 @@
       "action": "Run cargo test --locked -p fss-reference --test onvif_metadata_lifecycle_custody and cargo test --locked -p fss-cli --bin fss-onvif-metadata --test onvif_metadata_tracks_cli.",
       "authority": "Local synthetic fixtures only.",
       "expected_proof": "Executed native custody, complete import-to-lifecycle JSON, privacy and refusal behavior."
+    },
+    {
+      "action": "Run cargo test --locked -p fss-reference --test onvif_metadata_zones_custody and cargo test --locked -p fss-cli --bin fss-onvif-metadata --test onvif_metadata_zones_cli on a host that can compile the unchanged dependency closure.",
+      "authority": "Local synthetic fixtures only.",
+      "expected_proof": "Executed native policy admission, retained zone custody, exact input identity, privacy and whole-query refusal."
     }
   ]
 }

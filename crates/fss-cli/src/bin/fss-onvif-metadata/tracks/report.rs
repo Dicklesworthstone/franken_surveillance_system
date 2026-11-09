@@ -2,6 +2,7 @@
 //! Reusable closed JSON presentation of a completed retained vendor-tracklet snapshot.
 //! This module performs no I/O, source reading, authority creation, publication or grouping.
 
+#[path = "report/projection.rs"]
 mod projection;
 
 use std::fmt::{self, Write};

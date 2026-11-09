@@ -40,11 +40,14 @@ mod rtp;
 mod runtime;
 #[path = "fss-onvif-metadata/tracks.rs"]
 mod tracks;
+#[path = "fss-onvif-metadata/zones.rs"]
+mod zones;
 
-const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp|tracks|lifecycle> [options]
+const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp|tracks|lifecycle|zones> [options]
   RTP metadata: capture-rtp/import-rtp/inspect-rtp/verify-rtp --help
   tracks: see fss-onvif-metadata tracks --help for source-verified vendor tracklet JSON.
   lifecycle: see fss-onvif-metadata lifecycle --help for additive source-linked vendor relationships.
+  zones: see fss-onvif-metadata zones --help for source-verified raw vendor-coordinate observations.
   capture: see fss-onvif-metadata capture --help for explicit live subscription options.
   control: see fss-onvif-metadata control --help for cold discovery, operation inspection and explicit cleanup.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
@@ -255,25 +258,33 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, &'static str> {
 }
 
 fn read_input(path: &Path, scope: &runtime::Scope<'_, '_>) -> Result<Vec<u8>, &'static str> {
+    read_bounded_input(path, MAX_SOURCE_BYTES, scope)
+}
+
+fn read_bounded_input(
+    path: &Path,
+    maximum: usize,
+    scope: &runtime::Scope<'_, '_>,
+) -> Result<Vec<u8>, &'static str> {
     scope.input()?;
     let metadata = fs::symlink_metadata(path).map_err(|_| INPUT_ERROR)?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_SOURCE_BYTES as u64 {
+    if !metadata.file_type().is_file() || metadata.len() > maximum as u64 {
         return Err(INPUT_ERROR);
     }
     scope.input()?;
     let file = File::open(path).map_err(|_| INPUT_ERROR)?;
     scope.input()?;
     let opened = file.metadata().map_err(|_| INPUT_ERROR)?;
-    if !opened.is_file() || opened.len() > MAX_SOURCE_BYTES as u64 {
+    if !opened.is_file() || opened.len() > maximum as u64 {
         return Err(INPUT_ERROR);
     }
     let mut bytes = Vec::with_capacity(opened.len() as usize);
     scope.input()?;
-    file.take(MAX_SOURCE_BYTES as u64 + 1)
+    file.take(maximum as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| INPUT_ERROR)?;
     scope.now()?;
-    if bytes.is_empty() || bytes.len() > MAX_SOURCE_BYTES {
+    if bytes.is_empty() || bytes.len() > maximum {
         return Err(LIMIT_ERROR);
     }
     Ok(bytes)
@@ -911,6 +922,8 @@ fn main() -> ExitCode {
         tracks::run_args(&args)
     } else if args.first().is_some_and(|arg| arg == "lifecycle") {
         analysis::run_args(&args)
+    } else if args.first().is_some_and(|arg| arg == "zones") {
+        zones::run_args(&args)
     } else if args.first().is_some_and(|arg| arg == "capture-rtp") {
         capture_rtp::run_args(&args)
     } else if args.first().is_some_and(|arg| arg == "capture") {

@@ -1,0 +1,568 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/onvif_vendor_zones_report.v1.json",
+  "title": "Retained ONVIF vendor zones report",
+  "description": "Closed complete source-verified vendor-zone CLI report. Two complete original-source reconstruction passes and final authority checks precede release. Derived rectangle relations use original vendor claims and explicitly declared raw-coordinate policy; they are not physical identity, calibrated geometry, capture time, dwell, physical absence, coverage, events or effect authority. Native owners enforce digest commitments, cross-array references, caller-narrowed cumulative bounds and the 33554432-byte complete JSON ceiling. This schema verifies representation and disclosure consistency; it does not authenticate source custody.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "plane",
+    "provenance",
+    "source_provenance",
+    "vendor_values_included",
+    "snapshot_digest",
+    "query_digest",
+    "policy_input",
+    "max_json_bytes",
+    "tracklets",
+    "analysis",
+    "claims"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.onvif_vendor_zones_report.v1"
+    },
+    "status": {
+      "const": "verified"
+    },
+    "plane": {
+      "const": "cognition"
+    },
+    "provenance": {
+      "const": "derived"
+    },
+    "source_provenance": {
+      "const": "vendor_claimed"
+    },
+    "vendor_values_included": {
+      "type": "boolean"
+    },
+    "snapshot_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "query_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Commitment under fss.onvif_vendor_zones_cli_report.v1 to snapshot_digest, policy_input.digest and policy_input.bytes. Exact input-byte or length changes affect this commitment even when decoded policy semantics are unchanged."
+    },
+    "policy_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "bytes",
+        "max_bytes",
+        "byte_reservation"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "max_bytes": {
+          "const": 65536
+        },
+        "byte_reservation": {
+          "const": 65537
+        }
+      },
+      "description": "Exact original policy-file bytes are hashed before decoding. The shared input allowance reserves the complete 65536-byte bound plus one oversize probe; file paths and raw policy JSON formatting are not emitted."
+    },
+    "max_json_bytes": {
+      "const": 33554432
+    },
+    "tracklets": {
+      "$ref": "onvif_vendor_tracklets_report.v1.json"
+    },
+    "analysis": {
+      "$ref": "#/$defs/analysis"
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physical_identity",
+        "calibrated_geometry",
+        "capture_clock",
+        "dwell",
+        "physical_absence",
+        "coverage",
+        "event_authority",
+        "effect_permission"
+      ],
+      "properties": {
+        "physical_identity": {
+          "const": false
+        },
+        "calibrated_geometry": {
+          "const": false
+        },
+        "capture_clock": {
+          "const": false
+        },
+        "dwell": {
+          "const": false
+        },
+        "physical_absence": {
+          "const": false
+        },
+        "coverage": {
+          "const": false
+        },
+        "event_authority": {
+          "const": false
+        },
+        "effect_permission": {
+          "const": false
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "vendor_values_included": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "tracklets": {
+            "properties": {
+              "vendor_values_included": {
+                "const": false
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "tracklets": {
+            "properties": {
+              "vendor_values_included": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "zone_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "occurrence_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4095
+    },
+    "frame_ordinal": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1023
+    },
+    "unavailable_reason": {
+      "enum": [
+        "scope_mismatch",
+        "missing_module",
+        "module_mismatch",
+        "frame_transform_mismatch",
+        "object_transform_mismatch",
+        "uninterpreted_source",
+        "unsupported_frame_content",
+        "unsupported_object_content",
+        "missing_appearance",
+        "unsupported_appearance",
+        "missing_shape",
+        "unsupported_shape",
+        "coordinate_out_of_range"
+      ]
+    },
+    "frame_unavailable_reason": {
+      "enum": [
+        "scope_mismatch",
+        "missing_module",
+        "module_mismatch",
+        "frame_transform_mismatch",
+        "uninterpreted_source",
+        "unsupported_frame_content"
+      ]
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zone_index",
+        "occurrence_index",
+        "frame_ordinal",
+        "relation",
+        "reason"
+      ],
+      "properties": {
+        "zone_index": {
+          "$ref": "#/$defs/zone_index"
+        },
+        "occurrence_index": {
+          "$ref": "#/$defs/occurrence_index"
+        },
+        "frame_ordinal": {
+          "$ref": "#/$defs/frame_ordinal"
+        },
+        "relation": {
+          "enum": [
+            "inside",
+            "outside",
+            "boundary",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unavailable_reason"
+            }
+          ]
+        }
+      },
+      "description": "One cell for every original occurrence and every declared zone, in occurrence-major and zone-minor order. Unavailable is not outside. All indices address the accompanying unchanged tracklets and complete policy; native projection enforces exact cross-array consistency.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "relation": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "$ref": "#/$defs/unavailable_reason"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "frame_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zone_index",
+        "frame_ordinal",
+        "basis_unavailable",
+        "inside",
+        "outside",
+        "boundary",
+        "unavailable"
+      ],
+      "properties": {
+        "zone_index": {
+          "$ref": "#/$defs/zone_index"
+        },
+        "frame_ordinal": {
+          "$ref": "#/$defs/frame_ordinal"
+        },
+        "basis_unavailable": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/frame_unavailable_reason"
+            }
+          ]
+        },
+        "inside": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "outside": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "boundary": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "unavailable": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        }
+      },
+      "description": "One row for every original frame and every declared zone, including zero-object and incompatible-domain frames. The four counts sum to the original frame occurrence count, at most 128; native projection enforces this cross-array equality. Zero claims never certify physical absence or coverage.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "basis_unavailable": {
+                "type": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "inside": {
+                "const": 0
+              },
+              "outside": {
+                "const": 0
+              },
+              "boundary": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zone_index",
+        "tracklet_identity",
+        "kind",
+        "previous_occurrence",
+        "occurrence"
+      ],
+      "properties": {
+        "zone_index": {
+          "$ref": "#/$defs/zone_index"
+        },
+        "tracklet_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "kind": {
+          "enum": [
+            "observed_inside",
+            "entered_between_observations",
+            "left_between_observations",
+            "observation_interrupted"
+          ]
+        },
+        "previous_occurrence": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/occurrence_index"
+            }
+          ]
+        },
+        "occurrence": {
+          "$ref": "#/$defs/occurrence_index"
+        }
+      },
+      "description": "Exact endpoint references within one unchanged vendor tracklet and one zone. A first inside claim has no previous endpoint. Boundary samples establish no definite side; unavailable samples interrupt it. Native projection verifies ordering and membership. No trajectory, crossing time, dwell, physical identity or event authority is inferred.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "observed_inside"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "previous_occurrence": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "previous_occurrence": {
+                "$ref": "#/$defs/occurrence_index"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "generation",
+        "coordinates",
+        "coordinate_scale",
+        "plane",
+        "provenance",
+        "source_provenance",
+        "calibrated",
+        "absence_certified",
+        "physical_identity",
+        "effect_authority",
+        "policy_digest",
+        "tracklet_report_digest",
+        "input_digest",
+        "report_digest",
+        "policy",
+        "limits",
+        "cells",
+        "frame_samples",
+        "transitions",
+        "work_units",
+        "encoded_bytes"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.onvif_vendor_zone_projection.v1"
+        },
+        "generation": {
+          "const": "gen:fss1:onvif-vendor-zones-v1"
+        },
+        "coordinates": {
+          "const": "raw_vendor_object_millionths"
+        },
+        "coordinate_scale": {
+          "const": 1000000
+        },
+        "plane": {
+          "const": "cognition"
+        },
+        "provenance": {
+          "const": "derived"
+        },
+        "source_provenance": {
+          "const": "vendor_claimed"
+        },
+        "calibrated": {
+          "const": false
+        },
+        "absence_certified": {
+          "const": false
+        },
+        "physical_identity": {
+          "const": false
+        },
+        "effect_authority": {
+          "const": false
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "tracklet_report_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "input_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "report_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy": {
+          "$ref": "onvif_vendor_zone_policy.v1.json"
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_cells",
+            "max_frame_samples",
+            "max_transitions",
+            "max_work_units",
+            "max_output_bytes"
+          ],
+          "properties": {
+            "max_cells": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "max_frame_samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            },
+            "max_transitions": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "max_work_units": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "max_output_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8388608
+            }
+          }
+        },
+        "cells": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 65536,
+          "items": {
+            "$ref": "#/$defs/cell"
+          }
+        },
+        "frame_samples": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 16384,
+          "items": {
+            "$ref": "#/$defs/frame_sample"
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 65536,
+          "items": {
+            "$ref": "#/$defs/transition"
+          }
+        },
+        "work_units": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "encoded_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        }
+      },
+      "description": "Complete pure projection of at most 4096 original occurrences and 1024 frames against 1..16 declared zones. Canonical report bytes are distinct from enclosing JSON bytes. Native execution checks every supplied limit, complete matrix cardinality, exact policy/report commitments and pairing with the original tracklet report. Operator policy is always disclosed; raw vendor values belong only to the separately controlled original tracklet report."
+    }
+  }
+}

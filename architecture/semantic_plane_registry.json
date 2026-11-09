@@ -75,7 +75,8 @@
     "crates/fss-reference/src/ingest/rtsp_import/query/batch.rs",
     "crates/fss-reference/src/ingest/rtsp_import/query/utc/execute.rs",
     "crates/fss-cli/src/bin/fss-import-rtsp/query_driver.rs",
-    "crates/fss-cli/src/bin/fss-import-rtsp/query_utc_driver.rs"
+    "crates/fss-cli/src/bin/fss-import-rtsp/query_utc_driver.rs",
+    "crates/fss-reference/src/onvif/metadata/zones.rs"
   ],
   "module_declarations": {
     "crates/fss-object/src/contracts.rs": "support",
@@ -943,7 +944,16 @@
     "crates/fss-reference/tests/onvif_metadata_lifecycle_custody.rs": "support",
     "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/lifecycle_json.rs": "cognition",
     "crates/fss-cli/src/bin/fss-onvif-metadata/analysis.rs": "support",
-    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/report.rs": "cognition"
+    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/report.rs": "cognition",
+    "crates/fss-reference/src/onvif/metadata/zones.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/metadata/zones/contract.rs": "cognition",
+    "crates/fss-reference/src/onvif/metadata/zones/contract/geometry.rs": "cognition",
+    "crates/fss-core/tests/onvif_vendor_zones_contract.rs": "support",
+    "crates/fss-reference/tests/onvif_metadata_zones_custody.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/zones.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/zones/report.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/zones_json.rs": "cognition",
+    "crates/fss-cli/tests/onvif_metadata_zones_cli.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
