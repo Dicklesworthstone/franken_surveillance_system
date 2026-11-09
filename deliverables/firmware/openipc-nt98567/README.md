@@ -87,3 +87,20 @@ Both `wireguard-tools-1.0.20210914.tar.xz` and `wireguard-linux-compat` download
 mismatch from the mirror (a different body than the pinned one), and the kernel-module build
 costs time the first image does not need. The defconfig here drops them; re-enable once the
 mirror serves the pinned bytes again.
+
+### The sane path: build on an x86_64 Linux host
+
+The prebuilt toolchain is x86_64, so building *on* x86_64 avoids every emulation problem
+(jobserver, Rosetta slowness) and the macOS host-tool portability entirely. A reachable worker
+with 10 cores was used for the real build:
+
+```sh
+rsync -a --exclude out-linux --exclude output --exclude .git ./ root@<worker>:/root/oi/
+# seed the packages the mirror serves wrong (libevent-openipc, squashfs) into out/dl,
+# patch their .hash entries to the bytes we actually have, then:
+ssh root@<worker> 'cd /root/oi && FORCE_UNSAFE_CONFIGURE=1 make BOARD=nt98567_lite TARGET=/root/oi/out'
+```
+
+`FORCE_UNSAFE_CONFIGURE=1` is needed because the build runs as root (`host-tar` refuses
+otherwise). Expect the mirror to hand back wrong bodies for individual packages — the
+`ERROR: … has wrong sha256` line names which, and seeding from upstream is the fix.
