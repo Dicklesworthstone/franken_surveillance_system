@@ -799,3 +799,18 @@ while *printing* findings (f-string backslashes on system python 3.9) — findin
 visible. The old GUI LaunchAgent for the RTSP watcher was retired
 (`com.jeffreyemanuel.wyze-rtsp-watch.plist.retired`) in favour of the root daemon; the
 label had been loaded in both domains.
+
+## 2026-11-09 02:15Z — DESCRIBE storms wedge the Wyze rtspd
+
+Hammering 554 with authenticate-then-close probes (a dozen in a few minutes) leaves the
+Wyze server *accepting* TCP and answering nothing: `nc -z` says open, `ffprobe` says
+"Invalid data", and it stays that way for minutes. A port check therefore lies.
+
+- the watcher's health probe is now a real `OPTIONS` round-trip (`rtsp_alive`), not
+  `poll_554`; only that retires a unit.
+- keep probe counts low and space them; `e2e_capture_rtsp.sh` now waits `GAP` (default
+  2 s) after its verify probe and retries once.
+- `e2e_capture_rtsp.sh` also learned two contracts the hard way: `--root` and `--pins`
+  are created with `create(2)` semantics so neither may pre-exist (ROOT-001 before the
+  socket even opens), and the approval binds the args, so a retry re-plans against its
+  own fresh root instead of replaying a stale digest.

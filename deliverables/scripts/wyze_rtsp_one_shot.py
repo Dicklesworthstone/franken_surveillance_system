@@ -168,6 +168,24 @@ def send_frame(cam: "W.Cam", frame: bytes) -> None:
     cam.send(cam.encrypt(23, frame))
 
 
+def rtsp_alive(ip: str, timeout: float = 2.0) -> bool:
+    """A port that accepts is not a serving rtspd: after a DESCRIBE storm the Wyze
+    server keeps accepting connections and answers nothing (measured 2026-11-09),
+    so liveness has to be a real OPTIONS round-trip."""
+    try:
+        s = socket.create_connection((ip, 554), timeout=timeout)
+    except OSError:
+        return False
+    try:
+        s.settimeout(timeout)
+        s.sendall(b"OPTIONS rtsp://" + ip.encode() + b"/ RTSP/1.0\r\nCSeq: 1\r\n\r\n")
+        return b"RTSP/1.0 " in s.recv(512)
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def poll_554(ip: str, secs: int) -> bool:
     end = time.time() + secs
     while time.time() < end:
@@ -425,7 +443,7 @@ def loop_watch(a: argparse.Namespace, cmd: bytes) -> int:
         now = time.time()
         due = [ip for ip in fleet if retry_at.get(ip, 0) <= now]
         polled = [ip for ip in due if ping(ip)]
-        up = [ip for ip in polled if poll_554(ip, 1)]
+        up = [ip for ip in polled if rtsp_alive(ip)]
         print(f"poll {time.strftime('%H:%M:%S')} fleet={len(fleet)} "
               f"up={polled if polled else 'none'} rtsp={up if up else 'none'}", flush=True)
         for ip in up:

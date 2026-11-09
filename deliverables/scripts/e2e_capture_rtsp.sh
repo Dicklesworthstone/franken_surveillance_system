@@ -22,7 +22,7 @@ ROOT=${ROOT:-/tmp/fss-e2e-rtsp}
 SITE=${SITE:-e2e}
 BIN=${BIN:-$(cd "$(dirname "$0")/../../target/debug" && pwd)}
 HERE=$(cd "$(dirname "$0")" && pwd)
-SENSOR=tapo-c460
+SENSOR=${SENSOR:-tapo-c460}   # override for the Wyze lane: SENSOR=wyze-51
 STREAM=stream1
 GEN=1
 INGRESS=1
@@ -48,10 +48,22 @@ umask 077
 printf '%s\n%s\n' "$USER" "$PASS" > "$CRED"
 chmod 600 "$CRED"
 
-ARCHIVE=$ROOT/archive
-PINS=$ROOT/pins
-[ -e "$ARCHIVE" ] || mkdir -p "$ARCHIVE"
-[ -e "$PINS" ] || mkdir -p "$PINS"
+# a failed run leaves its (already created) root behind and --root must be NEW, so each
+# attempt takes a fresh suffix instead of dying on ROOT-001
+ARCHIVE=""
+PINS=""
+# --root and --pins are both created by the tool with create(2)-semantics, so neither may
+# pre-exist; every attempt takes its own suffix
+new_archive() {
+  local suffix
+  suffix=$(date +%s)-$RANDOM
+  ARCHIVE=$ROOT/archive-$suffix
+  PINS=$ROOT/pins-$suffix
+}
+# --root must NOT pre-exist: storage::open uses DirBuilder::create (not create_dir_all),
+# so a pre-made directory fails ERR-CAPTURE-RTSP-ROOT-001 before the socket is even
+# opened (measured 2026-11-09). The capture tool creates both with mode 0700; the import
+# step below needs $ROOT/deployment, which it makes itself.
 
 capture_args() {
   printf '%s\n' \
@@ -67,16 +79,32 @@ capture_args() {
     --credential-file "$CRED" --auth-realm "$REALM"
 }
 
+# Wyze rtspd tolerates ONE session per source IP and refuses a second DESCRIBE from the
+# same address for a moment; the verify probe above is still warm here (measured
+# 2026-11-09: AUTH-REFUSED within ms of a successful verify, 200 when spaced).
+sleep "${GAP:-2}"
+
 echo "== plan"
-# shellcheck disable=SC2046
-"$BIN/fss-capture-rtsp" $(capture_args) > "$ROOT/capture-plan.json"
-APPROVAL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["approval"])' \
-  "$ROOT/capture-plan.json")
-echo "  approval: $APPROVAL"
+# plan+approve+capture per attempt: --root must be NEW and the approval binds the args,
+# so a retry has to re-plan against its own fresh root rather than replay a stale digest
+attempt() {
+  new_archive
+  echo "  root: $ARCHIVE"
+  # shellcheck disable=SC2046
+  "$BIN/fss-capture-rtsp" $(capture_args) > "$ROOT/capture-plan.json"
+  APPROVAL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["approval"])' \
+    "$ROOT/capture-plan.json")
+  echo "  approval: $APPROVAL"
+  # shellcheck disable=SC2046
+  "$BIN/fss-capture-rtsp" $(capture_args) --approve "$APPROVAL" > "$ROOT/capture.jsonl"
+}
 
 echo "== capture $PICS pictures"
-# shellcheck disable=SC2046
-"$BIN/fss-capture-rtsp" $(capture_args) --approve "$APPROVAL" > "$ROOT/capture.jsonl"
+if ! attempt; then
+  echo "  capture failed — one retry after a gap"
+  sleep 3
+  attempt || true
+fi
 
 echo "== import every durable window"
 RECEIVE_NS=$(python3 -c 'import time;print(time.time_ns())')
