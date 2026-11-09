@@ -11,6 +11,8 @@ mod record;
 /// Original-packet custody and deterministic replay of bounded ONVIF metadata RTP dumps.
 pub mod rtp;
 mod source;
+/// Source-verified, bounded grouping of consecutive vendor object claims.
+pub mod tracks;
 
 pub use source::PullPointAcquisition;
 

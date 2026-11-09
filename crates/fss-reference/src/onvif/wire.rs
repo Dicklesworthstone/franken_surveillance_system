@@ -28,7 +28,7 @@ pub use analytics::{
     AnalyticsClassFormat, AnalyticsFrame, AnalyticsNumber, AnalyticsObject, AnalyticsShape,
     AnalyticsTransformation, AnalyticsVector, MAX_ANALYTICS_CLASSES, MAX_ANALYTICS_COORDINATE,
     MAX_ANALYTICS_FRAMES, MAX_ANALYTICS_NUMBER_BYTES, MAX_ANALYTICS_OBJECTS,
-    MAX_ANALYTICS_OBJECTS_PER_FRAME,
+    MAX_ANALYTICS_OBJECTS_PER_FRAME, analytics_object_key,
 };
 pub use events::{
     EventDocument, EventDocumentFormat, EventItems, EventNotification, EventTopic, MAX_EVENT_ITEMS,
@@ -47,7 +47,10 @@ pub use pullpoint::{
     pull_messages_request, renew_pull_point_request, require_relates_to,
     unsubscribe_pull_point_request, validate_relates_to,
 };
-pub use time::{UtcDateTime, get_system_date_and_time_request, parse_system_date_and_time};
+pub use time::{
+    UtcDateTime, get_system_date_and_time_request, parse_metadata_utc_nanoseconds,
+    parse_system_date_and_time,
+};
 
 /// Maximum complete SOAP response size, including unrelated extensions.
 pub const MAX_SOAP_BYTES: usize = 256 * 1024;

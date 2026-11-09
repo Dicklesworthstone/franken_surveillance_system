@@ -318,7 +318,7 @@ fn frame(
             let object = object(doc, child)?;
             // XML integers have equivalent spellings (+001 and 1). Preserve the
             // original spelling but refuse ambiguous duplicates in this frame.
-            if !identities.insert(integer_key(&object.object_id)?) {
+            if !identities.insert(analytics_object_key(&object.object_id)?) {
                 return Err(WireError::DuplicateField);
             }
             result.objects.push(object);
@@ -335,7 +335,7 @@ fn object(doc: &xml::Document, id: usize) -> Result<AnalyticsObject, WireError> 
     let object_id = doc
         .attribute(id, "", "ObjectId")
         .ok_or(WireError::MissingField)?;
-    integer_key(object_id)?;
+    analytics_object_key(object_id)?;
     Ok(AnalyticsObject {
         object_id: object_id.to_owned(),
         appearance: unique(doc, id, SCHEMA_NS, "Appearance")?
@@ -557,7 +557,12 @@ fn label(value: &str, empty: bool) -> Result<String, WireError> {
     Ok(value.to_owned())
 }
 
-fn integer_key(value: &str) -> Result<String, WireError> {
+/// Canonical comparison key for a bounded vendor `ObjectId` XML integer.
+///
+/// Equivalent signed/zero-padded spellings compare equal, while their original
+/// lexical values remain in each source occurrence. This is a vendor-local key,
+/// never an authenticated physical, biometric or cross-camera identity.
+pub fn analytics_object_key(value: &str) -> Result<String, WireError> {
     if value.is_empty() || value.len() > MAX_OBJECT_ID_BYTES {
         return Err(WireError::InvalidField);
     }

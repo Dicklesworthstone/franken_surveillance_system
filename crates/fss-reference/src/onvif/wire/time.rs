@@ -103,6 +103,64 @@ impl fmt::Debug for UtcDateTime {
     }
 }
 
+/// Parse the bounded metadata UTC spelling into exact Unix nanoseconds.
+///
+/// This is only a conversion of an untrusted vendor assertion. It grants no
+/// clock synchronization, capture-time, continuity or physical-duration claim.
+/// The accepted grammar is unchanged from event/analytics metadata: Gregorian
+/// years 1970–9999, UTC `Z`, and zero through nine fractional digits. Leap seconds
+/// and timezone offsets remain unsupported. The wider integer preserves 9999
+/// without overflowing an i64 nanosecond timestamp.
+pub fn parse_metadata_utc_nanoseconds(value: &str) -> Result<i128, WireError> {
+    let bytes = value.as_bytes();
+    if !(20..=30).contains(&bytes.len())
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+        || bytes.last() != Some(&b'Z')
+    {
+        return Err(WireError::InvalidField);
+    }
+    if bytes.len() > 20
+        && (bytes[19] != b'.'
+            || bytes.len() == 21
+            || !bytes[20..bytes.len() - 1].iter().all(u8::is_ascii_digit))
+    {
+        return Err(WireError::InvalidField);
+    }
+    let number = |start: usize, end: usize| -> Result<u16, WireError> {
+        let digits = &bytes[start..end];
+        if !digits.iter().all(u8::is_ascii_digit) {
+            return Err(WireError::InvalidField);
+        }
+        digits.iter().try_fold(0_u16, |n, digit| {
+            n.checked_mul(10)
+                .and_then(|n| n.checked_add(u16::from(*digit - b'0')))
+                .ok_or(WireError::InvalidField)
+        })
+    };
+    let date = UtcDateTime::new(
+        number(0, 4)?,
+        number(5, 7)? as u8,
+        number(8, 10)? as u8,
+        number(11, 13)? as u8,
+        number(14, 16)? as u8,
+        number(17, 19)? as u8,
+    )?;
+    let fraction = if bytes.len() == 20 {
+        0
+    } else {
+        let digits = &bytes[20..bytes.len() - 1];
+        digits
+            .iter()
+            .fold(0_i128, |n, digit| n * 10 + i128::from(*digit - b'0'))
+            * 10_i128.pow((9 - digits.len()) as u32)
+    };
+    Ok(i128::from(date.seconds) * 1_000_000_000 + fraction)
+}
+
 const fn days_before_year(year: u16) -> u64 {
     let preceding = year as u64 - 1;
     preceding * 365 + preceding / 4 - preceding / 100 + preceding / 400

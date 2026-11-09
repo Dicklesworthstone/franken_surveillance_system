@@ -1,0 +1,69 @@
+{
+  "schema": "fss.onvif_tracklets_reference_contract.v1",
+  "name": "source_linked_vendor_object_tracklets",
+  "status": "implemented",
+  "generation": "gen:fss1:onvif-vendor-tracklets-v1",
+  "qualification": "Pure production-source contract target executed; retained XML/RTP owner execution and live-camera qualification are not established by this target.",
+  "semanticPlane": "cognition",
+  "provenance": "derived",
+  "sourceProvenance": "vendor_claimed",
+  "inputDomain": "fss.onvif_vendor_tracklet_inputs.v1",
+  "policyDomain": "fss.onvif_vendor_tracklet_policy.v1",
+  "outputDomain": "fss.onvif_vendor_tracklet_report.v1",
+  "inputOrder": "Preserve the owner's complete explicit frame order; do not sort timestamps or coalesce repeated observations.",
+  "associationRule": "A nonempty named module may repeat one normalized XML integer ObjectId in successive frames of that module only while the source generation, time, coordinates and lifecycle remain compatible. Independent modules may interleave.",
+  "sourceRule": "Every occurrence retains exact original source identity, retained root, XML digest, source-bound frame digest, document/frame position and object position. The pure projector checks pin consistency but cannot authenticate supplied pins; the retained owner must verify originals.",
+  "valueRule": "Preserve ObjectId, module and timestamp spellings. Shape, class, transformation and opaque original values remain available through exact source handles. Integer aliases such as +001 and 1 may associate but retain distinct lexical occurrences.",
+  "timeRule": "Parse the existing UTC-Z grammar exactly into i128 nanoseconds over years 1970 through 9999, with at most nine fractional digits. Require a strictly positive vendor-time gap no larger than the explicit policy; vendor time never becomes a physical capture clock.",
+  "boundaries": [
+    "explicit independent-source or transport boundary",
+    "changed source identity or skipped/nonforward document or frame positions",
+    "changed exact source-generation scope",
+    "missing occurrence in the next frame of the same module",
+    "missing or empty module name",
+    "opaque source or frame lifecycle semantics, including uninterpreted ObjectTree",
+    "nonincreasing vendor time or policy gap",
+    "changed frame or object-relative coordinate transformation",
+    "finite end of supplied input, without a physical departure claim"
+  ],
+  "refusals": [
+    "invalid limits, non-SHA256 pins or malformed accepted-value input",
+    "duplicate original frame locator, conflicting source root or document digest",
+    "aliased ObjectIds within one frame",
+    "aggregate capacity or work exhaustion",
+    "owner cancellation at any admission checkpoint, including the final check"
+  ],
+  "limits": {
+    "aggregateFrames": 1024,
+    "aggregateObjectOccurrences": 4096,
+    "aggregateTracklets": 4096,
+    "canonicalOutputBytes": 4194304,
+    "workUnits": 16777216,
+    "defaultWorkUnits": 2000000,
+    "maxVendorGapNanoseconds": 60000000000,
+    "defaultVendorGapNanoseconds": 5000000000
+  },
+  "workAccounting": "One nonrenewing logical counter charges initial and per-frame/per-object validation and association, label length plus one, canonical transform bytes, canonical input bytes, terminal module/object accounting, output size-preflight rows and occurrence indices, and twice the final canonical report bytes before serialization and hashing. Small length-bounded policy/module/object/run identity encodings are covered by item charges. Units are deterministic admission accounting, not CPU instructions or measured time.",
+  "outputRule": "All original frames, including empty frames, and all object occurrences appear exactly once in a successful report. Exact size preflight precedes final canonical allocation. Failure returns no successful prefix. Report identity binds the generation, exact policy and source inputs, all output rows and consumed work.",
+  "disclosureRule": "Debug output excludes raw module, ObjectId and vendor timestamp strings. Their explicit presentation is the caller's disclosure decision.",
+  "noClaims": [
+    "physical person, persistent identity, biometric analysis or identity across cameras",
+    "native detector result, calibrated confidence, movement estimate or physical duration",
+    "camera authenticity from storage custody or caller-supplied digests",
+    "coverage, absence, independent corroboration, event truth or unknown lifecycle interpretation",
+    "permission to disclose evidence or perform an effect",
+    "live-camera, native owner or production qualification from pure contract tests"
+  ],
+  "proofTarget": {
+    "command": "cargo test --locked --offline -j1 -p fss-core --test onvif_tracklet_contract",
+    "result": "26 passed: 22 focused tracklet/helper tests and four existing embedded wire tests",
+    "productionSources": "The test includes the actual fss-reference ONVIF wire parser and tracklet contract with real fss-core contracts; it supplies no parser, runtime or authority facade."
+  },
+  "sources": [
+    "crates/fss-reference/src/onvif/metadata/tracks/contract.rs",
+    "crates/fss-reference/src/onvif/metadata/tracks.rs",
+    "crates/fss-reference/src/onvif/wire/analytics.rs",
+    "crates/fss-reference/src/onvif/wire/time.rs",
+    "crates/fss-core/tests/onvif_tracklet_contract.rs"
+  ]
+}

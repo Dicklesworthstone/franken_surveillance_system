@@ -10,8 +10,8 @@
 use std::fmt;
 
 use super::{
-    AnalyticsFrame, SCHEMA_NS, SOAP_NS, UtcDateTime, WireError, analytics, required, response,
-    scalar, unique, xml,
+    AnalyticsFrame, SCHEMA_NS, SOAP_NS, WireError, analytics, required, response, scalar, unique,
+    xml,
 };
 
 const EVENTS_NS: &str = "http://www.onvif.org/ver10/events/wsdl";
@@ -457,42 +457,5 @@ fn bounded_text(value: &str, max: usize, empty: bool) -> Result<(), WireError> {
 }
 
 pub(super) fn timestamp(value: &str) -> Result<(), WireError> {
-    let bytes = value.as_bytes();
-    if !(20..=30).contains(&bytes.len())
-        || bytes.get(4) != Some(&b'-')
-        || bytes.get(7) != Some(&b'-')
-        || bytes.get(10) != Some(&b'T')
-        || bytes.get(13) != Some(&b':')
-        || bytes.get(16) != Some(&b':')
-        || bytes.last() != Some(&b'Z')
-    {
-        return Err(WireError::InvalidField);
-    }
-    if bytes.len() > 20
-        && (bytes[19] != b'.'
-            || bytes.len() == 21
-            || !bytes[20..bytes.len() - 1].iter().all(u8::is_ascii_digit))
-    {
-        return Err(WireError::InvalidField);
-    }
-    let number = |start: usize, end: usize| -> Result<u16, WireError> {
-        let digits = &bytes[start..end];
-        if !digits.iter().all(u8::is_ascii_digit) {
-            return Err(WireError::InvalidField);
-        }
-        digits.iter().try_fold(0_u16, |n, digit| {
-            n.checked_mul(10)
-                .and_then(|n| n.checked_add(u16::from(*digit - b'0')))
-                .ok_or(WireError::InvalidField)
-        })
-    };
-    UtcDateTime::new(
-        number(0, 4)?,
-        number(5, 7)? as u8,
-        number(8, 10)? as u8,
-        number(11, 13)? as u8,
-        number(14, 16)? as u8,
-        number(17, 19)? as u8,
-    )?;
-    Ok(())
+    super::parse_metadata_utc_nanoseconds(value).map(|_| ())
 }
