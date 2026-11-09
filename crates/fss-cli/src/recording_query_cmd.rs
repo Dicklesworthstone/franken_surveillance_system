@@ -7,6 +7,9 @@ pub mod utc;
 /// Shared UTC selection across explicitly pinned native catalog pages.
 pub mod utc_set;
 
+/// Conditional UTC selection after complete bounded namespace discovery.
+pub mod utc_discover;
+
 /// One shared decode-clock query over explicitly pinned catalogs.
 pub mod set;
 

@@ -29,8 +29,8 @@ use crate::rtsp::recording_catalog::{
     CatalogEntry, CatalogError, CatalogScope, MAX_CATALOG_WINDOWS, verify_catalog,
 };
 use crate::rtsp::recording_clock::{
-    CLOCK_INDEX_KIND, MAX_CLOCK_INDEX_BYTES, RecordingClockCodec, RecordingClockError, UtcInterval,
-    clock_slot, verify_clock_metadata,
+    CLOCK_INDEX_KIND, MAX_CLOCK_INDEX_BYTES, RecordingClockCodec, RecordingClockError,
+    RecordingClockMetadata, UtcInterval, clock_slot, verify_clock_metadata,
 };
 use crate::site::clock::{ClockCorrelationPolicy, ClockOffsetInterval};
 
@@ -268,10 +268,42 @@ pub struct RecordingUtcSetQuery {
     pub read_usage: MetadataReadUsage,
 }
 
-struct Window {
+/// A member already admitted by the caller's catalog or namespace verifier.
+pub(super) struct UtcWindow {
     entry: CatalogEntry,
     locations: Vec<RecordingSetLocation>,
     clock_ordinal: Option<usize>,
+}
+
+impl UtcWindow {
+    pub(super) fn new(entry: CatalogEntry, locations: Vec<RecordingSetLocation>) -> Self {
+        Self {
+            entry,
+            locations,
+            clock_ordinal: None,
+        }
+    }
+}
+
+/// Exact temporal selection pins, independent of how the catalog universe was admitted.
+pub(super) struct UtcSelectionRequest<'a> {
+    pub codec: RecordingQueryCodec,
+    pub scope: &'a CatalogScope,
+    pub clock_slot: &'a SlotName,
+    pub clock_root: ContentDigest,
+    pub interval: Range<u64>,
+    pub max_windows: usize,
+    pub max_hydration_bytes: u64,
+}
+
+/// Complete clock join and conditional selection; the borrowed read owner must still finish.
+pub(super) struct VerifiedUtcSelection {
+    pub clock_metadata_digest: ContentDigest,
+    pub clock: RecordingClockMetadata,
+    pub reference_digests: Vec<ContentDigest>,
+    pub rows: Vec<RecordingUtcSetQueryRow>,
+    pub indexed_gaps: Vec<Range<u64>>,
+    pub quoted_hydration_bytes: u64,
 }
 
 /// Read all explicit catalog pages and one retained clock under the same bounded authority.
@@ -292,7 +324,7 @@ pub fn query_recordings_utc_set(
     let mut reader = PinnedMetadataReader::new(io, root, limits.metadata, cancelled)?;
     let mut catalogs = bounded_vec(request.catalogs.len())?;
     let mut references = BTreeSet::new();
-    let mut by_root = BTreeMap::<ContentDigest, Window>::new();
+    let mut by_root = BTreeMap::<ContentDigest, UtcWindow>::new();
     let mut by_slot = BTreeMap::<SlotName, ContentDigest>::new();
     let mut scanned_windows = 0_usize;
 
@@ -360,14 +392,7 @@ pub fn query_recordings_utc_set(
                 let mut locations = bounded_vec(1)?;
                 locations.push(location);
                 by_slot.insert(entry.slot().clone(), entry.root());
-                by_root.insert(
-                    entry.root(),
-                    Window {
-                        entry: entry.clone(),
-                        locations,
-                        clock_ordinal: None,
-                    },
-                );
+                by_root.insert(entry.root(), UtcWindow::new(entry.clone(), locations));
             }
         }
         catalogs.push(RecordingSetCatalog {
@@ -377,7 +402,105 @@ pub fn query_recordings_utc_set(
         });
     }
 
-    let clock_manifest = reader.manifest(&request.clock_slot, request.clock_root)?;
+    let unique_windows = by_root.len();
+    let VerifiedUtcSelection {
+        clock_metadata_digest,
+        clock,
+        reference_digests,
+        rows,
+        indexed_gaps,
+        quoted_hydration_bytes,
+    } = select_utc(
+        &mut reader,
+        &UtcSelectionRequest {
+            codec: request.codec,
+            scope: &request.scope,
+            clock_slot: &request.clock_slot,
+            clock_root: request.clock_root,
+            interval: request.interval.clone(),
+            max_windows: request.max_windows,
+            max_hydration_bytes: request.max_hydration_bytes,
+        },
+        by_root,
+        references,
+        cancelled,
+    )?;
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.agent_recordings.utc_set.decision.v1");
+    encoder.digest(request_digest);
+    encoder.u64(catalogs.len() as u64);
+    for catalog in &catalogs {
+        check_cancelled(cancelled)?;
+        encoder.text(catalog.pin.slot.as_str());
+        encoder.digest(catalog.pin.root);
+        encoder.digest(catalog.metadata_digest);
+        encoder.u64(catalog.scanned_windows as u64);
+    }
+    for digest in [
+        request.clock_root,
+        clock_metadata_digest,
+        clock.approval_digest(),
+    ] {
+        encoder.digest(digest);
+    }
+    for count in [
+        scanned_windows,
+        unique_windows,
+        clock.windows().len(),
+        clock.bracket_count(),
+    ] {
+        encoder.u64(count as u64);
+    }
+    encoder.u64(quoted_hydration_bytes);
+    encoder.u64(rows.len() as u64);
+    for row in &rows {
+        check_cancelled(cancelled)?;
+        encoder.digest(row.row_digest());
+    }
+    encoder.u64(indexed_gaps.len() as u64);
+    for gap in &indexed_gaps {
+        encoder.u64(gap.start);
+        encoder.u64(gap.end);
+    }
+    encoder.u64(reference_digests.len() as u64);
+    for reference in &reference_digests {
+        check_cancelled(cancelled)?;
+        encoder.digest(*reference);
+    }
+    let decision_digest = digest(encoder)?;
+    // One final pass includes early catalogs after later pages and the clock were admitted.
+    let read_usage = reader.finish()?;
+    Ok(RecordingUtcSetQuery {
+        request_digest,
+        decision_digest,
+        catalogs,
+        clock_root: request.clock_root,
+        clock_metadata_digest,
+        clock_approval_digest: clock.approval_digest(),
+        clock_policy: clock.policy(),
+        clock_offset: clock.offset_interval(),
+        clock_brackets: clock.bracket_count(),
+        clock_windows: clock.windows().len(),
+        reference_digests,
+        rows,
+        indexed_gaps,
+        quoted_hydration_bytes,
+        scanned_windows,
+        unique_windows,
+        read_usage,
+    })
+}
+
+/// Join every retained clock row before selection using the caller's original read allowance.
+/// Neither explicit-set nor discovered-namespace callers can refill or finish this owner here.
+pub(super) fn select_utc<F: Fn() -> bool + Sync>(
+    reader: &mut PinnedMetadataReader<'_, F>,
+    request: &UtcSelectionRequest<'_>,
+    mut by_root: BTreeMap<ContentDigest, UtcWindow>,
+    mut references: BTreeSet<ContentDigest>,
+    cancelled: &F,
+) -> Result<VerifiedUtcSelection> {
+    let clock_manifest = reader.manifest(request.clock_slot, request.clock_root)?;
     if clock_manifest.kind() != CLOCK_INDEX_KIND {
         return Err(RecordingClockError::Malformed.into());
     }
@@ -388,7 +511,7 @@ pub fn query_recordings_utc_set(
     let clock = verify_clock_metadata(
         &clock_manifest,
         &clock_metadata,
-        &request.scope,
+        request.scope,
         clock_codec(request.codec),
     )?;
     references.insert(clock_manifest.root());
@@ -470,73 +593,17 @@ pub fn query_recordings_utc_set(
     let indexed_gaps = declared_gaps(request.interval.clone(), observed)?;
     let mut reference_digests = bounded_vec(references.len())?;
     reference_digests.extend(references);
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.agent_recordings.utc_set.decision.v1");
-    encoder.digest(request_digest);
-    encoder.u64(catalogs.len() as u64);
-    for catalog in &catalogs {
-        check_cancelled(cancelled)?;
-        encoder.text(catalog.pin.slot.as_str());
-        encoder.digest(catalog.pin.root);
-        encoder.digest(catalog.metadata_digest);
-        encoder.u64(catalog.scanned_windows as u64);
-    }
-    for digest in [
-        request.clock_root,
+    Ok(VerifiedUtcSelection {
         clock_metadata_digest,
-        clock.approval_digest(),
-    ] {
-        encoder.digest(digest);
-    }
-    for count in [
-        scanned_windows,
-        unique_windows,
-        clock.windows().len(),
-        clock.bracket_count(),
-    ] {
-        encoder.u64(count as u64);
-    }
-    encoder.u64(quoted_hydration_bytes);
-    encoder.u64(rows.len() as u64);
-    for row in &rows {
-        check_cancelled(cancelled)?;
-        encoder.digest(row.row_digest());
-    }
-    encoder.u64(indexed_gaps.len() as u64);
-    for gap in &indexed_gaps {
-        encoder.u64(gap.start);
-        encoder.u64(gap.end);
-    }
-    encoder.u64(reference_digests.len() as u64);
-    for reference in &reference_digests {
-        check_cancelled(cancelled)?;
-        encoder.digest(*reference);
-    }
-    let decision_digest = digest(encoder)?;
-    // One final pass includes early catalogs after later pages and the clock were admitted.
-    let read_usage = reader.finish()?;
-    Ok(RecordingUtcSetQuery {
-        request_digest,
-        decision_digest,
-        catalogs,
-        clock_root: request.clock_root,
-        clock_metadata_digest,
-        clock_approval_digest: clock.approval_digest(),
-        clock_policy: clock.policy(),
-        clock_offset: clock.offset_interval(),
-        clock_brackets: clock.bracket_count(),
-        clock_windows: clock.windows().len(),
+        clock,
         reference_digests,
         rows,
         indexed_gaps,
         quoted_hydration_bytes,
-        scanned_windows,
-        unique_windows,
-        read_usage,
     })
 }
 
-fn clock_codec(codec: RecordingQueryCodec) -> RecordingClockCodec {
+pub(super) fn clock_codec(codec: RecordingQueryCodec) -> RecordingClockCodec {
     match codec {
         RecordingQueryCodec::Avc => RecordingClockCodec::Avc,
         RecordingQueryCodec::Hevc => RecordingClockCodec::Hevc,

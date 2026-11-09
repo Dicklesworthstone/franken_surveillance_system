@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Actual CLI/MCP UTC selection with unavailable clocks, protected context and metadata custody.
 
+#[path = "utc_discover.rs"]
+mod utc_discover;
 #[path = "utc_set.rs"]
 mod utc_set;
 
@@ -17,6 +19,13 @@ use fss_reference::rtsp::recording::hevc::PreparedHevcRecording;
 use fss_reference::rtsp::recording_clock::{
     ClockWindow, RecordingClockCodec, RecordingClockIndex, UtcInterval, clock_slot,
 };
+
+#[derive(Clone, Copy)]
+enum UtcFixtureMode {
+    Singleton,
+    CatalogSet,
+    Discovery,
+}
 
 struct UtcFixture {
     base: Fixture,
@@ -201,13 +210,13 @@ impl UtcFixture {
     }
 
     fn run(&self) -> TestResult<(String, ExitIdentity)> {
-        self.run_fields(self.fields(), false)
+        self.run_fields(self.fields(), UtcFixtureMode::Singleton)
     }
 
     fn run_fields(
         &self,
         fields: Vec<(&str, String)>,
-        catalog_set: bool,
+        mode: UtcFixtureMode,
     ) -> TestResult<(String, ExitIdentity)> {
         let mut args: Vec<OsString> = vec![
             "query".into(),
@@ -224,14 +233,19 @@ impl UtcFixture {
                 .map(|(key, value)| OsString::from(format!("--{}={value}", key.replace('_', "-")))),
         );
         let command = parse_fss_args(args.clone())?;
-        if catalog_set {
-            assert!(matches!(
-                command,
-                fss_cli::FssCommand::RecordingUtcSetQuery(_)
-            ));
-        } else {
-            assert!(matches!(command, fss_cli::FssCommand::RecordingUtcQuery(_)));
-        }
+        assert!(matches!(
+            (&command, mode),
+            (
+                fss_cli::FssCommand::RecordingUtcQuery(_),
+                UtcFixtureMode::Singleton
+            ) | (
+                fss_cli::FssCommand::RecordingUtcSetQuery(_),
+                UtcFixtureMode::CatalogSet
+            ) | (
+                fss_cli::FssCommand::RecordingUtcDiscoveryQuery(_),
+                UtcFixtureMode::Discovery
+            )
+        ));
         let answer = execute_fss_with_exit(command);
         let process = Command::new(env!("CARGO_BIN_EXE_fss"))
             .args(args)

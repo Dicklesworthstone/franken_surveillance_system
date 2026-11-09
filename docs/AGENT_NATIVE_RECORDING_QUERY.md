@@ -102,7 +102,10 @@ When the clock companion spans several native capture pages, replace the singlet
 catalog flags with `--catalogs "page-one=$ROOT_ONE,page-two=$ROOT_TWO"`. Include every
 page needed to bind all clock descriptors. One native request verifies the complete
 explicit union under one shared allowance, retains every duplicate membership and quotes
-each unique window once. UTC mode does not accept `--discover-catalogs`. See the
+each unique window once. For automatic page discovery in one exact source namespace,
+replace the catalog flags with `--discover-catalogs yes` and retain all four clock/UTC
+flags. The namespace inventory and clock join use the same read allowance and final
+revalidation. See the
 [catalog-set guide](RECORDING_CATALOG_SET_QUERY.md#retained-clock-utc-across-catalog-pages)
 for the CLI and MCP forms.
 
@@ -153,11 +156,16 @@ The native library admits either one catalog or an explicit set of up to eight c
 with at most 64 indexed memberships across the set. CLI/MCP return at most 32 selected
 unique windows and have no continuation; a result over the declared bound refuses whole.
 Unknown-clock windows always consume that bound. Separately, [namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md)
-can discover catalog pages using decode-clock bounds.
+can discover catalog pages using either decode-clock bounds or an independently pinned
+retained clock and UTC bounds. Discovery verifies up to 4,096 windows and 1,024 pages;
+the selected output cap stays 32. One clock companion describes at most 64 windows, so
+every other discovered window remains clock-unavailable and consumes output/quote limits.
 
 Decode mode shares 8 MiB of archive read bytes and 10,000 filesystem calls across both
 passes. UTC mode shares 64 MiB and 20,000 calls across catalog, clock, members and final
-revalidation; its larger ceiling admits the existing bounded retained clock format. Deployment context separately shares 256 MiB of metadata payload bytes and
+revalidation; its larger ceiling admits the existing bounded retained clock format.
+UTC discovery shares 64 MiB and 1,000,000 filesystem calls across both namespace
+observations, every page/window, the clock companion and final revalidation. Deployment context separately shares 256 MiB of metadata payload bytes and
 65,536 payload-read attempts across its initial and final replay. The response reports their
 combined allowance and consumption while explicitly distinguishing the counter units.
 The output ceiling is 256 KiB. The 60-second deadline is cooperative between bounded phases,
@@ -199,6 +207,7 @@ cargo test --locked --offline -p fss-publication --test pinned_metadata_contract
 cargo test --locked --offline -p fss-reference --test agent_recordings_contract
 cargo test --locked --offline -p fss-reference --test agent_recordings_utc_contract
 cargo test --locked --offline -p fss-reference --test agent_recordings_utc_set_contract
+cargo test --locked --offline -p fss-reference --test agent_recordings_utc_discovery_contract
 cargo test --locked --offline -p fss-cli --lib recording_query_cmd
 cargo test --locked --offline -p fss-cli --test recording_query_contract
 cargo test --locked --offline -p fss-cli --bin fss-mcp
@@ -216,6 +225,12 @@ late deletion markers, full current-deployment context and real-process CLI/MCP 
 parity. The standalone discovery schema passed 47 admission/refusal cases; that does not
 replace native transport execution.
 
-VIT-008, VIT-015 and VIT-019 remain open. Cross-catalog discovery, source replay through this
-agent surface, continuous recording, media hydration and broader quality/coverage qualification
-remain separate work.
+UTC discovery adds ten native and six CLI/context contracts plus four parser/MCP cases.
+Its six MCP recording modes have been checked for exclusivity across all 1,024 combinations
+of selector and time-flag presence. Native execution remains blocked: the unchanged
+Asupersync compiler was killed even with explicit single-thread frontend/backend/linker,
+one Cargo job, zero debug information and metadata-only emission.
+
+VIT-008, VIT-015 and VIT-019 remain open for broader cross-clock discovery, source replay
+through this agent surface, continuous recording, media hydration and quality/coverage
+qualification. Exact-namespace UTC discovery is implemented with the bounded scope above.

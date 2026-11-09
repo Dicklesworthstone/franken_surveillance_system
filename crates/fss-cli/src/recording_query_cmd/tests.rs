@@ -249,6 +249,112 @@ fn utc_pins(codec: &str) -> TestResult<Vec<(String, String)>> {
     Ok(values)
 }
 
+fn utc_discovery_pins(codec: &str) -> TestResult<Vec<(String, String)>> {
+    let mut values = utc_pins(codec)?;
+    values.retain(|(key, _)| key != "--catalog-slot" && key != "--catalog-root");
+    values.push(("--discover-catalogs".to_owned(), "yes".to_owned()));
+    Ok(values)
+}
+
+#[test]
+fn utc_discovery_dispatch_preserves_exact_clock_source_and_output_pins() -> TestResult {
+    for codec in ["avc", "hevc"] {
+        let values = utc_discovery_pins(codec)?;
+        let command = parse(&values, false)?;
+        assert_eq!(command, parse(&values, true)?);
+        assert!(command.is_json());
+        let FssCommand::RecordingUtcDiscoveryQuery(args) = command else {
+            return Err("UTC discovery dispatched through another query mode".into());
+        };
+        assert_eq!(args.request.recording.codec.as_str(), codec);
+        assert_eq!(
+            args.request.recording.clock_root,
+            ContentDigest::sha256(b"clock companion")
+        );
+        assert_eq!(
+            args.request.recording.interval,
+            9_007_199_254_740_993..u64::MAX
+        );
+        assert_eq!(args.request.recording.scope.time_scale, 90_000);
+        assert_eq!(args.request.recording.scope.recording.generation, 1);
+        assert_eq!(args.request.recording.max_windows, 32);
+        assert_eq!(args.root, PathBuf::from("/owner/deployment"));
+        assert_eq!(args.archive_root, PathBuf::from("/owner/archive"));
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_discovery_requires_explicit_complete_scope_without_manual_catalog_or_tick_modes()
+-> TestResult {
+    let valid = utc_discovery_pins("avc")?;
+    for missing in valid.iter().map(|(key, _)| key) {
+        let reduced = valid
+            .iter()
+            .filter(|(key, _)| key != missing)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            parse(&reduced, false).is_err(),
+            "accepted missing {missing}"
+        );
+    }
+    for (key, value) in [
+        ("--catalog-slot", "catalog"),
+        ("--catalog-root", "sha256:bad"),
+        ("--catalogs", "catalog=sha256:bad"),
+        ("--start-tick", "0"),
+        ("--end-tick", "1"),
+        ("--from-ns", "0"),
+        ("--through-ns", "1"),
+        ("--at", "latest"),
+        ("--hydrate", "H3"),
+        ("--continuation", "cursor"),
+    ] {
+        let mut mixed = valid.clone();
+        mixed.push((key.to_owned(), value.to_owned()));
+        assert!(parse(&mixed, false).is_err(), "accepted mixed {key}");
+    }
+    for key in [
+        "--discover-catalogs",
+        "--clock-slot",
+        "--clock-root",
+        "--start-utc-ns",
+        "--end-utc-ns",
+    ] {
+        let mut duplicate = valid.clone();
+        duplicate.push(
+            valid
+                .iter()
+                .find(|(name, _)| name == key)
+                .ok_or("fixture pin")?
+                .clone(),
+        );
+        assert!(parse(&duplicate, true).is_err(), "accepted duplicate {key}");
+    }
+    for (key, value) in [
+        ("--discover-catalogs", "true"),
+        ("--discover-catalogs", "no"),
+        ("--discover-catalogs", "1"),
+        ("--clock-slot", "foreign-clock"),
+        ("--generation", "2"),
+        ("--start-utc-ns", "9007199254740993.0"),
+        ("--end-utc-ns", "18446744073709551616"),
+    ] {
+        let mut changed = valid.clone();
+        changed
+            .iter_mut()
+            .find(|(name, _)| name == key)
+            .ok_or("fixture pin")?
+            .1 = value.to_owned();
+        assert!(
+            parse(&changed, false).is_err(),
+            "accepted invalid {key}={value}"
+        );
+    }
+    Ok(())
+}
+
 fn utc_set_pins(codec: &str) -> TestResult<Vec<(String, String)>> {
     let mut values = utc_pins(codec)?;
     values.retain(|(key, _)| key != "--catalog-slot" && key != "--catalog-root");

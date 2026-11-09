@@ -56,14 +56,10 @@ pub(super) fn arguments(
     };
     if discovery
         && (catalog_set
-            || utc
             || fields.contains_key("catalog_slot")
             || fields.contains_key("catalog_root"))
     {
-        return Err((
-            -32602,
-            "Archive discovery requires decode-clock bounds and excludes manual catalog or UTC pins",
-        ));
+        return Err((-32602, "Archive discovery excludes manual catalog pins"));
     }
 
     if catalog_set && (fields.contains_key("catalog_slot") || fields.contains_key("catalog_root")) {

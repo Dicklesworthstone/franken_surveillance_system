@@ -72,6 +72,10 @@
     "crates/fss-reference/src/ingest/package_zones/health.rs"
   ],
   "module_declarations": {
+    "crates/fss-reference/src/agent_recordings/utc_discover.rs": "cognition",
+    "crates/fss-reference/src/agent_recordings/discover/namespace.rs": "cognition",
+    "crates/fss-reference/src/agent_recording_context/utc_discover.rs": "cognition",
+    "crates/fss-cli/src/recording_query_cmd/utc_discover.rs": "cognition",
     "crates/fss-cli/src/alert_effect/report.rs": "support",
     "crates/fss-cli/src/alert_effect/runtime.rs": "support",
     "crates/fss-cli/src/alert_effect/runtime/tests.rs": "support",

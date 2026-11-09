@@ -12,7 +12,7 @@ receive clock, decode clock and tick rate. These exact pins derive the existing
 archive writer's namespace; discovery does not register a source or combine
 different generations or clocks.
 
-## Native API and completeness
+## Native decode-clock API and completeness
 
 `fss_reference::agent_recordings::discover::discover_recordings` accepts a
 `RecordingDiscoveryRequest` and finite `RecordingDiscoveryLimits`. The request
@@ -48,7 +48,7 @@ revalidation. The final scan must observe the same selected root records and
 membership. Unrelated entries consume enumeration allowance but their contents
 are not read or interpreted.
 
-| Default native bound | Ceiling |
+| Default native decode-clock bound | Ceiling |
 | --- | ---: |
 | Root-directory entries per observation, including unrelated entries | 16,384 |
 | Verified archive windows | 4,096 |
@@ -76,6 +76,73 @@ restrictions before releasing a result.
 Matching observations are a bounded change-detection mechanism, not an atomic
 filesystem snapshot or a guarantee that source payloads are retrievable.
 
+## UTC discovery with a retained clock
+
+`agent_recordings::utc_discover::discover_recordings_utc` accepts a
+`RecordingUtcDiscoveryRequest` with the same exact source namespace, an
+independently pinned retained-clock slot/root, and a half-open Unix-nanosecond
+interval. It discovers the complete canonical catalog universe without requiring
+manual catalog pins. The clock slot must be the one derived from the full codec,
+source generation and clock scope; discovering pages never substitutes a new
+clock root for the caller's pin.
+
+Tick discovery and UTC discovery share the same namespace verifier and inventory
+identity. UTC discovery and the explicit UTC-set reader share the same complete
+clock join and temporal selection. Neither shared helper creates or finishes a
+reader. One `PinnedMetadataReader` owns the initial namespace observation, every
+catalog and member, clock reconstruction, complete closure checks, and final
+metadata/publication/tombstone/namespace revalidation. The implementation does
+not compose two public queries with independent allowances.
+
+Every retained clock row must match an exact verified namespace member before
+selection. An empty namespace or missing page cannot discard a clock member and
+produce an empty success. Catalog windows with no retained clock annotation stay
+explicitly `clock_unavailable` and are returned regardless of the requested UTC
+interval. They consume the same output and whole-window hydration-quote limits
+as known-time candidates. If the complete selection cannot fit, the query
+refuses; narrowing time cannot exclude a window whose time is unavailable.
+
+The full namespace bounds remain 4,096 windows and 1,024 pages, independently of
+the retained clock's 64-window format limit. This allows ordinary capture pages
+and sparse clock annotations beyond the eight explicit-pin page ceiling. The
+UTC reader adds one clock publication, its manifest and typed index, and its
+maximum flat reference closure to the existing discovery allowance:
+
+| Default native UTC bound | Ceiling |
+| --- | ---: |
+| Root-directory entries per observation | 16,384 |
+| Verified archive windows / catalog pages | 4,096 / 1,024 |
+| Retained clock annotations | 64 |
+| Complete selected output, including unavailable clocks | Request supplied, at most 64 |
+| Publication bindings | 5,121 |
+| Distinct manifest and typed metadata objects | 6,146 |
+| Manifest reference edges | 65,857 |
+| One metadata object | 16 MiB |
+| Aggregate read bytes / filesystem calls, including final verification | 64 MiB / 1,000,000 |
+
+The object allowance covers 4,096 recording manifests, 1,024 catalog
+manifest/index pairs and one clock manifest/index pair. Actual aggregate bytes,
+edges and filesystem work remain separately bounded; a cardinality ceiling is
+not a promise that every object combination fits every other limit. Caller
+limits may narrow these ceilings, including to zero, but cannot enlarge them.
+
+Results add the clock root, canonical clock metadata digest, retained approval
+identity, reconstructed correction interval and policy, clock-window/bracket
+counts, and the same conditional UTC rows used by explicit UTC-set queries.
+Catalog positions follow canonical page order; rows preserve native decode
+order and their exact page membership. Request and decision identities use
+`fss.agent_recordings.utc_discovery.request.v1` and
+`fss.agent_recordings.utc_discovery.decision.v1`; existing tick-discovery and
+explicit-pin identities are unchanged. Unrelated directory entries consume
+scan/I/O allowance but do not change the selected inventory identity.
+
+Declared UTC gaps exclude only the union of conditional node-observation
+envelopes. Windows with unavailable clocks may overlap those gaps. This read
+does not authenticate UTC, replay packet admissions, establish camera exposure
+time or infer physical coverage. See the [retained-clock query guide](
+RECORDING_CLOCK_METADATA_QUERY.md) for the exact inclusive-envelope selection
+and uncertainty rules.
+
 ## CLI and MCP
 
 Use `--discover-catalogs yes` with the existing recording target and exact source
@@ -94,14 +161,19 @@ fss query --json --target recordings \
 ```
 
 Use `--codec hevc` for HEVC. `--principal` and `--anchor` keep their existing
-current-deployment meanings. Discovery cannot be combined with `--catalogs`,
-singleton catalog pins, or clock-companion/UTC flags. Explicit singleton, UTC
-and catalog-set queries retain their existing grammars and limits.
+current-deployment meanings. To query UTC, replace the two tick bounds with
+`--clock-slot "$clock_slot" --clock-root "$clock_root"` and
+`--start-utc-ns "$start_utc_ns" --end-utc-ns "$end_utc_ns"` while retaining
+`--discover-catalogs yes` and every source pin. Discovery cannot be combined with
+`--catalogs` or singleton catalog pins, and decode-tick and UTC bounds cannot be
+mixed. Explicit singleton and catalog-set queries retain their existing grammars
+and limits.
 
 The MCP `query` tool accepts `"target":"recordings"` and
-`"discover_catalogs":true` with the same source pins and tick interval. The
+`"discover_catalogs":true` with the same source pins and either tick bounds or
+`clock_slot`, `clock_root`, `start_utc_ns` and `end_utc_ns`. The
 flag must be Boolean `true`; omission leaves the existing explicit-pin modes.
-Pass generation, tick bounds and hydration-byte limits as decimal strings so
+Pass generation, tick/UTC bounds and hydration-byte limits as decimal strings so
 values above JavaScript's exact integer range remain intact. `time_scale` and
 `max_windows` retain their bounded integer schemas. The deployment and archive
 roots come from the server's launch configuration; a request cannot override
@@ -117,6 +189,15 @@ changed deployment history/layout and committed deletion intersecting **any**
 verified archive reference, including source leaves outside the selected interval.
 Historical archive scope does not create current source registration.
 
+`agent_recording_context::utc_discover::discover_recordings_utc_in_deployment`
+applies the same bracketed deployment and complete-reference deletion checks to
+UTC discovery, including unselected windows and the clock's flat closure. Its
+plan binds the complete namespace inventory and exact clock root. Only selected
+pages are expanded into propositions and evidence handles, so a large scanned
+namespace does not force an unbounded response. Clock-unavailable rows remain
+`not_observable`; the retained clock conditions and protected current situation
+remain visible even for a known-time selection with no matching rows.
+
 The answer retains current situation hypotheses and obligations. Its inventory
 proposition identifies the exact namespace and inventory digests, total verified
 pages/windows, selected count, scope and quote. Only pages supporting selected
@@ -126,7 +207,7 @@ archive does not require dumping that archive into the agent response. Every
 selected row preserves its exact catalog root and ordinal.
 
 Indexed gaps remain `not_observable`, while physical presence/absence, trusted
-UTC and source-payload availability remain `unknown`. Empty namespaces retain
+UTC and source-payload availability remain `unknown`. Empty decode-clock namespaces retain
 current protected context and the same explicit uncertainty. No media hydration,
 export, recovery or source contact is performed.
 
@@ -152,6 +233,19 @@ remains intact. Five CLI process contracts exercise both codecs, selected-only
 projection, empty-namespace context, overflow, corruption and an unindexed tail.
 CLI grammar and MCP dispatch contracts cover exact pins/integers, fixed owners,
 mode exclusion and byte-identical success/refusal forwarding.
+
+`agent_recordings_utc_discovery_contract` adds ten native contracts covering
+AVC/HEVC captures of nine, 64 and 65 windows, native eight-window pages, more than
+eight discovered pages, complete clock joining, and 128/129-window namespaces
+whose unavailable-clock remainder reaches/exceeds the output bound. They also
+cover exact shared-budget accounting, absent/corrupt source payloads, empty or
+truncated clock universes, namespace mutation, late clock/source deletion,
+cancellation and parity with the existing selection/inventory owners. Six
+protected CLI/MCP/context contracts exercise nine pages, selected-page output,
+unknown-clock quotes, changed deployment heads and committed deletion of an
+unselected source. These new contracts have been source-reviewed and formatted;
+they have not executed because the pinned build was killed while compiling
+unchanged Asupersync before reaching these Rust paths.
 
 The core checkpoint is `56146fab5ec9525d900cc63f59c5d9df408e664c`. Native
 execution and qualification results are recorded in the session handoff; test

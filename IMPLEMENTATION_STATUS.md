@@ -1,8 +1,42 @@
 # Implementation status
 
-**As of:** 2026-11-09 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-09 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## UTC discovery across a complete native archive namespace
+
+`fss query --target recordings --discover-catalogs yes` and MCP's
+`discover_catalogs: true` now combine exact source scope with an independently
+pinned retained clock and UTC interval. Callers can query the complete canonical
+namespace without constructing a catalog list. The native owner verifies up to
+4,096 windows and 1,024 pages under one allowance, including both namespace
+observations, all catalog/member metadata, the clock join and final revalidation.
+
+The namespace walker is shared with decode-tick discovery; complete clock joining
+and UTC selection are shared with explicit catalog-set queries. Existing request,
+inventory, row and decision encodings retain their original behavior. The response
+binds the complete inventory and projects only selected catalog/window details.
+Current protected deployment and deletion checks still cover every reference,
+including unselected source leaves.
+
+One retained clock annotates at most 64 windows. Every unannotated discovered
+window remains a candidate under every UTC interval and consumes the same output
+and byte-quote bounds. The native output ceiling is 64, and CLI/MCP retain 32;
+excess required unknowns refuse the query. This implements exact-namespace UTC
+discovery for VIT-008. Multi-clock correlation, media hydration, continuous
+recording and production qualification remain open. See the
+[operator form](docs/RECORDING_CATALOG_SET_QUERY.md#utc-discovery-without-manual-catalog-pins).
+
+**Validation:** ten native and ten parser/MCP/CLI/context tests are authored and
+source-reviewed. Pinned scoped formatting and whitespace checks passed. The schema
+suite ran 64 cases: 63 passed and one existing case was skipped. All six
+MCP selector/time modes were checked across 1,024 flag-presence combinations,
+with exactly six complete modes accepted and no overlapping branches. Native
+compilation still stops in unchanged Asupersync 0.5.0: a locked offline
+metadata-only attempt with one Cargo job, explicit single-thread frontend,
+backend and linker, no incremental compilation and zero debug information
+received compiler SIGKILL before reaching FSS. No native pass is claimed.
 
 ## UTC review across native recording catalog pages
 
@@ -19,11 +53,12 @@ descriptors, the clock index and final revalidation. Current deployment authorit
 and deletion checks cover the full reference union, including unselected windows.
 No source media is hydrated by a metadata query.
 
-`fss query --target recording --catalogs` accepts the existing exact clock-root
+`fss query --target recordings --catalogs` accepts the existing exact clock-root
 and UTC interval pins. The native scan supports 64 descriptors; protected output
 retains its 32-window cap. Existing singleton/decode-time query identities remain
-unchanged. This advances VIT-008/FSS-068/GOAL-011 review functionality; automatic
-UTC discovery, trusted physical coverage and production qualification remain open.
+unchanged. This advances VIT-008/FSS-068/GOAL-011 review functionality. Exact-source
+UTC discovery is now available above; trusted physical coverage and production
+qualification remain open.
 See [the bounded query contract](docs/RECORDING_CLOCK_METADATA_QUERY.md#utc-selection-across-native-capture-pages).
 Twelve native and five CLI/context contracts plus parser/MCP cases are authored
 and source-reviewed. Native compilation and execution remain blocked as recorded
@@ -53,7 +88,7 @@ native compilation and execution remain blocked as recorded below.
 The two features add **37 Rust tests**: 16 retention cases and 21 UTC-set cases.
 These are authored contracts, not executed passes. Independent source reviews,
 the exact pinned formatter on all 23 changed Rust files, and whitespace checks
-passed. The schema suite passed 64 cases with one existing skip. Effective
+passed. The schema suite ran 64 cases: 63 passed and one existing case was skipped. Effective
 base-plus-delta manifest digests matched all 35 covered changed files at the
 combined feature commit `20d39ee1cfd221873e177cf0f3cba30c812db72b`.
 

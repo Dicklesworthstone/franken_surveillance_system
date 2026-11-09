@@ -147,6 +147,47 @@ It preserves the current-deployment checks, H0-only handles and complete-or-refu
 output bounds described below. Each row retains every catalog membership, and
 its whole-window hydration quote is counted once.
 
+## UTC discovery without manual catalog pins
+
+Use `--discover-catalogs yes` with the same exact source scope and retained-clock pins
+to find every canonical page in that namespace. This mode does not have the explicit
+catalog list's eight-page ceiling:
+
+```bash
+fss query --json --target recordings \
+  --root "$deployment_root" --archive-root "$archive_root" \
+  --codec avc --discover-catalogs yes \
+  --sensor sensor:front-door --stream stream:primary --generation 1 \
+  --source-anchor "$source_anchor" --receive-clock "$receive_clock" \
+  --decode-clock "$decode_clock" --time-scale 90000 \
+  --clock-slot "$clock_slot" --clock-root "$clock_root" \
+  --start-utc-ns "$utc_start_ns" --end-utc-ns "$utc_end_ns" \
+  --max-windows 32 --max-hydration-bytes 67108864
+```
+
+MCP uses `discover_catalogs: true` with the four clock/UTC fields. Manual catalog
+pins and decode-tick bounds are excluded. The native owner is
+`agent_recordings::utc_discover::discover_recordings_utc`; the protected owner is
+`agent_recording_context::utc_discover::discover_recordings_utc_in_deployment`.
+
+The complete namespace scan admits at most 4,096 windows, 1,024 pages and 16,384
+root-directory entries per observation. Namespace discovery, all catalog/window
+metadata, the clock join and final revalidation use one reader with 64 MiB and
+1,000,000 filesystem calls. A missing page, unindexed tail, changed namespace,
+revoked source or missing clock member refuses the complete query.
+
+The output binds the complete inventory digest and counts, while listing catalog
+details and H0 metadata handles only for selected windows. This keeps output
+proportional to the requested result rather than the entire archive. Current
+deployment deletion checks still cover every source reference, including all
+unselected windows.
+
+One clock companion can annotate at most 64 windows. Every other discovered
+window stays clock-unavailable and remains a candidate under every UTC interval.
+If those required unknowns exceed the selected-window or quote limit, the query
+refuses. An explicit catalog-set query remains available when the caller intends
+a smaller, independently pinned scope. See [the complete discovery contract](RECORDING_ARCHIVE_DISCOVERY.md).
+
 ## Current deployment context and output
 
 The protected reader is
@@ -190,5 +231,5 @@ Validation results are recorded in the session handoff. Authored regression case
 and source review are not substitutes for native execution or deployment
 qualification. VIT-008 remains open for broader cross-clock archive queries,
 continuous operation and live qualification. Explicit UTC catalog sets are
-implemented here; [namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md) remains
-a separate decode-clock mode.
+implemented here; [namespace discovery](RECORDING_ARCHIVE_DISCOVERY.md) also admits
+an exact retained-clock UTC query through its own request and decision identities.

@@ -7,7 +7,6 @@
 //! An unindexed tail or malformed sequence refuses the whole observation, including when
 //! outside the requested interval. Discovery never opens the publisher or hydrates media.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
 use std::path::Path;
@@ -15,23 +14,22 @@ use std::path::Path;
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_object::SpoolIo;
 use fss_publication::custody_audit::pinned_metadata::{
-    MetadataReadUsage, NamespaceObservation, PinnedMetadataError, PinnedMetadataReader,
+    MetadataReadUsage, PinnedMetadataError, PinnedMetadataReader,
 };
 use fss_publication::custody_audit::{CustodyAuditError, CustodyAuditLimits};
 
-use super::set::{
-    RecordingCatalogPin, RecordingSetCatalog, RecordingSetLocation, RecordingSetQueryRow,
-};
+use super::set::{RecordingSetCatalog, RecordingSetLocation, RecordingSetQueryRow};
 use super::{RecordingQueryCodec, sha};
 use crate::rtsp::recording::MAX_RECORDING_BYTES;
 use crate::rtsp::recording_archive::{
     ArchiveCodec, ArchiveError, AvcArchiveCodec, CodecArchiveNamespace, HevcArchiveCodec,
     MAX_ARCHIVE_WINDOWS,
 };
-use crate::rtsp::recording_catalog::hevc::verify_hevc_catalog;
 use crate::rtsp::recording_catalog::{
-    CatalogError, CatalogScope, MAX_CATALOG_BYTES, MAX_CATALOG_WINDOWS, verify_catalog,
+    CatalogEntry, CatalogError, CatalogScope, MAX_CATALOG_BYTES, MAX_CATALOG_WINDOWS,
 };
+
+pub(super) mod namespace;
 
 /// Exact source scope and decode-clock selection, without manually supplied catalog pins.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -295,117 +293,34 @@ fn discover_namespace<C: ArchiveCodec>(
     namespace: CodecArchiveNamespace<C>,
 ) -> Result<RecordingDiscoveryQuery> {
     let mut reader = PinnedMetadataReader::new(io, root, limits.metadata, cancelled)?;
-    let max_roots = limits
-        .max_windows
-        .checked_add(limits.max_pages)
-        .ok_or(RecordingDiscoveryError::Limit)?;
-    let observation =
-        reader.observe_namespace(namespace.prefix(), limits.max_scan_roots, max_roots)?;
-    let namespace_digest = namespace.digest();
-    let inventory_digest = inventory_digest(namespace_digest, &observation, cancelled)?;
-    let mut window_roots = bounded_vec(observation.roots.len().min(limits.max_windows))?;
-    let mut page_roots = bounded_vec(observation.roots.len().min(limits.max_pages))?;
-    let mut unique_roots = BTreeSet::new();
-    for record in &observation.roots {
-        checkpoint(cancelled)?;
-        let (role, ordinal) = namespace
-            .classify_slot(&record.slot)?
-            .ok_or(RecordingDiscoveryError::Sequence)?;
-        let (target, limit) = match role {
-            'w' => {
-                if !unique_roots.insert(record.root) {
-                    return Err(RecordingDiscoveryError::Sequence);
-                }
-                (&mut window_roots, limits.max_windows)
-            }
-            'c' => (&mut page_roots, limits.max_pages),
-            _ => return Err(RecordingDiscoveryError::Sequence),
-        };
-        if target.len() == limit {
-            return Err(RecordingDiscoveryError::Limit);
-        }
-        target.push((ordinal, record));
-    }
-    window_roots.sort_unstable_by_key(|(ordinal, _)| *ordinal);
-    page_roots.sort_unstable_by_key(|(ordinal, _)| *ordinal);
-    if window_roots
-        .iter()
-        .enumerate()
-        .any(|(index, (ordinal, _))| index != *ordinal)
-    {
-        return Err(RecordingDiscoveryError::Sequence);
-    }
-
-    let mut catalogs = bounded_vec(page_roots.len())?;
-    let mut rows = bounded_vec(window_roots.len().min(request.max_windows))?;
+    let mut rows = bounded_vec(request.max_windows)?;
     let mut indexed_gaps = bounded_vec(request.max_windows + 1)?;
-    let mut references = BTreeSet::new();
-    let mut indexed = 0_usize;
-    let mut last_end = None;
     let mut cursor = request.interval.start;
     let mut quoted_hydration_bytes = 0_u64;
-
-    for (first, record) in page_roots {
-        checkpoint(cancelled)?;
-        if first != indexed {
-            return Err(RecordingDiscoveryError::Sequence);
-        }
-        let manifest = reader.manifest(&record.slot, record.root)?;
-        if manifest.kind() != request.codec.catalog_kind() {
-            return Err(CatalogError::Malformed.into());
-        }
-        let metadata_digest = manifest.metadata_digest().ok_or(CatalogError::Malformed)?;
-        let index = reader.metadata(&manifest)?;
-        let entries = match request.codec {
-            RecordingQueryCodec::Avc => {
-                let catalog = verify_catalog(&manifest, &index, &request.scope)?;
-                let mut entries = bounded_vec(catalog.entries().len())?;
-                entries.extend_from_slice(catalog.entries());
-                entries
-            }
-            RecordingQueryCodec::Hevc => {
-                let catalog = verify_hevc_catalog(&manifest, &index, &request.scope)?;
-                let mut entries = bounded_vec(catalog.entries().len())?;
-                entries.extend_from_slice(catalog.entries());
-                entries
-            }
-        };
-        let end = first
-            .checked_add(entries.len())
-            .ok_or(RecordingDiscoveryError::Limit)?;
-        if end > window_roots.len() {
-            return Err(RecordingDiscoveryError::Sequence);
-        }
-        references.insert(manifest.root());
-        references.insert(metadata_digest);
-        references.extend(manifest.children().iter().copied());
-
-        for (ordinal, (entry, (_, expected))) in
-            entries.iter().zip(&window_roots[first..end]).enumerate()
-        {
-            checkpoint(cancelled)?;
-            if entry.slot() != &expected.slot || entry.root() != expected.root {
-                return Err(CatalogError::WindowMismatch.into());
-            }
+    let namespace::VerifiedNamespace {
+        namespace_digest,
+        inventory_digest,
+        catalogs,
+        references,
+        scanned_windows: indexed,
+        scanned_root_entries,
+    } = namespace::read_namespace(
+        &mut reader,
+        request.codec,
+        &request.scope,
+        namespace,
+        namespace::NamespaceLimits {
+            max_scan_roots: limits.max_scan_roots,
+            max_windows: limits.max_windows,
+            max_pages: limits.max_pages,
+        },
+        cancelled,
+        &mut |entry: &CatalogEntry, location: RecordingSetLocation| {
             let interval = entry.decode_interval();
-            if last_end.is_some_and(|previous| previous > interval.start) {
-                return Err(RecordingDiscoveryError::Sequence);
-            }
-            last_end = Some(interval.end);
-            let window = reader.manifest(entry.slot(), entry.root())?;
-            if window.kind() != request.codec.window_kind() {
-                return Err(CatalogError::WindowMismatch.into());
-            }
-            references.insert(window.root());
-            references.extend(window.children().iter().copied());
-            if let Some(metadata) = window.metadata_digest() {
-                references.insert(metadata);
-            }
-
             let overlap =
                 request.interval.start.max(interval.start)..request.interval.end.min(interval.end);
             if overlap.start >= overlap.end {
-                continue;
+                return Ok(());
             }
             if rows.len() == request.max_windows {
                 return Err(RecordingDiscoveryError::Limit);
@@ -419,30 +334,15 @@ fn discover_namespace<C: ArchiveCodec>(
             }
             cursor = cursor.max(overlap.end);
             let mut locations = bounded_vec(1)?;
-            locations.push(RecordingSetLocation {
-                catalog_index: catalogs.len(),
-                catalog_root: record.root,
-                ordinal,
-            });
+            locations.push(location);
             rows.push(RecordingSetQueryRow {
                 entry: entry.clone(),
                 overlap,
                 locations,
             });
-        }
-        indexed = end;
-        catalogs.push(RecordingSetCatalog {
-            pin: RecordingCatalogPin {
-                slot: record.slot.clone(),
-                root: record.root,
-            },
-            metadata_digest,
-            scanned_windows: entries.len(),
-        });
-    }
-    if indexed != window_roots.len() {
-        return Err(RecordingDiscoveryError::UnindexedWindows);
-    }
+            Ok(())
+        },
+    )?;
     if cursor < request.interval.end {
         indexed_gaps.push(cursor..request.interval.end);
     }
@@ -493,38 +393,19 @@ fn discover_namespace<C: ArchiveCodec>(
         indexed_gaps,
         quoted_hydration_bytes,
         scanned_windows: indexed,
-        scanned_root_entries: observation.scanned_entries,
+        scanned_root_entries,
         read_usage,
     })
 }
 
-fn inventory_digest(
-    namespace: ContentDigest,
-    observation: &NamespaceObservation,
-    cancelled: &(impl Fn() -> bool + Sync),
-) -> Result<ContentDigest> {
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.agent_recordings.discovery.inventory.v1");
-    encoder.digest(namespace);
-    encoder.u64(observation.roots.len() as u64);
-    for record in &observation.roots {
-        checkpoint(cancelled)?;
-        encoder.text(record.slot.as_str());
-        encoder.digest(record.root);
-        encoder.u64(record.child_count);
-        encoder.digest(record.record_digest);
-    }
-    digest(encoder)
-}
-
-fn digest(encoder: CanonicalEncoder) -> Result<ContentDigest> {
+pub(super) fn digest(encoder: CanonicalEncoder) -> Result<ContentDigest> {
     let bytes = encoder
         .finish_checked()
         .map_err(|_| RecordingDiscoveryError::Limit)?;
     ContentDigest::try_sha256(&bytes).map_err(|_| RecordingDiscoveryError::Limit)
 }
 
-fn checkpoint(cancelled: &(impl Fn() -> bool + Sync)) -> Result<()> {
+pub(super) fn checkpoint(cancelled: &(impl Fn() -> bool + Sync)) -> Result<()> {
     if cancelled() {
         return Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled).into());
     }

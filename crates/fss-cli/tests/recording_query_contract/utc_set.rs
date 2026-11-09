@@ -98,7 +98,7 @@ impl UtcSetFixture {
                 .collect::<Vec<_>>()
                 .join(","),
         ));
-        self.base.run_fields(fields, true)
+        self.base.run_fields(fields, UtcFixtureMode::CatalogSet)
     }
 
     fn mcp(&self) -> TestResult<(String, bool)> {

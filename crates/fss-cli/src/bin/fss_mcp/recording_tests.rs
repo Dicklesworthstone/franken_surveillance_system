@@ -397,6 +397,123 @@ fn utc_fields(codec: &str) -> Test<Fields> {
     Ok(values)
 }
 
+fn utc_discovery_fields(codec: &str) -> Test<Fields> {
+    let mut values = utc_fields(codec)?;
+    values.remove("catalog_slot");
+    values.remove("catalog_root");
+    values.insert("discover_catalogs", "true".to_owned());
+    Ok(values)
+}
+
+fn native_utc_discovery(codec: &str, explicit: bool) -> Test<FssCommand> {
+    use fss_reference::agent_recording_context::utc_discover::RecordingUtcDiscoveryContextRequest;
+    use fss_reference::agent_recordings::utc_discover::RecordingUtcDiscoveryRequest;
+    let FssCommand::RecordingUtcQuery(base) = native_utc(codec, explicit)? else {
+        return Err("UTC fixture command".into());
+    };
+    let source = base.request.recording;
+    Ok(FssCommand::RecordingUtcDiscoveryQuery(
+        fss_cli::recording_query_cmd::utc_discover::RecordingUtcDiscoveryQueryArgs {
+            root: base.root,
+            archive_root: base.archive_root,
+            request: RecordingUtcDiscoveryContextRequest {
+                principal: base.request.principal,
+                expected_anchor: base.request.expected_anchor,
+                recording: RecordingUtcDiscoveryRequest {
+                    codec: source.codec,
+                    scope: source.scope,
+                    clock_slot: source.clock_slot,
+                    clock_root: source.clock_root,
+                    interval: source.interval,
+                    max_windows: source.max_windows,
+                    max_hydration_bytes: source.max_hydration_bytes,
+                },
+            },
+        },
+    ))
+}
+
+#[test]
+fn utc_discovery_dispatch_preserves_native_identity_ownership_and_complete_response_bytes() -> Test
+{
+    for codec in ["avc", "hevc"] {
+        for explicit in [false, true] {
+            let mut values = utc_discovery_fields(codec)?;
+            if explicit {
+                values.insert("max_windows", "32".to_owned());
+                values.insert("max_hydration_bytes", quote("2147483648"));
+                values.insert("anchor", quote(ANCHOR));
+            }
+            let expected = native_utc_discovery(codec, explicit)?;
+            let mut server = ready(true);
+            for (bytes, exit) in [
+                (
+                    "{\"catalogs\":9,\"inventory\":\"complete\",\"unannotated\":\"clock_unavailable\"}\n",
+                    ExitIdentity::SUCCESS,
+                ),
+                (
+                    "{\"refusal\":\"recording_discovery_unindexed_windows\",\"selection\":null}\n",
+                    ExitIdentity::AGENT_REFUSED,
+                ),
+            ] {
+                let mut calls = 0;
+                let answer = server
+                    .handle_with(&request(&values), |command| {
+                        calls += 1;
+                        assert_eq!(command, expected);
+                        (bytes.to_owned(), exit)
+                    })
+                    .ok_or("missing UTC discovery response")?;
+                assert_eq!(calls, 1);
+                assert_eq!(
+                    response_text(&answer)?,
+                    (bytes.to_owned(), exit != ExitIdentity::SUCCESS)
+                );
+            }
+            refused(&mut ready(false), &values);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_discovery_mcp_refuses_partial_scope_manual_catalogs_tick_bounds_and_owner_overrides() -> Test
+{
+    let valid = utc_discovery_fields("avc")?;
+    let mut server = ready(true);
+    for missing in valid.keys() {
+        let mut values = valid.clone();
+        values.remove(missing);
+        refused(&mut server, &values);
+    }
+    for (field, value) in [
+        ("discover_catalogs", "false".to_owned()),
+        ("discover_catalogs", quote("true")),
+        ("discover_catalogs", "null".to_owned()),
+        ("catalog_slot", quote("single")),
+        ("catalog_root", quote(CATALOG)),
+        (
+            "catalogs",
+            format!(r#"[{{"slot":"page","root":"{CATALOG}"}}]"#),
+        ),
+        ("start_tick", quote("0")),
+        ("end_tick", quote("1")),
+        ("start_utc_ns", "9007199254740993".to_owned()),
+        ("end_utc_ns", quote("18446744073709551616")),
+        ("clock_slot", quote("unbound-clock")),
+        ("archive_root", quote("/other/archive")),
+        ("root", quote("/other")),
+        ("principal", quote("principal:other")),
+        ("continuation", quote("cursor")),
+        ("at", quote("latest")),
+    ] {
+        let mut values = valid.clone();
+        values.insert(field, value);
+        refused(&mut server, &values);
+    }
+    Ok(())
+}
+
 fn utc_set_fields(codec: &str) -> Test<Fields> {
     let mut values = utc_fields(codec)?;
     values.remove("catalog_slot");
@@ -1048,7 +1165,7 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
             .ok_or("UTC property")?;
         assert_eq!(property.get("type").and_then(Input::text), Some("string"));
     }
-    assert_eq!(modes.len(), 5);
+    assert_eq!(modes.len(), 6);
     let utc_set = modes
         .iter()
         .filter_map(Input::object)
@@ -1090,6 +1207,60 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
         "start_tick",
         "end_tick",
         "discover_catalogs",
+    ] {
+        assert!(
+            exclusions
+                .iter()
+                .filter_map(Input::object)
+                .filter_map(|branch| branch.get("required").and_then(Input::array))
+                .any(|required| required.iter().any(|value| value.text() == Some(name)))
+        );
+    }
+    let utc_discovery = modes
+        .iter()
+        .filter_map(Input::object)
+        .find(|mode| {
+            mode.get("required")
+                .and_then(Input::array)
+                .is_some_and(|required| {
+                    required
+                        .iter()
+                        .any(|value| value.text() == Some("discover_catalogs"))
+                        && required
+                            .iter()
+                            .any(|value| value.text() == Some("start_utc_ns"))
+                })
+        })
+        .ok_or("explicit UTC discovery schema branch")?;
+    let discovery_required = utc_discovery
+        .get("required")
+        .and_then(Input::array)
+        .ok_or("UTC discovery pins")?;
+    for name in [
+        "discover_catalogs",
+        "clock_slot",
+        "clock_root",
+        "start_utc_ns",
+        "end_utc_ns",
+    ] {
+        assert!(
+            discovery_required
+                .iter()
+                .any(|value| value.text() == Some(name))
+        );
+    }
+    let exclusions = utc_discovery
+        .get("not")
+        .and_then(Input::object)
+        .and_then(|not| not.get("anyOf"))
+        .and_then(Input::array)
+        .ok_or("UTC discovery exclusions")?;
+    for name in [
+        "catalogs",
+        "catalog_slot",
+        "catalog_root",
+        "start_tick",
+        "end_tick",
     ] {
         assert!(
             exclusions

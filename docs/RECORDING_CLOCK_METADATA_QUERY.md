@@ -111,8 +111,38 @@ result after a bound, cancellation, mutation or deletion refusal.
 Set request, row and decision identities use separate
 `fss.agent_recordings.utc_set.*.v1` domains. The original singleton request,
 response and digest identities are unchanged. This entry point requires explicit
-catalog pins; directory discovery does not imply permission to construct a UTC
-catalog universe or obtain a fresh read allowance.
+catalog pins. Namespace discovery uses the separate bounded owner below; it
+cannot obtain a fresh allowance by composing explicit-set calls.
+
+## UTC discovery without manual catalog pins
+
+`agent_recordings::utc_discover::discover_recordings_utc` accepts the exact source
+scope and independently pinned clock companion, then verifies every canonical
+page and window in that native archive namespace before applying UTC selection.
+It shares the existing namespace inventory verifier with decode-clock discovery
+and the complete clock join with UTC-set queries. One reader covers both helpers
+and the final namespace, metadata, publication and tombstone checks. Original
+single-catalog and explicit-set APIs and identities remain unchanged.
+
+Discovery can inspect up to 4,096 windows in 1,024 pages, including more than the
+eight pages permitted by an explicit UTC set. The clock format still describes
+at most 64 windows. Every unannotated member must remain visible and charged;
+discovery refuses atomically if all required rows exceed the native 64-window
+output limit or the protected CLI/MCP 32-window limit. An empty or incomplete
+namespace cannot silently discard any retained clock descriptor. No new clock
+evidence or physical time mapping is fabricated for the remaining archive.
+
+The protected API is
+`agent_recording_context::utc_discover::discover_recordings_utc_in_deployment`.
+CLI/MCP callers select discovery with `--discover-catalogs yes` /
+`"discover_catalogs":true`, the exact clock slot/root and UTC bounds. The
+deployment prefix is bracketed around the archive read, and current deletion
+authority checks the complete namespace/clock reference union, including
+unselected source leaves. Output expands only pages supporting selected rows;
+the full inventory identity, counts, clock conditions and protected deployment
+context remain attached. See [native archive discovery](
+RECORDING_ARCHIVE_DISCOVERY.md#utc-discovery-with-a-retained-clock) for all limits,
+canonical identities, mode grammar and validation scope.
 
 ## Validation scope
 
