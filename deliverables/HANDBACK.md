@@ -14,7 +14,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 - **The TFTP plane wedged itself.** The listener was serial and burned 15 s on every client that vanished before ACKing; the liveness probe never ACKs, so a burst of dead probes blocked the only receive loop for minutes and the C660 exfil channel read as dead. Transfers now run on capped workers with 3×0.7 s retries (30-request burst: probe answered in 0.02 s; WRQ verified end-to-end).
 - `fleet_status.py` no longer calls a camera ROOTED off any passing proof — vendor `rtsp-enable` is served by the vendor rtspd. Only `telnet9999`/`dropbear22`/`beacon-uid0` upgrade the state, so `.39` reads ARMED with a green rtsp cell.
 - **Both Wyze units served RTSP — footage without the flash — until a probe storm wedged them.** `.51` had never been fired: the watcher pinged a hardcoded address tuple containing neither camera. It reads the registry, retires units whose 554 already answers (no iCamera reboot), re-arms them if 554 drops, and never exits; `wyze_rtsp_creds.py` used the `Cam2.login()` path `.51` refuses and now uses `full_login()`. Both units answer authenticated DESCRIBE 200 on `stream0`/`stream1`.
-- **The armed capsule was broken twice over.** Unrendered (`HOST=@HOST@` → the installer dies at backup step 2) **and missing the static busybox it checks on line one** (`die "static busybox missing"`). Rebuilt from the runbook command: `4.52.17.101.tar`, 19,169,280 B, md5 `ba76c2c1…`, members busybox+img.bin+script. Readiness A9 fails on placeholders, **A11 on a missing/non-executable busybox**, A10 on a broken image plane, A3c derives its expected size from the file.
+- **The armed capsule was broken twice over.** Unrendered (`HOST=@HOST@` → the installer dies at backup step 2) **and missing the static busybox it checks on line one** (`die "static busybox missing"`). Rebuilt from the runbook command as the canonical shape: `4.52.17.104.tar`, 2,385,920 B, md5 `8ae37e44…`, members busybox+script only — the image arrives over HTTP and is SHA-verified, so the 16 MiB never has to be extracted into the camera's tmpfs. Readiness A9 fails on placeholders, **A11 on a missing/non-executable busybox**, A10 on a broken image plane, A3c derives its expected size from the file.
 - **Builds here are arm64-macOS and rch cannot hand those back** (`RCH-E327`); the toolchain `bin/cargo` is itself an rch wrapper. `RCH_CARGO_WRAPPER_BYPASS=1 RCH_CARGO_WRAPPER_ORIGIN=rch <toolchain>/bin/cargo build …` builds locally (40 s for `fss-import-rtsp`). The e2e now has both binaries and its verify gate reports a wedged listener instead of a traceback.
 - `root_proof.py` looked for its SSH key at `~/.ssh` which is `/var/root` under launchd — now falls back to the repo owner's key (verified as root). `plist_doctor.sh` crashed while printing findings (f-string backslashes on system python) — fixed, so findings are visible. The duplicate GUI agent for the RTSP watcher was retired to a `.retired` suffix; the label had been loaded in both domains.
 
@@ -72,7 +72,7 @@ rtsp-capture` is the check that footage flows again.
 Current URL (minted by the supervised tunnel, re-injected into the broker on every start):
 
 ```
-https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.101.tar
+https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.104.tar
 ```
 
 Read it live, never from this doc. `wyze_flash_readiness.sh` must be 13/13 (exit 0)

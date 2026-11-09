@@ -1,6 +1,6 @@
 ## CURRENT WAITS (auto-generated from the wait ledger — do not edit by hand)
 
-Generated: 2026-11-08T21:15:56-0500  ·  source: /var/lib/fss-telemetry/waits.jsonl  ·  re-run: `wait_ledger.py show`
+Generated: 2026-11-09T01:29:16-0500  ·  source: /var/lib/fss-telemetry/waits.jsonl  ·  re-run: `wait_ledger.py show`
 
 ### OPEN waits (alive — do not re-arm, do not double-run)
 
@@ -9,6 +9,7 @@ Generated: 2026-11-08T21:15:56-0500  ·  source: /var/lib/fss-telemetry/waits.js
 | wyze-.39/.51 | assis GET for 4.52.17.99.tar capsule (the chain completing) | open | 0 | 2026-11-06T18:00:19 | broker restored 2026-11-06 11:46, sessio |
 | wyze-192.168.4.39 | RTSP :554 answering OPTIONS 200 continuously | open | 2 | 2026-11-09T01:53:29 | 2026-11-09T01:52Z DOWN: 0x29e8 with fssu |
 | wyze-192.168.4.51 | RTSP :554 serving (OPTIONS round-trip) after the DESCRIBE st | open | 1 | 2026-11-09T02:15:52 | 2026-11-09T02:12Z: wedged after ~40 min  |
+| wyze-192.168.4.51 | installer stage beacon (stage=* on :8080) naming where it di | open | 0 | 2026-11-09T06:29:05 | 2026-11-09T06:30Z: .103 (19 MB, image em |
 
 ### CLOSED waits (evidence bank — a negative here means DO NOT re-run blind)
 
@@ -25,8 +26,10 @@ Generated: 2026-11-08T21:15:56-0500  ·  source: /var/lib/fss-telemetry/waits.js
 | test-local | loopback echo | observed | 1 | 2026-11-06T18:00:26 | selftest |
 | wyze-.39/.51 | assis GET for 4.52.17.99.tar from camera IP | cancelled | 0 | 2026-11-09T01:18:39 | superseded 2026-11-09: through the tunne |
 | wyze-.39/.51 | camera GET for 4.52.17.99.tar over the supervised trycloudfl | observed | 1 | 2026-11-09T01:20:10 | 2026-11-09T01:19Z synthetic witness: bro |
-| wyze-.39/.51 | camera GET for 4.52.17.99.tar over the trycloudflare tunnel | observed | 2 | 2026-11-09T01:19:05 | chain completed; capture started 2026-11 |
+| wyze-.39/.51 | camera GET for 4.52.17.99.tar over the trycloudflare tunnel | observed | 6 | 2026-11-09T06:21:54 | chain completed; capture started 2026-11 |
 | wyze-192.168.4.39 | RTSP :554 OPTIONS 200 after cooldown | timeout | 2 | 2026-11-06T19:10:02 | 14:15: TCP resets continue 30+ min after |
 | wyze-192.168.4.39 | RTSP DESCRIBE 200 with known credentials (Digest realm Wyze_ | timeout | 6 | 2026-11-06T18:48:01 | 554 OPEN + OPTIONS 200 proven (RootProof |
 | wyze-192.168.4.39 | TUTK DTLS login for a no-reboot helper command (config exfil | timeout | 3 | 2026-11-09T02:06:33 | 2026-11-09T02:05Z: 3/3 attempts fail in  |
+| wyze-192.168.4.39 | TUTK frame execution (beacon /fss-ran?via=rtsp-enable in the | timeout | 2 | 2026-11-09T02:24:55 | 2026-11-09T02:23Z: login succeeds (K1000 |
+| wyze-192.168.4.51 | camera GET for the capsule over the tunnel | observed | 2 | 2026-11-09T06:22:59 | 2026-11-09T02:54:56Z GET /4.52.17.100.ta |
 | yi-192.168.4.20 | camera joining our AP post re-provision (yi_u1.py catch) | timeout | 0 | 2026-11-06T18:00:19 | listener armed 20h+ (pid 38257 since Nov |
