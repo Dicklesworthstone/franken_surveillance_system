@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 //! Finite source-verified lifecycle query under the existing native request owner.
 
+#[path = "analysis/lifecycle_json.rs"]
 mod lifecycle_json;
+#[path = "analysis/report.rs"]
 mod report;
 
 use std::collections::BTreeMap;

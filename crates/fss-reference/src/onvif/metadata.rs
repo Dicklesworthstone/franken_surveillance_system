@@ -15,6 +15,8 @@ pub mod rtp;
 mod source;
 /// Source-verified, bounded grouping of consecutive vendor object claims.
 pub mod tracks;
+/// Source-verified finite raw vendor-coordinate zone observations.
+pub mod zones;
 
 pub use source::PullPointAcquisition;
 

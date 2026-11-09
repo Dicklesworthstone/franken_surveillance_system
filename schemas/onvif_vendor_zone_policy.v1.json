@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/onvif_vendor_zone_policy.v1.json",
+  "title": "ONVIF vendor raw-coordinate zone policy",
+  "description": "Closed operator declaration for complete vendor bounding-box classification in explicitly selected raw object-coordinate millionths. Source scope, named module and both unmodified transform declarations are pinned; no transform is applied and no pixel, orientation or calibrated world basis is inferred. The native parser additionally enforces the 65536-byte UTF-8 input ceiling, exact integer JSON token spelling, unique zone IDs and min[axis] < max[axis]. These cross-field and lexical conditions are not substituted by JSON Schema validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "coordinates",
+    "zones"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.onvif_vendor_zone_policy.v1"
+    },
+    "coordinates": {
+      "const": "raw_vendor_object_millionths"
+    },
+    "zones": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/zone"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "nonzero_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "coordinate_pair": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "integer",
+        "minimum": -1000000000000000,
+        "maximum": 1000000000000000
+      }
+    },
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scope",
+        "module_digest",
+        "frame_transform_digest",
+        "object_transform_digest",
+        "min",
+        "max",
+        "margin"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "not": {
+            "pattern": "[^A-Za-z0-9_-]"
+          }
+        },
+        "scope": {
+          "$ref": "#/$defs/nonzero_sha256"
+        },
+        "module_digest": {
+          "$ref": "#/$defs/nonzero_sha256"
+        },
+        "frame_transform_digest": {
+          "$ref": "#/$defs/nonzero_sha256"
+        },
+        "object_transform_digest": {
+          "$ref": "#/$defs/nonzero_sha256"
+        },
+        "min": {
+          "$ref": "#/$defs/coordinate_pair"
+        },
+        "max": {
+          "$ref": "#/$defs/coordinate_pair"
+        },
+        "margin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000000
+        }
+      },
+      "description": "The complete claimed box is expanded by margin before classification. Numeric axis minima/maxima have no implied image orientation. The native parser requires strict min < max on both axes and a unique ID across the complete policy."
+    }
+  }
+}

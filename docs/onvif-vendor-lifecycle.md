@@ -70,7 +70,7 @@ RTP rejected/empty source receipts, frozen-v1 non-upgrade, limits and missing-st
 refusal. These new native tests, the outer JSON envelope and full command remain
 **unexecuted** after the genuine Asupersync dependency builds were killed before
 FSS diagnostics. The temporary execution outage was recovered; pinned rustfmt,
-whitespace checks and a fresh32-test lineage rerun passed. Independent source review
+whitespace checks and a fresh 32-test lineage rerun passed. Independent source review
 and static JSON/schema-shape checks passed. These do not replace native integration,
 standard JSON Schema validation or release qualification.
 
@@ -212,3 +212,9 @@ whitespace checks, and the actual-source lineage target was rebuilt and passed
 cargo test --locked --offline -j1 -p fss-core --test onvif_lifecycle_contract
 cargo test --locked --offline -j1 -p fss-reference --test onvif_metadata_lifecycle_custody
 ```
+
+The subsequent zone integration also checked the complete recursive metadata CLI
+module tree and corrected explicit child paths for tracks/lifecycle/report modules.
+Those pinned parse/module-resolution checks pass; native typechecking remains
+separate. See [source-verified vendor zones](onvif-vendor-zones.md) for the independent
+geometry query and exact original-occurrence correlation.
