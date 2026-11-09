@@ -95,9 +95,10 @@ def chkey() -> str:
     open(os.path.join(d, "appid.txt"), "w").write(os.environ.get("CLIENT_ID", APPID))
     open(os.path.join(d, "package.txt"), "w").write(os.environ.get("PACKAGE", "com.glazero.android"))
     open(os.path.join(d, "cert.der"), "wb").write(open(os.path.join(HARNESS, "cert.der"), "rb").read())
-    r = subprocess.run(["docker", "run", "--rm", "--platform", "linux/arm64",
-                        "-v", d + ":/data", "fss-jvm", "java", "-cp", "/w/out", "Run", "chkey"],
-                       capture_output=True, text=True, timeout=120)
+    plat = os.environ.get("DOCKER_PLATFORM")
+    argv = ["docker", "run", "--rm"] + (["--platform", plat] if plat else []) + \
+           ["-v", d + ":/data", "fss-jvm", "java", "-cp", "/w/out", "Run", "chkey"]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     for line in r.stderr.splitlines():
         if line.startswith("CHKEY="):
             _CHKEY = line[6:]
@@ -121,8 +122,12 @@ def sign(canon: str) -> str:
     open(os.path.join(d, "appid.txt"), "w").write(os.environ.get("CLIENT_ID", APPID))
     open(os.path.join(d, "package.txt"), "w").write(os.environ.get("PACKAGE", "com.glazero.android"))
     open(os.path.join(d, "cert.der"), "wb").write(open(os.path.join(HARNESS, "cert.der"), "rb").read())
-    r = subprocess.run(["docker", "run", "--rm", "--platform", "linux/arm64",
-                        "-v", d + ":/data", "fss-jvm"],
+    # no --platform: the image is built for the host it runs on (arm64 here, amd64 on a VPS
+    # used to get a fresh egress IP), and forcing arm64 breaks the x86_64 hosts
+    plat = os.environ.get("DOCKER_PLATFORM")
+    argv = ["docker", "run", "--rm"] + (["--platform", plat] if plat else []) + \
+           ["-v", d + ":/data", "fss-jvm"]
+    r = subprocess.run(argv,
                        capture_output=True, text=True, timeout=120)
     for line in r.stderr.splitlines():
         if line.startswith("RESULT="):
