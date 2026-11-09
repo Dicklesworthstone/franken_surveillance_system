@@ -854,3 +854,19 @@ the root daemons are the only copies.
 `watch:yi-listener`, `watch:wyze-rtsp-watch`), read from `launchctl print` rather than
 `ps` — `ps` argv is unreliable in this harness. 18 planes, all green. A watcher that dies
 now fails the gate instead of being discovered days later.
+
+## 2026-11-09 03:00Z — third capsule defect: no busybox inside the tar
+
+`upgraderun.sh` line one is `[ -x /tmp/Upgrade/busybox ] || die "static busybox missing"`.
+The capsule rebuilt for the rendering fix was made from the lane notes without
+`--file deliverables/firmware/busybox-mipsel-static:busybox`, so it carried
+`Upgrade/upgraderun.sh` and `Upgrade/img.bin` and nothing else — another power-cycle that
+would have died in the first second, after a successful download.
+
+Rebuilt with the committed static busybox (`4.52.17.101.tar`, 19,169,280 B, md5
+`ba76c2c1…`, members busybox+img.bin+script, zero placeholders), armed, served, in the
+delta. Readiness gained **A11**: the tar must contain an *executable* `Upgrade/busybox`
+(the size field is printed from `tar -tvf` field 5, not 3).
+
+The runbook's build command was right all along; the lane note I copied was not. Build the
+capsule from `docs/exploit/FLASH-DAY-RUNBOOK.md`, never from memory.

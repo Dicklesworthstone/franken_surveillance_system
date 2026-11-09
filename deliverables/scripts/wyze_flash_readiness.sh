@@ -97,6 +97,20 @@ else
   bad "A9 capsule file missing"
 fi
 
+# A11: the capsule must carry the static busybox, executable. The installer's very
+# first line is `[ -x /tmp/Upgrade/busybox ] || die`; the capsule was rebuilt without
+# it once and every other assert stayed green (measured 2026-11-09).
+if [ -n "$CAP" ] && [ -f "/tmp/fwserve/$CAP" ]; then
+  BBROW=$(tar -tvf "/tmp/fwserve/$CAP" 2>/dev/null | grep -E 'Upgrade/busybox$')
+  case "$BBROW" in
+    -rwx*Upgrade/busybox) ok "A11 capsule carries executable busybox ($(echo "$BBROW" | awk '{print $5}')B)" ;;
+    "") bad "A11 capsule has NO Upgrade/busybox — installer dies on its first line" ;;
+    *) bad "A11 busybox present but not executable ($BBROW)" ;;
+  esac
+else
+  bad "A11 capsule file missing"
+fi
+
 # A10: the image plane the installer fetches from (IMG_URL is built from the same
 # HOST/PORT pair, so a dead :8080 or short image is another silent stall)
 IMGCL=$(curl -sS -A fss-probe/a10 -I --max-time 10 http://192.168.4.160:8080/img.bin 2>/dev/null \
