@@ -1,0 +1,208 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-09",
+  "timezone": "UTC",
+  "state": "functional_checkpoints_published_native_components_passed_reference_cli_execution_pending",
+  "mission": {
+    "goal": "Implement consequential remaining functionality from the comprehensive plan and beads, with meaningful direct-main GitHub checkpoints and no PRs.",
+    "initial_source_head": "f10a39cc8d4b3ad97113627946726fec7a9429b5",
+    "first_reviewed_source_head": "6c6bfcd77ace2dfbccf4cada4040a0bb078e6092",
+    "current_source_parent": "2a64cd97459fe673cfa71a82164d6427bd3d1c33",
+    "concurrent_main_preserved_through": "2a64cd97459fe673cfa71a82164d6427bd3d1c33",
+    "bead_scope": [
+      "FSS-139 / fss-x4a.14.10",
+      "VIT-008 / fss-vit-je36t.8",
+      "FSS-068 / fss-x4a.13.8"
+    ],
+    "authority": "User explicitly authorized implementation and direct main commits using GitHub. No PR, deployment, live-device action or human-directed message was performed by this session.",
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "normative_plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "source_contracts": [
+      "docs/PINNED_RECORDING_READS.md",
+      "docs/RTSP_QUERY_IMPORT.md",
+      "docs/RTSP_UTC_QUERY_IMPORT.md",
+      "docs/onnx_import.md"
+    ],
+    "previous_handoff": "docs/SESSION_HANDOFF_2026-11-09_SPLIT_QUERY.json",
+    "new_domains": [
+      "fss.rtsp_query_import_cli_plan.v2",
+      "fss.rtsp_utc_query_import_plan.v1",
+      "fss.rtsp_utc_query_import_cli_plan.v1"
+    ]
+  },
+  "delivered": {
+    "static_detector_controls": [
+      "Bounded static INT64 Slice, including negative/reverse/empty/extreme-sentinel cases; ConstantOfShape requires an explicit one-element INT64 fill.",
+      "Exact i64 Equal produces typed compile-time Bool controls; broadcast Where selects INT64 controls without floating-point conversion.",
+      "Existing rank-zero/rank-one and eight-element control limits, cumulative tensor/parameter/work quotas, cancellation and runtime operator contracts remain unchanged.",
+      "Importer source fingerprint includes the new selection evaluator; no runtime Bool tensor escape or implicit default-F32 coercion."
+    ],
+    "pinned_native_recordings": [
+      "Request-owned read-only PinnedClosureReader admits only an exact pinned manifest and its direct children; no directory enumeration, archive recovery, writer lock, arbitrary traversal or mutation.",
+      "Real AVC and HEVC loaders require the full native four-child closure and replay the existing packet/remux verifier before releasing a recording.",
+      "Final selected payload rehash and root/deletion-marker checks include dynamic native authority checks around every object and metadata stage, plus per-syscall request cancellation.",
+      "Cumulative byte/I/O/object/edge/root allowances never refill; completed windows are not reread for later windows. Terminal finalization preserves completed accounting on failure.",
+      "Additive pinned retained-import adapter shares unchanged provenance, publication and child identities with existing publisher-backed import APIs."
+    ],
+    "query_acquisition": [
+      "Decode-clock query CLI uses the pinned reader with a v2 approval binding source strategy and all fixed read limits; unchanged v1 reference core-plan and native import identities remain available.",
+      "UTC query-utc supports explicit independently pinned sessions or complete bounded catalog discovery in one historical source namespace.",
+      "Every selected full row retains independent source generation/codec/receive/decode clock, retained-clock metadata, catalog memberships, conditional UTC uncertainty and unknown-clock candidate status.",
+      "One shared batch owns descriptor verification before publication, complete-window custody, cumulative aggregate limits, current authority and durable-prefix/uncertain-current-window failure receipts.",
+      "Full protected revalidation runs under the existing-only destination owner; no constructor recreates a vanished destination or reconciles unrelated external effects.",
+      "Minimum source work is checked before approval or acquisition. UTC preview refuses oversized complete provenance before mutation, reserving result headroom within 256 KiB.",
+      "Whole native windows retain capture_origin=None. Selection does not trim custody, copy partial catalog/clock roots, claim packet-to-clock correspondence, equate clocks or establish physical continuity/absence."
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "dc6064a00b1de837731b3f0dd1e90ead98002e0e",
+      "change": "Bounded detector static shape selection and retained 58-case native model evidence."
+    },
+    {
+      "commit": "f0fdd508038c55a8f3e456f1081e15b36f815033",
+      "change": "Exact-pin native closure capability, AVC/HEVC loaders and retained 50-case native component evidence."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Shared pinned query acquisition, UTC session/discovery core and CLI, contracts, exact domains, operator docs and this handoff."
+    }
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31 / rustc 1.100.0-nightly 90850177249efe0321573c569aec5d12b257f8d6",
+    "native_model": {
+      "status": "passed",
+      "command": "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution --test onnx_shape_program_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
+      "passed": 58,
+      "failed": 0,
+      "new_shape_selection_cases": 10,
+      "filtered": 18,
+      "scope": "41 attention/selection and 17 existing shape-program contracts. Applicable cases execute actual production scalar and optimized executors before/after canonical graph and Safetensors reload; 18 unrelated embedded executor unit tests are filtered.",
+      "wall_seconds": 77.92,
+      "peak_child_rss_kib": 310828,
+      "retained_log": "docs/validation/2026-11-09-shape-selection-native-tests.log",
+      "log_sha256": "9b4dda344e2caf9d1606ee83f842e2d92cb23381ca8924c534b0825ab5794c5b"
+    },
+    "native_recording_components": {
+      "status": "passed",
+      "command": "cargo test --locked --offline -p fss-container --test pinned_recording_contract -- --test-threads=1",
+      "passed": 50,
+      "failed": 0,
+      "new_feature_refusal_cases": 17,
+      "filtered": 0,
+      "scope": "Actual production object contracts/spool, publisher, custody readers and AVC/HEVC packet replay by source inclusion; no substituted storage, custody, codec or authority implementation. Does not execute ReferenceDeployment, retained-import adapter, asynchronous runtime or CLI.",
+      "notable_failures_exercised": [
+        "wrong source scope/codec",
+        "selected source corruption",
+        "checksummed source/index forgery",
+        "pending selected roots and tombstones",
+        "late root/payload mutation",
+        "cumulative resource exhaustion",
+        "cancellation and terminal finalization",
+        "authority revoked after the seventh selected file open during final rehash"
+      ],
+      "wall_seconds": 0.617,
+      "peak_child_rss_kib": 38972,
+      "retained_log": "docs/validation/2026-11-09-pinned-recording-native-tests.log",
+      "log_sha256": "726933bbb2d56403c94dd941a3ebe58eea884183f52ae6e65d1a5b98334343b2"
+    },
+    "reference_and_cli": {
+      "status": "authored_source_reviewed_not_typechecked_or_executed",
+      "new_utc_reference_cases": 10,
+      "new_decode_pinned_reference_cases": 2,
+      "new_utc_parser_cases": 6,
+      "new_decode_work_preflight_case": 1,
+      "new_utc_process_case": 1,
+      "extended_decode_process_case": 1,
+      "independent_reviews": "Native reader, shared batch, UTC API/error matches, CLI public-parser grammar, read-only Cx construction, output bounds and partial/retry semantics reviewed by separate agents.",
+      "blocking_evidence": "Prior exact pinned full-reference metadata checks received SIGKILL while compiling unchanged Asupersync 0.5.0 before project diagnostics; see SESSION_HANDOFF_2026-11-09_GAPS_REDUCTIONS.json. A publication-only target this session also reached that dependency and was stopped; no further heavy unchanged-runtime retries were made.",
+      "exact_external_kill_mechanism": "not established"
+    },
+    "scoped_checks": {
+      "pinned_rustfmt": "passed on all 24 Rust files in the final acquisition checkpoint",
+      "strict_json": "passed with duplicate-key refusal for the semantic plane registry and this handoff",
+      "git_diff_check": "passed"
+    },
+    "production_dependencies_added": [],
+    "dev_dependency_addition": "Existing fss-ledger workspace crate for the fss-container actual-source native harness.",
+    "release_qualification": "not claimed",
+    "native_builds_still_running": false
+  },
+  "findings_and_resolved_cases": [
+    {
+      "case": "final_rehash_dynamic_authority",
+      "finding": "A source reader cancellation callback cannot replace a potentially non-Sync native authority probe. Added a stage-specific guard checked around each object and root/deletion metadata stage; actual dynamic revocation regression passes.",
+      "state": "resolved_native_component_test_passed"
+    },
+    {
+      "case": "full_query_cli_grammar",
+      "finding": "The reused public recording parsers require synthetic query and --json dispatch tokens. Both are supplied, while strict literal-session size and field validation remain intact.",
+      "state": "resolved_source_reviewed_execution_pending"
+    },
+    {
+      "case": "vanished_existing_destination",
+      "finding": "Query CLI authority construction must not create a destination removed after preview. Use the existing zero-I/O context constructor and independently authorized existing-only destination opener.",
+      "state": "resolved_source_reviewed_execution_pending"
+    },
+    {
+      "case": "pinned_work_admission",
+      "finding": "Initial hash, native replay and final rehash need three maximum native-byte passes, plus descriptor work. Core owner and UTC plan check remaining work; decode CLI checks this before approval without changing v1 core encoding.",
+      "state": "resolved_source_reviewed_execution_pending"
+    }
+  ],
+  "limitations_and_unknowns": [
+    "Full reference/CLI compilation and execution remain unverified. Native component passes cannot upgrade those claims.",
+    "UTC metadata is conditional node read/admission evidence, not authenticated UTC or camera exposure. Packet-to-clock admission correspondence is not replayed by this route.",
+    "UTC selection provenance is carried in operator plan/result receipts. A retained clock companion and separately granted screened review derivative are not created.",
+    "Acquisition retains whole native windows. UTC selection is not a movie presentation range and does not authorize trimming or disclosure.",
+    "Two-pass source counters exclude protected query metadata and destination work. Read/hash cost is linear in selected bytes, but no wall-time production benchmark or release qualification is claimed.",
+    "A trained RF-DETR or other full model can still exceed admitted operators, shapes and package bounds. No trained-model quality or family qualification follows from static control support.",
+    "VIT-023 reviewer grants, payment-zone attestation, retained derivative custody, independent expiry/revocation and remote delivery remain open."
+  ],
+  "invalidations": [
+    "A changed deployment authority/effect prefix, catalog/clock pin, deletion state, selected row, request, path, source strategy or bound requires current-state preview and fresh exact approval.",
+    "Superseded fss.rtsp_query_import_cli_plan.v1 approvals do not authorize the v2 read-only source strategy; the old registered domain remains reserved.",
+    "Partial native publications survive failed aggregate acquisition. Fresh approval reuses deterministic completed child identities; a possibly durable current import must be reconciled."
+  ],
+  "obligations": [
+    {
+      "id": "reference_cli_native_qualification",
+      "state": "open",
+      "owner": "next controlled pinned-nightly host",
+      "required_evidence": "Execute the new actual reference and CLI targets with the unchanged locked runtime closure; retain exact logs and resolve concrete diagnostics."
+    },
+    {
+      "id": "direct_main_checkpoints",
+      "state": "completed_by_containing_main_checkpoint",
+      "owner": "root session",
+      "required_evidence": "The containing checkpoint is published only through a non-force expected-head GitHub main update; the root session verifies the returned main ref and tree contents before reporting completion."
+    }
+  ],
+  "budgets_and_stop_rules": {
+    "source_reader": "For n selected windows, B combined native payload bytes and M largest window: n roots, 5n object observations, 4n edges, per-object M, 2B+M+32768n read bytes, 1024n+16 I/O calls. No refill; maximum 32 windows.",
+    "native_recording_ceiling_bytes": 33554432,
+    "utc_operator_output_bytes": 262144,
+    "utc_preview_bytes": 196608,
+    "build_stop_rule": "Do not repeat unchanged heavy Asupersync retries or replace runtime/dependencies/features to obtain a pass. Resume full native qualification only on a host capable of building the exact closure."
+  },
+  "continuation": {
+    "required_validation": [
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-reference --test rtsp_utc_query_import_contract",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-reference --test rtsp_catalog_import_contract query_acquisition::",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-cli --bin fss-import-rtsp",
+      "cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-cli --test rtsp_import_cli"
+    ],
+    "next_functional_work": [
+      {
+        "requirement": "VIT-023 / fss-vit023-review-export-w8aai",
+        "action": "Add a grant-bound retained screened review derivative with current payment-zone mask attestation, root-last custody, expiry/revocation and delivery. Existing private export-movie files and metadata-only evidence_export do not satisfy this contract."
+      },
+      {
+        "requirement": "FSS-139",
+        "action": "Qualify a deliberately pinned trained detector package end to end against an independent oracle, then prioritize concrete unsupported operators revealed by that exact model instead of guessing a model family."
+      }
+    ]
+  }
+}

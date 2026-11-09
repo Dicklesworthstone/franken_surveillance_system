@@ -16,6 +16,8 @@ mod jpeg;
 mod plan;
 #[path = "fss-import-rtsp/query.rs"]
 mod query;
+#[path = "fss-import-rtsp/query_utc.rs"]
+mod query_utc;
 
 use plan::{MAX_ARGUMENTS, Options};
 
@@ -53,12 +55,17 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   Opening the archive uses its exclusive publisher lock and can complete publication recovery.\n\
   The timeout is cooperative at custody boundaries; one bounded native verifier is not preempted.\n\
   Acquire only queried windows: fss-import-rtsp query --help.\n\
+  Acquire conditional UTC candidates: fss-import-rtsp query-utc --help.\n\
   Import independent epochs together: fss-import-rtsp batch --help.\n\
   Import retained RTP/JPEG originals: fss-import-rtsp jpeg --help.\n";
 
 fn emit(text: &str) -> io::Result<()> {
     // A full 64-page plan includes every exact slot/root plus bounded paths and JSON escaping.
-    if text.len() > 64 * 1024 {
+    emit_bounded(text, 64 * 1024)
+}
+
+fn emit_bounded(text: &str, maximum: usize) -> io::Result<()> {
+    if text.len() > maximum {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut out = io::stdout().lock();
@@ -90,6 +97,7 @@ fn main() -> ExitCode {
             MAX_ARGUMENTS
                 .max(jpeg::MAX_ARGUMENTS)
                 .max(query::MAX_ARGUMENTS)
+                .max(query_utc::MAX_ARGUMENTS)
                 + 2,
         )
         .collect();
@@ -98,6 +106,9 @@ fn main() -> ExitCode {
     }
     if args.first().and_then(|arg| arg.to_str()) == Some("query") {
         return query::main(&args[1..]);
+    }
+    if args.first().and_then(|arg| arg.to_str()) == Some("query-utc") {
+        return query_utc::main(&args[1..]);
     }
     if args.first().and_then(|arg| arg.to_str()) == Some("batch") {
         return batch::main(&args[1..]);

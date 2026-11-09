@@ -131,7 +131,7 @@ fn existing_directory(path: &Path) -> bool {
 }
 
 fn authority_boundary(
-    options: &Options,
+    timeout_ms: u64,
     authority: &ContextAuthority,
     start: Instant,
 ) -> Result<(), &'static str> {
@@ -139,7 +139,7 @@ fn authority_boundary(
         || !CAPS
             .iter()
             .all(|capability| authority.has_capability(capability))
-        || start.elapsed() >= Duration::from_millis(options.timeout_ms)
+        || start.elapsed() >= Duration::from_millis(timeout_ms)
     {
         return Err("ERR-RTSP-IMPORT-AUTHORITY-001");
     }
@@ -151,37 +151,45 @@ pub(super) fn preflight_source_paths(
     authority: &ContextAuthority,
     start: Instant,
 ) -> Result<(), &'static str> {
+    preflight_store_paths(
+        &options.archive,
+        &options.root,
+        options.timeout_ms,
+        authority,
+        start,
+    )
+}
+
+pub(super) fn preflight_store_paths(
+    archive: &Path,
+    root: &Path,
+    timeout_ms: u64,
+    authority: &ContextAuthority,
+    start: Instant,
+) -> Result<(), &'static str> {
     // ReplayCx construction creates its root. These read-only checks therefore use the
     // validated, exact-plan authority before constructing destination I/O authority.
     for name in ["", "spool", "roots", "tombstones"] {
-        authority_boundary(options, authority, start)?;
-        if !existing_directory(&options.archive.join(name)) {
+        authority_boundary(timeout_ms, authority, start)?;
+        if !existing_directory(&archive.join(name)) {
             return Err("ERR-RTSP-IMPORT-SOURCE-001");
         }
     }
-    authority_boundary(options, authority, start)?;
-    let source_path = options
-        .archive
+    authority_boundary(timeout_ms, authority, start)?;
+    let source_path = archive
         .canonicalize()
         .map_err(|_| "ERR-RTSP-IMPORT-SOURCE-001")?;
-    authority_boundary(options, authority, start)?;
-    let target_path = match std::fs::symlink_metadata(&options.root) {
-        Ok(metadata) if metadata.file_type().is_dir() => options
-            .root
+    authority_boundary(timeout_ms, authority, start)?;
+    let target_path = match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_dir() => root
             .canonicalize()
             .map_err(|_| "ERR-RTSP-IMPORT-REQUEST-001")?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => options
-            .root
+        Err(error) if error.kind() == io::ErrorKind::NotFound => root
             .parent()
             .ok_or("ERR-RTSP-IMPORT-REQUEST-001")?
             .canonicalize()
             .map_err(|_| "ERR-RTSP-IMPORT-REQUEST-001")?
-            .join(
-                options
-                    .root
-                    .file_name()
-                    .ok_or("ERR-RTSP-IMPORT-REQUEST-001")?,
-            ),
+            .join(root.file_name().ok_or("ERR-RTSP-IMPORT-REQUEST-001")?),
         _ => return Err("ERR-RTSP-IMPORT-REQUEST-001"),
     };
     if source_path.starts_with(&target_path) || target_path.starts_with(&source_path) {

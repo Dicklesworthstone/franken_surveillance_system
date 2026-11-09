@@ -52,7 +52,7 @@ pub(super) struct Options {
     pub approve: Option<ContentDigest>,
 }
 
-fn path(text: &str) -> Result<PathBuf, &'static str> {
+pub(super) fn path(text: &str) -> Result<PathBuf, &'static str> {
     let path = PathBuf::from(text);
     if !path.is_absolute()
         || path.file_name().is_none()
@@ -64,7 +64,7 @@ fn path(text: &str) -> Result<PathBuf, &'static str> {
     Ok(path)
 }
 
-fn digest(text: &str) -> Result<ContentDigest, &'static str> {
+pub(super) fn digest(text: &str) -> Result<ContentDigest, &'static str> {
     let value = ContentDigest::parse(text).map_err(|_| "invalid digest")?;
     if value.algorithm() != DigestAlgorithm::Sha256 || value.bytes() == [0; 32] {
         return Err("nonzero SHA-256 digest required");
@@ -72,7 +72,7 @@ fn digest(text: &str) -> Result<ContentDigest, &'static str> {
     Ok(value)
 }
 
-fn timestamp(text: &str) -> Result<TimestampNs, &'static str> {
+pub(super) fn timestamp(text: &str) -> Result<TimestampNs, &'static str> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("nonnegative decimal timestamp required");
     }

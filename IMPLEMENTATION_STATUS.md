@@ -4,6 +4,59 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Pinned native acquisition, UTC selection and static detector controls
+
+`fss-import-rtsp query` now reads only the exact selected native recording
+closures through one cumulative read-only capability. It no longer opens the
+archive publisher, acquires its writer lock, recovers the archive or reads
+unrelated source payloads. Both AVC and HEVC still undergo complete native
+packet replay and remux verification. Selected objects, root bindings and
+deletion markers are checked again before each recording is released, with
+current authority checked throughout the final pass. Completed windows are not
+reread for later windows. The v2 operator approval binds the new source policy
+and all read allowances; existing native import and v1 core-plan identities
+remain unchanged. See [the reader contract](docs/PINNED_RECORDING_READS.md).
+
+`fss-import-rtsp query-utc` connects protected UTC session and namespace-discovery
+queries to approved acquisition. It preserves each selected window's exact
+source generation, codec, clock correlation and catalog memberships, including
+every unknown-time candidate. It retains complete native windows under the
+existing source-closed identities and shares frame, original/media-byte, read,
+I/O-call and native-work limits across the selection. Preview refuses oversized
+complete provenance before mutation. A partial failure preserves completed
+receipts and reports any uncertain current publication; a fresh approved plan
+reconciles completed imports. Conditional node-clock metadata does not become
+camera exposure time, packet-to-clock correspondence, continuity or absence.
+See [UTC acquisition](docs/RTSP_UTC_QUERY_IMPORT.md).
+
+The ONNX static shape evaluator now admits bounded INT64 `Slice`, explicit
+INT64 `ConstantOfShape`, exact integer `Equal` and broadcast `Where`. This
+extends detector-export shape/control compatibility while keeping the existing
+eight-element/rank-one limits, runtime operators, cumulative quotas and native
+executor contracts. Compile-time Bool values cannot escape into runtime tensors.
+See [ONNX import](docs/onnx_import.md).
+
+**Validation on 2026-11-09:** the pinned nightly passed 58 model contracts
+(including ten new shape-selection cases) through actual scalar/optimized
+execution and canonical graph/Safetensors reload, with 18 unrelated embedded
+executor unit tests filtered. It also passed all 50 recording component tests
+(17 new cases) over the actual production object, spool, publisher, custody and
+AVC/HEVC replay modules. Evidence includes held-writer-lock retrieval, unrelated
+corruption isolation, checksummed source/index forgery refusal, cumulative
+quotas and authority revocation during final rehash. Logs are retained for
+[model selection](docs/validation/2026-11-09-shape-selection-native-tests.log) and
+[native recording reads](docs/validation/2026-11-09-pinned-recording-native-tests.log).
+The new reference acquisition and CLI contracts are authored and independently
+source-reviewed but remain untypechecked/unexecuted here: the previously
+observed Asupersync metadata compiler SIGKILL remains the full-runtime boundary.
+The native component harness does not qualify `ReferenceDeployment`, the
+retained-import adapter, CLI or release. No production dependency, runtime,
+quota or qualification gate was substituted or weakened. See the
+[current typed handoff](docs/SESSION_HANDOFF_2026-11-09_PINNED_UTC.json).
+FSS-139, VIT-008 and FSS-068 advance; broad beads remain open. Retained screened
+review derivatives with separate grants, expiry/revocation and delivery remain
+the next acquisition-to-review gap.
+
 ## Explicit split detector heads and query-selected recording acquisition
 
 `fss-infer import-onnx` now accepts strict recipe v4 for detector exports with
@@ -28,12 +81,12 @@ A changed deployment prefix requires fresh approval; unchanged child identities
 reuse completed imports. Capture time stays unknown, and later review still
 requires current privacy screening. See [query-selected acquisition](docs/RTSP_QUERY_IMPORT.md).
 
-The archive's existing verified publisher recovery still rehashes unselected
-spool objects. The selected-byte quote describes retained originals, not total
-disk I/O; a separately qualified read-only native loader remains a performance
-gap. The new command is one exact catalog in native decode ticks, not UTC session
-or namespace-discovery acquisition. Remote reviewer grants, payment-zone
-attestation, retained derivative custody/expiry/revocation and delivery remain open.
+This earlier checkpoint used archive publisher recovery and one exact catalog
+in native decode ticks. The pinned-reader and UTC acquisition extension above
+supersedes those source-read and selection limitations. Selected-original byte
+quotes still differ from total two-pass source I/O. Remote reviewer grants,
+payment-zone attestation, retained derivative custody/expiry/revocation and
+delivery remain open.
 
 **Validation on 2026-11-09:** after the runner recovered, the pinned nightly passed
 all 31 focused model contracts, including ten new split-head cases and the actual

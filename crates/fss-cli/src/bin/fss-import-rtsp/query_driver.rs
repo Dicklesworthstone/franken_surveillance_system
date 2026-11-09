@@ -7,12 +7,12 @@ use fss_cli::agent_json::{array, object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_geometry::WorkBudget;
-use fss_object::{HostSpoolIo, MAX_MANIFEST_CHILDREN, SpoolLimits};
-use fss_publication::{LocalPublicationLimits, LocalRootPublisher};
+use fss_object::HostSpoolIo;
+use fss_publication::custody_audit::pinned_closure::PinnedClosureReader;
 use fss_reference::ingest::rtsp_import::MAX_ORIGINAL_BYTES;
 use fss_reference::ingest::rtsp_import::query::{
     RtspQueryImportAuthority, RtspQueryImportPlan, RtspQueryImportSettings,
-    RtspQueryImportedWindow, import_rtsp_query_existing, preview_rtsp_query_import,
+    RtspQueryImportedWindow, import_rtsp_query_pinned_existing, preview_rtsp_query_import,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -37,7 +37,27 @@ fn interval(interval: &std::ops::Range<u64>) -> String {
     ])
 }
 
-fn plan_report(options: &QueryOptions, plan: &RtspQueryImportPlan) -> Result<String, &'static str> {
+/// Match the pinned source owner's admission floor without changing the legacy v1 plan.
+/// This reserves native source verification and descriptor work; it is not a promise that
+/// the remaining decoding, reconstruction and publication work will fit the ceiling.
+pub(super) fn pinned_work_preflight(
+    windows: usize,
+    original_bytes: u64,
+    max_work: u64,
+) -> Result<u64, &'static str> {
+    u64::try_from(windows)
+        .ok()
+        .and_then(|windows| windows.checked_mul(MAX_ORIGINAL_BYTES * 3))
+        .and_then(|reads| reads.checked_add(original_bytes))
+        .filter(|minimum| *minimum <= max_work)
+        .ok_or("ERR-RTSP-IMPORT-REQUEST-001")
+}
+
+fn plan_report(
+    options: &QueryOptions,
+    plan: &RtspQueryImportPlan,
+    minimum_source_work: u64,
+) -> Result<String, &'static str> {
     let query = plan.query();
     let selected = plan
         .windows()
@@ -75,7 +95,11 @@ fn plan_report(options: &QueryOptions, plan: &RtspQueryImportPlan) -> Result<Str
         ("kind", string("plan")),
         (
             "approval_digest",
-            string(&options.approval(plan.digest())?.to_text()),
+            string(
+                &options
+                    .approval(plan.digest(), plan.source_limits())?
+                    .to_text(),
+            ),
         ),
         ("plan_digest", string(&plan.digest().to_text())),
         ("query_decision", string(&query.decision_digest.to_text())),
@@ -140,9 +164,16 @@ fn plan_report(options: &QueryOptions, plan: &RtspQueryImportPlan) -> Result<Str
         ),
         (
             "approved_archive_open",
-            string("rehashes_all_existing_spool_objects_and_may_recover_publications"),
+            string("read_only_exact_selected_closures_without_writer_lock_or_recovery"),
         ),
-        ("maximum_archive_spool_payload_bytes", "1073741824".into()),
+        (
+            "maximum_source_read_bytes",
+            plan.source_limits().max_read_bytes.to_string(),
+        ),
+        (
+            "maximum_source_io_calls",
+            plan.source_limits().max_io_calls.to_string(),
+        ),
         ("selected_frames", plan.frames().to_string()),
         (
             "maximum_frames",
@@ -156,6 +187,7 @@ fn plan_report(options: &QueryOptions, plan: &RtspQueryImportPlan) -> Result<Str
             "maximum_media_bytes",
             options.common.request.max_media_bytes.to_string(),
         ),
+        ("minimum_source_work", minimum_source_work.to_string()),
         ("maximum_work", options.common.work.to_string()),
         ("timeout_ms", options.common.timeout_ms.to_string()),
         (
@@ -210,11 +242,12 @@ struct Owner<'a> {
 impl Owner<'_> {
     fn allowed(&self, plan: &RtspQueryImportPlan) -> bool {
         plan.digest() == self.plan_digest
-            && self
-                .options
-                .common
-                .approve
-                .is_some_and(|approved| self.options.approval(plan.digest()).ok() == Some(approved))
+            && self.options.common.approve.is_some_and(|approved| {
+                self.options
+                    .approval(plan.digest(), plan.source_limits())
+                    .ok()
+                    == Some(approved)
+            })
             && self.authority.cancellation_reason.is_none()
             && CAPS
                 .iter()
@@ -250,20 +283,11 @@ fn acquire(
     }
     cx.checkpoint("import_rtsp:query_open_source")
         .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
-    let source = LocalRootPublisher::open(
+    let mut source = PinnedClosureReader::new(
+        &HostSpoolIo,
         &options.common.archive,
-        LocalPublicationLimits::new(
-            65536,
-            MAX_MANIFEST_CHILDREN,
-            65536,
-            65536,
-            SpoolLimits::new(
-                65536,
-                1024 * 1024 * 1024,
-                MAX_ORIGINAL_BYTES as usize,
-                131072,
-            ),
-        ),
+        plan.source_limits(),
+        &cancelled,
     )
     .map_err(|_| "ERR-RTSP-IMPORT-SOURCE-001")?;
     let owner = Owner {
@@ -274,9 +298,9 @@ fn acquire(
         start,
     };
     let mut work = WorkBudget::new(options.common.work);
-    let result = import_rtsp_query_existing(
+    let result = import_rtsp_query_pinned_existing(
         &HostSpoolIo,
-        &source,
+        &mut source,
         plan,
         &owner,
         cx,
@@ -288,7 +312,11 @@ fn acquire(
         ("kind", string("acquisition_result")),
         (
             "approval_digest",
-            string(&options.approval(plan.digest())?.to_text()),
+            string(
+                &options
+                    .approval(plan.digest(), plan.source_limits())?
+                    .to_text(),
+            ),
         ),
         ("plan_digest", string(&plan.digest().to_text())),
         (
@@ -318,10 +346,12 @@ fn acquire(
         ("destination_contains_complete_catalog", "false".into()),
         (
             "archive_open",
-            string("verified_recovery_may_read_unselected_payloads"),
+            string("read_only_exact_selected_closures_without_writer_lock_or_recovery"),
         ),
         ("network", string("none")),
         ("work_used", work.used().to_string()),
+        ("source_read_bytes", source.usage().read_bytes.to_string()),
+        ("source_io_calls", source.usage().io_calls.to_string()),
     ];
     let complete = match result {
         Ok(receipt) => {
@@ -376,11 +406,18 @@ pub(super) fn run(options: &QueryOptions) -> Result<(String, bool), &'static str
         &cancelled,
     )
     .map_err(|error| error.stable_id())?;
+    // Refuse an unaffordable pinned-source strategy before issuing or checking approval,
+    // constructing an authority owner, opening a source reader or opening a destination owner.
+    let minimum_source_work = pinned_work_preflight(
+        plan.windows().len(),
+        plan.original_bytes(),
+        plan.settings().max_work,
+    )?;
     if options.common.approve.is_none() {
-        return plan_report(options, &plan).map(|report| (report, true));
+        return plan_report(options, &plan, minimum_source_work).map(|report| (report, true));
     }
     // This comparison precedes all writer/recovery handles and original payload reads.
-    if options.common.approve != Some(options.approval(plan.digest())?) {
+    if options.common.approve != Some(options.approval(plan.digest(), plan.source_limits())?) {
         return Err("ERR-RTSP-IMPORT-APPROVAL-001");
     }
     let mut capabilities: Vec<_> = CAPS.iter().map(|value| (*value).to_owned()).collect();
@@ -408,7 +445,9 @@ pub(super) fn run(options: &QueryOptions) -> Result<(String, bool), &'static str
         .validate()
         .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
     super::super::driver::preflight_source_paths(&options.common, &authority, start)?;
-    let cx = ReplayCx::from_context_authority(&authority, options.common.root.clone())
+    // Construction itself must not recreate a destination removed after the preview.
+    // Independent retention authority is enforced by the existing-only native import owner.
+    let cx = ReplayCx::from_context_authority_read_only(&authority, options.common.root.clone())
         .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
     let result = acquire(options, &plan, &authority, &cx, start);
     cx.drain_and_finalize();

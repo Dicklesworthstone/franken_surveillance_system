@@ -10,10 +10,17 @@
 //! current import. Any changed deployment anchor requires a new preview and approval; identical
 //! child requests still reconcile through their existing native identities.
 
+mod batch;
 mod execute;
 mod plan;
 
-pub use execute::{import_rtsp_query, import_rtsp_query_existing};
+/// Conditional UTC selections across independent capture sessions or one discovered namespace.
+pub mod utc;
+
+pub use execute::{
+    import_rtsp_query, import_rtsp_query_existing, import_rtsp_query_pinned,
+    import_rtsp_query_pinned_existing,
+};
 pub use plan::preview_rtsp_query_import;
 
 use std::fmt;
@@ -38,6 +45,8 @@ pub const STAGE_QUERY_IMPORT: &str = "rtsp_query_import:authority";
 pub const STAGE_QUERY_REVALIDATE: &str = "rtsp_query_import:revalidate";
 /// Boundary before the next independent native import.
 pub const STAGE_QUERY_WINDOW: &str = "rtsp_query_import:next_window";
+/// Final read-only source-layout/cancellation observation before aggregate success.
+pub const STAGE_QUERY_FINALIZE: &str = "rtsp_query_import:finalize_source";
 
 const DOMAIN: &str = "fss.rtsp_query_import_plan.v1";
 const POLICY: &str = "protected-exact-catalog-query:whole-selected-native-windows:unknown-capture-time:unchanged-native-child-identities:exact-descriptor-check:one-import-work-account:independent-imports:no-partial-catalog:repreview-after-anchor-change:no-continuity:no-absence:no-media-delivery:v1";
@@ -123,6 +132,21 @@ impl RtspQueryImportPlan {
     pub fn archive_root(&self) -> &Path {
         &self.archive_root
     }
+    /// Aggregate selected-source read allowance for the optional two-pass pinned reader.
+    /// The legacy v1 plan/native identities remain unchanged; a transport selecting this
+    /// strategy must bind the strategy and these values into its own exact approval.
+    #[must_use]
+    pub fn source_limits(&self) -> fss_publication::custody_audit::CustodyAuditLimits {
+        batch::source_limits(
+            self.windows.len(),
+            self.original_bytes,
+            self.windows
+                .iter()
+                .map(|window| window.row.entry.byte_len())
+                .max()
+                .unwrap_or(0),
+        )
+    }
 }
 
 /// Current independent original-read and destination-retention permission for one exact plan.
@@ -173,6 +197,14 @@ pub enum RtspQueryImportError {
     Invalid(&'static str),
     /// Protected metadata context or query could not be verified.
     Context(Box<RecordingContextError>),
+    /// A complete protected UTC session selection could not be verified.
+    UtcSessionsContext(
+        Box<crate::agent_recording_context::utc_sessions::RecordingUtcSessionsContextError>,
+    ),
+    /// A complete protected UTC namespace selection could not be verified.
+    UtcDiscoveryContext(
+        Box<crate::agent_recording_context::utc_discover::RecordingUtcDiscoveryContextError>,
+    ),
     /// The approved context/selection differs from current metadata or the opened owner.
     StalePlan,
     /// Independent current authority, cancellation or deadline refused.
@@ -189,7 +221,10 @@ impl RtspQueryImportError {
         match self {
             Self::Invalid(_) => "ERR-RTSP-IMPORT-REQUEST-001",
             Self::Denied => "ERR-RTSP-IMPORT-AUTHORITY-001",
-            Self::Context(_) | Self::StalePlan => "ERR-RTSP-IMPORT-SOURCE-001",
+            Self::Context(_)
+            | Self::UtcSessionsContext(_)
+            | Self::UtcDiscoveryContext(_)
+            | Self::StalePlan => "ERR-RTSP-IMPORT-SOURCE-001",
             Self::Destination(_) => "ERR-RTSP-IMPORT-CUSTODY-001",
             Self::Import(error) => error.stable_id(),
         }

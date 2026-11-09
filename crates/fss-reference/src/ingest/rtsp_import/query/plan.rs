@@ -16,7 +16,7 @@ use crate::reference_deployment::validate_site_lineage;
 type Result<T> = std::result::Result<T, RtspQueryImportError>;
 
 impl RtspQueryImportSettings {
-    fn validate(&self) -> Result<()> {
+    pub(super) fn validate(&self) -> Result<()> {
         if validate_site_lineage(&self.site).is_err()
             || self.receive_time.0 < 0
             || !(1..=rtsp_import::catalog::MAX_FRAMES).contains(&self.max_frames)

@@ -7,6 +7,8 @@ mod hevc_recording_support;
 
 #[path = "rtsp_import_cli/query.rs"]
 mod query;
+#[path = "rtsp_import_cli/query_utc.rs"]
+mod query_utc;
 
 use std::ffi::OsString;
 use std::fs;

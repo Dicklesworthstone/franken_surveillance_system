@@ -2,6 +2,17 @@
 
 use super::*;
 
+fn source_limits() -> CustodyAuditLimits {
+    CustodyAuditLimits {
+        max_catalogue_entries: 1,
+        max_objects: 5,
+        max_edges: 4,
+        max_object_bytes: 1024,
+        max_read_bytes: 65536,
+        max_io_calls: 1040,
+    }
+}
+
 fn args() -> Vec<OsString> {
     let digest = ContentDigest::sha256(b"query-import-parser-fixture").to_text();
     [
@@ -78,11 +89,14 @@ fn query_approval_binds_the_interval_quote_context_plan_and_owner_choices()
 -> Result<(), &'static str> {
     let plan = ContentDigest::sha256(b"verified-plan");
     let options = QueryOptions::parse(&args())?;
-    let approved = options.approval(plan)?;
+    let approved = options.approval(plan, source_limits())?;
     assert_ne!(approved, options.common.approval()?);
+    let mut changed_limits = source_limits();
+    changed_limits.max_read_bytes -= 1;
+    assert_ne!(approved, options.approval(plan, changed_limits)?);
     assert_ne!(
         approved,
-        options.approval(ContentDigest::sha256(b"other-plan"))?
+        options.approval(ContentDigest::sha256(b"other-plan"), source_limits())?
     );
     let other = ContentDigest::sha256(b"other-scope").to_text();
     for (key, value) in [
@@ -107,7 +121,7 @@ fn query_approval_binds_the_interval_quote_context_plan_and_owner_choices()
         let mut changed = args();
         set(&mut changed, key, value);
         assert_ne!(
-            QueryOptions::parse(&changed)?.approval(plan)?,
+            QueryOptions::parse(&changed)?.approval(plan, source_limits())?,
             approved,
             "{key}"
         );
@@ -172,4 +186,30 @@ fn missing_deployment_preview_cannot_create_source_or_destination() -> Result<()
     assert!(!options.common.archive.exists());
     assert!(!options.common.root.exists());
     Ok(())
+}
+
+#[test]
+fn pinned_query_work_preflight_refuses_unaffordable_or_overflowing_source_work() {
+    let per_window = 3 * fss_reference::ingest::rtsp_import::MAX_ORIGINAL_BYTES;
+    let minimum = 2 * per_window + 4096;
+    assert_eq!(
+        driver::pinned_work_preflight(2, 4096, minimum - 1),
+        Err("ERR-RTSP-IMPORT-REQUEST-001")
+    );
+    assert_eq!(driver::pinned_work_preflight(2, 4096, minimum), Ok(minimum));
+    assert_eq!(
+        driver::pinned_work_preflight(2, 4096, minimum + 1),
+        Ok(minimum)
+    );
+    assert_eq!(driver::pinned_work_preflight(0, 0, 0), Ok(0));
+    assert_eq!(
+        driver::pinned_work_preflight(1, u64::MAX, u64::MAX),
+        Err("ERR-RTSP-IMPORT-REQUEST-001")
+    );
+    if let Ok(windows) = usize::try_from(u64::MAX / per_window + 1) {
+        assert_eq!(
+            driver::pinned_work_preflight(windows, 0, u64::MAX),
+            Err("ERR-RTSP-IMPORT-REQUEST-001")
+        );
+    }
 }

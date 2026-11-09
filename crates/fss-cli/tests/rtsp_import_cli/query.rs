@@ -10,7 +10,7 @@ use fss_reference::rtsp::recording_catalog::hevc::{HevcCatalogWindow, prepare_he
 use fss_reference::rtsp::recording_catalog::local::CatalogProgress;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-fn context(root: &std::path::Path) -> Test<ReplayCx> {
+pub(super) fn context(root: &std::path::Path) -> Test<ReplayCx> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:query-import-cli-fixture".into(),
         operation_id: OperationId::parse("operation:query-import-cli-fixture")?,
@@ -36,7 +36,7 @@ fn context(root: &std::path::Path) -> Test<ReplayCx> {
     )?)
 }
 
-fn source_limits() -> LocalPublicationLimits {
+pub(super) fn source_limits() -> LocalPublicationLimits {
     LocalPublicationLimits::new(
         16,
         64,
@@ -46,7 +46,7 @@ fn source_limits() -> LocalPublicationLimits {
     )
 }
 
-fn catalog(
+pub(super) fn catalog(
     directory: &Directory,
     first: &PreparedHevcRecording,
 ) -> Test<(ContentDigest, ContentDigest, ContentDigest)> {
@@ -174,7 +174,7 @@ fn selected_query_import_reapproves_current_state_and_reuses_closed_native_windo
         "--decode-end".into(),
         "100000".into(),
     ]);
-    // A held writer lock does not prevent bounded read-only metadata preview.
+    // Neither metadata preview nor approved selected acquisition needs an archive writer lock.
     let source = LocalRootPublisher::open(&archive, source_limits())?;
     let preview = good(run(&args)?)?;
     assert!(preview.contains("\"source_media_reads\":0"));
@@ -193,7 +193,27 @@ fn selected_query_import_reapproves_current_state_and_reuses_closed_native_windo
     assert!(!refusal.status.success());
     assert!(String::from_utf8_lossy(&refusal.stderr).contains("ERR-RTSP-IMPORT-APPROVAL-001"));
     assert_eq!(snapshot()?, before);
-    drop(source);
+    // An unrelated payload may be unreadable without blocking this exact source closure.
+    // Keep its published manifest and descriptor intact so the complete metadata query still
+    // observes its membership and deletion restrictions without hydrating its original bytes.
+    let unselected = fss_object::ObjectManifest::from_canonical_bytes(
+        &fss_publication::read_verified(&archive, unselected_root, 16384)?,
+    )?;
+    let opaque = *unselected
+        .children()
+        .iter()
+        .find(|digest| {
+            !first.manifest().children().contains(digest)
+                && Some(**digest) != unselected.metadata_digest()
+        })
+        .ok_or("unique unselected payload")?;
+    let opaque_path = archive
+        .join("spool/objects")
+        .join(opaque.to_text().trim_start_matches("sha256:"));
+    let mut corrupt = fs::read(&opaque_path)?;
+    let last = corrupt.last_mut().ok_or("nonempty original payload")?;
+    *last ^= 1;
+    fs::write(&opaque_path, &corrupt)?;
 
     let mut approved = args.clone();
     approved.extend([
@@ -205,6 +225,15 @@ fn selected_query_import_reapproves_current_state_and_reuses_closed_native_windo
     assert!(result.contains("\"completed_imports\":1"));
     assert!(result.contains("\"capture_time_label\":\"unknown\""));
     assert!(result.contains("\"destination_contains_complete_catalog\":false"));
+    assert!(result.contains(
+        "\"archive_open\":\"read_only_exact_selected_closures_without_writer_lock_or_recovery\""
+    ));
+    assert!(result.contains("\"source_read_bytes\":"));
+    assert_eq!(
+        fs::read(&opaque_path)?,
+        corrupt,
+        "source recovery modified an unrelated payload"
+    );
     let identity = field(&result, "import_identity")?.to_owned();
     let stored = root.join("objects/spool/objects");
     assert!(
@@ -233,6 +262,7 @@ fn selected_query_import_reapproves_current_state_and_reuses_closed_native_windo
     assert!(reused.contains("\"reused\":true"));
     assert_eq!(field(&reused, "import_identity")?, identity);
     assert_eq!(snapshot()?, committed);
+    drop(source);
     fs::rename(&archive, directory.0.join("offline archive"))?;
     let verified = good(
         Command::new(env!("CARGO_BIN_EXE_fss-file"))

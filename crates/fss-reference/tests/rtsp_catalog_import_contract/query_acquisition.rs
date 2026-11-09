@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 #[path = "query_descriptor.rs"]
 mod descriptor;
+#[path = "query_pinned.rs"]
+mod pinned;
 #[path = "query_refusals.rs"]
 mod refusals;
 

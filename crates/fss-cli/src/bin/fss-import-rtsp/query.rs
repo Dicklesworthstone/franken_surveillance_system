@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use fss_cli::ExitIdentity;
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_publication::custody_audit::CustodyAuditLimits;
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_recording_context::{RecordingContextLimits, RecordingContextRequest};
 use fss_reference::agent_recordings::RecordingQueryRequest;
@@ -17,7 +18,7 @@ use super::plan::Options;
 mod driver;
 
 pub(super) const MAX_ARGUMENTS: usize = super::plan::MAX_ARGUMENTS + 8;
-pub(super) const FORMAT: &str = "fss.rtsp_query_import_operator.v1";
+pub(super) const FORMAT: &str = "fss.rtsp_query_import_operator.v2";
 
 const HELP: &str = "fss-import-rtsp query --archive EXISTING_ABSOLUTE_ARCHIVE --root EXISTING_ABSOLUTE_DEPLOYMENT --site SITE\n\
   --catalog-slot SLOT --catalog-root sha256:HEX --codec avc|hevc\n\
@@ -33,8 +34,9 @@ const HELP: &str = "fss-import-rtsp query --archive EXISTING_ABSOLUTE_ARCHIVE --
   Approval binds the exact metadata decision, current deployment, interval, selected whole\n\
   windows, gaps, paths, principal and budgets. Execution revalidates before staging.\n\
   Only selected whole windows are imported, each under its existing native custody proof.\n\
-  Approved archive opening still rehashes existing spool objects (up to 1 GiB) and can\n\
-  recover publications; the selected-byte quote is not a total disk-I/O estimate.\n\
+  Approved source reads verify only exact selected native closures under one shared budget.\n\
+  No archive writer lock, recovery or unrelated source payload read is performed.\n\
+  The selected-byte quote prices retained originals; two-pass source I/O is reported separately.\n\
   The query overlap does not trim originals. Native movie selection uses the returned import IDs.\n\
   Capture time stays unknown; decode ticks never imply UTC, continuity or physical absence.\n\
   A batch is not atomic. On failure, completed imports remain durable; a failed import may\n\
@@ -159,13 +161,17 @@ impl QueryOptions {
         })
     }
 
-    pub fn approval(&self, plan: ContentDigest) -> Result<ContentDigest, &'static str> {
+    pub fn approval(
+        &self,
+        plan: ContentDigest,
+        source: CustodyAuditLimits,
+    ) -> Result<ContentDigest, &'static str> {
         if plan.algorithm() != DigestAlgorithm::Sha256 || plan.bytes() == [0; 32] {
             return Err("invalid acquisition plan digest");
         }
         let mut e = CanonicalEncoder::new();
-        e.text("fss.rtsp_query_import_cli_plan.v1");
-        e.text("selected-whole-windows:unknown-capture:no-cross-window-continuity:v1");
+        e.text("fss.rtsp_query_import_cli_plan.v2");
+        e.text("selected-whole-windows:unknown-capture:no-cross-window-continuity:read-only-pinned-source:v2");
         e.digest(self.common.approval()?);
         e.digest(
             self.context
@@ -178,6 +184,16 @@ impl QueryOptions {
             e.text(anchor.as_str());
         }
         e.digest(plan);
+        for value in [
+            source.max_catalogue_entries as u64,
+            source.max_objects as u64,
+            source.max_edges as u64,
+            source.max_object_bytes as u64,
+            source.max_read_bytes,
+            source.max_io_calls,
+        ] {
+            e.u64(value);
+        }
         Ok(ContentDigest::sha256(&e.finish()))
     }
 }
