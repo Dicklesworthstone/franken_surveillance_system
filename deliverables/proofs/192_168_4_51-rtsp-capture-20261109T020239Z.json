@@ -1,0 +1,17 @@
+{
+ "camera": "192.168.4.51",
+ "ip": "192.168.4.51",
+ "vector": "rtsp-capture",
+ "timestamp_utc": "20261109T020239Z",
+ "pass": true,
+ "checks": [
+  {
+   "name": "rtsp-capture>=10s",
+   "expect": ">=50 decoded frames",
+   "got": "frames=150 dims=width=640\nheight=360 bytes=212440",
+   "pass": true
+  }
+ ],
+ "notes": "",
+ "tool": "root_proof.py"
+}

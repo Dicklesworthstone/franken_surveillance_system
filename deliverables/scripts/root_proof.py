@@ -16,6 +16,7 @@ Vectors (each = defined check set):
     tftp-exfil   verify /tmp/tftp/<marker> landed via WRQ from <ip>
     beacon-uid0  verify a BEACON line with uid=0 exists for this ip in /tmp/fss_beacons.log
     rtsp-enable  probe :554, send OPTIONS, expect RTSP/1.0 200
+    rtsp-capture pull N s of video and count DECODED frames (a listener is not footage)
     uart-console n/a from this host — operator records the transcript manually via --notes
 
 Exit 0 = proof PASSED (all checks); exit 1 = proof FAILED or NEGATIVE (the
@@ -31,6 +32,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -118,6 +120,39 @@ def rtsp_enable(ip, timeout, _notes):
     return _shell_probe(ip, 554, opts, r"RTSP/1\.0 200", timeout)
 
 
+@vector("rtsp-capture")
+def rtsp_capture(ip, timeout, notes):
+    """Pull N seconds and count DECODED frames — a DESCRIBE proves a listener, only
+    frames prove ingest. Notes: user/pass/stream/secs (defaults fssuser/stream1/10)."""
+    user = notes.get("user", "fssuser")
+    pwd = notes.get("pass", "fss12345")
+    stream = notes.get("stream", "stream1")
+    secs = int(notes.get("secs", 10))
+    ff, fp = shutil.which("ffmpeg"), shutil.which("ffprobe")
+    check = {"name": f"rtsp-capture>={secs}s", "expect": f">={secs * 5} decoded frames", "got": "", "pass": False}
+    if not ff or not fp:
+        check["got"] = "ffmpeg/ffprobe absent"
+        return check, "no ffmpeg"
+    out = f"/tmp/_rtspcap_{ip.replace('.', '_')}.ts"
+    url = f"rtsp://{user}:{pwd}@{ip}/{stream}"
+    cmd = [ff, "-y", "-v", "error", "-rtsp_transport", "tcp", "-i", url, "-t", str(secs),
+           "-c", "copy", "-f", "mpegts", out]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=secs + 30, check=False)
+        pr = subprocess.run([fp, "-v", "error", "-count_frames", "-select_streams", "v:0",
+                             "-show_entries", "stream=width,height,nb_read_frames", out],
+                            capture_output=True, text=True, timeout=60, check=False)
+    except subprocess.TimeoutExpired:
+        check["got"] = "timeout"
+        return check, f"$ {' '.join(cmd)}\nTIMEOUT"
+    frames = re.search(r"nb_read_frames=(\d+)", pr.stdout)
+    dims = re.search(r"width=(\d+)\s+height=(\d+)", pr.stdout)
+    n = int(frames.group(1)) if frames else 0
+    check["got"] = f"frames={n} dims={dims.group(0) if dims else '?'} bytes={os.path.getsize(out) if os.path.exists(out) else 0}"
+    check["pass"] = n >= secs * 5
+    return check, f"$ {' '.join(cmd)}\n{n} frames, {check['got']}"
+
+
 @vector("dropbear22")
 def dropbear22(ip, timeout, notes):
     key = os.path.expanduser(notes.get("key", "") or DEFAULT_KEY)
@@ -201,12 +236,18 @@ def main():
     ap.add_argument("--key", default=DEFAULT_KEY, help="ssh key for dropbear22 (default: operator key, root-safe)")
     ap.add_argument("--marker", default="", help="expected filename for tftp-exfil")
     ap.add_argument("--text", default="", help="pasted transcript for uart-console")
+    ap.add_argument("--rtsp-user", default="fssuser")
+    ap.add_argument("--rtsp-pass", default="fss12345")
+    ap.add_argument("--rtsp-stream", default="stream1", choices=("stream0", "stream1"))
+    ap.add_argument("--secs", type=int, default=10, help="rtsp-capture duration")
     ap.add_argument("--notes", default="", help="free-text context stored in the artifact")
     a = ap.parse_args()
 
     os.makedirs(TRANSCRIPTS, exist_ok=True)
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    notes = {"key": a.key, "marker": a.marker, "text": a.text}
+    notes = {"key": a.key, "marker": a.marker, "text": a.text,
+             "user": a.rtsp_user, "pass": a.rtsp_pass,
+             "stream": a.rtsp_stream, "secs": a.secs}
 
     result = VECTORS[a.vector](a.ip, a.timeout, notes)
     transcript = ""
