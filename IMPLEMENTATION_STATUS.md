@@ -36,8 +36,14 @@ passed all 21 attention/reduction feature contracts (eight new), executing both
 production executors and canonical graph/Safetensors reload. Sixteen unrelated
 embedded executor unit tests were explicitly filtered in that target. All seven
 native RTP/movie component contracts also passed, including gap-preserving AVC
-and HEVC output. These component results do not execute retained custody or CLI
-processes; full reference/CLI validation is still in progress at this checkpoint.
+and HEVC output. Full reference/CLI validation remains blocked before project
+typechecking: both the standard pinned build and one serial-compiler, reduced-MIR
+retry received SIGKILL while compiling unchanged Asupersync 0.5.0 metadata.
+The new retained integration and CLI contracts are authored and independently
+source-reviewed, but untypechecked and unexecuted here. No runtime dependency,
+feature, lockfile or qualification gate was weakened. Exact commands, successful
+test scope and failure evidence are retained in the
+[session handoff](docs/SESSION_HANDOFF_2026-11-09_GAPS_REDUCTIONS.json).
 
 ## UTC review across capture sessions and source generations
 

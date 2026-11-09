@@ -334,8 +334,12 @@ On 2026-11-09, the exact pinned nightly passed all seven tests in
 The new component case exercises actual native AVC/HEVC window muxes, independent
 decoder spans, selected pixels and timed Matroska bytes across an internal gap,
 plus a query wholly inside the gap. This component target does not execute the
-retained importer, custody authority or CLI processes; those checks are recorded
-separately in the session handoff.
+retained importer, custody authority or CLI processes. Both subsequent full
+reference typecheck attempts were killed inside unchanged Asupersync 0.5.0 metadata
+compilation before reaching project code, including one serial-compiler,
+reduced-MIR retry. The new retained/CLI integration therefore remains untypechecked
+and unexecuted here. The [session handoff](SESSION_HANDOFF_2026-11-09_GAPS_REDUCTIONS.json)
+records exact scope, commands and evidence; no release qualification is claimed.
 
 The contracts exercise a real 320-frame AVC packet catalog and a separate
 320-frame capture-sized selection of ten windows across an eight-window page and
