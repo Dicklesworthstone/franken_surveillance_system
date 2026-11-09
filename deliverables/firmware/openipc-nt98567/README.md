@@ -68,3 +68,15 @@ Two downloads need pre-seeding because their upstreams are broken from here:
 - `uboot-tools-2021.07` — `ftp.denx.de` accepts the connection and then stalls. Fetched from
   GitHub's tag archive instead (`u-boot/u-boot@v2021.07`) and the local `uboot-tools.hash`
   updated to those bytes; GNU tar detects the gzip regardless of the `.tar.bz2` name.
+
+### Two more host facts, both fatal until handled
+
+- **The prebuilt toolchain is x86_64**, so the container must be `--platform linux/amd64` (on
+  Apple Silicon that is emulation). An arm64 container builds host tools fine and then dies on
+  `Cannot execute cross-compiler … Trace/breakpoint trap`.
+- **The make jobserver does not survive that emulation**: recursive kernel make aborts with
+  `write jobserver: Bad file descriptor`. Building with `BR2_JLEVEL=1` (no jobserver) is the
+  only way through it; it is slow, which is the real cost of building this port on this host.
+- Bind mounts into Docker Desktop also break `chmod` from inside the container (`Permission
+  denied` on extracted files) — build into a **named volume**, not a host directory, and copy
+  sources in once.
