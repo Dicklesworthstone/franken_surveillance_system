@@ -870,3 +870,19 @@ delta. Readiness gained **A11**: the tar must contain an *executable* `Upgrade/b
 
 The runbook's build command was right all along; the lane note I copied was not. Build the
 capsule from `docs/exploit/FLASH-DAY-RUNBOOK.md`, never from memory.
+
+## 2026-11-09 06:45Z — remote restart is delivered but does not revive a storm-wedged iCamera
+
+`wyze_cmd.py` publishes `restartprocess` / `start` / `kill` / `reboot` onto
+`hl/devices/<mac>/cmd` through our broker. The broker logs each body as `C CMDHEX`, the
+camera reacts (RTSP dropped the moment the first `restartprocess` landed) and re-establishes
+MQTT — so the path is real and is now sent automatically before every watcher fire.
+
+It does not bring rtspd or the upgrade handler back on either unit. `rtsp-enable.md` already
+records the reason: this degraded state "surviv[es] a restart". Only a power-cycle clears it,
+which is also the documented rule for the frame budget ("frames go inert … power-cycle
+first").
+
+Getting it wrong here mattered: three remote levers now exist (delta injection, the
+`0x29e8` ioctl, MQTT process actions) and all three are acknowledged by the camera. An
+acknowledgement is not an effect — that is why every stage of the installer now beacons.

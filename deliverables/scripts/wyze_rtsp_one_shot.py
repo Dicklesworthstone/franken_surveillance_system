@@ -482,6 +482,14 @@ def loop_watch(a: argparse.Namespace, cmd: bytes) -> int:
                 print(f"{ip}: no cfg in {CFG_DIR}, cannot fire", flush=True)
                 retry_at[ip] = time.time() + RETRY_COOLDOWN
                 continue
+            # ask the camera to restart iCamera first: MQTT still works when the shell
+            # path is wedged, and a restart is what clears a soft wedge. The frame below
+            # then re-writes the config. Cheap, and independent of exec_shell_sync.
+            pub = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wyze_cmd.py")
+            if os.path.exists(pub):
+                subprocess.run([sys.executable, pub, "restart", cfg[2]],
+                               capture_output=True, text=True, timeout=60, check=False)
+                print(f"{ip}: restartprocess sent", flush=True)
             listened, status = fire(ip, *cfg, a, cmd)
             if listened and status == 200:
                 retired.add(ip)
