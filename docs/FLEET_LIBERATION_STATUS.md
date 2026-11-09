@@ -886,3 +886,29 @@ first").
 Getting it wrong here mattered: three remote levers now exist (delta injection, the
 `0x29e8` ioctl, MQTT process actions) and all three are acknowledged by the camera. An
 acknowledgement is not an effect — that is why every stage of the installer now beacons.
+
+## 2026-11-09 07:05Z — the component channel is live; the forge was running six-day-old code
+
+`.39` is calling `get_processes` / `get_download_location` right now, over and over. That is
+an execution channel that does not go through the wedged parts: assis's component manager
+fetches over HTTP and the process entrypoint is `sh /tmp/edgeai/launch.sh`.
+
+Two things had to be fixed before it could be used:
+
+- the dl-loc handler answered the *model* version to the `kvsWebrtcClientMaster_t41`
+  process, and §20 says a mismatched `data.version` is rejected silently — so that
+  component could never be pulled. (The fix was already committed as `513f3ab5`; see next
+  point for why it did nothing.)
+- **the forge on :443 had been adopted since 2026-11-05 and still ran pre-edit code.**
+  `forge_ok()` adopts any listener matching script path + live cert + port and never looks
+  at mtime, so every forge edit since was invisible until the listener was killed by hand.
+  Kill the listener (or restart the broker after killing) before trusting a forge change.
+
+With that, `.39` pulled our `kvsWebrtcClientMaster_t41/2.1.2.571/launch.sh` (200, 726 B) and
+the `res_monitor.sh` component, both replaced with root payloads that beacon `via=launch` /
+`via=resmon` and run `/fss/stage2.sh`.
+
+Still unproven: **execution**. `via=entry` has never appeared in the beacon log, i.e. the
+entrypoint runner has never run on either unit, and `stop`/`start`/`restartprocess`/`reboot`
+over MQTT are accepted with no effect. Everything is staged on the device side and waits for
+a process start — which is the same physical step as before.
