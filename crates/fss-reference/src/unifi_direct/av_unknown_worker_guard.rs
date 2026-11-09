@@ -931,7 +931,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     }
 }
 
-fn supervisor_is_terminal(step: &supervisor::Step) -> bool {
+pub(super) fn supervisor_is_terminal(step: &supervisor::Step) -> bool {
     matches!(
         step,
         supervisor::Step::Media(pipeline::Step::Eof | pipeline::Step::LimitReached)
@@ -947,7 +947,7 @@ fn supervisor_is_terminal(step: &supervisor::Step) -> bool {
     )
 }
 
-fn advance_is_terminal(advance: &Advance) -> bool {
+pub(super) fn advance_is_terminal(advance: &Advance) -> bool {
     match advance {
         Advance::Context
         | Advance::StartRefused(_)

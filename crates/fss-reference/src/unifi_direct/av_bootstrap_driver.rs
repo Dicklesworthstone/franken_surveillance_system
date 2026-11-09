@@ -10,7 +10,10 @@ use std::time::Duration;
 use asupersync::io::{AsyncRead, AsyncWrite};
 use fss_core::OperationId;
 
-use super::{av_bootstrap, av_owned_sink, conversation, pipeline, recording, supervisor};
+use super::{
+    av_bootstrap, av_owned_sink, conversation, metered::MeteredClock, pipeline, recording,
+    supervisor,
+};
 
 /// One bounded driver result. Every returned source or event remains caller-owned.
 #[must_use]
@@ -82,6 +85,10 @@ pub enum HandoffRefusal<'scope, 'task, IO> {
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Driver<'scope, 'task, IO> {
+    pub(super) fn matches_clock(&self, clock: &MeteredClock<'_, '_>) -> bool {
+        self.parts.supervisor.matches_clock(clock)
+    }
+
     /// Attach only to an active audio interpreter with no unmatched event.
     /// On refusal the supervisor and collector are returned unchanged.
     pub fn attach(

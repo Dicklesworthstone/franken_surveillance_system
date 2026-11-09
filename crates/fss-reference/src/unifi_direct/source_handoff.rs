@@ -15,6 +15,7 @@ use fss_container::flv_avc::SourceKey;
 use fss_core::ContentDigest;
 
 use super::{
+    av_bootstrap_driver,
     av_unknown_worker_guard::{Advance, Drive as ArchiveDrive, SessionEvent, Step},
     av_worker, pipeline, recording, source_worker, supervisor,
 };
@@ -50,6 +51,56 @@ pub enum Result {
     },
     /// No supported separately returned source was found; event is unchanged.
     Unhandled(SessionEvent),
+}
+
+/// Ownership after an attempted bootstrap-source handoff.
+#[must_use]
+pub enum BootstrapResult {
+    /// The source worker accepted the exact original record.
+    Accepted {
+        /// Why the source was returned separately.
+        disposition: recording::SourceDisposition,
+        /// Audio interpretation paired with the original driver result.
+        audio: Option<pipeline::AudioEvent>,
+    },
+    /// The worker returned the unchanged source together with its audio event.
+    Refused {
+        /// Audio interpretation paired with the original driver result.
+        audio: Option<pipeline::AudioEvent>,
+        /// Refusal reason and unchanged original input.
+        refusal: source_worker::OfferRefusal,
+    },
+    /// The complete driver result did not contain a separate source.
+    Unhandled(av_bootstrap_driver::Step),
+}
+
+/// Offer a bootstrap result without losing its paired audio interpretation.
+pub fn offer_bootstrap(
+    worker: &mut source_worker::Worker,
+    event: av_bootstrap_driver::Step,
+    key: SourceKey,
+    camera_claim: ContentDigest,
+) -> BootstrapResult {
+    let (record, disposition, audio) = match event {
+        av_bootstrap_driver::Step::Forward {
+            push:
+                recording::Push::Source {
+                    record,
+                    disposition,
+                },
+            audio,
+        } => (record, disposition, audio),
+        other => return BootstrapResult::Unhandled(other),
+    };
+    match worker.offer(source_worker::Input::Original {
+        record,
+        key,
+        disposition,
+        camera_claim,
+    }) {
+        Ok(()) => BootstrapResult::Accepted { disposition, audio },
+        Err(refusal) => BootstrapResult::Refused { audio, refusal },
+    }
 }
 
 /// One control step while a separately owned source publication is running.

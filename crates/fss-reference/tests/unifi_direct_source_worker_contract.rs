@@ -35,7 +35,7 @@ use fss_packet::extended_flv::{
 use fss_reference::{
     ReferenceDeployment, ReplayCx,
     unifi_direct::{
-        archive,
+        archive, av_bootstrap_driver,
         av_session_inbox::Inbox,
         av_unknown_worker_guard::{Advance, Drive, SessionEvent, SessionObserver, Step},
         av_worker::StartError,
@@ -337,6 +337,15 @@ fn exercise_source_worker(first_record: SourceRecord, second_record: SourceRecor
                         source_handoff::Drive::Control { step: supervisor::Step::Idle, completion: None }
                     ) {
                         return Err("blocked source publication prevented control service".into());
+                    }
+                    if !matches!(source_handoff::offer_bootstrap(&mut worker,av_bootstrap_driver::Step::Retained,key(3),claim),source_handoff::BootstrapResult::Unhandled(av_bootstrap_driver::Step::Retained)) {
+                        return Err("unrelated bootstrap event was not returned".into());
+                    }
+                    let bootstrap=header().map_err(|e|e.to_string())?;
+                    let bootstrap_bytes=bootstrap.bytes().to_vec();
+                    match source_handoff::offer_bootstrap(&mut worker,av_bootstrap_driver::Step::Forward {push:Push::Source {record:bootstrap,disposition:SourceDisposition::Header},audio:Some(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Other))},key(3),claim) {
+                        source_handoff::BootstrapResult::Refused {audio:Some(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Other)),refusal:source_worker::OfferRefusal::Busy(source_worker::Input::Original {record,..})} if record.bytes()==bootstrap_bytes => (),
+                        _=>return Err("busy bootstrap source or event was not retained".into()),
                     }
                     inbox.observe(source_event(second_record, true)).map_err(|_| "inbox refused second source")?;
                     let second = match source_handoff::offer(&mut worker, inbox.take().ok_or("second event missing")?, key(2), claim) {

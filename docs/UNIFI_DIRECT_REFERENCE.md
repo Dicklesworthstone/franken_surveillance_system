@@ -7269,10 +7269,84 @@ that revision ran as strict-remote job `30101959465763565` but aborted with a
 test-thread stack overflow before producing a test verdict. The job exited 101,
 was acknowledged, and released its source and execution pair. The fixture's
 coordinator futures have since been boxed to reduce the size of its very large
-enclosing async state; whether that resolves the overflow remains under test.
+enclosing async state; later runs reached their assertions without overflowing.
 The coordinator is not yet wired into an unattended native recorder;
 cancellation through this coordinator and live physical-camera interoperability
 remain unverified.
+
+The boxed-fixture run, strict-remote job `30101959465763575`, did not overflow:
+one focused scenario passed and the coordinator scenario failed at a later
+fixture assertion that still expected the A/V segment to be held after the
+coordinator had queued it. The job exited 101, was acknowledged, and released
+its sources and execution pair. The assertion was moved to before the queue
+operation. Strict-remote job `30101959465763587`, at base
+`012169649d0b756d60c9e9ff1c067eb2398e7600` with overlay fingerprint
+`3c2a232489c7792491c72893ccb2711972272e65fb47160460e79f86c962cb71`,
+then passed both focused source-session scenarios: two passed, none failed or
+ignored, and 52 were filtered. The job exited zero, was acknowledged, and
+released its sources and execution pair. The coordinator case exercised
+separate source and A/V resource admissions, a refused source start and
+explicit retry, control while source publication was blocked, publication, and
+transition to the A/V archive. It used a synthetic source and controller; it
+did not test an automatic source returned by a physical session or the
+coordinator's cancellation branch.
+
+The source coordinator now also has a bounded observer-driven session slice.
+It retains all terminal and observer-refused events for its caller, passes
+audio observations through the existing guard, and leaves both worker owners
+for explicit draining on stop. Strict-remote job `30101959465763597` tested
+this revision at base `012169649d0b756d60c9e9ff1c067eb2398e7600` with
+overlay fingerprint `e66f1370345e4509d49d26e8aeeac70d3bc8185e309542513bab1bebcd260ad6`:
+two focused tests passed, none failed or were ignored, and 52 were filtered.
+The job exited zero, was acknowledged, and released sources and its execution
+pair. The socket fixture exercised that loop, a refused observer, a denied
+start and explicit retry, control exchange, source publication and the A/V
+archive transition. It did not exercise loop cancellation, its audio or
+terminal-error cases, automatic source receipt from the session, an unattended
+recorder, or a physical camera.
+
+The coordinator has been extended to handle originals forwarded by the
+earlier A/V bootstrap driver, preserving paired audio observations and
+withholding further media while that source is archived. Its new socket-based
+bootstrap test initially aborted with a test-thread stack overflow under
+strict-remote job `30101959465763603`; it exited 101, was acknowledged, and
+released its sources and execution pair. The new scenario was isolated in a
+boxed async state and rerun with a source-worker backpressure test. The
+following results are simulated-session checks, not a physical-camera test.
+
+That rerun, strict-remote job `30101959465763607`, passed the source-worker
+test and six related socket tests, but the new bootstrap scenario returned an
+unclassified unexpected result. One camera-input replay was ignored; the job
+exited 101, was acknowledged, and released sources and its execution pair.
+The fixture then reported only the returned state's classification, without
+recording message or media payloads. An isolated run passed under job
+`30101959465763615`, but an unchanged-binary repeat under job
+`30101959465763618` failed on its fifth attempt: a time-sync completion had
+arrived during source publication. Both jobs were acknowledged and released
+their resources. The fixture now preserves and checks that control result and
+any simultaneous source completion. Strict-remote job `30101959465763621`
+then passed seven socket tests; its source-worker output was truncated in this
+record. Strict-remote job `30101959465763624` ran that exact bootstrap binary
+20 times and separately ran the source-worker test: all 20 bootstrap attempts
+and the source-worker test passed. The worker binary SHA-256 was
+`d8263e9a4441b815a0b7393c5a949cf77849356b58e46a6258369c2648b8d48b` and the
+bootstrap binary SHA-256 was
+`3800ab31d6ee348d4939e14eceaf0bd244d74cde00a55b42fc8c5099729b170e` before
+and after the runs. Both jobs exited zero, were acknowledged, and released
+their sources and execution pairs. The source-worker test retained paired
+audio and original bytes when backpressure refused the handoff. These tests do
+not qualify an unattended recorder or a live physical-camera session.
+
+A bounded bootstrap loop was added after those results. Strict-remote job
+`30101959465763627` passed the source-worker test, but the bootstrap fixture
+overflowed its default test-thread stack before its assertions. The job exited
+101, was acknowledged, and released its sources and execution pair. The loop
+now boxes its nested step future to reduce its own retained async state; this
+revision still needs a completed default-stack test.
+
+At a later read-only check, the fallback recorder was active with restart count
+80, up from 79. Thirteen archive files had been modified in the preceding 15
+minutes. This shows recent archive activity, not uninterrupted coverage.
 
 A later ten-second, process-scoped diagnostic counted eight TLS reads and two
 writes in the running reference plugin without recording message contents. It
