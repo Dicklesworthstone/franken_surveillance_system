@@ -121,7 +121,15 @@ contracts, plus parser and MCP cases. They cover both codecs, nine- and 64-windo
 captures, duplicate memberships, unknown clocks, atomic output/quote ceilings,
 shared read budgets, incomplete page unions, revoked sources and late metadata
 or deployment changes. Source reviews and pinned scoped formatting have passed;
-native execution is pending the pinned dependency build in this session.
+the 21 new UTC-set tests remain unexecuted.
+
+On 2026-11-09, both the linked native UTC test build and a metadata-only check
+were killed with signal 9 while compiling unchanged Asupersync 0.5.0, before
+reaching the changed Rust paths. Both used the complete pinned nightly, locked
+offline dependencies, one Cargo job, no incremental compilation and zero debug
+information. The schema suite passed 64 cases with one existing skip, and the
+changed-file integrity checks passed. See [the exact commands and shared validation
+scope](../IMPLEMENTATION_STATUS.md#retention-and-utc-catalog-set-validation--2026-11-09).
 
 The bounded query and its adversarial contracts require the repository's pinned
 native compiler and unchanged locked production dependencies. On 2026-11-07, two

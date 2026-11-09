@@ -26,7 +26,8 @@ unchanged. This advances VIT-008/FSS-068/GOAL-011 review functionality; automati
 UTC discovery, trusted physical coverage and production qualification remain open.
 See [the bounded query contract](docs/RECORDING_CLOCK_METADATA_QUERY.md#utc-selection-across-native-capture-pages).
 Twelve native and five CLI/context contracts plus parser/MCP cases are authored
-and source-reviewed. Pinned Rust execution is pending the dependency build.
+and source-reviewed. Native compilation and execution remain blocked as recorded
+in the shared validation section below.
 
 ## Byte-target cleanup of retained file imports
 
@@ -45,8 +46,40 @@ advances VIT-006's bounded cleanup requirement. Continuous recording rings,
 automatic scheduling, live-capture retention and physical disk-space guarantees
 remain open. See [the command and accounting scope](docs/retention_cleanup.md).
 New native codec, cohort and CLI contracts are authored and source-reviewed;
-execution is pending the pinned dependency build. No release qualification is
-claimed.
+native compilation and execution remain blocked as recorded below.
+
+### Retention and UTC catalog-set validation — 2026-11-09
+
+The two features add **37 Rust tests**: 16 retention cases and 21 UTC-set cases.
+These are authored contracts, not executed passes. Independent source reviews,
+the exact pinned formatter on all 23 changed Rust files, and whitespace checks
+passed. The schema suite passed 64 cases with one existing skip. Effective
+base-plus-delta manifest digests matched all 35 covered changed files at the
+combined feature commit `20d39ee1cfd221873e177cf0f3cba30c812db72b`.
+
+After restoring the complete pinned `nightly-2026-08-31` toolchain, both attempts
+below exited 101 because the compiler was killed with signal 9 while compiling
+unchanged Asupersync 0.5.0. The second attempt emitted metadata only. Both used
+the locked offline dependencies, one Cargo job, disabled incremental compilation
+and zero dev/test debug information on the shared memory-constrained host.
+Neither attempt reached compilation of the changed reference/CLI paths or
+execution of their tests.
+
+```sh
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+  cargo test --locked --offline -j 1 -p fss-reference \
+  --test agent_recordings_utc_set_contract --test agent_recordings_utc_contract
+
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+  cargo check --locked --offline -j 1 -p fss-reference \
+  --test agent_recordings_utc_set_contract --test agent_recordings_utc_contract \
+  --test retention_cohort_contract
+```
+
+The compiler pin, Cargo manifests/lockfile, production dependency sources and
+qualification gates were not changed. Native tests, CLI/MCP execution and full
+local DSR qualification remain open; queued hosted workflows are not counted
+as passes.
 
 ## Native retained-package quality evaluation
 

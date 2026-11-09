@@ -10,8 +10,9 @@ remains cleanup of every safely deletable expired import.
 This implements one-shot cleanup, not a standing retention policy, daemon, automatic
 hold release, or remote archive deletion. The policy-change work packages remain open. It is a
 reference implementation, **not production-qualified**. The source-byte additions have passed
-source review and pinned formatting. Native contract execution is pending the pinned dependency
-build; the presence of executable checks is not proof that they passed.
+source review and pinned formatting. Native compilation and execution remain blocked by a
+compiler SIGKILL in unchanged Asupersync; the presence of executable checks is not proof that
+they passed.
 
 ## Preview before any deletion
 
@@ -196,6 +197,14 @@ The new tests cover real retained MJPEG imports, old versus recent and unknown-t
 shared source preservation, derived-frame deletion, holds, stale requests, version/member
 forgery, explicit no-op results, all six deletion interruption points, and cold exact retry.
 The optional hosted workflow invokes this same script and does not replace local DSR gates.
+
+On 2026-11-09, a linked native UTC test build and a metadata-only check that included
+`retention_cohort_contract` both exited 101 in unchanged Asupersync 0.5.0 with compiler
+signal 9. They used the complete pinned nightly, locked offline dependencies, one Cargo job,
+no incremental compilation and zero debug information. Neither reached the changed Rust
+paths. The 16 new retention tests remain unexecuted. The schema suite passed 64 cases with
+one existing skip; scoped formatting and changed-file integrity checks also passed. See
+[the exact commands and shared scope](../IMPLEMENTATION_STATUS.md#retention-and-utc-catalog-set-validation--2026-11-09).
 
 The source-byte contracts additionally exercise oldest-first stopping, complete-input
 deduplication, shared inputs across sensors, holds and union-only effect blockers, unknown-time
