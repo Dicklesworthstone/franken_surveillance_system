@@ -7004,3 +7004,18 @@ Job `30100509981410715` completed the Linux trial build, but the wrapper
 returned 102 when it refused to transfer the Linux executable to the Mac. The
 remote execution exited zero and was acknowledged with its resources released.
 The independent process fixture remains pending at this point.
+
+On a later check the previous fixture wrapper and its Linux executable were
+no longer present; no result from that attempt was retained. A fresh build
+of committed discovery revision `2a64cd97` was started as strict-remote job
+`30101959465763423` for the loopback fixture. Separately, discovery report
+validation was tightened so that distinct candidate claims and rejected
+datagrams cannot together exceed the observed datagram count; overflow is
+also refused. Both MAC selection and direct setup now apply this check.
+Focused unit job `30101959465763427` is testing those uncommitted changes;
+its outcome remains pending here. Neither job changes the physical camera.
+
+At the later read-only check, the fallback recorder was active with restart
+count 78. Its log recorded connection timeouts and subsequent restart of
+recording; recent fallback archive runs reported successful copies without
+errors. This confirms neither gap-free coverage nor 30-day retention.
