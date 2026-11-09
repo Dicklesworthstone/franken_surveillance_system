@@ -30,3 +30,21 @@ Expected gaps, in the order they will bite:
 
 This is a from-source build, so it does not run on the same turn as the exploit; the carrier
 (ROP → telnetd) is armed and independent of it.
+
+## Build friction seen on this host (2026-11-09)
+
+- `sources.buildroot.net` (BR2_BACKUP_SITE) **404s** `libevent-openipc-<sha>-br1.tar.gz` and
+  buildroot treats that as fatal instead of falling through. Set `BR2_BACKUP_SITE=""` in
+  `general/openipc.fragment` for the build.
+- buildroot's git downloader calls GNU `date -d @epoch`; BSD `date` has no `-d` and the download
+  bails with "corrupted git cache" / `popd: directory stack empty`. A `date` shim ahead in PATH
+  is enough:
+
+  ```sh
+  mkdir -p /tmp/gbin && printf '#!/bin/bash\ncase "$1" in -d) shift; s=$1; shift; \
+    case "$s" in @*) exec /bin/date -r "${s#@}" "$@";; *) exec /bin/date "$@";; esac;; esac; \
+    exec /bin/date "$@"\n' > /tmp/gbin/date && chmod +x /tmp/gbin/date
+  PATH=/tmp/gbin:$PATH make BOARD=nt98567_lite
+  ```
+- `/Volumes/USB_NVME` was not mounted, so `TARGET` stayed at the default `<tree>/output`
+  (`/tmp/oi/output`, ~2.5 GB and growing). Mount the NVMe or set `TARGET` deliberately.
