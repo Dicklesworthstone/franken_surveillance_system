@@ -223,7 +223,11 @@ def _digest_answer(user: str, password: str, realm: str, nonce: str, uri: str,
 def _rtsp_exchange(host: str, port: int, request: str, timeout: float = 5.0) -> str:
     s = socket.create_connection((host, port), timeout=timeout)
     s.settimeout(timeout)
-    s.sendall(request.encode())
+    try:
+        s.sendall(request.encode())
+    except OSError:
+        s.close()
+        return ""
     buf = b""
     try:
         while b"\r\n\r\n" not in buf:
@@ -232,6 +236,10 @@ def _rtsp_exchange(host: str, port: int, request: str, timeout: float = 5.0) -> 
                 break
             buf += d
     except socket.timeout:
+        pass
+    except OSError:
+        # a wedged Wyze rtspd accepts and then resets; an empty reply is the honest
+        # report and one fewer traceback in an operator's face
         pass
     finally:
         s.close()
