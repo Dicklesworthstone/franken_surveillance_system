@@ -828,6 +828,16 @@ probe` passes — its capability detector does not see the toolchain on a Mac.
 Working escape hatch, in order of preference:
 1. `rch exec --worker hz4 -- cargo build -j 2 …` when only *checking* compilation on
    Linux is enough (artifact cannot be run locally);
-2. `/Users/jemanuel/.rustup/toolchains/nightly-2026-08-31-aarch64-apple-darwin/bin/cargo
-   build …` directly for a usable arm64 binary — this bypasses the shim, so run it alone
-   and mind the disk.
+2. build locally with the bypass pair — the toolchain's `bin/cargo` is itself an rch
+   wrapper (`rch-toolchain-wrap-version: 4`), so an absolute path alone still queues
+   remotely. Only the two variables break the loop and reach `cargo-rch-real`:
+
+   ```
+   RCH_CARGO_WRAPPER_BYPASS=1 RCH_CARGO_WRAPPER_ORIGIN=rch \
+     /Users/jemanuel/.rustup/toolchains/nightly-2026-08-31-aarch64-apple-darwin/bin/cargo \
+     build -j 8 -p fss-cli --bin fss-import-rtsp
+   ```
+
+   `fss-import-rtsp` built in 40 s this way and is a real Mach-O arm64 binary. The wrapper
+   caps local parallelism through `CARGO_BUILD_JOBS` (default 8), and it is the only layer
+   a script or Makefile cannot dodge.
