@@ -22,7 +22,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 - Fleet self-heals every 15 min via `com.jeffreyemanuel.fleet-readiness` LaunchDaemon
 - Chain-watch daemon auto-captures root proof when the Wyze OTA completes
 - Wyze cameras CONNECTed to OUR broker (636+ connects), PUBACKing our deltas
-- **`.51` serves RTSP now** (`fssuser`, `stream0` 2.5k / `stream1` 360p), verified by `ffprobe` pulling real H.264 640×360@20 — ingest with no flash and no cloud; proof `…T013201Z`. `com.jeffreyemanuel.wyze-rtsp-watch` keeps it that way and re-enables a unit that loses 554. **`.39` is wedged** after the same provisioning: ping answers, every userspace port is closed, and neither a frame reboot nor a second ioctl brought it back — see the row above
+- **RTSP worked and is machine-proven once**: `.51` gave 150 decoded frames in 10 s on `stream1` (640×360) and a 2560×1440 grab on `stream0` — `root_proof.py rtsp-capture` PASS, no flash, no cloud. Both servers are now wedged (TCP accepts, nothing answers) after a DESCRIBE storm; a port check lies, so `wyze_rtsp_one_shot.py` requires a real OPTIONS round-trip and re-fires with an execution beacon. **The power-cycle clears it.**
 - C660 re-provisioned via Tapo app, live at 192.168.5.76 (en0)
 - 7 beads closed on hard evidence
 
@@ -30,7 +30,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 
 | Camera | Blocker | Unblock action | Who |
 |---|---|---|---|
-| **Wyze .39/.51** | No root: assis still hasn't pulled a capsule. **`.51` streams RTSP fine; `.39` is wedged** (ping only, every userspace port closed) after its account was re-provisioned | **Power-cycle `.39` (now REQUIRED, not optional) and `.51`** — the served capsule was found *unrendered* (`@HOST@` placeholders, installer would have died at backup step 2) and has been rebuilt rendered, with readiness A9/A10 asserting it | Operator (5 sec) |
+| **Wyze .39/.51** | No root: assis still hasn't pulled a capsule. **Both rtspd are wedged** — `.51` served real 2.5k video for ~40 min (proof retained) and then stopped answering under a DESCRIBE storm; `.39` never came back after provisioning | **Power-cycle `.39` (now REQUIRED, not optional) and `.51`** — the served capsule was found *unrendered* (`@HOST@` placeholders, installer would have died at backup step 2) and has been rebuilt rendered, with readiness A9/A10 asserting it | Operator (5 sec) |
 | **Tapo C660** | ROP fired 3× with verified gadgets but camera went back to sleep before telnetd could bind | **Walk past the C660** to trigger a PIR wake while the sweep is armed. The DS-readiness gate ensures the fire only happens when the camera can actually execute | Operator (walk by it) |
 | **Tapo C460** | Offset 1060 borrowed from C660, DIFFERENT SoC. 121 instrumented fires with identical no-shell-port-closed signature | **USB-serial UART connection** (3.3V, 115200 8N1) → extract `/bin/main` from the SXZ partition → derive the correct offset | Operator + UART adapter |
 | **Owlet .163** | Vendor 0x2041 grant never fires outside the app. H3/H4/H5 closed-negative. The en1 pcap can't see phone↔camera unicast | **Open the Owlet app's live view** while capturing from the ROUTER (not en1 — the AP forwards unicast only to the target MAC) | Operator + router capture |

