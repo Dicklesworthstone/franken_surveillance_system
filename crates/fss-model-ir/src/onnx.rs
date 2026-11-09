@@ -369,7 +369,7 @@ fn value_info(
             _ => return Err(OnnxError::Unsupported),
         }
     }
-    if dtype != Some(1) && !(control && dtype == Some(7)) {
+    if dtype != Some(1) && !(control && matches!(dtype, Some(7 | 9))) {
         return Err(OnnxError::Unsupported);
     }
     let mut wire = Wire(shape.ok_or(OnnxError::Unsupported)?);
@@ -387,10 +387,10 @@ fn value_info(
     if dims.len() > 1 || dims.first().is_some_and(|&n| n > 8) {
         return Err(OnnxError::Unsupported);
     }
-    let dtype = if dtype == Some(7) {
-        DType::I64
-    } else {
-        DType::F32
+    let dtype = match dtype {
+        Some(7) => DType::I64,
+        Some(9) => DType::Bool,
+        _ => DType::F32,
     };
     let shape = Shape::new(dims).map_err(|_| OnnxError::Limit)?;
     if shape.size_bytes(dtype).map_err(|_| OnnxError::Limit)? > a.limits.tensor_bytes {
@@ -532,6 +532,13 @@ fn source_node<'a>(
             return Err(OnnxError::Malformed);
         }
         Some(attributes[0])
+    } else if op == "ConstantOfShape" {
+        // Keep the tensor-valued fill intact for strict compile-time admission.
+        // Its absent attribute has F32 semantics, not an inferred INT64 zero.
+        if attributes.len() > 1 {
+            return Err(OnnxError::Malformed);
+        }
+        attributes.first().copied()
     } else {
         for bytes in attributes {
             let (key, value) = attribute(bytes, a)?;

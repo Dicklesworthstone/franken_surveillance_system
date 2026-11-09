@@ -6,10 +6,12 @@
 //! Semantics: https://onnx.ai/onnx/operators/onnx__Shape.html#shape-13,
 //! Gather-13, Squeeze-13, Unsqueeze-13, Concat-13 and Add/Sub/Mul/Div-13.
 
-use fss_tensor::{DType, Shape, Tensor};
+use fss_tensor::{DType, Shape, Tensor, TensorScalar};
 
 use super::{Lowering, OnnxError, Result, SourceNode};
 use crate::{AttrValue, TensorPort};
+
+mod selection;
 
 /// A rank-zero scalar or a rank-one vector; both may contain one value, but they
 /// have different ONNX broadcasting, Gather, and concatenation semantics.
@@ -19,20 +21,30 @@ struct Control {
 }
 
 pub(super) fn handles(source: &SourceNode<'_>, lowering: &Lowering<'_, '_>) -> bool {
-    matches!(source.op.as_str(), "Shape" | "Gather")
-        || (matches!(
-            source.op.as_str(),
-            "Identity" | "Squeeze" | "Unsqueeze" | "Concat" | "Add" | "Sub" | "Mul" | "Div"
-        ) && source
-            .inputs
-            .first()
-            .and_then(|name| lowering.known.get(name))
-            .is_some_and(|port| port.dtype() == DType::I64))
+    matches!(
+        source.op.as_str(),
+        "Shape" | "Gather" | "ConstantOfShape" | "Equal" | "Where"
+    ) || (matches!(
+        source.op.as_str(),
+        "Identity" | "Squeeze" | "Unsqueeze" | "Concat" | "Add" | "Sub" | "Mul" | "Div" | "Slice"
+    ) && source
+        .inputs
+        .first()
+        .and_then(|name| lowering.known.get(name))
+        .is_some_and(|port| port.dtype() == DType::I64))
 }
 
 fn control(name: &str, lowering: &mut Lowering<'_, '_>) -> Result<Control> {
+    let (shape, values) = typed_control::<i64>(name, lowering)?;
+    Ok(Control { shape, values })
+}
+
+fn typed_control<T: TensorScalar>(
+    name: &str,
+    lowering: &mut Lowering<'_, '_>,
+) -> Result<(Shape, Vec<T>)> {
     let port = lowering.known.get(name).ok_or(OnnxError::Graph)?;
-    if port.dtype() != DType::I64 || port.rank() > 1 {
+    if port.dtype() != T::DTYPE || port.rank() > 1 {
         return Err(OnnxError::Unsupported);
     }
     let tensor = lowering.constants.get(name).ok_or(OnnxError::Unsupported)?;
@@ -43,11 +55,11 @@ fn control(name: &str, lowering: &mut Lowering<'_, '_>) -> Result<Control> {
     if count > 8 {
         return Err(OnnxError::Limit);
     }
-    lowering.admission.charge(count * 8)?;
+    lowering.admission.charge(count * T::DTYPE.size_bytes())?;
     let shape = tensor.shape().clone();
-    let values = tensor.to_vec::<i64>().map_err(|_| OnnxError::Graph)?;
+    let values = tensor.to_vec::<T>().map_err(|_| OnnxError::Graph)?;
     lowering.control_uses.insert(name.to_owned());
-    Ok(Control { shape, values })
+    Ok((shape, values))
 }
 
 fn no_attributes(source: &SourceNode<'_>) -> Result<()> {
@@ -267,11 +279,17 @@ pub(super) fn lower(source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> 
     lowering
         .admission
         .charge(1 + lowering.known.len() + source.inputs.len())?;
+    if source.op == "Equal" {
+        return selection::equal(&source, lowering);
+    }
     let data = match source.op.as_str() {
         "Shape" => shape(&source, lowering)?,
         "Gather" => gather(&source, lowering)?,
         "Squeeze" | "Unsqueeze" => layout(&source, lowering)?,
         "Concat" => concat(&source, lowering)?,
+        "Slice" => selection::slice(&source, lowering)?,
+        "ConstantOfShape" => selection::fill(&source, lowering)?,
+        "Where" => selection::select(&source, lowering)?,
         "Add" | "Sub" | "Mul" | "Div" => arithmetic(&source, lowering)?,
         "Identity" => {
             arity(&source, 1)?;
@@ -280,12 +298,18 @@ pub(super) fn lower(source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> 
         }
         _ => return Err(OnnxError::Unsupported),
     };
-    let bytes = data
-        .shape
-        .size_bytes(DType::I64)
-        .map_err(|_| OnnxError::Limit)?;
-    if data.shape.rank() > 1
-        || data.values.len() > 8
+    store(&source, lowering, data.shape, &data.values)
+}
+
+fn store<T: TensorScalar>(
+    source: &SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    shape: Shape,
+    values: &[T],
+) -> Result<()> {
+    let bytes = shape.size_bytes(T::DTYPE).map_err(|_| OnnxError::Limit)?;
+    if shape.rank() > 1
+        || values.len() > 8
         || bytes > lowering.admission.limits.tensor_bytes
         || lowering
             .parameter_bytes
@@ -297,12 +321,12 @@ pub(super) fn lower(source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> 
     lowering.admission.charge(bytes)?;
     let port = TensorPort::new(
         source.outputs[0].clone(),
-        DType::I64,
-        data.shape.clone(),
+        T::DTYPE,
+        shape.clone(),
         lowering.generation,
     )
     .map_err(|_| OnnxError::Graph)?;
-    let tensor = Tensor::from_values(data.shape, &data.values, lowering.generation)
-        .map_err(|_| OnnxError::Graph)?;
+    let tensor =
+        Tensor::from_values(shape, values, lowering.generation).map_err(|_| OnnxError::Graph)?;
     lowering.add_constant(port, tensor)
 }

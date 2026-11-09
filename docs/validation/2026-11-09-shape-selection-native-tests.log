@@ -1,0 +1,78 @@
+COMMAND: cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution --test onnx_shape_program_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::
+    Blocking waiting for file lock on build directory
+   Compiling fss-model-ir v0.0.1 (/workspace/scratch/a0052a33ebcf/franken_surveillance_system/crates/fss-model-ir)
+    Finished `test` profile [unoptimized] target(s) in 1m 04s
+     Running tests/onnx_attention_execution.rs (target/debug/build/fss-model-ir/e5f4ceb75336a7b6/out/onnx_attention_execution-e5f4ceb75336a7b6)
+
+running 41 tests
+test attention_practical_token_sizes_have_constant_helper_count_and_checked_matrix_size ... ok
+test attention_qkv_batched_softmax_and_pooled_features_run_through_real_artifacts ... ok
+test attention_real_execution_refuses_short_budgets_stale_inputs_and_cancellation ... ok
+test empty_integer_attributes_accept_both_protobuf_encodings_without_type_confusion ... ok
+test gather_and_mean_aggregate_admission_work_and_cancellation_are_exact ... ok
+test gather_and_mean_helpers_cannot_capture_future_source_names ... ok
+test gather_and_mean_refuse_invalid_controls_attributes_and_output_witnesses ... ok
+test gather_every_rank_and_axis_preserves_exact_finite_bits ... ok
+test gather_literals_distinguish_scalar_vector_and_repeated_indices ... ok
+test gather_static_shape_controls_and_constant_data_keep_distinct_dispatch ... ok
+test mean_every_admitted_rank_matches_independent_coordinate_accumulation ... ok
+test mean_noncontiguous_negative_axes_keepdims_and_empty_axes_are_exact ... ok
+test mean_signed_zeros_subnormal_rounding_and_overflow_follow_native_order ... ok
+test reductions::every_admitted_rank_and_axis_order_matches_independent_reduction ... ok
+test reductions::normalized_weighted_feature_head_executes_with_both_reductions ... ok
+test reductions::reduction_rounding_signed_zero_underflow_and_overflow_remain_explicit ... ok
+test reductions::reductions_preflight_full_expansion_and_every_cancellation_checkpoint ... ok
+test reductions::reductions_refuse_incompatible_opset_forms_and_malformed_controls ... ok
+test reductions::sum_and_l2_literals_keepdims_defaults_and_versions_survive_reload ... ok
+test reductions::sum_axes_from_constant_and_static_shape_program_are_compile_time_only ... ok
+test reductions::sum_noop_preserves_exact_bits_and_uses_no_generated_parameters ... ok
+test shape_selection::bool_is_a_compile_time_witness_not_a_runtime_input_output_or_float ... ok
+test shape_selection::constant_of_shape_refuses_coercions_unsupported_rank_and_unbounded_fill ... ok
+test shape_selection::empty_shape_selections_are_controls_and_embedded_fill_stays_quota_charged ... ok
+test shape_selection::exact_i64_equality_and_three_way_broadcasting_select_scalar_and_vector_controls ... ok
+test shape_selection::integer_constant_of_shape_has_scalar_vector_and_exact_fill_semantics ... ok
+test shape_selection::integer_shape_slices_preserve_order_steps_empty_and_extreme_endpoints ... ok
+test shape_selection::integer_shape_slices_refuse_bad_axes_steps_and_control_lengths ... ok
+test shape_selection::selection_preserves_source_identity_and_all_import_limits ... ok
+test shape_selection::selection_refuses_incompatible_broadcast_and_invalid_unselected_branch ... ok
+test shape_selection::static_query_expansion_executes_input_dependent_attention_before_and_after_reload ... ok
+test split_heads::split_heads_bind_names_even_with_equal_widths_and_keep_exact_bits ... ok
+test split_heads::split_heads_cancel_at_every_assembly_checkpoint_without_partial_result ... ok
+test split_heads::split_heads_charge_original_controls_and_exact_expansion_limits ... ok
+test split_heads::split_heads_compact_contiguous_selections_independently_of_row_count ... ok
+test split_heads::split_heads_keep_explicit_sparse_background_and_label_order ... ok
+test split_heads::split_heads_refuse_ambiguous_names_and_invalid_class_mappings ... ok
+test split_heads::split_heads_refuse_mismatched_batches_rows_ranks_and_source_widths ... ok
+test split_heads::split_heads_reserve_helpers_outputs_and_repeated_assembly_names ... ok
+test split_heads::split_heads_run_shared_rgb_feature_branches_and_preserve_v2_and_weights ... ok
+test split_heads::split_package_fixture_executes_image_transform_and_both_heads_after_artifact_reload ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 12.97s
+
+     Running tests/onnx_shape_program_execution.rs (target/debug/build/fss-model-ir/7fcedc117f9b4db2/out/onnx_shape_program_execution-7fcedc117f9b4db2)
+
+running 17 tests
+test control_growth_and_nonconstant_integer_execution_remain_outside_profile ... ok
+test every_shape_program_cancellation_checkpoint_and_exact_work_limit_refuses_atomically ... ok
+test gather_preserves_scalar_vector_order_duplicates_and_negative_indices ... ok
+test generated_controls_are_charged_even_when_not_exported ... ok
+test integer_arithmetic_uses_exact_i64_values_and_numpy_broadcasting ... ok
+test invalid_indices_control_ranks_axis_sets_and_arity_refuse ... ok
+test metadata_only_parameters_are_omitted_but_data_uses_remain_bound ... ok
+test overflow_division_by_zero_and_incompatible_broadcasts_refuse ... ok
+test retained_detector_shape_program_executes_before_and_after_artifact_reload ... ok
+test retained_shape_program_rejects_every_truncated_prefix ... ok
+test scalar_and_length_one_controls_are_not_interchangeable ... ok
+test shape_and_control_attributes_are_opset_specific ... ok
+test shape_roundtrips_scalar_through_rank_eight_without_changing_bits ... ok
+test signed_integer_division_truncates_toward_zero ... ok
+test squeeze_unsqueeze_identity_and_empty_vectors_compose ... ok
+test static_shape_evaluation_preserves_runtime_input_binding_checks ... ok
+test wrong_shape_witnesses_shadowing_forward_and_unused_controls_refuse ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.75s
+
+
+EXIT: 0
+WALL_SECONDS: 77.92
+PEAK_CHILD_RSS_KIB: 310828
