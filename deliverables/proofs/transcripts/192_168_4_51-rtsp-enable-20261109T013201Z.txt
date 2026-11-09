@@ -1,0 +1,6 @@
+>>> sent b'OPTIONS rtsp://192.168.4.51/ RTSP/1.0\r\nCSeq: 1\r\n\r\n'
+<<< 69B: RTSP/1.0 200 OK
+CSeq: 1
+Public: DESCRIBE, SETUP, TEARDOWN, PLAY
+
+

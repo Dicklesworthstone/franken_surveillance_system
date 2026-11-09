@@ -1,0 +1,4 @@
+$ ssh -i /Users/jemanuel/.ssh/id_ed25519 -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o BatchMode=yes root@192.168.4.51 'id && cat /proc/mtd'
+rc=255
+ssh: connect to host 192.168.4.51 port 22: Connection refused
+

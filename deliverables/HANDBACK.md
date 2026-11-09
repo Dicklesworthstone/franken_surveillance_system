@@ -49,9 +49,23 @@ causes are fixed, plus a third that would have burned a third:
    download would have succeeded and the installer would have died at backup step 2.
    Rebuilt rendered (`4.52.17.100.tar`, md5 `819f9270…`); A9/A10 now assert it.
 
-The camera is *not* blind between now and the flash: both units serve authenticated RTSP
-(`stream0`/`stream1`) today — see the hardening notes. The flash is what removes the
-vendor cloud, the MITM and the assis dependency for good.
+The cameras served authenticated RTSP (`stream0`/`stream1`) for a while and are both
+wedged now — the power-cycle restores that too; the watcher re-fires the config frame
+within minutes of boot and retries every 180 s. The flash is what removes the vendor
+cloud, the MITM and the assis dependency for good.
+
+Watch it land:
+
+```
+tail -f /tmp/ota/fwserve_access.jsonl   # camera GET = non-"fss-probe" UA, complete:true
+tail -f /tmp/wyze_chain_watch.log       # "*** CAMERA REACHED THE CAPSULE ***"
+tail -f /tmp/fss_beacons.log            # via=rtsp-enable = frame EXECUTED
+                                        # (K10003 is only the login ack)
+```
+
+The chain watcher runs the proof sweep by itself and writes
+`deliverables/proofs/LEDGER.md`. If the OTA does not fire, `root_proof.py <ip>
+rtsp-capture` is the check that footage flows again.
 
 Current URL (minted by the supervised tunnel, re-injected into the broker on every start):
 
