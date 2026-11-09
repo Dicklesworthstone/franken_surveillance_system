@@ -19,6 +19,8 @@ pub enum RecordingIoError {
     Publication(Box<LocalPublicationError>),
     /// Verified source/object retrieval failed.
     Spool(SpoolError),
+    /// Exact-pin read-only publication/closure verification failed.
+    Pinned(fss_publication::custody_audit::pinned_closure::PinnedClosureError),
     /// The sealed bytes exceed the supplied reservation or owner object bounds.
     Budget,
     /// The caller's supplied admission deadline was reached.
@@ -44,6 +46,7 @@ impl std::fmt::Debug for RecordingIoError {
             Self::Content(e) => f.debug_tuple("Content").field(e).finish(),
             Self::Publication(e) => f.debug_tuple("Publication").field(&e.code()).finish(),
             Self::Spool(_) => f.write_str("Spool"),
+            Self::Pinned(error) => f.debug_tuple("Pinned").field(&error.reason()).finish(),
             Self::Budget => f.write_str("Budget"),
             Self::Deadline => f.write_str("Deadline"),
             Self::ClockReversed => f.write_str("ClockReversed"),
@@ -269,7 +272,7 @@ pub(super) struct WindowFormat {
     pub verify:
         fn(&ObjectManifest, RecordingObjects<'_>, &RecordingScope) -> Result<RecordingSummary>,
 }
-fn avc_references(bytes: &[u8]) -> Result<(RecordingScope, [ContentDigest; 3])> {
+pub(super) fn avc_references(bytes: &[u8]) -> Result<(RecordingScope, [ContentDigest; 3])> {
     let index = wire::decode_index(bytes)?;
     Ok((
         index.scope,

@@ -1,0 +1,75 @@
+Pinned recording native component validation
+Started UTC: 2026-11-09T06:33:21.326536+00:00
+Command: cargo test --locked --offline -p fss-container --test pinned_recording_contract -- --test-threads=1
+Toolchain:
+rustc 1.100.0-nightly (908501772 2026-08-30)
+binary: rustc
+commit-hash: 90850177249efe0321573c569aec5d12b257f8d6
+commit-date: 2026-08-30
+host: x86_64-unknown-linux-gnu
+release: 1.100.0-nightly
+LLVM version: 23.1.0
+
+Scope: actual production object contracts/spool, local root publisher, metadata/closure readers and AVC/HEVC recording source replay via source inclusion. No runtime, ReferenceDeployment or CLI execution claimed.
+
+    Finished `test` profile [unoptimized] target(s) in 0.35s
+     Running tests/pinned_recording_contract.rs (target/debug/build/fss-container/cf27cb876e0eeabc/out/pinned_recording_contract-cf27cb876e0eeabc)
+
+running 50 tests
+test checksummed_source_and_index_forgery_still_fails_real_native_packet_replay ... ok
+test closure_contract::absent_archives_and_pending_selected_roots_are_not_recovered_or_created ... ok
+test closure_contract::all_selected_tombstone_states_deny_even_when_added_after_read ... ok
+test closure_contract::arbitrary_children_and_unfinished_closures_fail_closed ... ok
+test closure_contract::cancellation_before_final_revalidation_never_releases_a_complete_closure ... ok
+test closure_contract::exact_root_binding_is_checked_again_after_selected_payload_reads ... ok
+test closure_contract::late_finalize_cancellation_preserves_completed_accounting_without_claiming_success ... ok
+test closure_contract::only_selected_flat_closure_is_hydrated_without_archive_scan_or_mutation ... ok
+test closure_contract::root_object_edge_and_io_allowances_are_cumulative_between_completed_roots ... ok
+test closure_contract::source_corruption_after_first_read_is_detected_by_final_rehash ... ok
+test closure_contract::successful_finalization_is_terminal_idempotent_and_keeps_exact_usage ... ok
+test current_native_authority_refusal_prevents_all_selected_payload_io ... ok
+test custody_audit::io::tests::failed_read_allowances_cannot_be_refunded_into_an_unbounded_retry_loop ... ok
+test custody_audit::io::tests::mutation_methods_are_refused_before_reaching_the_inner_capability ... ok
+test dynamic_native_permission_revoked_during_final_rehash_stops_before_next_object_read ... ok
+test ledger::tests::every_variant_code_is_listed_exactly_once ... ok
+test ledger::tests::identity_bound_matches_core_stable_identifier_bound ... ok
+test local::error::tests::every_variant_code_is_listed_exactly_once ... ok
+test local::error::tests::test_cleanup_failed_error_source_chain_includes_cleanup_details ... ok
+test local::record::tests::root_record_round_trips_and_largest_record_fits_bound ... ok
+test local::record::tests::tombstone_record_round_trips_and_rejects_wrong_domain ... ok
+test local::record::tests::truncated_and_trailing_records_are_undecodable ... ok
+test local::tests::record_directory_is_a_typed_error_for_a_path_without_a_parent_directory ... ok
+test local::tests::tightening_the_object_bound_never_widens_it_and_refuses_larger_admitted_objects ... ok
+test local::writer::tests::test_decode_st_dev ... ok
+test local::writer::tests::test_detect_writers_probe_options ... ok
+test local::writer::tests::test_detect_writers_proc_locks_source ... ok
+test local::writer::tests::test_display_formats ... ok
+test local::writer::tests::test_parse_proc_locks_line ... ok
+test metadata_regression::aggregate_byte_and_call_allowances_cover_both_passes_without_refill ... ok
+test metadata_regression::all_deletion_marker_states_deny_metadata_even_for_unread_source_children ... ok
+test metadata_regression::arbitrary_manifests_and_wrong_root_counts_do_not_grant_metadata_reads ... ok
+test metadata_regression::cancellation_before_admission_during_reads_and_at_final_revalidation_returns_no_result ... ok
+test metadata_regression::exact_metadata_reads_ignore_absent_source_and_unrelated_corruption_without_mutation ... ok
+test metadata_regression::final_pass_refuses_changed_slots_new_tombstones_and_corrupt_metadata ... ok
+test metadata_regression::pending_root_markers_refuse_before_admitting_the_slot ... ok
+test metadata_regression::selected_metadata_and_root_record_symlinks_are_never_deliberately_followed ... ok
+test namespace_regression::all_entries_consume_scan_allowance_and_selected_records_have_an_independent_ceiling ... ok
+test namespace_regression::cancellation_during_inventory_and_final_rescan_returns_no_complete_observation ... ok
+test namespace_regression::final_inventory_refuses_added_removed_rebound_and_recounted_selected_records ... ok
+test namespace_regression::invalid_preflight_does_no_io_and_started_observations_cannot_be_replaced ... ok
+test namespace_regression::inventory_and_pinned_metadata_share_one_allowance_through_both_final_passes ... ok
+test namespace_regression::selected_pending_malformed_and_noncanonical_records_refuse_on_both_passes ... ok
+test namespace_regression::selected_symlinks_and_non_utf8_names_refuse_while_unrelated_ones_are_ignored ... ok
+test namespace_regression::sorted_inventory_ignores_unrelated_contents_and_never_hydrates_missing_objects ... ok
+test namespace_regression::unrelated_membership_changes_do_not_invalidate_the_selected_namespace ... ok
+test native_avc_and_hevc_replay_match_writer_loader_while_archive_writer_lock_is_held ... ok
+test native_cancellation_after_replay_never_releases_a_verified_recording ... ok
+test unrelated_corrupt_source_and_inflight_root_do_not_block_selected_native_retrieval ... ok
+test wrong_codec_scope_and_selected_source_corruption_are_refused_before_returning_bytes ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+
+Exit status: 0
+Elapsed seconds: 0.617
+Peak child RSS KiB: 38972

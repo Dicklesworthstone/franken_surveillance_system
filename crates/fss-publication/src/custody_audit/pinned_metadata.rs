@@ -7,6 +7,7 @@
 //! These bounded observations detect observed changes, not an atomic filesystem snapshot,
 //! successful source retrieval, durability, or permission to disclose source bytes.
 
+#[path = "pinned_metadata/namespace.rs"]
 mod namespace;
 pub use namespace::{NamespaceObservation, NamespaceRootRecord};
 
@@ -91,7 +92,7 @@ type RootBinding = (ContentDigest, u64, ContentDigest);
 /// This type has no arbitrary object-read method, publisher opener, recovery hook, or writer
 /// callback. Call [`Self::finish`] before releasing a response. A successful intermediate read
 /// alone is not a revalidated observation. The caller supplies semantic metadata verification.
-pub struct PinnedMetadataReader<'a, F> {
+pub struct PinnedMetadataReader<'a, F: ?Sized> {
     root: &'a Path,
     io: AuditIo<'a, F>,
     limits: CustodyAuditLimits,
@@ -102,7 +103,7 @@ pub struct PinnedMetadataReader<'a, F> {
     edges: usize,
     namespace: Option<Result<namespace::NamespaceWitness>>,
 }
-impl<F> fmt::Debug for PinnedMetadataReader<'_, F> {
+impl<F: ?Sized> fmt::Debug for PinnedMetadataReader<'_, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PinnedMetadataReader")
             .field("pinned_roots", &self.bindings.len())
@@ -111,7 +112,7 @@ impl<F> fmt::Debug for PinnedMetadataReader<'_, F> {
     }
 }
 
-impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
+impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
     /// Open no files for writing and acquire no lock. Limits never refill across reads or passes.
     pub fn new(
         io: &'a dyn SpoolIo,
@@ -159,20 +160,89 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
         result
     }
 
-    /// Rehash admitted metadata and repeat every exact slot, tombstone and namespace observation.
-    /// Consumes the capability so a caller cannot refill or reuse its request budget.
-    pub fn finish(self) -> Result<MetadataReadUsage> {
+    // Only the sibling closure capability may hydrate direct children. The public metadata
+    // reader deliberately remains byte-free for source payloads.
+    pub(super) fn child(
+        &mut self,
+        manifest: &ObjectManifest,
+        digest: ContentDigest,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>> {
+        self.io.check()?;
+        if self.manifests.get(&manifest.root()) != Some(manifest)
+            || !manifest.children().contains(&digest)
+            || max_bytes > self.limits.max_object_bytes
+        {
+            return Err(PinnedMetadataError::MetadataInvalid);
+        }
+        if !self.objects.contains(&digest) && self.objects.len() >= self.limits.max_objects {
+            return Err(CustodyAuditError::Limit("closure_objects").into());
+        }
+        self.reference(digest)?;
+        self.objects.insert(digest);
+        let result = read_verified_with_io(self.root, digest, max_bytes, &self.io)
+            .map_err(|_| PinnedMetadataError::MetadataUnavailable);
+        self.io.check()?;
+        result
+    }
+
+    // A completed flat-closure phase releases observations, never the request's I/O allowance.
+    // Only the sibling closure capability can start another phase, charging cumulative counts.
+    pub(super) fn closure_checkpoint(
+        &mut self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<MetadataReadUsage> {
+        let result = self.revalidate_guarded(cancelled);
+        self.io.check()?;
+        result?;
+        let usage = self.usage();
+        self.bindings.clear();
+        self.manifests.clear();
+        self.objects.clear();
+        self.references.clear();
+        self.edges = 0;
+        Ok(usage)
+    }
+
+    pub(super) fn closure_final_check(&self) -> Result<MetadataReadUsage> {
+        if !self.bindings.is_empty() || self.namespace.is_some() {
+            return Err(PinnedMetadataError::MetadataInvalid);
+        }
         let result = self.revalidate();
         self.io.check()?;
         result?;
-        Ok(MetadataReadUsage {
+        Ok(self.usage())
+    }
+
+    pub(super) fn closure_allowances(&mut self, objects: usize, edges: usize) -> Result<()> {
+        self.io.check()?;
+        if !self.bindings.is_empty() || self.namespace.is_some() {
+            return Err(PinnedMetadataError::MetadataInvalid);
+        }
+        self.limits.max_catalogue_entries = 1;
+        self.limits.max_objects = objects;
+        self.limits.max_edges = edges;
+        Ok(())
+    }
+
+    pub(super) fn usage(&self) -> MetadataReadUsage {
+        MetadataReadUsage {
             read_bytes: self.io.bytes(),
             io_calls: self.io.calls(),
             metadata_objects: self.objects.len(),
             peak_reserved_read_bytes: self.io.peak(),
             pinned_roots: self.bindings.len(),
             reference_checks: self.references.len(),
-        })
+        }
+    }
+
+    /// Rehash admitted metadata and repeat every exact slot, tombstone and namespace observation.
+    /// Consumes the capability so a caller cannot refill or reuse its request budget.
+    pub fn finish(self) -> Result<MetadataReadUsage> {
+        let result = self.revalidate();
+        self.io.check()?;
+        result?;
+        Ok(self.usage())
     }
 
     fn layout(&self) -> Result<()> {
@@ -321,25 +391,46 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
     }
 
     fn revalidate(&self) -> Result<()> {
+        self.revalidate_guarded(&|| false)
+    }
+
+    // Current native semantic authority can be single-threaded. Check it around each selected
+    // object/metadata stage; the request's Sync I/O cancellation still gates every syscall.
+    fn revalidate_guarded(&self, cancelled: &dyn Fn() -> bool) -> Result<()> {
+        let admit = || {
+            if cancelled() {
+                Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled))
+            } else {
+                self.io.check().map_err(PinnedMetadataError::from)
+            }
+        };
+        admit()?;
         if let Some(Err(error)) = &self.namespace {
             return Err(error.clone());
         }
         self.layout()?;
+        admit()?;
         for digest in &self.objects {
-            self.io.check()?;
+            admit()?;
             self.verified_payload(*digest)?;
+            admit()?;
         }
         for digest in &self.references {
+            admit()?;
             self.not_tombstoned(*digest)?;
+            admit()?;
         }
         for (slot, expected) in &self.bindings {
+            admit()?;
             if self.binding(slot)? != *expected {
                 return Err(PinnedMetadataError::Changed);
             }
+            admit()?;
         }
         self.revalidate_namespace()?;
+        admit()?;
         self.layout()?;
-        self.io.check()?;
+        admit()?;
         Ok(())
     }
 }

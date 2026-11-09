@@ -41,6 +41,31 @@ pub fn load_hevc_recording(
     Ok(PreparedHevcRecording { plan, index })
 }
 
+/// Read one exact HEVC closure with shared nonrefillable read/I/O allowances and no writer open.
+/// Full native HEVC replay and selected-root revalidation both precede returning any bytes.
+pub fn load_pinned_hevc_recording(
+    reader: &mut fss_publication::custody_audit::pinned_closure::PinnedClosureReader<'_>,
+    slot: &SlotName,
+    expected_root: ContentDigest,
+    scope: &RecordingScope,
+    cancel: &dyn PublishCancellation,
+) -> std::result::Result<PreparedHevcRecording, RecordingIoError> {
+    let plan = super::super::pinned::load_window(
+        reader,
+        slot,
+        expected_root,
+        scope,
+        cancel,
+        WindowFormat {
+            kind: HEVC_RECORDING_KIND,
+            references,
+            verify: verify_summary,
+        },
+    )?;
+    let index = wire::decode(plan.objects().index).map_err(RecordingIoError::Content)?;
+    Ok(PreparedHevcRecording { plan, index })
+}
+
 fn references(bytes: &[u8]) -> Result<(RecordingScope, [ContentDigest; 3])> {
     let index = wire::decode(bytes)?;
     Ok((

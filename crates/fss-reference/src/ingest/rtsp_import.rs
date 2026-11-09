@@ -18,9 +18,11 @@ pub mod query;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 use fss_core::{CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm, TimestampNs};
 use fss_geometry::WorkBudget;
+use fss_publication::custody_audit::pinned_closure::PinnedClosureReader;
 use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint, SlotName};
 
 use super::file_adapter::{
@@ -29,7 +31,7 @@ use super::file_adapter::{
 };
 use crate::rtsp::recording::{
     MAX_RECORDING_BYTES, MAX_RECORDING_SAMPLES, RecordingScope, hevc::local::load_hevc_recording,
-    local::load_recording,
+    hevc::local::load_pinned_hevc_recording, local::load_recording, pinned::load_pinned_recording,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -439,11 +441,109 @@ pub(super) fn import_rtsp_checked<'cx>(
     ) -> Result<(), RtspImportError>,
     publication_started: &mut bool,
 ) -> Result<RtspImportReceipt, RtspImportError> {
+    import_rtsp_from_source(
+        NativeSource::Publisher(publisher),
+        destination,
+        request,
+        authority,
+        cx,
+        work,
+        check_window,
+        publication_started,
+    )
+}
+
+/// Import one exactly pinned native source through a shared read-only closure capability.
+/// No archive-wide writer recovery occurs. The selected window's source and publication
+/// observations are revalidated before existing custody publication. Reader allowances never
+/// refill across calls; the caller finishes the reader when the request ends. A fixed three
+/// native-window byte allowance reserves initial reads, semantic replay and final rehash before
+/// source access; actual I/O accounting is separately available on the supplied reader.
+pub fn import_rtsp_pinned<'cx>(
+    reader: &mut PinnedClosureReader<'_>,
+    destination: &mut ReferenceDeployment,
+    request: &RtspImportRequest,
+    authority: &dyn RtspImportAuthority,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'cx>,
+) -> Result<RtspImportReceipt, RtspImportError> {
+    let mut publication_started = false;
+    import_rtsp_pinned_checked(
+        reader,
+        destination,
+        request,
+        authority,
+        cx,
+        work,
+        &mut |_, _| Ok(()),
+        &mut publication_started,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn import_rtsp_pinned_checked<'cx>(
+    reader: &mut PinnedClosureReader<'_>,
+    destination: &mut ReferenceDeployment,
+    request: &RtspImportRequest,
+    authority: &dyn RtspImportAuthority,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'cx>,
+    check_window: &mut dyn FnMut(
+        &crate::rtsp::recording::PreparedRecording,
+        &mut WorkBudget<'cx>,
+    ) -> Result<(), RtspImportError>,
+    publication_started: &mut bool,
+) -> Result<RtspImportReceipt, RtspImportError> {
+    import_rtsp_from_source(
+        NativeSource::Pinned(reader),
+        destination,
+        request,
+        authority,
+        cx,
+        work,
+        check_window,
+        publication_started,
+    )
+}
+
+enum NativeSource<'borrow, 'owner> {
+    Publisher(&'borrow LocalRootPublisher),
+    Pinned(&'borrow mut PinnedClosureReader<'owner>),
+}
+impl NativeSource<'_, '_> {
+    fn root_dir(&self) -> &Path {
+        match self {
+            Self::Publisher(owner) => owner.root_dir(),
+            Self::Pinned(reader) => reader.root_dir(),
+        }
+    }
+    fn verification_work(&self) -> u64 {
+        match self {
+            Self::Publisher(_) => MAX_ORIGINAL_BYTES,
+            Self::Pinned(_) => 3 * MAX_ORIGINAL_BYTES,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_rtsp_from_source<'cx>(
+    mut source: NativeSource<'_, '_>,
+    destination: &mut ReferenceDeployment,
+    request: &RtspImportRequest,
+    authority: &dyn RtspImportAuthority,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'cx>,
+    check_window: &mut dyn FnMut(
+        &crate::rtsp::recording::PreparedRecording,
+        &mut WorkBudget<'cx>,
+    ) -> Result<(), RtspImportError>,
+    publication_started: &mut bool,
+) -> Result<RtspImportReceipt, RtspImportError> {
     *publication_started = false;
     request.digest()?;
     if cx.root_dir() != destination.root()
-        || publisher.root_dir().starts_with(destination.root())
-        || destination.root().starts_with(publisher.root_dir())
+        || source.root_dir().starts_with(destination.root())
+        || destination.root().starts_with(source.root_dir())
     {
         return Err(RtspImportError::Invalid(
             "distinct source and destination owners required",
@@ -452,7 +552,8 @@ pub(super) fn import_rtsp_checked<'cx>(
     guard(authority, request, destination, cx)?;
     // Native window readers have a fixed bounded original/replay contract. Reserve it before
     // their first read; a narrower request is a retention admission bound, not a syscall meter.
-    work.charge(MAX_ORIGINAL_BYTES).map_err(source_error)?;
+    work.charge(source.verification_work())
+        .map_err(source_error)?;
     let window = {
         let access = Access {
             authority,
@@ -462,25 +563,43 @@ pub(super) fn import_rtsp_checked<'cx>(
         };
         match request.codec {
             RtspImportCodec::Avc => {
-                let plan = load_recording(
-                    publisher,
-                    &request.slot,
-                    request.root,
-                    &request.source,
-                    &access,
-                )
+                let plan = match &mut source {
+                    NativeSource::Publisher(publisher) => load_recording(
+                        publisher,
+                        &request.slot,
+                        request.root,
+                        &request.source,
+                        &access,
+                    ),
+                    NativeSource::Pinned(reader) => load_pinned_recording(
+                        reader,
+                        &request.slot,
+                        request.root,
+                        &request.source,
+                        &access,
+                    ),
+                }
                 .map_err(source_error)?;
                 check_window(&plan, work)?;
                 provenance::Window::from_verified(&plan, request)?
             }
             RtspImportCodec::Hevc => {
-                let plan = load_hevc_recording(
-                    publisher,
-                    &request.slot,
-                    request.root,
-                    &request.source,
-                    &access,
-                )
+                let plan = match &mut source {
+                    NativeSource::Publisher(publisher) => load_hevc_recording(
+                        publisher,
+                        &request.slot,
+                        request.root,
+                        &request.source,
+                        &access,
+                    ),
+                    NativeSource::Pinned(reader) => load_pinned_hevc_recording(
+                        reader,
+                        &request.slot,
+                        request.root,
+                        &request.source,
+                        &access,
+                    ),
+                }
                 .map_err(source_error)?;
                 check_window(plan.publication_plan(), work)?;
                 provenance::Window::from_verified(plan.publication_plan(), request)?

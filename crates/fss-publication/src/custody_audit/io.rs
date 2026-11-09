@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use super::{CustodyAuditError, CustodyAuditLimits};
 use fss_object::SpoolIo;
 
-pub(super) struct AuditIo<'a, F> {
+pub(super) struct AuditIo<'a, F: ?Sized> {
     inner: &'a dyn SpoolIo,
     cancelled: &'a F,
     limits: CustodyAuditLimits,
@@ -19,13 +19,13 @@ pub(super) struct AuditIo<'a, F> {
     bytes: AtomicU64,
     peak: AtomicU64,
 }
-impl<F> fmt::Debug for AuditIo<'_, F> {
+impl<F: ?Sized> fmt::Debug for AuditIo<'_, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReadOnlyCustodyAuditIo")
             .finish_non_exhaustive()
     }
 }
-impl<'a, F: Fn() -> bool + Sync> AuditIo<'a, F> {
+impl<'a, F: Fn() -> bool + Sync + ?Sized> AuditIo<'a, F> {
     pub(super) fn new(
         inner: &'a dyn SpoolIo,
         limits: CustodyAuditLimits,
@@ -87,7 +87,7 @@ impl<'a, F: Fn() -> bool + Sync> AuditIo<'a, F> {
         self.peak.load(Ordering::SeqCst)
     }
 }
-impl<F: Fn() -> bool + Sync> SpoolIo for AuditIo<'_, F> {
+impl<F: Fn() -> bool + Sync + ?Sized> SpoolIo for AuditIo<'_, F> {
     fn create_dir_all(&self, _: &Path) -> io::Result<()> {
         self.forbid()
     }

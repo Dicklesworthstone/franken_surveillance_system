@@ -39,7 +39,7 @@ pub(super) struct NamespaceWitness {
     observation: NamespaceObservation,
 }
 
-impl<F: Fn() -> bool + Sync> PinnedMetadataReader<'_, F> {
+impl<F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'_, F> {
     /// Observe one complete literal slot prefix without opening manifests or source objects.
     ///
     /// The prefix must itself satisfy the slot grammar; it is never a glob or path. Every

@@ -23,6 +23,7 @@ use super::{
 use crate::{SlotName, read_verified_with_io};
 
 /// Durable-journal binding and independently rederived beliefs over ledgered local slots.
+#[path = "belief_snapshot/durable.rs"]
 pub mod durable;
 
 /// A complete captured byte set was not established. Partial payloads never leave this boundary.

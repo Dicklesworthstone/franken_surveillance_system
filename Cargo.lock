@@ -576,6 +576,7 @@ dependencies = [
  "fss-codec-h264",
  "fss-codec-h265",
  "fss-core",
+ "fss-ledger",
  "fss-packet",
 ]
 

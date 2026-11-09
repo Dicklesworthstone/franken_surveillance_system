@@ -8,9 +8,12 @@
 //! This proves byte relationships, not decoding, live continuity or authorization.
 
 /// Exact-root durable readback through the shared bounded publication owner.
+#[path = "hevc/local.rs"]
 pub mod local;
 
+#[path = "hevc/replay.rs"]
 mod replay;
+#[path = "hevc/wire.rs"]
 mod wire;
 
 use super::{

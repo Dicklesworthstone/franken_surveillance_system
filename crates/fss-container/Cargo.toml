@@ -17,3 +17,4 @@ fss-packet = { path = "../fss-packet" }
 fss-codec-h264 = { path = "../fss-codec-h264" }
 fss-codec-h265 = { path = "../fss-codec-h265" }
 fss-core = { path = "../fss-core" }
+fss-ledger = { path = "../fss-ledger" }

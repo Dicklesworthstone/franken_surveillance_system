@@ -7,11 +7,18 @@
 //! artifacts, not permission to disclose footage or an authentication certificate.
 
 /// Replay-verified HEVC recording windows, with a separate versioned index and codec contract.
+#[path = "recording/hevc.rs"]
 pub mod hevc;
 /// Root-last local publication and verified retrieval through an existing I/O owner.
+#[path = "recording/local.rs"]
 pub mod local;
+/// Exact-pin read-only retrieval without archive-wide publisher recovery.
+#[path = "recording/pinned.rs"]
+pub mod pinned;
 
+#[path = "recording/verify.rs"]
 mod verify;
+#[path = "recording/wire.rs"]
 mod wire;
 
 use fss_container::{AvcMuxer, Mp4Limits, NalMapping, SampleMapping, TimedAvcPicture};

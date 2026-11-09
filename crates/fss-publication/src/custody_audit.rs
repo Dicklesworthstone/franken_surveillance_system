@@ -24,14 +24,21 @@ use crate::{
     TOMBSTONE_RECORD_SUFFIX, read_verified_with_io, root_record_bytes, tombstone_record_bytes,
 };
 
+#[path = "custody_audit/io.rs"]
 mod io;
 use io::AuditIo;
 
 /// Bounded native disk-custody capture for independently rederived beliefs.
+#[path = "custody_audit/belief_snapshot.rs"]
 pub mod belief_snapshot;
 
 /// Exact-slot metadata observations without media reads, publication locks, or spool scans.
+#[path = "custody_audit/pinned_metadata.rs"]
 pub mod pinned_metadata;
+
+/// Exact-slot flat source closures with one cumulative read-only request allowance.
+#[path = "custody_audit/pinned_closure.rs"]
+pub mod pinned_closure;
 
 /// Maximum selected root digests.
 pub const MAX_AUDIT_ROOTS: usize = 128;
