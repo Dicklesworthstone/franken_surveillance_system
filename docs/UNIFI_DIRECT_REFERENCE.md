@@ -6736,3 +6736,8 @@ the job exited zero, was acknowledged, and released source and execution
 resources. The fixture uses a synthetic loopback peer and test-directory
 stores; it does not settle either historical camera effect, establish
 independent failure domains, or prove live-camera operation.
+
+At approximately `2026-11-09 03:58 UTC`, a further read-only check found the
+fallback recorder active with restart count 70 and 17 MP4 files modified in
+the preceding 20 minutes. This observes recent fallback activity, not gap-free
+coverage or a Rust-owned recording.
