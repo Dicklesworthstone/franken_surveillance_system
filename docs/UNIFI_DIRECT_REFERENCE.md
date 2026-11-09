@@ -7268,3 +7268,11 @@ fixture now also exercises transition back to A/V archival. A test request for
 that revision is queued and has not yet executed. The coordinator is not yet
 wired into an unattended native recorder; cancellation through this
 coordinator and live physical-camera interoperability remain unverified.
+
+A later ten-second, process-scoped diagnostic counted eight TLS reads and two
+writes in the running reference plugin without recording message contents. It
+did not establish peer identity or explain the pre-hello disconnect. A separate
+planned message-metadata diagnostic was rejected before execution by the
+command safety hook, which reported that it could not verify shell syntax; it
+did not attach a probe or collect plaintext. The recorder remained active at
+the subsequent check.
