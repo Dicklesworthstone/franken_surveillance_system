@@ -266,6 +266,11 @@ impl Registry {
     fn apply_event(&mut self, event: Event<'_>) -> Result<(), Error> {
         match event {
             Event::Added(added) => {
+                // The snapshot already contained this interface; seeing it
+                // added again means the adapter epoch cannot be continuous.
+                if added.path == self.adapter && added.adapter_added {
+                    return Err(Error::Inconsistent);
+                }
                 let Some(claim) = added.device else {
                     return Ok(());
                 };
@@ -304,6 +309,13 @@ impl Registry {
                 }
             }
             Event::Removed(removed) => {
+                // Adapter removal ends the observation epoch even if BlueZ
+                // does not separately send removals for its cached devices.
+                if removed.path == self.adapter
+                    && removed.interfaces().contains(&"org.bluez.Adapter1")
+                {
+                    return Err(Error::Inconsistent);
+                }
                 if !removed.interfaces().contains(&"org.bluez.Device1")
                     || !under_adapter(&self.adapter, removed.path)
                 {
@@ -321,6 +333,11 @@ impl Registry {
                 entry.services = Services::Unknown;
             }
             Event::Properties { path, change } => {
+                // A power transition or invalidation can interrupt discovery
+                // without removing the adapter or its cached devices.
+                if path == self.adapter && change.adapter_power_changed {
+                    return Err(Error::Inconsistent);
+                }
                 if change.interface != "org.bluez.Device1" || !under_adapter(&self.adapter, path) {
                     return Ok(());
                 }
@@ -373,6 +390,7 @@ mod tests {
             change: PropertiesChanged {
                 interface: "org.bluez.Device1",
                 services,
+                adapter_power_changed: false,
             },
         }
     }
@@ -454,11 +472,32 @@ mod tests {
             &body.0,
         )
     }
-    fn remove_frame() -> ChangeFrame {
+    fn add_adapter_frame(path: &str) -> ChangeFrame {
         let mut body = Writer(Vec::new());
-        body.string(DEVICE);
+        body.string(path);
+        let interfaces = body.array(8);
+        body.pad(8);
+        body.string("org.bluez.Adapter1");
+        let properties = body.array(8);
+        body.finish(properties);
+        body.finish(interfaces);
+        frame(
+            ":1.42",
+            "/",
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesAdded",
+            "oa{sa{sv}}",
+            &body.0,
+        )
+    }
+    fn remove_frame() -> ChangeFrame {
+        remove_interface_frame(DEVICE, "org.bluez.Device1")
+    }
+    fn remove_interface_frame(path: &str, interface: &str) -> ChangeFrame {
+        let mut body = Writer(Vec::new());
+        body.string(path);
         let interfaces = body.array(4);
-        body.string("org.bluez.Device1");
+        body.string(interface);
         body.finish(interfaces);
         frame(
             ":1.42",
@@ -484,6 +523,32 @@ mod tests {
         body.finish(values);
         body.finish(properties);
         let invalidated = body.array(4);
+        body.finish(invalidated);
+        frame(
+            ":1.42",
+            path,
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            "sa{sv}as",
+            &body.0,
+        )
+    }
+
+    fn adapter_property_frame(path: &str, property: &str, value: Option<bool>) -> ChangeFrame {
+        let mut body = Writer(Vec::new());
+        body.string("org.bluez.Adapter1");
+        let properties = body.array(8);
+        if let Some(powered) = value {
+            body.pad(8);
+            body.string(property);
+            body.0.extend_from_slice(&[1, b'b', 0]);
+            body.number(if powered { 1 } else { 0 });
+        }
+        body.finish(properties);
+        let invalidated = body.array(4);
+        if value.is_none() {
+            body.string(property);
+        }
         body.finish(invalidated);
         frame(
             ":1.42",
@@ -526,6 +591,76 @@ mod tests {
             Err(Error::Inconsistent)
         );
         assert_eq!(other.assess(0), Some(Assessment::Gap));
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_removal_invalidates_all_current_camera_claims() -> Result<(), Error> {
+        let mut registry = Registry::new(
+            ":1.42",
+            "/org/bluez/hci1",
+            snapshot(Some(vec![SERVICE.into()]), 0),
+            &[SERVICE],
+        )?;
+        assert_eq!(registry.assess(0), Some(Assessment::CandidateClaim));
+        // An unrelated adapter does not invalidate this adapter's epoch.
+        registry.apply(&remove_interface_frame(
+            "/org/bluez/hci2",
+            "org.bluez.Adapter1",
+        ))?;
+        assert_eq!(registry.assess(0), Some(Assessment::CandidateClaim));
+        assert_eq!(
+            registry.apply(&remove_interface_frame(
+                "/org/bluez/hci1",
+                "org.bluez.Adapter1"
+            )),
+            Err(Error::Inconsistent)
+        );
+        assert_eq!(registry.assess(0), Some(Assessment::Gap));
+        assert_eq!(registry.apply(&service_frame()), Err(Error::Gap));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_selected_adapter_addition_invalidates_camera_claims() -> Result<(), Error> {
+        let mut registry = Registry::new(
+            ":1.42",
+            "/org/bluez/hci1",
+            snapshot(Some(vec![SERVICE.into()]), 0),
+            &[SERVICE],
+        )?;
+        registry.apply(&add_adapter_frame("/org/bluez/hci2"))?;
+        assert_eq!(registry.assess(0), Some(Assessment::CandidateClaim));
+        assert_eq!(
+            registry.apply(&add_adapter_frame("/org/bluez/hci1")),
+            Err(Error::Inconsistent)
+        );
+        assert_eq!(registry.assess(0), Some(Assessment::Gap));
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_power_change_or_invalidation_requires_a_fresh_snapshot() -> Result<(), Error> {
+        for value in [Some(false), Some(true), None] {
+            let mut registry = Registry::new(
+                ":1.42",
+                "/org/bluez/hci1",
+                snapshot(Some(vec![SERVICE.into()]), 0),
+                &[SERVICE],
+            )?;
+            registry.apply(&adapter_property_frame(
+                "/org/bluez/hci1",
+                "Discovering",
+                Some(false),
+            ))?;
+            registry.apply(&adapter_property_frame("/org/bluez/hci2", "Powered", value))?;
+            assert_eq!(registry.assess(0), Some(Assessment::CandidateClaim));
+            assert_eq!(
+                registry.apply(&adapter_property_frame("/org/bluez/hci1", "Powered", value)),
+                Err(Error::Inconsistent)
+            );
+            assert_eq!(registry.assess(0), Some(Assessment::Gap));
+        }
         Ok(())
     }
 

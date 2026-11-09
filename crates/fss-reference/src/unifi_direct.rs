@@ -523,6 +523,12 @@ pub enum TimeSyncPolicy {
     /// <https://github.com/rjmotion/cuckoo/blob/2e18666e9d9998b31d908e3a8f1d9ebb658c467f/controller.py>;
     /// compatibility with any particular device remains unproven.
     BoundedPreHelloClockExchange,
+    /// Like `BoundedPreHelloClockExchange`, but also admits fresh requests
+    /// correlated to an older or unknown reply before hello. This matches the
+    /// broader reply behavior of reference implementations, but its usefulness
+    /// with a particular camera is unproven. The 32-reply, replay, pending
+    /// reply and per-effect admission limits remain in force.
+    BoundedAnyPreHelloClockExchange,
 }
 
 /// One owner-driven session. No socket, clock, task, or peer identity is held.
@@ -632,7 +638,11 @@ impl Controller {
     /// Largest caller-supplied startup reply quota for this session policy.
     /// The caller must still supply a distinct authorized operation per reply.
     pub fn startup_time_sync_limit(&self) -> usize {
-        if self.time_sync_policy == TimeSyncPolicy::BoundedPreHelloClockExchange {
+        if matches!(
+            self.time_sync_policy,
+            TimeSyncPolicy::BoundedPreHelloClockExchange
+                | TimeSyncPolicy::BoundedAnyPreHelloClockExchange
+        ) {
             MAX_PRE_HELLO_TIME_SYNC_REPLIES
         } else {
             MAX_OPT_IN_TIME_SYNC_REPLIES
@@ -726,11 +736,13 @@ impl Controller {
             }
             "ubnt_avclient_timeSync" => {
                 // Blindly echoing correlated replies can create a response loop.
-                // Both opt-in policies retain finite quotas and the single
-                // pending-reply slot; the chain policy applies only before hello.
-                let pre_hello_exchange = self.time_sync_policy
-                    == TimeSyncPolicy::BoundedPreHelloClockExchange
-                    && self.phase == Phase::AwaitHello;
+                // Opt-in policies retain finite quotas and the single
+                // pending-reply slot; the exchange policies apply only before hello.
+                let pre_hello_exchange = matches!(
+                    self.time_sync_policy,
+                    TimeSyncPolicy::BoundedPreHelloClockExchange
+                        | TimeSyncPolicy::BoundedAnyPreHelloClockExchange
+                ) && self.phase == Phase::AwaitHello;
                 if response_to != 0 {
                     self.time_sync_counts.correlated =
                         self.time_sync_counts.correlated.saturating_add(1);
@@ -754,7 +766,8 @@ impl Controller {
                         }
                     }
                     if pre_hello_exchange {
-                        if self.time_sync_reply_count > 0
+                        if self.time_sync_policy == TimeSyncPolicy::BoundedPreHelloClockExchange
+                            && self.time_sync_reply_count > 0
                             && self.time_sync_reply_ids[self.time_sync_reply_count - 1]
                                 != response_to
                         {

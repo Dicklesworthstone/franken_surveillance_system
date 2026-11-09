@@ -599,6 +599,8 @@ pub struct PropertiesChanged<'a> {
     pub interface: &'a str,
     /// Device1 service-list change, or unchanged for another interface.
     pub services: ServiceChange<'a>,
+    /// Adapter1 `Powered` was changed or invalidated; its value is not retained.
+    pub adapter_power_changed: bool,
 }
 impl fmt::Debug for PropertiesChanged<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -660,6 +662,8 @@ pub fn parse_properties_changed(
     Ok(PropertiesChanged {
         interface,
         services,
+        adapter_power_changed: interface == "org.bluez.Adapter1"
+            && (changed.contains(&"Powered") || invalidated.contains(&"Powered")),
     })
 }
 
@@ -943,6 +947,23 @@ mod tests {
         w.data
     }
 
+    fn adapter_signal(endian: Endian, property: &str, invalidated: bool) -> Vec<u8> {
+        let mut w = Writer::new(endian);
+        w.text("org.bluez.Adapter1");
+        let properties = w.array(8);
+        if !invalidated {
+            w.prop(property, "b");
+            w.number(0);
+        }
+        w.finish(properties);
+        let invalid = w.array(4);
+        if invalidated {
+            w.text(property);
+        }
+        w.finish(invalid);
+        w.data
+    }
+
     #[test]
     fn added_and_removed_signals_keep_bounded_untrusted_claims() -> Result<(), Error> {
         for endian in [Endian::Little, Endian::Big] {
@@ -994,6 +1015,22 @@ mod tests {
                 ServiceChange::Unchanged
             ));
             assert!(parse_properties_changed(&changed_signal(endian, true, true), endian).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_power_signals_report_changes_and_invalidations() -> Result<(), Error> {
+        for endian in [Endian::Little, Endian::Big] {
+            for invalidated in [false, true] {
+                let signal = adapter_signal(endian, "Powered", invalidated);
+                assert!(parse_properties_changed(&signal, endian)?.adapter_power_changed);
+                for split in 0..signal.len() {
+                    assert!(parse_properties_changed(&signal[..split], endian).is_err());
+                }
+                let unrelated = adapter_signal(endian, "Discovering", invalidated);
+                assert!(!parse_properties_changed(&unrelated, endian)?.adapter_power_changed);
+            }
         }
         Ok(())
     }
