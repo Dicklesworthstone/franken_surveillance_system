@@ -560,7 +560,10 @@ def main() -> int:
                     ]
                     # a process the device has never seen: if the supervisor starts unknown
                     # entries, this is the start we cannot get from the cmd channel.
-                    if os.environ.get("FSS_PROC"):
+                    # advertise the synthetic process whenever its payload is on disk.
+                    # Env is unreliable here: sudo resets it on the spawn, so FSS_PROC
+                    # never reached the forge (measured 2026-11-09).
+                    if os.path.isfile(os.path.join(a.dir, "proc/launch.sh")):
                         procs.append({
                             "processname": "fss",
                             "entrypoint": "sh /tmp/fss/launch.sh",

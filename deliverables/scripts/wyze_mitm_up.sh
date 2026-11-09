@@ -248,6 +248,8 @@ forge_ok() {
     start=$(sudo ps -o lstart= -p "$p" 2>/dev/null)
     start=$(date -j -f "%a %b %d %T %Y" "$start" +%s 2>/dev/null) || continue
     mtime=$(stat -f %m "$HERE/wyze_forge_serve.py" 2>/dev/null) || continue
+    smtime=$(stat -f %m "$HERE/wyze_mitm_up.sh" 2>/dev/null) || continue
+    [ "$smtime" -gt "$mtime" ] && mtime=$smtime      # the spawner's env is part of the contract
     [ "$start" -ge "$mtime" ] || return 1
   done
   echo "$cmd" | grep -q -- '--cert /tmp/iot2.pem' || return 1
