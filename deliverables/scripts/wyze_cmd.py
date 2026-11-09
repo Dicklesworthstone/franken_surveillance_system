@@ -1,117 +1,129 @@
-"""The one implementation of a Wyze cloud command body and of MQTT framing.
+#!/usr/bin/env python3
+"""Publish one command to a Wyze unit through our own MITM broker.
 
-Two consumers need exactly these bytes: the transparent proxy (`wyze_mqtt_mitm.py`, which rewrites
-and re-originates a cloud session) and the local shadow broker (`wyze_mqtt_broker.py`, which owns the
-session). Keeping one builder is what makes an oracle run against the broker mean anything about the
-proxy, and vice versa.
+Needed because the OTA path alone cannot revive a wedged iCamera: the delta is
+PUBACKed and ignored, while the process that owns both the OTA handler and rtspd
+sits dead. `restartprocess` is the one action that restarts it without a physical
+power-cycle.
 
-The body is the one iCamera's UDS receiver accepts: `{Action, Params{...}, Guid}` with `sub_mac`
-top-level (the handler at iCamera:0x476e98 dereferences it after starting the worker), XXTEA under the
-device ENR (ota-path.md §9.5). Shape sweeps (`OTA_SHAPES`, `OTA_EXTRA`, `OTA_PARAMS_EXTRA`) exist
-because the exact cloud body was never captured; they are applied here so both paths sweep the same.
+The camera shares the broker client id and kicks us within milliseconds, so the
+publish is retried until a PUBACK lands and the connection is dropped — the same
+dance `wyze_cloud.push` does for the shadow.
+
+  wyze_cmd.py restart <mac> [process]
+  wyze_cmd.py send <mac> '<json body>'
+  wyze_cmd.py raw <mac> <topic> '<json body>'
 """
-import base64
 import json
-import struct
+import os
+import socket
+import ssl
+import sys
+import time
 
-MODEL_DEFAULT = "HL_CAM4"
-URL_DEFAULT = "https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from wyze_cloud import IOT, IOT_SNI, _pkt, _s, store  # noqa: E402
 
-
-def enc_len(n):
-    out = b""
-    while True:
-        d = n % 128
-        n //= 128
-        out += bytes([d | (0x80 if n else 0)])
-        if not n:
-            return out
+PROC = "wyzeedgeai_cam_v4_test_protocol"
 
 
-def pkt(kind, body, flags=0):
-    return bytes([(kind << 4) | flags]) + enc_len(len(body)) + body
+def _await_type(w, want: int, secs: float) -> bool:
+    """Read MQTT packets until `want` arrives, dropping everything else."""
+    end = time.time() + secs
+    while time.time() < end:
+        hdr = w.recv(1)
+        if not hdr:
+            return False
+        if os.environ.get("WYZE_CMD_DEBUG"):
+            print(f"  <- type {hdr[0] >> 4}", flush=True)
+        if hdr[0] >> 4 == want:
+            return True
+        n, shift = 0, 0
+        while True:                      # remaining-length varint
+            b = w.recv(1)
+            if not b:
+                return False
+            n |= (b[0] & 0x7F) << shift
+            shift += 7
+            if not b[0] & 0x80 or shift > 21:
+                break
+        while n:                         # drain the body
+            chunk = w.recv(min(n, 4096))
+            if not chunk:
+                return False
+            n -= len(chunk)
+    return False
 
 
-def xxtea(data, key, decrypt=False):
-    n = len(data) // 4
-    if n < 2:
-        return data
-    v = list(struct.unpack("<%dI" % n, data[:n * 4]))
-    k = list(struct.unpack("<4I", (key + b"\0" * 16)[:16]))
-    delta = 0x9E3779B9
-    rounds = 6 + 52 // n
-    if decrypt:
-        total = (rounds * delta) & 0xFFFFFFFF
-        y = v[0]
-        for _ in range(rounds):
-            e = (total >> 2) & 3
-            for p in range(n - 1, -1, -1):
-                z = v[(p - 1) % n]
-                mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((total ^ y) + (k[(p & 3) ^ e] ^ z))
-                v[p] = (v[p] - mx) & 0xFFFFFFFF
-                y = v[p]
-            total = (total - delta) & 0xFFFFFFFF
+def publish(mac: str, topic: str, body: bytes, tries: int = 2) -> bool:
+    thing = mac.upper()
+    d = store(mac)
+    # The broker presents the forged eMudhra chain, which the device's rootCA.crt does not
+    # anchor; against loopback that is fine, so verification is off and only the client
+    # cert (the broker's actual ACL) is loaded.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.load_cert_chain(os.path.join(d, "cert.pem"), os.path.join(d, "privkey.pem"))
+    for attempt in range(tries):
+        try:
+            # talk to OUR broker: the name resolves to the real AWS from this host (the pf
+            # rdr only covers camera source IPs), and only our broker has our cert chain
+            w = ctx.wrap_socket(
+                socket.create_connection((os.environ.get("WYZE_IOT_HOST", "127.0.0.1"), 8883), timeout=10),
+                server_hostname="aws-iot.wyzecam.com")
+            w.settimeout(6)
+            # A DISTINCT client id: taking the camera's own id makes the broker hand us its
+            # queue and the CONNACK never arrives under the flood of deltas. A side client
+            # publishes onto the device's cmd topic and leaves the camera's session alone.
+            cid = thing + "-cmd" + ("" if os.environ.get("WYZE_CMD_TAKEOVER") else "")
+            w.sendall(_pkt(1, 0, _s("MQTT") + bytes([4, 0x02]) + b"\x00\x3c" + _s(cid)))
+            # Taking the camera's client id hands us its session, so queued PUBLISHes can
+            # arrive BEFORE the CONNACK; a plain recv(4) sees those and looks like failure.
+            # CONNACK may never arrive (the proxy pairs sockets and upstream is not always
+            # attached); publish anyway after a short grace and judge by the PUBACK.
+            _await_type(w, 2, 1.0)
+            w.sendall(_pkt(3, 2, _s(topic) + body))  # QoS1 without a packet id
+            # The broker is a pairing proxy: the PUBACK comes from upstream and the upstream
+            # leg is not always attached, so a written packet is the success criterion. The
+            # broker logs it as `C CMDHEX` — grep broker.log rather than trusting this line.
+            acked = _await_type(w, 4, 3)
+            try:
+                w.sendall(_pkt(14, 0, b""))      # DISCONNECT: stop kicking the camera
+            except OSError:
+                pass
+            w.close()
+            print(f"wrote {topic}{' (puback)' if acked else ' (no upstream ack)'}")
+            return True
+        except (socket.timeout, OSError, ssl.SSLError):
+            pass
+        time.sleep(1.2)
+    return False
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print(__doc__)
+        return 2
+    mode, mac = sys.argv[1], sys.argv[2].replace(":", "").lower()
+    thing = mac.upper()
+    if mode == "restart":
+        proc = sys.argv[3] if len(sys.argv) > 3 else PROC
+        body = {"Action": "restartprocess", "Guid": os.urandom(8).hex(),
+                "Params": {"processname": proc}}
+    elif mode == "send":
+        body = json.loads(sys.argv[3])
+    elif mode == "raw":
+        return 0 if publish(mac, sys.argv[3], sys.argv[4].encode()) else 1
     else:
-        total = 0
-        z = v[n - 1]
-        for _ in range(rounds):
-            total = (total + delta) & 0xFFFFFFFF
-            e = (total >> 2) & 3
-            for p in range(n):
-                y = v[(p + 1) % n]
-                mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((total ^ y) + (k[(p & 3) ^ e] ^ z))
-                v[p] = (v[p] + mx) & 0xFFFFFFFF
-                z = v[p]
-    return struct.pack("<%dI" % n, *v)
+        print(__doc__)
+        return 2
+    payload = json.dumps(body, separators=(",", ":")).encode()
+    print(f"-> hl/devices/{mac}/cmd {payload.decode()}")
+    ok = publish(mac, f"hl/devices/{mac}/cmd", payload)
+    print("ok" if ok else "NO PUBACK")
+    return 0 if ok else 1
 
 
-def build_body(act, thing, i=0, model=MODEL_DEFAULT, url=URL_DEFAULT, md5="", proc_name=None):
-    """The command body for one swept action. Unknown actions take the stop/start branch."""
-    ver = url.rsplit("/", 1)[-1].split(".tar")[0]
-    inner = {"model": model, "url": url, "firmware_ver": ver, "md5": md5, "sub_mac": thing.upper()}
-    if act == "upgrade":
-        return {"Action": "upgrade", "Params": inner, "sub_mac": thing.upper(), "Guid": "%016x" % (i + 1)}
-    if act == "cmd":
-        # iotclient logs "cmd:%d, len:%d, data:%s" and builds the UDS message itself
-        return {"cmd": 1234, "sub_mac": thing.upper(), "data": inner}
-    if act == "cmdstr":
-        return {"cmd": 1234, "data": json.dumps(inner)}
-    if act == "upgradeSub":
-        return {"Action": act, "Guid": f"{thing}-{i}", "url": url, "md5": md5, "model": model,
-                "sub_mac": thing.upper(), "Params": {"url": url}}
-    if act.lower().startswith(("stop", "start", "kill", "restartprocess")):
-        return {"Action": act, "Guid": f"{thing}-{i}",
-                "Params": {"processname": proc_name or "wyzeedgeai_cam_v4_test_protocol"}}
-    # no Ts: the captured body has none
-    return {"Action": act, "Guid": f"{thing}-{i}", "Params": inner}
-
-
-def apply_shapes(body, top_spec, par_spec):
-    """Merge swept extra fields: top-level into the body, the other into Params."""
-    for spec, dst in ((top_spec, body), (par_spec, body.get("Params") or {})):
-        if spec:
-            dst.update(json.loads(spec))
-    return body
-
-
-def encode_payload(text, enc="3", enr="", rawhex=""):
-    """Encode the JSON body the way the cloud does. enc: 1/2/3/4 AES/XXTEA variants, 5 raw hex."""
-    pl = text.encode()
-    if not enc:
-        return pl
-    if enc == "5":
-        return bytes.fromhex(rawhex)
-    if enc in ("3", "4"):
-        pl = xxtea(pl + b"\0" * (-len(pl) % 4), enr.encode())
-        if enc == "4":
-            pl = struct.pack("<III", 0, 1319, len(pl)) + pl
-        return pl
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    if enc == "2":
-        k = enr.encode()[:16]
-    else:
-        k = base64.b64decode(enr)
-        k = (k + b"\0" * 16)[:16]
-    pl += b"\0" * (-len(pl) % 16)
-    e = Cipher(algorithms.AES(k), modes.ECB()).encryptor()
-    return e.update(pl) + e.finalize()
+if __name__ == "__main__":
+    sys.exit(main())
