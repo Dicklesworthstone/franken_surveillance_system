@@ -4,14 +4,21 @@
   <key>Label</key><string>com.jeffreyemanuel.c660-convert</string>
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string>
-    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/watchers/c660_convert.sh</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/c660_convert_watch.sh</string>
   </array>
-  <key>EnvironmentVariables</key><dict>
-    <key>MAC</key><string>50:3d:d1:2f:49:b9</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><false/>
-  <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>/tmp/c660_convert.log</string>
-  <key>StandardErrorPath</key><string>/tmp/c660_convert.log</string>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/c660_convert.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/c660_convert.log</string>
 </dict></plist>

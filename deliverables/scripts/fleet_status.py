@@ -13,7 +13,8 @@ was manual and unpracticed).
 Planes checked per camera: presence (ARP/ping), vector state (mitm/rooted/fss),
 proofs (latest RootProof per vector), waits (open wait from the ledger).
 Fleet planes: broker :8883, forge :443/:8443, backup 444-449, tftp :69,
-pf rdr count, plist doctor (cached), launchd duplicate labels, rtsp watch.
+pf rdr count, plist doctor (cached), launchd duplicate labels, rtsp watch,
+and every camera-lane watcher job (a dead watcher is invisible otherwise).
 
 Read-only: this NEVER mutates. Convergence (the write side) is a separate
 reviewed change; status first, always.
@@ -35,6 +36,21 @@ from registry import load, arp_table, ping_probe, norm_mac  # noqa: E402
 
 PROOFS = os.path.normpath(os.path.join(HERE, "..", "proofs"))
 WAITS = "/var/lib/fss-telemetry/waits.jsonl"
+
+
+# Camera-lane watchers. Each one was running as an unsupervised nohup at some point and
+# one (the RTSP watcher) sat four days on an address its fleet did not contain; a plane
+# per job is the only way that death is visible.
+WATCHERS = (
+    "com.jeffreyemanuel.c460-fire",
+    "com.jeffreyemanuel.c460-burst-daemon",
+    "com.jeffreyemanuel.c660-sweep",
+    "com.jeffreyemanuel.c660-tftp",
+    "com.jeffreyemanuel.c660-convert",
+    "com.jeffreyemanuel.owlet-relay-watch",
+    "com.jeffreyemanuel.yi-listener",
+    "com.jeffreyemanuel.wyze-rtsp-watch",
+)
 
 
 def sh(cmd, timeout=15):
@@ -94,6 +110,9 @@ def fleet_planes():
     # the RTSP watcher is the only thing that re-enables a unit that rebooted
     # without rtspd; dead means a vendor reset silently costs ingest again
     planes["rtsp-watch"] = bool(sh("pgrep -f wyze_rtsp_one_shot.py")[1].strip())
+    for label in WATCHERS:
+        key = "watch:" + label.rsplit(".", 1)[-1]
+        planes[key] = "state = running" in sh(f"sudo -n launchctl print system/{label} 2>/dev/null")[1]
     # plist doctor as a cached gate check: runs at most once/15min, result cached
     cache = "/tmp/plist_doctor_cache.json"
     try:

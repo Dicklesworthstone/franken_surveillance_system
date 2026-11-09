@@ -841,3 +841,16 @@ Working escape hatch, in order of preference:
    `fss-import-rtsp` built in 40 s this way and is a real Mach-O arm64 binary. The wrapper
    caps local parallelism through `CARGO_BUILD_JOBS` (default 8), and it is the only layer
    a script or Makefile cannot dodge.
+
+## 2026-11-09 02:45Z — every lane watcher is a supervised job and a gate plane
+
+Four watchers (C660 convert, Yi listener, and earlier the RTSP one) were running as
+unsupervised `nohup`s from some agent's shell. Two were also loaded as GUI LaunchAgents,
+so the same label lived in both domains; all of those agent files are now `.retired` and
+the root daemons are the only copies.
+
+`fleet_status --gate` grew a plane per watcher (`watch:c460-fire`, `watch:c460-burst-daemon`,
+`watch:c660-sweep`, `watch:c660-tftp`, `watch:c660-convert`, `watch:owlet-relay-watch`,
+`watch:yi-listener`, `watch:wyze-rtsp-watch`), read from `launchctl print` rather than
+`ps` — `ps` argv is unreliable in this harness. 18 planes, all green. A watcher that dies
+now fails the gate instead of being discovered days later.
