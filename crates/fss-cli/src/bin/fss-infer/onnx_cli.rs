@@ -16,7 +16,8 @@ use fss_core::{
 use fss_object::ModelId;
 use fss_reference::ingest::onnx_package::{
     MAX_ATTRIBUTION_BYTES, OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform,
-    OnnxPackageLimits, OnnxPackageRecipe, OnnxPackageRequest, import_onnx_package,
+    OnnxPackageLimits, OnnxPackageRecipe, OnnxPackageRequest, OnnxSplitHeadAssembly,
+    import_onnx_package,
 };
 use fss_reference::ingest::rgb_detections::{HeadBoxes, HeadClasses, HeadLayout, HeadScore};
 use fss_reference::ingest::rgb_package::PackageHeadSpec;
@@ -39,6 +40,8 @@ const HELP: &str = "fss-infer import-onnx [options]\n\
   decoded detection-head semantics, ordered labels and license-use approval.\n\
   Recipe v2 adds explicit RGB/BGR channel normalization. Recipe v3 also converts\n\
   a declared static anchor-free DFL distance head into native pixel-corner boxes.\n\
+  Recipe v4 assembles named box/score outputs with explicit layouts and ordered class\n\
+  indices. Box coordinates and probability/logit score semantics remain explicit.\n\
   See docs/ONNX_PACKAGE_IMPORT.md for the complete strict recipe and supported profile.\n\
   The original ONNX, exact LICENSE and NOTICE remain inside the package. The package\n\
   must pass the same license, graph, parameter and CPU-backend verifier used by\n\
@@ -228,6 +231,7 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         "fss.onnx_rgb_package_recipe.v1" => 1,
         "fss.onnx_rgb_package_recipe.v2" => 2,
         "fss.onnx_rgb_package_recipe.v3" => 3,
+        "fss.onnx_rgb_package_recipe.v4" => 4,
         _ => return Err("unsupported recipe format".into()),
     };
     let root_fields = [
@@ -240,9 +244,13 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         "labels",
         "source",
         "license",
-        "head_decode",
+        if version == 4 {
+            "head_assembly"
+        } else {
+            "head_decode"
+        },
     ];
-    let root = object(&json, &root_fields[..if version == 3 { 10 } else { 9 }])?;
+    let root = object(&json, &root_fields[..if version >= 3 { 10 } else { 9 }])?;
     let preprocess_fields = [
         "image_input",
         "height",
@@ -397,6 +405,72 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
     } else {
         None
     };
+    let head_assembly = if version == 4 {
+        let a = object(
+            field(root, "head_assembly")?,
+            &[
+                "kind",
+                "boxes_output",
+                "boxes_layout",
+                "scores_output",
+                "scores_layout",
+                "class_indices",
+            ],
+        )?;
+        if string(a, "kind")? != "split-boxes-scores" {
+            return Err("head_assembly.kind requires split-boxes-scores".into());
+        }
+        let layout = |key: &str| -> Result<OnnxHeadLayout, String> {
+            match string(a, key)?.as_str() {
+                "rows" => Ok(OnnxHeadLayout::Rows),
+                "channels" => Ok(OnnxHeadLayout::Channels),
+                _ => Err(format!("{key} requires rows or channels")),
+            }
+        };
+        let indices = field(a, "class_indices")?
+            .array()
+            .filter(|values| (1..=256).contains(&values.len()))
+            .ok_or("split-head assembly requires 1..=256 ordered class indices")?;
+        let mut class_indices = Vec::new();
+        for value in indices {
+            if !matches!(value, Value::Number(_)) {
+                return Err("split-head class indices require JSON integers".into());
+            }
+            let index = value
+                .integer()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n <= 256)
+                .ok_or("split-head class index exceeds its bound")?;
+            if class_indices.contains(&index) {
+                return Err("split-head class indices must be unique".into());
+            }
+            class_indices.push(index);
+        }
+        let assembly = OnnxSplitHeadAssembly {
+            boxes_output: string(a, "boxes_output")?,
+            boxes_layout: layout("boxes_layout")?,
+            scores_output: string(a, "scores_output")?,
+            scores_layout: layout("scores_layout")?,
+            class_indices,
+        };
+        assembly
+            .validate()
+            .map_err(|_| "invalid split-head output names or class indices")?;
+        if string(h, "layout")? != "rows"
+            || objectness != "none"
+            || assembly.class_indices.len() != strings(root, "labels")?.len()
+            || assembly.boxes_output == string(h, "output_port")?
+            || assembly.scores_output == string(h, "output_port")?
+        {
+            return Err(
+                "split-head assembly requires a distinct rows output, no objectness, and one explicit source index per label"
+                    .into(),
+            );
+        }
+        Some(assembly)
+    } else {
+        None
+    };
     Ok(OnnxPackageRecipe {
         model_id: ModelId::parse(string(root, "model_id")?).map_err(|e| e.to_string())?,
         model_generation: ModelGeneration::parse(string(root, "model_generation")?)
@@ -414,6 +488,7 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         scale_to_unit,
         image_transform,
         head_decode,
+        head_assembly,
         head: PackageHeadSpec {
             output_port: string(h, "output_port")?,
             layout: match string(h, "layout")?.as_str() {

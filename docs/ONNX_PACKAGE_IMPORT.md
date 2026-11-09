@@ -314,6 +314,110 @@ rotated boxes, dynamic grids, batches other than one and unrelated YOLO head
 parameterizations remain explicit refusals. Already-decoded boxes continue to
 use v1 or v2 recipes without a DFL conversion.
 
+## Named box and score outputs: recipe v4
+
+Some static detectors expose box coordinates and class scores as two separate outputs.
+Recipe `fss.onnx_rgb_package_recipe.v4` connects these outputs to the existing native
+package detector while preserving their original names, tensors and source bytes. It
+requires every v2 preprocessing choice, replaces the v3 `head_decode` object with
+`head_assembly`, and requires an explicit ordered source-class map:
+
+```json
+"head_assembly": {
+  "kind": "split-boxes-scores",
+  "boxes_output": "boxes",
+  "boxes_layout": "rows",
+  "scores_output": "scores",
+  "scores_layout": "channels",
+  "class_indices": [2, 0]
+}
+```
+
+This example declares that label zero means source score column two, and label one means
+source score column zero. Source column one is deliberately excluded. The converter does
+not assume a first or last background column, inspect score values to choose labels, or
+derive semantics from a detector name. Every selected index must be unique and in range.
+The number of selected indices must equal the number of labels, in the same order.
+Indices are plain JSON integer literals; strings, fractional numbers and exponent
+spellings refuse.
+
+Set `head.output_port` to a **new, distinct** name, such as `assembled_head`, set
+`head.layout` to `rows`, and set `head.objectness` to `none`. The caller still
+chooses `head.boxes` from pixel corners, pixel center/size, normalized corners or normalized
+center/size, and chooses `head.class_score` as `probability` or `logit`. Those choices
+describe the existing source tensor values. Assembly copies them without coordinate
+conversion, sigmoid, softmax, clipping, thresholds or NMS. The existing package detector
+applies the declared score rule once and performs source-coordinate projection, privacy
+footprint screening, candidate limits and NMS.
+
+### Shapes and source preservation
+
+Both named ports must be declared static F32 source outputs with batch one. Their row
+counts must agree and be between one and 32,768, within `head.maximum_rows`.
+
+| Port | Explicit rows layout | Explicit channels layout |
+|---|---|---|
+| Boxes | `[1,N,4]` | `[1,4,N]` |
+| Source scores | `[1,N,C]` | `[1,C,N]` |
+| Appended output | `[1,N,4+K]` | Rows only |
+
+Here `C` is 1–257 source score columns, and `K` is 1–256 selected class columns.
+The extra source column permits an explicitly excluded background column without imposing
+that interpretation. Both source layouts are mandatory even if dimensions could suggest
+one. Mismatched row counts, wrong rank or batch, incorrect box width, missing source
+outputs, out-of-range indices and occupied destination names refuse conversion.
+
+The implementation adds only existing native Transpose, Slice and Concat operations.
+The original outputs, including auxiliary outputs, remain declared. Original source
+parameter bits remain intact. BGR ordering and per-channel normalization occur before
+the source graph, after native RGB masking, resize and optional unit scaling. The added
+assembly is frozen into the canonical graph and model identity; no foreign runtime,
+download, new model operator or package wire format is introduced.
+
+All source and generated graph nodes, names, intermediate tensors and work share the
+ordinary cumulative import ceilings, including earlier source lowering and preprocessing.
+The existing RGB loader also enforces at most 256 outputs and a 16 MiB aggregate output
+allowance; retained auxiliary tensors and the appended output count toward both bounds.
+Assembly refuses over-budget graphs rather than silently dropping source outputs.
+The existing source/license pins, package ceiling, backend verifier and cancellation
+checks apply before a new file is opened.
+
+### Complete recipe and regression scope
+
+The complete authored recipe is
+[`recipe_v4.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v4.json);
+its strict schema is [`onnx_rgb_package_recipe.v4.json`](../schemas/onnx_rgb_package_recipe.v4.json).
+V1–v3 continue to reject `head_assembly`; v4 requires it and rejects `head_decode`.
+The public package API also refuses simultaneous DFL decoding and split-head assembly,
+objectness, a channels-layout assembled head, or a class map that does not match the
+ordered labels.
+
+The accompanying `split_head_detector.onnx` is an authored, pixel-dependent two-query
+numerical fixture. Its box output uses rows layout and its three-class score output uses
+channels layout. The highest-scoring source column is deliberately excluded by the map
+`[2,0]`. Nonzero BGR channel means affect box coordinates and scores through separate
+declared matrices; an auxiliary embedding output remains available. Package tests are
+written to reopen the exact source-closed archive, run a separate matrix oracle, verify
+selected score bits, project normalized center/size boxes, distinguish ordered class maps,
+apply logit conversion only during projection, and screen denied source footprints.
+CLI tests cover strict parsing, all explicit box representations, invalid mappings and
+exclusive creation of a verified v4 package with its exact recipe-byte digest.
+
+**Validation status:** on the exact pinned toolchain, all 31 focused native
+attention/reduction/assembly contracts passed, including ten split-head cases and this
+exact 1,060-byte package fixture. The fixture case imports the source, applies BGR
+preprocessing, assembles columns `[2,0]`, executes the actual scalar and optimized
+engines, reloads canonical graph/Safetensors artifacts, and compares zero and nonzero
+pixels with independent box/score/embedding equations. Sixteen unrelated embedded
+executor unit tests are deliberately filtered from that integration command.
+Scoped pinned rustfmt and Draft 2020-12 validation of the complete v4 recipe/schema
+also passed. Full v4 package, parser and CLI tests remain **unexecuted** because the
+existing Asupersync dependency was killed during the full reference build; native
+model execution does not substitute for that integration gate. The fixture is wiring
+evidence, not a trained detector, and split-head support does not qualify RF-DETR or
+another model family: the complete graph must still satisfy importer,
+source/weight/package size, preprocessing, licensing and deployment requirements.
+
 ## Admitted model profile and bounds
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
@@ -325,8 +429,8 @@ Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
-profiles outside the explicit v3 DFL contract and unsupported operators refuse explicitly. The command does
-not claim that an arbitrary ONNX detector can be imported.
+profiles outside the explicit DFL or split-head assembly contracts and unsupported operators
+refuse explicitly. The command does not claim that an arbitrary ONNX detector can be imported.
 
 Sqrt and Erf admit unary static F32 tensors with no attributes and select the
 separate **Model IR v2** numerical contract. Sqrt preserves signed zero, uses
@@ -339,7 +443,7 @@ Runtime or computed exponents, nonscalar controls, other values/dtypes and
 attributes refuse. These additions permit decomposed LayerNorm and Erf-based
 GELU graphs without fusing or reordering their source arithmetic; overflow
 remains visible. Graphs using only earlier primitives retain Model IR v1.
-The graph version is independent of recipe v1/v2/v3 and the unchanged FMPK
+The graph version is independent of recipe v1/v2/v3/v4 and the unchanged FMPK
 envelope. See [decomposed normalization and GELU](onnx_import.md#decomposed-normalization-and-gelu)
 for numeric bounds, source provenance and executable regression entrypoints.
 
@@ -461,7 +565,19 @@ the package assembler. A recipe-v2 preprocessing transformation is represented b
 parameter bytes, so changing channel order, mean or standard deviation changes the derived
 model identity. The original ONNX source remains byte-for-byte intact. Existing package wire
 versions, already-provisioned packages and the specialized YOLOX importer remain unchanged;
-new conversions bind the current source-derived importer identity.
+new conversions bind the current source-derived importer identity. Adding a new importer
+module or changing the package assembler therefore changes the importer fingerprint for
+new conversions, including newly converted v1–v3 recipes; it does not reinterpret or
+rewrite already-provisioned packages.
+
+For v4, the canonical graph records both source output roles, layout transformations and
+the exact ordered class selection. The existing package spec records ordered labels,
+box representation and score interpretation. The CLI report continues to use
+`fss.onnx_rgb_package_import.v1` and binds the SHA-256 of the **exact supplied recipe bytes**.
+The recipe is not a seventh package artifact: its executable choices are represented by
+the graph, parameters and package spec. Whitespace-only recipe changes alter the reported
+recipe pin; they need not alter the resulting package. Changing the ordered class map
+changes the assembled graph and model identity even when the final tensor shape is equal.
 
 Native artifact tests reopen the canonical graph, read exported weights with the actual
 production Safetensors parser, and run the actual production scalar executor. They cover
@@ -476,5 +592,5 @@ decoding, Safetensors parsing and scalar execution against an independent pixel/
 for RGB/BGR and raw/unit inputs. Its fixture has nonzero weights, uses every normalized
 channel, and exposes a second image-consuming branch. Package tests reopen a complete v2
 archive, retain original-source provenance, execute and project its detector head, and check
-that denied RGB pixels are replaced before normalization. CLI tests exercise both strict
-recipe versions and exclusive package output creation.
+that denied RGB pixels are replaced before normalization. CLI tests exercise the strict recipe versions and exclusive package output creation; the
+new v4 cases remain pending native validation as stated above.

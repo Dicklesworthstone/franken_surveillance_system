@@ -4,6 +4,9 @@
 use super::*;
 use fss_model_ir::{OnnxHeadLayout, OnnxSplitHeadAssembly, assemble_onnx_split_head};
 
+const PACKAGE_SPLIT_SOURCE: &[u8] =
+    include_bytes!("../../../fss-reference/tests/fixtures/onnx_package/split_head_detector.onnx");
+
 fn recipe(
     boxes_layout: OnnxHeadLayout,
     scores_layout: OnnxHeadLayout,
@@ -65,15 +68,15 @@ fn assemble<'a>(
     )?)
 }
 
-fn assembled_roundtrip(
-    imported: &ImportedOnnx<'_>,
-    input: &[(&str, Tensor)],
-) -> Test<Outputs> {
+fn assembled_roundtrip(imported: &ImportedOnnx<'_>, input: &[(&str, Tensor)]) -> Test<Outputs> {
     let before = execute(imported.graph(), imported.parameters().clone(), input)?;
     let artifacts = export(imported)?;
     let repeat = export(imported)?;
     assert_eq!(artifacts.source(), imported.source());
-    assert_eq!(artifacts.source_digest(), ContentDigest::sha256(imported.source()));
+    assert_eq!(
+        artifacts.source_digest(),
+        ContentDigest::sha256(imported.source())
+    );
     assert_eq!(artifacts.graph_bytes(), repeat.graph_bytes());
     assert_eq!(artifacts.weights_bytes(), repeat.weights_bytes());
     let graph = decode_canonical_model_ir(artifacts.graph_bytes(), artifacts.graph_digest())?;
@@ -83,7 +86,10 @@ fn assembled_roundtrip(
     let weights = reloaded(&artifacts)?;
     assert_eq!(weights.len(), imported.parameters().len());
     for (name, parameter) in imported.parameters() {
-        assert_eq!(bits(&weights[name].to_vec::<f32>()?), bits(&parameter.to_vec::<f32>()?));
+        assert_eq!(
+            bits(&weights[name].to_vec::<f32>()?),
+            bits(&parameter.to_vec::<f32>()?)
+        );
     }
     let after = execute(&graph, weights, input)?;
     for (name, expected) in &before {
@@ -94,17 +100,26 @@ fn assembled_roundtrip(
 
 #[test]
 fn split_heads_bind_names_even_with_equal_widths_and_keep_exact_bits() -> Test {
-    let boxes: [&[f32]; 2] = [
-        &[-0., f32::from_bits(1), 12., 13.],
-        &[20., 21., 22., 23.],
-    ];
+    let boxes: [&[f32]; 2] = [&[-0., f32::from_bits(1), 12., 13.], &[20., 21., 22., 23.]];
     let scores: [&[f32]; 2] = [
         &[0., -2., f32::MAX, 4.],
         &[-f32::from_bits(1), 5., f32::MIN, -0.],
     ];
     let expected = [
-        -0., f32::from_bits(1), 12., 13., 4., 0., f32::MAX,
-        20., 21., 22., 23., -0., -f32::from_bits(1), f32::MIN,
+        -0.,
+        f32::from_bits(1),
+        12.,
+        13.,
+        4.,
+        0.,
+        f32::MAX,
+        20.,
+        21.,
+        22.,
+        23.,
+        -0.,
+        -f32::from_bits(1),
+        f32::MIN,
     ];
     for boxes_layout in [OnnxHeadLayout::Rows, OnnxHeadLayout::Channels] {
         for scores_layout in [OnnxHeadLayout::Rows, OnnxHeadLayout::Channels] {
@@ -119,7 +134,12 @@ fn split_heads_bind_names_even_with_equal_widths_and_keep_exact_bits() -> Test {
             assert!(imported.parameters().is_empty());
             assert_eq!(imported.graph().outputs().len(), 3);
             assert_eq!(
-                imported.graph().find_output("packed").ok_or("packed output")?.shape().dims(),
+                imported
+                    .graph()
+                    .find_output("packed")
+                    .ok_or("packed output")?
+                    .shape()
+                    .dims(),
                 [1, 2, 7]
             );
             let box_values = layout_values(&boxes, boxes_layout);
@@ -146,25 +166,27 @@ fn split_heads_run_shared_rgb_feature_branches_and_preserve_v2_and_weights() -> 
             node("Flatten", &["image"], &["features"], &int_attr("axis", 1)),
             node("MatMul", &["features", "box_weights"], &["box_flat"], &[]),
             node("Reshape", &["box_flat", "box_shape"], &["boxes"], &[]),
-            node("MatMul", &["features", "score_weights"], &["score_flat"], &[]),
+            node(
+                "MatMul",
+                &["features", "score_weights"],
+                &["score_flat"],
+                &[],
+            ),
             node("Reshape", &["score_flat", "score_shape"], &["scores"], &[]),
             node("Sqrt", &["features"], &["auxiliary"], &[]),
             weight(
                 "box_weights",
                 &[3, 8],
                 &[
-                    1., 0., 0., 1., 1., 2., 0., 0.,
-                    0., 1., 0., 0., 0., 0., 1., 0.,
-                    0., 0., 1., 0., 0., 0., 0., 1.,
+                    1., 0., 0., 1., 1., 2., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 1., 0.,
+                    0., 0., 0., 1.,
                 ],
             ),
             weight(
                 "score_weights",
                 &[3, 6],
                 &[
-                    1., 0., 1., 1., 0., -1.,
-                    0., 1., 0., 0., 1., 0.,
-                    0., 0., -1., 0., 0., 1.,
+                    1., 0., 1., 1., 0., -1., 0., 1., 0., 0., 1., 0., 0., 0., -1., 0., 0., 1.,
                 ],
             ),
             int_weight("box_shape", &[3], &[1, 2, 4]),
@@ -184,11 +206,11 @@ fn split_heads_run_shared_rgb_feature_branches_and_preserve_v2_and_weights() -> 
     assert_eq!(imported.runtime_inputs(), &["image"]);
     assert_eq!(export(&imported)?.weights_bytes(), original_weights);
     assert_eq!(imported.source_digest(), original.source_digest());
-    let output = assembled_roundtrip(
-        &imported,
-        &[("image", data(&[1, 3, 1, 1], &[1., 4., 9.])?)],
-    )?;
-    assert_eq!(bits(&output["boxes"]), bits(&[1., 4., 9., 1., 1., 2., 4., 9.]));
+    let output = assembled_roundtrip(&imported, &[("image", data(&[1, 3, 1, 1], &[1., 4., 9.])?)])?;
+    assert_eq!(
+        bits(&output["boxes"]),
+        bits(&[1., 4., 9., 1., 1., 2., 4., 9.])
+    );
     assert_eq!(bits(&output["scores"]), bits(&[1., 4., -8., 1., 4., 8.]));
     assert_eq!(bits(&output["auxiliary"]), bits(&[1., 2., 3.]));
     assert_eq!(
@@ -201,12 +223,14 @@ fn split_heads_run_shared_rgb_feature_branches_and_preserve_v2_and_weights() -> 
 #[test]
 fn split_heads_keep_explicit_sparse_background_and_label_order() -> Test {
     let source = head_source(&[1, 1, 4], &[1, 1, 257]);
-    let values = (0..257).map(|index| index as f32 - 128.).collect::<Vec<_>>();
+    let values = (0..257)
+        .map(|index| index as f32 - 128.)
+        .collect::<Vec<_>>();
     let mappings = [
         (0..256).collect::<Vec<_>>(), // Explicit last-slot omission.
         (1..257).collect::<Vec<_>>(), // Explicit first-slot omission.
         (0..127).chain(128..257).collect::<Vec<_>>(), // Explicit interior omission.
-        vec![90, 1, 3, 0], // Sparse foreground slots, in the requested label order.
+        vec![90, 1, 3, 0],            // Sparse foreground slots, in the requested label order.
         (1..257).rev().collect::<Vec<_>>(),
     ];
     for mapping in mappings {
@@ -264,14 +288,7 @@ fn assembly_error(
     output: &str,
     limits: OnnxLimits,
 ) -> Test<Option<OnnxError>> {
-    Ok(assemble_onnx_split_head(
-        import(source)?,
-        recipe,
-        output,
-        limits,
-        &|| false,
-    )
-    .err())
+    Ok(assemble_onnx_split_head(import(source)?, recipe, output, limits, &|| false).err())
 }
 
 #[test]
@@ -386,11 +403,23 @@ fn split_heads_charge_original_controls_and_exact_expansion_limits() -> Test {
     exact.work_units = imported.work_units();
     assert!(assemble(&source, &recipe, "packed", exact).is_ok());
     for limits in [
-        OnnxLimits { source_bytes: source.len() - 1, ..exact },
+        OnnxLimits {
+            source_bytes: source.len() - 1,
+            ..exact
+        },
         OnnxLimits { nodes: 4, ..exact },
-        OnnxLimits { tensors: 7, ..exact },
-        OnnxLimits { parameter_bytes: 23, ..exact },
-        OnnxLimits { tensor_bytes: 47, ..exact },
+        OnnxLimits {
+            tensors: 7,
+            ..exact
+        },
+        OnnxLimits {
+            parameter_bytes: 23,
+            ..exact
+        },
+        OnnxLimits {
+            tensor_bytes: 47,
+            ..exact
+        },
     ] {
         assert_eq!(
             assembly_error(&source, &recipe, "packed", limits)?,
@@ -402,7 +431,10 @@ fn split_heads_charge_original_controls_and_exact_expansion_limits() -> Test {
             &source,
             &recipe,
             "packed",
-            OnnxLimits { work_units: exact.work_units - 1, ..exact },
+            OnnxLimits {
+                work_units: exact.work_units - 1,
+                ..exact
+            },
         )?,
         Some(OnnxError::WorkBudget)
     );
@@ -433,7 +465,10 @@ fn split_heads_charge_original_controls_and_exact_expansion_limits() -> Test {
             &expanded_source,
             &recipe,
             "packed",
-            OnnxLimits { tensor_bytes: 128, ..OnnxLimits::default() },
+            OnnxLimits {
+                tensor_bytes: 128,
+                ..OnnxLimits::default()
+            },
         )
         .is_ok()
     );
@@ -442,7 +477,10 @@ fn split_heads_charge_original_controls_and_exact_expansion_limits() -> Test {
             &expanded_source,
             &recipe,
             "packed",
-            OnnxLimits { tensor_bytes: 127, ..OnnxLimits::default() },
+            OnnxLimits {
+                tensor_bytes: 127,
+                ..OnnxLimits::default()
+            },
         )?,
         Some(OnnxError::Limit)
     );
@@ -458,7 +496,10 @@ fn split_heads_charge_original_controls_and_exact_expansion_limits() -> Test {
             &source,
             &recipe,
             "packed",
-            OnnxLimits { work_units: original_work, ..exact },
+            OnnxLimits {
+                work_units: original_work,
+                ..exact
+            },
         )?,
         Some(OnnxError::WorkBudget)
     );
@@ -468,7 +509,11 @@ fn split_heads_charge_original_controls_and_exact_expansion_limits() -> Test {
 #[test]
 fn split_heads_cancel_at_every_assembly_checkpoint_without_partial_result() -> Test {
     let source = head_source(&[1, 4, 2], &[1, 4, 2]);
-    let recipe = recipe(OnnxHeadLayout::Channels, OnnxHeadLayout::Channels, &[3, 0, 2]);
+    let recipe = recipe(
+        OnnxHeadLayout::Channels,
+        OnnxHeadLayout::Channels,
+        &[3, 0, 2],
+    );
     let calls = Cell::new(0);
     assemble_onnx_split_head(
         import(&source)?,
@@ -507,8 +552,18 @@ fn split_heads_reserve_helpers_outputs_and_repeated_assembly_names() -> Test {
             node("Identity", &["box_input"], &["boxes"], &[]),
             node("Identity", &["score_input"], &["scores"], &[]),
             node("Identity", &["box_input"], &["fss:split-head:boxes"], &[]),
-            node("Identity", &["score_input"], &["fss:split-head:scores"], &[]),
-            node("Identity", &["score_input"], &["fss:split-head:classes-0"], &[]),
+            node(
+                "Identity",
+                &["score_input"],
+                &["fss:split-head:scores"],
+                &[],
+            ),
+            node(
+                "Identity",
+                &["score_input"],
+                &["fss:split-head:classes-0"],
+                &[],
+            ),
             bytes(11, &info("box_input", &dims, 1)),
             bytes(11, &info("score_input", &dims, 1)),
             bytes(12, &info("boxes", &dims, 1)),
@@ -520,28 +575,120 @@ fn split_heads_reserve_helpers_outputs_and_repeated_assembly_names() -> Test {
         .concat(),
     );
     let recipe = recipe(OnnxHeadLayout::Channels, OnnxHeadLayout::Channels, &[2, 0]);
-    let first = assemble(&source, &recipe, "onnx-split-head-0000", OnnxLimits::default())?;
-    let imported = assemble_onnx_split_head(
-        first,
+    let first = assemble(
+        &source,
         &recipe,
-        "second",
+        "onnx-split-head-0000",
         OnnxLimits::default(),
-        &|| false,
     )?;
+    let imported =
+        assemble_onnx_split_head(first, &recipe, "second", OnnxLimits::default(), &|| false)?;
     assert_eq!(imported.graph().outputs().len(), 7);
     let output = assembled_roundtrip(
         &imported,
         &[
             ("box_input", data(&dims, &[1., 5., 2., 6., 3., 7., 4., 8.])?),
-            ("score_input", data(&dims, &[9., 13., 10., 14., 11., 15., 12., 16.])?),
+            (
+                "score_input",
+                data(&dims, &[9., 13., 10., 14., 11., 15., 12., 16.])?,
+            ),
         ],
     )?;
     assert_eq!(
         bits(&output["second"]),
         bits(&[1., 2., 3., 4., 11., 9., 5., 6., 7., 8., 15., 13.])
     );
-    assert_eq!(bits(&output["second"]), bits(&output["onnx-split-head-0000"]));
-    assert_eq!(bits(&output["scores"]), bits(&output["fss:split-head:classes-0"]));
-    assert_eq!(bits(&output["boxes"]), bits(&output["fss:split-head:boxes"]));
+    assert_eq!(
+        bits(&output["second"]),
+        bits(&output["onnx-split-head-0000"])
+    );
+    assert_eq!(
+        bits(&output["scores"]),
+        bits(&output["fss:split-head:classes-0"])
+    );
+    assert_eq!(
+        bits(&output["boxes"]),
+        bits(&output["fss:split-head:boxes"])
+    );
+    Ok(())
+}
+
+#[test]
+fn split_package_fixture_executes_image_transform_and_both_heads_after_artifact_reload() -> Test {
+    use fss_model_ir::{OnnxChannelOrder, OnnxImageTransform, transform_onnx_image};
+
+    assert_eq!(PACKAGE_SPLIT_SOURCE.len(), 1060);
+    assert_eq!(
+        ContentDigest::sha256(PACKAGE_SPLIT_SOURCE).to_text(),
+        "sha256:9f38352f183e7f2f4748e254a29d121e3f3531c9137dce2750095b009e7d1f29"
+    );
+    let transformed = transform_onnx_image(
+        import(PACKAGE_SPLIT_SOURCE)?,
+        "image",
+        OnnxImageTransform {
+            channel_order: OnnxChannelOrder::Bgr,
+            mean: [0.; 3],
+            standard_deviation: [1.; 3],
+        },
+        OnnxLimits::default(),
+        &|| false,
+    )?;
+    let imported = assemble_onnx_split_head(
+        transformed,
+        &recipe(OnnxHeadLayout::Rows, OnnxHeadLayout::Channels, &[2, 0]),
+        "assembled_head",
+        OnnxLimits::default(),
+        &|| false,
+    )?;
+    assert_eq!(imported.graph().outputs().len(), 4);
+    for pixels in [
+        [0_u8; 12],
+        [10, 50, 90, 20, 100, 180, 30, 150, 210, 40, 200, 240],
+    ] {
+        let image = (0..3)
+            .flat_map(|channel| {
+                (0..4).map(move |pixel| {
+                    f32::from(pixels[pixel * 3 + channel]) * (1.0_f32 / 255.0_f32)
+                })
+            })
+            .collect::<Vec<_>>();
+        let outputs = assembled_roundtrip(&imported, &[("image", data(&[1, 3, 2, 2], &image)?)])?;
+        // Direct RGB-pixel equations are independent of the native layout and
+        // MatMul helpers. Each nonzero matrix term is a binary-exact coefficient.
+        let means = [2, 1, 0].map(|channel| {
+            let mut sum = 0.0_f32;
+            for pixel in 0..4 {
+                sum += f32::from(pixels[pixel * 3 + channel]) * (1.0_f32 / 255.0_f32);
+            }
+            sum / 4.0
+        });
+        let [blue, green, red] = means;
+        let boxes = [
+            blue * 0.0625 + 0.25,
+            0.5,
+            red * 0.03125 + 0.5,
+            1.0,
+            green * -0.0625 + 0.75,
+            0.5,
+            0.5,
+            1.0,
+        ];
+        let scores = [
+            blue * 0.0625 + 0.125,
+            green * -0.0625 + 0.875,
+            red * 0.03125 + 0.99,
+            red * -0.03125 + 0.99,
+            green * 0.0625 + 0.875,
+            blue * -0.0625 + 0.125,
+        ];
+        let expected = [
+            boxes[0], boxes[1], boxes[2], boxes[3], scores[4], scores[0], boxes[4], boxes[5],
+            boxes[6], boxes[7], scores[5], scores[1],
+        ];
+        assert_eq!(bits(&outputs["embedding"]), bits(&means));
+        assert_eq!(bits(&outputs["boxes"]), bits(&boxes));
+        assert_eq!(bits(&outputs["scores"]), bits(&scores));
+        assert_eq!(bits(&outputs["assembled_head"]), bits(&expected));
+    }
     Ok(())
 }

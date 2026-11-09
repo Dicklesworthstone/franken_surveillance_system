@@ -1256,21 +1256,31 @@ thresholds and NMS belong to the existing downstream head contract. See the
 [package recipe documentation](ONNX_PACKAGE_IMPORT.md) for the separately
 versioned operator integration; this native adapter alone does not select a recipe.
 
-**Validation scope, 2026-11-09:** nine new cases are added to the existing
-`onnx_attention_execution` target. They exercise the unchanged production scalar
+**Validation scope, 2026-11-09:** all 31 cases in the focused
+`onnx_attention_execution` target pass on pinned nightly-2026-08-31, including
+the 21 earlier attention/reduction cases and ten split-head cases. The tests use
+the unchanged production scalar
 and optimized executors, canonical graph reload and actual Safetensors parsing:
 all four layout pairs, equal-width role ambiguity, exact sample bits, a shared
 RGB-feature graph with separate MatMul branches and a preserved v2 auxiliary
 output, first/last/interior slot omission, sparse/reordered 256-class mappings,
 compact helper expansion, malformed roles/shapes/mappings, exact cumulative
 admission boundaries, every assembly cancellation checkpoint and reserved-name
-collisions across repeated conversion. These are untrained numerical fixtures,
-not detector accuracy or upstream framework conformance evidence.
+collisions across repeated conversion. The tenth case imports the actual
+1,060-byte `split_head_detector.onnx` package fixture, applies the explicit BGR
+image transform, and checks both heads, the preserved embedding and the packed
+output against independent zero/nonzero RGB-pixel equations before and after
+artifact reload. Its source SHA-256 is
+`9f38352f183e7f2f4748e254a29d121e3f3531c9137dce2750095b009e7d1f29`.
+These are untrained numerical fixtures, not detector accuracy or upstream
+framework conformance evidence.
 
-The new cases have **not been executed in this session**: the workspace execution
-service became unavailable before the split-head implementation was written.
-The earlier 21-test attention/reduction run described above predates this feature
-and is not a validation claim for it. The pending focused command is:
+The runner recovered after the initial source checkpoint. The final focused run
+completed in 19.45 seconds with 292,060 KiB peak child RSS. Its 16 embedded executor
+unit tests were deliberately excluded; production execution code itself is used
+unchanged. Scoped rustfmt also passes. This verifies native conversion/execution
+and the fixture, not the separately integrated package/CLI path or full
+`fss-reference` build. The focused command is:
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \

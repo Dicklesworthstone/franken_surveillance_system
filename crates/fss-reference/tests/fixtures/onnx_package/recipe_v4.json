@@ -1,0 +1,68 @@
+{
+  "format": "fss.onnx_rgb_package_recipe.v4",
+  "model_id": "MOD-ONNXSPLITFIXTURE-001",
+  "model_generation": "model:onnx-split-fixture:g1",
+  "tensor_generation": 1,
+  "preprocess": {
+    "image_input": "image",
+    "height": 2,
+    "width": 2,
+    "resize": "nearest",
+    "letterbox_pad": 0,
+    "masked_rgb": [
+      51,
+      102,
+      153
+    ],
+    "scale_to_unit": true,
+    "channel_order": "bgr",
+    "mean": [
+      0,
+      0,
+      0
+    ],
+    "standard_deviation": [
+      1,
+      1,
+      1
+    ]
+  },
+  "head": {
+    "output_port": "assembled_head",
+    "layout": "rows",
+    "boxes": "normalized-center-size",
+    "class_score": "probability",
+    "objectness": "none",
+    "classes": "best",
+    "minimum_score_ppm": 500000,
+    "nms_iou_ppm": 450000,
+    "maximum_rows": 2,
+    "maximum_candidates": 8,
+    "maximum_detections": 2
+  },
+  "labels": [
+    "fixture-class-two",
+    "fixture-class-zero"
+  ],
+  "source": {
+    "upstream": "fixture:fss/native-onnx-split",
+    "revision": "v1",
+    "producer": "FSS pixel-dependent split-head numerical fixture"
+  },
+  "license": {
+    "id": "MIT",
+    "use_approved": true,
+    "restrictions": []
+  },
+  "head_assembly": {
+    "kind": "split-boxes-scores",
+    "boxes_output": "boxes",
+    "boxes_layout": "rows",
+    "scores_output": "scores",
+    "scores_layout": "channels",
+    "class_indices": [
+      2,
+      0
+    ]
+  }
+}

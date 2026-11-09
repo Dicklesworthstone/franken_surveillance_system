@@ -1,0 +1,44 @@
+cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::
+   Compiling fss-model-ir v0.0.1 (/workspace/scratch/a0052a33ebcf/franken_surveillance_system/crates/fss-model-ir)
+    Finished `test` profile [unoptimized] target(s) in 3.86s
+     Running tests/onnx_attention_execution.rs (target/debug/build/fss-model-ir/e5f4ceb75336a7b6/out/onnx_attention_execution-e5f4ceb75336a7b6)
+
+running 31 tests
+test attention_practical_token_sizes_have_constant_helper_count_and_checked_matrix_size ... ok
+test attention_qkv_batched_softmax_and_pooled_features_run_through_real_artifacts ... ok
+test attention_real_execution_refuses_short_budgets_stale_inputs_and_cancellation ... ok
+test empty_integer_attributes_accept_both_protobuf_encodings_without_type_confusion ... ok
+test gather_and_mean_aggregate_admission_work_and_cancellation_are_exact ... ok
+test gather_and_mean_helpers_cannot_capture_future_source_names ... ok
+test gather_and_mean_refuse_invalid_controls_attributes_and_output_witnesses ... ok
+test gather_every_rank_and_axis_preserves_exact_finite_bits ... ok
+test gather_literals_distinguish_scalar_vector_and_repeated_indices ... ok
+test gather_static_shape_controls_and_constant_data_keep_distinct_dispatch ... ok
+test mean_every_admitted_rank_matches_independent_coordinate_accumulation ... ok
+test mean_noncontiguous_negative_axes_keepdims_and_empty_axes_are_exact ... ok
+test mean_signed_zeros_subnormal_rounding_and_overflow_follow_native_order ... ok
+test reductions::every_admitted_rank_and_axis_order_matches_independent_reduction ... ok
+test reductions::normalized_weighted_feature_head_executes_with_both_reductions ... ok
+test reductions::reduction_rounding_signed_zero_underflow_and_overflow_remain_explicit ... ok
+test reductions::reductions_preflight_full_expansion_and_every_cancellation_checkpoint ... ok
+test reductions::reductions_refuse_incompatible_opset_forms_and_malformed_controls ... ok
+test reductions::sum_and_l2_literals_keepdims_defaults_and_versions_survive_reload ... ok
+test reductions::sum_axes_from_constant_and_static_shape_program_are_compile_time_only ... ok
+test reductions::sum_noop_preserves_exact_bits_and_uses_no_generated_parameters ... ok
+test split_heads::split_heads_bind_names_even_with_equal_widths_and_keep_exact_bits ... ok
+test split_heads::split_heads_cancel_at_every_assembly_checkpoint_without_partial_result ... ok
+test split_heads::split_heads_charge_original_controls_and_exact_expansion_limits ... ok
+test split_heads::split_heads_compact_contiguous_selections_independently_of_row_count ... ok
+test split_heads::split_heads_keep_explicit_sparse_background_and_label_order ... ok
+test split_heads::split_heads_refuse_ambiguous_names_and_invalid_class_mappings ... ok
+test split_heads::split_heads_refuse_mismatched_batches_rows_ranks_and_source_widths ... ok
+test split_heads::split_heads_reserve_helpers_outputs_and_repeated_assembly_names ... ok
+test split_heads::split_heads_run_shared_rgb_feature_branches_and_preserve_v2_and_weights ... ok
+test split_heads::split_package_fixture_executes_image_transform_and_both_heads_after_artifact_reload ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 15.53s
+
+
+wall_seconds=19.45
+max_child_rss_kib=292060
+exit_code=0

@@ -4667,6 +4667,13 @@
       "schema": "fss.onnx_rgb_package_recipe.v3"
     },
     {
+      "authority": "operator input/provisioning",
+      "compatibilityRule": "Explicit v2 image preprocessing plus distinct named boxes and class-score outputs, independent rows/channels layouts, and ordered unique class indices. Native Transpose/Slice/Concat assembles one rows head with explicit box and probability/logit semantics, no objectness or guessed background slot. Original outputs/source and cumulative admission remain intact; DFL decoding is mutually exclusive. Existing v1-v3 recipe and package/report wire contracts remain unchanged.",
+      "file": "schemas/onnx_rgb_package_recipe.v4.json",
+      "id": "SCHEMA-ONNX-RGB-PACKAGE-RECIPE-004",
+      "schema": "fss.onnx_rgb_package_recipe.v4"
+    },
+    {
       "authority": "effect truth",
       "compatibilityRule": "state monotonicity; idempotency identity preserved",
       "file": "schemas/operation_receipt.v1.json",

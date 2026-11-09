@@ -51,8 +51,7 @@ impl OnnxSplitHeadAssembly {
         // At most 256 foreground classes plus one explicitly excluded source
         // slot fit this profile. Graph admission checks the actual score width.
         if self.class_indices.iter().any(|&index| index > 256)
-            || self.class_indices.iter().collect::<BTreeSet<_>>().len()
-                != self.class_indices.len()
+            || self.class_indices.iter().collect::<BTreeSet<_>>().len() != self.class_indices.len()
         {
             return Err(OnnxError::Graph);
         }
@@ -165,9 +164,7 @@ pub fn assemble_onnx_split_head<'a>(
     admission.charge(0)?;
     assembly.validate()?;
     admission.charge(
-        assembly.boxes_output.len()
-            + assembly.scores_output.len()
-            + assembly.class_indices.len(),
+        assembly.boxes_output.len() + assembly.scores_output.len() + assembly.class_indices.len(),
     )?;
     if !valid_name(assembled_output) || imported.reserved.contains(assembled_output) {
         return Err(OnnxError::Graph);
@@ -183,7 +180,10 @@ pub fn assemble_onnx_split_head<'a>(
     let (score_rows, score_fields) = head_dimensions(scores, assembly.scores_layout)?;
     if box_fields != 4
         || rows != score_rows
-        || assembly.class_indices.iter().any(|&index| index >= score_fields)
+        || assembly
+            .class_indices
+            .iter()
+            .any(|&index| index >= score_fields)
     {
         return Err(OnnxError::Graph);
     }
@@ -284,7 +284,10 @@ pub fn assemble_onnx_split_head<'a>(
                 vec![scores.clone()],
                 AttributeMap::from([
                     ("axes".into(), AttrValue::IntList(vec![2])),
-                    ("starts".into(), AttrValue::IntList(vec![range.start as i64])),
+                    (
+                        "starts".into(),
+                        AttrValue::IntList(vec![range.start as i64]),
+                    ),
                     ("ends".into(), AttrValue::IntList(vec![range.end as i64])),
                     ("steps".into(), AttrValue::IntList(vec![1])),
                 ]),

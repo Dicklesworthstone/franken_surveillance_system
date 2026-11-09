@@ -87,3 +87,64 @@ two score fields. Zero RGB makes every side uniform, giving exactly 1.5 bins; no
 changes both geometry and scores. The package tests check exact uniform-case corners, source
 retention, score-bit preservation, existing NMS, and privacy replacement/footprint screening.
 This fixture demonstrates the declared numerical pipeline and makes no model-quality claim.
+
+## Separate boxes and class scores fixture
+
+`split_head_detector.onnx` is an original ONNX IR 8 / opset-13 numerical fixture
+(1060 bytes, SHA-256
+`9f38352f183e7f2f4748e254a29d121e3f3531c9137dce2750095b009e7d1f29`).
+Its embedded finite F32 weights are authored test data, not trained
+weights. The producer is `FSS split-head numerical fixture, not trained detector`;
+the graph name is `fixture:onnx-split-head-detector`.
+
+The input `image` is `[1,3,2,2]`. GlobalAveragePool and Flatten produce the declared
+`embedding` output `[1,3]`. Two independent branches use MatMul, Add and Reshape:
+
+| Branch | Matrix | Bias | INT64 reshape control | Declared output |
+|---|---|---|---|---|
+| Boxes | `[1,3,8]` | `[1,1,8]` | `[1,2,4]` | `boxes`, rows layout |
+| Scores | `[1,3,6]` | `[1,1,6]` | `[1,3,2]` | `scores`, channels layout |
+
+Initialize both matrices to zero, then set the following nonzero coefficients,
+where `w[channel,field]` indexes the trailing two dimensions:
+
+```text
+box_weights[0,0] =  0.0625
+box_weights[1,4] = -0.0625
+box_weights[2,2] =  0.03125
+score_weights[0,0] =  0.0625
+score_weights[0,5] = -0.0625
+score_weights[1,1] = -0.0625
+score_weights[1,4] =  0.0625
+score_weights[2,2] =  0.03125
+score_weights[2,3] = -0.03125
+box_bias   = [0.25, 0.5, 0.5, 1.0, 0.75, 0.5, 0.5, 1.0]
+score_bias = [0.125, 0.875, 0.99, 0.99, 0.875, 0.125]
+```
+
+MatMul accumulates the three channel products in order; Add then applies the bias.
+All decimal values are stored as F32. The score order is class0/row0, class0/row1,
+class1/row0, class1/row1, class2/row0, class2/row1. Both reshape controls use embedded
+little-endian INT64 values; all learned-data tensors use embedded little-endian F32.
+
+`recipe_v4.json` declares unit-scaled BGR input, zero means, unit standard deviations,
+and public RGB replacement `[51,102,153]` for denied pixels. It assembles the box rows
+with class columns `[2,0]` into `assembled_head` `[1,2,6]`, preserving all three
+source outputs. Labels are explicitly `fixture-class-two`, then `fixture-class-zero`.
+Coordinates mean normalized center/size and scores mean probabilities. Zero RGB yields
+one left-half box for label zero and one right-half box for label one, both with score
+0.875. The higher-valued source column one is deliberately excluded; no automatic
+background convention is used.
+
+The exact fixture passed native import, BGR transformation, split-head assembly, actual
+scalar and optimized execution, and canonical-graph/Safetensors reload on the pinned
+toolchain. Independent zero and nonzero pixel/matrix equations check all original and
+assembled outputs. This case is part of the passing 31-case native integration target,
+including ten split-head cases; it does not establish model quality.
+
+The additional full package/CLI tests are authored for exact source/archive reopening,
+class-map identity, one-time logit handling, privacy replacement/footprint refusal,
+strict recipe admission and exact recipe-byte receipts. Those tests remain unexecuted
+because the full reference dependency build was killed in Asupersync. Pinned rustfmt
+and strict recipe/schema validation passed; native fixture execution does not replace
+the pending full-package integration gate.
