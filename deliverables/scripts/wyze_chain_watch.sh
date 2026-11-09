@@ -1,7 +1,7 @@
 #!/bin/bash
 # Wyze chain watcher — closes the loop the moment a CAMERA fetches the capsule.
 #
-# Trigger condition (the chain completing): a GET for 4.52.17.99.tar (or .32)
+# Trigger condition (the chain completing): a GET for *.tar (any capsule version)
 # from 192.168.4.39/51 in /tmp/ota/forge.log, followed by installer backups on
 # 444-449, a beacon, or an open shell port. On ANY of those:
 #   1. append to the wait ledger (observed),
@@ -66,7 +66,7 @@ while :; do
 
     # ledger: the wait is OBSERVED
     $PY "/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wait_ledger.py" record \
-      --cam "wyze-.39/.51" --expectation "camera GET for 4.52.17.99.tar over the trycloudflare tunnel" \
+      --cam "wyze-.39/.51" --expectation "camera GET for the capsule over the trycloudflare tunnel" \
       --state observed --observations "$now" \
       --note "chain completed; capture started $(date '+%F %T')" 2>/dev/null
 

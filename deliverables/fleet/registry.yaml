@@ -16,8 +16,10 @@ cameras:
     - uid
     - enr
   notes: 'TUTK uid VD46744U86PCN769111A. MITM OTA chain ARMED 2026-11-06 (broker :8883
-    live, accepted-rewrite → 4.52.17.99 capsule). Backup receivers 444-449 up. No
-    root proof yet (root_proof.py telnet9999/beacon-uid0 = FAIL, refusal).
+    live, accepted-rewrite → 4.52.17.100 capsule, RENDERED 2026-11-09). Backup receivers
+    444-449 up. No root proof yet (root_proof.py telnet9999/beacon-uid0 = FAIL, refusal).
+    RTSP ENABLED 2026-11-09: fssuser, authenticated DESCRIBE 200 (stream0/stream1);
+    proof 192_168_4_39-rtsp-enable-20261109T011815Z.json. Interim ingest path, no root.
 
     '
 - id: wyze-51
@@ -35,7 +37,10 @@ cameras:
     - uid
     - enr
   notes: 'TUTK uid S3X2PBBR14M8Y2J6111A. 28× 50199 component fetches (dl-loc fix proven).
-    Broker plist env targets THIS camera (CAP 4.52.17.99).
+    RTSP ENABLED 2026-11-09 via 0x29e8 (needs full_login, not Cam2.login): fssuser,
+    authenticated DESCRIBE 200 (stream0/stream1); proof
+    192_168_4_51-rtsp-enable-20261109T013201Z.json. Interim ingest path, no root.
+    Kept by com.jeffreyemanuel.wyze-rtsp-watch.
 
     '
 - id: tapo-c460

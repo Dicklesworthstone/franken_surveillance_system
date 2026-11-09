@@ -40,6 +40,24 @@ PROOFS = os.path.normpath(os.path.join(HERE, "..", "proofs"))
 TRANSCRIPTS = os.path.join(PROOFS, "transcripts")
 LEDGER = os.path.join(PROOFS, "LEDGER.md")
 BEACON_LOG = "/tmp/fss_beacons.log"
+
+
+def _default_key() -> str:
+    """Operator SSH key, resolved even when running as root (launchd).
+
+    The proofs are driven from a LaunchDaemon, where ~ is /var/root and the key
+    never exists; the lab key lives in the repo owner's home, which is three
+    levels above this script (…/Users/<owner>/projects/<repo>/deliverables/scripts).
+    """
+    owner_home = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+    for cand in (os.path.expanduser("~/.ssh/id_ed25519"),
+                 os.path.join(owner_home, ".ssh", "id_ed25519")):
+        if os.path.exists(cand):
+            return cand
+    return os.path.expanduser("~/.ssh/id_ed25519")
+
+
+DEFAULT_KEY = _default_key()
 TFTP_DIR = "/tmp/tftp"
 
 VECTORS = {}
@@ -102,7 +120,7 @@ def rtsp_enable(ip, timeout, _notes):
 
 @vector("dropbear22")
 def dropbear22(ip, timeout, notes):
-    key = os.path.expanduser(notes.get("key", "~/.ssh/id_ed25519"))
+    key = os.path.expanduser(notes.get("key", "") or DEFAULT_KEY)
     cmd = f"ssh -i {key} -o ConnectTimeout={timeout} -o StrictHostKeyChecking=no -o BatchMode=yes root@{ip} 'id && cat /proc/mtd'"
     check = {"name": "dropbear22-uid0", "expect": r"uid=0\(", "got": "", "pass": False}
     try:
@@ -180,7 +198,7 @@ def main():
     ap.add_argument("ip")
     ap.add_argument("vector", choices=sorted(VECTORS))
     ap.add_argument("--timeout", type=int, default=5)
-    ap.add_argument("--key", default="~/.ssh/id_ed25519", help="ssh key for dropbear22")
+    ap.add_argument("--key", default=DEFAULT_KEY, help="ssh key for dropbear22 (default: operator key, root-safe)")
     ap.add_argument("--marker", default="", help="expected filename for tftp-exfil")
     ap.add_argument("--text", default="", help="pasted transcript for uart-console")
     ap.add_argument("--notes", default="", help="free-text context stored in the artifact")

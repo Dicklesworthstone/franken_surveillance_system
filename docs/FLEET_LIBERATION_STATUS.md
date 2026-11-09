@@ -769,3 +769,33 @@ end-to-end (ACK 0 → DATA → ACK 1 → file landed), so the C660 exfil path is
 `fleet_status.py` also stopped calling a camera ROOTED off any passing proof: vendor
 `rtsp-enable` is served by the vendor rtspd, so only `telnet9999`/`dropbear22`/
 `beacon-uid0` may upgrade the state. `.39` is ARMED with a green rtsp cell, not ROOTED.
+
+## 2026-11-09 02:00Z — both Wyze units serve RTSP; the capsule was never rendered
+
+**RTSP, no flash.** `.51` had never been fired: `--loop-watch` pinged a hardcoded
+five-address tuple (`docs/…` predating 2026-11-06) that contained neither `.39` nor
+`.51`, so it spent four days polling an absent host and printing `up=none`. The watcher
+now reads `registry.yaml`, retires a unit whose 554 already answers without rebooting the
+iCamera, re-arms it if 554 disappears, and never exits. `wyze_rtsp_creds.py` also failed
+`AV login / K-auth failed` on `.51` because it used the inherited `Cam2.login()`; it now
+uses `full_login()`, the path the frame harness proves. Result: `.51` provisioned over
+0x29e8 on the first try — 401 challenge, then authenticated DESCRIBE 200, and
+`rtsp-enable` PASS recorded (`192_168_4_51-rtsp-enable-20261109T013201Z.json`).
+Both units now deliver `stream0`/`stream1` to FSS with no cloud in the path.
+
+**The armed capsule was unrendered.** `Upgrade/upgraderun.sh` inside the served tar
+still said `HOST=@HOST@`, `IMG_PORT=@IMG_PORT@`, `IMG_URL=…/@IMAGE@`. The downloader
+would have accepted it, then `busybox nc @HOST@ 444` would fail at backup step 2 and the
+installer would `die` — the power-cycle would have been spent for nothing, again. Root
+cause: `build_ota_tar.py --render` is mandatory and the last build was made without it.
+Rebuilt rendered (HOST=192.168.4.160, PORT=443, IMG_PORT=8080, IMAGE=img.bin,
+SHA256=033eb364…, SENSOR=os04d10) as `4.52.17.100.tar`, md5 `819f9270…`, served and in
+the delta; readiness now proves it instead of trusting it (A9 placeholders, A10 image
+plane), and A3c derives its expected size from the file rather than a literal.
+
+Also: `root_proof.py` resolved its SSH key via `~`, which is `/var/root` under launchd;
+it now falls back to the repo owner's key (verified as root). `plist_doctor.sh` crashed
+while *printing* findings (f-string backslashes on system python 3.9) — findings are now
+visible. The old GUI LaunchAgent for the RTSP watcher was retired
+(`com.jeffreyemanuel.wyze-rtsp-watch.plist.retired`) in favour of the root daemon; the
+label had been loaded in both domains.

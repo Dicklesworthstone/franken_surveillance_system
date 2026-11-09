@@ -13,13 +13,16 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 - `forge_ok()` required `--iot-cert` on :8443, which only :443 is ever spawned with — every broker reload killed the healthy 8443 forge, burned 3×15 s of doomed retries and could end with no listener. Fixed to match on our script + live cert material + port.
 - **The TFTP plane wedged itself.** The listener was serial and burned 15 s on every client that vanished before ACKing; the liveness probe never ACKs, so a burst of dead probes blocked the only receive loop for minutes and the C660 exfil channel read as dead. Transfers now run on capped workers with 3×0.7 s retries (30-request burst: probe answered in 0.02 s; WRQ verified end-to-end).
 - `fleet_status.py` no longer calls a camera ROOTED off any passing proof — vendor `rtsp-enable` is served by the vendor rtspd. Only `telnet9999`/`dropbear22`/`beacon-uid0` upgrade the state, so `.39` reads ARMED with a green rtsp cell.
+- **Both Wyze units serve RTSP now — footage without the flash.** `.51` had never been fired: the watcher pinged a hardcoded address tuple containing neither camera. It reads the registry, retires units whose 554 already answers (no iCamera reboot), re-arms them if 554 drops, and never exits; `wyze_rtsp_creds.py` used the `Cam2.login()` path `.51` refuses and now uses `full_login()`. Both units answer authenticated DESCRIBE 200 on `stream0`/`stream1`.
+- **The armed capsule was unrendered** — `HOST=@HOST@` inside `upgraderun.sh`; the downloader accepts it, then the installer dies at backup step 2. Rebuilt rendered (`4.52.17.100.tar`, md5 `819f9270…`), served, in the delta. Readiness A9 fails on placeholders, A10 on a broken image plane, A3c now derives its expected size from the file.
+- `root_proof.py` looked for its SSH key at `~/.ssh` which is `/var/root` under launchd — now falls back to the repo owner's key (verified as root). `plist_doctor.sh` crashed while printing findings (f-string backslashes on system python) — fixed, so findings are visible. The duplicate GUI agent for the RTSP watcher was retired to a `.retired` suffix; the label had been loaded in both domains.
 
 ### What WORKS right now
-- 8/8 fleet planes green (broker, forge 443+8443, backups, tftp, pf, doctor, no duplicates)
+- 9/9 fleet planes green (broker, forge 443+8443, backups, tftp, pf, doctor, no duplicates, rtsp-watch)
 - Fleet self-heals every 15 min via `com.jeffreyemanuel.fleet-readiness` LaunchDaemon
 - Chain-watch daemon auto-captures root proof when the Wyze OTA completes
 - Wyze cameras CONNECTed to OUR broker (636+ connects), PUBACKing our deltas
-- **192.168.4.39 vendor RTSP is live** (`OPTIONS` → `200`, proof `192_168_4_39-rtsp-enable-20261109T011815Z.json`) — an interim ingest path that needs no flash. `.51`'s rtspd is off; the same one-shot enabler covers it
+- **`.51` serves RTSP now** (`fssuser`, `stream0` 2.5k / `stream1` 360p), verified by `ffprobe` pulling real H.264 640×360@20 — ingest with no flash and no cloud; proof `…T013201Z`. `com.jeffreyemanuel.wyze-rtsp-watch` keeps it that way and re-enables a unit that loses 554. **`.39` is wedged** after the same provisioning: ping answers, every userspace port is closed, and neither a frame reboot nor a second ioctl brought it back — see the row above
 - C660 re-provisioned via Tapo app, live at 192.168.5.76 (en0)
 - 7 beads closed on hard evidence
 
@@ -27,7 +30,7 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 
 | Camera | Blocker | Unblock action | Who |
 |---|---|---|---|
-| **Wyze .39/.51** | assis hasn't pulled the capsule. Delta now carries the trycloudflare tunnel URL with a VALID Let's Encrypt cert (the forged eMudhra chain was rejected by the OTA downloader's strict TLS verification) | **Power-cycle .39 and .51 again** — the first power-cycle was BEFORE the wyze-secure delta fix and the tunnel. This time the delta carries a URL the camera's TLS can actually download from | Operator (5 sec) |
+| **Wyze .39/.51** | No root: assis still hasn't pulled a capsule. **`.51` streams RTSP fine; `.39` is wedged** (ping only, every userspace port closed) after its account was re-provisioned | **Power-cycle `.39` (now REQUIRED, not optional) and `.51`** — the served capsule was found *unrendered* (`@HOST@` placeholders, installer would have died at backup step 2) and has been rebuilt rendered, with readiness A9/A10 asserting it | Operator (5 sec) |
 | **Tapo C660** | ROP fired 3× with verified gadgets but camera went back to sleep before telnetd could bind | **Walk past the C660** to trigger a PIR wake while the sweep is armed. The DS-readiness gate ensures the fire only happens when the camera can actually execute | Operator (walk by it) |
 | **Tapo C460** | Offset 1060 borrowed from C660, DIFFERENT SoC. 121 instrumented fires with identical no-shell-port-closed signature | **USB-serial UART connection** (3.3V, 115200 8N1) → extract `/bin/main` from the SXZ partition → derive the correct offset | Operator + UART adapter |
 | **Owlet .163** | Vendor 0x2041 grant never fires outside the app. H3/H4/H5 closed-negative. The en1 pcap can't see phone↔camera unicast | **Open the Owlet app's live view** while capturing from the ROUTER (not en1 — the AP forwards unicast only to the target MAC) | Operator + router capture |
@@ -36,24 +39,28 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 
 ## The ONE Action That Changes Everything
 
-**Power-cycle .39 and .51 again.** The first power-cycle fired into the void because:
-1. The delta went to wyze-secure but the rewrite only handled wyze-service (FIXED)
-2. The OTA URL used the forged eMudhra cert which the camera's OTA downloader rejects (FIXED with tunnel)
+**Power-cycle .39 and .51 again.** Two earlier power-cycles fired into the void; both
+causes are fixed, plus a third that would have burned a third:
 
-Now the delta carries the tunnel URL with a valid Let's Encrypt cert. The camera's OTA
-downloader (CURLOPT_SSL_VERIFYHOST=2, CURLOPT_CAINFO=local/cacert.pem) will accept this
-cert. assis will download the 16.7MB capsule, verify the md5, extract, and run
-`upgraderun.sh` as root.
+1. the delta went to `wyze-secure` but the rewrite only handled `wyze-service` — FIXED;
+2. the OTA URL used the forged eMudhra chain the downloader rejects — FIXED (LE-cert
+   tunnel, and A3b fails the gate if the s3 origin ever comes back);
+3. **the served capsule was unrendered** — `HOST=@HOST@` inside `upgraderun.sh`, so the
+   download would have succeeded and the installer would have died at backup step 2.
+   Rebuilt rendered (`4.52.17.100.tar`, md5 `819f9270…`); A9/A10 now assert it.
+
+The camera is *not* blind between now and the flash: both units serve authenticated RTSP
+(`stream0`/`stream1`) today — see the hardening notes. The flash is what removes the
+vendor cloud, the MITM and the assis dependency for good.
 
 Current URL (minted by the supervised tunnel, re-injected into the broker on every start):
 
 ```
-https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.99.tar
+https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.100.tar
 ```
 
-Read it live, never from this doc: `wyze_flash_readiness.sh` A3b/A3c assert the plist
-carries a `*.trycloudflare.com` URL and that it serves the exact capsule over verified
-TLS. 11/11 must be green immediately before a power-cycle.
+Read it live, never from this doc. `wyze_flash_readiness.sh` must be 13/13 (exit 0)
+immediately before a power-cycle.
 
 **After the flash: thingino gives SSH + RTSP + ONVIF. No vendor cloud needed. No MITM needed.
 The camera becomes a standard ONVIF device that FSS ingests from directly.**

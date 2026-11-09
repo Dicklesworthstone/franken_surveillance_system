@@ -46,11 +46,12 @@ esac
 
 # A3c: that exact URL must serve the capsule over real TLS end-to-end through cloudflared
 if [ -n "$URLV" ]; then
+  WANT=$(stat -f %z "/tmp/fwserve/$CAP" 2>/dev/null)
   E2E=$(curl -sS -A fss-probe/readiness -o /dev/null -w '%{http_code} %{size_download} %{ssl_verify_result}' \
         --max-time 120 "$URLV" 2>/dev/null)
-  [ "$E2E" = "200 16783360 0" ] \
-    && ok "A3c tunnel serves capsule, TLS verified (${E2E%% *} bytes ok)" \
-    || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 16783360 0')"
+  [ -n "$WANT" ] && [ "$E2E" = "200 $WANT 0" ] \
+    && ok "A3c tunnel serves capsule, TLS verified ($WANT bytes)" \
+    || bad "A3c tunnel end-to-end FAILED (code/size/ssl=$E2E, want '200 ${WANT:-?} 0')"
 else
   bad "A3c cannot test (no OTA_URL)"
 fi
@@ -60,7 +61,7 @@ CW=$(pgrep -f 'wyze_chain_watch' | head -1)
 [ -n "$CW" ] && ok "A6 chain-watch daemon alive (pid $CW)" || bad "A6 chain-watch daemon NOT running — proof would be lost"
 
 # A7: forge serving the exact capsule bytes
-FORGE_OK=$(curl -sk -A fss-probe/readiness https://127.0.0.1:443/wuv2/upgrade/HL_CAM4/firmware/4.52.17.99.tar 2>/dev/null | md5 -q)
+FORGE_OK=$(curl -sk -A fss-probe/readiness https://127.0.0.1:443/$CAP 2>/dev/null | md5 -q)
 [ "$FORGE_OK" = "$MD5V" ] && ok "A7 forge serves capsule byte-verified" || bad "A7 forge capsule md5 mismatch (${FORGE_OK:-no-response})"
 
 # A8: :9443 is the UA-logging server, and it actually witnesses requests. Without this
@@ -69,7 +70,7 @@ FORGE_OK=$(curl -sk -A fss-probe/readiness https://127.0.0.1:443/wuv2/upgrade/HL
 ACC=/tmp/ota/fwserve_access.jsonl
 if nc -z -G 2 127.0.0.1 9443 2>/dev/null; then
   PRE=$(grep -c 'fss-probe/a8' "$ACC" 2>/dev/null)
-  curl -sS -A fss-probe/a8 -o /dev/null -I --max-time 10 http://127.0.0.1:9443/4.52.17.99.tar 2>/dev/null
+  curl -sS -A fss-probe/a8 -o /dev/null -I --max-time 10 http://127.0.0.1:9443/$CAP 2>/dev/null
   sleep 1
   POST=$(grep -c 'fss-probe/a8' "$ACC" 2>/dev/null)
   if [ "${POST:-0}" -gt "${PRE:-0}" ]; then
@@ -80,6 +81,29 @@ if nc -z -G 2 127.0.0.1 9443 2>/dev/null; then
 else
   bad "A8 :9443 capsule server NOT listening — tunnel would 502 and the flash never starts"
 fi
+
+# A9: the capsule's installer must be RENDERED. The served tar was built without
+# --render once, so upgraderun.sh still said HOST=@HOST@ / IMG_URL=@IMAGE@ — the
+# downloader rejects nothing, the installer just dies at backup step 2 (busybox nc
+# cannot resolve "@HOST@"). The image is 16 MiB and must not be a partial serve.
+if [ -n "$CAP" ] && [ -f "/tmp/fwserve/$CAP" ]; then
+  if tar -xOf "/tmp/fwserve/$CAP" Upgrade/upgraderun.sh 2>/dev/null | grep -qE '@[A-Z_]+@'; then
+    LEFT=$(tar -xOf "/tmp/fwserve/$CAP" Upgrade/upgraderun.sh 2>/dev/null | grep -oE '@[A-Z_]+@' | sort -u | tr '\n' ' ')
+    bad "A9 capsule has unrendered placeholders ($LEFT) — installer would die"
+  else
+    ok "A9 capsule installer fully rendered"
+  fi
+else
+  bad "A9 capsule file missing"
+fi
+
+# A10: the image plane the installer fetches from (IMG_URL is built from the same
+# HOST/PORT pair, so a dead :8080 or short image is another silent stall)
+IMGCL=$(curl -sS -A fss-probe/a10 -I --max-time 10 http://192.168.4.160:8080/img.bin 2>/dev/null \
+        | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2}')
+[ "$IMGCL" = "16777216" ] \
+  && ok "A10 image plane serves the 16 MiB image" \
+  || bad "A10 image plane broken (content-length=${IMGCL:-none}, want 16777216)"
 
 echo "== readiness: $FAIL failures =="
 exit $FAIL

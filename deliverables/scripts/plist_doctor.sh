@@ -159,7 +159,8 @@ for line in sys.stdin.read().replace("},\n{", "}\n{").splitlines():
     if not line.strip(): continue
     d = json.loads(line)
     mark = "✗" if d["severity"] == "error" else "⚠"
-    print(f"  {mark} {d[\"check\"]}: {d[\"plist\"].split(\"/\")[-1]} — {d[\"detail\"]}")
+    name = d["plist"].split("/")[-1]
+    print("  %s %s: %s — %s" % (mark, d["check"], name, d["detail"]))
 '
   fi
 fi

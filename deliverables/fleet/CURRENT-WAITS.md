@@ -1,13 +1,13 @@
 ## CURRENT WAITS (auto-generated from the wait ledger — do not edit by hand)
 
-Generated: 2026-11-08T20:20:21-0500  ·  source: /var/lib/fss-telemetry/waits.jsonl  ·  re-run: `wait_ledger.py show`
+Generated: 2026-11-08T20:54:35-0500  ·  source: /var/lib/fss-telemetry/waits.jsonl  ·  re-run: `wait_ledger.py show`
 
 ### OPEN waits (alive — do not re-arm, do not double-run)
 
 | cam | expectation | state | observations | since | note/tag |
 |---|---|---|---|---|---|
 | wyze-.39/.51 | assis GET for 4.52.17.99.tar capsule (the chain completing) | open | 0 | 2026-11-06T18:00:19 | broker restored 2026-11-06 11:46, sessio |
-| wyze-192.168.4.39 | RTSP :554 answering OPTIONS 200 continuously | open | 1 | 2026-11-09T01:18:27 | 2026-11-09T01:18Z: PASS now (vendor rtsp |
+| wyze-192.168.4.39 | RTSP :554 answering OPTIONS 200 continuously | open | 2 | 2026-11-09T01:53:29 | 2026-11-09T01:52Z DOWN: 0x29e8 with fssu |
 
 ### CLOSED waits (evidence bank — a negative here means DO NOT re-run blind)
 

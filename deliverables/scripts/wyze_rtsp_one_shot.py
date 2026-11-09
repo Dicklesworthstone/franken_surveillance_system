@@ -301,10 +301,45 @@ class Mock:
 
 FLEET = ("192.168.4.23", "192.168.4.24", "192.168.5.181",
          "192.168.5.242", "192.168.6.65")
+REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fleet", "registry.yaml")
 FLEET_INTERVAL = 30      # s between full-fleet pings
+RETRY_COOLDOWN = 180     # s before a unit that did not come up is fired again
 BOOT_GRACE = 20          # s after first ICMP before the frame: userspace settle
 
-CFG_DIR = os.path.expanduser("~/fss-exploit/cfg")
+
+def fleet_targets() -> tuple[str, ...]:
+    """Live Wyze addresses from registry.yaml — the identity single source.
+
+    The hardcoded FLEET tuple had drifted off the actual LAN (it still listed the
+    pre-2026-11-06 addresses and neither .39 nor .51), so --loop-watch spent four
+    days pinging an absent host while printing "up=none" for a fleet that did not
+    include the cameras. Registry wins; the tuple is the offline fallback.
+    """
+    ips: list[str] = []
+    cur = None
+    try:
+        with open(REGISTRY, encoding="utf-8") as fh:
+            for line in fh:
+                s = line.strip()
+                if s.startswith("- id:"):
+                    cur = s.split(":", 1)[1].strip()
+                elif cur and cur.startswith("wyze") and s.startswith("last_seen_ip:"):
+                    ip = s.split(":", 1)[1].strip()
+                    if ip and ip not in ips:
+                        ips.append(ip)
+    except OSError:
+        return FLEET
+    return tuple(ips) or FLEET
+
+# The cfg store is the operator's. Under launchd HOME=/var/root, where it never
+# exists ("no cfg …, cannot fire" while the camera sat unreachable — measured), so
+# the owner home is derived from this file: .../Users/<owner>/projects/<repo>/
+# deliverables/scripts. ~ stays first for an interactive operator shell.
+_OWNER_HOME = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
+CFG_DIR = next((d for d in (os.path.expanduser("~/fss-exploit/cfg"),
+                            os.path.join(_OWNER_HOME, "fss-exploit", "cfg"))
+                if os.path.isdir(d)), os.path.join(_OWNER_HOME, "fss-exploit", "cfg"))
 
 
 def cfg_for(ip: str) -> tuple[str, str, str] | None:
@@ -372,41 +407,65 @@ def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
 
 
 def loop_watch(a: argparse.Namespace, cmd: bytes) -> int:
-    """Fleet watch: ping all known Wyze addresses every FLEET_INTERVAL s; on
-    first ICMP answer wait BOOT_GRACE for userspace, fire the frame once, run
-    the DESCRIBE check, and record the outcome. Units already fired are
-    skipped for the life of the process."""
-    pending = list(a.targets or FLEET)
-    fired: dict[str, tuple[bool, int | None]] = {}
-    print(f"watch: fleet={pending} interval={FLEET_INTERVAL}s grace={BOOT_GRACE}s")
-    while pending:
-        polled = [ip for ip in pending if ping(ip)]
-        print(f"poll {time.strftime('%H:%M:%S')} swept={len(pending)} "
-              f"up={polled if polled else 'none'}", flush=True)
-        for ip in list(polled):
+    """Keep every Wyze unit serving RTSP.
+
+    Each cycle pings the registry fleet and retires a unit whose 554 already
+    answers (no iCamera reboot); a unit whose 554 is closed is fired again after
+    RETRY_COOLDOWN. The loop never exits — a unit that reboots into something
+    without rtspd is re-enabled on a later cycle, which is what made the previous
+    one-shot version useless once its first pass was over (it also polled a
+    hardcoded address list that contained neither camera).
+    """
+    fleet = list(a.targets or fleet_targets())
+    retired: set[str] = set()
+    retry_at: dict[str, float] = {}
+    print(f"watch: fleet={fleet} interval={FLEET_INTERVAL}s grace={BOOT_GRACE}s "
+          f"cooldown={RETRY_COOLDOWN}s")
+    while True:
+        now = time.time()
+        due = [ip for ip in fleet if retry_at.get(ip, 0) <= now]
+        polled = [ip for ip in due if ping(ip)]
+        up = [ip for ip in polled if poll_554(ip, 1)]
+        print(f"poll {time.strftime('%H:%M:%S')} fleet={len(fleet)} "
+              f"up={polled if polled else 'none'} rtsp={up if up else 'none'}", flush=True)
+        for ip in up:
+            if ip not in retired:
+                print(f"{ip}: 554 listening — retiring", flush=True)
+                retired.add(ip)
+            retry_at.pop(ip, None)
+        for ip in [p for p in fleet if p not in up]:
+            if ip in retired:
+                print(f"{ip}: 554 lost — re-arming", flush=True)
+                retired.discard(ip)
+            if ip not in polled:
+                continue
             print(f"{ip}: ICMP up at {time.strftime('%H:%M:%S')}, "
                   f"waiting {BOOT_GRACE}s for userspace", flush=True)
             time.sleep(BOOT_GRACE)
             cfg = cfg_for(ip)
             if cfg is None:
                 print(f"{ip}: no cfg in {CFG_DIR}, cannot fire", flush=True)
+                retry_at[ip] = time.time() + RETRY_COOLDOWN
+                continue
+            listened, status = fire(ip, *cfg, a, cmd)
+            if listened and status == 200:
+                retired.add(ip)
+                retry_at.pop(ip, None)
+                print(f"{ip}: serving with fssuser", flush=True)
             else:
-                fired[ip] = fire(ip, *cfg, a, cmd)
-            pending.remove(ip)
-        if pending:
-            time.sleep(FLEET_INTERVAL)
-    print("watch: fleet exhausted")
-    for ip, (up, st) in fired.items():
-        print(f"  {ip}: listened={up} describe={st}")
-    return 0 if any(st == 200 for _, st in fired.values()) else 1
+                retry_at[ip] = time.time() + RETRY_COOLDOWN
+                print(f"{ip}: not serving — retry in {RETRY_COOLDOWN}s", flush=True)
+        time.sleep(FLEET_INTERVAL)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", default="192.168.4.24")
-    ap.add_argument("--uid", required=True)
-    ap.add_argument("--enr", required=True)
-    ap.add_argument("--mac", required=True)
+    # loop mode resolves identity from the per-camera cfg store, so these are only
+    # required for a single-shot fire
+    ap.add_argument("--uid")
+    ap.add_argument("--enr")
+    ap.add_argument("--mac")
     ap.add_argument("--user", default="fssuser")
     ap.add_argument("--pass", dest="pwd", default="fss12345")
     ap.add_argument("--realm", default="Wyze_Cam")
@@ -429,6 +488,8 @@ def main() -> int:
                     help="watch the whole fleet and fire on first ICMP answer")
     ap.add_argument("--targets", nargs="*", help="override the fleet list")
     a = ap.parse_args()
+    if not a.loop_watch and not all((a.uid, a.enr, a.mac)):
+        ap.error("--uid/--enr/--mac are required unless --loop-watch")
 
     if a.no_reboot:
         cmd = build_command_noreboot(a.user, a.realm, a.pwd,

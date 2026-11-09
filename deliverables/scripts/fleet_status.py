@@ -13,7 +13,7 @@ was manual and unpracticed).
 Planes checked per camera: presence (ARP/ping), vector state (mitm/rooted/fss),
 proofs (latest RootProof per vector), waits (open wait from the ledger).
 Fleet planes: broker :8883, forge :443/:8443, backup 444-449, tftp :69,
-pf rdr count, plist doctor (cached), launchd duplicate labels.
+pf rdr count, plist doctor (cached), launchd duplicate labels, rtsp watch.
 
 Read-only: this NEVER mutates. Convergence (the write side) is a separate
 reviewed change; status first, always.
@@ -91,6 +91,9 @@ def fleet_planes():
     guiset = set(filter(None, guiout.split()))
     dups = sorted(sysset & guiset)
     planes["launchd-duplicates"] = dups
+    # the RTSP watcher is the only thing that re-enables a unit that rebooted
+    # without rtspd; dead means a vendor reset silently costs ingest again
+    planes["rtsp-watch"] = bool(sh("pgrep -f wyze_rtsp_one_shot.py")[1].strip())
     # plist doctor as a cached gate check: runs at most once/15min, result cached
     cache = "/tmp/plist_doctor_cache.json"
     try:

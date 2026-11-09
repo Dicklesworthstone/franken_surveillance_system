@@ -14,7 +14,7 @@
 set -u
 LOG=/tmp/cloudflared_tunnel.log
 PLIST=/Library/LaunchDaemons/com.jeffreyemanuel.wyze-broker.plist
-CAP=4.52.17.99.tar
+CAP=4.52.17.100.tar
 CF=/opt/homebrew/bin/cloudflared
 
 log() { echo "$(date '+%H:%M:%S') $*"; }

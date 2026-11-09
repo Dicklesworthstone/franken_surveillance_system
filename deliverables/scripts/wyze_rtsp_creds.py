@@ -58,9 +58,11 @@ def set_account(ip: str, uid: str, enr: str, mac: str, user: str, password: str,
     payload = ('{"name":"%s","pwd":"%s","rtspMode":%d}' % (user, password, mode)).encode()
     cam = W.Cam(ip, mac, uid, enr)
     cam.s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
-    cam.handshake()
-    if not cam.login():
-        raise RuntimeError("AV login / K-auth failed")
+    # full_login (encoder list + K10000/K10001 double-decrypt) is the path that
+    # actually passes K-auth on .51; the inherited Cam2.login() answers K10001 with
+    # K10002 and the unit refuses it ("AV login / K-auth failed", measured 2026-11-09 —
+    # the same frame harness using full_login logged in fine minutes earlier).
+    cam.full_login(verbose=True)
     time.sleep(0.6)                       # let the encoder hand out a frame
     send_ioctl(cam, CMD_SET, payload)
     print("sent 0x29e8 %s" % payload.decode(), flush=True)
