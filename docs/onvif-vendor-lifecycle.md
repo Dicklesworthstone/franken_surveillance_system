@@ -62,3 +62,85 @@ retained-owner execution or physical-device/Profile M qualification.
 ```sh
 cargo test --locked --offline -j1 -p fss-core --test onvif_lifecycle_wire_contract
 ```
+
+## Retained lifecycle lineage
+
+The public `metadata::lifecycle::RetainedLifecycle::open` API accepts the same
+ordered, exact XML/RTP identity-and-root pins as retained tracklets, plus
+`LifecycleReadLimits` and the existing `ReplayCx`. It reconstructs all original
+sources twice and runs the additive interpretation inside each complete source
+pass. It returns the original tracklet snapshot, a complete lifecycle report,
+every document disposition and a new retained snapshot digest.
+
+The pure `project_lifecycle` API pairs each original analytics frame with its
+lifecycle overlay and the unchanged tracks-v1 report. It first replays the genuine
+tracklet projector and requires full equality. It then resolves supported integer
+references against the current or immediately preceding eligible frame of the same
+named module. Each resolved endpoint includes the exact original occurrence,
+tracklet, frame and object position. It does not join or relabel the old tracklets.
+
+Rename, Split, Merge and Delete statements remain ordered occurrences, including
+duplicates and competing declarations. Endpoints carry observed, unresolved or
+conflicted state and explicit issues. Normative self endpoints such as Merge
+`12,17 -> 12` and Split `12 -> 12,17` are supported. Unsupported UUID references
+are never matched. Idle and Removed remain separate Behaviour claims. An observed
+integer following a vendor Delete produces an explicit reuse relationship.
+
+Separate input pins, generation changes, missing module/object support, vendor
+clock regression or excessive gap, transport discontinuity, changed transformations
+and genuinely uninterpreted content prevent unsupported linkage. The independent
+overlay understands ObjectTree/Behaviour that remain opaque in tracks-v1; it does
+not erase other opaque content. Neither observation linkage nor deletion/reuse
+establishes physical identity, departure, absence or camera coverage.
+
+### Complete source accounting
+
+Each XML candidate has a receipt with its exact source pin, original document/XML
+digest, frozen parser/container, original frame interval and complete interpretation
+counts. Empty, rejected and SOAP candidates remain visible. An RTP source with no
+complete candidate receives an explicit zero-document row. Frozen events-v1 inputs
+are skipped without applying the new parser or discovering analytics frames.
+
+Both complete passes debit the same installed indexed-read allowance and outer
+work balance. Additive XML rereads, once-per-document RTP hashing, conservative
+parser quotes, the entire independent projector reservation and receipt hashing
+are charged to that balance. Parser work is narrowed to the source quote only
+after checking the caller's cap. Aggregate operations/references are checked before
+moving to another document. Impossible two-pass work policies fail before opening.
+
+The defaults are 32 Mi work units for the complete retained request and 4,000,000
+for each lifecycle projection, including the full tracks-v1 replay reservation.
+The pure aggregate ceilings are 1024 frames, 4096 original objects, 1024 operations,
+4096 operation endpoints and 4 MiB canonical output. All rows participate; no
+successful truncated report is returned.
+
+The existing deployment must already exist. Its normal exclusive publisher open
+may perform recovery housekeeping, which remains outside indexed source-read
+counters. The query neither initializes a deployment nor reconciles pending
+external effects. The original final admission callback precedes durable-head and
+effect-store verification; no extension callback follows those final checks.
+
+### Validation scope
+
+The actual production-source lineage/JSON target passed **32 tests**: 28 new
+projector/renderer cases and four embedded wire tests. It used the pinned compiler,
+the genuine current dependency-free fss-core library, and the actual production
+wire parser, tracklet projector, lineage projector and JSON renderer. Tests cover
+unchanged tracklets, source alignment, forged reports, normative self endpoints,
+all cancellation cuts, exact work/output limits, deletion/reuse, unsupported
+references, barriers, privacy and writer refusal.
+
+Fourteen additional real retained-owner contracts are authored for XML/RTP custody,
+frozen-v1 non-upgrade, empty/rejected sources, cumulative two-pass limits, source
+tampering/deletion, cancellation, final authority checks and no effect reconciliation.
+Those native contracts are **not executed**. Genuine Asupersync compilation was
+previously killed before FSS diagnostics; the execution environment subsequently
+went offline. This checkpoint is not native integration or release qualification.
+Final rustfmt verification was also interrupted; recovered validated pure source
+bytes and independently reviewed owner code are preserved without claiming that
+gate passed.
+
+```sh
+cargo test --locked --offline -j1 -p fss-core --test onvif_lifecycle_contract
+cargo test --locked --offline -j1 -p fss-reference --test onvif_metadata_lifecycle_custody
+```

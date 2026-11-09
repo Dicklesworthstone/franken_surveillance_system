@@ -263,9 +263,37 @@ impl RetainedTracklets {
         limits: TrackReadLimits,
         cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<Self> {
+        Self::open_projected(root, site_lineage, pins, limits, cx, |_, _, _, _| {
+            Ok::<(), RetainedTrackError>(())
+        })
+        .map(|(snapshot, ())| snapshot)
+    }
+
+    /// Run an owned cognitive projection inside both complete custody passes. The hook
+    /// borrows only this pass's verified sources and uses the same nonrenewing allowance.
+    /// All output must agree before the existing final authority and effect-store checks.
+    pub(super) fn open_projected<A, T, F, E>(
+        root: &Path,
+        site_lineage: &str,
+        pins: &[TrackSourcePin],
+        limits: TrackReadLimits,
+        cx: &ReplayCx<A>,
+        mut extension: F,
+    ) -> Result<(Self, T), E>
+    where
+        A: ReplayAdmission,
+        T: Eq,
+        E: From<RetainedTrackError> + From<MetadataError> + From<ReferenceError> + From<TrackError>,
+        F: for<'a> FnMut(
+            ProjectionInput<'a>,
+            &ReferenceDeployment,
+            &mut WorkBudget,
+            &ReplayCx<A>,
+        ) -> Result<T, E>,
+    {
         limits.validate()?;
         if pins.is_empty() || pins.len() > limits.max_sources || cx.root_dir() != root {
-            return Err(RetainedTrackError::InvalidRequest);
+            return Err(RetainedTrackError::InvalidRequest.into());
         }
         let mut identities = BTreeSet::new();
         for pin in pins {
@@ -273,7 +301,7 @@ impl RetainedTracklets {
                 || !valid_digest(pin.root())
                 || !identities.insert(pin.identity())
             {
-                return Err(RetainedTrackError::InvalidRequest);
+                return Err(RetainedTrackError::InvalidRequest.into());
             }
         }
         checkpoint(cx, "onvif_tracks:open")?;
@@ -291,12 +319,13 @@ impl RetainedTracklets {
             maximum: limits.max_work_units,
             used: 0,
         };
-        let (sources, report) = read_projection(&deployment, pins, limits, &mut work, cx)?;
+        let (sources, report, projected) =
+            read_projection(&deployment, pins, limits, &mut work, cx, &mut extension)?;
         checkpoint(cx, "onvif_tracks:revalidate")?;
-        let (fresh_sources, fresh_report) =
-            read_projection(&deployment, pins, limits, &mut work, cx)?;
-        if fresh_sources != sources || fresh_report != report {
-            return Err(RetainedTrackError::Mismatch);
+        let (fresh_sources, fresh_report, fresh_projected) =
+            read_projection(&deployment, pins, limits, &mut work, cx, &mut extension)?;
+        if fresh_sources != sources || fresh_report != report || fresh_projected != projected {
+            return Err(RetainedTrackError::Mismatch.into());
         }
         // Admission callbacks may themselves discover or change authority. No callback runs
         // after this final on-disk authority verification and before the snapshot is returned.
@@ -308,7 +337,7 @@ impl RetainedTracklets {
         if deployment.current_anchor() != &authority_anchor
             || !deployment.effects().store_pin_is_current()
         {
-            return Err(RetainedTrackError::Mismatch);
+            return Err(RetainedTrackError::Mismatch.into());
         }
         let usage = TrackReadUsage {
             indexed_reads: deployment.publisher().spool().read_budget_usage(),
@@ -316,14 +345,17 @@ impl RetainedTracklets {
             maximum_work_units: limits.max_work_units,
         };
         let digest = snapshot_digest(&sources, &report, &authority_anchor, limits, usage);
-        Ok(Self {
-            report,
-            sources,
-            authority_anchor,
-            limits,
-            usage,
-            digest,
-        })
+        Ok((
+            Self {
+                report,
+                sources,
+                authority_anchor,
+                limits,
+                usage,
+                digest,
+            },
+            projected,
+        ))
     }
 
     /// Complete grouping, including singletons and all accepted source-frame occurrences.
@@ -373,12 +405,20 @@ impl RetainedTracklets {
     }
 }
 
-struct WorkBudget {
+/// Already reconstructed inputs borrowed by one bounded cognitive extension.
+pub(super) struct ProjectionInput<'a> {
+    pub sources: &'a [Source],
+    pub receipts: &'a [TrackSourceReceipt],
+    pub frames: &'a [TrackFrameInput<'a>],
+    pub tracks: &'a TrackletReport,
+}
+
+pub(super) struct WorkBudget {
     maximum: usize,
     used: usize,
 }
 impl WorkBudget {
-    fn reserve(&mut self, amount: usize) -> Result<()> {
+    pub(super) fn reserve(&mut self, amount: usize) -> Result<()> {
         self.used = self
             .used
             .checked_add(amount)
@@ -420,18 +460,29 @@ impl WorkBudget {
     }
 }
 
-enum Source {
+pub(super) enum Source {
     Xml(RetainedMetadata),
     Rtp(RetainedRtpMetadata),
 }
 
-fn read_projection(
+fn read_projection<A, T, F, E>(
     deployment: &ReferenceDeployment,
     pins: &[TrackSourcePin],
     limits: TrackReadLimits,
     work: &mut WorkBudget,
-    cx: &ReplayCx<impl ReplayAdmission>,
-) -> Result<(Vec<TrackSourceReceipt>, TrackletReport)> {
+    cx: &ReplayCx<A>,
+    extension: &mut F,
+) -> Result<(Vec<TrackSourceReceipt>, TrackletReport, T), E>
+where
+    A: ReplayAdmission,
+    E: From<RetainedTrackError> + From<MetadataError> + From<ReferenceError> + From<TrackError>,
+    F: for<'a> FnMut(
+        ProjectionInput<'a>,
+        &ReferenceDeployment,
+        &mut WorkBudget,
+        &ReplayCx<A>,
+    ) -> Result<T, E>,
+{
     let mut sources = Vec::new();
     sources
         .try_reserve_exact(pins.len())
@@ -471,7 +522,7 @@ fn read_projection(
                 .checked_add(document.analytics_frames.len())
                 .ok_or(RetainedTrackError::Limit)?;
             if total_frames > limits.projection.max_frames {
-                return Err(RetainedTrackError::Limit);
+                return Err(RetainedTrackError::Limit.into());
             }
             work.reserve(document.analytics_frames.len())?;
             for frame in &document.analytics_frames {
@@ -479,7 +530,7 @@ fn read_projection(
                     .checked_add(frame.objects.len())
                     .ok_or(RetainedTrackError::Limit)?;
                 if total_objects > limits.projection.max_objects {
-                    return Err(RetainedTrackError::Limit);
+                    return Err(RetainedTrackError::Limit.into());
                 }
             }
         }
@@ -636,7 +687,18 @@ fn read_projection(
     let report = project_tracklets(&frames, limits.projection, || {
         checkpoint(cx, "onvif_tracks:group").is_ok()
     })?;
-    Ok((receipts, report))
+    let projected = extension(
+        ProjectionInput {
+            sources: &sources,
+            receipts: &receipts,
+            frames: &frames,
+            tracks: &report,
+        },
+        deployment,
+        work,
+        cx,
+    )?;
+    Ok((receipts, report, projected))
 }
 
 fn append_frame<'a>(

@@ -7,6 +7,8 @@
 //! authority: camera timestamps, labels, false values and empty responses establish
 //! neither physical truth nor coverage, absence, identity or effect permission.
 
+/// Additive source-verified vendor lifecycle relationships over unchanged tracklets.
+pub mod lifecycle;
 mod record;
 /// Original-packet custody and deterministic replay of bounded ONVIF metadata RTP dumps.
 pub mod rtp;

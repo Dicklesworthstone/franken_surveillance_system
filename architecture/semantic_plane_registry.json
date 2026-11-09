@@ -70,7 +70,8 @@
     "crates/fss-cli/src/probe_cmd/render.rs",
     "crates/fss-cli/src/probe_cmd/render/case.rs",
     "crates/fss-cli/src/probe_cmd/render/refusal.rs",
-    "crates/fss-reference/src/ingest/package_zones/health.rs"
+    "crates/fss-reference/src/ingest/package_zones/health.rs",
+    "crates/fss-reference/src/onvif/metadata/lifecycle.rs"
   ],
   "module_declarations": {
     "crates/fss-reference/src/agent_recordings/utc_sessions.rs": "cognition",
@@ -918,7 +919,12 @@
     "crates/fss-cli/src/supervisor/tests.rs": "support",
     "crates/fss-cli/tests/fusion_sequence_cli.rs": "support",
     "crates/fss-cli/src/bin/fss-capture-rtsp/from_unifi.rs": "support",
-    "crates/fss-reference/src/rtsp/tcp/ssrc.rs": "support"
+    "crates/fss-reference/src/rtsp/tcp/ssrc.rs": "support",
+    "crates/fss-reference/src/onvif/metadata/lifecycle.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/metadata/lifecycle/contract.rs": "cognition",
+    "crates/fss-core/tests/onvif_lifecycle_contract.rs": "support",
+    "crates/fss-reference/tests/onvif_metadata_lifecycle_custody.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/analysis/lifecycle_json.rs": "cognition"
   },
   "types": {
     "AlertEffectRecord": {
