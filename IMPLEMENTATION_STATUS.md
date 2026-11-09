@@ -6566,3 +6566,37 @@ The final synchronous metadata reconstruction is bounded but not interruptible;
 direct callers apply late-cancellation delivery gating. Broad FSS-046, FSS-210,
 FSS-235 and FSS-242 beads remain open. See the
 [read-only query guide](docs/ONVIF_AGENT_QUERY.md).
+
+## 2026-11-09 — canonical ONVIF queries through CLI and MCP
+
+`fss query --target onvif --analysis tracks|lifecycle|zones` and the existing MCP
+`query` tool now expose the genuine read-only retained-source owner. They share
+one closed parser and canonical query/case renderer. Ordered exact source pins
+are inline JSON; zones require an explicit inline policy whose semantic identity
+is independent of object-key order. MCP fixes deployment scope and principal at
+launch and rejects scope overrides, source/policy file indirection, raw-value
+disclosure, historical selectors and continuation. Other targets retain their
+original closed grammars.
+
+The existing response/cognitive envelopes carry all selected source and analysis
+rows together with protected deployment knowledge, obligations, evidence handles
+and read affordances. Existing verified source roots are H0 metadata handles;
+transient analysis digests are proof pointers without derived publication or
+hydration authority. Unknown/conflicted/barrier evidence remains visible. The
+complete outer response must fit 256 KiB, and the cooperative 60-second deadline
+is checked after rendering. Byte/work/row/output or authority failures never
+release a truncated success.
+
+Selected execution passed 427 tests: 337 ordinary core/model/parser/projector
+baseline checks and 90 genuine native checks (53 source/owner/API, 5 canonical
+CLI, 16 MCP, 4 standalone arguments and 12 actual-process tests). The process
+suites use the exact checked-in tests, genuine Cargo-built executables and matching
+pinned libraries. Canonical responses agree byte-for-byte; pending effects and
+full deployment file trees remain untouched. Formal Draft 2020-12 checks passed
+for three schemas and all 188 selector instances. Exact commands, artifact/log
+identities and resource settings are recorded in the
+[typed handoff](docs/SESSION_HANDOFF_2026-11-09_ONVIF_AGENT_QUERY.json).
+The new selector, digest domains and semantic boundaries are registered.
+The repository-wide semantic-plane check still fails on unrelated modules/registry
+drift, with no findings on this session's changed paths; no full qualification
+claim is made. See the [CLI/MCP guide](docs/ONVIF_AGENT_QUERY.md#canonical-cli-and-mcp).

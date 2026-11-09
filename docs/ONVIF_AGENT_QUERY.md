@@ -12,6 +12,86 @@ It does not establish device/Profile M conformance, physical identity, trusted
 capture time, calibrated occupancy or release qualification. The broader beads
 remain open.
 
+## Canonical CLI and MCP
+
+Use the existing `fss query` command with `--target onvif`. The `--sources` value
+is an inline ordered JSON array of exact existing import identities and publication
+roots from retained source receipts. Replace the digest placeholders below with
+their complete lowercase 64-digit SHA-256 values:
+
+```sh
+fss query --json --root /absolute/existing/deployment \
+  --target onvif --analysis lifecycle \
+  --sources '[{"kind":"xml","identity":"sha256:<import digest>","root":"sha256:<publication root>"}]' \
+  --max-entries 32 --principal principal:operator
+```
+
+Select `--analysis tracks` for the original vendor-local grouping or
+`--analysis zones --zone-policy '<inline policy JSON>'` for raw-coordinate zones.
+The inline policy has the same closed shape as the
+[vendor zone policy](../schemas/onvif_vendor_zone_policy.v1.json).
+Its semantic identity ignores JSON key order and whitespace. There is no policy
+file/stdin indirection. Use `kind: "rtp"` for either a retained RTP file or a finite
+native RTP capture; XML and RTP pins can appear together in the ordered array.
+
+Start MCP with an operator-selected deployment and principal:
+
+```sh
+fss-mcp --root /absolute/existing/deployment --principal principal:operator
+```
+
+After ordinary MCP initialization, call the existing `query` tool:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "query",
+    "arguments": {
+      "target": "onvif",
+      "analysis": "lifecycle",
+      "sources": [
+        {
+          "kind": "xml",
+          "identity": "sha256:<import digest>",
+          "root": "sha256:<publication root>"
+        }
+      ],
+      "max_entries": 32
+    }
+  }
+}
+```
+
+For zones, add a `zone_policy` JSON object. MCP fixes root and principal at
+launch; per-call scope overrides are rejected. Both transports invoke the same
+typed parser, native owner and renderer. The complete canonical JSON response is
+byte-identical for equivalent successful requests and stable authority, including
+semantically equivalent zone-policy object ordering. MCP wraps those bytes in
+its existing tool-result envelope; it introduces no new ONVIF-specific tool.
+
+Successful results use the existing `AgentResponseEnvelope` and
+`AgentCognitiveEnvelope` v1, operation `query`, view `case`. They retain protected
+deployment knowledge, unresolved obligations and read affordances alongside the
+complete source analysis. Existing verified source roots are H0-only metadata
+handles. No original source bytes or raw vendor values are disclosed.
+
+`--anchor` / `anchor` optionally requires the exact current deployment token;
+it is separate from each source publication anchor. Historical `--at`,
+continuations, raw-value options and arbitrary archive paths are not admitted.
+The [closed selector schema](../schemas/onvif_analysis_query.v1.json) describes
+MCP arguments; native validation also enforces exact lexical and custody rules.
+
+The source selector is limited to 16 KiB, zone policy to 64 KiB and complete
+outer response to 256 KiB. A cooperative 60-second deadline brackets the native
+read and gates delivery after rendering. If any complete-row, byte, work,
+authority, cancellation or output bound fails, the response refuses without
+delivering a partial analysis. An empty or refused result never certifies absence.
+Select a smaller finite retained input when the complete result cannot fit;
+there is no implicit top-k or hidden pagination.
+
 ## Native API
 
 ```rust,ignore
@@ -133,8 +213,8 @@ reconstructs the final deployment prefix, followed only by pure comparison and
 assembly. No caller callback then runs and invalidates the verified authority.
 This final bounded phase is not interruptible. Direct library callers requiring
 delivery suppression for a cancellation/deadline arriving during finalization
-must apply their own delivery gate. A transport must also check its deadline after
-rendering the complete response.
+must apply their own delivery gate. The canonical CLI/MCP renderer applies its
+deadline gate after rendering the complete response.
 
 ## Compatibility and validation
 

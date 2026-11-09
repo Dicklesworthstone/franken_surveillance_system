@@ -2,7 +2,7 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-09",
   "scope": "Canonical read-only ONVIF analysis integration",
-  "state": "native_integration_passed_transport_validation_in_progress_not_qualified",
+  "state": "implemented_native_and_transport_checks_passed_not_release_qualified",
   "mission": {
     "goal": "Connect exact retained XML/RTP tracks, lifecycle and vendor-zone analysis to canonical AOP-005 queries through a real read-only source owner.",
     "basis": [
@@ -30,12 +30,17 @@
     "source": "crates/fss-reference/src/onvif/metadata/read_source.rs",
     "read_view": "crates/fss-reference/src/onvif/metadata/read_view.rs",
     "context": "crates/fss-reference/src/agent_onvif.rs",
-    "projection": "crates/fss-reference/src/agent_onvif/projection.rs"
+    "projection": "crates/fss-reference/src/agent_onvif/projection.rs",
+    "transport_base": "012169649d0b756d60c9e9ff1c067eb2398e7600"
   },
   "published_checkpoints": [
     {
-      "commit": "this_commit",
+      "commit": "5e6f551eb10b701774eccdcf748d9de4d85a9d01",
       "change": "Shared frozen source reconstruction, genuine read-only two-pass analysis, canonical AOP-005 context and complete redacted semantic rows."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Canonical CLI/MCP ONVIF target, closed inline selector schema, same native source owner/renderer and actual-process parity tests."
     }
   ],
   "contracts": {
@@ -49,7 +54,10 @@
     "pins": "ordered exact XML/RTP identity/root pairs, duplicate identities refused, each independent source a continuity barrier",
     "privacy": "Raw lexical vendor values/UUIDs/source bytes withheld; original handles, barriers, uncertainty and explicit operator zone policy retained. No source hydration grant.",
     "compatibility": "Old source bytes/generations, projection identities, public retained-owner APIs and original read/callback order preserved; new query domains bind its different read owner and accounting.",
-    "complete_rows": "All source/frame/occurrence/tracklet rows plus all selected lifecycle document/operation/endpoint/support/behaviour/reuse rows or zone policy/cell/frame/transition rows; 1..32 or whole-query refusal."
+    "complete_rows": "All source/frame/occurrence/tracklet rows plus all selected lifecycle document/operation/endpoint/support/behaviour/reuse rows or zone policy/cell/frame/transition rows; 1..32 or whole-query refusal.",
+    "cli": "fss query --target onvif --analysis tracks|lifecycle|zones --sources <inline JSON>; zones requires inline --zone-policy.",
+    "mcp": "Existing query tool target onvif, no parallel tool. Operator launch root/principal are fixed; the per-call selector is closed.",
+    "transport": "Existing query/case canonical response shared byte-for-byte across native renderer, CLI and MCP. Outer response cap 256 KiB, cooperative 60-second deadline with post-render delivery gate."
   },
   "budgets": {
     "source_pins": 32,
@@ -76,6 +84,14 @@
         "crates/fss-reference/tests/agent_onvif_contract.rs"
       ],
       "qualification": "All 53 genuine native checks passed: 12 public API integration, seven shared-source custody unit and 34 existing retained-owner regression tests."
+    },
+    {
+      "question": "Do canonical Rust, CLI and MCP queries produce equivalent results without mutating deployment state?",
+      "finding": "All three analyses return identical full canonical response bytes across the library renderer and actual CLI/MCP processes. Reordered equivalent zone policies agree; pending effects/full directory bytes, privacy canaries, complete-row/stale-anchor refusals and scope denials are verified.",
+      "evidence": [
+        "crates/fss-cli/tests/onvif_agent_query_cli.rs"
+      ],
+      "qualification": "Three genuine separate-process tests passed against the actual Cargo-built executables and matching pinned dependency closure."
     }
   ],
   "validation": {
@@ -97,7 +113,7 @@
       "onvif_metadata_zones_custody": 7
     },
     "source_review": "Shared original-source read order and no-write owner reviewed; explicit bounded finalization contract preserves final authority checks after last callback.",
-    "qualification": "No complete release matrix, live-device/Profile M, physical-world truth or release qualification.",
+    "qualification": "Selected genuine-source developer validation only. No complete workspace/release matrix or live-device/Profile M/physical-world qualification; scripts/qualify.sh remains release authority. Shared-host compiler memory limits and the bounded finalization contract remain explicit.",
     "native_execution": {
       "argv": [
         "cargo",
@@ -142,6 +158,483 @@
       "log_sha256": "6a0492053cfef2f035001b605ef454d3a6638d70c53a594118ed20bdda7723b5",
       "wall_seconds": 97.36,
       "child_max_rss_kib": 4158108
+    },
+    "json_schema": {
+      "draft": "2020-12",
+      "schema_checks_passed": 3,
+      "instance_checks_passed": 188,
+      "valid_onvif_against_both_entry_schemas": 20,
+      "invalid_onvif_against_both_entry_schemas": 156,
+      "existing_target_positive": 3,
+      "cross_target_denial": 9,
+      "resolver": "Local referencing registry, no network or schema stubs."
+    },
+    "semantic_plane_check": {
+      "command": "python3 scripts/semantic_plane_checker.py --json --skip-doctests",
+      "exit_code": 1,
+      "summary": {
+        "status": "fail",
+        "error_count": 808,
+        "warning_count": 0,
+        "types_mapped": 179,
+        "authority_types": 41,
+        "cognition_types": 77,
+        "effect_types": 9,
+        "ambiguous_types": 9,
+        "doctests_verified": 0
+      },
+      "findings_on_session_changed_paths": [],
+      "qualification": "Whole-repository check remains failing on unrelated modules/registry drift; no full-gate pass claimed."
+    },
+    "cli_library": {
+      "passed": 5,
+      "unrelated_tests_filtered": 527,
+      "argv": [
+        "cargo",
+        "--config",
+        "profile.dev.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.test.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.dev.package.fss-reference.codegen-units=256",
+        "--config",
+        "profile.test.package.fss-reference.codegen-units=256",
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "fss-cli",
+        "--lib",
+        "onvif_query_cmd::tests"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 23.12,
+      "child_max_rss_kib": 1403064,
+      "log_sha256": "c8f0b0cdd8f0e81f3dc402f0cf6e36dcf901e9392460068b9c2bc2a44722d614",
+      "parent": "5e6f551eb10b701774eccdcf748d9de4d85a9d01",
+      "source": "Actual current CLI library and updated upstream reference dependency; two test-only OsString conversions fixed after first compilation diagnostics.",
+      "concurrent_upstream": "Two disjoint deliverable-script commits preserved after this execution; no Rust, dependency or request-schema change."
+    },
+    "mcp_onvif": {
+      "passed": 5,
+      "argv": [
+        "cargo",
+        "--config",
+        "profile.dev.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.test.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.dev.package.fss-reference.codegen-units=256",
+        "--config",
+        "profile.test.package.fss-reference.codegen-units=256",
+        "test",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "fss-cli",
+        "--bin",
+        "fss-mcp",
+        "server::onvif_tests"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 16.872,
+      "child_max_rss_kib": 1003032,
+      "log_sha256": "66d0af5627a236b005f5ab99889f439795b3df465cd1051299b7e1cf21ea1bbe"
+    },
+    "independent_transport_review": "No concrete blocker: shared closed parser, fixed MCP scope, redaction/provenance, complete-row/deadline/output gates, qualified accounting and existing query behavior independently traced; this is static review, separate from native results.",
+    "production_binaries": {
+      "argv": [
+        "cargo",
+        "--config",
+        "profile.dev.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.test.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.dev.package.fss-reference.codegen-units=256",
+        "--config",
+        "profile.test.package.fss-reference.codegen-units=256",
+        "build",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-p",
+        "fss-cli",
+        "--bin",
+        "fss",
+        "--bin",
+        "fss-mcp",
+        "--bin",
+        "fss-onvif-metadata",
+        "--message-format=json"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 10.689,
+      "child_max_rss_kib": 899916,
+      "log_sha256": "a7e40b63ab36adf4e37c197abd33b87bb178078c9f747de153eafb8fdac4d018",
+      "executables": [
+        "fss",
+        "fss-mcp",
+        "fss-onvif-metadata"
+      ]
+    },
+    "summary": {
+      "selected_passed_tests": 427,
+      "core_and_pure_baseline": 337,
+      "native_selected_passed_tests": 90,
+      "native_breakdown": {
+        "reference_source_owner_and_api": 53,
+        "canonical_cli_library": 5,
+        "mcp_onvif_and_existing_query_discovery": 16,
+        "standalone_lifecycle_and_zone_arguments": 4,
+        "actual_process_suites": 12
+      },
+      "new_test_cases_in_this_extension": 32,
+      "json_schema_instance_checks": 188,
+      "json_schema_meta_checks": 3,
+      "release_qualified": false
+    },
+    "selected_executions": [
+      {
+        "label": "core-model-baseline",
+        "passed_tests": 215,
+        "test_group_counts": [
+          193,
+          22
+        ],
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "-p",
+          "fss-core",
+          "-p",
+          "fss-model-ir",
+          "--lib"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 22.533,
+        "child_max_rss_kib": 776144,
+        "log_sha256": "00eaeef39f44e265dd44d4dd58cb1c0d9247e95712844e87151fdb56351fec10"
+      },
+      {
+        "label": "onvif-pure-baseline",
+        "passed_tests": 122,
+        "test_group_counts": [
+          32,
+          28,
+          26,
+          12,
+          24
+        ],
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "-p",
+          "fss-core",
+          "--test",
+          "onvif_tracklet_contract",
+          "--test",
+          "onvif_tracklet_json_contract",
+          "--test",
+          "onvif_lifecycle_wire_contract",
+          "--test",
+          "onvif_lifecycle_contract",
+          "--test",
+          "onvif_vendor_zones_contract"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 8.23,
+        "child_max_rss_kib": 329296,
+        "log_sha256": "a2b06d9d4bd2fb7788177e41e89196bd81eb7099101db63e6b057a5aed35dc41"
+      },
+      {
+        "label": "onvif-reference-custody-codegen256",
+        "passed_tests": 46,
+        "test_group_counts": [
+          12,
+          14,
+          13,
+          7
+        ],
+        "argv": [
+          "cargo",
+          "--config",
+          "profile.dev.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.test.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.dev.package.fss-reference.codegen-units=256",
+          "--config",
+          "profile.test.package.fss-reference.codegen-units=256",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "--no-fail-fast",
+          "-p",
+          "fss-reference",
+          "--test",
+          "agent_onvif_contract",
+          "--test",
+          "onvif_metadata_tracks_custody",
+          "--test",
+          "onvif_metadata_lifecycle_custody",
+          "--test",
+          "onvif_metadata_zones_custody"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 70.928,
+        "child_max_rss_kib": 3232612,
+        "log_sha256": "198cd071a2fd34a235a3cd62430a3db7e1e6adc5aa834bebd483e30b8e0c2d8c"
+      },
+      {
+        "label": "onvif-source-reader-native",
+        "passed_tests": 7,
+        "test_group_counts": [
+          7
+        ],
+        "argv": [
+          "cargo",
+          "--config",
+          "profile.dev.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.test.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.dev.package.fss-reference.codegen-units=256",
+          "--config",
+          "profile.test.package.fss-reference.codegen-units=256",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "-p",
+          "fss-reference",
+          "--lib",
+          "onvif::metadata::read_source::tests"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 97.36,
+        "child_max_rss_kib": 4158108,
+        "log_sha256": "6a0492053cfef2f035001b605ef454d3a6638d70c53a594118ed20bdda7723b5"
+      },
+      {
+        "label": "onvif-cli-library-fixed",
+        "passed_tests": 5,
+        "test_group_counts": [
+          5
+        ],
+        "argv": [
+          "cargo",
+          "--config",
+          "profile.dev.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.test.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.dev.package.fss-reference.codegen-units=256",
+          "--config",
+          "profile.test.package.fss-reference.codegen-units=256",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "-p",
+          "fss-cli",
+          "--lib",
+          "onvif_query_cmd::tests"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 23.12,
+        "child_max_rss_kib": 1403064,
+        "log_sha256": "c8f0b0cdd8f0e81f3dc402f0cf6e36dcf901e9392460068b9c2bc2a44722d614"
+      },
+      {
+        "label": "onvif-mcp-final-native",
+        "passed_tests": 16,
+        "test_group_counts": [
+          16
+        ],
+        "argv": [
+          "cargo",
+          "--config",
+          "profile.dev.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.test.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.dev.package.fss-reference.codegen-units=256",
+          "--config",
+          "profile.test.package.fss-reference.codegen-units=256",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "-vv",
+          "-p",
+          "fss-cli",
+          "--bin",
+          "fss-mcp",
+          "--",
+          "server::onvif_tests",
+          "server::tests::query_",
+          "server::tests::footage_query_",
+          "server::tests::explicit_event_target_",
+          "server::tests::lifecycle_and_discovery_",
+          "server::tests::canonical_dispatch_and_envelope_",
+          "server::recording_tests::recording_and_existing_query_predicates_cannot_cross_targets",
+          "server::recording_tests::recording_discovery_exposes_pins_and_budgets_without_host_scope"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 4.401,
+        "child_max_rss_kib": 916892,
+        "log_sha256": "69072a9f79b5bc9c33486d4b479d47299f93b23c1c568e6afc4f302db76f6a73"
+      },
+      {
+        "label": "onvif-metadata-analysis-arguments-native",
+        "passed_tests": 4,
+        "test_group_counts": [
+          4
+        ],
+        "argv": [
+          "cargo",
+          "--config",
+          "profile.dev.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.test.package.asupersync.codegen-units=256",
+          "--config",
+          "profile.dev.package.fss-reference.codegen-units=256",
+          "--config",
+          "profile.test.package.fss-reference.codegen-units=256",
+          "test",
+          "--locked",
+          "--offline",
+          "-j1",
+          "-p",
+          "fss-cli",
+          "--bin",
+          "fss-onvif-metadata",
+          "--",
+          "analysis::tests",
+          "zones::tests"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 6.195,
+        "child_max_rss_kib": 848552,
+        "log_sha256": "4b61d72797a5c1d21df41aca4dc9090e3f3a86554c79bf9528f2f8e608176cc5"
+      },
+      {
+        "label": "onvif_agent_query_cli-execute",
+        "passed_tests": 3,
+        "test_group_counts": [
+          3
+        ],
+        "argv": [
+          "/workspace/scratch/8213fa6b6b34/fss-validation/onvif_agent_query_cli-native-process-tests"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 0.278,
+        "child_max_rss_kib": 26428,
+        "log_sha256": "b985733f88e4fda2608c9af89294d5fae8ddeb4cf1787631a9492518feea25a6"
+      },
+      {
+        "label": "onvif_metadata_tracks_cli-execute-fixture-fixed",
+        "passed_tests": 6,
+        "test_group_counts": [
+          6
+        ],
+        "argv": [
+          "/workspace/scratch/8213fa6b6b34/fss-validation/onvif_metadata_tracks_cli-native-process-tests"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 0.131,
+        "child_max_rss_kib": 10240,
+        "log_sha256": "a86d6347e1d577ccc104314ba870fae9a960845f7a45074764e70c33f615c90b"
+      },
+      {
+        "label": "onvif_metadata_zones_cli-execute",
+        "passed_tests": 3,
+        "test_group_counts": [
+          3
+        ],
+        "argv": [
+          "/workspace/scratch/8213fa6b6b34/fss-validation/onvif_metadata_zones_cli-native-process-tests"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 0.146,
+        "child_max_rss_kib": 10240,
+        "log_sha256": "96f15fd5dfa61c98f51d83be4cafa029359f8f2499df61f0ee5eff599ea92db6"
+      }
+    ],
+    "native_process_closure": {
+      "scope": "Exact checked-in process test sources compiled against genuine Cargo-produced FSS libraries and executed against the three genuine Cargo-produced binaries; not a full workspace/release qualification lane",
+      "cargo_lock_sha256": "588387df14c8aaab77c76c5a3778c3675ae1c9e82d97b95b8162b107611106a1",
+      "cargo_artifact_log_sha256": "a7e40b63ab36adf4e37c197abd33b87bb178078c9f747de153eafb8fdac4d018",
+      "libraries": {
+        "fss_cli": {
+          "metadata_sha256": "19131d2893a60bbfb6b133a9e65d35f5b9b38393b9fb1a29e6a4b7477d464dbf",
+          "library_sha256": "f493634bf276e11ae2ca1bcf8abda48992616c4e15a611fcb6b258ed08e8e332",
+          "features": []
+        },
+        "fss_core": {
+          "metadata_sha256": "a3b29bcf646ad87a8048be51025b36d5f40aff492bb857d030e4d56bfa2be940",
+          "library_sha256": "988c3682afd28ad3912740377f26468f6a51a53a4f9bd9b81f37f07a6500a956",
+          "features": [
+            "default"
+          ]
+        },
+        "fss_object": {
+          "metadata_sha256": "aacdcb4276ec96dc966efafac54adbe28ac6ab97c07f828671d5488753e2c459",
+          "library_sha256": "a7b67d2d6ddd566a23c413fa968cceb5873d8dbc85e1a9057d67bc118117ba71",
+          "features": []
+        },
+        "fss_reference": {
+          "metadata_sha256": "b1ff5b9d7b1a15c1fdbe31646e87ab03464b68f5f0be8a58f6a435cdd135d9ae",
+          "library_sha256": "d4eb743739bcf2b71120348241fddac7d07a58534ddbeed26ab30171aff281bb",
+          "features": []
+        },
+        "fss_packet": {
+          "metadata_sha256": "c61095d70d0c67076ae8882deb4b6426b772c54233949fa1b8474d1870421c15",
+          "library_sha256": "0747063fd616c2fb648cc08b2a16fb79ab923d09a49e85a3c61a11cf57982dbb",
+          "features": []
+        }
+      },
+      "binaries": {
+        "fss-onvif-metadata": "5b3b291611b73d7923efd4ff35c9f55da67cab9c622547dd6b3667105e72e3c7",
+        "fss": "60dad6e06068e7734ba294029c799c7586ad66f86d571915775a2c3e2cb24870",
+        "fss-mcp": "84afd663c8f44d92bd15f93ac2bab0480d6cebe9779278df2f6ed793600dd53c"
+      },
+      "source_tests": {
+        "onvif_agent_query_cli": {
+          "path": "crates/fss-cli/tests/onvif_agent_query_cli.rs",
+          "sha256": "8c3c775672252bca122cb662acdb6324e4ff90f73ff867925341a493ffccf174"
+        },
+        "onvif_metadata_tracks_cli": {
+          "path": "crates/fss-cli/tests/onvif_metadata_tracks_cli.rs",
+          "sha256": "d03570a5ea72d19872e0103d2d2780c1ccae29542b425b2ed303b19dc12ab246"
+        },
+        "onvif_metadata_zones_cli": {
+          "path": "crates/fss-cli/tests/onvif_metadata_zones_cli.rs",
+          "sha256": "088039d863b07550940991db841fb3b78fa7280b5dcc58b26f1e0844b9f41009"
+        }
+      },
+      "linkage": "Exact checked-in integration sources linked to matching genuine Cargo .rlib and .rmeta pairs through repeated --extern names, following the pinned Cargo -vv invocation; no facade, source substitution or dependency/lockfile change.",
+      "execution": "Separate test executables launch real Cargo-built fss, fss-mcp and fss-onvif-metadata with existing explicit test binary overrides; this is not a full cargo workspace test or release lane."
+    },
+    "recovered_fixture_errors": [
+      "Two new CLI test vectors converted to the required OsString iterator; no production API change.",
+      "Existing MCP explicit-event fixture supplied the already-required --json flag; production grammar unchanged.",
+      "Existing intentional rejected-RTP fixture now requires exact partial-processing exit 1 and durable complete custody with 4 complete/3 usable/1 rejected document; generic success helper and production import behavior unchanged."
+    ],
+    "final_formatting": "Pinned rustfmt only reordered adjacent agent_onvif/agent_orient module declarations after execution; executable semantics and public API unchanged. All session source paths checked again before publication.",
+    "format_check": {
+      "toolchain": "nightly-2026-08-31",
+      "source_files": 23,
+      "exit_code": 0
     }
   },
   "findings": [
@@ -149,9 +642,7 @@
     "Canonical queries need complete uncertainty-preserving rows and existing envelopes, not parallel MCP tools.",
     "A late arbitrary callback after captured authority is unsafe; finalization admission and transport delivery gating remain distinct."
   ],
-  "active_work": [
-    "Execute canonical CLI/MCP and separate-process equivalence, then publish a second meaningful commit."
-  ],
+  "active_work": [],
   "open_beads": [
     "fss-x4a.11.4",
     "fss-x4a.24.10",
@@ -160,8 +651,8 @@
   ],
   "obligations": [
     {
-      "state": "open",
-      "work": "Complete canonical CLI/MCP tests and publish exact evidence."
+      "state": "satisfied",
+      "work": "Selected native source/owner, canonical CLI/MCP and exact checked-in real-process suites passed; results recorded with source/artifact/log identities."
     },
     {
       "state": "open",
@@ -182,9 +673,9 @@
   ],
   "continuations": [
     {
-      "action": "Run the recorded native owner/public API and canonical CLI/MCP fixture targets with genuine pinned dependencies.",
-      "authority": "Local synthetic sources only.",
-      "expected_proof": "Source parity, bounded/no-write behavior, complete typed output and transport equivalence."
+      "action": "Implement the next scoped ONVIF continuous provisional-to-durable identity contract or calibrated scene/event integration, preserving exact source authority and explicit uncertainty.",
+      "authority": "Further implementation under repository contracts; no live-device or external-effect authority from this handoff.",
+      "expected_proof": "A complete vertical feature with its actual native source/device/clock/custody boundaries established; broad beads remain open."
     }
   ]
 }

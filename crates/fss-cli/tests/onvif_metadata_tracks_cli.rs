@@ -434,7 +434,32 @@ fn lifecycle_rtp_keeps_rejected_and_empty_documents_with_exact_original_handles(
         lifecycle_document(&[]),
     ];
     fs::write(&input, dump(&documents))?;
-    let receipt = success(run(&import_args(&directory.root(), &input, true))?)?;
+    // The rejected XML is retained with its exact source, so this import commits
+    // durably but reports incomplete processing with the documented partial exit.
+    let imported = run(&import_args(&directory.root(), &input, true))?;
+    assert_eq!(
+        imported.status.code(),
+        Some(1),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&imported.stdout),
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    assert!(imported.stderr.is_empty());
+    let receipt = String::from_utf8(imported.stdout)?;
+    for (name, expected) in [
+        ("operation", "import-rtp"),
+        ("durable_publication", "true"),
+        ("processing_complete", "false"),
+        ("replay_processing_complete", "false"),
+        ("complete_documents", "4"),
+        ("usable_documents", "3"),
+        ("rejected_documents", "1"),
+        ("unprocessed_source", "false"),
+        ("document.2.xml_accepted", "false"),
+        ("document.2.parse_error", "unexpected_xml_response"),
+    ] {
+        assert_eq!(line(&receipt, name)?, expected, "{name}");
+    }
     fs::remove_file(input)?;
     let report = parse(&success(run(&lifecycle_args(
         &directory.root(),

@@ -17,6 +17,8 @@ mod feedback;
 mod investigate;
 #[path = "fss_mcp/json.rs"]
 mod json;
+#[path = "fss_mcp/onvif.rs"]
+mod onvif;
 #[path = "fss_mcp/recordings.rs"]
 mod recordings;
 #[path = "fss_mcp/server.rs"]
@@ -156,7 +158,14 @@ mod tests {
             vec!["--root", "/x", "--principal", "invalid principal"],
             vec!["--root", "/x", "--archive-root"],
             vec!["--root", "/x", "--archive-root", ""],
-            vec!["--root", "/x", "--archive-root", "/a", "--archive-root", "/b"],
+            vec![
+                "--root",
+                "/x",
+                "--archive-root",
+                "/a",
+                "--archive-root",
+                "/b",
+            ],
         ] {
             assert!(options(args.into_iter().map(OsString::from)).is_err());
         }

@@ -642,6 +642,32 @@ pub(crate) fn build_footage_response(
     )
 }
 
+/// Redacted vendor-metadata projection scoped to the exact ONVIF query target.
+pub(crate) fn build_onvif_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+    {
+        return Err(RenderError("invalid ONVIF query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only redacted query of exact retained ONVIF vendor metadata".to_owned();
+    projection.visible_domains.extend([
+        "onvif-source-publication-metadata".to_owned(),
+        "onvif-vendor-analysis-redacted-semantics".to_owned(),
+        "operator-declared-raw-coordinate-zone-policy".to_owned(),
+    ]);
+    build_response_for_basis_and_privacy(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+    )
+}
+
 /// Explicit privacy projection for native archive metadata, scoped to AOP-005 only.
 pub(crate) fn build_recording_response(
     parts: ResponseParts,

@@ -119,6 +119,9 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--end-utc-ns",
             "--max-windows",
             "--max-hydration-bytes",
+            "--analysis",
+            "--sources",
+            "--zone-policy",
         ],
     )?;
     match take(&values, "--target") {
@@ -128,6 +131,9 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         }
         Some((_, target, _)) if target == "footage" => {
             parse_footage_query_args(tokens).map(FssCommand::FootageQuery)
+        }
+        Some((_, target, _)) if target == "onvif" => {
+            crate::onvif_query_cmd::parse_onvif_query_args(tokens).map(FssCommand::OnvifQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
             if take(&values, "--sessions").is_some() {
@@ -186,7 +192,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         Some((_, target, index)) => Err(malformed(
             "--target",
             target,
-            "expected events, footage or recordings",
+            "expected events, footage, recordings or onvif",
             *index,
         )),
     }

@@ -22,10 +22,10 @@ mod adapter_wyze;
 /// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
 pub mod agent_follow;
 pub mod agent_footage;
-/// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).
-pub mod agent_orient;
 /// Canonical read-only ONVIF vendor-claim interpretation over exact retained sources.
 pub mod agent_onvif;
+/// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).
+pub mod agent_orient;
 /// Bounded AOP-005 queries of committed event records, with exact continuations.
 pub mod agent_query;
 /// Protected deployment context for exact native recording metadata queries.

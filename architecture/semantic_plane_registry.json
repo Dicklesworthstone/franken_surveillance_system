@@ -79,7 +79,10 @@
     "crates/fss-reference/src/onvif/metadata/zones.rs",
     "crates/fss-reference/src/agent_onvif.rs",
     "crates/fss-reference/src/onvif/metadata/read_source.rs",
-    "crates/fss-reference/src/onvif/metadata/read_view.rs"
+    "crates/fss-reference/src/onvif/metadata/read_view.rs",
+    "crates/fss-cli/src/onvif_query_cmd.rs",
+    "crates/fss-cli/src/footage_query_cmd.rs",
+    "crates/fss-cli/src/orient_cmd.rs"
   ],
   "module_declarations": {
     "crates/fss-object/src/contracts.rs": "support",
@@ -962,7 +965,16 @@
     "crates/fss-reference/src/onvif/metadata/read_source.rs": "ambiguous",
     "crates/fss-reference/src/onvif/metadata/read_source/tests.rs": "support",
     "crates/fss-reference/src/onvif/metadata/read_view.rs": "ambiguous",
-    "crates/fss-reference/tests/agent_onvif_contract.rs": "support"
+    "crates/fss-reference/tests/agent_onvif_contract.rs": "support",
+    "crates/fss-cli/src/onvif_query_cmd.rs": "ambiguous",
+    "crates/fss-cli/src/onvif_query_cmd/tests.rs": "support",
+    "crates/fss-cli/src/bin/fss_mcp/onvif.rs": "support",
+    "crates/fss-cli/src/bin/fss_mcp/onvif_tests.rs": "support",
+    "crates/fss-cli/tests/onvif_agent_query_cli.rs": "support",
+    "crates/fss-cli/src/bin/fss-mcp.rs": "support",
+    "crates/fss-cli/src/footage_query_cmd.rs": "ambiguous",
+    "crates/fss-cli/src/lib.rs": "support",
+    "crates/fss-cli/src/orient_cmd.rs": "ambiguous"
   },
   "types": {
     "AlertEffectRecord": {

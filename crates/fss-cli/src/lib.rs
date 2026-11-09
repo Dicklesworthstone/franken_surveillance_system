@@ -64,6 +64,10 @@ pub mod mission_cmd;
 /// Explicitly owned bounded local-daemon synchronization for native source clocks.
 pub mod native_clock;
 pub mod negative_evidence_cmd;
+/// Pure native ONVIF handoff selection and unchanged outer capture approval.
+pub mod onvif_plan;
+/// Exact retained ONVIF analysis through the canonical read-only query operation.
+pub mod onvif_query_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
@@ -81,6 +85,8 @@ pub mod session_cancel_cmd;
 pub mod session_cmd;
 /// Read-only site manifests and exact native capture plans; no device or credential access.
 pub mod site_cmd;
+/// Protected historical ONVIF handoff bindings for atomic site capture planning.
+pub mod site_onvif;
 /// Atomic site-to-native capture planning with exact manifest and probe bindings.
 pub mod site_plan;
 /// Exact approval-gated native RTSP probing with receipts or session evidence.
@@ -89,17 +95,13 @@ pub mod site_probe;
 pub mod site_probe_cmd;
 /// Protected exact UniFi export bindings for atomic site capture planning.
 pub mod site_unifi;
-/// Protected historical ONVIF handoff bindings for atomic site capture planning.
-pub mod site_onvif;
-/// Pure native ONVIF handoff selection and unchanged outer capture approval.
-pub mod onvif_plan;
-/// Pure native UniFi selection, private argument composition and outer approval.
-pub mod unifi_plan;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
 pub mod status_cmd;
 /// Bounded multi-camera supervisor coordinator with explicit sequential fusion (`fss-becce`).
 pub mod supervisor;
 pub mod token;
+/// Pure native UniFi selection, private argument composition and outer approval.
+pub mod unifi_plan;
 
 pub use crosswalk::{
     CrosswalkValidationError, OperationCrosswalkEntry, REGISTERED_EXIT_IDENTITIES,
