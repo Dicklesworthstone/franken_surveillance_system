@@ -1361,6 +1361,20 @@ fn run_discovered_setup_with_listener(
                     }
                     assert_eq!(http.phase(), Phase::Login);
                     report.stop = discovery::Stop::WindowElapsed;
+                    let original_malformed = report.malformed;
+                    report.malformed = report.datagrams;
+                    assert!(matches!(
+                        owner.run(&mut http, &config!(&report)).await,
+                        Err(setup::Error::Claims)
+                    ));
+                    if observe {
+                        assert!(matches!(
+                            owner.observe(&mut http, &config!(&report)).await,
+                            Err(setup::Error::Claims)
+                        ));
+                    }
+                    assert_eq!(http.phase(), Phase::Login);
+                    report.malformed = original_malformed;
                     if drop_future {
                         let mut trace = setup::Trace::default();
                         let cfg = config!(&report);

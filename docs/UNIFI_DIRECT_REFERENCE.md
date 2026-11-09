@@ -7012,8 +7012,12 @@ of committed discovery revision `2a64cd97` was started as strict-remote job
 validation was tightened so that distinct candidate claims and rejected
 datagrams cannot together exceed the observed datagram count; overflow is
 also refused. Both MAC selection and direct setup now apply this check.
-Focused unit job `30101959465763427` is testing those uncommitted changes;
-its outcome remains pending here. Neither job changes the physical camera.
+Focused unit job `30101959465763427` tested those uncommitted changes at base
+`2a64cd97459fe673cfa71a82164d6427bd3d1c33`, overlay fingerprint
+`ed57977c1f4a0ae30da42778e9beafbc2882a9c39fdec4edae802242b937c6a0`:
+one passed, none failed or ignored, and 2,352 were filtered. It exited zero,
+was acknowledged and released its sources and execution pair. Neither job
+changes the physical camera.
 The committed revision's trial built successfully on Linux, but its wrapper
 returned 102 because the Linux executable could not be transferred to macOS;
 the remote execution exited zero, was acknowledged and released its resources.
