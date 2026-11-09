@@ -33,11 +33,11 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 | Camera | Blocker | Unblock action | Who |
 |---|---|---|---|
 | **Wyze .39/.51** | **The OTA downloads but never installs.** `.51` pulled `.100` (02:54Z) and `.101` (05:52Z) complete — then nothing: no backup stream, no shell, no beacon. The upgrade handler lives in **iCamera**, and iCamera is the thing that is wedged (DTLS login and `0x29e8` still answer; `exec_shell_sync` and rtspd do not). `.39` is wedged the same way. | **Power-cycle `.39` and `.51`** — it is now the *only* thing that revives iCamera, which is what has to run the installer. The capsule is armed in the canonical shape with a stage beacon on every step | Operator (5 sec) |
-| **Tapo C660** | ROP fired 3× with verified gadgets but camera went back to sleep before telnetd could bind | **Walk past the C660** to trigger a PIR wake while the sweep is armed. The DS-readiness gate ensures the fire only happens when the camera can actually execute | Operator (walk by it) |
-| **Tapo C460** | Offset 1060 borrowed from C660, DIFFERENT SoC. 121 instrumented fires with identical no-shell-port-closed signature | **USB-serial UART connection** (3.3V, 115200 8N1) → extract `/bin/main` from the SXZ partition → derive the correct offset | Operator + UART adapter |
+| **Tapo C660** | Carrier only: ROP verified, DS gate armed, **image built + verified** | **walk past it**; the fire lands telnetd, then `tapo_flash_chain.sh <ip> c660` | Operator (walk-by) |
+| **Tapo C460** | Carrier only: the borrowed offset is scanned (`1024…1536`, 4-byte steps, persistent cursor, DS-gated, 16 shots per wake) | **walk past it**; on a shell `tapo_flash_chain.sh <ip> c460` runs dumps→verify→write. UART only if the scan never lands | Operator (walk-by) |
 | **Owlet .163** | Vendor 0x2041 grant never fires outside the app. H3/H4/H5 closed-negative. The en1 pcap can't see phone↔camera unicast | **Open the Owlet app's live view** while capturing from the ROUTER (not en1 — the AP forwards unicast only to the target MAC) | Operator + router capture |
 | **Yi .20** | SSID injection payload ready, listener alive 3+ days on :4444. Camera must scan during setup and hear the payload SSID | **macOS Internet Sharing** (System Settings → Sharing) with the payload SSID, or a standalone travel router broadcasting the payload SSID | Operator (the one disruptive step) |
-| **AOSU ×4** | Tuya registration burned (ILLEGAL_CLIENT_ID confirmed live). LAN OTA (0x1A/0x1B/0x1C) needs `local_key` from the Tuya gateway. H2E HomeBase is the real target (always-on, fronts all 4 cameras) but not yet located on the LAN | **New Tuya IoT Platform account** (iot.tuya.com, 10 min) → new app_id/secret → local_key → LAN OTA | Operator (web browser) |
+| **AOSU ×4** | `ILLEGAL_CLIENT_ID` — now proven **not** IP-related: a fresh Contabo egress still refuses, so the burn is on the app_id/cert. Unit located at `.126` (0x23 broadcast) | **New Tuya app registration** — unavoidable; a fresh IoT account yields app_id/secret → `local_key` → LAN OTA | Operator (web browser) |
 
 ## The ONE Action That Changes Everything
 
@@ -130,3 +130,19 @@ waits on cloudflared so a crash loops back through a fresh injection.
 
 An s3-us-west-2 URL in the plist is always a regression: that origin serves the forged
 eMudhra chain the OTA downloader rejects. A3b fails the gate on it.
+
+## Flash kit (both Tapo units, image verified)
+
+Nothing to fetch or build — it is on disk and pinned:
+
+```
+~/fss-exploit/fw/{uImage,rootfs.squashfs}.{ssc30kq,nt98567}   # md5s pinned in the chain
+deliverables/scripts/tapo_flash_chain.sh <ip> c460|c660       # dumps → verify → write → reboot
+```
+
+The chain dumps **all 13 partitions** first (receiver 444-459), checks the image md5 *on the
+camera*, writes rootfs then kernel, sets `bootargs`, reads back, reboots. `--dry-run` validates
+the profile without a camera. Rollback is writing `/tmp/fwbackup/mtdN.bin` back.
+
+Gate planes that guard it: `images:tapo` (files match the chain's pins), `forge:443/8443`
+(a real response, not just a socket), `watch:*` (every lane watcher alive).
