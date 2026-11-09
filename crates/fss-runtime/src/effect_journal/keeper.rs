@@ -191,6 +191,34 @@ impl JournalPinRetainer {
     pub const fn anchor(&self) -> EffectJournalPin {
         self.anchor
     }
+
+    /// Verify every retained target against the separately opened effect history.
+    ///
+    /// This does not authenticate external device outcomes or create dispatch
+    /// authority. Both stores and their independently retained minima must
+    /// already have been verified by their respective storage owners.
+    pub fn verify_effect_history(
+        &self,
+        journal: &dyn EffectJournalStore,
+    ) -> Result<(), EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        if self.store.head() != Some(self.anchor)
+            || !self.store.contains(self.anchor)
+            || self.anchor.sequence as u128 != self.store.records().len() as u128
+        {
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        for bytes in self.store.records() {
+            if let Some(pin) = decode(self.scope, bytes)?
+                && !journal.contains(pin)
+            {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EffectPinRetainer for JournalPinRetainer {
@@ -215,6 +243,14 @@ impl EffectPinRetainer for JournalPinRetainer {
         }
         self.store
             .reserve_capacity(additional_pins, MAX_RECORD_BYTES)
+    }
+
+    fn verify_effect_history(
+        &mut self,
+        journal: &dyn EffectJournalStore,
+    ) -> Result<(), EffectPersistenceError> {
+        self.retained_pin()?;
+        JournalPinRetainer::verify_effect_history(self, journal)
     }
 
     fn retain(
@@ -255,5 +291,114 @@ impl EffectPinRetainer for JournalPinRetainer {
                 Err(error)
             }
         }
+    }
+}
+
+/// Couples a journal-backed keeper to a separately supplied root pin authority.
+///
+/// The root authority must already hold the keeper's independently retained
+/// bootstrap or current anchor. Each successful retention advances both stores
+/// before acknowledgement. The root authority is the declared trust boundary:
+/// this type does not prove its independence, availability, or rollback safety.
+#[derive(Debug)]
+pub struct RootAnchoredJournalPinRetainer {
+    keeper: JournalPinRetainer,
+    root: Box<dyn EffectPinRetainer>,
+    poisoned: bool,
+}
+
+impl RootAnchoredJournalPinRetainer {
+    /// Bind a verified keeper to the exact independently retained root anchor.
+    /// An unanchored bootstrap or a keeper ahead of the root must be recovered
+    /// separately; this method never writes or creates authority.
+    pub fn new(
+        mut keeper: JournalPinRetainer,
+        mut root: Box<dyn EffectPinRetainer>,
+    ) -> Result<Self, EffectPersistenceError> {
+        keeper.retained_pin()?;
+        if root.retained_pin()? != Some(keeper.anchor()) {
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        root.verify_effect_history(keeper.store.as_ref())?;
+        Ok(Self {
+            keeper,
+            root,
+            poisoned: false,
+        })
+    }
+
+    fn verify_root(&mut self) -> Result<(), EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        if self.root.retained_pin()? != Some(self.keeper.anchor()) {
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        self.root.verify_effect_history(self.keeper.store.as_ref())
+    }
+}
+
+impl EffectPinRetainer for RootAnchoredJournalPinRetainer {
+    fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> {
+        if let Err(error) = self.verify_root() {
+            self.poisoned = true;
+            return Err(error);
+        }
+        match self.keeper.retained_pin() {
+            Ok(pin) => Ok(pin),
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn reserve_capacity(&mut self, additional_pins: usize) -> Result<(), EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        self.keeper.reserve_capacity(additional_pins)?;
+        self.root.reserve_capacity(additional_pins)
+    }
+
+    fn verify_effect_history(
+        &mut self,
+        journal: &dyn EffectJournalStore,
+    ) -> Result<(), EffectPersistenceError> {
+        if let Err(error) = self.verify_root() {
+            self.poisoned = true;
+            return Err(error);
+        }
+        match self.keeper.verify_effect_history(journal) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn retain(
+        &mut self,
+        expected: Option<EffectJournalPin>,
+        next: EffectJournalPin,
+    ) -> Result<(), EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        self.reserve_capacity(1)?;
+        let result = (|| {
+            self.verify_root()?;
+            let previous = self.keeper.anchor();
+            self.keeper.retain(expected, next)?;
+            let current = self.keeper.anchor();
+            self.root.retain(Some(previous), current)?;
+            self.verify_root()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
     }
 }

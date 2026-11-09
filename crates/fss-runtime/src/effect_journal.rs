@@ -100,6 +100,14 @@ pub trait EffectPinRetainer: std::fmt::Debug + Send + Sync {
     /// Refuse insufficient capacity before writing; this must not change custody.
     fn reserve_capacity(&mut self, additional_pins: usize) -> Result<(), EffectPersistenceError>;
 
+    /// Verify retained target commitments against the separately opened journal.
+    /// Implementations retaining a history must check every retained target.
+    /// This check does not grant authority or authenticate an external outcome.
+    fn verify_effect_history(
+        &mut self,
+        journal: &dyn EffectJournalStore,
+    ) -> Result<(), EffectPersistenceError>;
+
     /// Compare, durably retain and verify the next commitment.
     fn retain(
         &mut self,
@@ -143,6 +151,38 @@ impl PinRetainedEffectJournal {
             journal,
             retainer,
             retained: None,
+            poisoned: false,
+        })
+    }
+
+    /// Bind matching, already verified custody domains for reconciliation.
+    ///
+    /// The journal must have been opened at an independently retained minimum,
+    /// and its current head must exactly match the retainer's verified target.
+    /// A later journal record or missing checkpoint is ambiguous and requires
+    /// separate recovery; this method never advances either domain. Pass the
+    /// returned store to `EffectCoordinator::recover`, which restores no grant,
+    /// lease, or permit and does not admit new dispatches.
+    pub fn for_reconciliation(
+        journal: Box<dyn EffectJournalStore>,
+        mut retainer: Box<dyn EffectPinRetainer>,
+    ) -> Result<Self, EffectPersistenceError> {
+        let retained = retainer
+            .retained_pin()?
+            .ok_or(EffectPersistenceError::PinMismatch)?;
+        if retained.sequence == 0
+            || retained.root.is_laboratory()
+            || journal.head() != Some(retained)
+            || !journal.contains(retained)
+            || retained.sequence as u128 != journal.records().len() as u128
+        {
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        retainer.verify_effect_history(journal.as_ref())?;
+        Ok(Self {
+            journal,
+            retainer,
+            retained: Some(retained),
             poisoned: false,
         })
     }

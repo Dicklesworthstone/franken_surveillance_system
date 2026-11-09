@@ -14,6 +14,7 @@ use fss_core::{
 };
 use fss_object::effect_journal::{
     EFFECT_JOURNAL_RECORD_DOMAIN, EffectJournalLimits, FileEffectJournal,
+    FileTrustedRootPinRetainer,
 };
 use fss_object::{
     FaultInjectingSpoolIo, HostSpoolIo, SPOOL_HOLDS_DIR, SPOOL_LOCK_FILE, SPOOL_OBJECTS_DIR,
@@ -25,7 +26,8 @@ use fss_runtime::effect::{
 };
 use fss_runtime::effect_journal::{
     EffectJournalPin, EffectJournalStore, EffectPersistenceError, EffectPinRetainer,
-    PinRetainedEffectJournal, keeper::JournalPinRetainer,
+    PinRetainedEffectJournal,
+    keeper::{JournalPinRetainer, RootAnchoredJournalPinRetainer},
 };
 use fss_runtime::lease::LeaseRegistry;
 
@@ -98,7 +100,20 @@ fn separate_disk_keeper_reopens_and_identifies_the_exact_effect_prefix() -> Test
     let effects = FileEffectJournal::open(&effect_root, limits(), Arc::new(HostSpoolIo), second)?;
     assert!(effects.contains(first));
     assert_eq!(effects.head(), Some(second));
-    drop(keeper);
+    keeper.verify_effect_history(&effects)?;
+    let unrelated = FileEffectJournal::create(
+        directory.0.join("unrelated-effects"),
+        limits(),
+        Arc::new(HostSpoolIo),
+    )?;
+    assert_eq!(
+        keeper.verify_effect_history(&unrelated),
+        Err(EffectPersistenceError::PinMismatch)
+    );
+    let recovered =
+        PinRetainedEffectJournal::for_reconciliation(Box::new(effects), Box::new(keeper))?;
+    assert_eq!(recovered.head(), Some(second));
+    drop(recovered);
     let keeper_store =
         FileEffectJournal::open(&keeper_root, limits(), Arc::new(HostSpoolIo), advanced)?;
     assert!(
@@ -106,6 +121,91 @@ fn separate_disk_keeper_reopens_and_identifies_the_exact_effect_prefix() -> Test
             Box::new(keeper_store),
             ContentDigest::sha256(b"other scope"),
             advanced,
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn three_file_custody_domains_reopen_without_reissuing_an_effect() -> Test {
+    let directory = Directory::new()?;
+    let effect_root = directory.0.join("effects");
+    let keeper_root = directory.0.join("keeper");
+    let trust_root = directory.0.join("trusted-root");
+    let keeper_scope = ContentDigest::sha256(b"keeper fixture scope");
+    let root_scope = ContentDigest::sha256(b"trusted root fixture scope");
+    let effect = FileEffectJournal::create(&effect_root, limits(), Arc::new(HostSpoolIo))?;
+    let keeper_store = FileEffectJournal::create(&keeper_root, limits(), Arc::new(HostSpoolIo))?;
+    let (keeper, bootstrap) = JournalPinRetainer::create(Box::new(keeper_store), keeper_scope)?;
+    let mut root = FileTrustedRootPinRetainer::create(
+        &trust_root,
+        limits(),
+        Arc::new(HostSpoolIo),
+        root_scope,
+    )?;
+    root.retain(None, bootstrap)?;
+    let keeper = RootAnchoredJournalPinRetainer::new(keeper, Box::new(root))?;
+    let mut effect = PinRetainedEffectJournal::new(Box::new(effect), Box::new(keeper))?;
+    let first = effect.append(None, b"prepared")?;
+    let second = effect.append(Some(first), b"committed")?;
+    drop(effect);
+
+    let mut root = FileTrustedRootPinRetainer::open_trusting_storage(
+        &trust_root,
+        limits(),
+        Arc::new(HostSpoolIo),
+        root_scope,
+    )?;
+    let keeper_anchor = root.retained_pin()?.ok_or("missing keeper anchor")?;
+    let keeper_store =
+        FileEffectJournal::open(&keeper_root, limits(), Arc::new(HostSpoolIo), keeper_anchor)?;
+    let mut keeper =
+        JournalPinRetainer::reopen(Box::new(keeper_store), keeper_scope, keeper_anchor)?;
+    assert_eq!(keeper.retained_pin()?, Some(second));
+    let effect = FileEffectJournal::open(&effect_root, limits(), Arc::new(HostSpoolIo), second)?;
+    let keeper = RootAnchoredJournalPinRetainer::new(keeper, Box::new(root))?;
+    let recovered =
+        PinRetainedEffectJournal::for_reconciliation(Box::new(effect), Box::new(keeper))?;
+    assert_eq!(recovered.head(), Some(second));
+    assert!(recovered.contains(first));
+    Ok(())
+}
+
+#[test]
+fn trusted_root_refuses_missing_copied_and_wrong_scope_histories() -> Test {
+    let directory = Directory::new()?;
+    let root = directory.0.join("trusted-root");
+    let copy = directory.0.join("copied-root");
+    let scope = ContentDigest::sha256(b"trusted root fixture scope");
+    assert!(
+        FileTrustedRootPinRetainer::open_trusting_storage(
+            &root,
+            limits(),
+            Arc::new(HostSpoolIo),
+            scope,
+        )
+        .is_err()
+    );
+    let root_store =
+        FileTrustedRootPinRetainer::create(&root, limits(), Arc::new(HostSpoolIo), scope)?;
+    drop(root_store);
+    copy_tree(&root, &copy)?;
+    assert!(
+        FileTrustedRootPinRetainer::open_trusting_storage(
+            &copy,
+            limits(),
+            Arc::new(HostSpoolIo),
+            scope,
+        )
+        .is_err()
+    );
+    assert!(
+        FileTrustedRootPinRetainer::open_trusting_storage(
+            &root,
+            limits(),
+            Arc::new(HostSpoolIo),
+            ContentDigest::sha256(b"wrong scope"),
         )
         .is_err()
     );
@@ -134,6 +234,29 @@ fn keeper_stale_compare_fences_the_existing_owner() -> Test {
     let store = FileEffectJournal::open(&root, limits(), Arc::new(HostSpoolIo), latest)?;
     let mut recovered = JournalPinRetainer::reopen(Box::new(store), scope, bootstrap)?;
     assert_eq!(recovered.retained_pin()?, Some(first));
+    Ok(())
+}
+
+#[test]
+fn reconciliation_refuses_an_earlier_wrong_keeper_target_even_if_the_head_matches() -> Test {
+    let directory = Directory::new()?;
+    let mut effects =
+        FileEffectJournal::create(directory.0.join("effects"), limits(), Arc::new(HostSpoolIo))?;
+    let first = effects.append(None, b"prepared")?;
+    let second = effects.append(Some(first), b"committed")?;
+    let store =
+        FileEffectJournal::create(directory.0.join("keeper"), limits(), Arc::new(HostSpoolIo))?;
+    let (mut keeper, _bootstrap) =
+        JournalPinRetainer::create(Box::new(store), ContentDigest::sha256(b"history fixture"))?;
+    let wrong_first = EffectJournalPin {
+        sequence: 1,
+        root: ContentDigest::sha256(b"a different first effect"),
+    };
+    keeper.retain(None, wrong_first)?;
+    keeper.retain(Some(wrong_first), second)?;
+    assert_eq!(keeper.retained_pin()?, Some(second));
+    let result = PinRetainedEffectJournal::for_reconciliation(Box::new(effects), Box::new(keeper));
+    assert!(matches!(result, Err(EffectPersistenceError::PinMismatch)));
     Ok(())
 }
 

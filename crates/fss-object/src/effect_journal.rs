@@ -11,13 +11,18 @@
 //! cooperating writers; stable file identities require a supported platform. This reference
 //! backend cannot detect rollback beyond the caller's independent pin or hostile filesystem
 //! replacement inside a single system call.
+//! [`FileTrustedRootPinRetainer`] is a distinct opt-in trust boundary: its own
+//! storage is authoritative and cannot detect its own rollback without an external witness.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
-use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
+use fss_runtime::effect_journal::{
+    EffectJournalPin, EffectJournalStore, EffectPersistenceError, EffectPinRetainer,
+    keeper::JournalPinRetainer,
+};
 
 use crate::upload_journal::io::{BudgetedJournalIo, FileIdentity};
 use crate::{
@@ -150,7 +155,17 @@ impl FileEffectJournal {
         minimum: EffectJournalPin,
     ) -> Result<Self, EffectPersistenceError> {
         validate_pin(minimum)?;
-        let root = root.as_ref();
+        Self::open_with_minimum(root.as_ref(), limits, capability, Some(minimum))
+    }
+
+    // Only the explicitly trusted root-pin backend may reopen without a
+    // separately retained minimum. Ordinary effect histories always use open.
+    fn open_with_minimum(
+        root: &Path,
+        limits: EffectJournalLimits,
+        capability: Arc<dyn SpoolIo>,
+        minimum: Option<EffectJournalPin>,
+    ) -> Result<Self, EffectPersistenceError> {
         let spool_limits = limits.spool_limits()?;
         let io = Arc::new(BudgetedJournalIo::new(capability, limits.max_read_bytes));
         let identities = inspect_layout(io.as_ref(), root)?;
@@ -195,8 +210,16 @@ impl FileEffectJournal {
             records.push(record.payload);
             previous = Some(EffectJournalPin { sequence, root });
         }
-        if pins.get(&minimum.sequence) != Some(&minimum.root) {
-            return Err(EffectPersistenceError::PinMismatch);
+        match minimum {
+            Some(minimum) if pins.get(&minimum.sequence) != Some(&minimum.root) => {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            None if pins.is_empty() => {
+                return Err(EffectPersistenceError::InvalidHistory(
+                    "trusted root pin history is empty",
+                ));
+            }
+            _ => {}
         }
         // Cold recovery may find a renamed object whose original directory sync failed.
         // Synchronize those exact names before admitting new runtime work.
@@ -355,6 +378,76 @@ impl EffectJournalStore for FileEffectJournal {
             self.poisoned = true;
         }
         result
+    }
+}
+
+/// A file-backed pin retainer whose storage is an explicitly trusted root.
+///
+/// The caller must supply a separately authorized and appropriately independent
+/// storage capability. Reopening trusts that storage to present its latest
+/// committed history: rollback of the root storage itself is not detectable
+/// without an independently retained witness. This owner never authenticates
+/// a camera, proves an external outcome, or grants a dispatch permit.
+#[derive(Debug)]
+pub struct FileTrustedRootPinRetainer {
+    keeper: JournalPinRetainer,
+}
+
+impl FileTrustedRootPinRetainer {
+    /// Initialize dedicated, empty trusted-root storage for one scope.
+    /// A failure after writing starts may have created history; recover it
+    /// explicitly instead of reinitializing an ambiguous store.
+    pub fn create(
+        root: impl AsRef<Path>,
+        limits: EffectJournalLimits,
+        capability: Arc<dyn SpoolIo>,
+        scope: ContentDigest,
+    ) -> Result<Self, EffectPersistenceError> {
+        let store = FileEffectJournal::create(root, limits, capability)?;
+        let (keeper, _) = JournalPinRetainer::create(Box::new(store), scope)?;
+        Ok(Self { keeper })
+    }
+
+    /// Reopen an existing root while explicitly trusting the supplied storage.
+    ///
+    /// The complete visible chain and original physical namespace are checked;
+    /// a missing or empty history is refused. A storage rollback that leaves a
+    /// valid earlier prefix is not detectable at this declared trust boundary.
+    pub fn open_trusting_storage(
+        root: impl AsRef<Path>,
+        limits: EffectJournalLimits,
+        capability: Arc<dyn SpoolIo>,
+        scope: ContentDigest,
+    ) -> Result<Self, EffectPersistenceError> {
+        let store = FileEffectJournal::open_with_minimum(root.as_ref(), limits, capability, None)?;
+        let head = store.head().ok_or(EffectPersistenceError::PinMismatch)?;
+        let keeper = JournalPinRetainer::reopen(Box::new(store), scope, head)?;
+        Ok(Self { keeper })
+    }
+}
+
+impl EffectPinRetainer for FileTrustedRootPinRetainer {
+    fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> {
+        self.keeper.retained_pin()
+    }
+
+    fn reserve_capacity(&mut self, additional_pins: usize) -> Result<(), EffectPersistenceError> {
+        self.keeper.reserve_capacity(additional_pins)
+    }
+
+    fn verify_effect_history(
+        &mut self,
+        journal: &dyn EffectJournalStore,
+    ) -> Result<(), EffectPersistenceError> {
+        EffectPinRetainer::verify_effect_history(&mut self.keeper, journal)
+    }
+
+    fn retain(
+        &mut self,
+        expected: Option<EffectJournalPin>,
+        next: EffectJournalPin,
+    ) -> Result<(), EffectPersistenceError> {
+        self.keeper.retain(expected, next)
     }
 }
 
