@@ -399,10 +399,24 @@ fn policy_authority_is_guarded_and_damaged_custody_never_becomes_no_policy() -> 
     let mut f = Fixture::new("policy-guard")?;
     f.ingest("old", 40)?;
     let request = change(None, true)?;
-    let mut preview_only = f.authority.clone();
-    preview_only
-        .capabilities
-        .retain(|capability| capability != CAP_HOLD_COMMIT);
+    let preview_only = f.authority.narrow(fss_core::region::ContextNarrowingSpec {
+        operation_id: f.authority.operation_id.clone(),
+        capabilities: f
+            .authority
+            .capabilities()
+            .iter()
+            .filter(|capability| capability.as_str() != CAP_HOLD_COMMIT)
+            .cloned()
+            .collect(),
+        deadline: f.authority.deadline,
+        priority: f.authority.priority,
+        budgets: f.authority.budgets,
+        privacy_scope: f.authority.privacy_scope.clone(),
+        retention_scope: f.authority.retention_scope.clone(),
+        lease_fence: f.authority.lease_fence,
+        idempotency_key: f.authority.idempotency_key.clone(),
+        lab_controls: f.authority.lab_controls.clone(),
+    })?;
     let preview = preview_policy_change(&f.deployment, &request, &preview_only, &f.cx)?;
     assert!(matches!(
         commit_policy_change(

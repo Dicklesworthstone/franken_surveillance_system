@@ -17,7 +17,7 @@ import time
 from prehello_fixture import HEAD, exact, frame, message, received
 
 
-def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesced=False, startup_request=False):
+def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesced=False, startup_request=False, nonlatest=False):
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
     port = reserve.getsockname()[1]
@@ -26,7 +26,7 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesc
     command = [binary, f"127.0.0.1:{port}", "127.0.0.1", "001122aabbcc",
                str(cert), str(key), str(root / "journal"), str(root / "clip.mp4"),
                "12345678-1234-4abc-9abc-123456789abc", "60",
-               "--bounded-prehello-clock"]
+               "--bounded-any-prehello-clock" if nonlatest else "--bounded-prehello-clock"]
     if startup_request:
         command.extend(["--media-before-reply", "--reply-startup-requests"])
     command.append("--owner-authorized")
@@ -64,6 +64,7 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesc
                         or reply.get("payload") != {"synthetic": "fixture"}):
                     raise ValueError("invalid startup request reply")
             correlation = 999
+            first_reply = None
             count = 32 if quota else 12
             if coalesced:
                 # Real transports can deliver several camera frames in one
@@ -77,7 +78,11 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesc
                 requests.append(frame(message("ubnt_avclient_hello", 200, payload={})))
                 sock.sendall(b"".join(requests))
             for index in range(count):
-                response_to = 0 if uncorrelated or (mixed and index % 2 == 0) else correlation
+                if nonlatest and index > 1:
+                    # Alternate a stale reply ID with an unknown correlation.
+                    response_to = first_reply if index % 2 == 0 else 999
+                else:
+                    response_to = 0 if uncorrelated or (mixed and index % 2 == 0) else correlation
                 request = message("ubnt_avclient_timeSync", 100 + index, response_to)
                 request["responseExpected"] = False
                 if not coalesced:
@@ -87,6 +92,8 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesc
                         or reply.get("inResponseTo") != 100 + index):
                     raise ValueError("invalid clock reply")
                 correlation = reply["messageId"]
+                if first_reply is None:
+                    first_reply = correlation
             if quota:
                 sock.sendall(frame(message("ubnt_avclient_timeSync", 132, 0 if uncorrelated else correlation)))
                 try:
@@ -111,7 +118,7 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesc
             out, err = child.communicate(timeout=10)
             if child.returncode == 0 or b"TimeSyncLimit" not in out + err:
                 raise ValueError("missing explicit time-sync quota stop")
-        mode = 'startup_request' if startup_request else 'coalesced' if coalesced else 'uncorrelated' if uncorrelated else 'mixed' if mixed else 'correlated'
+        mode = 'nonlatest' if nonlatest else 'startup_request' if startup_request else 'coalesced' if coalesced else 'uncorrelated' if uncorrelated else 'mixed' if mixed else 'correlated'
         print(f"clock_chain_fixture mode={mode} replies={count} result={'quota_stop' if quota else 'hello_agreement_stream'}")
     finally:
         if child.poll() is None:
@@ -142,6 +149,8 @@ def main():
         run(sys.argv[1], cert, key, root / "uncorrelated-quota", True, uncorrelated=True)
         run(sys.argv[1], cert, key, root / "coalesced", False, coalesced=True)
         run(sys.argv[1], cert, key, root / "startup-request", False, startup_request=True)
+        run(sys.argv[1], cert, key, root / "nonlatest", False, nonlatest=True)
+        run(sys.argv[1], cert, key, root / "nonlatest-quota", True, nonlatest=True)
 
 
 if __name__ == "__main__":

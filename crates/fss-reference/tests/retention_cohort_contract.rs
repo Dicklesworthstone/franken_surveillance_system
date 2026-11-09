@@ -798,7 +798,7 @@ fn identical_evidence_has_identical_selection_and_plan_across_storage_roots() ->
 fn byte_budget_selects_oldest_then_stops_and_binds_the_exact_target() -> TestResult {
     let mut f = Fixture::new("budget-oldest")?;
     let newest = f.ingest_at("newest", 120, SENSOR, Some(300))?;
-    let oldest = f.ingest_at("oldest", 40, SENSOR, Some(-200))?;
+    let oldest = f.ingest_at("oldest", 40, SENSOR, Some(0))?;
     let middle = f.ingest_at("middle", 80, SENSOR, Some(100))?;
     let oldest_bytes = f.source_bytes(oldest)?;
     let target = f.source_bytes(middle)? + f.source_bytes(newest)?;

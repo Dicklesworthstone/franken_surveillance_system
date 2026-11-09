@@ -339,6 +339,33 @@ fn explicit_correlated_time_sync_policy_has_a_hard_reply_bound() -> TestResult {
 }
 
 #[test]
+fn bounded_any_pre_hello_clock_accepts_fresh_nonlatest_correlations_with_limits() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedAnyPreHelloClockExchange,
+    )?;
+    assert_eq!(c.startup_time_sync_limit(), 32);
+    for camera_id in 100..132 {
+        // The first response ID becomes stale after the next written reply.
+        let correlation = if camera_id == 100 { 999 } else { 1 };
+        assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?, Observation::TimeSyncRequested);
+        if camera_id == 100 {
+            assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 999, 42, "{}")), Err(Error::TimeSyncLimit));
+        }
+        let reply = c.prepare_time_sync(123_456, TIME)?.id();
+        c.finish_dispatch(reply, Dispatch::Written)?;
+        if camera_id == 100 {
+            assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, 999, "{}")), Err(Error::UnexpectedMessage));
+        }
+    }
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 132, 999, "{}")), Err(Error::TimeSyncLimit));
+    assert_eq!(c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?, Observation::Hello);
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 501, 999, "{}"))?, Observation::Other);
+    Ok(())
+}
+
+#[test]
 fn bounded_pre_hello_clock_exchange_follows_correlated_chain() -> TestResult {
     let identity = Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?;
     let mut c = Controller::new_with_time_sync_policy(
