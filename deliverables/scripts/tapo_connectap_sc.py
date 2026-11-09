@@ -122,7 +122,7 @@ def _rsa_device_confirm(host, d):
     return dd["device_confirm"], dd.get("nonce") or nonce, h1, h2
 
 
-def login(host, tries=90):
+def login(host, tries=40):
     for i in range(tries):
         try:
             j = json.loads(post(host, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3))
