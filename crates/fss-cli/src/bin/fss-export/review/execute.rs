@@ -2,28 +2,25 @@
 //! Local operator authority, exact publication and separately approved private delivery.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use fss_cli::agent_json::{evidence_anchor, object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
-use fss_core::{BudgetVector, CanonicalEncoder, CaptureInterval, ContentDigest, OperationId};
+use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_reference::deletion::DeletionIndex;
 use fss_reference::evidence_export::{CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE};
 use fss_reference::review_media::{
-    CAP_REVIEW_MEDIA_READ, ReviewMediaRecord, ReviewedMedia, commit_review_media,
-    inspect_review_media, prepare_review_media, read_review_media, revalidate_review_media,
-    review_grant_revoked, revocation_approval, revoke_review_media,
+    CAP_REVIEW_MEDIA_READ, ReviewMediaRecord, commit_review_media, inspect_review_media,
+    prepare_review_media, review_grant_revoked, revocation_approval, revoke_review_media,
 };
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
 use super::super::RunResult;
 use super::options::{Action, Options};
-use super::private_output::PrivateOutputPath;
 
 const MAX_REPORT_BYTES: usize = 512 * 1024;
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
-const IO_CHUNK_BYTES: usize = 64 * 1024;
 
 fn refused(message: &'static str) -> io::Error {
     io::Error::other(message)
@@ -117,186 +114,16 @@ fn report(
     ]))
 }
 
-/// The held directory and canonical pathname jointly bind approval. No ambient pathname can
-/// select a replacement directory after preparation, and creation is always exclusive.
-struct Destination {
-    output: PrivateOutputPath,
-    binding: ContentDigest,
-    #[cfg(unix)]
-    identity: (u64, u64),
-}
-
-impl Destination {
-    fn prepare(path: &Path, root: &Path, cx: &ReplayCx) -> RunResult<Self> {
-        if !cfg!(target_os = "linux") {
-            return Err(refused("private review delivery requires Linux directory handles").into());
-        }
-        let output = PrivateOutputPath::prepare(path, root, cx)?;
-        let destination = output.destination();
-        let parent = destination
-            .parent()
-            .ok_or_else(|| refused("review destination requires a parent directory"))?;
-        let metadata = fs::symlink_metadata(parent)?;
-        let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.review_media_cli_destination.v1");
-        encoder.bytes(destination.as_os_str().as_encoded_bytes());
-        #[cfg(unix)]
-        let identity = {
-            use std::os::unix::fs::MetadataExt;
-            if !metadata.is_dir() || metadata.mode() & 0o022 != 0 {
-                return Err(
-                    refused("review output parent must forbid group and world writes").into(),
-                );
-            }
-            encoder.u64(metadata.dev());
-            encoder.u64(metadata.ino());
-            (metadata.dev(), metadata.ino())
-        };
-        #[cfg(not(unix))]
-        let _ = metadata;
-        let value = Self {
-            output,
-            binding: ContentDigest::sha256(&encoder.finish_checked()?),
-            #[cfg(unix)]
-            identity,
-        };
-        value.check(cx)?;
-        Ok(value)
-    }
-
-    fn check(&self, cx: &ReplayCx) -> RunResult<()> {
-        self.output.check(cx)?;
-        let path = self.output.destination();
-        let parent = path
-            .parent()
-            .ok_or_else(|| refused("review output parent changed"))?;
-        let metadata = fs::symlink_metadata(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if !metadata.is_dir()
-                || metadata.mode() & 0o022 != 0
-                || (metadata.dev(), metadata.ino()) != self.identity
-            {
-                return Err(refused("review output parent identity or protection changed").into());
-            }
-        }
-        #[cfg(not(unix))]
-        let _ = metadata;
-        Ok(())
-    }
-}
-
-fn delivery_approval(
-    options: &Options,
-    media: &ReviewedMedia,
-    now: CaptureInterval,
-    target: &Destination,
-) -> RunResult<ContentDigest> {
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.review_media_cli_delivery_approval.v1");
-    encoder.text(&options.site);
-    encoder.text(&options.principal);
-    encoder.digest(media.root());
-    encoder.digest(media.record().digest());
-    encoder.digest(media.media_digest());
-    encoder.u64(media.bytes().len() as u64);
-    encoder.i128(now.earliest.0);
-    encoder.i128(now.latest.0);
-    encoder.digest(target.binding);
-    Ok(ContentDigest::sha256(&encoder.finish_checked()?))
-}
-
-fn delivery_report(
-    options: &Options,
-    media: &ReviewedMedia,
-    now: CaptureInterval,
-    target: &Destination,
-    approval: ContentDigest,
-    written: bool,
-) -> RunResult<String> {
-    bounded(object(&[
-        ("format", string("fss.review_media_cli.v1")),
-        ("site", string(&options.site)),
-        (
-            "status",
-            string(if written {
-                "private_file_written"
-            } else {
-                "awaiting_file_approval"
-            }),
-        ),
-        ("review_root", string(&media.root().to_text())),
-        ("record_digest", string(&media.record().digest().to_text())),
-        ("media_digest", string(&media.media_digest().to_text())),
-        ("media_bytes", media.bytes().len().to_string()),
-        ("media_type", string("video/x-matroska")),
-        ("approval_digest", string(&approval.to_text())),
-        ("destination_binding", string(&target.binding.to_text())),
-        ("recipient", string(&options.principal)),
-        (
-            "attested_now_ns",
-            object(&[
-                ("earliest", string(&now.earliest.0.to_string())),
-                ("latest", string(&now.latest.0.to_string())),
-            ]),
-        ),
-        ("file_written", written.to_string()),
-        ("recipient_authenticated", "false".into()),
-        ("trusted_clock_used", "false".into()),
-        ("external_transport_performed", "false".into()),
-        ("delivery_receipt_in_deployment", "false".into()),
-        ("qualification", string("implemented_not_qualified")),
-    ]))
-}
-
-fn read_to_file(
-    options: &Options,
-    deployment: &ReferenceDeployment,
-    authority: &ContextAuthority,
-    cx: &ReplayCx,
-) -> RunResult<String> {
-    let Action::Read {
-        root,
-        attested_now,
-        output,
-        approval,
-    } = &options.action
-    else {
-        return Err(refused("review delivery requires explicit read action").into());
-    };
-    let target = Destination::prepare(output, &options.root, cx)?;
-    let media = read_review_media(deployment, *root, *attested_now, authority, cx)?;
-    let expected = delivery_approval(options, &media, *attested_now, &target)?;
-    let Some(approval) = approval else {
-        return delivery_report(options, &media, *attested_now, &target, expected, false);
-    };
-    if *approval != expected {
-        return Err(
-            refused("review file approval does not match exact destination and grant").into(),
-        );
-    }
-    // Finish bounded metadata before creating an output; no serialization failure can turn a
-    // successful copy into a fabricated complete response.
-    let report = delivery_report(options, &media, *attested_now, &target, expected, true)?;
-    target.check(cx)?;
-    revalidate_review_media(deployment, &media, *attested_now, authority, cx)?;
-    let mut file = target.output.create(cx)?;
-    for chunk in media.bytes().chunks(IO_CHUNK_BYTES) {
-        cx.checkpoint("review_cli:write_screened_media")?;
-        target.check(cx)?;
-        file.write_all(chunk)?;
-    }
-    target.output.sync(&file, cx)?;
-    target.check(cx)?;
-    revalidate_review_media(deployment, &media, *attested_now, authority, cx)?;
-    Ok(report)
-}
-
 pub(super) fn run(options: &Options) -> RunResult<String> {
     let mut capabilities = vec!["ADP-REPLAY-001".to_owned()];
     match &options.action {
-        Action::Read { .. } => capabilities.push(CAP_REVIEW_MEDIA_READ.into()),
+        Action::Read { approval, .. } => {
+            capabilities.push(CAP_REVIEW_MEDIA_READ.into());
+            if approval.is_some() {
+                capabilities.push(CAP_EXPORT_COMMIT.into());
+            }
+        }
+        Action::DeliveryShow { .. } => capabilities.push(CAP_REVIEW_MEDIA_READ.into()),
         Action::Publish { approval, .. } => {
             capabilities.push(CAP_EXPORT_PREPARE.into());
             capabilities.push(CAP_REVIEW_MEDIA_READ.into());
@@ -418,7 +245,10 @@ pub(super) fn run(options: &Options) -> RunResult<String> {
                     Some(revoked),
                 )
             }
-            Action::Read { .. } => read_to_file(options, &deployment, &authority, &cx),
+            Action::Read { .. } => super::delivery::run(options, &mut deployment, &authority, &cx),
+            Action::DeliveryShow { identity } => {
+                super::delivery::show(options, &deployment, *identity, &authority, &cx)
+            }
             Action::Revoke {
                 root,
                 approval: None,

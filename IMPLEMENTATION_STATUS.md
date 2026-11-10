@@ -4,6 +4,60 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Durable local review delivery and restart reconciliation
+
+`fss-export review-read` now records a guarded destination-bound attempt before
+creating a private file, then records completion only after complete held-file
+readback and renewed grant/source/privacy/deletion checks. Stable delivery
+identity permits a fresh current-time attestation after a restart. A synced
+complete file can be reconciled without rewriting; a missing or partial file
+remains explicitly indeterminate and is never automatically recreated.
+
+Completed retries recheck exact bytes, length, device/inode, private mode,
+single-link status and retained modification/change timestamps. They return the
+same receipt without another ledger transition. Generic append APIs cannot
+forge either delivery family or shadow its object namespace. Original reader
+scope remains bound across retries; adding the separately required export-commit
+capability to a read-only preview does not change that binding.
+
+`review-delivery-show` exposes recipient-scoped audit metadata after expiry,
+revocation and deletion without reading the external file or granting disclosure.
+Delivery audit children contain metadata only, so source deletion and the
+concurrent explicit review-expiry cleanup can remove pixels without destroying
+the delivery history. A local readback receipt does not assert remote receipt,
+authentication, permanent file presence or copy recall.
+
+All five canonical record contracts passed on the pinned nightly against the
+exact production wire module. Six native lifecycle contracts, four CLI
+restart/filesystem contracts and one CLI admission contract cover the new
+behavior; their full-runtime execution is pending. Existing review publication,
+masking, grant and deletion cases remain selected. The local pinned compiler stopped in unchanged Asupersync before FSS
+diagnostics, and the local execution environment subsequently became unavailable.
+Changes were recovered from recorded edits through GitHub; full integration
+verification is pending the exact-source supplementary runner. No runtime,
+dependency, toolchain or qualification gate was replaced or weakened. This
+advances VIT-023 / FSS-068; see
+[`RETAINED_REVIEW_MEDIA.md`](docs/RETAINED_REVIEW_MEDIA.md).
+
+## Native ONNX pixel shuffle and unshuffle
+
+The opset-13 importer accepts static positive rank-four F32
+`DepthToSpace` (default DCR or explicit CRD) and `SpaceToDepth`.
+Both lower to the existing native Reshape, Transpose and Reshape operators.
+No runtime operator, generated parameter tensor, foreign framework or frozen
+Model IR v1 identity is added. Complete helper-expansion quotas, checked shape
+arithmetic, source-name reservations and cancellation apply before expansion.
+
+All **50** targeted attention/import regression contracts passed on
+`nightly-2026-08-31`, including **nine new spatial contracts**. Positive fixtures
+execute the real scalar and optimized implementations before and after canonical
+graph/Safetensors reload. Literal and independent coordinate oracles cover
+DCR/CRD ordering, inverse composition, convolution heads, multiple batches,
+rectangular shapes, blocks 1–3 and extreme finite sample bits. The established
+isolated-import command excludes 16 unrelated embedded executor unit tests.
+This is focused FSS-138/FSS-139 progress; broader model qualification remains open.
+See [`onnx_import.md`](docs/onnx_import.md).
+
 ## Source-preserving cleanup of expired review derivatives
 
 `fss-event delete review-expiry-plan` now inventories current retained reviews

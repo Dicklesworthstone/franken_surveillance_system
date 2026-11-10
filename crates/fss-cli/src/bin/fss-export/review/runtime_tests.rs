@@ -21,6 +21,9 @@ use fss_reference::ingest::privacy_mask::{
 use fss_reference::ingest::{FileIngestAdapter, FileIngestRequest};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "delivery_tests.rs"]
+mod durable_delivery;
+
 type Test<T = ()> = Result<T, Box<dyn Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const SITE: &str = "site:review-cli";
@@ -197,7 +200,8 @@ fn cold_review_cli_publishes_delivers_exact_private_bytes_and_revokes_future_rea
     let read = delivery(&root, &review_root, &output, "principal:reviewer", "20:30");
     let read_preview = run(&read)?;
     assert!(!output.exists(), "preview disclosed media");
-    let completed = run(&approved(read, &read_preview)?)?;
+    let approved_read = approved(read, &read_preview)?;
+    let completed = run(&approved_read)?;
     assert_eq!(text(&completed, "status")?, "private_file_written");
     let bytes = fs::read(&output)?;
     assert!(bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]));
@@ -206,16 +210,33 @@ fn cold_review_cli_publishes_delivers_exact_private_bytes_and_revokes_future_rea
         text(&completed, "media_digest")?
     );
     assert_eq!(fs::metadata(&output)?.permissions().mode() & 0o777, 0o600);
-    assert!(
-        run(&delivery(
-            &root,
-            &review_root,
-            &output,
+    assert_eq!(
+        json_field(&completed, "delivery_receipt_in_deployment")?.boolean(),
+        Some(true)
+    );
+    let verified_again = run(&approved_read)?;
+    assert_eq!(text(&verified_again, "status")?, "private_file_verified");
+    assert_eq!(
+        json_field(&verified_again, "file_written")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(
+        text(&verified_again, "delivery_record_digest")?,
+        text(&completed, "delivery_record_digest")?
+    );
+    let delivery_show = args(
+        &root,
+        "review-delivery-show",
+        &[
+            "--delivery-id",
+            text(&completed, "delivery_id")?,
+            "--principal",
             "principal:reviewer",
-            "20:30"
-        ))
-        .is_err(),
-        "existing output was adopted"
+        ],
+    );
+    assert_eq!(
+        text(&run(&delivery_show)?, "delivery_state")?,
+        "verified_local_file"
     );
 
     let revoke = args(&root, "review-revoke", &["--review-root", &review_root]);
@@ -239,6 +260,10 @@ fn cold_review_cli_publishes_delivers_exact_private_bytes_and_revokes_future_rea
         .is_err()
     );
     assert!(!blocked.exists());
+    assert_eq!(
+        text(&run(&delivery_show)?, "delivery_state")?,
+        "verified_local_file"
+    );
     assert_eq!(
         fs::read(&output)?,
         bytes,

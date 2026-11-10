@@ -215,3 +215,36 @@ fn approval_is_exact_and_actions_do_not_accept_other_operations_flags() -> Resul
     }
     Ok(())
 }
+
+#[test]
+fn delivery_inspection_requires_recipient_and_never_accepts_disclosure_flags() -> Result<(), String>
+{
+    let identity = ContentDigest::sha256(b"delivery");
+    let mut args: Vec<OsString> = [
+        "review-delivery-show",
+        "--root",
+        "/existing",
+        "--site",
+        "site:review-cli",
+        "--delivery-id",
+        &identity.to_text(),
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    assert!(parse(&args).is_err());
+    args.extend(["--principal".into(), "principal:reviewer".into()]);
+    let Action::DeliveryShow { identity: parsed } = parse(&args)?.action else {
+        return Err("wrong action".into());
+    };
+    assert_eq!(parsed, identity);
+    for flag in ["--approve", "--out", "--review-root", "--attested-now-ns"] {
+        let mut invalid = args.clone();
+        invalid.extend([flag.into(), "unused".into()]);
+        assert!(
+            parse(&invalid).is_err(),
+            "metadata inspection accepted {flag}"
+        );
+    }
+    Ok(())
+}

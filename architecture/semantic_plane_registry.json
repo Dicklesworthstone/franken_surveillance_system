@@ -88,7 +88,8 @@
     "crates/fss-reference/src/review_media/record.rs",
     "crates/fss-reference/src/review_media/storage.rs",
     "crates/fss-reference/src/review_media/render.rs",
-    "crates/fss-cli/src/bin/fss-export/review/execute.rs"
+    "crates/fss-cli/src/bin/fss-export/review/execute.rs",
+    "crates/fss-cli/src/bin/fss-export/review/delivery.rs"
   ],
   "module_declarations": {
     "crates/fss-object/src/contracts.rs": "support",
@@ -983,6 +984,9 @@
     "crates/fss-cli/src/orient_cmd.rs": "ambiguous",
     "crates/fss-cli/src/bin/fss-export/review.rs": "effect",
     "crates/fss-cli/src/bin/fss-export/review/execute.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/delivery.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/destination.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/delivery_tests.rs": "support",
     "crates/fss-cli/src/bin/fss-export/review/options.rs": "effect",
     "crates/fss-cli/src/bin/fss-export/review/tests.rs": "support",
     "crates/fss-reference/src/review_media.rs": "effect",

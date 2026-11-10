@@ -336,7 +336,7 @@ fn main() -> ExitCode {
     }
     if matches!(
         args.first().and_then(|value| value.to_str()),
-        Some("review" | "review-show" | "review-read" | "review-revoke")
+        Some("review" | "review-show" | "review-read" | "review-revoke" | "review-delivery-show")
     ) {
         return review::main(&args);
     }
