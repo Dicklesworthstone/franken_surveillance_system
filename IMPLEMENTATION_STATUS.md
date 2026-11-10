@@ -43,39 +43,41 @@ physical erasure at expiry. Raw grayscale output is limited to short intervals
 and 64 MiB. See [the operator contract](docs/RETAINED_REVIEW_MEDIA.md).
 VIT-023 and FSS-068 advance; their broad beads remain open.
 
-**Validation on 2026-11-10:** all 14 new reference unit contracts passed on the
-exact pinned supplementary GitHub runner at `cf76bda5`: seven canonical grant
-cases and seven retained renderer cases, using the complete runtime and actual
-native AVC/HEVC fixtures. These cover exact screened pixels, B-picture timing,
-partial trims, repeated edits and holes, cancellation, cumulative limits, stable
-receipts, and refusal when a selected HEVC RASL picture is unavailable. The
-[runtime contract log](docs/validation/2026-11-10-review-runtime-contracts.log)
-records the executed target and scope. The eleven lifecycle integration and seven
-new CLI cases remain pending on the corrected integration checkpoint.
+**Validation on 2026-11-10:** all **32 new review contracts passed** in the
+isolated pinned-nightly supplementary step on source commit `e42713f8`: seven
+canonical grant cases, seven retained native renderer cases, eleven durable
+lifecycle integration cases, and seven review CLI cases. The
+[verified focused job](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42751437197/job/129618113635)
+completed that step successfully at 03:56:44 UTC. This verifies exact screened
+pixels, B-picture timing, partial trims, repeated edits and holes, cumulative
+limits, cancellation, cold reads and retries, forgery refusal, recipient/time
+restrictions, revocation, source deletion, private file delivery, and current
+durable source/derivative root checks. The positive HEVC fixture uses its valid
+initial IDR range; the missing-RASL refusal contract remains intact.
+
+The [runtime contract evidence](docs/validation/2026-11-10-review-runtime-contracts.log)
+retains the current-source GitHub API success witness and earlier verbatim
+per-test output. At capture, the complete job was still active, so its final
+per-test log was not yet available. The preceding checkpoint passed all seven
+new CLI cases and nine of ten lifecycle cases; its sole review failure was the
+HEVC positive-fixture interval corrected before this successful focused run.
 
 All 25 existing movie component contracts also passed against the actual
 production sources: ten output-cache, eight timing and seven native RTSP timeline
 cases. The [native component log](docs/validation/2026-11-10-retained-review-movie-components-direct.log)
-records exact direct compiler commands. Seven grant cases also passed through
-the actual complete `fss-core` and production grant module in the separate
-[direct grant lane](docs/validation/2026-11-10-review-grant-tests.log); these
-overlap the full-runtime grant cases and are not additional distinct tests.
-Existing original export (23), deployment (15) and deployment recovery (36)
-contracts passed on the first checkpoint. The
+records exact direct compiler commands. Seven grant cases also passed in the
+separate [direct grant lane](docs/validation/2026-11-10-review-grant-tests.log);
+these overlap the full-runtime grant cases and are not additional distinct
+tests. Existing original export (23), offline custody integration (14), deployment
+(15), and deployment recovery (36) contracts passed on earlier checkpoints. The
 [retained build evidence](docs/validation/2026-11-10-review-reference-build.md)
-separates those regressions from the new review contract results.
+separates those regressions from the new review results.
 
-The positive HEVC lifecycle fixture now selects its valid initial IDR interval;
-the separate missing-RASL refusal contract is unchanged. A new hot/cold contract
-covers missing and corrupt source root records, including an already-loaded
-clip and a fresh-purpose preparation. The existing workflow now reports the
-focused review contracts in a separate early step while preserving the original
-export and CLI integration regression commands.
-
-The overall supplementary workflow is not green. Existing deletion-command
-module routing and catalog-test API blockers were corrected alongside explicit
-review CLI module paths and the new fixtures' privacy-owner calls. The final
-local Cargo checks were killed in unchanged Asupersync 0.5.0 before reaching FSS
+Complete repository qualification remains open. The preceding full supplementary
+job failed an existing ONVIF operation-recovery journal assertion and exhausted
+its thirty-minute limit during a later multipart dwell CLI contract. The latest
+whole job was still running when the focused result was recorded. Final local
+Cargo checks were killed in unchanged Asupersync 0.5.0 before reaching FSS
 diagnostics; [the local build record](docs/validation/2026-11-10-review-local-build.md)
 documents this boundary. No local full-build pass or release qualification is
 claimed. No production dependency, pinned toolchain, runtime, quota or

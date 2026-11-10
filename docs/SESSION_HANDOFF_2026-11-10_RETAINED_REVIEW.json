@@ -2,7 +2,7 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-10",
   "timezone": "UTC",
-  "state": "functional_checkpoints_published_full_runtime_grant_renderer_passed_lifecycle_cli_pending",
+  "state": "focused_review_functionality_verified_on_main_full_repository_qualification_open",
   "mission": {
     "goal": "Implement consequential remaining functionality after reading the comprehensive plan and beads; checkpoint meaningful changes directly to main through GitHub without PRs.",
     "initial_source_head": "904f350abab486225175ce9274da5aef9124b2cc",
@@ -34,8 +34,12 @@
       "change": "Correct review/deletion command module routing and actual test API calls; retain backend compilation/regression evidence from supplementary runner."
     },
     {
-      "commit": "this_commit",
+      "commit": "e42713f8379b39751309fd60c065bc0a7ef8af4c",
       "change": "Require current durable source-root custody before preparation and release; cover hot/cold source-root loss; use a valid HEVC positive fixture; retain full-runtime unit evidence and expose focused review validation early."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Record successful current-source execution of all 32 focused review contracts and preserve exact validation scope and remaining repository diagnostics."
     }
   ],
   "delivered": [
@@ -71,19 +75,39 @@
       "cargo_attempt_log": "docs/validation/2026-11-10-retained-review-movie-components.log"
     },
     "full_runtime": {
-      "status": "grant_and_renderer_unit_contracts_passed_lifecycle_and_cli_pending",
-      "authored_renderer_unit_cases": 7,
-      "authored_lifecycle_integration_cases": 11,
-      "authored_cli_cases": 7,
+      "status": "passed_all_32_focused_review_contracts",
       "local_observation": "Final exact pinned default-MIR serial and allocator-only checks both ended with signal 9 in unchanged Asupersync 0.5.0 before FSS diagnostics. No further local resource retries are running.",
-      "automatic_github_run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42746997725",
-      "github_observation": "At cf76bda5, all 14 selected new review unit tests passed using the complete runtime: seven grant and seven retained native renderer cases, zero failures. Whole workflow failed on module/API compile blockers corrected by fa654dea. Lifecycle and new CLI execution remain pending on the corrected source.",
+      "automatic_github_run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42751437197",
+      "github_observation": "The dedicated focused step succeeded on exact source e42713f8. The configured commands execute all 14 grant/renderer unit cases, all 11 lifecycle cases and all 7 review CLI cases, including the corrected HEVC positive interval and durable source-root guard. The complete job was still running at observation; no global pass or release qualification is claimed.",
       "backend_compilation_log": "docs/validation/2026-11-10-review-reference-build.md",
       "local_build_record": "docs/validation/2026-11-10-review-local-build.md",
       "runtime_contract_log": "docs/validation/2026-11-10-review-runtime-contracts.log",
-      "passed_grant_unit_cases": 7,
-      "passed_renderer_unit_cases": 7,
-      "focused_workflow_step": "Verify retained screened review lifecycle and private delivery; original export and CLI integration regressions remain separately configured."
+      "focused_workflow_step": "Verify retained screened review lifecycle and private delivery; original export and CLI integration regressions remain separately configured.",
+      "source_commit": "e42713f8379b39751309fd60c065bc0a7ef8af4c",
+      "executed_cases": {
+        "grant": 7,
+        "renderer": 7,
+        "lifecycle": 11,
+        "review_cli": 7,
+        "total": 32
+      },
+      "focused_step_evidence": {
+        "source_commit": "e42713f8379b39751309fd60c065bc0a7ef8af4c",
+        "run_id": 42751437197,
+        "job_id": 129618113635,
+        "job_url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42751437197/job/129618113635",
+        "job_status": "in_progress",
+        "job_conclusion": null,
+        "focused_step": {
+          "name": "Verify retained screened review lifecycle and private delivery",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-10T03:54:37Z",
+          "completed_at": "2026-11-10T03:56:44Z"
+        }
+      },
+      "detailed_log_scope": "Current-source completed-step success is captured from GitHub's run/jobs API. Its final job log was not available while the whole job remained active. The retained runtime log also includes prior completed per-test output: cf76bda5 units 14/14; fa654dea lifecycle 9/10 and fss-export 19/19 (including all 7 new CLI cases). The one prior review failure was the HEVC fixture interval now corrected."
     },
     "scoped_semantic_import_check": {
       "review_modules": 14,
@@ -93,19 +117,22 @@
     "production_dependencies_added": [],
     "pins_changed": false,
     "release_qualification": "not claimed",
-    "repository_manifest": "All18 paths in second checkpoint passed staged layered-manifest coverage. Whole-tree audit still fails on pre-existing mismatched/missing manifest entries; no global pass claimed."
+    "repository_manifest": "Each checkpoint's changed paths passed the staged layered-manifest gate. The whole-tree audit still has pre-existing mismatched or missing entries; no global pass is claimed.",
+    "other_observed_ci_boundaries": [
+      "At fa654dea, an existing ONVIF cold-created recovery test failed a journal byte-equality assertion after an additional restart-reconciliation indeterminate record.",
+      "That prior job exhausted its configured thirty-minute timeout during incremental::partitioned::multipart_continuations_keep_whole_scan_identity_and_publish_once; earlier dwell/replay groups completed. The latest complete repository job was still running at the focused-step observation."
+    ]
   },
   "remaining_material_work": [
-    "Execute the 11 lifecycle and 7 new CLI contracts on corrected source, including the source-root durability guard and valid HEVC positive fixture; resolve concrete diagnostics. Complete-runtime grant 7 and native renderer 7 contracts already pass at cf76bda5.",
     "External reviewer authentication/FLDT rights integration and payment-zone mask attestation remain absent; local principal labels are trusted-caller inputs.",
     "External delivery or transfer receipts, remote access serving, automatic expiry deletion and recall of previously delivered copies are outside this local profile.",
     "Raw grayscale 64 MiB output targets short review intervals; color, audio, native compressed output and wider codec support remain separate features.",
-    "Always-on recorder doctrine still needs the explicit D7 decision already identified in the plan; this session does not choose it."
+    "Always-on recorder doctrine still needs the explicit D7 decision already identified in the plan; this session does not choose it.",
+    "Complete repository qualification remains open; investigate the separate ONVIF recovery journal assertion and long multipart dwell contract without treating focused review success as a global pass."
   ],
-  "next_validation_commands": [
-    "cargo test --locked --offline -p fss-reference --lib review_media::",
-    "cargo test --locked --offline -p fss-reference --test review_media_contract",
-    "cargo test --locked --offline -p fss-cli --bin fss-export",
-    "python3 -B scripts/manifest_delta_gate.py --worktree"
+  "focused_reproduction_commands": [
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media::",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test review_media_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export review::"
   ]
 }

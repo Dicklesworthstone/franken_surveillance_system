@@ -29,3 +29,113 @@ test review_media::render::tests::receipt_remains_input_stable_after_an_unrelate
 test review_media::render::tests::repeated_edits_reuse_pixels_and_preserve_leading_internal_trailing_holes ... ok
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2360 filtered out; finished in 0.26s
+
+Corrected command integration checkpoint — 2026-11-10
+Source commit: fa654dea93e403337e127e0ca08957ba1aa250fd
+Automatic run: https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42748244210
+Job: 129606977396
+
+The complete reference runtime executed all fourteen grant/renderer unit tests successfully.
+The lifecycle target passed nine of ten cases. Its sole failure was the positive HEVC
+fixture selecting a required RASL picture that the native decoder intentionally omits;
+commit e42713f8 selects the fixture's valid initial IDR interval instead and preserves
+the separate negative renderer contract. The command target passed all nineteen tests,
+including all seven newly added review CLI cases. No result below is a pass for the
+new source-root durability guard added after this source commit.
+
+The overall job was cancelled by its thirty-minute timeout in a later dwell/replay
+step. An unrelated ONVIF operation recovery test also failed. No global CI pass is claimed.
+
+Command: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test original_media_export_contract --test review_media_contract
+Verbatim lifecycle output (timestamps and ANSI color removed):
+
+     Running tests/review_media_contract.rs (target/debug/build/fss-reference/fd6b9df79137fd93/out/review_media_contract-fd6b9df79137fd93)
+
+running 10 tests
+test changing_masks_invalidates_old_approval_reads_and_pending_release ... ok
+test cancellation_before_write_and_between_root_and_grant_has_exact_cold_retry ... ok
+test actual_avc_and_hevc_previews_write_nothing_and_cold_reads_are_exact ... FAILED
+test generic_authority_append_cannot_forge_review_issuance_or_revocation ... ok
+test authentic_render_bytes_do_not_validate_fabricated_source_claims_or_historical_basis ... ok
+test generic_root_publication_cannot_launder_arbitrary_bytes_into_a_review_grant ... ok
+test committed_source_deletion_denies_review_before_any_payload_is_unlinked ... ok
+test revocation_survives_cold_reopen_and_cannot_be_undone_by_exact_commit_retry ... ok
+test roots_never_replace_exact_recipient_capability_time_or_current_byte_budget ... ok
+test missing_or_corrupt_root_custody_never_claims_deletion_or_authorizes_cached_reads ... ok
+
+failures:
+
+---- actual_avc_and_hevc_previews_write_nothing_and_cold_reads_are_exact stdout ----
+Error: Render(Output(Missing))
+
+
+failures:
+    actual_avc_and_hevc_previews_write_nothing_and_cold_reads_are_exact
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+Command: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export --bin fss-review --test rtsp_event_media_export_cli
+Verbatim fss-export unit output (timestamps and ANSI color removed):
+
+     Running unittests src/bin/fss-export.rs (target/debug/build/fss-cli/68019ac86b2079b8/out/fss_export-68019ac86b2079b8)
+
+running 19 tests
+test media::file::tests::destination_inode_replacement_invalidates_exact_approval_binding ... ok
+test media::file::tests::cancellation_before_mkdir_has_no_output_and_during_write_has_no_completion ... ok
+test media::file::tests::destination_inside_deployment_and_metadata_over_budget_fail_before_output ... ok
+test media::file::tests::parent_replacement_after_mkdir_cannot_redirect_original_bytes ... ok
+test media::file::tests::final_authority_refusal_never_publishes_completion_or_adopts_partial_directory ... ok
+test media::file::tests::completed_output_has_exact_bytes_private_modes_and_idempotent_retry ... ok
+test media::file::tests::altered_complete_payload_is_never_overwritten_on_retry ... ok
+test review::runtime_tests::read_only_commands_never_bootstrap_a_missing_deployment ... ok
+test review::tests::approval_is_exact_and_actions_do_not_accept_other_operations_flags ... ok
+test review::tests::disclosure_never_infers_recipient_or_current_time_and_never_accepts_raw_override ... ok
+test media::file::tests::symlinks_and_second_media_file_are_refused ... ok
+test review::tests::publication_requires_all_source_privacy_recipient_time_and_output_pins ... ok
+test tests::approval_is_separate_and_unknown_or_duplicate_options_fail ... ok
+test review::tests::invalid_intervals_and_noncanonical_numbers_are_refused_before_any_io ... ok
+test tests::exact_revision_recipient_purpose_and_expiry_are_required ... ok
+test tests::include_all_or_raw_media_escape_hatches_do_not_exist ... ok
+test tests::show_requires_only_exact_export_root_and_read_scope ... ok
+test review::runtime_tests::cold_review_cli_publishes_delivers_exact_private_bytes_and_revokes_future_reads ... ok
+test review::runtime_tests::wrong_recipient_expiry_changed_destination_and_unsafe_paths_never_create_output ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+Verified focused current-source result — 2026-11-10
+Source commit: e42713f8379b39751309fd60c065bc0a7ef8af4c
+Job: https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42751437197/job/129618113635
+
+The isolated focused step completed successfully on this exact source. Its configured
+commands execute all 32 new review cases: grant 7, renderer 7, lifecycle 11, CLI 7.
+This includes the valid positive HEVC interval and the new missing/corrupt source-root
+contract, both hot and after restart. The original-export and general CLI regressions
+remain configured separately in the same workflow.
+
+Configured commands:
+cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media::
+cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test review_media_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export review::
+
+GitHub API observation from the exact run/jobs response:
+{
+  "source_commit": "e42713f8379b39751309fd60c065bc0a7ef8af4c",
+  "run_id": 42751437197,
+  "job_id": 129618113635,
+  "job_url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42751437197/job/129618113635",
+  "job_status": "in_progress",
+  "job_conclusion": null,
+  "focused_step": {
+    "name": "Verify retained screened review lifecycle and private delivery",
+    "status": "completed",
+    "conclusion": "success",
+    "number": 5,
+    "started_at": "2026-11-10T03:54:37Z",
+    "completed_at": "2026-11-10T03:56:44Z"
+  }
+}
+
+The complete job was still active when this witness was captured, so its final decoded
+per-test log was not yet available. This is the completed focused step's success result;
+it is not a claim that the whole workflow, repository qualification, or release passed.
+Earlier completed per-test outputs above are retained with their original source commits.
