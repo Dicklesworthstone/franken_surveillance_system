@@ -6,6 +6,8 @@
 
 #[path = "onnx_attention_execution/dfl_pyramid.rs"]
 mod dfl_pyramid;
+#[path = "onnx_attention_execution/head_softmax.rs"]
+mod head_softmax;
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]

@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "onnx_cli_tests/head_softmax.rs"]
+mod head_softmax;
+
 const RECIPE: &[u8] =
     include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe.json");
 const RECIPE_V2: &[u8] =

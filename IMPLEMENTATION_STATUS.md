@@ -4,6 +4,44 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Full-class detector probabilities before foreground selection
+
+Recipe `fss.onnx_rgb_package_recipe.v6` now provisions split-output detectors
+whose scores are mutually exclusive class logits. Native Softmax includes the
+complete original class axis before selecting explicit label slots, so omitted
+background/no-object classes retain their probability mass. Selected foreground
+scores are never renormalized. The package requires probability interpretation
+and rejects a second activation, objectness or conflicting conversion modes.
+Existing v1-v5 recipe meanings and the FMPK/report formats remain unchanged.
+
+The adapter supports explicit Rows/Channels layouts, 1-257 original classes and
+up to 256 selected classes. It preserves raw boxes/logits, auxiliary outputs,
+source bytes, parameter bits, IR version and generation. Temporary normalization
+stays internal. Complete expansion bounds, original conversion work, source-name
+reservations and cancellation remain enforced. Privacy replacement still occurs
+before image/model execution and private-footprint screening after detection.
+
+All **82 unfiltered native attention/import tests passed** on the pinned nightly,
+including eight new Softmax and eight pyramid contracts. Both production executors
+and actual canonical/Safetensors reload are exercised with independent oracles,
+all layout combinations, an omitted dominant background, 257-class normalization,
+resource boundaries and cancellation. The seven newly added v6 package/CLI
+contracts cover archive reload, one correct foreground detection, masked-pixel
+invariance, strict admission, v4 compatibility and exclusive output creation;
+their full-runtime execution remains pending.
+
+Scoped pinned formatting passes on all 13 touched Rust files. Standard Draft
+2020-12 schema validation accepts the complete v6 fixture, rejects 12 malformed
+variants and retains v4 fixture validity. Robot documentation was regenerated
+from the merged registries, including concurrent recording changes. The prior
+native runtime builds stopped at unchanged Asupersync with SIGKILL, and hosted
+jobs still lacked assigned runners at the last observation. No full runtime,
+local DSR, hardware interoperability or trained-model accuracy pass is claimed.
+
+See `docs/ONNX_PACKAGE_IMPORT.md`, `scripts/check_onnx_package.sh` and
+`docs/SESSION_HANDOFF_2026-11-10_MODEL_PROVISIONING.json`. WP-080/FSS-138/FSS-139
+remain open beyond these admitted detector conversion profiles.
+
 ## Historical recording discovery through protected native capture
 
 Operators can now run `fss-onvif recordings` to obtain a complete bounded private

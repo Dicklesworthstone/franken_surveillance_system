@@ -43,9 +43,9 @@ pub use node::GraphNode;
 pub use onnx::{
     ImportedOnnx, OnnxArtifacts, OnnxChannelOrder, OnnxDflHeadDecode, OnnxDflPyramidDecode,
     OnnxDflPyramidLayout, OnnxDflPyramidLevel, OnnxError, OnnxExportLimits, OnnxHeadLayout,
-    OnnxImageTransform, OnnxLimits, OnnxSplitHeadAssembly, assemble_onnx_split_head,
-    decode_onnx_dfl_head, decode_onnx_dfl_pyramid, export_onnx_artifacts, import_onnx,
-    onnx_importer_identity, transform_onnx_image,
+    OnnxImageTransform, OnnxLimits, OnnxSplitHeadAssembly, assemble_onnx_softmax_split_head,
+    assemble_onnx_split_head, decode_onnx_dfl_head, decode_onnx_dfl_pyramid, export_onnx_artifacts,
+    import_onnx, onnx_importer_identity, transform_onnx_image,
 };
 pub use op::{
     AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS, OPERATOR_SPECS_V2,

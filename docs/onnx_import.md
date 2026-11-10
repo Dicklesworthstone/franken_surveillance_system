@@ -1519,3 +1519,30 @@ weights, three mixed-layout levels and an independent image-coordinate/binary64
 softmax oracle. The actual production scalar and optimized executors and real
 canonical/Safetensors reload are exercised by the `onnx_attention_execution` target.
 This is bounded detector-output assembly, not a general model-family or accuracy claim.
+
+## Full-class Softmax for split detector outputs
+
+`assemble_onnx_softmax_split_head` uses the explicit `OnnxSplitHeadAssembly`
+roles, layouts and class map. Native Softmax processes the complete original
+score axis before any selected-class Slice. The adapter then delegates to the
+unchanged split-head assembler. Rows tensors normalize axis two; Channels tensors
+normalize axis one. Unselected and background slots retain their probability
+mass; selected scores are not renormalized.
+
+The final output contains unchanged box fields followed by the ordered selected
+probabilities. Original raw logits, boxes and auxiliary outputs remain intact.
+Only the new assembled output becomes public; the normalized intermediate stays
+private. The full original class tensor, all generated nodes/names and final
+output are admitted against the original cumulative limits before construction.
+Original source/control bytes and conversion work remain charged through final
+graph validation and cancellation.
+
+Eight new actual-source tests cover dominant omitted background, all four layout
+pairs, 257 original classes, extreme finite logits, ties, sparse class order,
+repeated assembly and helper collisions, exact limits and every cancellation
+checkpoint. The shared `tests/fixtures/model/onnx_softmax_split.rs` fixture has
+RGB-dependent logits, an auxiliary IR-v2 output and an independent full-axis
+softmax oracle. Both production executors and actual canonical/Safetensors
+reload run these cases. The complete unfiltered attention/import target passed
+82 tests on nightly-2026-08-31; this does not establish trained detector accuracy
+or execution of the separate package/CLI contracts.

@@ -482,6 +482,65 @@ tests check original source retention, exact score tails, privacy replacement an
 the existing detection projection. These fixtures establish numerical wiring, not
 trained-detector accuracy or arbitrary pretrained-model compatibility.
 
+## Full-class Softmax before foreground selection: recipe v6
+
+Some split-output detectors emit mutually exclusive class logits, including a
+background or no-object slot. Recipe `fss.onnx_rgb_package_recipe.v6` applies
+native Softmax across the **complete original class axis**, then selects the
+explicit `class_indices` in label order. Omitted classes still contribute to the
+denominator. Selected probabilities are never renormalized.
+
+This matters when a row strongly predicts background: removing that slot before
+normalization would redistribute its probability mass to foreground classes.
+V6 preserves the original meaning of the model's scores. V4 retains its existing
+copy/select behavior for already-normalized probabilities or independent logits.
+
+Keep all v2 preprocessing choices and use this explicit assembly profile:
+
+```json
+"head_assembly": {
+  "kind": "split-boxes-softmax-scores",
+  "boxes_output": "boxes",
+  "boxes_layout": "rows",
+  "scores_output": "logits",
+  "scores_layout": "channels",
+  "class_indices": [2, 0]
+}
+```
+
+For that example, output labels correspond to original classes two and zero;
+original class one is omitted from the output, but participates in Softmax.
+The importer does not infer which class represents background.
+
+The assembled head requires `layout: "rows"`, `class_score: "probability"`,
+and `objectness: "none"`. The probability requirement prevents applying a
+second sigmoid in the detector. Box-coordinate representation, thresholds,
+class-selection behavior and NMS stay explicit. This mode cannot be combined
+with packed DFL, pyramid DFL or raw split assembly.
+
+Source boxes and scores are declared static F32, batch-one, rank-three outputs
+with equal row counts. Boxes have four fields; scores have 1–257 original
+classes. Rows scores use `[1,N,C]` and Softmax axis two; Channels scores use
+`[1,C,N]` and Softmax axis one. The existing ordered class map selects at
+most 256 distinct source slots afterward.
+
+Both raw source outputs and any auxiliary outputs remain public and retain
+their original order and bits. The temporary normalized score tensor stays
+private; only the distinct assembled output is added. Source bytes, parameters,
+IR version, cumulative quotas and cancellation remain bound as in the existing
+importer. No new runtime operator or package wire format is introduced.
+
+The complete example and schema are
+[`recipe_v6.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v6.json)
+and [`onnx_rgb_package_recipe.v6.json`](../schemas/onnx_rgb_package_recipe.v6.json).
+Its two-row RGB-dependent fixture deliberately makes an omitted class dominate
+the first row and a selected foreground class dominate the second. At a 0.5
+threshold, correct assembly yields exactly one detection. Pure adapter tests
+exercise both production executors and real canonical/Safetensors reload,
+including all layout combinations, sparse class maps, full 257-class normalization,
+source preservation, exact resource bounds and cancellation. Package/CLI execution
+status is recorded separately in `IMPLEMENTATION_STATUS.md`.
+
 ## Admitted model profile and bounds
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.

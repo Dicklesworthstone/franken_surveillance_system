@@ -95,6 +95,7 @@ fn recipe() -> Test<OnnxPackageRecipe> {
         head_decode: None,
         head_pyramid: None,
         head_assembly: None,
+        head_softmax_assembly: None,
         head: PackageHeadSpec {
             output_port: "head".into(),
             layout: HeadLayout::Rows,
@@ -713,3 +714,6 @@ mod split_head;
 
 #[path = "onnx_package_import/dfl_pyramid.rs"]
 mod dfl_pyramid;
+
+#[path = "onnx_package_import/head_softmax.rs"]
+mod head_softmax;

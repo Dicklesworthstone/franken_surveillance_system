@@ -21,6 +21,7 @@ on:
       - 'crates/fss-cli/src/bin/fss-infer/onnx_cli_tests.rs'
       - 'crates/fss-cli/src/bin/fss-infer/onnx_cli_tests/**'
       - 'tests/fixtures/model/onnx_dfl_pyramid.rs'
+      - 'tests/fixtures/model/onnx_softmax_split.rs'
       - 'scripts/check_onnx_package.sh'
       - 'Cargo.toml'
       - 'Cargo.lock'
