@@ -4,6 +4,28 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Historical recorder RTP timestamp interpretation
+
+The packet layer now interprets the fixed ONVIF 0xABAC AVC/HEVC replay extension
+without allocation or I/O. It preserves raw NTP seconds/fraction, C/E/D/T device
+assertions and the low byte of PLAY CSeq. Foreign profiles remain distinct from
+malformed known extensions; reserved bits and unsupported extension tails refuse.
+An explicit caller-supplied NTP era produces outward-rounded integer nanosecond
+bounds in the existing 1970-9999 UTC profile. Raw-zero time remains unknown.
+These bounds describe numeric rounding only; physical clock error is unknown.
+
+The first-packet requirement and repeated-header consistency belong to the
+source-to-sample owner. The packet API does not infer an era from the requested
+range, receive clock or RTCP, authenticate the recorder, establish full CSeq
+identity, claim coverage, or alter original recording formats. The cold archive
+query is the next integration step of VIT-022 and is not claimed in this checkpoint.
+
+Validation: **18 protocol contracts authored and independently source-reviewed**,
+including real RTP CSRC/extension/padding parsing, fraction boundaries, era rollover,
+unknown time, year-9999 bounds and low-byte ambiguity. Native compilation, tests
+and pinned formatting have not run for this slice because the workspace is
+unavailable. No dependency or qualification gate has been changed.
+
 ## Full-class detector probabilities before foreground selection
 
 Recipe `fss.onnx_rgb_package_recipe.v6` now provisions split-output detectors

@@ -27,6 +27,8 @@ pub mod jpeg;
 pub mod ntp;
 /// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
 pub mod onvif_metadata;
+/// Bounded recorded-RTP time assertions with an explicitly supplied NTP era.
+pub mod onvif_replay;
 /// Bounded reassembly of the experimental UniFi BLE packet stream.
 pub mod unifi_ble;
 /// Bounded, untrusted Ubiquiti discovery datagram parsing.
@@ -79,4 +81,9 @@ pub use onvif_metadata::{
     OnvifMetadataError, OnvifMetadataFailure, OnvifMetadataLimits, OnvifMetadataOutput,
     OnvifMetadataReceiveAdmission, OnvifMetadataReceiveCancellation, OnvifMetadataReceiveError,
     OnvifMetadataReceivePoll, OnvifMetadataReceiver, OnvifMetadataSourceSpan, OnvifMetadataStatus,
+};
+
+pub use onvif_replay::{
+    MAX_RECORDED_UTC_NS, REPLAY_EXTENSION_BYTES, REPLAY_EXTENSION_PROFILE, RecordedUtcInterval,
+    ReplayExtensionError, ReplayHeaderExtension, parse_replay_extension,
 };

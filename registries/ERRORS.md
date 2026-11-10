@@ -815,3 +815,14 @@ refusal; an exact retry revalidates custody rather than reconstructing missing e
 | `ERR-ONVIF-REPLAY-HANDOFF-001` | The private selected-recording document is malformed, incomplete, inconsistent or outside its strict bounded schema | Recreate a complete protected handoff through an explicitly approved fss-onvif replay operation. Preserve unknown bounds/lifetime; native recording-range refusals retain their specific error codes. |
 | `ERR-CAPTURE-ONVIF-REPLAY-HANDOFF-001` | Protected input, exact file digest/fingerprint, source/native option isolation or destination separation is invalid | Restore the exact private file and independently supplied native source/custody configuration, then preview again. No recorder, credential or capture store is admitted through this refusal. |
 | `ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001` | The top-level replay wrapper approval or revalidated private file/native child plan does not match | Inspect a fresh wrapper preview and approve its exact top-level identity; replacing a file with identical bytes still changes its fingerprint. A nested native approval cannot authorize the source-bearing wrapper. |
+
+## Historical recorder RTP timestamps
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-RTP-REPLAY-EXTENSION-LENGTH-001` | Known ONVIF 0xABAC extension does not have the fixed three-word AVC/HEVC layout | Preserve the original datagram and report unusable historical time; combined JPEG extensions require a separately supported profile. |
+| `ERR-RTP-REPLAY-RESERVED-001` | A must-be-zero replay flag bit is set | Preserve the assertion as unusable; do not mask an unknown protocol interpretation into a valid time. |
+| `ERR-RTP-REPLAY-TIME-UNKNOWN-001` | The raw NTP timestamp is zero, meaning unknown or unsynchronized | Retain the raw assertion and flags; do not turn it into an epoch using a requested range, receive clock or era guess. |
+| `ERR-RTP-REPLAY-UTC-RANGE-001` | The explicit NTP era and outward-rounded fraction fall outside the admitted 1970-9999 UTC profile | Review the external era basis; do not clamp the value or erase numeric uncertainty. |
+| `ERR-RTP-REPLAY-CSEQ-INVALID-001` | The caller supplied a zero full PLAY CSeq | Supply the actual successful PLAY coordinate from an independently verified receipt. |
+| `ERR-RTP-REPLAY-CSEQ-MISMATCH-001` | The recorder extension differs from the successful PLAY CSeq's low byte | Preserve an uncorrelated assertion; never substitute another receipt. A matching low byte still does not authenticate a full PLAY identity. |
