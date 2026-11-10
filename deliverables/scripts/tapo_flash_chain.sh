@@ -79,6 +79,10 @@ CAPS=""
 if [ "$DRY" = 0 ]; then
   CAPS=$(talk 4 'for x in flash_erase mtd_debug fw_setenv fw_printenv md5sum tftp dd nc; do command -v $x >/dev/null && echo "have $x"; done')
   echo "$CAPS" | tee -a "$LOG"
+  # which sensor this unit actually has decides whether the image can drive it at all
+  SENSOR=$(talk 4 'for p in /etc/ko/sensor_name /sp_rom/etc/ko/sensor_name; do [ -r $p ] && { cat $p; break; }; done' | tr -d '\r' | head -1)
+  log "sensor: ${SENSOR:-unknown}"
+  echo "sensor=${SENSOR:-unknown}" | tee -a "$LOG"
 fi
 
 # ---- 1. dumps ------------------------------------------------------------------------------
