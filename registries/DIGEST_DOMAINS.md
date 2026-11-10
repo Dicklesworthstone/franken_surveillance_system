@@ -867,6 +867,13 @@ from the whole-file JSON pin.
 | `SCHEMA-DOMAIN-PACKAGE-EVALUATION-PIPELINE-001` | `fss.package_evaluation_pipeline.v1` | Native tracker/extraction comparison generation | derived generation identity | Binds the fixed extraction policy, actual package/tracker/assignment/observation implementation closure, exact tracking recipe and retained detector score floor. Curves remain conditional on that floor and NMS; discarded detections are not reconstructed. |
 | `SCHEMA-DOMAIN-RETAINED-PACKAGE-EVALUATION-001` | `fss.retained_package_evaluation.v1` | Completed source-verified evaluation snapshot | derived report; no threshold, calibration, event or effect publication | Binds complete projection digest, unchanged canonical evaluator report digest, actual original-source bytes charged and one nonrenewing source allowance shared across initial construction and final revalidation. Existing deployment opening may recover local publication state but does not initialize a deployment or reclassify pending external effects. |
 
+## UniFi restart-boundary metadata
+
+| ID | Domain | Scope | Authority | Invariant rule |
+|---|---|---|---|---|
+| `SCHEMA-DOMAIN-UNIFI-RESTART-BOUNDARY-001` | `fss.unifi_restart_boundary.v1` | UniFi direct restart boundary | authority/evidence; no continuity or camera identity proof | Canonical metadata binds the caller-supplied camera claim, old and new connection/generation claims, separately retained source and A/V root and retention identities, and explicit false markers for known physical capture bounds and established continuity. Its SHA-256 is the metadata child of a ledgered `unifi_restart_boundary_v1` root. |
+| `SCHEMA-DOMAIN-UNIFI-AV-VIDEO-ONLY-EVIDENCE-001` | `fss.unifi-direct.flv-av-video-only-evidence.v1` | UniFi A/V initialization with a video-only fragment | source mapping; no audio coverage or camera identity proof | Binds the exact nested video graph, AAC configuration origin and bytes, two-track initialization, byte-identical video-only derivative, explicit no-emitted-audio tag, and false audio-coverage marker. Its separate manifest kind uses dedicated unknown-time anchored publication and checked recovery; it is not compatible with the audio-bearing A/V reader. |
+
 ## Consolidated registration tombstones
 
 | Retired ID | Status | Canonical registration |
