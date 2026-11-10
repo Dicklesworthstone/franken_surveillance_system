@@ -66,6 +66,8 @@ pub mod native_clock;
 pub mod negative_evidence_cmd;
 /// Pure native ONVIF handoff selection and unchanged outer capture approval.
 pub mod onvif_plan;
+/// Protected historical ONVIF selection and separately approved native replay handoff.
+pub mod onvif_replay_plan;
 /// Exact retained ONVIF analysis through the canonical read-only query operation.
 pub mod onvif_query_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.

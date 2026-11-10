@@ -9,7 +9,7 @@ use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_reference::rtsp::client::ClientConfig;
 use fss_reference::rtsp::client::replay::{MAX_REPLAY_DURATION_SECONDS, ReplayWindow};
 use fss_reference::rtsp::recording::RecordingScope;
-use fss_reference::rtsp::recording_replay::{ReplayCodec, ReplayRequest};
+use fss_reference::rtsp::recording_replay::{OnvifReplaySource, ReplayCodec, ReplayRequest};
 use fss_reference::rtsp::tcp::{SsrcPolicy, TcpBinding};
 
 pub(super) const POLICY: &str = "recorder-replay:avc:explicit-uri:closed-clock-range:require-onvif-replay:rate-control-no:durable-request-acknowledgement:received-prefix-only:v1";
@@ -29,6 +29,7 @@ pub(crate) fn reject_wrapped(args: &[OsString]) -> Result<(), &'static str> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn parse(
     values: &BTreeMap<&str, &str>,
     binding: &TcpBinding,
@@ -37,9 +38,10 @@ pub(super) fn parse(
     payload_type: u8,
     hevc: bool,
     base_decode_clock: ContentDigest,
+    onvif_source: Option<OnvifReplaySource>,
 ) -> Result<Option<ReplayRequest>, &'static str> {
     let (start, end) = match (values.get("--replay-start"), values.get("--replay-end")) {
-        (None, None) => return Ok(None),
+        (None, None) if onvif_source.is_none() => return Ok(None),
         (Some(start), Some(end)) => (*start, *end),
         _ => return Err("recorder replay requires both --replay-start and --replay-end"),
     };
@@ -71,13 +73,15 @@ pub(super) fn parse(
     } else {
         ReplayRequest::new(scope.clone(), route, window, base_decode_clock)
     };
-    request
-        .map(Some)
+    request.and_then(|request| match onvif_source {
+        Some(source) => request.with_onvif_source(source),
+        None => Ok(request),
+    }).map(Some)
         .map_err(|_| "recorder replay request refused")
 }
 
 pub(super) fn preview(request: &ReplayRequest) -> String {
-    object(&[
+    let mut fields = vec![
         ("source", string("recorder_replay")),
         ("codec", string(request.codec().as_str())),
         ("request_identity", string(&request.digest().to_text())),
@@ -91,5 +95,9 @@ pub(super) fn preview(request: &ReplayRequest) -> String {
         ("complete_interval_retrieval", "false".into()),
         ("upstream_retention_known", "false".into()),
         ("automatic_live_fallback", "false".into()),
-    ])
+    ];
+    if let Some(source) = request.onvif_source() {
+        fields.push(("onvif_source", fss_cli::onvif_replay_plan::source_json(source)));
+    }
+    object(&fields)
 }

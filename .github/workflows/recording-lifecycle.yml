@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'crates/fss-reference/src/onvif/**'
+      - 'crates/fss-reference/tests/onvif_recording_contract.rs'
+      - 'crates/fss-reference/tests/onvif_recording_contract/**'
+      - 'crates/fss-core/tests/onvif_recording_wire_contract.rs'
+      - 'crates/fss-reference/tests/recording_replay_contract/**'
+      - 'crates/fss-reference/tests/rtsp_replay_contract/**'
       - 'crates/fss-reference/src/rtsp/recording*.rs'
       - 'crates/fss-reference/src/rtsp/recording*/**'
       - 'crates/fss-reference/src/rtsp/live_hevc_archive.rs'
@@ -39,7 +45,7 @@ concurrency:
 
 jobs:
   recording-lifecycle:
-    name: pinned replay and review-expiry contracts
+    name: pinned recording discovery, replay and review-expiry contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -52,5 +58,5 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Verify recorder replay and review expiry
+      - name: Verify recording discovery, replay and review expiry
         run: bash scripts/check_recording_lifecycle.sh all

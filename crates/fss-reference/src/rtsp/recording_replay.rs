@@ -57,6 +57,85 @@ pub const HEVC_REPLAY_RECEIPT_DOMAIN: &str = "fss.hevc_recording_replay_receipt.
 /// Immutable HEVC replay routing namespace.
 pub const HEVC_REPLAY_SLOT_DOMAIN: &str = "fss.hevc_recording_replay_slot.v1";
 
+/// Protected ONVIF recording selection and its actual private-file observation.
+pub const ONVIF_REPLAY_SOURCE_DOMAIN: &str = "fss.onvif_replay_source_binding.v1";
+/// Distinct request identity for an ONVIF-selected historical source and explicit codec.
+pub const ONVIF_REPLAY_REQUEST_DOMAIN: &str = "fss.onvif_rtsp_replay_request.v1";
+/// AVC replay metadata with protected recording-discovery provenance.
+pub const ONVIF_AVC_REPLAY_RECEIPT_DOMAIN: &str = "fss.onvif_avc_recording_replay_receipt.v1";
+/// HEVC replay metadata with protected recording-discovery provenance.
+pub const ONVIF_HEVC_REPLAY_RECEIPT_DOMAIN: &str = "fss.onvif_hevc_recording_replay_receipt.v1";
+
+/// Immutable, credential-free provenance of one protected ONVIF replay handoff.
+/// Digests bind exact observations; these pins grant no network or recording authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OnvifReplaySource {
+    onboarding_plan: ContentDigest,
+    handoff_digest: ContentDigest,
+    file_identity: ContentDigest,
+    services_digest: ContentDigest,
+    services_observation_digest: ContentDigest,
+    recording_token_digest: ContentDigest,
+    information_digest: ContentDigest,
+    uri_digest: ContentDigest,
+    uri_observation_digest: ContentDigest,
+}
+
+impl OnvifReplaySource {
+    /// Validate all pins. URI and recording token text remain in protected input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        onboarding_plan: ContentDigest,
+        handoff_digest: ContentDigest,
+        file_identity: ContentDigest,
+        services_digest: ContentDigest,
+        services_observation_digest: ContentDigest,
+        recording_token_digest: ContentDigest,
+        information_digest: ContentDigest,
+        uri_digest: ContentDigest,
+        uri_observation_digest: ContentDigest,
+    ) -> Result<Self> {
+        if [onboarding_plan, handoff_digest, file_identity, services_digest,
+            services_observation_digest, recording_token_digest, information_digest,
+            uri_digest, uri_observation_digest].into_iter().any(|pin| !valid_digest(pin))
+        { return Err(ReplayReceiptError::Scope); }
+        Ok(Self { onboarding_plan, handoff_digest, file_identity, services_digest,
+            services_observation_digest, recording_token_digest, information_digest,
+            uri_digest, uri_observation_digest })
+    }
+    /// Exact independently approved ONVIF selection operation.
+    #[must_use] pub const fn onboarding_plan(&self) -> ContentDigest { self.onboarding_plan }
+    /// Complete protected handoff bytes, including original information and URI spelling.
+    #[must_use] pub const fn handoff_digest(&self) -> ContentDigest { self.handoff_digest }
+    /// Actual private inode/permission/owner/length/time fingerprint.
+    #[must_use] pub const fn file_identity(&self) -> ContentDigest { self.file_identity }
+    /// Canonical exact selected service advertisements.
+    #[must_use] pub const fn services_digest(&self) -> ContentDigest { self.services_digest }
+    /// Complete GetServices SOAP body, including unprojected extensions.
+    #[must_use] pub const fn services_observation_digest(&self) -> ContentDigest { self.services_observation_digest }
+    /// SHA-256 of the exact explicitly selected recording token.
+    #[must_use] pub const fn recording_token_digest(&self) -> ContentDigest { self.recording_token_digest }
+    /// Canonical complete recording-information observation, including unknown bounds.
+    #[must_use] pub const fn information_digest(&self) -> ContentDigest { self.information_digest }
+    /// SHA-256 of the exact credential-free replay URI, without query normalization.
+    #[must_use] pub const fn uri_digest(&self) -> ContentDigest { self.uri_digest }
+    /// Complete GetReplayUri SOAP body digest.
+    #[must_use] pub const fn uri_observation_digest(&self) -> ContentDigest { self.uri_observation_digest }
+    /// Canonical provenance binding; it is not an approval.
+    pub fn digest(&self) -> Result<ContentDigest> {
+        let mut out = CanonicalEncoder::new();
+        self.encode(&mut out);
+        digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)
+    }
+    fn encode(&self, out: &mut CanonicalEncoder) {
+        out.text(ONVIF_REPLAY_SOURCE_DOMAIN);
+        for pin in [self.onboarding_plan, self.handoff_digest, self.file_identity,
+            self.services_digest, self.services_observation_digest, self.recording_token_digest,
+            self.information_digest, self.uri_digest, self.uri_observation_digest]
+        { out.digest(pin); }
+    }
+}
+
 /// Closed caller-selected replay codec. Stored bytes never select a verifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayCodec {
@@ -159,6 +238,7 @@ pub struct ReplayRequest {
     route: ContentDigest,
     window: ReplayWindow,
     base_decode_clock: ContentDigest,
+    onvif_source: Option<OnvifReplaySource>,
     digest: ContentDigest,
     decode_clock: ContentDigest,
 }
@@ -194,17 +274,42 @@ impl ReplayRequest {
         window: ReplayWindow,
         base_decode_clock: ContentDigest,
     ) -> Result<Self> {
+        Self::for_source(codec, scope, route, window, base_decode_clock, None)
+    }
+
+    /// Bind one protected recording selection before constructing any recording namespace.
+    /// A source-bearing request cannot be rebound to another discovery observation.
+    pub fn with_onvif_source(self, source: OnvifReplaySource) -> Result<Self> {
+        if self.onvif_source.is_some() { return Err(ReplayReceiptError::Scope); }
+        Self::for_source(self.codec, self.scope, self.route, self.window,
+            self.base_decode_clock, Some(source))
+    }
+
+    fn for_source(
+        codec: ReplayCodec,
+        scope: RecordingScope,
+        route: ContentDigest,
+        window: ReplayWindow,
+        base_decode_clock: ContentDigest,
+        onvif_source: Option<OnvifReplaySource>,
+    ) -> Result<Self> {
         validate_recording_scope(&scope)?;
         if !valid_digest(route) || !valid_digest(base_decode_clock) {
             return Err(ReplayReceiptError::Scope);
         }
         ReplayWindow::new(window.start(), window.end())?;
         let mut out = CanonicalEncoder::new();
-        out.text(codec.request_domain());
+        if onvif_source.is_some() {
+            out.text(ONVIF_REPLAY_REQUEST_DOMAIN);
+            out.text(codec.as_str());
+        } else {
+            out.text(codec.request_domain());
+        }
         wire::encode_recording_scope(&mut out, &scope);
         out.digest(route);
         out.text(&window.to_string());
         out.digest(base_decode_clock);
+        if let Some(source) = &onvif_source { source.encode(&mut out); }
         let digest = digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)?;
         let mut out = CanonicalEncoder::new();
         out.text(codec.clock_domain());
@@ -213,12 +318,23 @@ impl ReplayRequest {
         let decode_clock = self::digest(
             &out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?,
         )?;
-        Ok(Self { codec, scope, route, window, base_decode_clock, digest, decode_clock })
+        Ok(Self { codec, scope, route, window, base_decode_clock, onvif_source, digest, decode_clock })
     }
 
     /// Explicit caller-selected native recording family.
     #[must_use]
     pub const fn codec(&self) -> ReplayCodec { self.codec }
+    /// Protected recording-discovery observation, absent for the unchanged direct replay path.
+    #[must_use]
+    pub const fn onvif_source(&self) -> Option<&OnvifReplaySource> { self.onvif_source.as_ref() }
+    fn receipt_domain(&self) -> &'static str {
+        if self.onvif_source.is_some() {
+            match self.codec {
+                ReplayCodec::Avc => ONVIF_AVC_REPLAY_RECEIPT_DOMAIN,
+                ReplayCodec::Hevc => ONVIF_HEVC_REPLAY_RECEIPT_DOMAIN,
+            }
+        } else { self.codec.receipt_domain() }
+    }
     /// Stable exact request identity, independent of approval and publication outcomes.
     #[must_use]
     pub const fn digest(&self) -> ContentDigest { self.digest }

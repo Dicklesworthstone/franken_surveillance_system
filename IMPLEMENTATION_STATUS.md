@@ -4,36 +4,44 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Native historical recording discovery
+## Historical recording discovery through protected native capture
 
-The bounded ONVIF recording client now enumerates existing recording configurations
-and resolves one explicitly selected recording/time interval to a replay URI.
-GetServices selects exact Recording/Search/Replay namespaces; GetRecordingInformation
-must match the selected token, contain one video track and satisfy every supplied
-recording/video bound before GetReplayUri can run. Unknown extrema remain unknown;
-no clipping, live fallback, retention-coverage or calibrated historical-time claim occurs.
+Operators can now run `fss-onvif recordings` to obtain a complete bounded private
+recording inventory, `fss-onvif replay` to select one exact recording/codec/interval
+and obtain its scoped URI, then `fss-capture-rtsp from-onvif-replay` to acquire original
+AVC or HEVC media through the existing native archive owner. This closes the manual
+recorder-URI gap while preserving separate discovery and capture approvals.
 
-The native owner reuses the existing scoped HTTP transport, Digest/UsernameToken
-authentication, finite deadline/work budgets and cancellation. New read-only SOAP
-actions are explicitly admitted by the transport's closed allowlist. Service endpoints
-stay inside the approved HTTP origin/subtree; playback uses an independent RTSP pin.
-Complete private information and service observations have distinct canonical domains
-including original SOAP-body identities.
+Selection validates exact recording token, one video track, state and every supplied
+recording/video bound before acquiring a URI. Unknown extrema and URI lifetime remain
+explicit; there is no interval clipping, live fallback, continuous-retention or
+calibrated historical-time claim. The existing HTTP, Digest/UsernameToken, scoped RTSP,
+finite work/deadline and cancellation owners remain in use.
 
-Added contracts comprise 14 shared production-wire cases and 10 native HTTP loopbacks;
-the core target imports the actual wire module. They cover exact namespaces/tokens,
-complete bounds, canonical reopen, auth retries, private diagnostics, foreign destinations,
-cancellation, deadlines and refusal before URI acquisition. Final GitHub snapshots have
-independent source review but have not compiled or executed during the executor outage.
-The exact prior recorder/review run is retained separately; its HEVC guard failure is
-repaired by the existing main-branch correction below. The stale-event deletion fixture
-now prepares its alert before advancing unrelated ingest authority, preserving the
-production guard.
+The protected handoff retains complete canonical information, services and response
+identities. Native request construction binds nine observation/file pins before deriving
+the recording namespace. Exact outer capture approval survives in the durable companion
+receipt. Input replacement, relaxed permissions, unapproved overrides and nested-only
+approval refuse. Independently pinned cold inspection verifies source provenance and
+every original window after the private handoff is removed. Direct AVC/HEVC canonical
+bytes and original recording formats remain unchanged.
 
-The native API is the first checkpoint. Operator recording inventory, protected handoff
-production and receipt-bound capture integration follow separately. VIT-022 remains
-open; local DSR and hardware recorder interoperability are unqualified. See
-[historical recording discovery](docs/ONVIF_RECORDING_DISCOVERY.md).
+The two feature checkpoints add 40 distinct contracts: 14 shared production-wire,
+10 native HTTP, 4 operator-plan/signing, 5 actual producer-process, 3 source-receipt and
+4 protected capture-process cases. Core tests exercise the same 14 production-wire
+contracts. The focused repository-owned script includes the new targets and existing
+ONVIF/direct-replay regressions; no gate, dependency, runtime or toolchain pin changed.
+
+Final GitHub snapshots have independent source/API/authority review. They have not been
+compiled, formatted or executed after the executor became unavailable. Earlier local
+production modules parsed with the pinned formatter, but that is not verification of
+the final reconstructed snapshot. The exact preceding 163-pass/10-failure native run
+and its separately committed corrections remain recorded without claiming a later pass.
+Native execution, local DSR, hardware interoperability, remote search sessions, multi-video
+selection and historical per-frame UTC indexing remain open. VIT-022 is not closed.
+
+See [operator commands and semantics](docs/ONVIF_RECORDING_DISCOVERY.md) and the
+[continuation record](docs/SESSION_HANDOFF_2026-11-10_RECORDING_DISCOVERY.json).
 
 ## Multi-scale ONNX detector provisioning
 

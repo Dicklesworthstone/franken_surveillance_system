@@ -353,6 +353,9 @@ fn run(options: Options) -> Result<String> {
             scope.time_scale,
         ),
     )?;
+    if let Some(source) = request.onvif_source() {
+        append(&mut report, &format!("\"onvif_source\":{},", fss_cli::onvif_replay_plan::source_json(source)))?;
+    }
     append(
         &mut report,
         &format!(

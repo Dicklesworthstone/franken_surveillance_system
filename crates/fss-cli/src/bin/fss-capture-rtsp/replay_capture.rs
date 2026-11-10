@@ -114,7 +114,7 @@ impl CaptureReplay {
     }
 
     pub(super) fn report(&self) -> String {
-        object(&[
+        let mut fields = vec![
             ("source", string("recorder_replay")),
             ("codec", string(self.request.codec().as_str())),
             ("request_identity", string(&self.request.digest().to_text())),
@@ -146,7 +146,11 @@ impl CaptureReplay {
             ("complete_interval_retrieval", "false".into()),
             ("upstream_retention_known", "false".into()),
             ("automatic_live_fallback", "false".into()),
-        ])
+        ];
+        if let Some(source) = self.request.onvif_source() {
+            fields.push(("onvif_source", fss_cli::onvif_replay_plan::source_json(source)));
+        }
+        object(&fields)
     }
 
     pub(super) fn publish(
@@ -167,12 +171,14 @@ impl CaptureReplay {
         let result = (|| {
             owner.begin_drain()?;
             owner.storage_check()?;
-            // Supervised single capture admits the complete outer approval before
-            // delegating its nested capture digest. Retain the caller's exact
-            // approval, including the watchdog policy, in the durable companion.
-            let approval = match owner.supervision {
-                Some(supervision) => supervision.approval(),
-                None => options.digest().map_err(|_| Failure::Configuration)?,
+            // Preserve the exact admitted outer approval, including the protected input or
+            // watchdog policy. The delegated native digest cannot substitute for that grant.
+            let approval = match options.protected_replay_approval() {
+                Some(outer) => outer,
+                None => match owner.supervision {
+                    Some(supervision) => supervision.approval(),
+                    None => options.digest().map_err(|_| Failure::Configuration)?,
+                },
             };
             let receipt = ReplayReceipt::prepare(
                 self.request.clone(),

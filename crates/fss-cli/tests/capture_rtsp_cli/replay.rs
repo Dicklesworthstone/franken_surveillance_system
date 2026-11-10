@@ -14,6 +14,10 @@ use fss_reference::rtsp::recording_replay::{
 };
 use std::collections::BTreeMap;
 
+#[cfg(target_os = "linux")]
+#[path = "replay/onvif.rs"]
+mod onvif;
+
 const REPLAY_START: &str = "20261101T120000Z";
 const REPLAY_END: &str = "20261101T120100Z";
 const REQUESTED_RANGE: &str = "clock=20261101T120000Z-20261101T120100Z";
@@ -377,7 +381,7 @@ fn verify_saved_receipt(
     // approval is admitted. Keep that approval while reading native scope/bounds.
     let preview = preview
         .object()
-        .and_then(|fields| fields.get("capture"))
+        .and_then(|fields| fields.get("capture").or_else(|| fields.get("native_capture")))
         .unwrap_or(preview);
     let accepted = detail(rows, "replay_accepted")?;
     assert_eq!(

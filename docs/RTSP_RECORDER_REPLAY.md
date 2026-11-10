@@ -5,9 +5,11 @@ footage from an explicitly supplied recorder replay URI. The request and the
 recorder's acknowledgement are retained in a separate durable receipt linked to
 the exact original recording windows.
 
-This advances VIT-022 (`fss-vit022-recorder-retrieval-5js5o`). Recording search,
-ONVIF GetReplayUri, vendor URI discovery, upstream retention inventory and
-historical per-frame timestamp indexing remain outside this profile.
+This advances VIT-022 (`fss-vit022-recorder-retrieval-5js5o`). The separate
+[ONVIF recording discovery workflow](ONVIF_RECORDING_DISCOVERY.md) now obtains a
+scoped GetReplayUri from an exact recording selection and supplies a protected
+`from-onvif-replay` handoff. Remote search sessions, vendor-specific URI discovery,
+proof of upstream media retention and historical per-frame timestamp indexing remain open.
 
 ## Capture an explicitly selected interval
 
@@ -65,7 +67,9 @@ media samples. The ordinary HEVC source-protection journal, bounded storage
 pause and independent final drain remain in use.
 
 Replay is refused in JPEG, automatic-SSRC, reconnect, retain-source,
-sentinel, onboarding-wrapper and offline recovery modes. There is no live
+sentinel, live onboarding-wrapper and offline recovery modes. The explicit
+`from-onvif-replay` wrapper is the separate recording-discovery path and retains
+its own source binding and outer approval. There is no live
 fallback, alternate URI, widened request, reverse playback or implicit seek.
 The existing single-attempt progress watchdog can still stop a stalled replay.
 When that watchdog is selected, the durable receipt retains the admitted outer
@@ -234,6 +238,13 @@ during metadata compilation at approximately 1.98 GiB peak resident memory, befo
 FSS type checking. The earlier 350-test AVC result below does not establish that
 the new HEVC tests passed. No dependency, feature or qualification gate is changed
 to avoid that limitation.
+
+The later focused predecessor run executed the native receipt and CLI targets,
+passing 163 tests and exposing 10 failures across HEVC admission and fixtures.
+The HEVC state guard was corrected on main in `2f402c2`, hold fixtures in `48d2bc7`,
+and unrelated-import fixture ordering in `9b21280`. These corrections and the new
+ONVIF-bound path still require exact-head native execution; see the
+[retained results](validation/2026-11-10-recorder-native-results.json).
 
 ### Previously executed AVC baseline
 

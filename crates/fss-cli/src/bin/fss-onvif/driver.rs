@@ -78,6 +78,9 @@ fn username_token_request_matches(plan: &Plan, route: &HttpRoute, request: &Soap
     if !plan.uses_username_token() {
         return false;
     }
+    if let Some(recording) = &plan.recording {
+        return recording.username_request_matches(&plan.device_path, route, request);
+    }
     let (discovery, profiles) = match plan.media_version {
         MediaVersion::Media1 => (
             wire::get_capabilities_request(),
@@ -347,6 +350,15 @@ pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
             credentials: credentials.as_ref(),
             entropy: RefCell::new(entropy),
         };
+        if let Some(recording) = &plan.recording {
+            let observation = super::recorder::observe(recording, &config, &owner, approval)?;
+            let file_digest = ContentDigest::sha256(observation.bytes.as_bytes());
+            if let Some(lease) = &credentials {
+                lease.revalidate(&check).map_err(|error| secret_error(error).code())?;
+            }
+            output.write(observation.bytes.as_bytes(), &|| scope.output())?;
+            return Ok(observation.result(approval, file_digest));
+        }
         let report =
             client::run(&config, plan.profile.as_deref(), &owner).map_err(|error| error.code())?;
         let bytes = match &report.selection {

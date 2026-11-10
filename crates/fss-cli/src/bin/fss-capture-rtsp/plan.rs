@@ -25,7 +25,7 @@ use fss_reference::rtsp::recording_archive::{
     checkpoint::{ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES},
 };
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::rtsp::recording_replay::ReplayRequest;
+use fss_reference::rtsp::recording_replay::{OnvifReplaySource, ReplayRequest};
 use fss_reference::rtsp::recording_collector::{CollectorLimits, RecordingCollector};
 use fss_reference::rtsp::tcp::{SsrcPolicy, TcpBinding, TcpLimits, TcpSecurityPolicy};
 
@@ -160,6 +160,7 @@ pub(super) struct Options {
     pub(super) pins: PathBuf,
     pub(super) principal: String,
     pub(super) approve: Option<ContentDigest>,
+    protected_replay_approval: Option<ContentDigest>,
     pub(super) stop_after_pictures: u64,
     pub(super) frame_duration: u32,
     pub(super) max_reorder_pictures: u8,
@@ -302,6 +303,15 @@ fn authority(text: &str) -> Result<&str, &'static str> {
 
 impl Options {
     pub(super) fn parse(args: &[OsString]) -> Result<Self, &'static str> {
+        Self::parse_with_replay_source(args, None)
+    }
+
+    /// Inject protected source provenance before deriving the replay archive namespace.
+    /// This argument is never populated from a public capture CLI flag.
+    pub(super) fn parse_with_replay_source(
+        args: &[OsString],
+        onvif_source: Option<OnvifReplaySource>,
+    ) -> Result<Self, &'static str> {
         if args.len() > MAX_ARGUMENTS
             || !args.len().is_multiple_of(2)
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
@@ -594,6 +604,7 @@ impl Options {
             payload_type,
             is_hevc,
             base_decode_clock,
+            onvif_source,
         )?;
         // Historical request identity is part of archive media-clock provenance.
         // It never replaces the authority anchor or local packet receive clock.
@@ -712,6 +723,7 @@ impl Options {
             live_preview: PreviewPlan::parse(&values)?,
             node_clock: ClockPlan::parse(&values, timeout_ns, max_windows)?,
             replay,
+            protected_replay_approval: None,
             approve: values
                 .get("--approve")
                 .map(|text| digest(text))
@@ -719,6 +731,21 @@ impl Options {
         };
         options.digest()?;
         Ok(options)
+    }
+
+    /// Seal the checked outer handoff approval while delegating its exact native child plan.
+    pub(super) fn approve_protected_replay(&mut self, outer: ContentDigest) -> Result<(), &'static str> {
+        if self.approve.is_some() || self.protected_replay_approval.is_some()
+            || self.replay.as_ref().is_none_or(|request| request.onvif_source().is_none())
+            || outer.algorithm() != DigestAlgorithm::Sha256 || outer.is_laboratory() || outer.bytes() == [0; 32]
+        { return Err("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001"); }
+        self.approve = Some(self.digest()?);
+        self.protected_replay_approval = Some(outer);
+        Ok(())
+    }
+
+    pub(super) fn protected_replay_approval(&self) -> Option<ContentDigest> {
+        self.protected_replay_approval
     }
 
     pub(super) fn live_config(&self) -> LiveAvcConfig {

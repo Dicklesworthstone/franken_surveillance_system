@@ -11,6 +11,9 @@ mod reconnect;
 #[path = "onvif/wsse.rs"]
 mod wsse;
 
+#[path = "onvif/recording.rs"]
+mod recording;
+
 const PROFILE: &str = "ONVIF_PRIVATE_PROFILE_CANARY";
 const QUERY: &str = "ONVIF_PRIVATE_URI_CANARY";
 const USER: &str = "ONVIF_SYNTHETIC_USER_CANARY";

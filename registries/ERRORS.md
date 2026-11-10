@@ -807,3 +807,11 @@ refusal; an exact retry revalidates custody rather than reconstructing missing e
 | `ERR-ONVIF-RECORDING-BOUNDS-001` | Advertised extrema are reversed, invalid or contradict recording-wide bounds | Reobserve or investigate the recorder. Do not normalize contradictions into a successful coverage claim. |
 | `ERR-ONVIF-RECORDING-STATE-001` | The recorder explicitly advertises Removing or Removed for the selected recording | Reinspect availability; this remote assertion neither deletes local originals nor proves historical absence. |
 | `ERR-ONVIF-RECORDING-REQUEST-001` | Caller UTC coordinates are invalid for bounded forward replay | Supply a validated ReplayWindow with a nonempty forward interval of at most seven days; no network request is authorized by a malformed interval. |
+
+## Protected ONVIF recorder replay input
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-ONVIF-REPLAY-HANDOFF-001` | The private selected-recording document is malformed, incomplete, inconsistent or outside its strict bounded schema | Recreate a complete protected handoff through an explicitly approved fss-onvif replay operation. Preserve unknown bounds/lifetime; native recording-range refusals retain their specific error codes. |
+| `ERR-CAPTURE-ONVIF-REPLAY-HANDOFF-001` | Protected input, exact file digest/fingerprint, source/native option isolation or destination separation is invalid | Restore the exact private file and independently supplied native source/custody configuration, then preview again. No recorder, credential or capture store is admitted through this refusal. |
+| `ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001` | The top-level replay wrapper approval or revalidated private file/native child plan does not match | Inspect a fresh wrapper preview and approve its exact top-level identity; replacing a file with identical bytes still changes its fingerprint. A nested native approval cannot authorize the source-bearing wrapper. |

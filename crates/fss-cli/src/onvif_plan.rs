@@ -300,7 +300,7 @@ impl OnvifSourceSpec {
 /// Recover only an explicitly hash-pinned subtree of the protected presentation.
 /// Candidate count is bounded by the native 2048-byte URI ceiling. Exact percent
 /// spelling and slashes are preserved; no decoding, fallback or default root exists.
-fn resolve_control_root(presentation: &str, expected: &str) -> Result<String, &'static str> {
+pub(crate) fn resolve_control_root(presentation: &str, expected: &str) -> Result<String, &'static str> {
     let digest = ContentDigest::parse(expected).map_err(|_| ERR_ONVIF_HANDOFF)?;
     if digest.algorithm() != DigestAlgorithm::Sha256
         || digest.bytes() == [0; 32]

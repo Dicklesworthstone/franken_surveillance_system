@@ -4,6 +4,9 @@
 mod recording_support;
 mod hevc_recording_support;
 
+#[path = "recording_replay_contract/onvif.rs"]
+mod onvif;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
