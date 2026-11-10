@@ -39,6 +39,21 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 | **Yi .20** | SSID injection payload ready, listener alive 3+ days on :4444. Camera must scan during setup and hear the payload SSID | **macOS Internet Sharing** (System Settings → Sharing) with the payload SSID, or a standalone travel router broadcasting the payload SSID | Operator (the one disruptive step) |
 | **AOSU ×4** | `ILLEGAL_CLIENT_ID` — now proven **not** IP-related: a fresh Contabo egress still refuses, so the burn is on the app_id/cert. Unit located at `.126` (0x23 broadcast) | **New Tuya app registration** — unavoidable; a fresh IoT account yields app_id/secret → `local_key` → LAN OTA | Operator (web browser) |
 
+## Power-cycle list (one trip, four units)
+
+Every armed lane is now waiting on a dead process, not on code:
+
+| unit | state | what a cycle revives |
+|---|---|---|
+| `.39` Wyze | iCamera wedged | RTSP + the component/OTA executor |
+| `.51` Wyze | iCamera wedged | same |
+| `.243` C460 | `main` dead, 443 is only a kernel backlog | the DS, so the wake/login/fire lane runs |
+| `.76` C660 | same, dead for hours | same |
+
+A cycle is a replug, nothing else. Everything they need is already armed and will fire
+unattended: the import capsule for the Wyze pair, wake+login+fire for the Tapos, then the
+dump/verify/write chain with the pinned images.
+
 ## The ONE Action That Changes Everything
 
 **Power-cycle .39 and .51 again.** Two earlier power-cycles fired into the void; both
