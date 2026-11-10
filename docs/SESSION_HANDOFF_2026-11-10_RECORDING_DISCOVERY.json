@@ -1,0 +1,135 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-10",
+  "timezone": "UTC",
+  "state": "implemented_on_main_native_verification_pending",
+  "mission": {
+    "goal": "Implement the highest-value remaining recording functionality from the comprehensive plan and beads, with meaningful direct-main GitHub commits and no PRs.",
+    "initial_source_head": "0c185015b044960e64490b4a5cd8eefa7dc17519",
+    "bead_scope": [
+      "VIT-022 / fss-vit022-recorder-retrieval-5js5o"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "normative_plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-10_RECORDING_LIFECYCLE.json",
+    "discovery_contract": "docs/ONVIF_RECORDING_DISCOVERY.md",
+    "replay_contract": "docs/RTSP_RECORDER_REPLAY.md",
+    "validation": "docs/validation/2026-11-10-recorder-native-results.json",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "9b2128037545fd83ffed43e348b9b401e2f9e2ad",
+      "change": "Native bounded recording inventory, exact selected information/range checks, scoped replay URI, canonical observations and 24 contracts; corrected unrelated-import alert fixture ordering."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Operator recordings/replay commands, private exact handoff, protected AVC/HEVC capture with nine source pins and durable outer approval, independent cold inspection and 16 additional contracts."
+    }
+  ],
+  "concurrent_main_changes_preserved": [
+    "2f402c29f76874d14a255cb6b85e761902b3af40: shared HEVC replay session admission and six protocol regressions.",
+    "73eb0a46e7b564e57b3ade27171a179adb6f51cf: named detector-scale native DFL assembly.",
+    "aa83e37650f888ea4762274a4046e16b451b7005: multi-scale DFL package recipe v5, native documentation, HEVC contract formatting and existing review-expiry preview fixture correction."
+  ],
+  "findings": [
+    "Native historical replay existed but an operator still had to supply a recorder URI. The new ONVIF path performs bounded recording inventory and exact selection before replay.",
+    "GetRecordings retention duration and GetRecordingInformation extrema are device assertions. Unknown dates stay unknown; every supplied bound is enforced without clipping and none proves continuous media coverage.",
+    "The existing HTTP transport has a closed SOAP action allowlist. The three new read-only actions were explicitly added; source review caught this integration omission before publication.",
+    "Live ONVIF handoff lifetime semantics cannot represent GetReplayUri. A distinct private schema retains unknown replay URI lifetime and complete canonical selected information.",
+    "Discovery does not grant capture authority. The protected consumer binds actual file identity and the complete native plan into a separate outer approval, which is retained in the durable receipt.",
+    "Source-bearing requests use distinct canonical domains and bind nine observation/file identities before deriving the original namespace. Cold verification reconstructs those pins and original source windows without reopening private metadata.",
+    "The exact c839 native run passed163 tests and failed10, exposing the HEVC gate and fixtures. Corrections on later commits have not been verified by that predecessor run."
+  ],
+  "cases_and_falsifiers": [
+    {
+      "case": "Bounded private recording selection",
+      "falsifiers": [
+        "unknown or contradictory bounds are silently clipped",
+        "foreign advertised endpoint receives credentials",
+        "wrong recording token reaches GetReplayUri",
+        "recording or URI canary appears on stdout/stderr"
+      ]
+    },
+    {
+      "case": "Separate protected replay admission",
+      "falsifiers": [
+        "nested child approval authorizes the wrapper",
+        "replacement inode with identical bytes preserves approval",
+        "changed private canonical bounds are not revalidated",
+        "live handoff is admitted as recording replay"
+      ]
+    },
+    {
+      "case": "Durable source identity",
+      "falsifiers": [
+        "any of nine source pins changes without request/namespace change",
+        "cold inspection trusts the private file or reconnects to the recorder",
+        "stored codec chooses another verifier",
+        "receipt loses the actual outer approval"
+      ]
+    }
+  ],
+  "authority": {
+    "user_grant": "Implement and commit meaningful changes directly to main using GitHub; no PRs.",
+    "runtime_scope": "Authored deterministic and owned loopback fixtures only; no live cameras, production deployment or account configuration changed.",
+    "release_authority": "Repository-owned local qualification with retained DSR receipts; hosted CI remains supplementary.",
+    "authority_changes": "Explicit read-only recorder operations and a separately approved single native capture wrapper. No standing scheduler, search session, configuration write or live fallback."
+  },
+  "budgets": {
+    "inventory": "64 recordings, 32 tracks per recording, 512-byte descriptive text plus existing complete SOAP/XML/HTTP limits; excess refuses rather than truncates.",
+    "information": "64 KiB canonical complete information, four16 KiB hex chunks,139264-byte handoff,262144-byte private file owner.",
+    "network": "Four/six maximum HTTP Digest attempts or three/four UsernameToken exchanges for inventory/selection; existing finite deadline, cancellation and work limits.",
+    "native_capture": "Existing finite source, work, picture, archive and publication bounds; one attempt, exact SSRC and explicit codec/cadence.",
+    "receipt": "Existing64 windows/64 KiB combined companion bounds; direct AVC/HEVC encodings preserved."
+  },
+  "validation": {
+    "new_distinct_contracts": 40,
+    "shared_wire_contracts": 14,
+    "native_http_loopbacks": 10,
+    "operator_plan_contracts": 4,
+    "operator_process_contracts": 5,
+    "native_source_receipt_contracts": 3,
+    "protected_capture_process_contracts": 4,
+    "additional_core_execution_of_shared_wire": 14,
+    "final_source_review": "Independent API, authority, fixture and canonical compatibility review found no remaining concrete blocker.",
+    "native_execution": "Not executed for the final new source snapshots. Executor unavailable; final normal rustfmt/compiler/runtime checks remain open.",
+    "previous_local_limit": "Pinned baseline unchanged Asupersync0.5.0 metadata compiler was killed before FSS diagnostics; no dependency or gate was weakened.",
+    "preceding_native_run": {
+      "commit": "c83974f1f1ee1a23c1e712b01616175215f0a619",
+      "run_id": 42758095012,
+      "passed": 163,
+      "failed": 10
+    },
+    "commands": [
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-core --test onvif_recording_wire_contract",
+      "bash scripts/check_recording_lifecycle.sh onvif-recording",
+      "bash scripts/check_recording_lifecycle.sh all"
+    ]
+  },
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Run pinned formatter and the actual committed focused native targets when an executor is available; inspect every target, correct concrete failures and record exact-head evidence."
+    },
+    {
+      "state": "open",
+      "action": "Complete repository-owned local DSR and owned-hardware interoperability before production qualification."
+    }
+  ],
+  "unknowns_and_invalidations": [
+    "No calibrated per-frame historical UTC mapping, continuous retention, complete retrieval, device-origin authentication or Profile G conformance is established.",
+    "Multiple video-track selection, remote FindRecordings search sessions, vendor-specific URI adapters and the broader always-on recorder decision remain outside this bounded path.",
+    "Changed private bytes, file fingerprint, route/codec/window, native source authority, limits or destinations invalidate their exact approvals.",
+    "Final GitHub blobs are authoritative; disconnected workspace copies may contain earlier versions. Reconcile against main without discarding unrelated concurrent work before resuming local development."
+  ],
+  "valid_next_affordances": [
+    "Verify the committed discovery-to-capture pipeline with the focused native commands and retain exact results.",
+    "Qualify an owner-authorized recorder against the explicit transport/codec/range subset.",
+    "Add evidence-bound historical per-frame UTC interpretation without converting advertised extrema or requested UTC into capture-time truth.",
+    "Extend explicit track selection or remote recording search only with bounded resource/session ownership and separate authority."
+  ]
+}

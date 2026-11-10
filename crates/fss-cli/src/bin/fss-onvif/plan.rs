@@ -17,8 +17,10 @@ use fss_reference::onvif::wire::{MediaVersion, get_stream_uri_request};
 use super::authentication::AuthPlan;
 use super::handoff::digest;
 use super::private_file::absolute_path;
+use super::recorder::RecorderRequest;
 
-pub(super) const MAX_ARGUMENTS: usize = 48;
+pub(super) const MAX_ARGUMENTS: usize = 65;
+const MAX_LIVE_ARGUMENTS: usize = 48;
 const ARGUMENT: &str = "ERR-ONVIF-ARGUMENT-001";
 const MEDIA1_POLICY: &str = "read-only-media1:same-pinned-http-origin:explicit-service-subtree:\
 one-scoped-digest-retry:no-basic-no-wsse-no-tls:private-create-only-metadata:\
@@ -49,6 +51,24 @@ pub(super) const HELP: &str = "fss-onvif --peer IP:PORT --authority HOST[:PORT]\
   [--generation 1] [--timeout-ms 30000] [--max-steps 20000]\n\
   [--max-response-bytes 262144] [--connect-timeout-ms 5000]\n\
   [--principal principal:local-operator] [--approve sha256:HEX]\n\
+\n\
+Historical recording discovery uses two explicit commands with the same HTTP, authentication,\n\
+output and owner-authorization flags:\n\
+  fss-onvif recordings --peer IP:PORT --authority HOST[:PORT]\n\
+    --device-path /onvif/device_service --service-root /onvif\n\
+    --output NEW_ABSOLUTE_PRIVATE_FILE --owner-authorized yes --plaintext yes\n\
+  fss-onvif replay --peer IP:PORT --authority HOST[:PORT]\n\
+    --device-path /onvif/device_service --service-root /onvif\n\
+    --recording-token TOKEN --codec avc|hevc\n\
+    --replay-start YYYYMMDDThhmmssZ --replay-end YYYYMMDDThhmmssZ\n\
+    --rtsp-peer IP:PORT --rtsp-authority HOST[:PORT]\n\
+    --output NEW_ABSOLUTE_PRIVATE_FILE --owner-authorized yes --plaintext yes\n\
+Recordings lists the complete bounded GetRecordings inventory. Replay selects one exact token,\n\
+checks GetRecordingInformation against the unchanged interval, and retrieves GetReplayUri.\n\
+These commands reject --profile and --media-version. The replay handoff is consumed by\n\
+fss-capture-rtsp from-onvif-replay under a separate approval. URI lifetime stays unknown;\n\
+advertised bounds do not prove continuous retention or capture time. No remote search session,\n\
+recording configuration change or Profile G conformance is established.\n\
 \n\
 Without --approve, output is a pure plan: no files, clock, credentials or network are opened.\n\
 Repeat the exact options with the returned approval for bounded owner-authorized SOAP requests.\n\
@@ -122,7 +142,7 @@ impl OnvifAuthPlan {
         }
     }
 
-    fn preview(&self) -> String {
+    pub(super) fn preview(&self) -> String {
         match self {
             Self::HttpDigest(auth) => auth.preview(),
             Self::UsernameTokenDigest { credential_file } => object(&[
@@ -161,6 +181,7 @@ pub(super) struct Plan {
     pub(super) generation: u64,
     pub(super) output: PathBuf,
     pub(super) profile: Option<String>,
+    pub(super) recording: Option<RecorderRequest>,
     pub(super) rtsp: Option<RtspScope>,
     pub(super) auth: Option<OnvifAuthPlan>,
     pub(super) timeout_ns: u64,
@@ -172,7 +193,12 @@ pub(super) struct Plan {
 
 impl Plan {
     pub(super) fn parse(args: &[OsString]) -> Result<Self, &'static str> {
-        if args.len() > MAX_ARGUMENTS
+        let (command, args) = match args.first().and_then(|arg| arg.to_str()) {
+            Some(command @ ("recordings" | "replay")) => (Some(command), &args[1..]),
+            _ => (None, args),
+        };
+        let limit = if command.is_some() { MAX_ARGUMENTS - 1 } else { MAX_LIVE_ARGUMENTS };
+        if args.len() > limit
             || !args.len().is_multiple_of(2)
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
         {
@@ -189,6 +215,10 @@ impl Plan {
             "--media-version",
             "--auth-mode",
             "--profile",
+            "--recording-token",
+            "--replay-start",
+            "--replay-end",
+            "--codec",
             "--rtsp-peer",
             "--rtsp-authority",
             "--credential-file",
@@ -215,6 +245,7 @@ impl Plan {
                 return Err(ARGUMENT);
             }
         }
+        let recording = RecorderRequest::parse(command, &values)?;
         let required = |key| values.get(key).copied().ok_or(ARGUMENT);
         if required("--owner-authorized")? != "yes" || required("--plaintext")? != "yes" {
             return Err(ARGUMENT);
@@ -257,7 +288,7 @@ impl Plan {
         let rtsp = match (
             values.get("--rtsp-peer"),
             values.get("--rtsp-authority"),
-            profile.is_some(),
+            profile.is_some() || recording.as_ref().is_some_and(RecorderRequest::is_replay),
         ) {
             (None, None, false) => None,
             (Some(peer), Some(authority), true) => {
@@ -304,6 +335,7 @@ impl Plan {
             generation,
             output,
             profile,
+            recording,
             rtsp,
             auth,
             timeout_ns: number("--timeout-ms", 30000, 1, 60000)? * 1_000_000,
@@ -324,7 +356,10 @@ impl Plan {
         encoded.text(self.schema());
         encoded.text(self.policy());
         if self.uses_username_token() {
-            encoded.text(self.media_version_name());
+            encoded.text(if self.recording.is_some() { "recording" } else { self.media_version_name() });
+        }
+        if let Some(recording) = &self.recording {
+            recording.encode(&mut encoded);
         }
         for text in [
             self.peer.to_string().as_str(),
@@ -408,6 +443,9 @@ impl Plan {
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
+        if self.recording.is_some() {
+            return super::recorder::preview(self);
+        }
         Ok(object(&[
             ("schema", string(self.schema())),
             ("phase", string("planned")),
@@ -467,7 +505,9 @@ impl Plan {
     }
 
     pub(super) fn max_http_exchanges(&self) -> u64 {
-        match (self.uses_username_token(), self.profile.is_some()) {
+        let selected = self.profile.is_some()
+            || self.recording.as_ref().is_some_and(RecorderRequest::is_replay);
+        match (self.uses_username_token(), selected) {
             (true, false) => 3,
             (true, true) => 4,
             (false, false) => 4,
@@ -475,7 +515,8 @@ impl Plan {
         }
     }
 
-    fn schema(&self) -> &'static str {
+    pub(super) fn schema(&self) -> &'static str {
+        if self.recording.is_some() { return "fss.onvif_recording_operator_plan.v1"; }
         if self.uses_username_token() {
             return "fss.onvif_operator_plan.v3";
         }
@@ -485,7 +526,10 @@ impl Plan {
         }
     }
 
-    fn policy(&self) -> &'static str {
+    pub(super) fn policy(&self) -> &'static str {
+        if self.recording.is_some() {
+            return if self.uses_username_token() { super::recorder::USERNAME_TOKEN_POLICY } else { super::recorder::HTTP_POLICY };
+        }
         match (self.uses_username_token(), self.media_version) {
             (false, MediaVersion::Media1) => MEDIA1_POLICY,
             (false, MediaVersion::Media2) => MEDIA2_POLICY,

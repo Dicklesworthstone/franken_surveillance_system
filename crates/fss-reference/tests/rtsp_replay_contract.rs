@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Bounded historical playback uses the native RTSP parser, session and Digest owner.
 
+#[path = "rtsp_replay_contract/hevc.rs"]
+mod hevc;
+
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use fss_reference::rtsp::client::authenticated::DigestClientError;
 use fss_reference::rtsp::client::replay::{

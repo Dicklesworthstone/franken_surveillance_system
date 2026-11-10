@@ -155,6 +155,24 @@ pub struct RecordingSummary {
     pub decode_interval: Range<u64>,
 }
 
+/// Read-only AVC sample/source projection from an already sealed or verified window.
+/// This contains no bytes, authority, clock calibration or publication capability.
+#[derive(Clone, Debug)]
+pub struct AvcRecordingSourceMap {
+    samples: Vec<SampleMapping>,
+    mappings: Vec<NalMapping>,
+}
+impl AvcRecordingSourceMap {
+    /// Native sample order, decode and presentation timing, and exact mapping ranges.
+    pub fn samples(&self) -> &[SampleMapping] {
+        &self.samples
+    }
+    /// Native NAL source spans, including originals relocated into initialization.
+    pub fn mappings(&self) -> &[NalMapping] {
+        &self.mappings
+    }
+}
+
 /// Fully owned deterministic plan. Keep it until publication is durable or its
 /// exact root is reconciled. A retry uses these same bytes, never remuxes again.
 pub struct PreparedRecording {
@@ -197,6 +215,18 @@ impl PreparedRecording {
     /// publication plan; it grants neither source access nor capture continuity.
     pub fn packets(&self) -> Result<Vec<RecordingPacket<'_>>> {
         wire::decode_packets(&self.source)
+    }
+    /// Project bounded immutable AVC source maps after native preparation/readback.
+    /// A HEVC publication plan is refused; stored bytes never select another codec.
+    pub fn avc_source_map(&self) -> Result<AvcRecordingSourceMap> {
+        if self.manifest.kind() != RECORDING_KIND {
+            return Err(RecordingError::Scope);
+        }
+        let index = wire::decode_index(&self.index)?;
+        Ok(AvcRecordingSourceMap {
+            samples: index.samples,
+            mappings: index.mappings,
+        })
     }
     /// Combined retained payload bytes including the root manifest.
     pub fn byte_len(&self) -> usize {

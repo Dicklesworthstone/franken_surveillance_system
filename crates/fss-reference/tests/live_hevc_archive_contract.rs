@@ -22,8 +22,13 @@ use fss_reference::rtsp::archive_pins::{
     ArchivePinLimits, ArchivePinScope, HevcArchivePinJournal, JournaledArchiveProgress,
 };
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
-use fss_reference::rtsp::client::{ClientCommand, ClientConfig, ClientProgress, ClientState};
-use fss_reference::rtsp::hevc_client::{HevcClientPoll, pictures::HevcPictureClientPoll as Event};
+use fss_reference::rtsp::client::replay::ReplayWindow;
+use fss_reference::rtsp::client::{
+    ClientCommand, ClientConfig, ClientError, ClientProgress, ClientState,
+};
+use fss_reference::rtsp::hevc_client::{
+    HevcClientError, HevcClientPoll, pictures::HevcPictureClientPoll as Event,
+};
 use fss_reference::rtsp::hevc_recording_capture::live::{
     AutomaticHevcRecordingStep as RecordingStep, LiveHevcRecordingConfig,
 };
@@ -495,6 +500,78 @@ impl<'a> Fixture<'a> {
 }
 
 #[test]
+fn selected_hevc_replay_keeps_exact_setup_play_and_acknowledgement_without_live_fallback() -> Test {
+    let mut stores = Stores::new()?;
+    let mut f = Fixture::new(&mut stores, selected()?)?;
+    let window = ReplayWindow::from_timestamps("20261101T120000Z", "20261101T120100Z")?;
+    let other = ReplayWindow::from_timestamps("20261101T120010Z", "20261101T120050Z")?;
+    assert!(f.driver.replay_window().is_none());
+    f.driver.select_replay(window)?;
+    let refused = f
+        .driver
+        .select_replay(other)
+        .expect_err("replay intent changed after selection");
+    assert!(matches!(
+        refused.reason,
+        LiveHevcArchiveError::Configuration
+    ));
+    assert!(refused.retirement.is_none());
+    assert_eq!(f.driver.replay_window(), Some(window));
+    assert_eq!(f.driver.totals().ok_or("totals")?.sent_bytes, 0);
+    let (describe, _) = f.command()?;
+    assert_eq!(describe.command, ClientCommand::Describe);
+    f.reply(
+        &response(describe.cseq, "Content-Type: application/sdp\r\n", &sdp()?),
+        ClientState::Described,
+    )?;
+    let (setup, wire) = f.command()?;
+    assert_eq!(setup.command, ClientCommand::SetupReplay);
+    assert!(std::str::from_utf8(&wire)?.contains("Require: onvif-replay\r\n"));
+    f.reply(&response(setup.cseq, "Session: test-session;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n", ""), ClientState::Ready)?;
+    let (play, wire) = f.command()?;
+    assert_eq!(play.command, ClientCommand::PlayReplay(window));
+    let wire = std::str::from_utf8(&wire)?;
+    assert!(wire.contains("Require: onvif-replay\r\n"));
+    assert!(wire.contains(&format!("Range: {window}\r\n")));
+    assert!(wire.contains("Rate-Control: no\r\n"));
+    f.peer.write_all(&response(
+        play.cseq,
+        &format!("Session: test-session\r\nRange: {other}\r\n"),
+        "",
+    ))?;
+    let mut accepted = None;
+    for _ in 0..32_768 {
+        let Step::Recording(step) = f.poll(ready())? else {
+            return Err("replay acknowledgement became archive work".into());
+        };
+        if let RecordingStep::Capture { event, .. } = step.as_ref()
+            && let HevcCapturePoll::Receiver(source) = event.as_ref()
+            && let Event::Client { event, work: None } = source.as_ref()
+            && let HevcClientPoll::Control {
+                progress: ClientProgress::ReplayAccepted(value),
+                ..
+            } = event.as_ref()
+        {
+            accepted = Some(*value);
+        }
+        f.originals.push(*step);
+        if accepted.is_some() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let accepted = accepted.ok_or("exact replay acknowledgement missing")?;
+    assert_eq!(accepted.cseq(), play.cseq);
+    assert_eq!(accepted.requested(), window);
+    assert_eq!(accepted.acknowledged(), other);
+    assert_eq!(f.driver.state(), ClientState::Playing);
+    assert!(f.driver.select_replay(other).is_err());
+    assert_eq!(f.driver.replay_window(), Some(window));
+    assert!(f.driver.cancel().is_some());
+    Ok(())
+}
+
+#[test]
 fn owner_stop_at_final_admission_closes_tcp_before_checkpoint_and_drains_past_live_lease() -> Test {
     let mut stores = Stores::new()?;
     let root = stores.root.clone();
@@ -836,78 +913,134 @@ fn eof_after_final_seal(explicit: bool) -> Test {
 
 #[test]
 fn missing_ambiguous_wrong_payload_or_over_limit_sdp_refuses_before_setup() -> Test {
-    for case in 0..5 {
-        let mut stores = Stores::new()?;
-        let mut selection = selected()?;
-        let mut description = sdp()?;
-        match case {
-            0 => {
-                description = description
-                    .lines()
-                    .filter(|l| !l.starts_with("a=fmtp:"))
-                    .collect::<Vec<_>>()
-                    .join("\r\n")
-                    + "\r\n"
-            }
-            1 => {
-                let vps = base64(&nals()?[0]);
-                description = description.replace(
-                    &format!("sprop-vps={vps};"),
-                    &format!("sprop-vps={vps},{vps};"),
-                );
-            }
-            2 => selection.payload_type = 97,
-            3 => selection.configuration_limits.max_width = 1,
-            _ => selection.payload_type = 97,
-        }
-        let mut f = Fixture::configured(
-            &mut stores,
-            selection,
-            (case == 4).then(configuration).transpose()?,
-        )?;
-        let (describe, _) = f.command()?;
-        let sent = f.driver.totals().ok_or("totals")?.sent_bytes;
-        f.peer.write_all(&response(
-            describe.cseq,
-            "Content-Type: application/sdp\r\n",
-            &description,
-        ))?;
-        let mut failure = None;
-        for _ in 0..32_768 {
-            match f.poll(ready()) {
-                Err(e) => {
-                    failure = Some(e);
-                    break;
+    for replay in [false, true] {
+        for case in 0..5 {
+            let mut stores = Stores::new()?;
+            let mut selection = selected()?;
+            let mut description = sdp()?;
+            match case {
+                0 => {
+                    description = description
+                        .lines()
+                        .filter(|l| !l.starts_with("a=fmtp:"))
+                        .collect::<Vec<_>>()
+                        .join("\r\n")
+                        + "\r\n"
                 }
-                Ok(Step::Recording(step)) => f.originals.push(*step),
-                _ => return Err("refused description advanced archive state".into()),
+                1 => {
+                    let vps = base64(&nals()?[0]);
+                    description = description.replace(
+                        &format!("sprop-vps={vps};"),
+                        &format!("sprop-vps={vps},{vps};"),
+                    );
+                }
+                2 => selection.payload_type = 97,
+                3 => selection.configuration_limits.max_width = 1,
+                _ => selection.payload_type = 97,
             }
-            std::thread::yield_now();
+            let mut f = Fixture::configured(
+                &mut stores,
+                selection,
+                (case == 4).then(configuration).transpose()?,
+            )?;
+            if replay {
+                f.driver.select_replay(ReplayWindow::from_timestamps(
+                    "20261101T120000Z",
+                    "20261101T120100Z",
+                )?)?;
+            }
+            let (describe, _) = f.command()?;
+            let sent = f.driver.totals().ok_or("totals")?.sent_bytes;
+            let original = response(
+                describe.cseq,
+                "Content-Type: application/sdp\r\n",
+                &description,
+            );
+            f.peer.write_all(&original)?;
+            let mut failure = None;
+            let mut stopped = None;
+            for _ in 0..32_768 {
+                match f.poll(ready()) {
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
+                    Ok(Step::Stopped { trigger, retained }) => {
+                        stopped = Some((trigger, retained));
+                        break;
+                    }
+                    Ok(Step::Recording(step)) => f.originals.push(*step),
+                    _ => return Err("refused description advanced archive state".into()),
+                }
+                std::thread::yield_now();
+            }
+            let (retired, sent_after) = if matches!(case, 2 | 4) {
+                // Exact payload selection rejects the absent offer in the session before
+                // the archive can create a collector. The stopped event owns the original
+                // failed description and the terminal transport; it is not archive work.
+                assert!(failure.is_none());
+                let (trigger, retired) = stopped.ok_or("exact payload refusal missing")?;
+                let RecordingStep::Network(LiveHevcStep::Protocol {
+                    event,
+                    transport: Some(transport),
+                }) = *trigger
+                else {
+                    return Err("payload refusal lost original protocol/transport".into());
+                };
+                let Event::Client { event, work: Some(work) } = event else {
+                    return Err("payload refusal lost picture retirement".into());
+                };
+                let HevcClientPoll::Fault {
+                    reason: HevcClientError::Session(ClientError::Description),
+                    retirement,
+                    source: Some(source),
+                } = *event
+                else {
+                    return Err("payload refusal lost the typed description failure".into());
+                };
+                assert_eq!(source.expose_wire(), original);
+                assert_eq!(retirement.session.pending_cseq, Some(describe.cseq));
+                assert!(!retirement.session.remote_session_may_exist);
+                assert!(retirement.video.is_none());
+                assert_eq!((work.queued.nals, work.queued.bytes), (0, 0));
+                assert!(retired.recording.is_none());
+                (retired, transport.totals.sent_bytes)
+            } else {
+                assert!(stopped.is_none());
+                let failure = failure.ok_or("description refusal bound")?;
+                assert!(
+                    matches!(failure.reason, LiveHevcArchiveError::Selection),
+                    "case {case}, replay {replay}"
+                );
+                let mut retired = failure.retirement.ok_or("retirement")?;
+                let input = retired.recording.take().ok_or("input retirement")?;
+                assert!(input.capture.is_none());
+                let event = input.unoffered_event.ok_or("original description")?;
+                let Event::Client { event, work: None } = *event else {
+                    return Err("selection refusal lost original description".into());
+                };
+                let HevcClientPoll::Control {
+                    progress: ClientProgress::Accepted(ClientState::Described),
+                    source,
+                } = *event
+                else {
+                    return Err("selection refusal lost accepted description".into());
+                };
+                assert_eq!(source.expose_wire(), original);
+                let transport = input.connection.ok_or("connection")?.transport;
+                (retired, transport.totals.sent_bytes)
+            };
+            assert_eq!(sent_after, sent);
+            assert!(retired.unoffered_window.is_none());
+            assert!(retired.interruption.is_none());
+            let archive = retired.archive.ok_or("archive retirement")?;
+            assert!(archive.writer.archive.snapshot.windows().is_empty());
+            assert!(archive.writer.archive.pending.is_none());
+            assert_eq!(archive.journal_anchor.sequence, 1);
+            assert_eq!(f.driver.state(), ClientState::Closed);
+            assert_eq!(f.peer.read(&mut [0_u8; 1])?, 0);
+            assert!(f.driver.cancel().is_none());
         }
-        let failure = failure.ok_or("description refusal bound")?;
-        assert!(
-            matches!(failure.reason, LiveHevcArchiveError::Selection),
-            "case {case}"
-        );
-        let retired = failure.retirement.ok_or("retirement")?;
-        let input = retired.recording.ok_or("input retirement")?;
-        assert!(input.capture.is_none());
-        assert!(input.unoffered_event.is_some());
-        assert_eq!(
-            input
-                .connection
-                .ok_or("connection")?
-                .transport
-                .totals
-                .sent_bytes,
-            sent
-        );
-        let archive = retired.archive.ok_or("archive retirement")?;
-        assert!(archive.writer.archive.snapshot.windows().is_empty());
-        assert!(archive.writer.archive.pending.is_none());
-        assert_eq!(archive.journal_anchor.sequence, 1);
-        assert_eq!(f.peer.read(&mut [0_u8; 1])?, 0);
-        assert!(f.driver.cancel().is_none());
     }
     Ok(())
 }

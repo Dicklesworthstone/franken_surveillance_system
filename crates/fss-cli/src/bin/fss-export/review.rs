@@ -7,12 +7,14 @@ use std::process::ExitCode;
 
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 
+#[path = "review/delivery.rs"]
+mod delivery;
+#[path = "review/destination.rs"]
+mod destination;
 #[path = "review/execute.rs"]
 mod execute;
 #[path = "review/options.rs"]
 mod options;
-#[path = "../fss-file/private_output.rs"]
-mod private_output;
 #[cfg(all(test, target_os = "linux"))]
 #[path = "review/runtime_tests.rs"]
 mod runtime_tests;
@@ -43,7 +45,15 @@ Both interval bounds must fall inside the grant. The clock is caller-attested, n
 Without --approve, returns a destination-bound approval without creating a file. Approved reads\n\
 write a new private file outside the deployment; existing files are never overwritten.\n\
 The destination parent must exist and forbid group/world writes. Linux with /proc is required.\n\
-An interrupted write may leave a partial file. Revocation or expiry cannot erase delivered copies.\n\
+Delivery records an intent before creating the file, then verifies its complete readback.\n\
+Repeat an approved request to verify a complete prior file; missing or partial files refuse.\n\
+No retry overwrites an existing file or creates a second copy for the same delivery identity.\n\
+Revocation or expiry cannot erase delivered copies.\n\
+\n\
+fss-export review-delivery-show --root DIR --site SITE --delivery-id sha256:HEX\n\
+  --principal RECIPIENT_ID\n\
+Reads durable delivery metadata even after grant expiry or revocation. It neither reads the\n\
+external file nor grants media access; Started means the outcome requires reconciliation.\n\
 \n\
 fss-export review-revoke --root DIR --site SITE --review-root sha256:HEX\n\
   [--principal ID] [--approve sha256:HEX]\n\

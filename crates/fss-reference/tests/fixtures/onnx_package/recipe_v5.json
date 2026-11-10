@@ -1,0 +1,78 @@
+{
+  "format": "fss.onnx_rgb_package_recipe.v5",
+  "model_id": "MOD-ONNXPYRAMIDFIXTURE-001",
+  "model_generation": "model:onnx-pyramid-fixture:g1",
+  "tensor_generation": 1,
+  "preprocess": {
+    "image_input": "image",
+    "height": 8,
+    "width": 8,
+    "resize": "nearest",
+    "letterbox_pad": 0,
+    "masked_rgb": [
+      0,
+      0,
+      0
+    ],
+    "scale_to_unit": true,
+    "channel_order": "rgb",
+    "mean": [
+      0,
+      0,
+      0
+    ],
+    "standard_deviation": [
+      1,
+      1,
+      1
+    ]
+  },
+  "head": {
+    "output_port": "detections",
+    "layout": "rows",
+    "boxes": "pixel-corners",
+    "class_score": "probability",
+    "objectness": "none",
+    "classes": "best",
+    "minimum_score_ppm": 500000,
+    "nms_iou_ppm": 450000,
+    "maximum_rows": 21,
+    "maximum_candidates": 42,
+    "maximum_detections": 21
+  },
+  "labels": [
+    "fixture-object",
+    "fixture-other"
+  ],
+  "source": {
+    "upstream": "fixture:fss/native-onnx-dfl-pyramid",
+    "revision": "v1",
+    "producer": "FSS RGB-dependent three-scale DFL numerical fixture"
+  },
+  "license": {
+    "id": "MIT",
+    "use_approved": true,
+    "restrictions": []
+  },
+  "head_decode": {
+    "kind": "anchor-free-dfl-pyramid",
+    "bins": 4,
+    "levels": [
+      {
+        "output": "coarse",
+        "stride": 4,
+        "layout": "nchw"
+      },
+      {
+        "output": "fine",
+        "stride": 2,
+        "layout": "nhwc"
+      },
+      {
+        "output": "global",
+        "stride": 8,
+        "layout": "nchw"
+      }
+    ]
+  }
+}

@@ -6,6 +6,7 @@
 //! not a capability: every read checks current recipient authority, expiry, privacy, revocation
 //! and deletion. This local profile is not FLDT authentication or payment-mask attestation.
 
+pub mod delivery;
 pub mod grant;
 mod record;
 pub mod render;
@@ -25,6 +26,7 @@ use grant::{GrantError, ReviewAccessRequest, ReviewGrant};
 use render::{ReviewMovieRequest, render_movie};
 
 pub use record::{MAX_REVIEW_RECORD_BYTES, ReviewMediaRecord};
+pub(crate) use storage::inspect_for_expiry;
 pub use storage::{
     inspect_review_media, review_grant_revoked, revocation_approval, revoke_review_media,
 };

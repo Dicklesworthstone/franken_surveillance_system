@@ -190,6 +190,10 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         crate::review_media::FAMILY_REVIEW_MEDIA | crate::review_media::FAMILY_REVIEW_REVOCATION => {
             Some("review_media::commit_review_media/revoke_review_media")
         }
+        crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_STARTED
+        | crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_VERIFIED => {
+            Some("review_media::delivery::begin_review_delivery/verify_review_delivery")
+        }
         crate::deployment_backup::FAMILY_RESTORE_FENCE => Some("deployment_backup::restore_backup"),
         crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH => {
             Some("ingest::historical_health::HistoricalHealthDiagnostic::retain")
@@ -1680,6 +1684,17 @@ impl ReferenceDeployment {
             delta
                 .object_id
                 .as_str()
+                .starts_with(crate::review_media::delivery::DELIVERY_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_STARTED.to_owned(),
+                entry_point: "review_media::delivery::begin_review_delivery/verify_review_delivery",
+            });
+        }
+        if deltas.iter().any(|delta| {
+            delta
+                .object_id
+                .as_str()
                 .starts_with(crate::review_media::REVIEW_OBJECT_PREFIX)
         }) {
             return Err(ReferenceError::ReservedDeltaFamily {
@@ -1938,6 +1953,49 @@ impl ReferenceDeployment {
         {
             return Err(ReferenceError::InvalidSpec(
                 "invalid review-media authority transition",
+            ));
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Guarded local delivery lifecycle, owned by actual review-media file readback.
+    /// Generic appends cannot issue either family or shadow this object namespace.
+    pub(crate) fn append_review_delivery_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                let transition = match delta.family.as_str() {
+                    crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_STARTED => {
+                        delta.prior_generation.is_none() && delta.new_generation == 1
+                    }
+                    crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_VERIFIED => {
+                        delta.prior_generation == Some(1) && delta.new_generation == 2
+                    }
+                    _ => false,
+                };
+                !transition
+                    || !delta
+                        .object_id
+                        .as_str()
+                        .starts_with(crate::review_media::delivery::DELIVERY_OBJECT_PREFIX)
+                    || delta.plane != Plane::Authority
+                    || delta.witness_digest.is_none()
+                    || delta.operation_id.is_none()
+            })
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "invalid review-delivery authority transition",
             ));
         }
         self.append_checked_batch(batch_id, deltas, children)

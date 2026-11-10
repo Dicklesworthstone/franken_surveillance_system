@@ -1,0 +1,211 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-10",
+  "timezone": "UTC",
+  "observed_at": "2026-11-10 05:20:52 UTC",
+  "state": "features_committed_native_delivery_integration_verification_blocked",
+  "mission": {
+    "goal": "Implement consequential remaining features after reading the comprehensive plan and beads; commit meaningful increments directly to main through GitHub, without PRs.",
+    "initial_source_head": "ad252a5dfc870413e714ac8ca452c54222e34894",
+    "inspected_plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "inspected_beads": ".beads/issues.jsonl",
+    "focused_requirements": [
+      "FSS-138",
+      "FSS-139 / fss-x4a.14.10",
+      "VIT-023 / fss-vit023-review-export-w8aai",
+      "FSS-068 / fss-x4a.13.8"
+    ],
+    "broad_beads_closed": false
+  },
+  "published_checkpoints": [
+    {
+      "commit": "c1318677f30928779967f4e9afabf3f1b7b196ea",
+      "change": "Native opset-13 DepthToSpace DCR/CRD and SpaceToDepth import, execution and artifact round-trip contracts."
+    },
+    {
+      "commit": "68477c202b653a439bd3bb1e18f5ef42c0f2c793",
+      "change": "Guarded durable review delivery attempts and exact held-file verification receipts, immutable reader/destination pins, audit retention and canonical/lifecycle contracts."
+    },
+    {
+      "commit": "32ca1e8bd299eaf0cb52b7b65a64618f4b1514e4",
+      "change": "Private create-once CLI delivery, cold reconciliation without resend, metadata inspection, recovery/refusal contracts and operator documentation."
+    }
+  ],
+  "concurrent_changes_preserved": {
+    "commits": [
+      "0cb32f803e44d1562f6694e65bbc8ee7870d402a",
+      "c83974f1f1ee1a23c1e712b01616175215f0a619",
+      "48d2bc7ba7b7cb3de7c3385e6c90a2757451ae3f"
+    ],
+    "features": [
+      "Native HEVC recorder replay",
+      "Source-preserving explicit expiry cleanup",
+      "New approved derivatives after completed expiry"
+    ],
+    "integration": "Delivery audit retains only metadata and does not retain derivative pixels or original source media. CLI deleted-review inspection remains intact.",
+    "qualification": "Concurrent features are not claimed as this session's implementation or independently qualified by its focused checks."
+  },
+  "delivered": {
+    "model": [
+      "Bit-preserving Reshape/Transpose/Reshape lowering; static positive rank-four F32 only.",
+      "Checked block size, divisibility, shape arithmetic, complete expansion limits, helper-name reservations and cancellation.",
+      "Source-bound importer generation includes the new lowering; frozen native IR v1 and operator identities remain unchanged."
+    ],
+    "review_delivery": [
+      "Stable identity excludes current attested time while each approval binds exact current authority/time.",
+      "Guarded Started is durable before exclusive output creation. Existing attempts never authorize recreation.",
+      "Verified requires complete actual held-file readback, SHA-256, size, private mode, single link, stable dev/inode and modification/change timestamps.",
+      "Fresh valid time attestation permits reconciliation of a complete prior file without writing. Missing/partial outputs remain indeterminate.",
+      "Metadata inspection remains recipient-scoped after expiry, revocation and deletion, without reading the external file or granting media disclosure.",
+      "Source, privacy, deletion and original narrowed reader-authority checks remain mandatory; generic ledger appends cannot forge delivery families or namespace."
+    ]
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "model": {
+      "status": "passed",
+      "passed": 50,
+      "failed": 0,
+      "new_spatial_contracts": 9,
+      "scope": "Production scalar and optimized executors before/after real canonical graph and Safetensors reload; independent coordinate and literal oracles.",
+      "excluded": "16 unrelated embedded executor unit tests, as in the established isolated-import command.",
+      "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::"
+    },
+    "canonical_delivery_records": {
+      "status": "passed",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "wire_blob": "9d258047a6d79ee2a7eb5fbfec989d4f05813580",
+      "test_blob": "efbd30d441f6471c08071f0acab0540386f0e9ad",
+      "scope": "Exact production wire module and actual fss-core; no simulated ledger, file owner or runtime.",
+      "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-core --test review_delivery_record_contract"
+    },
+    "container_baseline": {
+      "status": "passed",
+      "passed": 242,
+      "failed": 0,
+      "existing_ignored": 1,
+      "scope": "Existing production native container/component contracts; baseline, not new delivery lifecycle qualification."
+    },
+    "scoped_semantic_imports": {
+      "modules": 19,
+      "findings": 0,
+      "new_domain_registrations": 3
+    },
+    "formatting": "Pinned rustfmt parsed/formatted the new delivery source and tests and all changed CLI modules, with skip_children=true. Scoped whitespace check passed.",
+    "native_delivery_integration": {
+      "status": "blocked_before_fss_diagnostics",
+      "attempted_source": "48d2bc7ba7b7cb3de7c3385e6c90a2757451ae3f",
+      "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test review_media_contract",
+      "settings": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "RUSTFLAGS": "unchanged"
+      },
+      "observation": "Both the earlier reference check and a fresh native-test attempt stopped while unchanged Asupersync 0.5.0 rustc received SIGKILL, before FSS delivery diagnostics or test execution.",
+      "exit_code": 101,
+      "exact_kill_cause": "not established",
+      "retained_log": "docs/validation/2026-11-10-review-delivery-native-build.log",
+      "retained_log_sha256": "2e08a483cad6470945dc78035a2c96885a219aca5a7ac87866835cb6466fd90f",
+      "conditional_cli_and_reference_unit_followups": "not executed after the dependency build failed",
+      "new_pending_cases": {
+        "native_lifecycle": 6,
+        "cli_restart_and_filesystem": 4,
+        "cli_admission": 1
+      },
+      "hosted_jobs": "New-source native jobs have not executed. Latest cumulative-source runs were pending without a job/runner; the earlier focused delivery run was cancelled in favor of the newer pending run. No pass or assertion failure is inferred.",
+      "hosted_runs": [
+        "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759266529",
+        "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759266624",
+        "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759744548",
+        "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759744335"
+      ],
+      "hosted_snapshot": [
+        {
+          "id": 42759266529,
+          "source": "32ca1e8bd299eaf0cb52b7b65a64618f4b1514e4",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759266529"
+        },
+        {
+          "id": 42759266624,
+          "source": "32ca1e8bd299eaf0cb52b7b65a64618f4b1514e4",
+          "status": "queued",
+          "conclusion": null,
+          "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759266624"
+        },
+        {
+          "id": 42759744548,
+          "source": "48d2bc7ba7b7cb3de7c3385e6c90a2757451ae3f",
+          "status": "pending",
+          "conclusion": null,
+          "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759744548"
+        },
+        {
+          "id": 42759744335,
+          "source": "48d2bc7ba7b7cb3de7c3385e6c90a2757451ae3f",
+          "status": "pending",
+          "conclusion": null,
+          "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42759744335"
+        }
+      ]
+    },
+    "prior_hosted_baseline": {
+      "source": "c1318677f30928779967f4e9afabf3f1b7b196ea",
+      "run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42756556741",
+      "review_unit": 14,
+      "review_lifecycle": 11,
+      "review_cli": 7,
+      "scope": "Pre-delivery-change baseline only. Whole job failed existing ONVIF recovery assertion and later timed out in dwell tests."
+    },
+    "runtime_or_dependency_substitution": false,
+    "pins_changed": false,
+    "release_qualification": "not claimed",
+    "native_onnx_baseline": {
+      "source": "c1318677f30928779967f4e9afabf3f1b7b196ea",
+      "passed": 12,
+      "failed": 0,
+      "run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42756556487",
+      "scope": "Independent native reference ONNX execution target, not the skipped whole-model qualification step. The workflow's broader qualification failed pre-existing stale robot documentation."
+    }
+  },
+  "obligations": [
+    {
+      "state": "blocked",
+      "work": "Execute the actual merged delivery lifecycle and CLI contracts on a capable native host or assigned supplementary runner; inspect and repair concrete failures."
+    },
+    {
+      "state": "open",
+      "work": "Preserve missing/partial delivery outcomes as indeterminate; no automatic resend or retroactive adoption of legacy files."
+    },
+    {
+      "state": "open",
+      "work": "Complete broader model and repository qualification before release; focused contracts do not close the broad beads."
+    }
+  ],
+  "next_commands": [
+    "bash scripts/check_recording_lifecycle.sh review-expiry",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media::",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export review::"
+  ],
+  "remaining_product_limits": [
+    "Local principal labels and time intervals remain trusted-caller inputs; authenticated remote review and FLDT integration remain open.",
+    "Local file verification is not remote receipt, permanent file custody or recall of an already delivered copy.",
+    "The inherited review media profile is bounded raw grayscale output; longer/compressed/color/audio review delivery is separate.",
+    "Dynamic shapes, other ONNX types/opsets and full model qualification remain outside the new spatial-layout profile."
+  ],
+  "operator_guides": [
+    "docs/RETAINED_REVIEW_MEDIA.md",
+    "docs/onnx_import.md"
+  ],
+  "authority": {
+    "commit_destination": "main",
+    "pull_requests_created": 0,
+    "live_device_contact": false,
+    "additional_production_dependencies": []
+  }
+}

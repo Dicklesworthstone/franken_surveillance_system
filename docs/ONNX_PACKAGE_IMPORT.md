@@ -388,7 +388,7 @@ The complete authored recipe is
 [`recipe_v4.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v4.json);
 its strict schema is [`onnx_rgb_package_recipe.v4.json`](../schemas/onnx_rgb_package_recipe.v4.json).
 V1–v3 continue to reject `head_assembly`; v4 requires it and rejects `head_decode`.
-The public package API also refuses simultaneous DFL decoding and split-head assembly,
+The public package API also refuses combining packed DFL, pyramid DFL and split-head assembly,
 objectness, a channels-layout assembled head, or a class map that does not match the
 ordered labels.
 
@@ -417,6 +417,129 @@ model execution does not substitute for that integration gate. The fixture is wi
 evidence, not a trained detector, and split-head support does not qualify RF-DETR or
 another model family: the complete graph must still satisfy importer,
 source/weight/package size, preprocessing, licensing and deployment requirements.
+
+## Separate feature-pyramid outputs: recipe v5
+
+Recipe `fss.onnx_rgb_package_recipe.v5` connects separately exported detector
+levels to the same native DFL decoder. This closes the gap between a model whose
+outputs are feature maps and recipe v3, which requires one already-packed rank-three
+tensor. Supply all v2 preprocessing choices and this explicit `head_decode` object:
+
+```json
+"head_decode": {
+  "kind": "anchor-free-dfl-pyramid",
+  "bins": 16,
+  "levels": [
+    {"output": "p3", "stride": 8, "layout": "nchw"},
+    {"output": "p4", "stride": 16, "layout": "nhwc"},
+    {"output": "p5", "stride": 32, "layout": "nchw"}
+  ]
+}
+```
+
+The names and layouts above are examples. Bind the actual declared graph outputs;
+the importer never guesses a level from an output name or sorts the strides.
+`head.output_port` names a new output, `head.layout` is `rows`, and
+`head.boxes` is `pixel-corners`. Class labels, probability/logit interpretation,
+objectness, thresholds and NMS remain explicit as in recipe v3.
+
+Let `H,W` be the model-input dimensions, `s` the level's stride, and
+`F = 4*bins + labels.len() + objectness_fields`, where objectness contributes
+zero or one field.
+
+| Declared level layout | Required source shape | Packed row order |
+|---|---|---|
+| `nchw` | `[1,F,H/s,W/s]` | `y` then `x`, with fields contiguous |
+| `nhwc` | `[1,H/s,W/s,F]` | `y` then `x`, with fields contiguous |
+
+The complete head concatenates those rows in the **exact level-list order**.
+All levels must be actual static F32 graph outputs, with distinct names and unique
+positive strides. Every stride must divide both image dimensions. The existing
+bounds remain: 1–8 levels, 2–32 bins, at most 32,768 total rows, and the declared
+`head.maximum_rows` allowance. Swapped names or incorrect layouts that disagree
+with the actual source shapes fail conversion.
+
+Native Transpose, Reshape and Concat produce an internal packed tensor. The existing
+DFL decoder then computes pixel corners and preserves every score bit. That temporary
+packed tensor stays private: the final graph exposes the original outputs in their
+original order plus the new decoded output. The original ONNX and parameter bits
+remain retained. Packing, DFL constants, graph validation and any preceding image
+normalization share the original import quotas and cancellation boundary.
+
+V5 rejects the packed v3 and split v4 profiles. The public package API also rejects
+combining `head_pyramid` with `head_decode` or `head_assembly`. Existing recipes
+and FMPK/report formats retain their meanings.
+
+The complete authored example is
+[`recipe_v5.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v5.json),
+with strict schema
+[`onnx_rgb_package_recipe.v5.json`](../schemas/onnx_rgb_package_recipe.v5.json).
+Its shared Rust fixture constructs a nonzero RGB-dependent Conv/pooling graph with
+three outputs in mixed NCHW/NHWC layouts, 8×8 input, four bins and 21 cells. Graph
+output order deliberately differs from recipe order. Tests compare both native
+executors and archive reload with an independent coordinate/softmax oracle; package
+tests check original source retention, exact score tails, privacy replacement and
+the existing detection projection. These fixtures establish numerical wiring, not
+trained-detector accuracy or arbitrary pretrained-model compatibility.
+
+## Full-class Softmax before foreground selection: recipe v6
+
+Some split-output detectors emit mutually exclusive class logits, including a
+background or no-object slot. Recipe `fss.onnx_rgb_package_recipe.v6` applies
+native Softmax across the **complete original class axis**, then selects the
+explicit `class_indices` in label order. Omitted classes still contribute to the
+denominator. Selected probabilities are never renormalized.
+
+This matters when a row strongly predicts background: removing that slot before
+normalization would redistribute its probability mass to foreground classes.
+V6 preserves the original meaning of the model's scores. V4 retains its existing
+copy/select behavior for already-normalized probabilities or independent logits.
+
+Keep all v2 preprocessing choices and use this explicit assembly profile:
+
+```json
+"head_assembly": {
+  "kind": "split-boxes-softmax-scores",
+  "boxes_output": "boxes",
+  "boxes_layout": "rows",
+  "scores_output": "logits",
+  "scores_layout": "channels",
+  "class_indices": [2, 0]
+}
+```
+
+For that example, output labels correspond to original classes two and zero;
+original class one is omitted from the output, but participates in Softmax.
+The importer does not infer which class represents background.
+
+The assembled head requires `layout: "rows"`, `class_score: "probability"`,
+and `objectness: "none"`. The probability requirement prevents applying a
+second sigmoid in the detector. Box-coordinate representation, thresholds,
+class-selection behavior and NMS stay explicit. This mode cannot be combined
+with packed DFL, pyramid DFL or raw split assembly.
+
+Source boxes and scores are declared static F32, batch-one, rank-three outputs
+with equal row counts. Boxes have four fields; scores have 1–257 original
+classes. Rows scores use `[1,N,C]` and Softmax axis two; Channels scores use
+`[1,C,N]` and Softmax axis one. The existing ordered class map selects at
+most 256 distinct source slots afterward.
+
+Both raw source outputs and any auxiliary outputs remain public and retain
+their original order and bits. The temporary normalized score tensor stays
+private; only the distinct assembled output is added. Source bytes, parameters,
+IR version, cumulative quotas and cancellation remain bound as in the existing
+importer. No new runtime operator or package wire format is introduced.
+
+The complete example and schema are
+[`recipe_v6.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v6.json)
+and [`onnx_rgb_package_recipe.v6.json`](../schemas/onnx_rgb_package_recipe.v6.json).
+Its two-row RGB-dependent fixture deliberately makes an omitted class dominate
+the first row and a selected foreground class dominate the second. At a 0.5
+threshold, correct assembly yields exactly one detection. Pure adapter tests
+exercise both production executors and real canonical/Safetensors reload,
+including all layout combinations, sparse class maps, full 257-class normalization,
+source preservation, exact resource bounds and cancellation. Package/CLI execution
+status is recorded separately in `IMPLEMENTATION_STATUS.md`.
 
 ## Admitted model profile and bounds
 

@@ -21,11 +21,13 @@ mod clip;
 mod constants;
 mod conv_transpose;
 mod dfl;
+mod dfl_pyramid;
 mod export;
 mod gather;
 mod gemm;
 mod hard_sigmoid;
 mod head_assembly;
+mod head_softmax;
 mod instance_normalization;
 mod leaky_relu;
 mod pad;
@@ -39,12 +41,17 @@ mod resize_coordinates;
 mod resize_linear;
 mod resize_linear_coordinates;
 mod shape_program;
+mod spatial_layout;
 mod split;
 mod structure;
 
 pub use dfl::{OnnxDflHeadDecode, OnnxHeadLayout, decode_onnx_dfl_head};
+pub use dfl_pyramid::{
+    OnnxDflPyramidDecode, OnnxDflPyramidLayout, OnnxDflPyramidLevel, decode_onnx_dfl_pyramid,
+};
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
 pub use head_assembly::{OnnxSplitHeadAssembly, assemble_onnx_split_head};
+pub use head_softmax::assemble_onnx_softmax_split_head;
 pub use preprocess::{OnnxChannelOrder, OnnxImageTransform, transform_onnx_image};
 
 /// Explicit bounds for parsing, source hashing, graph conversion and parameter allocation.
@@ -1031,6 +1038,8 @@ pub fn import_onnx<'a>(
             pad::lower(source, &mut lowering)?;
         } else if source.op == "Split" {
             split::lower(source, &mut lowering)?;
+        } else if matches!(source.op.as_str(), "DepthToSpace" | "SpaceToDepth") {
+            spatial_layout::lower(source, &mut lowering)?;
         } else if matches!(
             source.op.as_str(),
             "Reshape" | "Squeeze" | "Unsqueeze" | "Slice"

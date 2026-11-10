@@ -850,7 +850,7 @@ fn replay_options_refuse_partial_intervals_and_unimplemented_modes() -> Result<(
     assert!(Options::parse(&input).is_ok());
     for (key, value) in [
         ("--replay-end", "20261108T120000.000000001Z"),
-        ("--codec", "hevc"),
+        ("--codec", "jpeg"),
         ("--ssrc", "auto"),
         ("--max-windows", "65"),
     ] {
@@ -861,5 +861,27 @@ fn replay_options_refuse_partial_intervals_and_unimplemented_modes() -> Result<(
     let mut end_only = args();
     set(&mut end_only, "--replay-end", "20261101T120100Z");
     assert!(Options::parse(&end_only).is_err());
+    Ok(())
+}
+
+#[test]
+fn hevc_replay_is_explicit_and_binds_a_separate_clock_namespace_and_approval()
+-> Result<(), &'static str> {
+    let mut input = args();
+    set(&mut input, "--replay-start", "20261101T120000Z");
+    set(&mut input, "--replay-end", "20261101T120100Z");
+    let avc = Options::parse(&input)?;
+    set(&mut input, "--codec", "hevc");
+    let hevc = Options::parse(&input)?;
+    let request = hevc.replay.as_ref().ok_or("missing HEVC replay")?;
+    assert_eq!(request.codec().as_str(), "hevc");
+    assert_eq!(hevc.recording.scope, avc.recording.scope);
+    assert_ne!(request.digest(), avc.replay.as_ref().ok_or("missing AVC replay")?.digest());
+    assert_ne!(hevc.catalog_scope().decode_clock, avc.catalog_scope().decode_clock);
+    assert_ne!(hevc.pin_scope().archive_namespace, avc.pin_scope().archive_namespace);
+    assert_ne!(hevc.digest()?, avc.digest()?);
+    assert!(hevc.preview()?.contains("recorder-replay:hevc:"));
+    set(&mut input, "--ssrc", "auto");
+    assert!(Options::parse(&input).is_err());
     Ok(())
 }

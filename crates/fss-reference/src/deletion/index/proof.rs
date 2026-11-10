@@ -88,6 +88,7 @@ impl Progress {
                 plan_digest: digest,
                 plan,
                 completion_digest: None,
+                completion_anchor: None,
             },
             expected,
             consumed: 0,
@@ -215,6 +216,7 @@ pub(in crate::deletion) fn read_controlled<E: From<DeletionError>>(
                 return Err(DeletionError::RecordMismatch.into());
             }
             progress.entry.completion_digest = Some(digest);
+            progress.entry.completion_anchor = Some(batch.new_anchor.clone());
             progress.last_sequence = batch.new_anchor.commit_sequence;
         } else {
             let first = batch.deltas.first().ok_or(DeletionError::RecordMismatch)?;

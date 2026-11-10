@@ -103,9 +103,22 @@ pub fn get_media2_stream_uri_request(profile_token: &str) -> Result<SoapRequest,
 /// No match in a valid inventory is explicit `None`; an empty/malformed response
 /// cannot be converted into an unsupported-service absence claim.
 pub fn parse_media2_service(bytes: &[u8]) -> Result<Option<Media2Service>, WireError> {
+    Ok(parse_services(bytes)?.into_iter().find(|service| service.namespace == MEDIA2_NS)
+        .map(|service| Media2Service { xaddr: service.xaddr, version: service.version }))
+}
+
+pub(super) struct ServiceAdvertisement {
+    pub(super) namespace: String,
+    pub(super) xaddr: String,
+    pub(super) version: ServiceVersion,
+}
+
+/// Shared complete inventory validation; select a namespace only after checking every entry.
+/// Advertised addresses never grant routing authority.
+pub(super) fn parse_services(bytes: &[u8]) -> Result<Vec<ServiceAdvertisement>, WireError> {
     let (doc, root) = response(bytes, DEVICE_NS, "GetServicesResponse")?;
     let mut namespaces = Vec::new();
-    let mut media2 = None;
+    let mut services = Vec::new();
     for id in doc.child_ids(root) {
         if !doc.named(id, DEVICE_NS, "Service") {
             return Err(WireError::UnexpectedResponse);
@@ -125,17 +138,16 @@ pub fn parse_media2_service(bytes: &[u8]) -> Result<Option<Media2Service>, WireE
         // Capabilities are unrequested and never confer an interpretation or grant.
         // Check their cardinality even if a device includes this optional field.
         unique(&doc, id, DEVICE_NS, "Capabilities")?;
-        if namespace == MEDIA2_NS {
-            media2 = Some(Media2Service {
-                xaddr: xaddr.to_owned(),
-                version: ServiceVersion { major, minor },
-            });
-        }
+        services.push(ServiceAdvertisement {
+            namespace: namespace.to_owned(),
+            xaddr: xaddr.to_owned(),
+            version: ServiceVersion { major, minor },
+        });
     }
     if namespaces.is_empty() {
         return Err(WireError::MissingField);
     }
-    Ok(media2)
+    Ok(services)
 }
 
 fn version_component(doc: &xml::Document, id: usize) -> Result<u16, WireError> {

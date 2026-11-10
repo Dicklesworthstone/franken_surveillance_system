@@ -4,10 +4,16 @@
 //! Layout/reduction oracles are independent; the composed attention oracle uses
 //! binary64 math on explicitly bounded ordinary fixtures, not trained weights.
 
+#[path = "onnx_attention_execution/dfl_pyramid.rs"]
+mod dfl_pyramid;
+#[path = "onnx_attention_execution/head_softmax.rs"]
+mod head_softmax;
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]
 mod shape_selection;
+#[path = "onnx_attention_execution/spatial_layout.rs"]
+mod spatial_layout;
 #[path = "onnx_attention_execution/split_heads.rs"]
 mod split_heads;
 

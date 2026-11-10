@@ -796,3 +796,48 @@ Native metadata storage retains the original cancellation/deadline/budget/author
 Native HTTP source/import, model, decoder, privacy and retained-sentinel refusals keep their
 existing owner identities. Known completed imports and analyses remain durable after a later
 refusal; an exact retry revalidates custody rather than reconstructing missing evidence.
+
+## Bounded ONVIF recorder selection
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-ONVIF-RECORDING-TOKEN-001` | The selected information response describes a different exact recording token | Reinspect the private inventory and explicitly select the intended recording; no URI acquisition or implicit alternate token follows. |
+| `ERR-ONVIF-RECORDING-VIDEO-001` | No video track or multiple video tracks prevent an unambiguous supported selection | Select a supported recording with one video track; descriptions and token spelling cannot infer codec or track mapping. |
+| `ERR-ONVIF-RECORDING-RANGE-001` | An exact requested endpoint lies outside a supplied recording or selected-video bound | Choose and separately approve a different interval if appropriate. The client never clips, widens or silently switches to live capture; this refusal does not prove retention expiry. |
+| `ERR-ONVIF-RECORDING-BOUNDS-001` | Advertised extrema are reversed, invalid or contradict recording-wide bounds | Reobserve or investigate the recorder. Do not normalize contradictions into a successful coverage claim. |
+| `ERR-ONVIF-RECORDING-STATE-001` | The recorder explicitly advertises Removing or Removed for the selected recording | Reinspect availability; this remote assertion neither deletes local originals nor proves historical absence. |
+| `ERR-ONVIF-RECORDING-REQUEST-001` | Caller UTC coordinates are invalid for bounded forward replay | Supply a validated ReplayWindow with a nonempty forward interval of at most seven days; no network request is authorized by a malformed interval. |
+
+## Protected ONVIF recorder replay input
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-ONVIF-REPLAY-HANDOFF-001` | The private selected-recording document is malformed, incomplete, inconsistent or outside its strict bounded schema | Recreate a complete protected handoff through an explicitly approved fss-onvif replay operation. Preserve unknown bounds/lifetime; native recording-range refusals retain their specific error codes. |
+| `ERR-CAPTURE-ONVIF-REPLAY-HANDOFF-001` | Protected input, exact file digest/fingerprint, source/native option isolation or destination separation is invalid | Restore the exact private file and independently supplied native source/custody configuration, then preview again. No recorder, credential or capture store is admitted through this refusal. |
+| `ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001` | The top-level replay wrapper approval or revalidated private file/native child plan does not match | Inspect a fresh wrapper preview and approve its exact top-level identity; replacing a file with identical bytes still changes its fingerprint. A nested native approval cannot authorize the source-bearing wrapper. |
+
+## Historical recorder RTP timestamps
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-RTP-REPLAY-EXTENSION-LENGTH-001` | Known ONVIF 0xABAC extension does not have the fixed three-word AVC/HEVC layout | Preserve the original datagram and report unusable historical time; combined JPEG extensions require a separately supported profile. |
+| `ERR-RTP-REPLAY-RESERVED-001` | A must-be-zero replay flag bit is set | Preserve the assertion as unusable; do not mask an unknown protocol interpretation into a valid time. |
+| `ERR-RTP-REPLAY-TIME-UNKNOWN-001` | The raw NTP timestamp is zero, meaning unknown or unsynchronized | Retain the raw assertion and flags; do not turn it into an epoch using a requested range, receive clock or era guess. |
+| `ERR-RTP-REPLAY-UTC-RANGE-001` | The explicit NTP era and outward-rounded fraction fall outside the admitted 1970-9999 UTC profile | Review the external era basis; do not clamp the value or erase numeric uncertainty. |
+| `ERR-RTP-REPLAY-CSEQ-INVALID-001` | The caller supplied a zero full PLAY CSeq | Supply the actual successful PLAY coordinate from an independently verified receipt. |
+| `ERR-RTP-REPLAY-CSEQ-MISMATCH-001` | The recorder extension differs from the successful PLAY CSeq's low byte | Preserve an uncorrelated assertion; never substitute another receipt. A matching low byte still does not authenticate a full PLAY identity. |
+
+## Cold recorder UTC query
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-REPLAY-TIME-SCOPE-001` | Independent catalog/source scope or receipt/request identity is invalid | Supply the complete intended scope and nonzero production SHA-256 pins retained from the approved capture. Stored metadata cannot grant replacement pins or select a codec. |
+| `ERR-REPLAY-TIME-INTERVAL-001` | The half-open UTC interval is empty, reversed or outside 1970–9999 | Supply explicit ordered Unix-nanosecond bounds and the intended external NTP era. Do not clip the request or use receive/PLAY time to fill missing source assertions. |
+| `ERR-REPLAY-TIME-LIMIT-001` | Admission, original-payload reservation/read, allocation or aggregate result ceiling refused the complete query | Review exact limits or select a smaller independently pinned receipt. Each original reserves 32 MiB before reading; sample/packet limits do not lower intrinsic native verifier work. No truncated result or source fallback is returned. |
+| `ERR-REPLAY-TIME-CUSTODY-001` | Exact receipt, current root/slot, source closure, native verification or tombstone checks failed | Preserve current custody and inspect the intended independent pins and underlying typed refusal. Do not recreate missing originals, substitute another codec/request or treat refusal as absence. |
+| `ERR-REPLAY-TIME-CANCELLED-001` | The existing I/O owner observed cancellation during cold load, native projection or final checks | Retain existing originals and retry only with a fresh valid owner/deadline scope if desired. No partial successful report is released and no prior publication is retracted. |
+
+Invalid CLI arguments, archive-open failures and output failures retain the existing CLI
+error identities. Unusable per-sample replay extensions are explicit unknown rows with
+the packet error code where applicable; they do not erase the sample or fail a sound
+original's custody verification.

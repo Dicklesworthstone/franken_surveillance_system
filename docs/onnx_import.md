@@ -46,6 +46,7 @@ including hand-computed dense and convolution/pooling results.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
+  DepthToSpace, SpaceToDepth,
   Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
   Shape, INT64 ConstantOfShape, Equal and Where also support the bounded shape programs below; F32 data
   selection uses the separate static Gather profile described below.
@@ -72,6 +73,42 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Spatial and channel rearrangement
+
+[DepthToSpace-13](https://onnx.ai/onnx/operators/onnx__DepthToSpace.html#depthtospace-13)
+and [SpaceToDepth-13](https://onnx.ai/onnx/operators/onnx__SpaceToDepth.html#spacetodepth-13)
+accept static positive rank-four F32 tensors in NCHW layout. They enable imported
+pixel-shuffle upsampling and spatial feature packing without interpolation or a
+new runtime operator. Both require a positive integer `blocksize`. DepthToSpace
+requires channels divisible by its square and accepts the source's default
+`DCR` ordering or explicit `CRD`. SpaceToDepth requires both spatial dimensions
+divisible by the block size and uses the opset-13 DCR inverse ordering. It does
+not accept the `mode` attribute introduced by a later operator schema.
+
+Each source node lowers to exactly one native Reshape, one Transpose and one
+final Reshape, with no generated parameter tensors and no floating-point
+arithmetic. Input bits, including signed zeros and subnormals, survive the
+rearrangement exactly. Each intermediate has the same element count as its
+input. The importer reserves all three nodes and two private tensor names,
+checks shape arithmetic and the tensor ceiling before expansion, and charges
+the existing cumulative import budget. The normal executor memory/work budget
+and cancellation checks still govern inference. Original ONNX bytes, parameters,
+generation bindings and frozen Model IR v1 identities retain their existing
+meaning; the source-bound importer identity includes the new lowering.
+
+The spatial contracts in `onnx_attention_execution` exercise DCR/CRD ordering,
+multiple batches and rectangular inputs, exact finite bits, the inverse
+composition, and a convolution-to-pixel-shuffle head. They run both production
+CPU executors and reload the actual canonical graph and Safetensors artifacts.
+Invalid blocks, nondivisible shapes, ranks, dtypes, attributes, exceeded
+arithmetic/resource limits and cancellation refuse. Helper names cannot capture
+source tensors. These contracts establish operator compatibility, not a trained
+model's quality or activation.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution spatial_
+```
 
 ## Decomposed normalization and GELU
 
@@ -1454,3 +1491,58 @@ quality, calibrated threat probabilities or absence of activity. The package com
 validation scope is documented separately. A broader exporter/model corpus, model
 qualification and local DSR qualification remain separate work. The existing
 Safetensors and canonical-graph import paths are unchanged.
+
+## Explicit feature-pyramid assembly for DFL detectors
+
+`decode_onnx_dfl_pyramid` accepts an `OnnxDflPyramidDecode` profile with
+1–8 explicitly ordered levels. Each level names a declared F32 output, unique stride
+and `Nchw` or `Nhwc` layout. For target `[H,W]`, a level must have
+`[1,4*bins+scores,H/s,W/s]` or `[1,H/s,W/s,4*bins+scores]` exactly.
+Names, layout and stride are never inferred from model family or graph output order.
+
+The adapter packs each level into row-major cells using frozen Transpose/Reshape
+operations, concatenates levels in caller order, and invokes the existing native DFL
+expected-bin decoder. The complete score tail is copied without applying an activation
+or selecting classes. The caller still supplies score semantics to the package detector.
+The temporary packed output is removed from the public outputs after composition;
+all original outputs remain in order and the new decoded output is appended.
+
+Full packing and decoding costs share the original source import's node, tensor,
+parameter, byte and work allowances. Validation reserves the complete expansion before
+generated payload construction and accounts for the final graph validation. Cancellation
+and quota refusal return no partly converted graph. Source bytes, original parameter
+bits and frozen IR/operator tables retain their meanings; the conversion implementation
+is included in the separate source-bound importer identity.
+
+The shared `tests/fixtures/model/onnx_dfl_pyramid.rs` fixture has nonzero RGB
+weights, three mixed-layout levels and an independent image-coordinate/binary64
+softmax oracle. The actual production scalar and optimized executors and real
+canonical/Safetensors reload are exercised by the `onnx_attention_execution` target.
+This is bounded detector-output assembly, not a general model-family or accuracy claim.
+
+## Full-class Softmax for split detector outputs
+
+`assemble_onnx_softmax_split_head` uses the explicit `OnnxSplitHeadAssembly`
+roles, layouts and class map. Native Softmax processes the complete original
+score axis before any selected-class Slice. The adapter then delegates to the
+unchanged split-head assembler. Rows tensors normalize axis two; Channels tensors
+normalize axis one. Unselected and background slots retain their probability
+mass; selected scores are not renormalized.
+
+The final output contains unchanged box fields followed by the ordered selected
+probabilities. Original raw logits, boxes and auxiliary outputs remain intact.
+Only the new assembled output becomes public; the normalized intermediate stays
+private. The full original class tensor, all generated nodes/names and final
+output are admitted against the original cumulative limits before construction.
+Original source/control bytes and conversion work remain charged through final
+graph validation and cancellation.
+
+Eight new actual-source tests cover dominant omitted background, all four layout
+pairs, 257 original classes, extreme finite logits, ties, sparse class order,
+repeated assembly and helper collisions, exact limits and every cancellation
+checkpoint. The shared `tests/fixtures/model/onnx_softmax_split.rs` fixture has
+RGB-dependent logits, an auxiliary IR-v2 output and an independent full-axis
+softmax oracle. Both production executors and actual canonical/Safetensors
+reload run these cases. The complete unfiltered attention/import target passed
+82 tests on nightly-2026-08-31; this does not establish trained detector accuracy
+or execution of the separate package/CLI contracts.

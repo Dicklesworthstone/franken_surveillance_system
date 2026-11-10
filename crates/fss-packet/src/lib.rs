@@ -10,10 +10,10 @@
 pub mod access_unit;
 pub mod avc;
 pub mod cadence;
-/// Restricted, bounded local D-Bus handshake framing for future BlueZ access.
-pub mod dbus_handshake;
 /// Scoped, bounded BlueZ signal decoding without I/O or authority inference.
 pub mod dbus_bluez_signal;
+/// Restricted, bounded local D-Bus handshake framing for future BlueZ access.
+pub mod dbus_handshake;
 /// Bounded read-only D-Bus ObjectManager body parsing for BlueZ inventory.
 pub mod dbus_object_manager;
 /// Bounded, source-preserving parsing of the experimental UniFi extended-FLV wire format.
@@ -27,6 +27,8 @@ pub mod jpeg;
 pub mod ntp;
 /// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
 pub mod onvif_metadata;
+/// Bounded recorded-RTP time assertions with an explicitly supplied NTP era.
+pub mod onvif_replay;
 /// Bounded reassembly of the experimental UniFi BLE packet stream.
 pub mod unifi_ble;
 /// Bounded, untrusted Ubiquiti discovery datagram parsing.
@@ -79,4 +81,9 @@ pub use onvif_metadata::{
     OnvifMetadataError, OnvifMetadataFailure, OnvifMetadataLimits, OnvifMetadataOutput,
     OnvifMetadataReceiveAdmission, OnvifMetadataReceiveCancellation, OnvifMetadataReceiveError,
     OnvifMetadataReceivePoll, OnvifMetadataReceiver, OnvifMetadataSourceSpan, OnvifMetadataStatus,
+};
+
+pub use onvif_replay::{
+    MAX_RECORDED_UTC_NS, REPLAY_EXTENSION_BYTES, REPLAY_EXTENSION_PROFILE, RecordedUtcInterval,
+    ReplayExtensionError, ReplayHeaderExtension, parse_replay_extension,
 };

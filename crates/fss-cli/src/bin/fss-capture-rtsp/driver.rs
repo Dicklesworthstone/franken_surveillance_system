@@ -1850,6 +1850,17 @@ pub(super) fn execute_observed_attempt(
     source: Option<&SourceConfig>,
     observer: Option<&mut dyn FnMut(NativeAttemptObservation)>,
 ) -> Result<AttemptOutcome, &'static str> {
+    let protected_replay = options
+        .replay
+        .as_ref()
+        .is_some_and(|request| request.onvif_source().is_some());
+    // A generic caller cannot admit protected replay using only the nested native digest
+    // or substitute another wrapper's source/supervision grant for its exact outer approval.
+    if protected_replay != options.protected_replay_approval().is_some()
+        || (protected_replay && (source.is_some() || supervision.is_some()))
+    {
+        return Err("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001");
+    }
     let approval = match source {
         Some(source) => source.digest(options)?,
         None => options.digest()?,

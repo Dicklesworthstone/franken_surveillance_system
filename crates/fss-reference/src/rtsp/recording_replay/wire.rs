@@ -21,8 +21,9 @@ pub(super) fn encode(
     publication_complete: bool,
 ) -> Result<Vec<u8>> {
     let mut out = CanonicalEncoder::new();
-    out.text(REPLAY_RECEIPT_DOMAIN);
+    out.text(request.receipt_domain());
     out.u64(VERSION);
+    if let Some(source) = request.onvif_source() { source.encode(&mut out); }
     encode_recording_scope(&mut out, request.scope());
     out.digest(request.route());
     out.text(&request.window().to_string());
@@ -74,6 +75,7 @@ pub(super) fn encode_scope(out: &mut CanonicalEncoder, scope: &CatalogScope) {
 
 pub(super) fn decode(
     bytes: &[u8],
+    expected_codec: ReplayCodec,
     expected_scope: &CatalogScope,
     expected_request: ContentDigest,
 ) -> Result<ReplayReceipt> {
@@ -85,14 +87,31 @@ pub(super) fn decode(
     }
     trailer.ensure_finished().map_err(bad)?;
     let mut input = CanonicalDecoder::new(&bytes[..body_end]);
-    if input.text().map_err(bad)? != REPLAY_RECEIPT_DOMAIN || input.u64().map_err(bad)? != VERSION {
+    let domain = input.text().map_err(bad)?;
+    let onvif_domain = match expected_codec {
+        ReplayCodec::Avc => ONVIF_AVC_REPLAY_RECEIPT_DOMAIN,
+        ReplayCodec::Hevc => ONVIF_HEVC_REPLAY_RECEIPT_DOMAIN,
+    };
+    if (domain != expected_codec.receipt_domain() && domain != onvif_domain)
+        || input.u64().map_err(bad)? != VERSION
+    {
         return Err(ReplayReceiptError::Malformed);
     }
+    let source = if domain == onvif_domain {
+        if input.text().map_err(bad)? != ONVIF_REPLAY_SOURCE_DOMAIN {
+            return Err(ReplayReceiptError::Malformed);
+        }
+        Some(OnvifReplaySource::new(
+            input.digest().map_err(bad)?, input.digest().map_err(bad)?, input.digest().map_err(bad)?,
+            input.digest().map_err(bad)?, input.digest().map_err(bad)?, input.digest().map_err(bad)?,
+            input.digest().map_err(bad)?, input.digest().map_err(bad)?, input.digest().map_err(bad)?,
+        )?)
+    } else { None };
     let recording = decode_recording_scope(&mut input)?;
     let route = input.digest().map_err(bad)?;
     let window = decode_window(&mut input)?;
     let base = input.digest().map_err(bad)?;
-    let request = ReplayRequest::new(recording, route, window, base)?;
+    let request = ReplayRequest::for_source(expected_codec, recording, route, window, base, source)?;
     if input.digest().map_err(bad)? != request.digest() || request.digest() != expected_request {
         return Err(ReplayReceiptError::Scope);
     }
@@ -134,6 +153,7 @@ pub(super) fn decode(
         let leaves = [input.digest().map_err(bad)?, input.digest().map_err(bad)?,
             input.digest().map_err(bad)?, input.digest().map_err(bad)?];
         windows.push(ReplayWindowProof {
+            codec: expected_codec,
             slot,
             summary: RecordingSummary { root, scope: scope.recording.clone(), packets, samples,
                 nals, time_scale: scope.time_scale, decode_interval: start..end },

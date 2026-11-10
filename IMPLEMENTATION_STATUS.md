@@ -4,6 +4,312 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Cold recorder-reported UTC queries over retained AVC/HEVC
+
+`fss-archive query-replay-utc` now connects the native ONVIF 0xABAC timestamp
+parser to independently pinned replay receipts and cold original-source
+verification. Exact native packet mappings produce sample citations, explicit
+unknowns and separate HEVC source-only lookahead. Whole access-unit ownership
+includes AVC parameter sets relocated into initialization and HEVC in-band
+prefixes. Missing first assertions cannot be repaired by later packets;
+conflicting or malformed assertions remain unknown.
+
+An explicit external NTP era yields outward-rounded nanosecond enclosures of
+recorder assertions. Decode/presentation order, B-frame reordering, raw NTP and
+C/E/D/T flags remain visible. Requested/acknowledged ranges, receive clocks and
+RTCP never substitute for historical UTC. Low-byte CSeq agreement does not prove
+full PLAY identity. Physical clock error, coverage and absence remain unknown.
+Deterministic index/report identities bind every association and exact query,
+while existing source, live capture and replay receipt encodings remain unchanged.
+
+Metadata admission precedes original I/O. Every original child read is capped by
+the remaining native 32 MiB window allowance before allocation, including hostile
+later-child replacements. Sample/packet limits bound admitted and projected
+counts; malformed descriptors can still consume the verifier's intrinsic bounded
+per-window work before refusal. Result ceilings count matches, unknowns and
+source-only rows together; no partial report is returned on budget, custody or
+cancellation failure. Final source/receipt/tombstone checks remain mandatory.
+
+Validation: **36 native parser contracts passed** on pinned nightly `2026-08-31`:
+18 replay-extension/era contracts and 18 shared production ONVIF wire contracts,
+with zero executed-test failures or ignored cases. The latter target exercises
+14 recorder-wire and four existing snapshot-wire contracts. The 18 new native
+source/custody and eight new CLI process contracts remain **unexecuted**. Four
+full-build or metadata-check attempts were terminated by SIGKILL while compiling
+unchanged Asupersync 0.5.0, before the new reference or CLI feature source compiled.
+
+Independent source/API review, scoped pinned formatting and `git diff --check`
+are complete. The parser passes do not establish cold-query source association,
+custody or operator execution, hardware interoperability or release qualification.
+No dependency or qualification gate has changed. The [retained native results](docs/validation/2026-11-10-recorder-time-native-results.json)
+record exact source identities, commands, passing targets and blocked attempts.
+
+See [operator commands and precise time/budget semantics](docs/RECORDER_TIMESTAMP_QUERY.md).
+Replay-provenance-preserving ordinary import, calibrated device time and complete
+historical retrieval remain open. This advances VIT-022 without closing it.
+
+## Full-class detector probabilities before foreground selection
+
+Recipe `fss.onnx_rgb_package_recipe.v6` now provisions split-output detectors
+whose scores are mutually exclusive class logits. Native Softmax includes the
+complete original class axis before selecting explicit label slots, so omitted
+background/no-object classes retain their probability mass. Selected foreground
+scores are never renormalized. The package requires probability interpretation
+and rejects a second activation, objectness or conflicting conversion modes.
+Existing v1-v5 recipe meanings and the FMPK/report formats remain unchanged.
+
+The adapter supports explicit Rows/Channels layouts, 1-257 original classes and
+up to 256 selected classes. It preserves raw boxes/logits, auxiliary outputs,
+source bytes, parameter bits, IR version and generation. Temporary normalization
+stays internal. Complete expansion bounds, original conversion work, source-name
+reservations and cancellation remain enforced. Privacy replacement still occurs
+before image/model execution and private-footprint screening after detection.
+
+All **82 unfiltered native attention/import tests passed** on the pinned nightly,
+including eight new Softmax and eight pyramid contracts. Both production executors
+and actual canonical/Safetensors reload are exercised with independent oracles,
+all layout combinations, an omitted dominant background, 257-class normalization,
+resource boundaries and cancellation. The seven newly added v6 package/CLI
+contracts cover archive reload, one correct foreground detection, masked-pixel
+invariance, strict admission, v4 compatibility and exclusive output creation;
+their full-runtime execution remains pending.
+
+Scoped pinned formatting passes on all 13 touched Rust files. Standard Draft
+2020-12 schema validation accepts the complete v6 fixture, rejects 12 malformed
+variants and retains v4 fixture validity. Robot documentation was regenerated
+from the merged registries, including concurrent recording changes. The prior
+native runtime builds stopped at unchanged Asupersync with SIGKILL, and hosted
+jobs still lacked assigned runners at the last observation. No full runtime,
+local DSR, hardware interoperability or trained-model accuracy pass is claimed.
+
+See `docs/ONNX_PACKAGE_IMPORT.md`, `scripts/check_onnx_package.sh` and
+`docs/SESSION_HANDOFF_2026-11-10_MODEL_PROVISIONING.json`. WP-080/FSS-138/FSS-139
+remain open beyond these admitted detector conversion profiles.
+
+## Historical recording discovery through protected native capture
+
+Operators can now run `fss-onvif recordings` to obtain a complete bounded private
+recording inventory, `fss-onvif replay` to select one exact recording/codec/interval
+and obtain its scoped URI, then `fss-capture-rtsp from-onvif-replay` to acquire original
+AVC or HEVC media through the existing native archive owner. This closes the manual
+recorder-URI gap while preserving separate discovery and capture approvals.
+
+Selection validates exact recording token, one video track, state and every supplied
+recording/video bound before acquiring a URI. Unknown extrema and URI lifetime remain
+explicit; there is no interval clipping, live fallback, continuous-retention or
+calibrated historical-time claim. The existing HTTP, Digest/UsernameToken, scoped RTSP,
+finite work/deadline and cancellation owners remain in use.
+
+The protected handoff retains complete canonical information, services and response
+identities. Native request construction binds nine observation/file pins before deriving
+the recording namespace. Exact outer capture approval survives in the durable companion
+receipt. Input replacement, relaxed permissions, unapproved overrides and nested-only
+approval refuse. Independently pinned cold inspection verifies source provenance and
+every original window after the private handoff is removed. Direct AVC/HEVC canonical
+bytes and original recording formats remain unchanged.
+
+The two feature checkpoints add 40 distinct contracts: 14 shared production-wire,
+10 native HTTP, 4 operator-plan/signing, 5 actual producer-process, 3 source-receipt and
+4 protected capture-process cases. Core tests exercise the same 14 production-wire
+contracts. The focused repository-owned script includes the new targets and existing
+ONVIF/direct-replay regressions; no gate, dependency, runtime or toolchain pin changed.
+
+Final GitHub snapshots have independent source/API/authority review. They have not been
+compiled, formatted or executed after the executor became unavailable. Earlier local
+production modules parsed with the pinned formatter, but that is not verification of
+the final reconstructed snapshot. The exact preceding 163-pass/10-failure native run
+and its separately committed corrections remain recorded without claiming a later pass.
+Native execution, local DSR, hardware interoperability, remote search sessions, multi-video
+selection and historical per-frame UTC indexing remain open. VIT-022 is not closed.
+
+See [operator commands and semantics](docs/ONVIF_RECORDING_DISCOVERY.md) and the
+[continuation record](docs/SESSION_HANDOFF_2026-11-10_RECORDING_DISCOVERY.json).
+
+## Multi-scale ONNX detector provisioning
+
+Recipe `fss.onnx_rgb_package_recipe.v5` now provisions native detector packages
+from separately named NCHW/NHWC feature-pyramid outputs. Each level explicitly
+binds its output, unique stride and layout. The importer validates exact
+target/stride shapes, packs levels in caller order, and runs the existing DFL
+decoder into a distinct rows/pixel-corners head. Temporary packing stays private;
+original outputs, source bytes and parameter bits remain retained.
+
+The package and CLI preserve explicit labels, probability/logit interpretation,
+objectness, privacy preprocessing and existing NMS behavior. Packed DFL, pyramid
+DFL and split-head assembly are mutually exclusive. All generated work shares
+the original import and decoding bounds. Recipe v1-v4, FMPK and report formats
+retain their meanings; no model family, trained accuracy or activation is inferred.
+
+All 74 unfiltered native attention/import contracts passed on the pinned nightly,
+including eight new pyramid cases, both production executors, actual
+canonical/Safetensors reload, independent RGB/grid oracles, bit-exact score tails,
+all mixed layouts, cumulative limits and cancellation. Three additional package
+contracts and three CLI contracts cover source-preserving archive reload,
+privacy screening, strict recipe admission and exclusive output creation; their
+full-runtime execution remains pending on the hosted native runner. The strict
+v5 schema and complete fixture validate, scoped formatting passes, and generated
+robot documentation now matches the machine registries.
+
+See `docs/ONNX_PACKAGE_IMPORT.md` and `scripts/check_onnx_package.sh`.
+This advances the bounded detector provisioning/execution path in WP-080/FSS-139;
+it does not establish arbitrary pretrained-model compatibility or release qualification.
+
+## HEVC recorder replay session admission
+
+The shared native RTSP session now admits explicit replay SETUP for both AVC and
+HEVC. Previously the HEVC archive/CLI owners selected replay correctly, but the
+session's H.264-only gate refused the next request with
+`Authentication(Session(State))`, before any SETUP reached the recorder.
+Live/replay mode separation, replay acknowledgement containment, Digest retries,
+response deadlines and JPEG/metadata exclusions retain their existing contracts.
+
+Six protocol regressions cover exact HEVC wire requests, negotiated SSRC,
+contained and malformed acknowledgements, recorder status refusals, Digest
+correlation/deadlines, and excluded codecs. The archive refusal fixture now
+checks the earlier source-bearing Description fault for an absent payload,
+including original SDP, closed transport, empty archive and unchanged pin journal,
+for both live and replay. Configuration refusals still require Selection errors.
+
+This repairs the production cause exposed by native hosted run 42758095012
+(job 129637080496). Source review is complete; execution of the new regressions
+and affected archive/CLI suites remains pending while the local executor is
+unavailable. No runtime, dependency, profile bound or qualification gate changed.
+
+## Durable local review delivery and restart reconciliation
+
+`fss-export review-read` now records a guarded destination-bound attempt before
+creating a private file, then records completion only after complete held-file
+readback and renewed grant/source/privacy/deletion checks. Stable delivery
+identity permits a fresh current-time attestation after a restart. A synced
+complete file can be reconciled without rewriting; a missing or partial file
+remains explicitly indeterminate and is never automatically recreated.
+
+Completed retries recheck exact bytes, length, device/inode, private mode,
+single-link status and retained modification/change timestamps. They return the
+same receipt without another ledger transition. Generic append APIs cannot
+forge either delivery family or shadow its object namespace. Original reader
+scope remains bound across retries; adding the separately required export-commit
+capability to a read-only preview does not change that binding.
+
+`review-delivery-show` exposes recipient-scoped audit metadata after expiry,
+revocation and deletion without reading the external file or granting disclosure.
+Delivery audit children contain metadata only, so source deletion and the
+concurrent explicit review-expiry cleanup can remove pixels without destroying
+the delivery history. A local readback receipt does not assert remote receipt,
+authentication, permanent file presence or copy recall.
+
+All five canonical record contracts passed on the pinned nightly against the
+exact production wire module. Six native lifecycle contracts, four CLI
+restart/filesystem contracts and one CLI admission contract cover the new
+behavior; their full-runtime execution remains unverified. The 19 scoped review
+modules pass the semantic import check, and each of the three new canonical
+domains is registered once. Pinned formatting and scoped whitespace checks pass.
+
+The initial reference check and a fresh native-test build on merged source
+`48d2bc7` both stopped when unchanged Asupersync 0.5.0 rustc received SIGKILL,
+before FSS delivery diagnostics or test execution. The signal alone does not
+establish the exact kill cause. The hosted jobs were still queued or pending
+without an assigned runner at the final observation. No runtime, dependency,
+toolchain or qualification gate was replaced or weakened; no native integration
+or release-qualification pass is claimed.
+
+This advances VIT-023 / FSS-068. The exact commands, passing checks, retained
+native build log and outstanding validation obligation are recorded in
+[`SESSION_HANDOFF_2026-11-10_DELIVERY_LAYOUT.json`](docs/SESSION_HANDOFF_2026-11-10_DELIVERY_LAYOUT.json).
+See [`RETAINED_REVIEW_MEDIA.md`](docs/RETAINED_REVIEW_MEDIA.md) for operation and recovery.
+
+## Native ONNX pixel shuffle and unshuffle
+
+The opset-13 importer accepts static positive rank-four F32
+`DepthToSpace` (default DCR or explicit CRD) and `SpaceToDepth`.
+Both lower to the existing native Reshape, Transpose and Reshape operators.
+No runtime operator, generated parameter tensor, foreign framework or frozen
+Model IR v1 identity is added. Complete helper-expansion quotas, checked shape
+arithmetic, source-name reservations and cancellation apply before expansion.
+
+All **50** targeted attention/import regression contracts passed on
+`nightly-2026-08-31`, including **nine new spatial contracts**. Positive fixtures
+execute the real scalar and optimized implementations before and after canonical
+graph/Safetensors reload. Literal and independent coordinate oracles cover
+DCR/CRD ordering, inverse composition, convolution heads, multiple batches,
+rectangular shapes, blocks 1–3 and extreme finite sample bits. The established
+isolated-import command excludes 16 unrelated embedded executor unit tests.
+This is focused FSS-138/FSS-139 progress; broader model qualification remains open.
+See [`onnx_import.md`](docs/onnx_import.md).
+
+## Source-preserving cleanup of expired review derivatives
+
+`fss-event delete review-expiry-plan` now inventories current retained reviews
+for one exact sensor and classifies immutable grant expiry against explicit
+owner-attested time bounds. `review-expiry-commit` revalidates the complete
+selection and deletion closure against its exact plan and approval. The new
+v4 scope selects derivative roots with an empty source-import member list;
+source recordings, current sibling reviews, shared media and bounded issuance
+audit metadata remain retained. Active source holds exclude their descendants;
+unheld eligible reviews can still be selected. The closure follows downstream
+review references without following provenance back to original evidence.
+
+The existing tombstone-before-unlink protocol denies media reads through every
+interruption. Cold retries resume the same retained plan, and completed retries
+return the same completion without another mutation. `fss-export review-show`
+reports deleted audit metadata, exact plan/completion and historical revocation
+separately. Agent orientation names the deleted reviews and retained sources.
+Original deletion v1/v2/v3 and live review-report formats remain unchanged.
+
+Twelve reference lifecycle contracts, two canonical-selection unit contracts,
+five actual-process CLI contracts and three parser contracts cover expiry
+uncertainty/boundaries, held and unheld cohorts, current sibling/shared-byte
+preservation, orphan-source preservation, every deletion cutpoint, cold retries,
+stale time/holds/approvals, metadata inspection, source deletion and strict
+inventory limits. Pinned Rust parsing/formatting of changed clean files and
+whitespace checks pass; native execution is pending the supplemental focused
+hosted run. The unchanged local Asupersync compiler-memory blocker remains;
+no local full-build or release-qualification pass is claimed.
+
+A follow-up correction permits a newly approved grant to reconstruct identical
+screened payloads from a preserved original after completed derivative expiry.
+Every historical deletion of either reusable payload must be that narrow scope;
+the new preparation must include each verified completion anchor. Incomplete or
+source-scoped deletions still refuse, old grants remain denied, and an exact old
+completion retry cannot unlink the new publication. Regressions continue through
+a second expiry, a new hold and eventual source deletion. The reference hold
+fixture also now uses a valid identifier under the existing admission rules.
+
+This advances VIT-006 (`fss-vit-je36t.6`) and VIT-023
+(`fss-vit023-review-export-w8aai`). It provides exact local physical cleanup;
+automatic scheduling, authenticated remote review, upstream copies and broader
+production qualification remain open. See
+[`REVIEW_MEDIA_EXPIRY.md`](docs/REVIEW_MEDIA_EXPIRY.md).
+
+## Native HEVC recorder-window retrieval
+
+The bounded recorder replay path now supports HEVC as well as AVC. An explicitly
+approved HEVC request selects replay SETUP/PLAY before the first protocol request,
+requires the pinned SSRC and validated closed UTC acknowledgement, and retains
+original windows through the existing native HEVC source and publication owners.
+Protocol refusal cannot fall back to a live stream. The HEVC request, decode clock,
+receipt and slot have independent canonical domains; all existing AVC durable
+encodings remain unchanged. `fss-archive inspect-replay --codec hevc` requires
+the exact receipt root, request and scope and revalidates every original through
+the native HEVC loader. Wrong codec, changed pins, damaged custody and deleted
+originals refuse.
+
+New contracts exercise native automatic selection, real loopback CLI acquisition
+and acknowledgement refusal, codec separation, interrupted receipt publication,
+cold reopen and archive inspection. Parsing with pinned rustfmt and whitespace checks
+pass. Full local reference/CLI execution remains blocked by the unchanged
+Asupersync 0.5.0 metadata compiler being killed before FSS diagnostics (about
+1.98 GiB peak RSS in the recorded baseline). The new repository-owned
+`scripts/check_recording_lifecycle.sh replay` runs these supplemental contracts
+early in the hosted workflow; results are pending at this implementation
+checkpoint. No dependency, toolchain pin or qualification gate was weakened.
+
+This advances `fss-vit022-recorder-retrieval-5js5o` / VIT-022. Profile G discovery,
+vendor inventory, verified upstream retention and full qualification remain open.
+Requested and acknowledged UTC are recorder assertions, not frame capture times
+or proof that the whole requested interval was retrieved. See
+[`RTSP_RECORDER_REPLAY.md`](docs/RTSP_RECORDER_REPLAY.md).
+
 ## Retained screened review clips and local delivery
 
 `fss-export review` adds the local acquisition-to-review step: an exact retained

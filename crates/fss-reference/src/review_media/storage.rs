@@ -3,7 +3,7 @@
 
 use super::record::{hex, slot, valid_digest};
 use super::*;
-use crate::deletion::DeletionIndex;
+use crate::deletion::{DeletionIndex, DeletionScope};
 use fss_core::{BatchId, EvidenceDelta, ObjectId, Plane};
 use fss_object::ObjectManifest;
 use fss_publication::{
@@ -74,6 +74,45 @@ fn publication_children(record: &ReviewMediaRecord) -> Vec<ContentDigest> {
     children
 }
 
+/// A separately approved grant may reproduce its screened payload from still-retained
+/// originals after derivative expiry finished. Every deletion of the digest must be that
+/// narrow completed scope, already included in this new issuance's preparation basis.
+/// Old review roots/identities remain terminal, and global digest availability is unchanged.
+fn reusable_expired_payload(
+    deleted: &DeletionIndex,
+    record: &ReviewMediaRecord,
+    digest: ContentDigest,
+) -> bool {
+    if deleted.object(digest).is_none() {
+        return true;
+    }
+    // Check all generations, not only the latest deletion indexed for this digest. A later
+    // expiry must never hide a previous source/sensor/event/retention deletion declaration.
+    deleted
+        .entries()
+        .iter()
+        .filter(|entry| {
+            entry
+                .plan
+                .deletable
+                .binary_search_by_key(&digest, |object| object.digest)
+                .is_ok()
+        })
+        .all(|entry| {
+            if !matches!(&entry.plan.scope, DeletionScope::ReviewExpiry(selection)
+            if !selection.roots().contains(&record.root()))
+                || !entry.is_complete()
+            {
+                return false;
+            }
+            entry.completion_anchor.as_ref().is_some_and(|completed| {
+                let basis = record.basis();
+                basis.site_lineage == completed.site_lineage
+                    && (basis.commit_sequence > completed.commit_sequence || basis == completed)
+            })
+        })
+}
+
 pub(super) fn not_deleted(
     d: &ReferenceDeployment,
     record: &ReviewMediaRecord,
@@ -82,17 +121,19 @@ pub(super) fn not_deleted(
     if deleted
         .import(record.grant().request().import_identity)
         .is_some()
+        || deleted.review(record.root()).is_some()
         || [
             record.root(),
             record.digest(),
-            record.media_digest(),
-            record.render_receipt_digest(),
             record.grant().request().import_root,
             record.source_manifest(),
         ]
         .into_iter()
         .any(|digest| deleted.object(digest).is_some())
         || deleted.unit_deleted(&format!("slot:{}", record.slot()?.as_str()))
+        || ![record.media_digest(), record.render_receipt_digest()]
+            .into_iter()
+            .all(|digest| reusable_expired_payload(&deleted, record, digest))
     {
         return Err(ReviewMediaError::Deleted);
     }
@@ -109,7 +150,7 @@ fn graph_record(
     }
     checkpoint(cx, "review_media:read_record")?;
     let deleted = DeletionIndex::read(d).map_err(|_| ReviewMediaError::AuthorityChanged)?;
-    if deleted.object(root).is_some() {
+    if deleted.object(root).is_some() || deleted.review(root).is_some() {
         return Err(ReviewMediaError::Deleted);
     }
     let spool = d.publisher().spool();
@@ -192,12 +233,27 @@ fn state(
     record: &ReviewMediaRecord,
     cx: &ReplayCx,
 ) -> Result<Option<bool>, ReviewMediaError> {
+    state_through(d, record, cx, None)
+}
+
+/// After an approved expiry, the append-only issuance/withdrawal prefix remains inspectable.
+/// This path is metadata-only: a deleted revocation payload is reconstructed deterministically
+/// and matched to its ledger digest. It is never used to authorize media delivery.
+fn state_through(
+    d: &ReferenceDeployment,
+    record: &ReviewMediaRecord,
+    cx: &ReplayCx,
+    through: Option<u64>,
+) -> Result<Option<bool>, ReviewMediaError> {
     let object = record.object_id()?;
     let expected_publish = publication_delta(record)?;
     let expected_revoke = revocation_delta(record)?;
     let mut published = false;
     let mut revoked = false;
-    for batch in d.ledger().batches() {
+    for (position, batch) in d.ledger().batches().iter().enumerate() {
+        if through.is_some_and(|last| position as u64 >= last) {
+            break;
+        }
         checkpoint(cx, "review_media:history")?;
         for delta in &batch.deltas {
             if delta.object_id != object {
@@ -216,12 +272,14 @@ fn state(
                 && batch.batch_id == batch_id(record, true)?
                 && batch.deltas.len() == 1
             {
-                let bytes = d
-                    .publisher()
-                    .spool()
-                    .read_bounded(delta.payload_digest, MAX_REVIEW_RECORD_BYTES)?;
-                if bytes != revocation_bytes(record) {
-                    return Err(ReviewMediaError::CustodyMismatch);
+                if through.is_none() {
+                    let bytes = d
+                        .publisher()
+                        .spool()
+                        .read_bounded(delta.payload_digest, MAX_REVIEW_RECORD_BYTES)?;
+                    if bytes != revocation_bytes(record) {
+                        return Err(ReviewMediaError::CustodyMismatch);
+                    }
                 }
                 let mut expected = vec![record.root(), delta.payload_digest];
                 expected.sort_unstable();
@@ -233,6 +291,9 @@ fn state(
                 return Err(ReviewMediaError::CustodyMismatch);
             }
         }
+    }
+    if through.is_some() {
+        return Ok(published.then_some(revoked));
     }
     match d.ledger().current().objects.get(&object) {
         None if !published => Ok(None),
@@ -271,6 +332,61 @@ pub(super) fn read_record(
         Some(true) if !allow_revoked => Err(ReviewMediaError::Revoked),
         Some(_) => Ok(record),
     }
+}
+
+/// Read-only deletion-owner inspection of a currently retained issuance, including withdrawal.
+pub(crate) fn inspect_for_expiry(
+    d: &ReferenceDeployment,
+    root: ContentDigest,
+    cx: &ReplayCx,
+) -> Result<ReviewMediaRecord, ReviewMediaError> {
+    read_record(d, root, cx, true)
+}
+
+fn expired_record(
+    d: &ReferenceDeployment,
+    root: ContentDigest,
+    cx: &ReplayCx,
+) -> Result<Option<ReviewMediaRecord>, ReviewMediaError> {
+    checkpoint(cx, "review_media:expiry_metadata")?;
+    let deleted = DeletionIndex::read(d).map_err(|_| ReviewMediaError::AuthorityChanged)?;
+    let Some(entry) = deleted.review(root) else {
+        return Ok(None);
+    };
+    let crate::deletion::DeletionScope::ReviewExpiry(selection) = &entry.plan.scope else {
+        return Err(ReviewMediaError::CustodyMismatch);
+    };
+    let candidate = selection
+        .candidates()
+        .iter()
+        .find(|candidate| candidate.root() == root)
+        .ok_or(ReviewMediaError::CustodyMismatch)?;
+    let bytes = d
+        .publisher()
+        .spool()
+        .read_bounded(candidate.record_digest(), MAX_REVIEW_RECORD_BYTES)?;
+    let record = ReviewMediaRecord::from_bytes(&bytes, candidate.record_digest())?;
+    if record.root() != root
+        || record.identity() != candidate.identity()
+        || record.grant().request().import_identity != candidate.import_identity()
+        || record.grant().request().expires_at != candidate.expires_at()
+        || &record.grant().request().sensor != selection.request().sensor()
+        || record.grant().site() != d.site_lineage()
+        || !entry.plan.retained.iter().any(|retained| {
+            retained.digest == record.digest() && retained.reason == "review_expiry_audit_metadata"
+        })
+    {
+        return Err(ReviewMediaError::CustodyMismatch);
+    }
+    verify_preparation_basis(d, &record, cx)?;
+    state_through(
+        d,
+        &record,
+        cx,
+        Some(entry.plan.basis_anchor.commit_sequence),
+    )?
+    .ok_or(ReviewMediaError::CustodyMismatch)?;
+    Ok(Some(record))
 }
 
 fn read_receipt(
@@ -433,7 +549,10 @@ pub fn inspect_review_media(
     cx: &ReplayCx,
 ) -> Result<ReviewMediaRecord, ReviewMediaError> {
     authorize(d, a, cx, CAP_EXPORT_PREPARE)?;
-    let record = read_record(d, root, cx, true)?;
+    let record = match expired_record(d, root, cx)? {
+        Some(record) => record,
+        None => read_record(d, root, cx, true)?,
+    };
     if record.grant().owner().as_str() != a.principal || record.authority() != authority_binding(a)
     {
         return Err(ReviewMediaError::Unauthorized);
@@ -449,7 +568,11 @@ pub fn review_grant_revoked(
     cx: &ReplayCx,
 ) -> Result<bool, ReviewMediaError> {
     let record = inspect_review_media(d, root, a, cx)?;
-    state(d, &record, cx)?.ok_or(ReviewMediaError::CustodyMismatch)
+    let deleted = DeletionIndex::read(d).map_err(|_| ReviewMediaError::AuthorityChanged)?;
+    let through = deleted
+        .review(root)
+        .map(|entry| entry.plan.basis_anchor.commit_sequence);
+    state_through(d, &record, cx, through)?.ok_or(ReviewMediaError::CustodyMismatch)
 }
 
 /// Prepare an exact local revocation. This never deletes source/derivative bytes or recalls copies.
@@ -460,6 +583,7 @@ pub fn revocation_approval(
     cx: &ReplayCx,
 ) -> Result<ContentDigest, ReviewMediaError> {
     let record = inspect_review_media(d, root, a, cx)?;
+    not_deleted(d, &record)?;
     let mut e = CanonicalEncoder::new();
     e.text("fss.review_media_revoke_approval.v1");
     e.digest(record.root());

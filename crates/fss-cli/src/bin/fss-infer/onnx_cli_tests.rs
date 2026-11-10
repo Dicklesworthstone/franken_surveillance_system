@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "onnx_cli_tests/head_softmax.rs"]
+mod head_softmax;
+
 const RECIPE: &[u8] =
     include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe.json");
 const RECIPE_V2: &[u8] =
@@ -372,3 +375,6 @@ fn command_creates_verified_package_then_refuses_overwrite() -> RunResult<()> {
 
 #[path = "onnx_cli_tests/split_head.rs"]
 mod split_head;
+
+#[path = "onnx_cli_tests/dfl_pyramid.rs"]
+mod dfl_pyramid;

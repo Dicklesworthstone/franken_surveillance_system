@@ -11,7 +11,7 @@ pub(super) mod proof;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::{ContentDigest, EvidenceDeltaBatch};
+use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerAnchor};
 
 use super::DeletionError;
 use super::plan::DeletionPlan;
@@ -26,6 +26,9 @@ pub struct DeletionEntry {
     pub plan: DeletionPlan,
     /// Completion record identity, once appended.
     pub completion_digest: Option<ContentDigest>,
+    /// Verified authority position after the exact completion append. Absent for an
+    /// incomplete deletion; a staged completion payload does not establish this position.
+    pub completion_anchor: Option<LedgerAnchor>,
 }
 
 impl DeletionEntry {
@@ -100,6 +103,16 @@ impl DeletionIndex {
     #[must_use]
     pub fn import(&self, import: ContentDigest) -> Option<&DeletionEntry> {
         self.imports.get(&import).map(|at| &self.entries[*at])
+    }
+
+    /// The approved expiry deletion of one review root, including a partially applied plan.
+    /// Shared payloads may remain, so physical object absence is not the authority for this state.
+    #[must_use]
+    pub fn review(&self, root: ContentDigest) -> Option<&DeletionEntry> {
+        self.entries.iter().find(|entry| match &entry.plan.scope {
+            super::DeletionScope::ReviewExpiry(selection) => selection.roots().contains(&root),
+            _ => false,
+        })
     }
 
     /// The deletion that removed object `digest`, if any.

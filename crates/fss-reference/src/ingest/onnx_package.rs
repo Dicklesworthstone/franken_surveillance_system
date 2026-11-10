@@ -10,11 +10,13 @@ use fss_core::{
     Generation, ModelGeneration, SchemaId,
 };
 pub use fss_model_ir::{
-    OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform, OnnxSplitHeadAssembly,
+    OnnxChannelOrder, OnnxDflHeadDecode, OnnxDflPyramidDecode, OnnxDflPyramidLayout,
+    OnnxDflPyramidLevel, OnnxHeadLayout, OnnxImageTransform, OnnxSplitHeadAssembly,
 };
 use fss_model_ir::{
-    OnnxError, OnnxExportLimits, OnnxLimits, assemble_onnx_split_head, decode_onnx_dfl_head,
-    export_onnx_artifacts, import_onnx, transform_onnx_image,
+    OnnxError, OnnxExportLimits, OnnxLimits, assemble_onnx_softmax_split_head,
+    assemble_onnx_split_head, decode_onnx_dfl_head, decode_onnx_dfl_pyramid, export_onnx_artifacts,
+    import_onnx, transform_onnx_image,
 };
 use fss_object::{
     MAX_RESTRICTION_LEN, MAX_RESTRICTIONS_COUNT, MAX_SOURCE_IDENTITY_LEN, MAX_SPDX_LEN,
@@ -22,7 +24,7 @@ use fss_object::{
     ModelPackage, ModelPackageArchive, ModelPackageArtifact, ModelPackageError,
 };
 
-use super::rgb_detections::{HeadBoxes, HeadLayout, RgbDetectionContract};
+use super::rgb_detections::{HeadBoxes, HeadLayout, HeadScore, RgbDetectionContract};
 use super::rgb_package::{
     GRAPH_ARTIFACT, LICENSE_ARTIFACT, MAX_RGB_PACKAGE_BYTES, NOTICE_ARTIFACT, PackageHeadSpec,
     PackageSource, RgbDetectorPackage, RgbPackageError, RgbPackageSpec, SPEC_ARTIFACT,
@@ -63,10 +65,20 @@ pub struct OnnxPackageRecipe {
     /// Optional recipe-v3 static anchor-free DFL decoder. The existing head selects
     /// its new rows/pixel-corner output; the original raw output remains available.
     pub head_decode: Option<OnnxDflHeadDecode>,
+    /// Optional recipe-v5 DFL decoder for explicitly named rank-four feature levels.
+    /// Caller order binds each level to its stride; layouts are never inferred.
+    /// Mutually exclusive with packed-head decoding and split-head assembly.
+    pub head_pyramid: Option<OnnxDflPyramidDecode>,
     /// Optional recipe-v4 assembly of named box and score outputs. The explicit class
     /// indices are in label order; source outputs remain intact. Mutually exclusive
     /// with DFL decoding, and requires a rows head without an objectness field.
     pub head_assembly: Option<OnnxSplitHeadAssembly>,
+    /// Optional recipe-v6 full-class Softmax before named split-head selection.
+    /// Every source class participates, including omitted background slots; selected
+    /// probabilities are not renormalized. Requires a rows/probability head, no
+    /// objectness, and one explicit source index per label. Mutually exclusive
+    /// with every other head conversion mode.
+    pub head_softmax_assembly: Option<OnnxSplitHeadAssembly>,
     /// Already-decoded dense detection-head semantics.
     pub head: PackageHeadSpec,
     /// Ordered unique class labels.
@@ -230,10 +242,31 @@ fn spec(
             .validate_rgb_range(recipe.scale_to_unit)
             .map_err(|_| OnnxPackageError::Recipe("invalid or overflowing image normalization"))?;
     }
-    if recipe.head_decode.is_some() && recipe.head_assembly.is_some() {
+    if usize::from(recipe.head_decode.is_some())
+        + usize::from(recipe.head_pyramid.is_some())
+        + usize::from(recipe.head_assembly.is_some())
+        + usize::from(recipe.head_softmax_assembly.is_some())
+        > 1
+    {
         return Err(OnnxPackageError::Recipe(
-            "DFL decoding and split-head assembly are mutually exclusive",
+            "packed DFL, pyramid DFL, split-head assembly, and class-softmax assembly are mutually exclusive",
         ));
+    }
+    if let Some(decode) = &recipe.head_pyramid {
+        decode
+            .validate()
+            .map_err(|_| OnnxPackageError::Recipe("invalid DFL pyramid profile"))?;
+        if recipe.head.layout != HeadLayout::Rows
+            || recipe.head.boxes != HeadBoxes::PixelCorners
+            || decode
+                .levels
+                .iter()
+                .any(|level| level.output == recipe.head.output_port)
+        {
+            return Err(OnnxPackageError::Recipe(
+                "DFL pyramid requires a distinct rows/pixel-corner output",
+            ));
+        }
     }
     if let Some(assembly) = &recipe.head_assembly {
         assembly
@@ -247,6 +280,22 @@ fn spec(
         {
             return Err(OnnxPackageError::Recipe(
                 "split-head assembly requires a distinct rows output, no objectness, and one explicit source index per label",
+            ));
+        }
+    }
+    if let Some(assembly) = &recipe.head_softmax_assembly {
+        assembly
+            .validate()
+            .map_err(|_| OnnxPackageError::Recipe("invalid class-softmax split-head profile"))?;
+        if recipe.head.layout != HeadLayout::Rows
+            || recipe.head.class_score != HeadScore::Probability
+            || recipe.head.objectness.is_some()
+            || assembly.class_indices.len() != recipe.labels.len()
+            || assembly.boxes_output == recipe.head.output_port
+            || assembly.scores_output == recipe.head.output_port
+        {
+            return Err(OnnxPackageError::Recipe(
+                "class-softmax assembly requires a distinct rows/probability output, no objectness, and one explicit source index per label",
             ));
         }
     }
@@ -395,8 +444,32 @@ pub fn import_onnx_package(
     } else {
         imported
     };
+    let imported = if let Some(decode) = &request.recipe.head_pyramid {
+        decode_onnx_dfl_pyramid(
+            imported,
+            decode,
+            &spec.head.output_port,
+            spec.target,
+            spec.labels.len() + usize::from(spec.head.objectness.is_some()),
+            limits.import,
+            &cancelled,
+        )?
+    } else {
+        imported
+    };
     let imported = if let Some(assembly) = &request.recipe.head_assembly {
         assemble_onnx_split_head(
+            imported,
+            assembly,
+            &spec.head.output_port,
+            limits.import,
+            &cancelled,
+        )?
+    } else {
+        imported
+    };
+    let imported = if let Some(assembly) = &request.recipe.head_softmax_assembly {
+        assemble_onnx_softmax_split_head(
             imported,
             assembly,
             &spec.head.output_port,

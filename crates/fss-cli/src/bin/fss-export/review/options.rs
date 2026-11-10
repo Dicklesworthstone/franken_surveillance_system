@@ -33,6 +33,9 @@ pub(super) enum Action {
         output: PathBuf,
         approval: Option<ContentDigest>,
     },
+    DeliveryShow {
+        identity: ContentDigest,
+    },
     Revoke {
         root: ContentDigest,
         approval: Option<ContentDigest>,
@@ -85,6 +88,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, String> {
             "--approve",
         ],
         "review-show" => &["--review-root"],
+        "review-delivery-show" => &["--delivery-id"],
         "review-read" => &["--review-root", "--attested-now-ns", "--out", "--approve"],
         "review-revoke" => &["--review-root", "--approve"],
         _ => return Err("unknown review action".into()),
@@ -115,7 +119,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, String> {
         .map_err(|_| "invalid site lineage")?;
     let principal = match values.get("--principal") {
         Some(_) => text(&values, "--principal")?,
-        None if command == "review-read" => {
+        None if matches!(command, "review-read" | "review-delivery-show") => {
             return Err("review-read requires the explicit recipient --principal".into());
         }
         None => "principal:local-operator",
@@ -160,6 +164,10 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, String> {
                 access,
             }),
             approval,
+        }
+    } else if command == "review-delivery-show" {
+        Action::DeliveryShow {
+            identity: digest(text(&values, "--delivery-id")?)?,
         }
     } else {
         let root = digest(text(&values, "--review-root")?)?;

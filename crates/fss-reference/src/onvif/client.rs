@@ -8,6 +8,9 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
+#[path = "client/recording.rs"]
+pub mod recording;
+
 use super::authentication::{UsernameToken, UtcDateTime};
 use super::http::{
     HttpAuthority, HttpDenial, HttpError, HttpExchange, HttpLimits, HttpOperation, HttpProgress,
@@ -265,6 +268,8 @@ pub enum ClientError {
     Scope,
     /// Invalid, absent or non-video profile selection.
     Profile,
+    /// Exact recording selection, advertised state or requested bounds were refused.
+    Recording(wire::RecordingCheckError),
     /// Service, transport, or MIME type is outside the implemented subset.
     Unsupported,
     /// The whole onboarding deadline was exceeded or invalid.
@@ -295,6 +300,7 @@ impl ClientError {
             Self::HttpStatus(_) => "ERR-ONVIF-STATUS-001",
             Self::Scope => "ERR-ONVIF-SCOPE-001",
             Self::Profile => "ERR-ONVIF-PROFILE-001",
+            Self::Recording(error) => error.code(),
             Self::Unsupported => "ERR-ONVIF-UNSUPPORTED-001",
             Self::Deadline => "ERR-ONVIF-DEADLINE-001",
             Self::Cancelled => "ERR-ONVIF-CANCELLED-001",
@@ -322,6 +328,9 @@ impl From<WireError> for ClientError {
     fn from(error: WireError) -> Self {
         Self::Wire(error)
     }
+}
+impl From<wire::RecordingCheckError> for ClientError {
+    fn from(error: wire::RecordingCheckError) -> Self { Self::Recording(error) }
 }
 impl From<AuthenticationError> for ClientError {
     fn from(error: AuthenticationError) -> Self {
@@ -390,33 +399,7 @@ pub fn run(
             MediaVersion::Media2 => wire::get_media2_stream_uri_request(token),
         })
         .transpose()?;
-    let mut budget = SessionBudget::default();
-    let now = budget.now(config, cx)?;
-    if config.deadline_ns.saturating_sub(now) > MAX_SESSION_NS {
-        return Err(ClientError::Deadline);
-    }
-
-    if matches!(
-        config.auth.as_ref(),
-        Some(AuthenticationConfig::UsernameTokenDigest)
-    ) {
-        let request = wire::get_system_date_and_time_request();
-        let response = send(config, &config.device, &request, None, cx, &mut budget)?;
-        if response.status() == 401 {
-            return Err(ClientError::AuthenticationRefused);
-        }
-        let observed_ns = budget.now(config, cx)?;
-        let utc = wire::parse_system_date_and_time(soap_body(&response)?)?;
-        let now = budget.now(config, cx)?;
-        cx.checkpoint(
-            &config.device,
-            HttpOperation::Release,
-            now,
-            config.deadline_ns,
-        )
-        .map_err(wsse_checkpoint_error)?;
-        budget.authentication_time = Some(AuthenticationTime { utc, observed_ns });
-    }
+    let mut budget = start_session(config, cx)?;
 
     let discovery_request = match config.media_version {
         MediaVersion::Media1 => wire::get_capabilities_request(),
@@ -488,6 +471,39 @@ pub fn run(
         selection,
         exchanges: budget.exchanges,
     })
+}
+
+/// Shared owner preserves PRE_AUTH time, authentication and the six-attempt ceiling.
+fn start_session(config: &ClientConfig, cx: &impl OnvifContext) -> Result<SessionBudget, ClientError> {
+    let mut budget = SessionBudget::default();
+    let now = budget.now(config, cx)?;
+    if config.deadline_ns.saturating_sub(now) > MAX_SESSION_NS {
+        return Err(ClientError::Deadline);
+    }
+
+    if matches!(
+        config.auth.as_ref(),
+        Some(AuthenticationConfig::UsernameTokenDigest)
+    ) {
+        let request = wire::get_system_date_and_time_request();
+        let response = send(config, &config.device, &request, None, cx, &mut budget)?;
+        if response.status() == 401 {
+            return Err(ClientError::AuthenticationRefused);
+        }
+        let observed_ns = budget.now(config, cx)?;
+        let utc = wire::parse_system_date_and_time(soap_body(&response)?)?;
+        let now = budget.now(config, cx)?;
+        cx.checkpoint(
+            &config.device,
+            HttpOperation::Release,
+            now,
+            config.deadline_ns,
+        )
+        .map_err(wsse_checkpoint_error)?;
+        budget.authentication_time = Some(AuthenticationTime { utc, observed_ns });
+    }
+
+    Ok(budget)
 }
 
 #[derive(Default)]

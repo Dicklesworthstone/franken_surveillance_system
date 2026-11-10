@@ -1,14 +1,15 @@
 #![forbid(unsafe_code)]
-//! Request/acknowledgement custody over the exact durable AVC recording prefix.
+//! Request/acknowledgement custody over the exact durable native recording prefix.
 
 use fss_cli::agent_json::{object, string};
 use fss_core::ContentDigest;
 use fss_publication::{LocalPublicationState, LocalRootPublisher, SlotName};
 use fss_reference::rtsp::client::replay::{ReplayAcceptance, ReplayWindow};
 use fss_reference::rtsp::recording::PreparedRecording;
+use fss_reference::rtsp::recording::hevc::PreparedHevcRecording;
 use fss_reference::rtsp::recording_replay::{
     MAX_REPLAY_WINDOWS, ReplayReceipt, ReplayRequest, ReplayTermination, ReplayWindowProof,
-    publish_replay_receipt, replay_slot,
+    publish_replay_receipt,
 };
 
 use super::{Failure, Options, Owner};
@@ -59,17 +60,30 @@ impl CaptureReplay {
         slot: SlotName,
         recording: &PreparedRecording,
     ) -> Result<(), Failure> {
+        let proof = ReplayWindowProof::from_avc(slot, recording).map_err(|_| Failure::State)?;
+        self.prepare_proof(proof)
+    }
+
+    pub(super) fn prepare_hevc_window(
+        &mut self,
+        slot: SlotName,
+        recording: &PreparedHevcRecording,
+    ) -> Result<(), Failure> {
+        let proof = ReplayWindowProof::from_hevc(slot, recording).map_err(|_| Failure::State)?;
+        self.prepare_proof(proof)
+    }
+
+    fn prepare_proof(&mut self, proof: ReplayWindowProof) -> Result<(), Failure> {
         if self.acceptance.is_none() || self.pending.is_some() {
             return Err(Failure::State);
         }
+        if proof.codec() != self.request.codec() { return Err(Failure::State); }
         if self.windows.len() >= MAX_REPLAY_WINDOWS {
             return Err(Failure::WorkBudget);
         }
         // Reserve before retaining another descriptor. Original media is not copied.
         self.windows.try_reserve(1).map_err(|_| Failure::WorkBudget)?;
-        self.pending = Some(
-            ReplayWindowProof::from_avc(slot, recording).map_err(|_| Failure::State)?,
-        );
+        self.pending = Some(proof);
         Ok(())
     }
 
@@ -100,8 +114,9 @@ impl CaptureReplay {
     }
 
     pub(super) fn report(&self) -> String {
-        object(&[
+        let mut fields = vec![
             ("source", string("recorder_replay")),
+            ("codec", string(self.request.codec().as_str())),
             ("request_identity", string(&self.request.digest().to_text())),
             ("requested_range", string(&self.request.window().to_string())),
             ("acknowledgement", self.acknowledgement_json()),
@@ -131,7 +146,11 @@ impl CaptureReplay {
             ("complete_interval_retrieval", "false".into()),
             ("upstream_retention_known", "false".into()),
             ("automatic_live_fallback", "false".into()),
-        ])
+        ];
+        if let Some(source) = self.request.onvif_source() {
+            fields.push(("onvif_source", fss_cli::onvif_replay_plan::source_json(source)));
+        }
+        object(&fields)
     }
 
     pub(super) fn publish(
@@ -152,12 +171,14 @@ impl CaptureReplay {
         let result = (|| {
             owner.begin_drain()?;
             owner.storage_check()?;
-            // Supervised single capture admits the complete outer approval before
-            // delegating its nested capture digest. Retain the caller's exact
-            // approval, including the watchdog policy, in the durable companion.
-            let approval = match owner.supervision {
-                Some(supervision) => supervision.approval(),
-                None => options.digest().map_err(|_| Failure::Configuration)?,
+            // Preserve the exact admitted outer approval, including the protected input or
+            // watchdog policy. The delegated native digest cannot substitute for that grant.
+            let approval = match options.protected_replay_approval() {
+                Some(outer) => outer,
+                None => match owner.supervision {
+                    Some(supervision) => supervision.approval(),
+                    None => options.digest().map_err(|_| Failure::Configuration)?,
+                },
             };
             let receipt = ReplayReceipt::prepare(
                 self.request.clone(),
@@ -169,8 +190,7 @@ impl CaptureReplay {
                 publication_complete,
             )
             .map_err(|_| Failure::State)?;
-            let slot = replay_slot(receipt.scope(), receipt.request().digest())
-                .map_err(|_| Failure::State)?;
+            let slot = receipt.slot().map_err(|_| Failure::State)?;
             self.unsettled = true;
             let published = match publish_replay_receipt(&receipt, publisher, owner) {
                 Ok(published) => published,

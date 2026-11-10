@@ -12,6 +12,8 @@ mod authentication;
 mod driver;
 #[path = "fss-capture-rtsp/from_onvif.rs"]
 mod from_onvif;
+#[path = "fss-capture-rtsp/from_onvif_replay.rs"]
+mod from_onvif_replay;
 #[path = "fss-capture-rtsp/from_unifi.rs"]
 mod from_unifi;
 #[path = "fss-capture-rtsp/jpeg.rs"]
@@ -38,6 +40,7 @@ fn main() -> ExitCode {
         .skip(1)
         .take(
             from_onvif::MAX_ARGUMENTS
+                .max(from_onvif_replay::MAX_ARGUMENTS)
                 .max(from_unifi::MAX_ARGUMENTS)
                 .max(sentinel::MAX_ARGUMENTS)
                 + 2,
@@ -61,13 +64,16 @@ fn main() -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("from-onvif") {
         return onvif_main(&args[1..]);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("from-onvif-replay") {
+        return onvif_replay_main(&args[1..]);
+    }
     if args.first().and_then(|arg| arg.to_str()) == Some("from-unifi") {
         return unifi_main(&args[1..]);
     }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(plan::HELP.as_bytes()).and_then(|()| {
             write_bounded(single::HELP.as_bytes()).and_then(|()| {
-                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nNative JPEG capture/cold replay: fss-capture-rtsp jpeg --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nPrivate UniFi Protect selection: fss-capture-rtsp from-unifi --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
+                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nNative JPEG capture/cold replay: fss-capture-rtsp jpeg --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nPrivate ONVIF recorder replay: fss-capture-rtsp from-onvif-replay --help\nPrivate UniFi Protect selection: fss-capture-rtsp from-unifi --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
             })
         }) {
             Ok(()) => ExitCode::SUCCESS,
@@ -152,6 +158,25 @@ fn onvif_main(args: &[std::ffi::OsString]) -> ExitCode {
         Ok(plan) => plan,
         Err(code) => {
             eprintln!("{code}: invalid private ONVIF handoff plan; use from-onvif --help");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+    finish(if plan.approved() {
+        plan.execute()
+    } else {
+        plan.preview()
+            .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
+    })
+}
+
+fn onvif_replay_main(args: &[std::ffi::OsString]) -> ExitCode {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return finish(write_bounded(from_onvif_replay::HELP.as_bytes()));
+    }
+    let plan = match from_onvif_replay::SourcePlan::parse(args) {
+        Ok(plan) => plan,
+        Err(code) => {
+            eprintln!("{code}: invalid private recorder replay plan; use from-onvif-replay --help");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
     };

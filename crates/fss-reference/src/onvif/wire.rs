@@ -20,6 +20,8 @@ mod lifecycle;
 mod media2;
 #[path = "wire/pullpoint.rs"]
 mod pullpoint;
+#[path = "wire/recording.rs"]
+pub mod recording;
 #[path = "wire/time.rs"]
 mod time;
 #[path = "wire/xml.rs"]
@@ -55,6 +57,15 @@ pub use pullpoint::{
     parse_pull_point_subscription, parse_renew_response, parse_unsubscribe_response,
     pull_messages_request, renew_pull_point_request, require_relates_to,
     unsubscribe_pull_point_request, validate_relates_to,
+};
+pub use recording::{
+    AdvertisedRecordingRange, MAX_RECORDING_DESCRIPTION_BYTES, MAX_RECORDING_INFORMATION_BYTES,
+    MAX_RECORDING_TRACKS, MAX_RECORDINGS, RECORDING_INFORMATION_DOMAIN, RECORDING_SERVICES_DOMAIN,
+    RecordingCheckError, RecordingInformation, RecordingItem, RecordingList,
+    RecordingRangeAssessment, RecordingService, RecordingServices, RecordingSource,
+    RecordingStatus, RecordingTrack, RecordingTrackInformation, RecordingTrackType, ReplayUri,
+    get_recording_information_request, get_recordings_request, get_replay_uri_request,
+    parse_recording_information, parse_recording_services, parse_recordings, parse_replay_uri,
 };
 pub use time::{
     UtcDateTime, get_system_date_and_time_request, parse_metadata_utc_nanoseconds,
@@ -109,6 +120,12 @@ pub enum OnvifOperation {
     GetMedia2Profiles,
     /// Request the selected Media2 profile's RTSP-over-TCP presentation URI.
     GetMedia2StreamUri,
+    /// Enumerate existing recording configurations without creating a search or job.
+    GetRecordings,
+    /// Read exact selected recording metadata through the Search service.
+    GetRecordingInformation,
+    /// Obtain an RTSP/TCP replay URI for one existing recording; no playback is started.
+    GetReplayUri,
     /// Create one finite transient event subscription, with explicit owner authority.
     CreatePullPointSubscription,
     /// Pull vendor event notifications from the exact acquired subscription.
@@ -134,6 +151,9 @@ impl OnvifOperation {
             Self::GetServices => "http://www.onvif.org/ver10/device/wsdl/GetServices",
             Self::GetMedia2Profiles => "http://www.onvif.org/ver20/media/wsdl/GetProfiles",
             Self::GetMedia2StreamUri => "http://www.onvif.org/ver20/media/wsdl/GetStreamUri",
+            Self::GetRecordings => "http://www.onvif.org/ver10/recording/wsdl/GetRecordings",
+            Self::GetRecordingInformation => "http://www.onvif.org/ver10/search/wsdl/GetRecordingInformation",
+            Self::GetReplayUri => "http://www.onvif.org/ver10/replay/wsdl/GetReplayUri",
             Self::CreatePullPointSubscription => {
                 "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest"
             }
@@ -451,6 +471,14 @@ pub enum SoapFaultSubcode {
     InvalidArgVal,
     /// The requested profile does not exist.
     NoProfile,
+    /// The requested recording does not exist according to the device.
+    NoRecording,
+    /// The device refused the recording or track token.
+    InvalidToken,
+    /// The device refused the requested streaming transport.
+    InvalidStreamSetup,
+    /// The device reported a stream-resource conflict.
+    StreamConflict,
     /// No subcode was supplied.
     Absent,
     /// A supplied subcode is outside the admitted vocabulary.
@@ -491,6 +519,8 @@ pub enum WireError {
     ProfileLimitExceeded,
     /// More advertised services were supplied than can be checked completely.
     ServiceLimitExceeded,
+    /// More recordings or tracks were supplied than can be represented completely.
+    RecordingLimitExceeded,
     /// More event notifications were supplied than can be represented completely.
     EventLimitExceeded,
     /// More Source, Key, or Data items were supplied than this subset permits.
@@ -522,6 +552,7 @@ impl fmt::Display for WireError {
             Self::InvalidField => f.write_str("invalid ONVIF response field"),
             Self::ProfileLimitExceeded => f.write_str("ONVIF profile count exceeds limit"),
             Self::ServiceLimitExceeded => f.write_str("ONVIF service count exceeds limit"),
+            Self::RecordingLimitExceeded => f.write_str("ONVIF recording or track count exceeds limit"),
             Self::EventLimitExceeded => f.write_str("ONVIF event count exceeds limit"),
             Self::ItemLimitExceeded => f.write_str("ONVIF event item count exceeds limit"),
             Self::AnalyticsLimitExceeded => f.write_str("ONVIF analytics count exceeds limit"),
@@ -877,6 +908,10 @@ fn fault(doc: &xml::Document, fault: usize) -> Result<SoapFault, WireError> {
             (ERROR_NS, "ActionNotSupported") => SoapFaultSubcode::ActionNotSupported,
             (ERROR_NS, "InvalidArgVal") => SoapFaultSubcode::InvalidArgVal,
             (ERROR_NS, "NoProfile") => SoapFaultSubcode::NoProfile,
+            (ERROR_NS, "NoRecording") => SoapFaultSubcode::NoRecording,
+            (ERROR_NS, "InvalidToken") => SoapFaultSubcode::InvalidToken,
+            (ERROR_NS, "InvalidStreamSetup") => SoapFaultSubcode::InvalidStreamSetup,
+            (ERROR_NS, "StreamConflict") => SoapFaultSubcode::StreamConflict,
             _ => SoapFaultSubcode::Unknown,
         };
         parent = nested;

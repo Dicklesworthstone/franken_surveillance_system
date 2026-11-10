@@ -86,7 +86,7 @@ pub enum ClientCommand {
     Describe,
     /// Negotiate the selected TCP-interleaved media track.
     Setup,
-    /// Negotiate AVC recorder playback with the required ONVIF replay option.
+    /// Negotiate AVC or HEVC recorder playback with the required ONVIF replay option.
     SetupReplay,
     /// Start the negotiated session.
     Play,
@@ -565,7 +565,8 @@ impl RtspClientSession {
             ClientCommand::Options | ClientCommand::Describe => self.state == ClientState::Idle,
             ClientCommand::Setup => self.state == ClientState::Described,
             ClientCommand::SetupReplay => {
-                self.state == ClientState::Described && self.codec == ClientCodec::H264
+                self.state == ClientState::Described
+                    && matches!(self.codec, ClientCodec::H264 | ClientCodec::H265)
             }
             ClientCommand::Play => self.state == ClientState::Ready && !self.replay_setup,
             ClientCommand::PlayReplay(_) => self.state == ClientState::Ready && self.replay_setup,

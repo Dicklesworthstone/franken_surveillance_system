@@ -9,6 +9,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      - 'scripts/check_recording_lifecycle.sh'
       - '.github/workflows/reference-rust.yml'
   workflow_dispatch:
 
@@ -34,12 +35,20 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify native recorder replay and durable receipts
+        if: success() || failure()
+        run: bash scripts/check_recording_lifecycle.sh replay
+      - name: Verify review expiry and source-preserving deletion
+        if: success() || failure()
+        run: bash scripts/check_recording_lifecycle.sh review-expiry
       - name: Verify owned runtime and recoverable effect transitions
+        if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-runtime --all-targets --all-features
       - name: Verify retained screened review lifecycle and private delivery
         if: success() || failure()
         run: |
           review_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-core --test review_delivery_record_contract || review_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media:: || review_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test review_media_contract || review_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export review:: || review_exit=1

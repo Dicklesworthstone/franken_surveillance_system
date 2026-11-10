@@ -1,0 +1,134 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-10",
+  "timezone": "UTC",
+  "observed_at": "2026-11-10T06:19:52Z",
+  "state": "functional_model_profiles_complete_native_package_cli_execution_pending",
+  "mission": "Implement high-impact remaining functionality and commit meaningful increments directly to main, without PRs.",
+  "parent": "bbb3d22dc4ec99930a75fb6b564e73fd1326428c",
+  "published_checkpoints": [
+    {
+      "commit": "2f402c29f76874d14a255cb6b85e761902b3af40",
+      "change": "Admit explicit native HEVC recorder replay SETUP and preserve source-bearing refusal evidence."
+    },
+    {
+      "commit": "73eb0a46e7b564e57b3ade27171a179adb6f51cf",
+      "change": "Assemble explicit named mixed-layout detector pyramid levels into bounded native DFL decoding."
+    },
+    {
+      "commit": "aa83e37650f888ea4762274a4046e16b451b7005",
+      "change": "Provision pyramid detectors through strict recipe v5, native package importer and CLI."
+    }
+  ],
+  "current_feature": "Recipe v6 normalizes all source classes before ordered foreground selection and requires probability scores; v4 raw-score assembly remains unchanged.",
+  "concurrent_changes_preserved": [
+    {
+      "commit": "9b2128037545fd83ffed43e348b9b401e2f9e2ad",
+      "change": "Independent ONVIF recording discovery implementation and evidence."
+    },
+    {
+      "commit": "bbb3d22dc4ec99930a75fb6b564e73fd1326428c",
+      "change": "Independent ONVIF discovery through protected native replay custody; included without rewriting its code."
+    }
+  ],
+  "verification": {
+    "model_target": {
+      "state": "passed",
+      "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution",
+      "passed": 82,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0,
+      "scope": "Actual scalar and optimized production executors, canonical graph and Safetensors reload; eight new pyramid and eight new class-softmax contracts.",
+      "duration_seconds": 116.37,
+      "exact_result": "test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 116.37s",
+      "evidence": "Observed native tool output; no complete filesystem log retained. Tested core files remain byte-identical after integration formatting.",
+      "tested_core_sha256": {
+        "crates/fss-model-ir/src/onnx/head_softmax.rs": "26c2bc61ce854087ae3fe320134f31bb4b13b976dc3e8e873457e8de72186591",
+        "crates/fss-model-ir/tests/onnx_attention_execution/head_softmax.rs": "04835351f28302cf613f07ee694d3e70778ad691867c51783e6c3aeada9c6944",
+        "tests/fixtures/model/onnx_softmax_split.rs": "dd47688d1df2ce392ce94de5d3c6a4bc7f86abbe130869e41f1bd5f64ac48db4"
+      }
+    },
+    "formatting": {
+      "state": "passed",
+      "scope": "13 touched Rust files with pinned rustfmt, skip_children=true; unrelated files excluded."
+    },
+    "schema": {
+      "state": "passed",
+      "validator": "Python jsonschema Draft202012Validator",
+      "valid": "complete v6 fixture and existing v4 fixture under its own schema",
+      "rejected_invalid_v6_variants": 12
+    },
+    "generated_robot_docs": {
+      "state": "passed",
+      "scope": "Current merged machine registries, including new v6 schema and concurrent recording registries.",
+      "command": "python3 scripts/generate_robot_docs.py --check"
+    },
+    "native_package_cli": {
+      "state": "pending",
+      "new_v5_package_tests": 3,
+      "new_v5_cli_tests": 3,
+      "new_v6_package_tests": 4,
+      "new_v6_cli_tests": 3,
+      "reason": "Final package/CLI targets have not executed. Previous faithful native builds stopped when unchanged Asupersync rustc received SIGKILL before project diagnostics; supplementary jobs still queued without runners."
+    },
+    "native_hevc": {
+      "state": "pending",
+      "new_session_tests": 6,
+      "reason": "New session/archive/CLI regressions require actual native execution; old failing native run established the repaired production gate and fixture issue."
+    },
+    "hosted_snapshot": {
+      "observed_at": "2026-11-10T06:19:52Z",
+      "onnx_head": "aa83e37650f888ea4762274a4046e16b451b7005",
+      "run": 42766253590,
+      "job": 129663327359,
+      "status": "queued",
+      "runner_id": 0,
+      "runner_name": "",
+      "recording_head": "bbb3d22dc4ec99930a75fb6b564e73fd1326428c",
+      "recording_run": 42766820459,
+      "recording_status": "pending",
+      "note": "These are observations before the current feature commit, not execution receipts for its final tree."
+    }
+  },
+  "obligations": [
+    {
+      "state": "open",
+      "work": "Execute the complete package and fss-infer CLI targets on a capable pinned native host, inspect concrete diagnostics, and repair any failures."
+    },
+    {
+      "state": "open",
+      "work": "Execute cumulative review delivery/expiry and HEVC recorder replay regressions; previous delivery obligations remain in their original handoff."
+    },
+    {
+      "state": "open",
+      "work": "Complete repository-owned local DSR qualification before any release claim; hosted results remain supplementary."
+    }
+  ],
+  "next_commands": [
+    "bash scripts/check_onnx_package.sh all",
+    "bash scripts/check_recording_lifecycle.sh all",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_replay_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test live_hevc_archive_contract"
+  ],
+  "remaining_product_limits": [
+    "Static bounded admitted ONNX profiles, not arbitrary model compatibility or trained detector accuracy.",
+    "No automatic background-index inference, class-map inference or score reinterpretation.",
+    "No claim of native camera/recorder interoperability or full release qualification.",
+    "WP-080, FSS-138/FSS-139, VIT-022 and VIT-023 remain open beyond the implemented slices."
+  ],
+  "operator_guides": [
+    "docs/ONNX_PACKAGE_IMPORT.md",
+    "docs/onnx_import.md",
+    "docs/RTSP_RECORDER_REPLAY.md",
+    "docs/SESSION_HANDOFF_2026-11-10_DELIVERY_LAYOUT.json"
+  ],
+  "authority": {
+    "commit_destination": "main",
+    "pull_requests_created": 0,
+    "live_device_contact": false,
+    "additional_production_dependencies": [],
+    "runtime_substitutions": false,
+    "qualification_gates_weakened": false
+  }
+}

@@ -20,19 +20,26 @@ use fss_publication::{
 };
 use fss_reference::rtsp::recording::{MAX_RECORDING_BYTES, RecordingScope};
 use fss_reference::rtsp::recording_archive::ArchiveNamespace;
+use fss_reference::rtsp::recording_archive::hevc::HevcArchiveNamespace;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::rtsp::recording_replay::{load_replay_receipt, replay_slot};
+use fss_reference::rtsp::recording_replay::{
+    ReplayCodec, hevc_replay_slot, load_hevc_replay_receipt, load_replay_receipt, replay_slot,
+};
+
+#[path = "replay_time.rs"]
+mod time;
 
 const MAX_REPORT_BYTES: usize = 64 * 1024;
+pub(super) const TIME_HELP: &str = time::HELP;
 pub(super) const HELP: &str = "fss-archive inspect-replay [options]\n\
-  Required: --root EXISTING_DIR --codec avc --sensor ID --stream ID --generation N\n\
+  Required: --root EXISTING_DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
             --decode-clock sha256:HEX --time-scale N\n\
             --expected-replay-root sha256:HEX --expected-replay-request sha256:HEX\n\
   Bounds: [--timeout-ms N] [--max-scan-roots N] [--max-objects N]\n\
           [--max-object-bytes N] [--max-total-bytes N]\n\
   Requires the exact replay-bound decode clock and independently pinned receipt/request.\n\
-  Revalidates every original AVC window and source closure before bounded JSON output.\n\
+  Revalidates every original window with the explicitly selected native codec verifier.\n\
   At most 64 original windows; output is at most 64 KiB and contains no source bytes.\n\
   Requested and acknowledged UTC ranges are protocol assertions, not calibrated frame\n\
   capture times. Publication completeness never proves complete requested UTC coverage.\n\
@@ -40,7 +47,8 @@ pub(super) const HELP: &str = "fss-archive inspect-replay [options]\n\
   it is not a forensic read-only open. No network, guessed pins, publication or deletion.\n";
 
 pub(super) fn handles(args: &[OsString]) -> bool {
-    args.first().is_some_and(|arg| arg == "inspect-replay")
+    args.first()
+        .is_some_and(|arg| arg == "inspect-replay" || arg == "query-replay-utc")
 }
 
 struct Error {
@@ -70,11 +78,13 @@ fn runtime(message: &'static str) -> Error {
 
 struct Options {
     root: PathBuf,
+    codec: ReplayCodec,
     scope: CatalogScope,
     receipt: ContentDigest,
     request: ContentDigest,
     storage: LocalPublicationLimits,
     timeout: Duration,
+    time: Option<time::QueryOptions>,
 }
 
 fn parse(args: &[OsString]) -> Result<Options> {
@@ -84,6 +94,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     {
         return Err(malformed("command or argument count/length bound exceeded"));
     }
+    let query_time = args[0] == "query-replay-utc";
     let allowed = [
         "--root",
         "--codec",
@@ -107,7 +118,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         let key = pair[0]
             .to_str()
             .ok_or_else(|| argument(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
-        if !allowed.contains(&key) {
+        if !allowed.contains(&key) && !(query_time && time::OPTIONS.contains(&key)) {
             return Err(argument(
                 ERR_CLI_UNKNOWN_OPTION,
                 "unknown or inapplicable option",
@@ -162,11 +173,15 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }
         Ok(value)
     };
-    if text("--codec")? != "avc" {
-        return Err(malformed(
-            "replay receipts require the explicit AVC profile",
-        ));
-    }
+    let codec = match text("--codec")? {
+        "avc" => ReplayCodec::Avc,
+        "hevc" => ReplayCodec::Hevc,
+        _ => {
+            return Err(malformed(
+                "replay receipts require explicit avc or hevc codec",
+            ));
+        }
+    };
     let scope = CatalogScope {
         recording: RecordingScope {
             sensor: SensorId::parse(text("--sensor")?)
@@ -182,7 +197,11 @@ fn parse(args: &[OsString]) -> Result<Options> {
     };
     let receipt = digest("--expected-replay-root")?;
     let request = digest("--expected-replay-request")?;
-    replay_slot(&scope, request).map_err(|_| malformed("invalid pinned replay scope"))?;
+    match codec {
+        ReplayCodec::Avc => replay_slot(&scope, request),
+        ReplayCodec::Hevc => hevc_replay_slot(&scope, request),
+    }
+    .map_err(|_| malformed("invalid pinned replay scope"))?;
     let scan = number("--max-scan-roots", Some(16_384), 1, 65_536)? as usize;
     let objects = number("--max-objects", Some(65_536), 1, 131_072)? as usize;
     let storage = LocalPublicationLimits::new(
@@ -210,8 +229,15 @@ fn parse(args: &[OsString]) -> Result<Options> {
     storage
         .validate()
         .map_err(|_| malformed("inconsistent storage ceilings"))?;
+    let time = if query_time {
+        Some(time::QueryOptions::parse(&values)?)
+    } else {
+        None
+    };
     Ok(Options {
+        time,
         root: PathBuf::from(required("--root")?),
+        codec,
         scope,
         receipt,
         request,
@@ -291,7 +317,14 @@ fn run(options: Options) -> Result<String> {
         .map_err(|_| runtime("archive open or exclusive ownership refused"))?;
     // Existing owner open is count/byte bounded but has no cancellation argument.
     clock.check()?;
-    let receipt = load_replay_receipt(
+    if let Some(query) = &options.time {
+        return time::run(&publisher, &options, query, &clock);
+    }
+    let load = match options.codec {
+        ReplayCodec::Avc => load_replay_receipt,
+        ReplayCodec::Hevc => load_hevc_replay_receipt,
+    };
+    let receipt = load(
         &publisher,
         options.receipt,
         &options.scope,
@@ -302,21 +335,30 @@ fn run(options: Options) -> Result<String> {
     clock.check()?;
     let request = receipt.request();
     let scope = receipt.scope();
-    let namespace = ArchiveNamespace::new(scope.clone())
-        .map_err(|_| runtime("verified replay namespace could not be reconstructed"))?;
-    let slot = replay_slot(scope, request.digest())
+    let namespace = match options.codec {
+        ReplayCodec::Avc => {
+            ArchiveNamespace::new(scope.clone()).map(|namespace| namespace.digest())
+        }
+        ReplayCodec::Hevc => {
+            HevcArchiveNamespace::new(scope.clone()).map(|namespace| namespace.digest())
+        }
+    }
+    .map_err(|_| runtime("verified replay namespace could not be reconstructed"))?;
+    let slot = receipt
+        .slot()
         .map_err(|_| runtime("verified replay slot could not be reconstructed"))?;
     let mut report = String::new();
     append(
         &mut report,
         &format!(
-            "{{\"schema\":\"fss.local_replay_operator_report.v1\",\"command\":\"inspect-replay\",\"codec\":\"avc\",\"replay_receipt_root\":{},\"replay_receipt_slot\":{},\"replay_request\":{},\"route\":{},\"approval\":{},\"namespace\":{},\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"base_decode_clock\":{},\"decode_clock\":{},\"time_scale\":{},",
+            "{{\"schema\":\"fss.local_replay_operator_report.v1\",\"command\":\"inspect-replay\",\"codec\":{},\"replay_receipt_root\":{},\"replay_receipt_slot\":{},\"replay_request\":{},\"route\":{},\"approval\":{},\"namespace\":{},\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"base_decode_clock\":{},\"decode_clock\":{},\"time_scale\":{},",
+            quoted(options.codec.as_str()),
             quoted(&receipt.root().to_text()),
             quoted(slot.as_str()),
             quoted(&request.digest().to_text()),
             quoted(&request.route().to_text()),
             quoted(&receipt.approval().to_text()),
-            quoted(&namespace.digest().to_text()),
+            quoted(&namespace.to_text()),
             quoted(scope.recording.sensor.as_str()),
             quoted(scope.recording.stream.as_str()),
             scope.recording.generation,
@@ -327,6 +369,15 @@ fn run(options: Options) -> Result<String> {
             scope.time_scale,
         ),
     )?;
+    if let Some(source) = request.onvif_source() {
+        append(
+            &mut report,
+            &format!(
+                "\"onvif_source\":{},",
+                fss_cli::onvif_replay_plan::source_json(source)
+            ),
+        )?;
+    }
     append(
         &mut report,
         &format!(
@@ -370,7 +421,11 @@ fn run(options: Options) -> Result<String> {
 
 pub(super) fn dispatch(args: &[OsString]) -> ExitCode {
     let result = if args.len() == 2 && args[1] == "--help" {
-        Ok(HELP.to_owned())
+        Ok(if args[0] == "query-replay-utc" {
+            TIME_HELP.to_owned()
+        } else {
+            HELP.to_owned()
+        })
     } else {
         parse(args).and_then(run)
     };
@@ -382,7 +437,7 @@ pub(super) fn dispatch(args: &[OsString]) -> ExitCode {
         Err(error) => {
             eprintln!("{}: {}", error.code, error.message);
             eprintln!(
-                "No complete report was emitted. Retain the exact replay pins and existing archive. Use fss-archive inspect-replay --help."
+                "No complete report was emitted. Retain the exact replay pins and existing archive. Use fss-archive help."
             );
             ExitCode::from(if error.usage {
                 ExitIdentity::MALFORMED_VALUE.code

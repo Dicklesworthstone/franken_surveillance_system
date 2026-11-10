@@ -1,0 +1,94 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-10",
+  "timezone": "UTC",
+  "state": "implemented_on_main_native_verification_pending",
+  "mission": {
+    "goal": "Complete consequential remaining recording and review functionality after reading the comprehensive plan and beads, with meaningful direct-main GitHub commits and no PRs.",
+    "initial_source_head": "ad252a5dfc870413e714ac8ca452c54222e34894",
+    "bead_scope": [
+      "VIT-022 / fss-vit022-recorder-retrieval-5js5o",
+      "VIT-006 / fss-vit-je36t.6",
+      "VIT-023 / fss-vit023-review-export-w8aai"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "normative_plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-10_RETAINED_REVIEW.json",
+    "replay_contract": "docs/RTSP_RECORDER_REPLAY.md",
+    "expiry_contract": "docs/REVIEW_MEDIA_EXPIRY.md",
+    "validation": "docs/validation/2026-11-10-recording-lifecycle.md",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "0cb32f803e44d1562f6694e65bbc8ee7870d402a",
+      "change": "Approved native HEVC recorder replay, codec-specific durable receipts and cold inspection, preserving AVC encodings."
+    },
+    {
+      "commit": "c83974f1f1ee1a23c1e712b01616175215f0a619",
+      "change": "Exact review expiry with original/shared-byte/hold preservation, v4 tombstone recovery, owner inspection and agent orientation."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Newly approved review reissue after verified completed expiry, keeping old grants terminal and pending/source deletions authoritative."
+    }
+  ],
+  "concurrent_main_changes_preserved": [
+    "c1318677f30928779967f4e9afabf3f1b7b196ea: native ONNX pixel shuffle/unshuffle",
+    "68477c202b653a439bd3bb1e18f5ef42c0f2c793: durable review delivery attempts and receipts",
+    "32ca1e8bd299eaf0cb52b7b65a64618f4b1514e4: CLI delivery reconciliation"
+  ],
+  "findings": [
+    "HEVC native capture existed but recorder replay and its durable cold receipt were AVC-only; explicit codec-specific request, clock, slot and verifier now complete that path.",
+    "Review grant expiry previously denied reads without physically cleaning derivatives; one exact approved v4 scope now selects derivative roots with no source-import members.",
+    "Source provenance must never be followed backward into original evidence during derivative-only orphan cleanup.",
+    "Identical derivative hashes can be reconstructed only for a fresh approved grant after every applicable expiry completion is included in its preparation basis; old grants and incomplete/source deletions remain denied.",
+    "The unchanged local Asupersync metadata build was killed before reaching FSS; hosted execution must supply actual native test evidence."
+  ],
+  "cases_and_falsifiers": [
+    {
+      "case": "Codec-bound replay custody",
+      "falsifiers": ["AVC bytes accepted as HEVC", "acknowledgement refusal falls back to live capture", "missing original accepted by cold receipt"]
+    },
+    {
+      "case": "Derivative-only expiry and reissue",
+      "falsifiers": ["source or current sibling removed", "source hold bypassed", "old grant readable after reissue", "pending cleanup admits reusable bytes", "completed retry unlinks a new review"]
+    }
+  ],
+  "authority": {
+    "user_grant": "Implement and commit meaningful changes directly to repository main through GitHub; no PRs.",
+    "runtime_scope": "Local deterministic fixtures and loopback protocol servers; no production deployment or camera operation.",
+    "release_authority": "Repository-owned local qualification with retained DSR receipts; hosted CI is supplementary.",
+    "authority_changes": "Explicit new review-expiry scope only; no standing cleanup scheduler, remote-review authentication or live-capture fallback."
+  },
+  "budgets": {
+    "replay_receipt": "64 windows and 64 KiB canonical receipt bound; existing source and native work limits retained.",
+    "review_expiry": "256 current reviews, 65,536 ledger batches, one million inventory entries and 4,096 bounded exclusion findings; overflow refuses whole inventory.",
+    "local_build": "One measured baseline attempt; no dependency weakening or repeated identical resource failure."
+  },
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Execute scripts/check_recording_lifecycle.sh all on the committed correction, inspect every target and fix concrete failures.",
+      "evidence": "Independent supplementary recording lifecycle workflow; native result pending."
+    },
+    {
+      "state": "open",
+      "action": "Complete repository-owned native DSR qualification before production-qualified claims."
+    }
+  ],
+  "unknowns_and_invalidations": [
+    "Requested and acknowledged recorder UTC do not establish frame capture time, gap-free retrieval or upstream retention.",
+    "Owner-attested review expiry time is not a calibrated clock; delivered external copies and backups remain outside local unlinking.",
+    "Changed inventory, holds, time, principal or authority invalidates a fresh deletion approval; exact committed retries retain their historical scope.",
+    "Full native verification remained pending at this checkpoint; source review and test existence are not runtime success."
+  ],
+  "valid_next_affordances": [
+    "Run the committed focused native targets and record exact results without weakening gates.",
+    "Implement a complete bounded ONVIF Profile G inventory-to-selected-replay handoff, binding distinct replay URI semantics and outer discovery approval into the native receipt.",
+    "Keep the unresolved always-on recorder D7 decision separate from bounded playback and one-shot review expiry."
+  ]
+}

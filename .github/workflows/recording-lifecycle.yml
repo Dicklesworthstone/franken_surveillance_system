@@ -1,0 +1,65 @@
+# Focused supplementary feedback; local DSR qualification remains authoritative.
+# An independent queue keeps these contracts from waiting behind the broad Rust suite.
+name: supplementary recording lifecycle checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-reference/src/onvif/**'
+      - 'crates/fss-reference/tests/onvif_recording_contract.rs'
+      - 'crates/fss-reference/tests/onvif_recording_contract/**'
+      - 'crates/fss-core/tests/onvif_recording_wire_contract.rs'
+      - 'crates/fss-reference/tests/recording_replay_contract/**'
+      - 'crates/fss-reference/tests/rtsp_replay_contract/**'
+      - 'crates/fss-reference/src/rtsp/recording*.rs'
+      - 'crates/fss-reference/src/rtsp/recording*/**'
+      - 'crates/fss-reference/src/rtsp/live_hevc_archive.rs'
+      - 'crates/fss-reference/src/rtsp/live_hevc_archive/**'
+      - 'crates/fss-reference/src/rtsp/client/replay.rs'
+      - 'crates/fss-reference/src/review_media.rs'
+      - 'crates/fss-reference/src/review_media/**'
+      - 'crates/fss-reference/src/deletion.rs'
+      - 'crates/fss-reference/src/deletion/**'
+      - 'crates/fss-reference/tests/*replay*.rs'
+      - 'crates/fss-reference/tests/*hevc_archive*.rs'
+      - 'crates/fss-reference/tests/review_media_contract.rs'
+      - 'crates/fss-reference/tests/review_media_contract/**'
+      - 'crates/fss-reference/tests/deletion*.rs'
+      - 'crates/fss-reference/tests/retention*.rs'
+      - 'crates/fss-packet/src/onvif_replay.rs'
+      - 'crates/fss-packet/src/rtp.rs'
+      - 'crates/fss-packet/tests/onvif_replay_contract.rs'
+      - 'crates/fss-cli/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/bootstrap_toolchain.sh'
+      - 'scripts/check_recording_lifecycle.sh'
+      - '.github/workflows/recording-lifecycle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fss-recording-lifecycle-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  recording-lifecycle:
+    name: pinned recording discovery, replay and review-expiry contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Provision pinned test toolchain
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify recording discovery, replay and review expiry
+        run: bash scripts/check_recording_lifecycle.sh all

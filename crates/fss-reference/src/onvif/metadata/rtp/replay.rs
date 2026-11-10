@@ -635,6 +635,7 @@ fn wire_reason(reason: WireError) -> &'static str {
         WireError::InvalidField => "invalid_xml_field",
         WireError::ProfileLimitExceeded => "xml_profile_limit",
         WireError::ServiceLimitExceeded => "xml_service_limit",
+        WireError::RecordingLimitExceeded => "xml_recording_limit",
         WireError::EventLimitExceeded => "xml_event_limit",
         WireError::ItemLimitExceeded => "xml_item_limit",
         WireError::AnalyticsLimitExceeded => "xml_analytics_limit",

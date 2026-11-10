@@ -24,6 +24,7 @@ use fss_core::{
 use fss_reference::deletion::retention::{
     RetentionRequest, RetentionSelection, commit_retention, plan_retention,
 };
+use fss_reference::deletion::review_expiry::ReviewExpiryRequest;
 use fss_reference::deletion::{
     CommitReceipt, DELETION_MECHANISM, DELETION_OUT_OF_SCOPE, DeletionError, DeletionPlan,
     DeletionScope, Finding, commit_deletion, plan_scope_deletion,
@@ -34,6 +35,8 @@ use super::RunResult;
 
 #[path = "delete/policy.rs"]
 mod policy;
+#[path = "delete/review_expiry.rs"]
+mod review_expiry;
 
 /// Capability of `delete plan` and `delete retention-plan`.
 pub(super) const CAP_DELETE_PREPARE: &str = "CAP-DELETE-PREPARE-001";
@@ -77,6 +80,14 @@ pub(super) enum Operation {
         plan: ContentDigest,
         approve: ContentDigest,
     },
+    /// Preview derivative-only cleanup of certainly expired review grants.
+    ReviewExpiryPlan(ReviewExpiryRequest),
+    /// Execute or resume one exactly approved derivative-only expiry closure.
+    ReviewExpiryCommit {
+        request: ReviewExpiryRequest,
+        plan: ContentDigest,
+        approve: ContentDigest,
+    },
 }
 
 impl Operation {
@@ -86,10 +97,14 @@ impl Operation {
         match self {
             Self::PolicyPlan(_) | Self::PolicyShow(_) => vec![CAP_HOLD_PREPARE],
             Self::PolicyCommit { .. } => vec![CAP_HOLD_PREPARE, CAP_HOLD_COMMIT],
-            Self::Commit { .. } | Self::PolicyRetentionCommit { .. } => {
+            Self::Commit { .. }
+            | Self::PolicyRetentionCommit { .. }
+            | Self::ReviewExpiryCommit { .. } => {
                 vec![CAP_DELETE_PREPARE, CAP_DELETE_COMMIT]
             }
-            Self::Plan { .. } | Self::PolicyRetentionPlan { .. } => vec![CAP_DELETE_PREPARE],
+            Self::Plan { .. } | Self::PolicyRetentionPlan { .. } | Self::ReviewExpiryPlan(_) => {
+                vec![CAP_DELETE_PREPARE]
+            }
         }
     }
 }
@@ -115,16 +130,19 @@ fn sha256(value: &str, key: &str) -> Result<ContentDigest, String> {
 /// Parses the arguments after `delete`.
 pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
     let command = args.first().and_then(|a| a.to_str()).ok_or(
-        "delete requires plan, commit, retention-plan, retention-commit or policy-plan/commit/show",
+        "delete requires plan/commit, retention-plan/commit, review-expiry-plan/commit or policy-plan/commit/show",
     )?;
     if matches!(command, "policy-plan" | "policy-commit" | "policy-show") {
         return policy::parse(args);
+    }
+    if matches!(command, "review-expiry-plan" | "review-expiry-commit") {
+        return review_expiry::parse(args);
     }
     if !matches!(
         command,
         "plan" | "commit" | "retention-plan" | "retention-commit"
     ) {
-        return Err("delete requires plan, commit, retention-plan, retention-commit or policy-plan/commit/show".to_owned());
+        return Err("delete requires plan/commit, retention-plan/commit, review-expiry-plan/commit or policy-plan/commit/show".to_owned());
     }
     let is_retention = matches!(command, "retention-plan" | "retention-commit");
     let is_plan = matches!(command, "plan" | "retention-plan");
@@ -366,6 +384,12 @@ fn scope_json(scope: &DeletionScope, imports: &[ContentDigest]) -> String {
             retention_json(selection)
         ));
     }
+    if let DeletionScope::ReviewExpiry(selection) = scope {
+        json.push_str(&format!(
+            ",\"review_expiry_selection\":{}",
+            review_expiry::selection_json(selection)
+        ));
+    }
     json
 }
 
@@ -390,10 +414,23 @@ fn plan_json(action: &DeleteAction, plan: &DeletionPlan) -> RunResult<String> {
     let digest = plan.digest()?;
     let approval = plan.approval_digest(&action.principal)?;
     let blocked = !plan.blockers.is_empty();
-    let command = if blocked {
+    let command = if blocked || action.root.to_str().is_none() {
         "null".to_owned()
     } else {
         let (verb, parameters) = match &plan.scope {
+            DeletionScope::ReviewExpiry(selection) => {
+                let request = selection.request();
+                let now = request.attested_now();
+                (
+                    "review-expiry-commit",
+                    format!(
+                        " --sensor-id {} --attested-now-ns {}:{}",
+                        quote_arg(request.sensor().as_str()),
+                        now.earliest.0,
+                        now.latest.0
+                    ),
+                )
+            }
             DeletionScope::Retention(selection) => {
                 let request = selection.request();
                 let now = request.attested_now();
@@ -610,6 +647,9 @@ pub(super) fn run(
         }
     }
     let json = match (&action.operation, &action.retention) {
+        (Operation::ReviewExpiryPlan(_) | Operation::ReviewExpiryCommit { .. }, _) => {
+            review_expiry::run(action, deployment, cx)?
+        }
         (
             Operation::PolicyPlan(_) | Operation::PolicyCommit { .. } | Operation::PolicyShow(_),
             _,
