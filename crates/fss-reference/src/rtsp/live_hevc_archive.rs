@@ -22,6 +22,7 @@ use super::archive_pins::{
     JournaledArchiveProgress, JournaledHevcArchiveRetirement, JournaledHevcArchiveWriter,
 };
 use super::authentication::DigestCredentials;
+use super::client::replay::ReplayWindow;
 use super::client::{ClientCommand, ClientState};
 use super::hevc_client::HevcClientError;
 use super::hevc_client::pictures::{HevcPictureClientError, HevcPictureClientPoll as Event};
@@ -249,6 +250,7 @@ pub struct JournaledLiveHevcArchive<'a, 'p> {
     ready: bool,
     next: Option<Control>,
     keepalive: ClientCommand,
+    replay: Option<ReplayWindow>,
     control_blocked: bool,
     network_ended: bool,
     completion: Option<LiveArchiveCompletion>,
@@ -264,6 +266,7 @@ impl fmt::Debug for JournaledLiveHevcArchive<'_, '_> {
             .field("configured", &self.capture.is_some())
             .field("ready", &self.ready)
             .field("keepalive", &self.keepalive)
+            .field("replay", &self.replay)
             .field("completion", &self.completion)
             .field("remaining_steps", &self.remaining_steps)
             .finish_non_exhaustive()
@@ -354,6 +357,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             ready: false,
             next: Some(Control::Request(ClientCommand::Describe)),
             keepalive: ClientCommand::KeepAlive,
+            replay: None,
             control_blocked: false,
             network_ended: false,
             completion: None,
@@ -389,6 +393,45 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// Exact locally pinned liveness intent; it is not camera health or remote acceptance.
     pub fn keepalive_command(&self) -> ClientCommand {
         self.keepalive
+    }
+    /// Select one closed recorder replay interval before the first RTSP request.
+    /// Replay always requires the caller's pinned SSRC and uses the same native
+    /// source, timing and protected publication owners as live HEVC acquisition.
+    /// This pure selection grants no authority and never enables a live fallback.
+    pub fn select_replay(&mut self, window: ReplayWindow) -> Result<(), LiveHevcArchiveFailure> {
+        if self.finished
+            || self.completion.is_some()
+            || self.network_ended
+            || self.replay.is_some()
+            || self.binding.ssrc_policy() != super::tcp::SsrcPolicy::Pinned
+            || self.state() != ClientState::Idle
+            || !matches!(self.next, Some(Control::Request(ClientCommand::Describe)))
+            || !self.totals().is_some_and(|totals| {
+                totals.read_calls == 0 && totals.write_calls == 0 && totals.sent_bytes == 0
+            })
+            || ReplayWindow::new(window.start(), window.end()).is_err()
+        {
+            return Err(safe(LiveHevcArchiveError::Configuration));
+        }
+        self.replay = Some(window);
+        Ok(())
+    }
+
+    /// Locally selected protocol interval; no remote acceptance or UTC frame claim.
+    pub fn replay_window(&self) -> Option<ReplayWindow> {
+        self.replay
+    }
+
+    fn selected_control(&self, event: &Event) -> Option<Control> {
+        control(event).map(|command| match (command, self.replay) {
+            (Control::Request(ClientCommand::Setup), Some(_)) => {
+                Control::Request(ClientCommand::SetupReplay)
+            }
+            (Control::Request(ClientCommand::Play), Some(window)) => {
+                Control::Request(ClientCommand::PlayReplay(window))
+            }
+            _ => command,
+        })
     }
     /// Use an independently supplied immutable VPS/SPS/PPS tuple, including when SDP omits it.
     /// The tuple and collector are validated before storage or a connection attempt. DESCRIBE
@@ -883,7 +926,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             }
             other => {
                 if let HevcCapturePoll::Receiver(source) = &other
-                    && let Some(next) = control(source)
+                    && let Some(next) = self.selected_control(source)
                 {
                     self.next = Some(next);
                 }
@@ -913,7 +956,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                     return Err(self.fatal(reason, recording, None));
                 }
             } else {
-                if let Some(next) = control(&event) {
+                if let Some(next) = self.selected_control(&event) {
                     self.next = Some(next);
                 }
                 let trigger = AutomaticHevcRecordingStep::Network(LiveHevcStep::Protocol {

@@ -1,14 +1,17 @@
 #![forbid(unsafe_code)]
-//! Native recorder playback through approved capture, durable receipts and cold AVC decode.
+//! Native recorder playback through approved capture, durable receipts and cold AVC/HEVC decode.
 
 use super::*;
 use fss_core::{SensorId, StreamId};
 use fss_object::SpoolLimits;
 use fss_publication::{LocalPublicationLimits, LocalRootPublisher, NeverCancel};
 use fss_reference::rtsp::recording::RecordingScope;
+use fss_reference::rtsp::recording::hevc::local::load_hevc_recording;
 use fss_reference::rtsp::recording::local::load_recording;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::rtsp::recording_replay::{ReplayTermination, load_replay_receipt, replay_slot};
+use fss_reference::rtsp::recording_replay::{
+    ReplayTermination, hevc_replay_slot, load_hevc_replay_receipt, load_replay_receipt, replay_slot,
+};
 use std::collections::BTreeMap;
 
 const REPLAY_START: &str = "20261101T120000Z";
@@ -46,6 +49,41 @@ fn replay_args(directory: &Directory, peer: SocketAddr) -> Vec<OsString> {
         REPLAY_END.into(),
     ]);
     arguments
+}
+
+fn codec_replay_args(directory: &Directory, peer: SocketAddr, hevc: bool) -> Test<Vec<OsString>> {
+    if !hevc {
+        return Ok(replay_args(directory, peer));
+    }
+    let mut arguments = hevc::args(directory, peer, 2)?;
+    arguments.extend([
+        "--replay-start".into(),
+        REPLAY_START.into(),
+        "--replay-end".into(),
+        REPLAY_END.into(),
+    ]);
+    Ok(arguments)
+}
+
+fn hevc_video(pictures: usize) -> Test<Vec<u8>> {
+    let nals = hevc::nals()?;
+    let mut packets = vec![hevc::packet(0, 0, false, &nals[0])]; // receiver probation
+    let count = if pictures == 1 { 5 } else { 6 };
+    for (at, (nal, timestamp)) in nals
+        .iter()
+        .zip([0, 0, 0, 0, 18_000, 36_000])
+        .take(count)
+        .enumerate()
+    {
+        packets.push(hevc::packet(u16::try_from(at + 1)?, timestamp, true, nal));
+    }
+    let mut wire = Vec::new();
+    for packet in packets {
+        wire.extend_from_slice(&[b'$', 0]);
+        wire.extend_from_slice(&u16::try_from(packet.len())?.to_be_bytes());
+        wire.extend_from_slice(&packet);
+    }
+    Ok(wire)
 }
 
 fn header<'a>(wire: &'a str, name: &str) -> Test<Option<&'a str>> {
@@ -98,7 +136,11 @@ fn replay_request(peer: &mut TcpStream) -> Test<Option<ReplayRequestWire>> {
     Err("replay request exceeded the fixture byte bound".into())
 }
 
-fn serve_replay(listener: TcpListener, behavior: ReplayBehavior) -> Test<ReplayTranscript> {
+fn serve_replay(
+    listener: TcpListener,
+    behavior: ReplayBehavior,
+    hevc: bool,
+) -> Test<ReplayTranscript> {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut peer = loop {
         match listener.accept() {
@@ -124,11 +166,16 @@ fn serve_replay(listener: TcpListener, behavior: ReplayBehavior) -> Test<ReplayT
     let describe = replay_request(&mut peer)?.ok_or("no replay DESCRIBE")?;
     assert_eq!(describe.method, "DESCRIBE");
     assert!(header(&describe.wire, "Range")?.is_none());
+    let description = if hevc {
+        hevc::description(&[98])
+    } else {
+        SDP.to_owned()
+    };
     response(
         &mut peer,
         describe.cseq,
         "Content-Type: application/sdp\r\n",
-        SDP,
+        &description,
     )?;
     transcript.requests.push(describe);
 
@@ -175,7 +222,11 @@ fn serve_replay(listener: TcpListener, behavior: ReplayBehavior) -> Test<ReplayT
         } else {
             2
         };
-        transcript.video = video(pictures, 3600, 96, false)?;
+        transcript.video = if hevc {
+            hevc_video(pictures as usize)?
+        } else {
+            video(pictures, 3600, 96, false)?
+        };
         // Invalid acknowledgements also carry real video in the same write: a
         // bad control response must fence media already waiting in native intake.
         reply.extend_from_slice(&transcript.video);
@@ -224,8 +275,11 @@ fn capture_replay(
     arguments: &[OsString],
     behavior: ReplayBehavior,
 ) -> Test<(Output, ReplayTranscript)> {
+    let hevc = arguments
+        .windows(2)
+        .any(|pair| pair[0] == "--codec" && pair[1] == "hevc");
     thread::scope(|scope| {
-        let server = scope.spawn(move || serve_replay(listener, behavior));
+        let server = scope.spawn(move || serve_replay(listener, behavior, hevc));
         let output = run("capture", arguments);
         let server = server
             .join()
@@ -359,17 +413,25 @@ fn verify_saved_receipt(
     assert_eq!(text(terminal_receipt, "root")?, text(published, "root")?);
 
     let planned = value(preview, "recorder_replay")?;
+    let hevc = text(preview, "codec")? == "hevc";
     let request = ContentDigest::parse(text(planned, "request_identity")?)?;
     assert_eq!(text(published, "request_identity")?, request.to_text());
     assert_eq!(text(replay, "request_identity")?, request.to_text());
     let root = ContentDigest::parse(text(published, "root")?)?;
     let scope = catalog_scope(preview)?;
-    assert_eq!(
-        replay_slot(&scope, request)?.as_str(),
-        text(published, "slot")?
-    );
+    let slot = if hevc {
+        hevc_replay_slot(&scope, request)?
+    } else {
+        replay_slot(&scope, request)?
+    };
+    assert_eq!(slot.as_str(), text(published, "slot")?);
     let publisher = LocalRootPublisher::open(&directory.root(), publication_limits(preview)?)?;
-    let receipt = load_replay_receipt(&publisher, root, &scope, request, &NeverCancel)?;
+    let receipt = if hevc {
+        load_hevc_replay_receipt(&publisher, root, &scope, request, &NeverCancel)?
+    } else {
+        load_replay_receipt(&publisher, root, &scope, request, &NeverCancel)?
+    };
+    assert_eq!(receipt.request().codec().as_str(), text(preview, "codec")?);
     assert_eq!(receipt.root(), root);
     assert_eq!(receipt.scope(), &scope);
     assert_eq!(receipt.request().digest(), request);
@@ -395,13 +457,50 @@ fn verify_saved_receipt(
     assert_eq!(window.slot().as_str(), text(durable, "slot")?);
     assert_eq!(window.root(), ContentDigest::parse(text(durable, "root")?)?);
     assert_eq!(window.samples(), pictures);
-    let original = load_recording(
-        &publisher,
-        window.slot(),
-        window.root(),
-        &scope.recording,
-        &NeverCancel,
-    )?;
+    let hevc_original = if hevc {
+        Some(load_hevc_recording(
+            &publisher,
+            window.slot(),
+            window.root(),
+            &scope.recording,
+            &NeverCancel,
+        )?)
+    } else {
+        None
+    };
+    let avc_original = if !hevc {
+        Some(load_recording(
+            &publisher,
+            window.slot(),
+            window.root(),
+            &scope.recording,
+            &NeverCancel,
+        )?)
+    } else {
+        None
+    };
+    let original = hevc_original
+        .as_ref()
+        .map(|original| original.publication_plan())
+        .or(avc_original.as_ref())
+        .ok_or("native original")?;
+    if let Some(original) = &hevc_original {
+        assert_eq!(
+            original.source_only_nals(),
+            1,
+            "real HEVC boundary witness was lost"
+        );
+        assert!(
+            load_recording(
+                &publisher,
+                window.slot(),
+                window.root(),
+                &scope.recording,
+                &NeverCancel
+            )
+            .is_err()
+        );
+    }
     assert_eq!(original.summary().samples, pictures);
     assert_eq!(original.summary().scope, scope.recording);
     let sent = sent_packets(&transcript.video)?;
@@ -592,6 +691,15 @@ fn recorder_replay_early_eof_preserves_durable_prefix_without_completeness_upgra
 
 #[test]
 fn recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
+    bad_acknowledgements(false)
+}
+
+#[test]
+fn hevc_recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
+    bad_acknowledgements(true)
+}
+
+fn bad_acknowledgements(hevc: bool) -> Test {
     for headers in [
         "",
         "Range: npt=0-60\r\n",
@@ -601,7 +709,11 @@ fn recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
     ] {
         let directory = Directory::new("replay-bad-ack")?;
         let listener = listener()?;
-        let approved = approve(&replay_args(&directory, listener.local_addr()?))?;
+        let approved = approve(&codec_replay_args(
+            &directory,
+            listener.local_addr()?,
+            hevc,
+        )?)?;
         let (output, transcript) = capture_replay(
             listener,
             &approved,
@@ -648,6 +760,15 @@ fn recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
 
 #[test]
 fn recorder_replay_status_refusals_are_typed_and_never_fall_back_to_live() -> Test {
+    status_refusals(false)
+}
+
+#[test]
+fn hevc_recorder_replay_status_refusals_are_typed_and_never_fall_back_to_live() -> Test {
+    status_refusals(true)
+}
+
+fn status_refusals(hevc: bool) -> Test {
     for (status, error_id, cause) in [
         (
             456,
@@ -667,7 +788,11 @@ fn recorder_replay_status_refusals_are_typed_and_never_fall_back_to_live() -> Te
     ] {
         let directory = Directory::new("replay-status")?;
         let listener = listener()?;
-        let approved = approve(&replay_args(&directory, listener.local_addr()?))?;
+        let approved = approve(&codec_replay_args(
+            &directory,
+            listener.local_addr()?,
+            hevc,
+        )?)?;
         let (output, transcript) =
             capture_replay(listener, &approved, ReplayBehavior::Rejected(status))?;
         assert!(!output.status.success());
@@ -695,4 +820,130 @@ fn recorder_replay_status_refusals_are_typed_and_never_fall_back_to_live() -> Te
         assert!(!boolean(replay, "upstream_retention_known")?);
     }
     Ok(())
+}
+
+fn inspect_saved_hevc_receipt(directory: &Directory, preview: &Value, rows: &[Value]) -> Test {
+    let published = detail(rows, "replay_receipt_published")?;
+    let scope = catalog_scope(preview)?;
+    let mut arguments = vec![
+        "inspect-replay".into(),
+        "--root".into(),
+        directory.root().into_os_string(),
+    ];
+    for (key, value) in [
+        ("--codec", "hevc".to_owned()),
+        ("--sensor", scope.recording.sensor.as_str().to_owned()),
+        ("--stream", scope.recording.stream.as_str().to_owned()),
+        ("--generation", scope.recording.generation.to_string()),
+        ("--anchor", scope.recording.anchor.to_text()),
+        ("--receive-clock", scope.recording.receive_clock.to_text()),
+        ("--decode-clock", scope.decode_clock.to_text()),
+        ("--time-scale", scope.time_scale.to_string()),
+        (
+            "--expected-replay-root",
+            text(published, "root")?.to_owned(),
+        ),
+        (
+            "--expected-replay-request",
+            text(published, "request_identity")?.to_owned(),
+        ),
+    ] {
+        arguments.extend([key.into(), value.into()]);
+    }
+    let report = parse(&good(run("archive", &arguments)?)?)?;
+    assert_eq!(text(&report, "codec")?, "hevc");
+    assert_eq!(
+        text(&report, "replay_receipt_root")?,
+        text(published, "root")?
+    );
+    assert_eq!(text(&report, "requested_range")?, REQUESTED_RANGE);
+    assert_eq!(text(&report, "acknowledged_range")?, ACKNOWLEDGED_RANGE);
+    assert!(boolean(&report, "original_source_verified")?);
+    assert_eq!(text(&report, "frame_capture_time")?, "unknown");
+    assert_eq!(text(&report, "coverage_claim")?, "not_claimed");
+    replace(&mut arguments, "--codec", "avc")?;
+    let wrong_codec = run("archive", &arguments)?;
+    assert!(!wrong_codec.status.success());
+    assert!(wrong_codec.stdout.is_empty());
+    Ok(())
+}
+
+#[test]
+fn hevc_recorder_replay_target_keeps_native_boundaries_receipt_and_cold_decode() -> Test {
+    let directory = Directory::new("hevc-replay-target")?;
+    let listener = listener()?;
+    let peer = listener.local_addr()?;
+    let (live, _) = plan(&hevc::args(&directory, peer, 2)?)?;
+    let mut arguments = codec_replay_args(&directory, peer, true)?;
+    let (preview, approval) = plan(&arguments)?;
+    assert_eq!(text(value(&preview, "recorder_replay")?, "codec")?, "hevc");
+    assert_ne!(
+        text(&live, "decode_clock")?,
+        text(&preview, "decode_clock")?
+    );
+    assert_ne!(
+        text(&live, "archive_namespace")?,
+        text(&preview, "archive_namespace")?
+    );
+    no_connection(&listener)?;
+    assert!(!directory.root().exists());
+    assert!(!directory.pins().exists());
+    arguments.extend(["--approve".into(), approval.into()]);
+    let (output, transcript) = capture_replay(listener, &arguments, ReplayBehavior::Target)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!transcript.source_eof);
+    let rows = saved_rows(&directory, output)?;
+    let terminal = detail(&rows, "terminal")?;
+    assert!(boolean(terminal, "complete")?);
+    assert!(!boolean(terminal, "peer_eof")?);
+    assert_eq!(integer(terminal, "durable_pictures")?, 2);
+    assert_eq!(integer(terminal, "durable_source_only_nals")?, 1);
+    verify_saved_receipt(
+        &directory,
+        &preview,
+        &rows,
+        &transcript,
+        ReplayTermination::RequestedStop,
+        true,
+        2,
+    )?;
+    inspect_saved_hevc_receipt(&directory, &preview, &rows)?;
+    hevc::import_and_cold_decode(&directory, &rows, 2, false)
+}
+
+#[test]
+fn hevc_recorder_replay_eof_keeps_only_the_source_closed_prefix_and_failed_receipt() -> Test {
+    let directory = Directory::new("hevc-replay-eof")?;
+    let listener = listener()?;
+    let mut arguments = codec_replay_args(&directory, listener.local_addr()?, true)?;
+    let (preview, approval) = plan(&arguments)?;
+    arguments.extend(["--approve".into(), approval.into()]);
+    let (output, transcript) = capture_replay(listener, &arguments, ReplayBehavior::EofAfterOne)?;
+    assert!(
+        !output.status.success(),
+        "transport EOF completed an unclosed HEVC picture"
+    );
+    assert!(transcript.source_eof);
+    let rows = saved_rows(&directory, output)?;
+    let terminal = detail(&rows, "terminal")?;
+    assert!(!boolean(terminal, "complete")?);
+    assert_eq!(text(terminal, "stop_cause")?, "input_ended_before_target");
+    assert_eq!(integer(terminal, "durable_pictures")?, 1);
+    assert_eq!(integer(terminal, "durable_source_only_nals")?, 1);
+    verify_saved_receipt(
+        &directory,
+        &preview,
+        &rows,
+        &transcript,
+        ReplayTermination::InputEnded,
+        false,
+        1,
+    )?;
+    inspect_saved_hevc_receipt(&directory, &preview, &rows)?;
+    hevc::import_and_cold_decode(&directory, &rows, 1, false)
 }

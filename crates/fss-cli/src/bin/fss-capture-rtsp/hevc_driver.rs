@@ -36,9 +36,7 @@ fn reason(error: &LiveHevcArchiveError) -> Failure {
             | LiveHevcError::Transport(TcpError::WorkBudget | TcpError::RequestBudget) => {
                 Failure::WorkBudget
             }
-            LiveHevcError::Protocol(HevcPictureClientError::Client(
-                HevcClientError::Authentication(_) | HevcClientError::AuthenticationAtEof,
-            )) => Failure::AuthenticationRefused,
+            LiveHevcError::Protocol(HevcPictureClientError::Client(error)) => client_failure(error),
             LiveHevcError::Transport(error) if abrupt_read_failure(error) => {
                 Failure::ReadInterrupted
             }
@@ -113,6 +111,10 @@ fn client_failure(error: &HevcClientError) -> Failure {
         HevcClientError::Authentication(_) | HevcClientError::AuthenticationAtEof => {
             Failure::AuthenticationRefused
         }
+        HevcClientError::Session(ClientError::ReplayRejected(rejection)) => {
+            Failure::ReplayRejected(*rejection)
+        }
+        HevcClientError::Session(ClientError::Replay(_)) => Failure::ReplayAcknowledgement,
         _ => Failure::Protocol,
     }
 }
@@ -142,6 +144,14 @@ fn receiver<W: Write>(
                     object(&[("state", string(state_name(*state)))]),
                     false,
                 )?;
+            }
+            HevcClientPoll::Control {
+                progress: ClientProgress::ReplayAccepted(acceptance),
+                ..
+            } => {
+                let replay = stats.replay.as_mut().ok_or(Failure::State)?;
+                replay.accept(*acceptance)?;
+                log.emit("replay_accepted", replay.acknowledgement_json(), false)?;
             }
             HevcClientPoll::Fault { reason, .. } => return Err(client_failure(reason)),
             HevcClientPoll::Rtp {
@@ -389,6 +399,9 @@ fn drive<W: Write>(
                 if pending.manifest().root() != admission.root || stats.pending_window.is_some() {
                     return Err(Failure::State);
                 }
+                if let Some(replay) = &mut stats.replay {
+                    replay.prepare_hevc_window(admission.slot.clone(), pending)?;
+                }
                 stats.pending_window =
                     Some((admission.root, pending.objects().source.len() as u64));
                 stats.pending_source_only_nals = pending.source_only_nals() as u64;
@@ -627,7 +640,14 @@ pub(super) fn run<W: Write>(
     stats.connection_attempted = true;
     // Pin the already-approved liveness method before the first automatic request.
     // Always run the normal retirement path, even if this pure selection is refused.
-    let result = match capture.select_keepalive(options.keepalive) {
+    let selection = capture.select_keepalive(options.keepalive).and_then(|()| {
+        if let Some(request) = &options.replay {
+            capture.select_replay(request.window())
+        } else {
+            Ok(())
+        }
+    });
+    let result = match selection {
         Ok(()) => drive(options, source, &mut capture, owner, entropy, stats, log),
         Err(error) => Err(failure(error, stats)),
     };

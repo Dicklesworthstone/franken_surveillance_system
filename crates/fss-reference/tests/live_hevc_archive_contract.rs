@@ -22,6 +22,7 @@ use fss_reference::rtsp::archive_pins::{
     ArchivePinLimits, ArchivePinScope, HevcArchivePinJournal, JournaledArchiveProgress,
 };
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
+use fss_reference::rtsp::client::replay::ReplayWindow;
 use fss_reference::rtsp::client::{ClientCommand, ClientConfig, ClientProgress, ClientState};
 use fss_reference::rtsp::hevc_client::{HevcClientPoll, pictures::HevcPictureClientPoll as Event};
 use fss_reference::rtsp::hevc_recording_capture::live::{
@@ -492,6 +493,78 @@ impl<'a> Fixture<'a> {
             _ => Err("sealed completed prefix was not admitted".into()),
         }
     }
+}
+
+#[test]
+fn selected_hevc_replay_keeps_exact_setup_play_and_acknowledgement_without_live_fallback() -> Test {
+    let mut stores = Stores::new()?;
+    let mut f = Fixture::new(&mut stores, selected()?)?;
+    let window = ReplayWindow::from_timestamps("20261101T120000Z", "20261101T120100Z")?;
+    let other = ReplayWindow::from_timestamps("20261101T120010Z", "20261101T120050Z")?;
+    assert!(f.driver.replay_window().is_none());
+    f.driver.select_replay(window)?;
+    let refused = f
+        .driver
+        .select_replay(other)
+        .expect_err("replay intent changed after selection");
+    assert!(matches!(
+        refused.reason,
+        LiveHevcArchiveError::Configuration
+    ));
+    assert!(refused.retirement.is_none());
+    assert_eq!(f.driver.replay_window(), Some(window));
+    assert_eq!(f.driver.totals().ok_or("totals")?.sent_bytes, 0);
+    let (describe, _) = f.command()?;
+    assert_eq!(describe.command, ClientCommand::Describe);
+    f.reply(
+        &response(describe.cseq, "Content-Type: application/sdp\r\n", &sdp()?),
+        ClientState::Described,
+    )?;
+    let (setup, wire) = f.command()?;
+    assert_eq!(setup.command, ClientCommand::SetupReplay);
+    assert!(std::str::from_utf8(&wire)?.contains("Require: onvif-replay\r\n"));
+    f.reply(&response(setup.cseq, "Session: test-session;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n", ""), ClientState::Ready)?;
+    let (play, wire) = f.command()?;
+    assert_eq!(play.command, ClientCommand::PlayReplay(window));
+    let wire = std::str::from_utf8(&wire)?;
+    assert!(wire.contains("Require: onvif-replay\r\n"));
+    assert!(wire.contains(&format!("Range: {window}\r\n")));
+    assert!(wire.contains("Rate-Control: no\r\n"));
+    f.peer.write_all(&response(
+        play.cseq,
+        &format!("Session: test-session\r\nRange: {other}\r\n"),
+        "",
+    ))?;
+    let mut accepted = None;
+    for _ in 0..32_768 {
+        let Step::Recording(step) = f.poll(ready())? else {
+            return Err("replay acknowledgement became archive work".into());
+        };
+        if let RecordingStep::Capture { event, .. } = step.as_ref()
+            && let HevcCapturePoll::Receiver(source) = event.as_ref()
+            && let Event::Client { event, work: None } = source.as_ref()
+            && let HevcClientPoll::Control {
+                progress: ClientProgress::ReplayAccepted(value),
+                ..
+            } = event.as_ref()
+        {
+            accepted = Some(*value);
+        }
+        f.originals.push(*step);
+        if accepted.is_some() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let accepted = accepted.ok_or("exact replay acknowledgement missing")?;
+    assert_eq!(accepted.cseq(), play.cseq);
+    assert_eq!(accepted.requested(), window);
+    assert_eq!(accepted.acknowledged(), other);
+    assert_eq!(f.driver.state(), ClientState::Playing);
+    assert!(f.driver.select_replay(other).is_err());
+    assert_eq!(f.driver.replay_window(), Some(window));
+    assert!(f.driver.cancel().is_some());
+    Ok(())
 }
 
 #[test]

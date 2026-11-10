@@ -20,17 +20,19 @@ use fss_publication::SlotName;
 
 use super::client::replay::{ReplayAcceptance, ReplayError, ReplayWindow};
 use super::recording::local::RecordingIoError;
+use super::recording::hevc::{HEVC_RECORDING_KIND, PreparedHevcRecording};
 use super::recording::{
     MAX_RECORDING_BYTES, MAX_RECORDING_MAPPINGS, MAX_RECORDING_PACKETS,
     MAX_RECORDING_SAMPLES, PreparedRecording, RECORDING_KIND, RecordingError, RecordingScope,
     RecordingSummary,
 };
 use super::recording_archive::ArchiveNamespace;
+use super::recording_archive::hevc::HevcArchiveNamespace;
 use super::recording_catalog::CatalogScope;
 
-pub use storage::{load_replay_receipt, publish_replay_receipt};
+pub use storage::{load_hevc_replay_receipt, load_replay_receipt, publish_replay_receipt};
 
-/// Maximum original AVC windows in one immutable replay receipt.
+/// Maximum original windows in one immutable replay receipt.
 pub const MAX_REPLAY_WINDOWS: usize = 64;
 /// Combined canonical receipt metadata and manifest byte ceiling.
 pub const MAX_REPLAY_RECEIPT_BYTES: usize = 64 * 1024;
@@ -44,6 +46,60 @@ pub const REPLAY_DECODE_CLOCK_DOMAIN: &str = "fss.rtsp_replay_decode_clock.v1";
 pub const REPLAY_RECEIPT_DOMAIN: &str = "fss.recording_replay_receipt.v1";
 /// Separate immutable routing namespace for an exact scope and replay request.
 pub const REPLAY_SLOT_DOMAIN: &str = "fss.recording_replay_slot.v1";
+/// HEVC companion family; native original HEVC recording roots remain unchanged.
+pub const HEVC_REPLAY_RECEIPT_KIND: &str = "hevc_recording_replay_receipt_v1";
+/// HEVC request identity, distinct from an otherwise identical AVC request.
+pub const HEVC_REPLAY_REQUEST_DOMAIN: &str = "fss.rtsp_hevc_replay_request.v1";
+/// HEVC replay-specific decode-clock binding.
+pub const HEVC_REPLAY_DECODE_CLOCK_DOMAIN: &str = "fss.rtsp_hevc_replay_decode_clock.v1";
+/// Canonical HEVC receipt metadata; the caller pins this family before decoding.
+pub const HEVC_REPLAY_RECEIPT_DOMAIN: &str = "fss.hevc_recording_replay_receipt.v1";
+/// Immutable HEVC replay routing namespace.
+pub const HEVC_REPLAY_SLOT_DOMAIN: &str = "fss.hevc_recording_replay_slot.v1";
+
+/// Closed caller-selected replay codec. Stored bytes never select a verifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayCodec {
+    /// Native H.264/AVC recording verification.
+    Avc,
+    /// Native H.265/HEVC recording verification, including source-only tails.
+    Hevc,
+}
+
+impl ReplayCodec {
+    /// Stable codec spelling in bounded operator reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Avc => "avc", Self::Hevc => "hevc" }
+    }
+
+    const fn request_domain(self) -> &'static str {
+        match self { Self::Avc => REPLAY_REQUEST_DOMAIN, Self::Hevc => HEVC_REPLAY_REQUEST_DOMAIN }
+    }
+
+    const fn clock_domain(self) -> &'static str {
+        match self { Self::Avc => REPLAY_DECODE_CLOCK_DOMAIN, Self::Hevc => HEVC_REPLAY_DECODE_CLOCK_DOMAIN }
+    }
+
+    const fn receipt_domain(self) -> &'static str {
+        match self { Self::Avc => REPLAY_RECEIPT_DOMAIN, Self::Hevc => HEVC_REPLAY_RECEIPT_DOMAIN }
+    }
+
+    const fn receipt_kind(self) -> &'static str {
+        match self { Self::Avc => REPLAY_RECEIPT_KIND, Self::Hevc => HEVC_REPLAY_RECEIPT_KIND }
+    }
+
+    const fn recording_kind(self) -> &'static str {
+        match self { Self::Avc => RECORDING_KIND, Self::Hevc => HEVC_RECORDING_KIND }
+    }
+
+    fn window_slot(self, scope: &CatalogScope, ordinal: usize) -> Result<SlotName> {
+        match self {
+            Self::Avc => ArchiveNamespace::new(scope.clone()).and_then(|namespace| namespace.window_slot(ordinal)),
+            Self::Hevc => HevcArchiveNamespace::new(scope.clone()).and_then(|namespace| namespace.window_slot(ordinal)),
+        }.map_err(|_| ReplayReceiptError::Scope)
+    }
+}
 
 /// Payload-free validation and storage refusal. Publication indeterminacy is retained.
 #[derive(Debug)]
@@ -98,6 +154,7 @@ type Result<T> = std::result::Result<T, ReplayReceiptError>;
 /// The route digest must name the caller's credential-free approved route plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayRequest {
+    codec: ReplayCodec,
     scope: RecordingScope,
     route: ContentDigest,
     window: ReplayWindow,
@@ -116,28 +173,52 @@ impl ReplayRequest {
         window: ReplayWindow,
         base_decode_clock: ContentDigest,
     ) -> Result<Self> {
+        Self::for_codec(ReplayCodec::Avc, scope, route, window, base_decode_clock)
+    }
+
+    /// Bind an explicitly selected HEVC replay without changing native source
+    /// authority. AVC and HEVC requests cannot share a replay clock or namespace.
+    pub fn new_hevc(
+        scope: RecordingScope,
+        route: ContentDigest,
+        window: ReplayWindow,
+        base_decode_clock: ContentDigest,
+    ) -> Result<Self> {
+        Self::for_codec(ReplayCodec::Hevc, scope, route, window, base_decode_clock)
+    }
+
+    fn for_codec(
+        codec: ReplayCodec,
+        scope: RecordingScope,
+        route: ContentDigest,
+        window: ReplayWindow,
+        base_decode_clock: ContentDigest,
+    ) -> Result<Self> {
         validate_recording_scope(&scope)?;
         if !valid_digest(route) || !valid_digest(base_decode_clock) {
             return Err(ReplayReceiptError::Scope);
         }
         ReplayWindow::new(window.start(), window.end())?;
         let mut out = CanonicalEncoder::new();
-        out.text(REPLAY_REQUEST_DOMAIN);
+        out.text(codec.request_domain());
         wire::encode_recording_scope(&mut out, &scope);
         out.digest(route);
         out.text(&window.to_string());
         out.digest(base_decode_clock);
         let digest = digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)?;
         let mut out = CanonicalEncoder::new();
-        out.text(REPLAY_DECODE_CLOCK_DOMAIN);
+        out.text(codec.clock_domain());
         out.digest(base_decode_clock);
         out.digest(digest);
         let decode_clock = self::digest(
             &out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?,
         )?;
-        Ok(Self { scope, route, window, base_decode_clock, digest, decode_clock })
+        Ok(Self { codec, scope, route, window, base_decode_clock, digest, decode_clock })
     }
 
+    /// Explicit caller-selected native recording family.
+    #[must_use]
+    pub const fn codec(&self) -> ReplayCodec { self.codec }
     /// Stable exact request identity, independent of approval and publication outcomes.
     #[must_use]
     pub const fn digest(&self) -> ContentDigest { self.digest }
@@ -214,10 +295,11 @@ impl ReplayTermination {
     }
 }
 
-/// Exact original descriptor extracted from sealed, native-verified AVC bytes.
+/// Exact original descriptor extracted from sealed, native-verified recording bytes.
 /// This alone is not a durable-publication receipt; publication verifies the slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayWindowProof {
+    codec: ReplayCodec,
     slot: SlotName,
     summary: RecordingSummary,
     bytes: usize,
@@ -227,10 +309,21 @@ pub struct ReplayWindowProof {
 impl ReplayWindowProof {
     /// Extract exact original identity, accounting and closure without copying media.
     pub fn from_avc(slot: SlotName, recording: &PreparedRecording) -> Result<Self> {
-        if recording.manifest().kind() != RECORDING_KIND {
+        Self::from_recording(ReplayCodec::Avc, slot, recording)
+    }
+
+    /// Extract a native HEVC original, preserving its source-only trailing NALs
+    /// through the exact source and index closure verified again on cold load.
+    pub fn from_hevc(slot: SlotName, recording: &PreparedHevcRecording) -> Result<Self> {
+        Self::from_recording(ReplayCodec::Hevc, slot, recording.publication_plan())
+    }
+
+    fn from_recording(codec: ReplayCodec, slot: SlotName, recording: &PreparedRecording) -> Result<Self> {
+        if recording.manifest().kind() != codec.recording_kind() {
             return Err(ReplayReceiptError::Scope);
         }
         let value = Self {
+            codec,
             slot,
             summary: recording.summary().clone(),
             bytes: recording.byte_len(),
@@ -240,6 +333,9 @@ impl ReplayWindowProof {
         Ok(value)
     }
 
+    /// Native codec verifier required for this original descriptor.
+    #[must_use]
+    pub const fn codec(&self) -> ReplayCodec { self.codec }
     /// Exact current local slot required at publication and cold retrieval.
     #[must_use]
     pub const fn slot(&self) -> &SlotName { &self.slot }
@@ -322,16 +418,14 @@ impl ReplayReceipt {
         }
         ReplayAcceptance::new(acceptance.cseq(), acceptance.requested(), acceptance.acknowledged())?;
         if windows.len() > MAX_REPLAY_WINDOWS { return Err(ReplayReceiptError::Limit); }
-        let namespace = ArchiveNamespace::new(scope.clone())
-            .map_err(|_| ReplayReceiptError::Scope)?;
         let mut roots = BTreeSet::new();
         let mut slots = BTreeSet::new();
         let mut previous_end = None;
         for (ordinal, window) in windows.iter().enumerate() {
             validate_window(window)?;
-            if window.scope() != &scope.recording || window.time_scale() != scope.time_scale
-                || window.slot() != &namespace.window_slot(ordinal)
-                    .map_err(|_| ReplayReceiptError::Scope)?
+            if window.codec() != request.codec() || window.scope() != &scope.recording
+                || window.time_scale() != scope.time_scale
+                || window.slot() != &request.codec().window_slot(&scope, ordinal)?
             {
                 return Err(ReplayReceiptError::Scope);
             }
@@ -349,7 +443,7 @@ impl ReplayReceipt {
             children.insert(window.root());
             children.extend(window.leaves);
         }
-        let manifest = ObjectManifest::new(REPLAY_RECEIPT_KIND, children, Some(digest(&metadata)?))
+        let manifest = ObjectManifest::new(request.codec().receipt_kind(), children, Some(digest(&metadata)?))
             .map_err(|_| ReplayReceiptError::Digest)?;
         if metadata.len().checked_add(manifest.canonical_bytes().len())
             .is_none_or(|bytes| bytes > MAX_REPLAY_RECEIPT_BYTES)
@@ -364,6 +458,10 @@ impl ReplayReceipt {
     /// Original request and its independently reconstructible replay clock.
     #[must_use]
     pub const fn request(&self) -> &ReplayRequest { &self.request }
+    /// Immutable codec-specific routing slot for this exact request and scope.
+    pub fn slot(&self) -> Result<SlotName> {
+        codec_replay_slot(self.request.codec(), &self.scope, self.request.digest())
+    }
     /// Exact replay-bound catalog namespace and unchanged authority anchor.
     #[must_use]
     pub const fn scope(&self) -> &CatalogScope { &self.scope }
@@ -398,15 +496,24 @@ impl ReplayReceipt {
 
 /// One immutable slot per exact replay scope and request, with no mutable latest pointer.
 pub fn replay_slot(scope: &CatalogScope, request_digest: ContentDigest) -> Result<SlotName> {
+    codec_replay_slot(ReplayCodec::Avc, scope, request_digest)
+}
+
+/// HEVC companion slot, independently selected before any stored bytes are read.
+pub fn hevc_replay_slot(scope: &CatalogScope, request_digest: ContentDigest) -> Result<SlotName> {
+    codec_replay_slot(ReplayCodec::Hevc, scope, request_digest)
+}
+
+fn codec_replay_slot(codec: ReplayCodec, scope: &CatalogScope, request_digest: ContentDigest) -> Result<SlotName> {
     validate_scope(scope)?;
     if !valid_digest(request_digest) { return Err(ReplayReceiptError::Scope); }
     let mut out = CanonicalEncoder::new();
-    out.text(REPLAY_SLOT_DOMAIN);
+    out.text(match codec { ReplayCodec::Avc => REPLAY_SLOT_DOMAIN, ReplayCodec::Hevc => HEVC_REPLAY_SLOT_DOMAIN });
     wire::encode_scope(&mut out, scope);
     out.digest(request_digest);
     let identity = digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)?.to_text();
     let hex = identity.strip_prefix("sha256:").ok_or(ReplayReceiptError::Digest)?;
-    SlotName::parse(&format!("fssrr1-avc-{hex}")).map_err(|_| ReplayReceiptError::Malformed)
+    SlotName::parse(&format!("fssrr1-{}-{hex}", codec.as_str())).map_err(|_| ReplayReceiptError::Malformed)
 }
 
 fn validate_recording_scope(scope: &RecordingScope) -> Result<()> {
@@ -438,7 +545,7 @@ fn validate_window(window: &ReplayWindowProof) -> Result<()> {
     if !valid_digest(window.root()) || window.leaves.iter().any(|value| !valid_digest(*value)) {
         return Err(ReplayReceiptError::Digest);
     }
-    let original = ObjectManifest::new(RECORDING_KIND, window.leaves[..3].iter().copied(),
+    let original = ObjectManifest::new(window.codec.recording_kind(), window.leaves[..3].iter().copied(),
         Some(window.leaves[3])).map_err(|_| ReplayReceiptError::Digest)?;
     if original.root() != window.root() { return Err(ReplayReceiptError::Digest); }
     Ok(())

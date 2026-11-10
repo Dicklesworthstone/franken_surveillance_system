@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
-//! Recorder replay receipts retain real AVC custody without inventing UTC coverage.
+//! Recorder replay receipts retain native AVC/HEVC custody without inventing UTC coverage.
 
 mod recording_support;
+mod hevc_recording_support;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -17,15 +18,17 @@ use fss_publication::{
 };
 use fss_reference::rtsp::client::replay::{ReplayAcceptance, ReplayWindow};
 use fss_reference::rtsp::recording::PreparedRecording;
+use fss_reference::rtsp::recording::hevc::local::load_hevc_recording;
 use fss_reference::rtsp::recording::local::{
     RecordingIoError, RecordingProgress, RecordingPublication, load_recording,
 };
 use fss_reference::rtsp::recording_archive::ArchiveNamespace;
+use fss_reference::rtsp::recording_archive::hevc::HevcArchiveNamespace;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
 use fss_reference::rtsp::recording_replay::{
-    MAX_REPLAY_WINDOWS, REPLAY_RECEIPT_KIND, ReplayReceipt, ReplayReceiptError as E,
+    MAX_REPLAY_WINDOWS, REPLAY_RECEIPT_KIND, HEVC_REPLAY_RECEIPT_KIND, ReplayCodec, ReplayReceipt, ReplayReceiptError as E,
     ReplayRequest, ReplayTermination, ReplayWindowProof, load_replay_receipt,
-    publish_replay_receipt, replay_slot,
+    publish_replay_receipt, replay_slot, hevc_replay_slot, load_hevc_replay_receipt,
 };
 use recording_support::{Error, fixture, scope};
 
@@ -178,8 +181,12 @@ fn publish_metadata(
     let old = receipt.manifest().metadata_digest().ok_or("metadata")?;
     let current = publisher.stage_object(metadata)?;
     let children = receipt.manifest().children().iter().copied().filter(|value| *value != old);
-    let manifest = ObjectManifest::new(REPLAY_RECEIPT_KIND, children, Some(current))?;
-    publisher.publish(&replay_slot(scope, receipt.request().digest())?, &manifest)?;
+    let manifest = ObjectManifest::new(receipt.manifest().kind(), children, Some(current))?;
+    let slot = match receipt.request().codec() {
+        ReplayCodec::Avc => replay_slot(scope, receipt.request().digest())?,
+        ReplayCodec::Hevc => hevc_replay_slot(scope, receipt.request().digest())?,
+    };
+    publisher.publish(&slot, &manifest)?;
     Ok(manifest)
 }
 
@@ -764,5 +771,137 @@ fn accepted_empty_attempts_keep_termination_separate_from_publication_and_cannot
         publish_replay_receipt(&settled, &mut publisher, &NeverCancel),
         Err(E::Storage(RecordingIoError::RootConflict))
     ));
+    Ok(())
+}
+
+fn hevc_request() -> Result<ReplayRequest, Error> {
+    let avc = request()?;
+    Ok(ReplayRequest::new_hevc(hevc_recording_support::scope()?, avc.route(),
+        avc.window(), avc.base_decode_clock())?)
+}
+
+fn hevc_setup(name: &str) -> Result<(PathBuf, LocalRootPublisher, ReplayReceipt), Error> {
+    let root = path(name);
+    let mut publisher = LocalRootPublisher::open(&root, limits())?;
+    let request = hevc_request()?;
+    let namespace = HevcArchiveNamespace::new(catalog_scope(&request))?;
+    // Three real parameter NALs close the second picture and remain source-only.
+    let packets = hevc_recording_support::packets()?;
+    let original = hevc_recording_support::prepare(&packets[..8], &hevc_recording_support::timings(2))?;
+    assert_eq!(original.source_only_nals(), 3);
+    let slot = namespace.window_slot(0)?;
+    publish_window(&mut publisher, &slot, original.publication_plan())?;
+    let proof = ReplayWindowProof::from_hevc(slot, &original)?;
+    let receipt = prepare(request, vec![proof], ReplayTermination::RequestedStop, true)?;
+    Ok((root, publisher, receipt))
+}
+
+#[test]
+fn hevc_replay_reopens_native_originals_with_exact_source_only_boundary_witnesses() -> TestResult {
+    let (root, mut publisher, receipt) = hevc_setup("hevc-reopen")?;
+    assert_eq!(receipt.request().codec(), ReplayCodec::Hevc);
+    assert_eq!(receipt.manifest().kind(), HEVC_REPLAY_RECEIPT_KIND);
+    assert_eq!(receipt.slot()?, hevc_replay_slot(receipt.scope(), receipt.request().digest())?);
+    assert!(receipt.slot()?.as_str().starts_with("fssrr1-hevc-"));
+    publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?;
+    drop(publisher);
+    let mut reopened = LocalRootPublisher::open(root, limits())?;
+    let loaded = load_hevc_replay_receipt(&reopened, receipt.root(), receipt.scope(),
+        receipt.request().digest(), &NeverCancel)?;
+    assert_eq!(loaded.metadata_bytes(), receipt.metadata_bytes());
+    assert_eq!(loaded.windows(), receipt.windows());
+    assert_eq!(loaded.request(), receipt.request());
+    assert_eq!(loaded.acceptance(), receipt.acceptance());
+    let proof = &loaded.windows()[0];
+    assert_eq!(proof.codec(), ReplayCodec::Hevc);
+    let original = load_hevc_recording(&reopened, proof.slot(), proof.root(),
+        loaded.request().scope(), &NeverCancel)?;
+    assert_eq!(original.source_only_nals(), 3);
+    assert_eq!(original.summary().samples, 2);
+    assert_eq!(original.summary().nals, 5);
+    assert_eq!(original.summary().decode_interval, proof.decode_interval());
+    assert_eq!(original.byte_len(), proof.byte_len());
+    let packets = hevc_recording_support::packets()?;
+    for (actual, expected) in original.packets()?.iter().zip(&packets[..8]) {
+        assert_eq!(actual.bytes, expected.bytes);
+        assert_eq!(actual.received_ns, expected.received_ns);
+        assert_eq!(actual.sequence, expected.sequence);
+    }
+    assert_eq!(publish_replay_receipt(&receipt, &mut reopened, &NeverCancel)?.outcome,
+        PublishOutcome::AlreadyPublished);
+    assert!(load_replay_receipt(&reopened, receipt.root(), receipt.scope(),
+        receipt.request().digest(), &NeverCancel).is_err());
+    assert!(matches!(load_hevc_replay_receipt(&reopened, receipt.root(), receipt.scope(),
+        receipt.request().digest(), &StopAt(PublishCutPoint::AfterChildrenVerified)),
+        Err(E::Storage(RecordingIoError::Cancelled))));
+    Ok(())
+}
+
+#[test]
+fn codec_choice_changes_replay_identity_and_cannot_cross_original_or_receipt_families() -> TestResult {
+    let hevc = hevc_request()?;
+    let avc = ReplayRequest::new(hevc.scope().clone(), hevc.route(), hevc.window(), hevc.base_decode_clock())?;
+    assert_ne!(avc.digest(), hevc.digest());
+    assert_ne!(avc.decode_clock(), hevc.decode_clock());
+    let original = hevc_recording_support::fixture()?;
+    let namespace = HevcArchiveNamespace::new(catalog_scope(&hevc))?;
+    assert!(ReplayWindowProof::from_avc(namespace.window_slot(0)?, original.publication_plan()).is_err());
+    let proof = ReplayWindowProof::from_hevc(namespace.window_slot(0)?, &original)?;
+    assert!(prepare(avc.clone(), vec![proof], ReplayTermination::RequestedStop, true).is_err());
+    let avc_receipt = prepare(avc, Vec::new(), ReplayTermination::ProtocolFailure, false)?;
+    let hevc_receipt = prepare(hevc, Vec::new(), ReplayTermination::ProtocolFailure, false)?;
+    assert_ne!(avc_receipt.root(), hevc_receipt.root());
+    assert_ne!(avc_receipt.slot()?, hevc_receipt.slot()?);
+    let mut publisher = LocalRootPublisher::open(path("codec-pinned"), limits())?;
+    publish_replay_receipt(&avc_receipt, &mut publisher, &NeverCancel)?;
+    publish_replay_receipt(&hevc_receipt, &mut publisher, &NeverCancel)?;
+    // Even a coherently installed AVC root in the HEVC routing slot cannot make
+    // the explicitly chosen HEVC loader select AVC from the stored manifest.
+    let slot = hevc_replay_slot(avc_receipt.scope(), avc_receipt.request().digest())?;
+    publisher.publish(&slot, avc_receipt.manifest())?;
+    assert!(matches!(load_hevc_replay_receipt(&publisher, avc_receipt.root(), avc_receipt.scope(),
+        avc_receipt.request().digest(), &NeverCancel), Err(E::Digest)));
+    Ok(())
+}
+
+#[test]
+fn hevc_replay_cannot_publish_absent_originals_or_trust_rehashed_accounting() -> TestResult {
+    let (_, mut publisher, receipt) = hevc_setup("hevc-forged")?;
+    let mut empty = LocalRootPublisher::open(path("hevc-missing"), limits())?;
+    assert!(publish_replay_receipt(&receipt, &mut empty, &NeverCancel).is_err());
+    assert!(empty.root(&receipt.slot()?).is_none());
+    let mut metadata = receipt.metadata_bytes().to_vec();
+    let body_end = metadata.len().checked_sub(33).ok_or("checksum")?;
+    let offset = body_end.checked_sub(4 * 33 + 8).ok_or("descriptor")?;
+    let invented = receipt.windows()[0].byte_len() as u64 + 1;
+    metadata[offset..offset + 8].copy_from_slice(&invented.to_be_bytes());
+    rechecksum(&mut metadata)?;
+    let forged = publish_metadata(&mut publisher, &receipt, receipt.scope(), &metadata)?;
+    assert!(matches!(load_hevc_replay_receipt(&publisher, forged.root(), receipt.scope(),
+        receipt.request().digest(), &NeverCancel), Err(E::WindowMismatch)));
+    Ok(())
+}
+
+#[test]
+fn hevc_replay_source_tombstone_prevents_a_cold_verified_receipt() -> TestResult {
+    let (root, mut publisher, receipt) = hevc_setup("hevc-tombstone")?;
+    publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?;
+    let deleted = receipt.windows()[0].original_leaf_digests()[0];
+    let witness_bytes = b"authorized HEVC original deletion witness";
+    publisher.stage_object(witness_bytes)?;
+    drop(publisher);
+    let donor_root = path("hevc-tombstone-donor");
+    let mut donor = LocalRootPublisher::open(&donor_root, limits())?;
+    let witness = donor.stage_object(witness_bytes)?;
+    donor.record_tombstone(TombstoneRecord::new(ObjectId::parse("object:hevc-replay-fixture")?,
+        Generation(2), Generation(1), TombstoneReason::Deleted, Some(witness), deleted)?)?;
+    drop(donor);
+    for entry in std::fs::read_dir(donor_root.join(LOCAL_TOMBSTONES_DIR))? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), root.join(LOCAL_TOMBSTONES_DIR).join(entry.file_name()))?;
+    }
+    let reopened = LocalRootPublisher::open(root, limits())?;
+    assert!(load_hevc_replay_receipt(&reopened, receipt.root(), receipt.scope(),
+        receipt.request().digest(), &NeverCancel).is_err());
     Ok(())
 }

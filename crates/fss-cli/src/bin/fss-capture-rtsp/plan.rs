@@ -95,8 +95,8 @@ No rejection, missing reply or advertised server method enables automatic fallba
 Omitting the option or selecting options preserves existing approval and recording identities.\n\
 \n\
 Recorder playback: --replay-start 20261101T120000Z --replay-end 20261101T120100Z\n\
-Supply an explicit recorder replay URI using the ordinary route options. AVC and a pinned\n\
-SSRC are required. Closed forward UTC ranges may span at most seven days; compact UTC\n\
+Supply an explicit recorder replay URI using the ordinary route options. AVC or HEVC and a\n\
+pinned SSRC are required. Closed forward UTC ranges may span at most seven days; compact UTC\n\
 timestamps support up to nine fractional digits. There is no recorder search or URI discovery.\n\
 SETUP and PLAY require onvif-replay; PLAY sends the exact range and Rate-Control: no.\n\
 A single contained closed clock range must be acknowledged before media is admitted.\n\
@@ -775,9 +775,9 @@ impl Options {
             policy.push(':');
             policy.push_str(SSRC_AUTO_POLICY);
         }
-        if self.replay.is_some() {
+        if let Some(request) = &self.replay {
             policy.push(':');
-            policy.push_str(replay::POLICY);
+            policy.push_str(replay::policy(request));
         }
         policy
     }
@@ -996,7 +996,7 @@ impl Options {
             clock.encode(&mut e);
         }
         if let Some(request) = &self.replay {
-            e.text(replay::POLICY);
+            e.text(replay::policy(request));
             e.digest(request.digest());
         }
         let bytes = e

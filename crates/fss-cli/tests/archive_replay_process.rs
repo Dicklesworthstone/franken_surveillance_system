@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
-//! Cold executable inspection of pinned replay receipts and real AVC originals.
+//! Cold executable inspection of codec-pinned replay receipts and native originals.
 
+#[path = "../../fss-reference/tests/hevc_recording_support/mod.rs"]
+mod hevc_recording_support;
 #[path = "../../fss-reference/tests/recording_support/mod.rs"]
 mod recording_support;
 
@@ -24,6 +26,7 @@ use fss_reference::rtsp::recording::local::{
     RecordingProgress, RecordingPublication, load_recording,
 };
 use fss_reference::rtsp::recording_archive::ArchiveNamespace;
+use fss_reference::rtsp::recording_archive::hevc::HevcArchiveNamespace;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
 use fss_reference::rtsp::recording_replay::{
     ReplayReceipt, ReplayRequest, ReplayTermination, ReplayWindowProof, publish_replay_receipt,
@@ -157,7 +160,7 @@ fn args(root: &Path, receipt: &ReplayReceipt) -> Vec<OsString> {
         root.as_os_str().to_owned(),
     ];
     for (key, value) in [
-        ("--codec", "avc".to_owned()),
+        ("--codec", receipt.request().codec().as_str().to_owned()),
         ("--sensor", scope.recording.sensor.as_str().to_owned()),
         ("--stream", scope.recording.stream.as_str().to_owned()),
         ("--generation", scope.recording.generation.to_string()),
@@ -262,7 +265,7 @@ fn malformed_pins_and_limits_refuse_before_storage_and_never_echo_values() -> Te
             "--expected-replay-request",
             Some("PRIVATE_PASSWORD_SENTINEL"),
         ),
-        ("--codec", Some("hevc")),
+        ("--codec", Some("mjpeg")),
         ("--max-object-bytes", Some("33554433")),
         ("--timeout-ms", Some("0")),
     ] {
@@ -406,6 +409,62 @@ fn cold_inspection_reports_exact_acknowledgement_and_native_verified_originals()
         publisher.spool().read(receipt.root())?,
         receipt.manifest().canonical_bytes()
     );
+    Ok(())
+}
+
+#[test]
+fn hevc_cold_inspection_uses_the_pinned_codec_and_refuses_avc_substitution() -> Test {
+    let _serial = serial();
+    let root = path("hevc-native-originals");
+    let template = request()?;
+    let request = ReplayRequest::new_hevc(
+        hevc_recording_support::scope()?,
+        template.route(),
+        template.window(),
+        template.base_decode_clock(),
+    )?;
+    let namespace = HevcArchiveNamespace::new(catalog_scope(&request))?;
+    let packets = hevc_recording_support::packets()?;
+    let original =
+        hevc_recording_support::prepare(&packets[..8], &hevc_recording_support::timings(2))?;
+    assert_eq!(original.source_only_nals(), 3);
+    let slot = namespace.window_slot(0)?;
+    let mut publisher = LocalRootPublisher::open(&root, limits())?;
+    publish_original(&mut publisher, &slot, original.publication_plan())?;
+    let receipt = prepare(
+        request,
+        vec![ReplayWindowProof::from_hevc(slot, &original)?],
+        ReplayTermination::RequestedStop,
+        true,
+    )?;
+    publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?;
+    drop(publisher);
+    let report = report(run(&args(&root, &receipt))?)?;
+    assert_eq!(text(&report, "codec")?, "hevc");
+    assert_eq!(text(&report, "namespace")?, namespace.digest().to_text());
+    assert_eq!(
+        text(&report, "replay_receipt_slot")?,
+        receipt.slot()?.as_str()
+    );
+    assert_eq!(
+        text(&report, "replay_request")?,
+        receipt.request().digest().to_text()
+    );
+    assert_eq!(field(&report, "durable_windows")?.integer(), Some(1));
+    assert_eq!(
+        field(&report, "original_source_verified")?.boolean(),
+        Some(true)
+    );
+    assert_eq!(text(&report, "frame_capture_time")?, "unknown");
+    assert_eq!(text(&report, "coverage_claim")?, "not_claimed");
+    let mut wrong = args(&root, &receipt);
+    change(&mut wrong, "--codec", Some("avc"))?;
+    let output = run(&wrong)?;
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(ExitIdentity::RUNTIME_FAILURE.code))
+    );
+    assert!(output.stdout.is_empty());
     Ok(())
 }
 

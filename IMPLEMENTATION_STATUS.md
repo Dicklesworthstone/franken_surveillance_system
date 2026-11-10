@@ -4,6 +4,35 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native HEVC recorder-window retrieval
+
+The bounded recorder replay path now supports HEVC as well as AVC. An explicitly
+approved HEVC request selects replay SETUP/PLAY before the first protocol request,
+requires the pinned SSRC and validated closed UTC acknowledgement, and retains
+original windows through the existing native HEVC source and publication owners.
+Protocol refusal cannot fall back to a live stream. The HEVC request, decode clock,
+receipt and slot have independent canonical domains; all existing AVC durable
+encodings remain unchanged. `fss-archive inspect-replay --codec hevc` requires
+the exact receipt root, request and scope and revalidates every original through
+the native HEVC loader. Wrong codec, changed pins, damaged custody and deleted
+originals refuse.
+
+New contracts exercise native automatic selection, real loopback CLI acquisition
+and acknowledgement refusal, codec separation, interrupted receipt publication,
+cold reopen and archive inspection. Parsing with pinned rustfmt and whitespace checks
+pass. Full local reference/CLI execution remains blocked by the unchanged
+Asupersync 0.5.0 metadata compiler being killed before FSS diagnostics (about
+1.98 GiB peak RSS in the recorded baseline). The new repository-owned
+`scripts/check_recording_lifecycle.sh replay` runs these supplemental contracts
+early in the hosted workflow; results are pending at this implementation
+checkpoint. No dependency, toolchain pin or qualification gate was weakened.
+
+This advances `fss-vit022-recorder-retrieval-5js5o` / VIT-022. Profile G discovery,
+vendor inventory, verified upstream retention and full qualification remain open.
+Requested and acknowledged UTC are recorder assertions, not frame capture times
+or proof that the whole requested interval was retrieved. See
+[`RTSP_RECORDER_REPLAY.md`](docs/RTSP_RECORDER_REPLAY.md).
+
 ## Retained screened review clips and local delivery
 
 `fss-export review` adds the local acquisition-to-review step: an exact retained

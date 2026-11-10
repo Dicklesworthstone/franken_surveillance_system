@@ -20,19 +20,22 @@ use fss_publication::{
 };
 use fss_reference::rtsp::recording::{MAX_RECORDING_BYTES, RecordingScope};
 use fss_reference::rtsp::recording_archive::ArchiveNamespace;
+use fss_reference::rtsp::recording_archive::hevc::HevcArchiveNamespace;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::rtsp::recording_replay::{load_replay_receipt, replay_slot};
+use fss_reference::rtsp::recording_replay::{
+    ReplayCodec, hevc_replay_slot, load_hevc_replay_receipt, load_replay_receipt, replay_slot,
+};
 
 const MAX_REPORT_BYTES: usize = 64 * 1024;
 pub(super) const HELP: &str = "fss-archive inspect-replay [options]\n\
-  Required: --root EXISTING_DIR --codec avc --sensor ID --stream ID --generation N\n\
+  Required: --root EXISTING_DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
             --decode-clock sha256:HEX --time-scale N\n\
             --expected-replay-root sha256:HEX --expected-replay-request sha256:HEX\n\
   Bounds: [--timeout-ms N] [--max-scan-roots N] [--max-objects N]\n\
           [--max-object-bytes N] [--max-total-bytes N]\n\
   Requires the exact replay-bound decode clock and independently pinned receipt/request.\n\
-  Revalidates every original AVC window and source closure before bounded JSON output.\n\
+  Revalidates every original window with the explicitly selected native codec verifier.\n\
   At most 64 original windows; output is at most 64 KiB and contains no source bytes.\n\
   Requested and acknowledged UTC ranges are protocol assertions, not calibrated frame\n\
   capture times. Publication completeness never proves complete requested UTC coverage.\n\
@@ -70,6 +73,7 @@ fn runtime(message: &'static str) -> Error {
 
 struct Options {
     root: PathBuf,
+    codec: ReplayCodec,
     scope: CatalogScope,
     receipt: ContentDigest,
     request: ContentDigest,
@@ -162,11 +166,15 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }
         Ok(value)
     };
-    if text("--codec")? != "avc" {
-        return Err(malformed(
-            "replay receipts require the explicit AVC profile",
-        ));
-    }
+    let codec = match text("--codec")? {
+        "avc" => ReplayCodec::Avc,
+        "hevc" => ReplayCodec::Hevc,
+        _ => {
+            return Err(malformed(
+                "replay receipts require explicit avc or hevc codec",
+            ));
+        }
+    };
     let scope = CatalogScope {
         recording: RecordingScope {
             sensor: SensorId::parse(text("--sensor")?)
@@ -182,7 +190,11 @@ fn parse(args: &[OsString]) -> Result<Options> {
     };
     let receipt = digest("--expected-replay-root")?;
     let request = digest("--expected-replay-request")?;
-    replay_slot(&scope, request).map_err(|_| malformed("invalid pinned replay scope"))?;
+    match codec {
+        ReplayCodec::Avc => replay_slot(&scope, request),
+        ReplayCodec::Hevc => hevc_replay_slot(&scope, request),
+    }
+    .map_err(|_| malformed("invalid pinned replay scope"))?;
     let scan = number("--max-scan-roots", Some(16_384), 1, 65_536)? as usize;
     let objects = number("--max-objects", Some(65_536), 1, 131_072)? as usize;
     let storage = LocalPublicationLimits::new(
@@ -212,6 +224,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         .map_err(|_| malformed("inconsistent storage ceilings"))?;
     Ok(Options {
         root: PathBuf::from(required("--root")?),
+        codec,
         scope,
         receipt,
         request,
@@ -291,7 +304,11 @@ fn run(options: Options) -> Result<String> {
         .map_err(|_| runtime("archive open or exclusive ownership refused"))?;
     // Existing owner open is count/byte bounded but has no cancellation argument.
     clock.check()?;
-    let receipt = load_replay_receipt(
+    let load = match options.codec {
+        ReplayCodec::Avc => load_replay_receipt,
+        ReplayCodec::Hevc => load_hevc_replay_receipt,
+    };
+    let receipt = load(
         &publisher,
         options.receipt,
         &options.scope,
@@ -302,21 +319,30 @@ fn run(options: Options) -> Result<String> {
     clock.check()?;
     let request = receipt.request();
     let scope = receipt.scope();
-    let namespace = ArchiveNamespace::new(scope.clone())
-        .map_err(|_| runtime("verified replay namespace could not be reconstructed"))?;
-    let slot = replay_slot(scope, request.digest())
+    let namespace = match options.codec {
+        ReplayCodec::Avc => {
+            ArchiveNamespace::new(scope.clone()).map(|namespace| namespace.digest())
+        }
+        ReplayCodec::Hevc => {
+            HevcArchiveNamespace::new(scope.clone()).map(|namespace| namespace.digest())
+        }
+    }
+    .map_err(|_| runtime("verified replay namespace could not be reconstructed"))?;
+    let slot = receipt
+        .slot()
         .map_err(|_| runtime("verified replay slot could not be reconstructed"))?;
     let mut report = String::new();
     append(
         &mut report,
         &format!(
-            "{{\"schema\":\"fss.local_replay_operator_report.v1\",\"command\":\"inspect-replay\",\"codec\":\"avc\",\"replay_receipt_root\":{},\"replay_receipt_slot\":{},\"replay_request\":{},\"route\":{},\"approval\":{},\"namespace\":{},\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"base_decode_clock\":{},\"decode_clock\":{},\"time_scale\":{},",
+            "{{\"schema\":\"fss.local_replay_operator_report.v1\",\"command\":\"inspect-replay\",\"codec\":{},\"replay_receipt_root\":{},\"replay_receipt_slot\":{},\"replay_request\":{},\"route\":{},\"approval\":{},\"namespace\":{},\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"base_decode_clock\":{},\"decode_clock\":{},\"time_scale\":{},",
+            quoted(options.codec.as_str()),
             quoted(&receipt.root().to_text()),
             quoted(slot.as_str()),
             quoted(&request.digest().to_text()),
             quoted(&request.route().to_text()),
             quoted(&receipt.approval().to_text()),
-            quoted(&namespace.digest().to_text()),
+            quoted(&namespace.to_text()),
             quoted(scope.recording.sensor.as_str()),
             quoted(scope.recording.stream.as_str()),
             scope.recording.generation,

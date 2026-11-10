@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::rtsp::recording::local::load_recording;
+use crate::rtsp::recording::hevc::local::load_hevc_recording;
 use fss_publication::{
     LocalPublicationReceipt, LocalPublicationState, LocalRootPublisher, PublishCancellation,
     PublishCutPoint,
@@ -21,7 +22,7 @@ pub fn publish_replay_receipt(
 ) -> Result<LocalPublicationReceipt> {
     cancelled(cancel)?;
     owner_ready(publisher)?;
-    let slot = replay_slot(receipt.scope(), receipt.request().digest())?;
+    let slot = receipt.slot()?;
     if publisher.root(&slot).is_some_and(|known| known.root != receipt.root()) {
         return Err(RecordingIoError::RootConflict.into());
     }
@@ -49,18 +50,41 @@ pub fn load_replay_receipt(
     expected_request: ContentDigest,
     cancel: &dyn PublishCancellation,
 ) -> Result<ReplayReceipt> {
+    load_codec_receipt(publisher, ReplayCodec::Avc, expected_root, expected_scope, expected_request, cancel)
+}
+
+/// Cold-load an explicitly selected HEVC receipt using the native HEVC source
+/// verifier. No stored tag, manifest, or AVC fallback may select another codec.
+pub fn load_hevc_replay_receipt(
+    publisher: &LocalRootPublisher,
+    expected_root: ContentDigest,
+    expected_scope: &CatalogScope,
+    expected_request: ContentDigest,
+    cancel: &dyn PublishCancellation,
+) -> Result<ReplayReceipt> {
+    load_codec_receipt(publisher, ReplayCodec::Hevc, expected_root, expected_scope, expected_request, cancel)
+}
+
+fn load_codec_receipt(
+    publisher: &LocalRootPublisher,
+    expected_codec: ReplayCodec,
+    expected_root: ContentDigest,
+    expected_scope: &CatalogScope,
+    expected_request: ContentDigest,
+    cancel: &dyn PublishCancellation,
+) -> Result<ReplayReceipt> {
     cancelled(cancel)?;
     owner_ready(publisher)?;
     if !valid_digest(expected_root) || !valid_digest(expected_request) {
         return Err(ReplayReceiptError::Digest);
     }
-    let slot = replay_slot(expected_scope, expected_request)?;
+    let slot = codec_replay_slot(expected_codec, expected_scope, expected_request)?;
     durable_root(publisher, &slot, expected_root)?;
     let root_bytes = read_object(publisher, expected_root, cancel)?;
     if root_bytes.len() > MAX_REPLAY_ROOT_BYTES { return Err(ReplayReceiptError::Limit); }
     let manifest = ObjectManifest::from_canonical_bytes(&root_bytes)
         .map_err(|_| ReplayReceiptError::Malformed)?;
-    if manifest.root() != expected_root || manifest.kind() != REPLAY_RECEIPT_KIND
+    if manifest.root() != expected_root || manifest.kind() != expected_codec.receipt_kind()
         || manifest.children().len() > MAX_REPLAY_WINDOWS * 5 + 1
     { return Err(ReplayReceiptError::Digest); }
     let metadata_digest = manifest.metadata_digest().ok_or(ReplayReceiptError::Malformed)?;
@@ -68,7 +92,7 @@ pub fn load_replay_receipt(
     if metadata.len().checked_add(root_bytes.len())
         .is_none_or(|bytes| bytes > MAX_REPLAY_RECEIPT_BYTES)
     { return Err(ReplayReceiptError::Limit); }
-    let receipt = wire::decode(&metadata, expected_scope, expected_request)?;
+    let receipt = wire::decode(&metadata, expected_codec, expected_scope, expected_request)?;
     if receipt.manifest != manifest { return Err(ReplayReceiptError::Digest); }
     live_originals(publisher, &receipt, cancel)?;
     verify_originals(publisher, &receipt, cancel)?;
@@ -92,9 +116,18 @@ fn verify_originals(
         cancelled(cancel)?;
         durable_root(publisher, window.slot(), window.root())?;
         // Bound original media residence to one window at a time.
-        let recording = load_recording(publisher, window.slot(), window.root(),
-            &receipt.scope.recording, cancel)?;
-        let actual = ReplayWindowProof::from_avc(window.slot().clone(), &recording)?;
+        let actual = match receipt.request.codec() {
+            ReplayCodec::Avc => {
+                let recording = load_recording(publisher, window.slot(), window.root(),
+                    &receipt.scope.recording, cancel)?;
+                ReplayWindowProof::from_avc(window.slot().clone(), &recording)?
+            }
+            ReplayCodec::Hevc => {
+                let recording = load_hevc_recording(publisher, window.slot(), window.root(),
+                    &receipt.scope.recording, cancel)?;
+                ReplayWindowProof::from_hevc(window.slot().clone(), &recording)?
+            }
+        };
         if &actual != window { return Err(ReplayReceiptError::WindowMismatch); }
     }
     Ok(())

@@ -31,7 +31,7 @@ const VPS: &str = "QAEMAf//AWAAAAMAkAAAAwAAAwAeugJA";
 const SPS: &str = "QgEBAWAAAAMAkAAAAwAAAwAeoCCDHVZbpKTC8BaAgAAAAwCAAAADAoQ=";
 const PPS: &str = "RAHAc8CJ";
 
-fn args(directory: &Directory, peer: SocketAddr, pictures: u64) -> Test<Vec<OsString>> {
+pub(super) fn args(directory: &Directory, peer: SocketAddr, pictures: u64) -> Test<Vec<OsString>> {
     let mut args = super::args(directory, peer, pictures);
     replace(&mut args, "--frame-duration-ticks", "18000")?;
     replace(
@@ -69,7 +69,7 @@ fn description_without_parameters(description: &str) -> String {
         .collect()
 }
 
-fn description(payloads: &[u8]) -> String {
+pub(super) fn description(payloads: &[u8]) -> String {
     let offered = payloads
         .iter()
         .map(u8::to_string)
@@ -87,7 +87,7 @@ fn description(payloads: &[u8]) -> String {
     sdp
 }
 
-fn nals() -> Test<Vec<Vec<u8>>> {
+pub(super) fn nals() -> Test<Vec<Vec<u8>>> {
     let fixture = include_str!("../../../../tests/fixtures/media/hevc/remux_main8.nals.hex");
     fixture
         .lines()
@@ -104,7 +104,7 @@ fn nals() -> Test<Vec<Vec<u8>>> {
         .collect()
 }
 
-fn packet(sequence: u16, timestamp: u32, marker: bool, nal: &[u8]) -> Vec<u8> {
+pub(super) fn packet(sequence: u16, timestamp: u32, marker: bool, nal: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0x80, PT | if marker { 128 } else { 0 }];
     bytes.extend_from_slice(&sequence.to_be_bytes());
     bytes.extend_from_slice(&timestamp.to_be_bytes());
