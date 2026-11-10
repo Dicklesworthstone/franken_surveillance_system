@@ -4,6 +4,27 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## HEVC recorder replay session admission
+
+The shared native RTSP session now admits explicit replay SETUP for both AVC and
+HEVC. Previously the HEVC archive/CLI owners selected replay correctly, but the
+session's H.264-only gate refused the next request with
+`Authentication(Session(State))`, before any SETUP reached the recorder.
+Live/replay mode separation, replay acknowledgement containment, Digest retries,
+response deadlines and JPEG/metadata exclusions retain their existing contracts.
+
+Six protocol regressions cover exact HEVC wire requests, negotiated SSRC,
+contained and malformed acknowledgements, recorder status refusals, Digest
+correlation/deadlines, and excluded codecs. The archive refusal fixture now
+checks the earlier source-bearing Description fault for an absent payload,
+including original SDP, closed transport, empty archive and unchanged pin journal,
+for both live and replay. Configuration refusals still require Selection errors.
+
+This repairs the production cause exposed by native hosted run 42758095012
+(job 129637080496). Source review is complete; execution of the new regressions
+and affected archive/CLI suites remains pending while the local executor is
+unavailable. No runtime, dependency, profile bound or qualification gate changed.
+
 ## Durable local review delivery and restart reconciliation
 
 `fss-export review-read` now records a guarded destination-bound attempt before
