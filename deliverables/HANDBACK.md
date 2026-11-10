@@ -54,6 +54,12 @@ A cycle is a replug, nothing else. Everything they need is already armed and wil
 unattended: the import capsule for the Wyze pair, wake+login+fire for the Tapos, then the
 dump/verify/write chain with the pinned images.
 
+## Known gap before any C460 flash
+
+The C460 image boots but has **no driver for its sensor** (sc5336p): image kernel is 4.9.84, the
+vendor module is 5.10.117, upstream has no sc5336 at all and the GPL drop has no sensor source.
+Expect a working shell and a blind camera. Details in `docs/exploit/c460-openipc-flash.md`.
+
 ## The ONE Action That Changes Everything
 
 **Power-cycle .39 and .51 again.** Two earlier power-cycles fired into the void; both
