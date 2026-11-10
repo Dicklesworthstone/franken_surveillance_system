@@ -277,7 +277,7 @@ impl ReviewMediaRecord {
     pub fn duration_ns(&self) -> u64 {
         self.duration_ns
     }
-    pub(super) fn identity(&self) -> ContentDigest {
+    pub(crate) fn identity(&self) -> ContentDigest {
         self.identity
     }
     pub(super) fn request_digest(&self) -> ContentDigest {

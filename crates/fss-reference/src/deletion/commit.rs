@@ -229,7 +229,14 @@ pub(super) fn commit(
     principal: &str,
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
-    commit_request(deployment, PlanRequest::Digest, plan_digest, approval, principal, cx)
+    commit_request(
+        deployment,
+        PlanRequest::Digest,
+        plan_digest,
+        approval,
+        principal,
+        cx,
+    )
 }
 
 /// Explicit retention request, recomputed once before a fresh commit. Durable retries bind
@@ -242,12 +249,39 @@ pub(super) fn commit_retention(
     principal: &str,
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
-    commit_request(deployment, PlanRequest::Retention(request), plan_digest, approval, principal, cx)
+    commit_request(
+        deployment,
+        PlanRequest::Retention(request),
+        plan_digest,
+        approval,
+        principal,
+        cx,
+    )
+}
+
+/// An explicit derivative-expiry request, with the same durable resume protocol as imports.
+pub(super) fn commit_review_expiry(
+    deployment: &mut ReferenceDeployment,
+    request: &super::review_expiry::ReviewExpiryRequest,
+    plan_digest: ContentDigest,
+    approval: ContentDigest,
+    principal: &str,
+    cx: &ReplayCx,
+) -> Result<CommitReceipt, DeletionError> {
+    commit_request(
+        deployment,
+        PlanRequest::ReviewExpiry(request),
+        plan_digest,
+        approval,
+        principal,
+        cx,
+    )
 }
 
 enum PlanRequest<'a> {
     Digest,
     Retention(&'a super::retention::RetentionRequest),
+    ReviewExpiry(&'a super::review_expiry::ReviewExpiryRequest),
 }
 
 impl PlanRequest<'_> {
@@ -256,6 +290,9 @@ impl PlanRequest<'_> {
             Self::Digest => true,
             Self::Retention(request) => {
                 matches!(scope, DeletionScope::Retention(selection) if selection.request() == *request)
+            }
+            Self::ReviewExpiry(request) => {
+                matches!(scope, DeletionScope::ReviewExpiry(selection) if selection.request() == *request)
             }
         }
     }
@@ -296,8 +333,16 @@ fn commit_request(
     }
     let plan = match requested {
         PlanRequest::Digest => current_plan(deployment, &index, plan_digest, cx)?,
-        PlanRequest::Retention(request) => super::retention::plan_retention(deployment, request, cx)?
-            .deletion.ok_or(DeletionError::StalePlan(plan_digest))?,
+        PlanRequest::Retention(request) => {
+            super::retention::plan_retention(deployment, request, cx)?
+                .deletion
+                .ok_or(DeletionError::StalePlan(plan_digest))?
+        }
+        PlanRequest::ReviewExpiry(request) => {
+            super::review_expiry::assess_review_expiry(deployment, request, cx)?
+                .deletion
+                .ok_or(DeletionError::StalePlan(plan_digest))?
+        }
     };
     if plan.digest()? != plan_digest {
         return Err(DeletionError::StalePlan(plan_digest));

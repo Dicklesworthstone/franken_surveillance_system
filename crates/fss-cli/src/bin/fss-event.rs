@@ -360,6 +360,15 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
   delete retention-commit: same selection options plus --plan sha256:PLAN --approve sha256:APPROVAL\n\
     Revalidates one union closure, records deletion before unlinking and supports exact cold\n\
     retry after interruption. A changed request or deployment requires a fresh approval.\n\
+  delete review-expiry-plan: --sensor-id ID --attested-now-ns EARLIEST:LATEST\n\
+    Read-only cleanup preview for retained review derivatives of one sensor. Only grants whose\n\
+    expiry is no later than the earliest owner-attested time are eligible. Uncertain expiry,\n\
+    active holds and shared-evidence blockers remain explicit. Original imports are preserved.\n\
+    This does not release holds, read a trusted clock, recall delivered copies or run a scheduler.\n\
+  delete review-expiry-commit: same sensor and time plus --plan sha256:PLAN --approve sha256:APPROVAL\n\
+    Follows the preview's exact approval, revalidates the derivative-only closure and records\n\
+    deletion before unlinking. Interrupted cleanup supports exact cold retry. A changed time\n\
+    assertion, sensor or uncommitted authority basis requires a fresh preview and approval.\n\
   delete policy-plan: --sensor-id ID --state enabled|disabled --retain-for-ns POSITIVE_NS\n\
           [--max-retained-source-bytes BYTES] --expected-policy none|sha256:CURRENT\n\
           --attested-now-ns EARLIEST:LATEST --reason TEXT\n\

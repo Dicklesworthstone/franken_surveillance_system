@@ -134,6 +134,13 @@ Repeated revocation is idempotent. Revocation prevents later managed reads; it
 does not erase a copy already delivered to a recipient. Expiry is an access
 condition, not an automatic physical deletion scheduler.
 
+For an explicit cleanup after expiry, use the source-preserving
+[`review-expiry-plan` / `review-expiry-commit` workflow](REVIEW_MEDIA_EXPIRY.md).
+It selects certainly expired local derivatives, honors source holds, and keeps
+original recordings and media still needed by current sibling reviews.
+After approved cleanup, `review-show` reports retained audit metadata and the
+deletion completion separately from explicit grant revocation.
+
 ## Current-source checks and deletion
 
 Every managed read validates the durable review transition, exact reader,

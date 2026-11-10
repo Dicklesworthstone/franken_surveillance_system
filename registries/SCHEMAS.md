@@ -1,5 +1,27 @@
 # Schema registry
 
+## Review derivative expiry
+
+The handwritten deletion owner adds `fss.deletion_plan.v4` and
+`fss.deletion_completion.v4` only for scope tag 5, `review_expiry`. The scope
+contains the complete canonical `fss.review_expiry_selection.v1`; its selected
+review-root set is nonempty and its source-import member list is empty. The
+selection binds the exact sensor and attested time, every current same-sensor
+review's root/issuance/source/expiry, all dispositions and blocked-trial witnesses.
+Bounded strict decoding and whole-byte reencoding remain mandatory. Existing
+import v1, sensor/event v2 and retention v3 bytes and interpretation are unchanged.
+
+The complete CLI projection `fss.review_expiry_preview.v1` carries this selection,
+an optional exact deletion plan, explicit original-evidence exclusion and
+qualification state. `fss.review_media_deleted.v1` is owner-authorized audit
+inspection after such a deletion: immutable issuance metadata, exact deletion
+plan/completion, current denial of media access, and historical explicit
+revocation state. It never substitutes missing media or authorizes delivery.
+Existing non-deleted `fss.review_media_cli.v1` reports remain unchanged. Neither
+JSON spelling nor either projection is canonical identity or effect authority.
+
+## Interchange schemas
+
 | ID | Schema | File | Authority | Compatibility rule |
 |---|---|---|---|---|
 | `SCHEMA-ONVIF-ANALYSIS-QUERY-001` | `fss.onvif_analysis_query.v1` | `schemas/onvif_analysis_query.v1.json` | existing AOP-005 bounded read intent; operator binds deployment scope | Closed selector for target onvif, analysis tracks/lifecycle/zones and 1..32 ordered exact XML/RTP identity/root pairs. Inline zone policy is required only for zones; complete semantic data rows must fit max_entries 1..32 or the operation refuses. Native admission additionally enforces canonical number/digest spellings, unique source identities, bounded inline bytes, exact current anchor and real custody/work/deletion checks. No root/principal/archive override, path indirection, disclosure expansion, historical selector or continuation through MCP. Responses retain the existing AgentResponseEnvelope and AgentCognitiveEnvelope v1 query/case contracts; the selector has no required schema discriminator field. |

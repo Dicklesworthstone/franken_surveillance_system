@@ -3,7 +3,8 @@
 //!
 //! Import scopes keep exact v1 bytes; sensor/event scopes keep exact v2 bytes. Retention
 //! cohorts use v3 and bind the complete selection, including owner time assertions and
-//! exclusions. A scope is admitted only by its own version, never silently reinterpreted.
+//! exclusions. Review-expiry v4 binds exact derivative roots with no selected source imports.
+//! A scope is admitted only by its own version, never silently reinterpreted.
 
 use std::collections::BTreeSet;
 
@@ -21,6 +22,8 @@ pub const DELETION_PLAN_DOMAIN: &str = "fss.deletion_plan.v1";
 pub const DELETION_SCOPE_PLAN_DOMAIN: &str = "fss.deletion_plan.v2";
 /// Canonical plan domain of an exact age-based retention cohort.
 pub const DELETION_RETENTION_PLAN_DOMAIN: &str = "fss.deletion_plan.v3";
+/// Canonical plan domain for derivative-only review expiry; the source import list is empty.
+pub const DELETION_REVIEW_EXPIRY_PLAN_DOMAIN: &str = "fss.deletion_plan.v4";
 /// Exact approval domain (`SCHEMA-DOMAIN-DELETION-APPROVAL-001`).
 pub const DELETION_APPROVAL_DOMAIN: &str = "fss.deletion_approval.v1";
 /// Canonical completion domain of an import-scope plan (`SCHEMA-DOMAIN-DELETION-COMPLETION-001`).
@@ -29,6 +32,8 @@ pub const DELETION_COMPLETION_DOMAIN: &str = "fss.deletion_completion.v1";
 pub const DELETION_SCOPE_COMPLETION_DOMAIN: &str = "fss.deletion_completion.v2";
 /// Canonical completion domain of an exact age-based retention cohort.
 pub const DELETION_RETENTION_COMPLETION_DOMAIN: &str = "fss.deletion_completion.v3";
+/// Canonical completion domain for derivative-only review expiry.
+pub const DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN: &str = "fss.deletion_completion.v4";
 /// Local unlinking, not cryptographic erasure (the spool is not encrypted).
 pub const DELETION_MECHANISM: &str = "filesystem_unlink";
 /// Hard ceiling on one canonical plan or completion record.
@@ -140,13 +145,13 @@ pub struct DeletionPlan {
     pub site_lineage: String,
     /// What the plan deletes (bound into the digest).
     pub scope: DeletionScope,
-    /// Deleted import identities, strictly ascending; exactly the selected scope members.
+    /// Deleted import identities, strictly ascending; empty for derivative-only review expiry.
     pub imports: Vec<ContentDigest>,
     /// Authority head the plan was computed at; any later commit makes it stale.
     pub basis_anchor: LedgerAnchor,
     /// Effect-journal record root at planning time.
     pub effect_journal_root: ContentDigest,
-    /// Validity of the deletion record (the hull of the member imports' validities).
+    /// Member-import validity hull, or the explicit current-time assertion for review expiry.
     pub validity: CaptureInterval,
     /// Spool objects read and scanned for retained references.
     pub scanned_objects: u64,
@@ -252,6 +257,11 @@ fn check_retention_members(
     {
         return Err(DeletionError::RecordMismatch);
     }
+    if let DeletionScope::ReviewExpiry(selection) = scope
+        && (!imports.is_empty() || selection.roots().is_empty())
+    {
+        return Err(DeletionError::RecordMismatch);
+    }
     Ok(())
 }
 
@@ -348,7 +358,8 @@ impl DeletionPlan {
                 d.text(),
                 Ok(DELETION_PLAN_DOMAIN
                     | DELETION_SCOPE_PLAN_DOMAIN
-                    | DELETION_RETENTION_PLAN_DOMAIN)
+                    | DELETION_RETENTION_PLAN_DOMAIN
+                    | DELETION_REVIEW_EXPIRY_PLAN_DOMAIN)
             )
     }
 
@@ -370,6 +381,7 @@ impl DeletionPlan {
             DELETION_PLAN_DOMAIN => 1,
             DELETION_SCOPE_PLAN_DOMAIN => 2,
             DELETION_RETENTION_PLAN_DOMAIN => 3,
+            DELETION_REVIEW_EXPIRY_PLAN_DOMAIN => 4,
             _ => return Err(invalid()),
         };
         let site_lineage = d.text()?.to_owned();
@@ -540,12 +552,13 @@ impl DeletionPlan {
             DeletionScope::Import(_) => DELETION_PLAN_DOMAIN,
             DeletionScope::Sensor(_) | DeletionScope::Event(_) => DELETION_SCOPE_PLAN_DOMAIN,
             DeletionScope::Retention(_) => DELETION_RETENTION_PLAN_DOMAIN,
+            DeletionScope::ReviewExpiry(_) => DELETION_REVIEW_EXPIRY_PLAN_DOMAIN,
         }
     }
 }
 
-/// Each scope has exactly one format version. A v3 cohort cannot be relabelled v2, and its
-/// encoded member list must equal precisely its eligible selection entries.
+/// Each scope has exactly one format version. Cohorts cannot be relabelled as earlier formats;
+/// retention import members must match selection and derivative expiry must select no imports.
 fn decode_scope(
     d: &mut CanonicalDecoder<'_>,
     version: u8,
@@ -557,7 +570,9 @@ fn decode_scope(
     let scope = DeletionScope::decode(d)?;
     if !matches!(
         (version, &scope),
-        (2, DeletionScope::Sensor(_) | DeletionScope::Event(_)) | (3, DeletionScope::Retention(_))
+        (2, DeletionScope::Sensor(_) | DeletionScope::Event(_))
+            | (3, DeletionScope::Retention(_))
+            | (4, DeletionScope::ReviewExpiry(_))
     ) {
         return Err(invalid());
     }
@@ -566,7 +581,9 @@ fn decode_scope(
     for _ in 0..n {
         imports.push(sha(d)?);
     }
-    if imports.is_empty() || !strictly_sorted(&imports) {
+    if (imports.is_empty() && !matches!(scope, DeletionScope::ReviewExpiry(_)))
+        || !strictly_sorted(&imports)
+    {
         return Err(ContractError::NonCanonicalOrdering.into());
     }
     check_retention_members(&scope, &imports)?;
@@ -594,7 +611,7 @@ pub struct DeletionCompletion {
     pub plan_digest: ContentDigest,
     /// Deleted scope.
     pub scope: DeletionScope,
-    /// Deleted imports, strictly ascending.
+    /// Deleted imports, strictly ascending; empty for derivative-only review expiry.
     pub imports: Vec<ContentDigest>,
     /// Objects unlinked, every name verified absent from the spool afterwards.
     pub objects_unlinked: u64,
@@ -639,6 +656,7 @@ impl DeletionCompletion {
             DeletionScope::Import(_) => DELETION_COMPLETION_DOMAIN,
             DeletionScope::Sensor(_) | DeletionScope::Event(_) => DELETION_SCOPE_COMPLETION_DOMAIN,
             DeletionScope::Retention(_) => DELETION_RETENTION_COMPLETION_DOMAIN,
+            DeletionScope::ReviewExpiry(_) => DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN,
         }
     }
 
@@ -694,7 +712,8 @@ impl DeletionCompletion {
                 d.text(),
                 Ok(DELETION_COMPLETION_DOMAIN
                     | DELETION_SCOPE_COMPLETION_DOMAIN
-                    | DELETION_RETENTION_COMPLETION_DOMAIN)
+                    | DELETION_RETENTION_COMPLETION_DOMAIN
+                    | DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN)
             )
     }
 
@@ -716,6 +735,7 @@ impl DeletionCompletion {
             DELETION_COMPLETION_DOMAIN => 1,
             DELETION_SCOPE_COMPLETION_DOMAIN => 2,
             DELETION_RETENTION_COMPLETION_DOMAIN => 3,
+            DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN => 4,
             _ => return Err(invalid()),
         };
         let plan_digest = sha(&mut d)?;

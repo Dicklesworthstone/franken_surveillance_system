@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use fss_cli::agent_json::{evidence_anchor, object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, CanonicalEncoder, CaptureInterval, ContentDigest, OperationId};
+use fss_reference::deletion::DeletionIndex;
 use fss_reference::evidence_export::{CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE};
 use fss_reference::review_media::{
     CAP_REVIEW_MEDIA_READ, ReviewMediaRecord, ReviewedMedia, commit_review_media,
@@ -379,6 +380,34 @@ pub(super) fn run(options: &Options) -> RunResult<String> {
             Action::Show { root } => {
                 let record = inspect_review_media(&deployment, *root, &authority, &cx)?;
                 let revoked = review_grant_revoked(&deployment, *root, &authority, &cx)?;
+                let deletions = DeletionIndex::read(&deployment)?;
+                if let Some(entry) = deletions.review(*root) {
+                    return bounded(object(&[
+                        ("format", string("fss.review_media_deleted.v1")),
+                        ("site", string(&options.site)),
+                        ("status", string("deleted_review_metadata")),
+                        ("review_root", string(&root.to_text())),
+                        ("record_digest", string(&record.digest().to_text())),
+                        ("record", record.to_json()),
+                        ("media_access", string("denied")),
+                        ("grant_revoked", revoked.to_string()),
+                        ("deletion_plan_digest", string(&entry.plan_digest.to_text())),
+                        ("deletion_complete", entry.is_complete().to_string()),
+                        (
+                            "completion_digest",
+                            entry
+                                .completion_digest
+                                .map_or_else(|| "null".into(), |digest| string(&digest.to_text())),
+                        ),
+                        (
+                            "authority_anchor",
+                            evidence_anchor(deployment.current_anchor()),
+                        ),
+                        ("existing_copies_recalled", "false".into()),
+                        ("external_transport_performed", "false".into()),
+                        ("qualification", string("implemented_not_qualified")),
+                    ]));
+                }
                 report(
                     options,
                     "verified_retained_review",

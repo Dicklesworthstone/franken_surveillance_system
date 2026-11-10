@@ -102,6 +102,16 @@ impl DeletionIndex {
         self.imports.get(&import).map(|at| &self.entries[*at])
     }
 
+    /// The approved expiry deletion of one review root, including a partially applied plan.
+    /// Shared payloads may remain, so physical object absence is not the authority for this state.
+    #[must_use]
+    pub fn review(&self, root: ContentDigest) -> Option<&DeletionEntry> {
+        self.entries.iter().find(|entry| match &entry.plan.scope {
+            super::DeletionScope::ReviewExpiry(selection) => selection.roots().contains(&root),
+            _ => false,
+        })
+    }
+
     /// The deletion that removed object `digest`, if any.
     #[must_use]
     pub fn object(&self, digest: ContentDigest) -> Option<&DeletionEntry> {

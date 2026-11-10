@@ -38,6 +38,9 @@ jobs:
       - name: Verify native recorder replay and durable receipts
         if: success() || failure()
         run: bash scripts/check_recording_lifecycle.sh replay
+      - name: Verify review expiry and source-preserving deletion
+        if: success() || failure()
+        run: bash scripts/check_recording_lifecycle.sh review-expiry
       - name: Verify owned runtime and recoverable effect transitions
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-runtime --all-targets --all-features

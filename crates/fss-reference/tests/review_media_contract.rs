@@ -5,6 +5,9 @@
 #[path = "support/import_integrity.rs"]
 mod support;
 
+#[path = "review_media_contract/expiry.rs"]
+mod expiry;
+
 use std::{fs, path::PathBuf};
 
 use fss_container::demux::{AvcMp4, DemuxLimits, VideoCodec};

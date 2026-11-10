@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
-//! What a deletion plan covers: one import, one sensor, one event, or an exact retention cohort.
+//! What a deletion plan covers: imports, a sensor/event cohort, or exact review derivatives.
 //!
 //! Sensor and event scopes retain their v2 encoding. Retention uses tag 4 only in v3 plans:
 //! its immutable selection binds the owner request, every selected import, same-sensor
 //! exclusions, capture bounds and source-metadata digests. Older readers refuse this scope.
+//! Review expiry uses tag 5 only in v4 plans and never makes a source import a deletion member.
 //! No person or data-subject identity is inferred from a sensor or its recordings.
 
 use fss_core::{
@@ -12,6 +13,7 @@ use fss_core::{
 
 use super::DeletionError;
 use super::retention::RetentionSelection;
+use super::review_expiry::ReviewExpirySelection;
 
 /// What one deletion plan covers.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -24,6 +26,8 @@ pub enum DeletionScope {
     Event(EventId),
     /// Exactly the eligible imports of a freshly verified, owner-requested age selection.
     Retention(RetentionSelection),
+    /// Exactly the certainly expired review derivatives; source imports remain retained.
+    ReviewExpiry(ReviewExpirySelection),
 }
 
 impl DeletionScope {
@@ -38,10 +42,13 @@ impl DeletionScope {
             Self::Retention(selection) => {
                 format!("retention:{}", selection.request().sensor().as_str())
             }
+            Self::ReviewExpiry(selection) => {
+                format!("review_expiry:{}", selection.request().sensor().as_str())
+            }
         }
     }
 
-    /// Scope kind (`import`, `sensor`, `event`, `retention`).
+    /// Scope kind (`import`, `sensor`, `event`, `retention`, `review_expiry`).
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
@@ -49,6 +56,7 @@ impl DeletionScope {
             Self::Sensor(_) => "sensor",
             Self::Event(_) => "event",
             Self::Retention(_) => "retention",
+            Self::ReviewExpiry(_) => "review_expiry",
         }
     }
 
@@ -60,6 +68,7 @@ impl DeletionScope {
             Self::Sensor(sensor) => sensor.as_str().to_owned(),
             Self::Event(event) => event.as_str().to_owned(),
             Self::Retention(selection) => selection.request().sensor().as_str().to_owned(),
+            Self::ReviewExpiry(selection) => selection.request().sensor().as_str().to_owned(),
         }
     }
 
@@ -82,6 +91,10 @@ impl DeletionScope {
                 e.u8(4);
                 selection.encode(e);
             }
+            Self::ReviewExpiry(selection) => {
+                e.u8(5);
+                selection.encode(e);
+            }
         }
     }
 
@@ -98,6 +111,7 @@ impl DeletionScope {
             2 => Self::Sensor(SensorId::parse(d.text()?)?),
             3 => Self::Event(EventId::parse(d.text()?)?),
             4 => Self::Retention(RetentionSelection::decode(d)?),
+            5 => Self::ReviewExpiry(ReviewExpirySelection::decode(d)?),
             _ => return Err(DeletionError::RecordMismatch),
         })
     }

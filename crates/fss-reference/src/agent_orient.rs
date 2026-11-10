@@ -4528,6 +4528,23 @@ fn deletion_warnings(snapshot: &DeploymentSnapshot) -> Vec<String> {
 fn deleted_subject(plan: &crate::deletion::DeletionPlan, import_word: &str) -> String {
     match &plan.scope {
         crate::deletion::DeletionScope::Import(import) => format!("{import_word} {import}"),
+        crate::deletion::DeletionScope::ReviewExpiry(selection) => {
+            let roots: Vec<String> = selection
+                .roots()
+                .iter()
+                .map(|root| root.to_text())
+                .collect();
+            format!(
+                "{} scope {} (review root(s) {}; source imports retained)",
+                if import_word == "Import" {
+                    "The"
+                } else {
+                    "the"
+                },
+                plan.scope.text(),
+                roots.join(", ")
+            )
+        }
         scope => {
             let members: Vec<String> = plan.imports.iter().map(|d| d.to_text()).collect();
             format!(

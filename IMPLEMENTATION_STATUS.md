@@ -4,6 +4,41 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Source-preserving cleanup of expired review derivatives
+
+`fss-event delete review-expiry-plan` now inventories current retained reviews
+for one exact sensor and classifies immutable grant expiry against explicit
+owner-attested time bounds. `review-expiry-commit` revalidates the complete
+selection and deletion closure against its exact plan and approval. The new
+v4 scope selects derivative roots with an empty source-import member list;
+source recordings, current sibling reviews, shared media and bounded issuance
+audit metadata remain retained. Active source holds exclude their descendants;
+unheld eligible reviews can still be selected. The closure follows downstream
+review references without following provenance back to original evidence.
+
+The existing tombstone-before-unlink protocol denies media reads through every
+interruption. Cold retries resume the same retained plan, and completed retries
+return the same completion without another mutation. `fss-export review-show`
+reports deleted audit metadata, exact plan/completion and historical revocation
+separately. Agent orientation names the deleted reviews and retained sources.
+Original deletion v1/v2/v3 and live review-report formats remain unchanged.
+
+Nine reference lifecycle contracts, two canonical-selection unit contracts,
+four actual-process CLI contracts and three parser contracts cover expiry
+uncertainty/boundaries, held and unheld cohorts, current sibling/shared-byte
+preservation, orphan-source preservation, every deletion cutpoint, cold retries,
+stale time/holds/approvals, metadata inspection, source deletion and strict
+inventory limits. Pinned Rust parsing/formatting of changed clean files and
+whitespace checks pass; native execution is pending the supplemental focused
+hosted run. The unchanged local Asupersync compiler-memory blocker remains;
+no local full-build or release-qualification pass is claimed.
+
+This advances VIT-006 (`fss-vit-je36t.6`) and VIT-023
+(`fss-vit023-review-export-w8aai`). It provides exact local physical cleanup;
+automatic scheduling, authenticated remote review, upstream copies and broader
+production qualification remain open. See
+[`REVIEW_MEDIA_EXPIRY.md`](docs/REVIEW_MEDIA_EXPIRY.md).
+
 ## Native HEVC recorder-window retrieval
 
 The bounded recorder replay path now supports HEVC as well as AVC. An explicitly

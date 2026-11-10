@@ -37,6 +37,8 @@
 //! - [`retention`] selects an exact age-eligible cohort under an explicit owner duration and
 //!   current-time interval. Its v3 scope retains selection and timing provenance. It is one
 //!   union deletion, never a chain of stale per-import approvals, and never releases holds.
+//! - [`review_expiry`] applies the same explicit approval and hold rules to expired review
+//!   derivatives, with a v4 scope that preserves original imports and immutable review metadata.
 
 /// Deletion-owner adapter for durable belief verification.
 pub mod belief;
@@ -48,6 +50,8 @@ mod onvif;
 mod plan;
 /// Conservative age selection and exact, crash-resumable cleanup of completed recordings.
 pub mod retention;
+/// Owner-approved local expiry cleanup of retained review derivatives, preserving sources.
+pub mod review_expiry;
 mod rtp;
 pub mod scope;
 mod walk;
@@ -63,10 +67,11 @@ pub use index::{DeletionEntry, DeletionIndex, has_records};
 pub use plan::{
     ClosureUnit, DELETION_APPROVAL_DOMAIN, DELETION_COMPLETION_DOMAIN, DELETION_MECHANISM,
     DELETION_OUT_OF_SCOPE, DELETION_PLAN_DOMAIN, DELETION_RETENTION_COMPLETION_DOMAIN,
-    DELETION_RETENTION_PLAN_DOMAIN, DELETION_SCOPE_COMPLETION_DOMAIN, DELETION_SCOPE_PLAN_DOMAIN,
-    DeletableObject, DeletionCompletion, DeletionPlan, EventReference, Finding,
-    MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject, RootRetraction, Unattributed,
-    approval_digest,
+    DELETION_RETENTION_PLAN_DOMAIN, DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN,
+    DELETION_REVIEW_EXPIRY_PLAN_DOMAIN, DELETION_SCOPE_COMPLETION_DOMAIN,
+    DELETION_SCOPE_PLAN_DOMAIN, DeletableObject, DeletionCompletion, DeletionPlan, EventReference,
+    Finding, MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject, RootRetraction,
+    Unattributed, approval_digest,
 };
 pub use scope::DeletionScope;
 
@@ -285,6 +290,9 @@ pub fn plan_scope_deletion(
         && let Some(plan) = retention::revalidate_plan(deployment, selection, cx)?
     {
         return Ok(plan);
+    }
+    if let DeletionScope::ReviewExpiry(selection) = scope {
+        return review_expiry::revalidate_plan(deployment, selection, cx);
     }
     let index = DeletionIndex::read(deployment)?;
     if let DeletionScope::Import(import) = scope

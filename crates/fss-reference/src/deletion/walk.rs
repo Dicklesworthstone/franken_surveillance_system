@@ -487,14 +487,32 @@ impl Universe {
         }
 
         let mut objects: BTreeMap<ContentDigest, ObjectInfo> = BTreeMap::new();
-        let mut records: BTreeSet<ContentDigest> = BTreeSet::new();
+        // Expiry retains bounded issuance metadata as audit history. Its historical media
+        // references cannot keep bytes live, nor may another cleanup classify it as an orphan.
+        let mut records: BTreeSet<ContentDigest> = index
+            .entries()
+            .iter()
+            .flat_map(|entry| match &entry.plan.scope {
+                DeletionScope::ReviewExpiry(selection) => selection
+                    .candidates()
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.disposition()
+                            == super::review_expiry::ReviewExpiryDisposition::Expired
+                    })
+                    .map(|candidate| candidate.record_digest())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
         for digest in &spool_digests {
             checkpoint(cx, STAGE_DELETION_SCAN)?;
             // Unreadable bytes have unknown references, not an empty reference set. Even an
             // apparently unrelated object may hold the only edge into this closure. Refuse the
             // scan with its custody error rather than authorize a smaller, incomplete deletion.
             let bytes = spool.read(*digest)?;
-            if DeletionPlan::is_plan_bytes(&bytes)
+            if records.contains(digest)
+                || DeletionPlan::is_plan_bytes(&bytes)
                 || DeletionCompletion::is_completion_bytes(&bytes)
                 || super::retention::policy::is_policy_record_bytes(&bytes, *digest)?
             {
@@ -749,6 +767,13 @@ impl Universe {
                 }
                 Ok((members, Vec::new()))
             }
+            DeletionScope::ReviewExpiry(selection) => {
+                if selection.roots().is_empty() {
+                    return Err(empty());
+                }
+                // Source identities are provenance, never members of this deletion scope.
+                Ok((Vec::new(), Vec::new()))
+            }
         }
     }
 
@@ -763,6 +788,71 @@ impl Universe {
                 via[*seed] = Some(*member);
             }
         }
+        self.grow_closure(via, keys)
+    }
+
+    /// Review deletion starts at exact derivative units, never at a source or its ancestors.
+    fn review_closure(
+        &self,
+        selection: &super::review_expiry::ReviewExpirySelection,
+    ) -> Result<Closure, DeletionError> {
+        let mut via = vec![None; self.units.len()];
+        let mut keys = HashSet::new();
+        let roots: BTreeSet<_> = selection.roots().into_iter().collect();
+        for candidate in selection
+            .candidates()
+            .iter()
+            .filter(|c| roots.contains(&c.root()))
+        {
+            if !self.imports.contains_key(&candidate.import_identity()) {
+                return Err(DeletionError::UnknownImport(candidate.import_identity()));
+            }
+            let identity = hex(candidate.identity());
+            let slot = format!("slot:review-{identity}");
+            let publish = format!("batch:review-media:{identity}:publish");
+            let revoke = format!("batch:review-media:{identity}:revoke");
+            let mut seeded_slot = false;
+            let mut seeded_publish = false;
+            for (position, unit) in self.units.iter().enumerate() {
+                if unit.id == slot || unit.id == publish || unit.id == revoke {
+                    if unit.authority || !unit.members.contains(&candidate.root()) {
+                        return Err(DeletionError::RecordMismatch);
+                    }
+                    seeded_slot |= unit.id == slot;
+                    seeded_publish |= unit.id == publish;
+                    via[position] = Some(candidate.root());
+                }
+            }
+            if !seeded_slot || !seeded_publish {
+                return Err(DeletionError::RecordMismatch);
+            }
+            keys.insert(candidate.root());
+        }
+        let closure = self.grow_closure(via, keys);
+        if self
+            .imports
+            .values()
+            .flatten()
+            .any(|seed| closure.via[*seed].is_some())
+            || self.units.iter().enumerate().any(|(position, unit)| {
+                closure.via[position].is_some()
+                    && unit.id.starts_with("slot:review-")
+                    && unit
+                        .slot
+                        .as_ref()
+                        .is_none_or(|(_, root)| !roots.contains(root))
+            })
+        {
+            return Err(DeletionError::RecordMismatch);
+        }
+        Ok(closure)
+    }
+
+    fn grow_closure(
+        &self,
+        mut via: Vec<Option<ContentDigest>>,
+        mut keys: HashSet<ContentDigest>,
+    ) -> Closure {
         loop {
             for (index, unit) in self.units.iter().enumerate() {
                 if via[index].is_none() || unit.authority {
@@ -805,12 +895,16 @@ impl Universe {
         scope: &DeletionScope,
     ) -> Result<DeletionPlan, DeletionError> {
         let (imports, membership_blockers) = self.members(deployment, scope)?;
-        let Closure { via, keys } = self.closure(&imports);
+        let Closure { via, keys } = match scope {
+            DeletionScope::ReviewExpiry(selection) => self.review_closure(selection)?,
+            _ => self.closure(&imports),
+        };
         let subject = match scope {
             DeletionScope::Import(import) => import.to_text(),
-            DeletionScope::Sensor(_) | DeletionScope::Event(_) | DeletionScope::Retention(_) => {
-                scope.text()
-            }
+            DeletionScope::Sensor(_)
+            | DeletionScope::Event(_)
+            | DeletionScope::Retention(_)
+            | DeletionScope::ReviewExpiry(_) => scope.text(),
         };
 
         let in_closure = |index: usize| via[index].is_some();
@@ -861,6 +955,12 @@ impl Universe {
                     .find(|r| keys.contains(r) || attributed.contains_key(r))
                     .copied()
                     .or_else(|| {
+                        // Derivative expiry follows downstream references only. An unheld
+                        // original named by review provenance is an ancestor, not a review
+                        // leftover. Owned media/receipt children already came through the root.
+                        if matches!(scope, DeletionScope::ReviewExpiry(_)) {
+                            return None;
+                        }
                         deletable
                             .iter()
                             .chain(attributed.keys())
@@ -903,6 +1003,24 @@ impl Universe {
                 class: "deletable_content".to_owned(),
                 via: *referrer,
             });
+        }
+        if let DeletionScope::ReviewExpiry(selection) = scope {
+            for candidate in selection.candidates().iter().filter(|c| {
+                c.disposition() == super::review_expiry::ReviewExpiryDisposition::Expired
+            }) {
+                deletable.remove(&candidate.record_digest());
+                retained.insert(candidate.record_digest(), "review_expiry_audit_metadata");
+            }
+            // A malformed forward reference must never turn a derivative cleanup into
+            // source deletion, including orphan attribution after the unit-closure walk.
+            if self.imports.values().flatten().any(|seed| {
+                self.units[*seed]
+                    .members
+                    .iter()
+                    .any(|digest| deletable.contains(digest))
+            }) {
+                return Err(DeletionError::RecordMismatch);
+            }
         }
         units.sort();
 
@@ -979,7 +1097,10 @@ impl Universe {
                 .ok_or(DeletionError::UnknownImport(*import))?;
             hull = Some(hull.map_or(own, |hull| hull.hull(own)));
         }
-        let validity = hull.ok_or_else(|| DeletionError::ScopeEmpty(scope.text()))?;
+        let validity = match scope {
+            DeletionScope::ReviewExpiry(selection) => selection.request().attested_now(),
+            _ => hull.ok_or_else(|| DeletionError::ScopeEmpty(scope.text()))?,
+        };
 
         let mut blockers: Vec<Finding> = self
             .broken_slots
@@ -1042,6 +1163,17 @@ impl Universe {
         // Events whose history is retained; effects that reference them.
         let mut events: BTreeMap<String, u64> = BTreeMap::new();
         let mut unknown_copies = Vec::new();
+        if let DeletionScope::ReviewExpiry(selection) = scope {
+            for root in selection.roots() {
+                unknown_copies.push(Finding {
+                    kind: "delivered_review_copies".to_owned(),
+                    subject: root.to_text(),
+                    detail: "previously delivered review bytes and operator copies outside this \
+                             deployment cannot be enumerated, recalled or deleted"
+                        .to_owned(),
+                });
+            }
+        }
         for import in &imports {
             unknown_copies.push(Finding {
                 kind: "original_input_file".to_owned(),
