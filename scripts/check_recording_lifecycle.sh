@@ -43,6 +43,10 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
 fi
 
 if [[ "$selection" == all || "$selection" == review-expiry ]]; then
+  run_tests 'canonical local review delivery receipts and malformed metadata' \
+    -p fss-core --test review_delivery_record_contract
+  run_tests 'private review delivery and restart recovery through the CLI' \
+    -p fss-cli --bin fss-export review::
   run_tests 'retained review expiry, deletion obligations and retention holds' \
     -p fss-reference --test review_media_contract \
     --test deletion_effect_lifecycle_contract --test retention_cohort_contract

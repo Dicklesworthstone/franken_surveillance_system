@@ -5,6 +5,10 @@
 #[path = "support/import_integrity.rs"]
 mod support;
 
+#[cfg(unix)]
+#[path = "review_media_contract/delivery.rs"]
+mod delivery;
+
 #[path = "review_media_contract/expiry.rs"]
 mod expiry;
 

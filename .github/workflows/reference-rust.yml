@@ -48,6 +48,7 @@ jobs:
         if: success() || failure()
         run: |
           review_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-core --test review_delivery_record_contract || review_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media:: || review_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test review_media_contract || review_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export review:: || review_exit=1

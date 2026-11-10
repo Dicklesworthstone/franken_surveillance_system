@@ -6,6 +6,7 @@
 //! not a capability: every read checks current recipient authority, expiry, privacy, revocation
 //! and deletion. This local profile is not FLDT authentication or payment-mask attestation.
 
+pub mod delivery;
 pub mod grant;
 mod record;
 pub mod render;

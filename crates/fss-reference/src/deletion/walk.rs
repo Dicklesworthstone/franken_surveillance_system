@@ -64,6 +64,8 @@ const AUTHORITY_HISTORY_FAMILIES: &[&str] = &[
     crate::reference_deployment::FAMILY_RETENTION_POLICY,
     crate::reference_deployment::FAMILY_TWIN_LOCALIZATION_RECEIPT,
     crate::reference_deployment::FAMILY_CALIBRATION_INVALIDATION,
+    crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_STARTED,
+    crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_VERIFIED,
 ];
 /// Families this module owns; their batches are never units.
 const DELETION_FAMILIES: &[&str] = &[
@@ -135,6 +137,7 @@ fn unit_kind(id: &str) -> &'static str {
         ("batch:alert-outcome:", "alert_outcome"),
         ("slot:rgbe1-", "rgb_evidence"),
         ("batch:review-media:", "review_media"),
+        ("batch:review-delivery:", "review_delivery_audit"),
         ("slot:review-", "review_media"),
     ];
     KINDS
