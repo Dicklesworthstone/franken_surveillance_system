@@ -189,18 +189,33 @@ fn source_mapped_fragments_round_trip_through_independent_demux() -> TestResult 
 
 #[test]
 fn av_fragment_keeps_video_and_audio_source_mappings() -> TestResult {
+    av_fragment_with_configuration(&[0x14, 0x08])
+}
+
+#[test]
+fn av_fragment_preserves_explicit_absent_sbr_configuration() -> TestResult {
+    av_fragment_with_configuration(&[0x14, 0x08, 0x56, 0xe5, 0x00])
+}
+
+fn av_fragment_with_configuration(config_bytes: &[u8]) -> TestResult {
     use fss_container::flv_av::{self, TimedAudio};
     use fss_packet::extended_flv::{aac, aac_adts, aac_clock};
 
     let (wire, records) = fixture_with_audio_step(64)?;
     let mut video = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
-    let config_bytes = [0x14, 0x08];
-    let audio_config = aac::Configuration::parse_explicit(&config_bytes)?;
+    let audio_config = aac::Configuration::parse_explicit(config_bytes)?;
     let init = video.av_initialization(&audio_config)?;
     assert_eq!(
         &init.bytes()[init.audio_configuration_range()],
-        &config_bytes
+        config_bytes
     );
+    let config_start = init.audio_configuration_range().start;
+    let descriptor = &init.bytes()[config_start - 22..config_start];
+    assert_eq!(descriptor[0], 0x03);
+    assert_eq!(usize::from(descriptor[1]), 23 + config_bytes.len());
+    assert_eq!(descriptor[5], 0x04);
+    assert_eq!(usize::from(descriptor[6]), 15 + config_bytes.len());
+    assert_eq!(&descriptor[20..], &[0x05, config_bytes.len() as u8]);
     assert_eq!(
         &wire[video.configuration_sources()[0].start as usize
             ..video.configuration_sources()[0].end as usize],
@@ -282,6 +297,16 @@ fn av_fragment_keeps_video_and_audio_source_mappings() -> TestResult {
     let wrong = aac::Configuration::parse_explicit(&other_bytes)?;
     assert!(matches!(
         flv_av::fragment(&init, &video_fragment, &wrong, &audio, Mp4Limits::default()),
+        Err(Mp4Error::ParameterSet)
+    ));
+    let alternate_bytes: &[u8] = if config_bytes.len() == 2 {
+        &[0x14, 0x08, 0x56, 0xe5, 0x00]
+    } else {
+        &[0x14, 0x08]
+    };
+    let alternate = aac::Configuration::parse_explicit(alternate_bytes)?;
+    assert!(matches!(
+        flv_av::fragment(&init, &video_fragment, &alternate, &audio, Mp4Limits::default()),
         Err(Mp4Error::ParameterSet)
     ));
     let other_key = SourceKey {
@@ -371,13 +396,66 @@ fn av_fragment_keeps_video_and_audio_source_mappings() -> TestResult {
 
 #[test]
 fn av_session_preserves_cross_fragment_sequence_and_audio_clock() -> TestResult {
+    av_session_with_configuration(&[0x14, 0x08])
+}
+
+#[test]
+fn av_session_preserves_explicit_absent_sbr_across_fragments() -> TestResult {
+    av_session_with_configuration(&[0x14, 0x08, 0x56, 0xe5, 0x00])
+}
+
+#[test]
+fn av_session_can_explicitly_emit_video_before_audio_without_resetting_video_order() -> TestResult {
+    use fss_container::flv_av::{self, TimedAudio};
+    use fss_packet::extended_flv::{aac, aac_adts, aac_clock};
+
+    let (_, records) = fixture_with_audio_count(64, &[2], Some(9))?;
+    let config = aac::Configuration::parse_explicit(&[0x14, 0x08])?;
+    let wrong = aac::Configuration::parse_explicit(&[0x12, 0x10])?;
+    let mut video_mux = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
+    let init = video_mux.av_initialization(&config)?;
+    let samples = |start: usize| (start..start + 4).map(|i| TimedSample {
+        record: &records[3 + 2 * i], decode_time_ms: i as u64 * 40, duration_ms: 40,
+    }).collect::<Vec<_>>();
+    let first_samples = samples(0);
+    let second_samples = samples(4);
+    let first_coverage: Vec<_> = records[2..=11].iter().collect();
+    let second_coverage: Vec<_> = records[10..=19].iter().collect();
+    let first_video = video_mux.fragment(&first_samples, &records[11], &first_coverage)?;
+    let second_video = video_mux.fragment(&second_samples, &records[19], &second_coverage)?;
+    let mut session = flv_av::Session::new(&init)?;
+    assert!(matches!(session.fragment_without_audio(&init, &first_video, &wrong, Mp4Limits::default()), Err(Mp4Error::ParameterSet)));
+    let first = session.fragment_without_audio(&init, &first_video, &config, Mp4Limits::default())?;
+    assert!(first.audio().is_empty());
+    assert_eq!(first.video_target_shift(), 0);
+    assert_eq!(first.bytes(), first_video.bytes());
+    flv_av::verify_archived_video_only_fragment(first_video.bytes(), first.bytes(), Mp4Limits::default())?;
+    let mut corrupt = first.bytes().to_vec();
+    *corrupt.last_mut().ok_or("missing fragment")? ^= 1;
+    assert!(matches!(flv_av::verify_archived_video_only_fragment(first_video.bytes(), &corrupt, Mp4Limits::default()), Err(Mp4Error::Layout)));
+    assert!(matches!(session.fragment_without_audio(&init, &first_video, &config, Mp4Limits::default()), Err(Mp4Error::SourceOrder)));
+
+    let frame = aac_adts::source_frame(&config, &records[10], Limits::default(), aac::Limits::default())?.ok_or("missing audio")?;
+    let mut clock = aac_clock::Clock::new(&config, 0, 1, 8)?;
+    let timed = [TimedAudio { time: clock.observe(frame.timestamp_ms())?, frame: &frame }];
+    let second = session.fragment(&init, &second_video, &config, &timed, Mp4Limits::default())?;
+    assert_eq!(second.audio().len(), 1);
+    assert_eq!(second.video().sequence(), 2);
+    let mut movie = init.bytes().to_vec();
+    movie.extend_from_slice(first.bytes());
+    movie.extend_from_slice(second.bytes());
+    let parsed = AvcMp4::parse(&movie, None, DemuxLimits::default())?;
+    assert_eq!(parsed.samples().len(), 8);
+    Ok(())
+}
+
+fn av_session_with_configuration(config_bytes: &[u8]) -> TestResult {
     use fss_container::flv_av::{self, TimedAudio};
     use fss_packet::extended_flv::{aac, aac_adts, aac_clock};
 
     let (_, records) = fixture_with_audio_count(64, &[2], Some(9))?;
     assert_eq!(records.len(), 20);
-    let config_bytes = [0x14, 0x08];
-    let config = aac::Configuration::parse_explicit(&config_bytes)?;
+    let config = aac::Configuration::parse_explicit(config_bytes)?;
     let mut video_mux = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
     let init = video_mux.av_initialization(&config)?;
     let first_video: Vec<_> = (0..4)
@@ -489,8 +567,12 @@ fn synthetic_av_for_external_decoder() -> TestResult {
     }
     let (_, records) = fixture_with_audio(64, &body)?;
     let mut video = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
-    let config_bytes = [0x14, 0x08];
-    let config = aac::Configuration::parse_explicit(&config_bytes)?;
+    let config_bytes: &[u8] = match std::env::var("FSS_SYNTHETIC_AAC_EXTENSION").as_deref() {
+        Ok("1") => &[0x14, 0x08, 0x56, 0xe5, 0x00],
+        Err(std::env::VarError::NotPresent) => &[0x14, 0x08],
+        _ => return Err("invalid synthetic AAC extension selection".into()),
+    };
+    let config = aac::Configuration::parse_explicit(config_bytes)?;
     let init = video.av_initialization(&config)?;
     let videos = [
         TimedSample {

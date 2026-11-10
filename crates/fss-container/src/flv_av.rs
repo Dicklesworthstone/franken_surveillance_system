@@ -117,7 +117,7 @@ impl<'a> Fragment<'a> {
 pub struct Session {
     key: flv_avc::SourceKey,
     video_configuration_sources: [Range<u64>; 2],
-    audio_configuration: [u8; 2],
+    audio_configuration: Vec<u8>,
     next_sequence: Option<u32>,
     started: bool,
     video_end_ms: Option<u64>,
@@ -129,16 +129,17 @@ pub struct Session {
 impl Session {
     /// Bind a session to the exact initialization selected by the caller.
     pub fn new(initialization: &Initialization) -> Result<Self, Mp4Error> {
-        let bytes: [u8; 2] = initialization
+        let bytes = initialization
             .bytes()
             .get(initialization.audio_configuration.clone())
-            .ok_or(Mp4Error::Layout)?
-            .try_into()
+            .ok_or(Mp4Error::Layout)?;
+        // Validate the complete supported configuration before owning a bounded copy.
+        fss_packet::extended_flv::aac::Configuration::parse_explicit(bytes)
             .map_err(|_| Mp4Error::Layout)?;
         Ok(Self {
             key: initialization.key,
             video_configuration_sources: initialization.video_configuration_sources.clone(),
-            audio_configuration: bytes,
+            audio_configuration: bytes.to_vec(),
             next_sequence: None,
             started: false,
             video_end_ms: None,
@@ -147,6 +148,55 @@ impl Session {
             audio_sender_ms: None,
             audio_elapsed_ms: None,
         })
+    }
+
+    /// Advance video without writing an audio track fragment.
+    ///
+    /// This explicitly emits no audio samples and does not claim that audio
+    /// was absent or coverage was complete. The caller must account for the
+    /// omission and retain the original source and boundary witness. Existing
+    /// audio cursors are unchanged, so a later audio-bearing fragment must
+    /// still satisfy the same continuity checks.
+    pub fn fragment_without_audio<'a>(
+        &mut self,
+        initialization: &Initialization,
+        video: &'a flv_avc::Fragment,
+        config: &Configuration<'_>,
+        limits: Mp4Limits,
+    ) -> Result<Fragment<'a>, Mp4Error> {
+        if initialization.key != self.key
+            || initialization.video_configuration_sources != self.video_configuration_sources
+        {
+            return Err(Mp4Error::StreamMismatch);
+        }
+        if config.bytes() != self.audio_configuration.as_slice() {
+            return Err(Mp4Error::ParameterSet);
+        }
+        if self.started && self.next_sequence != Some(video.sequence()) {
+            return Err(if self.next_sequence.is_none() {
+                Mp4Error::SequenceExhausted
+            } else {
+                Mp4Error::SourceOrder
+            });
+        }
+        let first = video.samples().first().ok_or(Mp4Error::Limit)?;
+        let last = video.samples().last().ok_or(Mp4Error::Limit)?;
+        if self
+            .video_end_ms
+            .is_some_and(|end| first.decode_time_ms != end)
+            || (self.started && video.timeline_gap().is_some())
+        {
+            return Err(Mp4Error::Timeline);
+        }
+        let end = last
+            .decode_time_ms
+            .checked_add(u64::from(last.duration_ms))
+            .ok_or(Mp4Error::Timeline)?;
+        let output = fragment_without_audio(initialization, video, config, limits)?;
+        self.started = true;
+        self.next_sequence = video.sequence().checked_add(1);
+        self.video_end_ms = Some(end);
+        Ok(output)
     }
 
     /// Derive the next ordered fragment. A refusal leaves this session's
@@ -225,6 +275,84 @@ impl Session {
         self.audio_elapsed_ms = Some(last_audio.time.elapsed_ms);
         Ok(output)
     }
+}
+
+/// Copy a source-linked video fragment under the two-track initialization,
+/// explicitly emitting no audio samples. This does not establish why no audio
+/// was emitted, whether any was observed, or whether coverage was complete.
+pub fn fragment_without_audio<'a>(
+    initialization: &Initialization,
+    video: &'a flv_avc::Fragment,
+    config: &Configuration<'_>,
+    limits: Mp4Limits,
+) -> Result<Fragment<'a>, Mp4Error> {
+    limits.validate()?;
+    if initialization.key != video.key()
+        || initialization.video_configuration_sources != video.configuration_sources()
+    {
+        return Err(Mp4Error::StreamMismatch);
+    }
+    if initialization
+        .bytes()
+        .get(initialization.audio_configuration.clone())
+        != Some(config.bytes())
+    {
+        return Err(Mp4Error::ParameterSet);
+    }
+    if video.samples().is_empty()
+        || video.samples().len() > limits.max_samples
+        || video.nals().len() > limits.max_nals
+        || video.nals().len() > limits.max_source_spans
+    {
+        return Err(Mp4Error::Limit);
+    }
+    verify_archived_video_only_fragment(video.bytes(), video.bytes(), limits)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(video.bytes().len())
+        .map_err(|_| Mp4Error::Allocation)?;
+    bytes.extend_from_slice(video.bytes());
+    Ok(Fragment {
+        video,
+        bytes,
+        video_shift: 0,
+        audio: Vec::new(),
+    })
+}
+
+/// Verify the video-only layout of an explicit no-audio derivative against its
+/// independently verified original video fragment. This establishes no audio
+/// coverage, source custody, physical identity, or capture-time claim.
+pub fn verify_archived_video_only_fragment(
+    video: &[u8],
+    derived: &[u8],
+    limits: Mp4Limits,
+) -> Result<(), Mp4Error> {
+    limits.validate()?;
+    if video.len() > limits.max_fragment_bytes || derived.len() > limits.max_fragment_bytes {
+        return Err(Mp4Error::Limit);
+    }
+    if video != derived || video.get(4..8) != Some(b"moof") || video.get(72..76) != Some(b"trun") {
+        return Err(Mp4Error::Layout);
+    }
+    let count = read_u32(video, 80)? as usize;
+    if count == 0 || count > limits.max_samples {
+        return Err(Mp4Error::Limit);
+    }
+    let moof = count
+        .checked_mul(16)
+        .and_then(|n| n.checked_add(88))
+        .ok_or(Mp4Error::Limit)?;
+    let payload = moof.checked_add(8).ok_or(Mp4Error::Limit)?;
+    if read_u32(video, 0)? as usize != moof
+        || read_u32(video, 84)? as usize != payload
+        || video.get(moof + 4..payload) != Some(b"mdat")
+        || read_u32(video, moof)? as usize
+            != video.len().checked_sub(moof).ok_or(Mp4Error::Layout)?
+    {
+        return Err(Mp4Error::Layout);
+    }
+    Ok(())
 }
 
 /// Build one two-track fragment from a validated AVC fragment and ordered AAC

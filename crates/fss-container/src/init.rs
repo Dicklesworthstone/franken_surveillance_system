@@ -219,9 +219,12 @@ fn audio_track(w: &mut Writer, config: &AacConfiguration<'_>) -> Result<Range<us
     w.u32(rate << 16)?;
     let esds = w.full(b"esds", 0)?;
     // ISO MPEG-4 ES descriptor, DecoderConfigDescriptor, and SLConfigDescriptor.
-    w.put(&[0x03, 0x19, 0, 2, 0, 0x04, 0x11, 0x40, 0x15])?;
+    let config_len = u8::try_from(config.bytes().len()).map_err(|_| Mp4Error::Layout)?;
+    let decoder_len = 0x0f_u8.checked_add(config_len).ok_or(Mp4Error::Layout)?;
+    let es_len = 0x17_u8.checked_add(config_len).ok_or(Mp4Error::Layout)?;
+    w.put(&[0x03, es_len, 0, 2, 0, 0x04, decoder_len, 0x40, 0x15])?;
     w.zeros(11)?;
-    w.put(&[0x05, 0x02])?;
+    w.put(&[0x05, config_len])?;
     let begin = w.data.len();
     w.put(config.bytes())?;
     let range = begin..w.data.len();

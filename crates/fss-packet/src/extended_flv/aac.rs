@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 //! Bounded, source-preserving AAC views for structurally framed FLV audio tags.
 //!
-//! This first profile supports two-byte AAC-LC AudioSpecificConfig records with
-//! indexed rates and explicit channel configurations. Extensions, program
-//! configuration elements, explicit rates, and other object types are refused
-//! rather than silently interpreted as AAC-LC. A raw access-unit view is not
-//! proof of decodability, sender identity, continuity, or capture time.
+//! This profile supports two-byte AAC-LC AudioSpecificConfig records and the
+//! five-byte form explicitly declaring SBR absent, with indexed rates and
+//! explicit channel configurations. Other extensions, program configuration
+//! elements, explicit rates, and other object types are refused. A raw access
+//! unit is not proof of decodability, sender identity, continuity, or capture time.
 
 use std::{fmt, ops::Range};
 
@@ -14,6 +14,8 @@ use super::Tag;
 const FLV_TAG_HEADER: usize = 11;
 const AAC_HEADER: usize = 2;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum length of a complete configuration admitted by this profile.
+pub const MAX_SUPPORTED_CONFIGURATION_BYTES: usize = 5;
 const RATES: [u32; 13] = [
     96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
     7_350,
@@ -154,7 +156,7 @@ impl<'a> AudioTag<'a> {
     pub fn body(self) -> &'a [u8] {
         &self.source[self.body_range()]
     }
-    /// Interpret the complete, supported two-byte AAC-LC configuration.
+    /// Interpret a complete supported AAC-LC configuration.
     pub fn configuration(self) -> Result<Configuration<'a>, Error> {
         if self.packet_type != PacketType::Configuration {
             return Err(Error::WrongPacketType);
@@ -212,7 +214,10 @@ impl<'a> Configuration<'a> {
         source_range: Range<usize>,
         origin: ConfigurationOrigin,
     ) -> Result<Self, Error> {
-        if body.len() != 2 {
+        // 0x2b7 (11 bits), AOT_SBR=5 (5 bits), sbrPresentFlag=0,
+        // followed by seven zero padding bits. Active SBR and any unknown
+        // extension or nonzero trailing bits must not be treated as AAC-LC.
+        if body.len() != 2 && !(body.len() == MAX_SUPPORTED_CONFIGURATION_BYTES && body[2..] == [0x56, 0xe5, 0x00]) {
             return Err(Error::UnsupportedConfiguration);
         }
         if body[0] >> 3 != 2 {
