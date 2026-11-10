@@ -186,6 +186,32 @@ impl PinRetainedEffectJournal {
             poisoned: false,
         })
     }
+
+    /// Recheck the currently retained head against both custody domains.
+    ///
+    /// This performs no append and grants no effect authority. A mismatch or
+    /// failure fences this owner until the journal and retainer are reopened.
+    pub fn verify_retained_head(&mut self) -> Result<EffectJournalPin, EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        let result = (|| {
+            let retained = self.retained.ok_or(EffectPersistenceError::PinMismatch)?;
+            if self.retainer.retained_pin()? != Some(retained)
+                || self.journal.head() != Some(retained)
+                || !self.journal.contains(retained)
+                || retained.sequence as u128 != self.journal.records().len() as u128
+            {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            self.retainer.verify_effect_history(self.journal.as_ref())?;
+            Ok(retained)
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
 }
 
 impl EffectJournalStore for PinRetainedEffectJournal {

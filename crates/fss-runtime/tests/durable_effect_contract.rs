@@ -470,6 +470,34 @@ fn retained_store_direct_append_reserves_both_domains_before_writing() -> Test {
 }
 
 #[test]
+fn retained_head_revalidation_fences_after_custody_loss() -> Test {
+    let disk = Arc::new(Mutex::new(Disk::default()));
+    let pins = Arc::new(Mutex::new(RetainedPins::default()));
+    let mut journal = PinRetainedEffectJournal::new(
+        Box::new(MemoryStore::open(&disk)),
+        Box::new(MemoryPinRetainer(pins.clone())),
+    )?;
+    let pin = journal.append(None, b"boundary candidate")?;
+    assert_eq!(journal.verify_retained_head()?, pin);
+    pins.lock().expect("retainer lock").pin = None;
+    assert_eq!(
+        journal.verify_retained_head(),
+        Err(EffectPersistenceError::PinMismatch)
+    );
+    pins.lock().expect("retainer lock").pin = Some(pin);
+    assert_eq!(
+        journal.verify_retained_head(),
+        Err(EffectPersistenceError::Poisoned)
+    );
+    assert_eq!(
+        journal.append(Some(pin), b"later candidate"),
+        Err(EffectPersistenceError::Poisoned)
+    );
+    assert_eq!(disk.lock().expect("disk lock").records.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn matching_retained_history_reopens_only_for_reconciliation() -> Test {
     let (mut fixture, pins) = retained_fixture()?;
     let prepared = fixture.prepare("retained-recovery")?;
