@@ -41,9 +41,10 @@ pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVe
 pub use memory::{MemoryPlan, MemoryPlanError, MemoryPlanLimits, MemoryStep, TensorLifetime};
 pub use node::GraphNode;
 pub use onnx::{
-    ImportedOnnx, OnnxArtifacts, OnnxChannelOrder, OnnxDflHeadDecode, OnnxError, OnnxExportLimits,
-    OnnxHeadLayout, OnnxImageTransform, OnnxLimits, OnnxSplitHeadAssembly,
-    assemble_onnx_split_head, decode_onnx_dfl_head, export_onnx_artifacts, import_onnx,
+    ImportedOnnx, OnnxArtifacts, OnnxChannelOrder, OnnxDflHeadDecode, OnnxDflPyramidDecode,
+    OnnxDflPyramidLayout, OnnxDflPyramidLevel, OnnxError, OnnxExportLimits, OnnxHeadLayout,
+    OnnxImageTransform, OnnxLimits, OnnxSplitHeadAssembly, assemble_onnx_split_head,
+    decode_onnx_dfl_head, decode_onnx_dfl_pyramid, export_onnx_artifacts, import_onnx,
     onnx_importer_identity, transform_onnx_image,
 };
 pub use op::{

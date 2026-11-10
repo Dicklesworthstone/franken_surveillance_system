@@ -10,6 +10,18 @@ on:
       - 'crates/fss-tensor/**'
       - 'crates/fss-reference/src/scalar_executor.rs'
       - 'crates/fss-reference/tests/onnx_import_execution.rs'
+      - 'crates/fss-reference/src/ingest/onnx_package.rs'
+      - 'crates/fss-reference/src/ingest/onnx_package/**'
+      - 'crates/fss-reference/tests/onnx_package_import.rs'
+      - 'crates/fss-reference/tests/onnx_package_import/**'
+      - 'crates/fss-reference/tests/fixtures/onnx_package/**'
+      - 'crates/fss-cli/src/bin/fss-infer.rs'
+      - 'crates/fss-cli/src/bin/fss-infer/onnx_cli.rs'
+      - 'crates/fss-cli/src/bin/fss-infer/onnx_cli/**'
+      - 'crates/fss-cli/src/bin/fss-infer/onnx_cli_tests.rs'
+      - 'crates/fss-cli/src/bin/fss-infer/onnx_cli_tests/**'
+      - 'tests/fixtures/model/onnx_dfl_pyramid.rs'
+      - 'scripts/check_onnx_package.sh'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -37,6 +49,9 @@ jobs:
         run: bash scripts/bootstrap_toolchain.sh
       - name: Execute repository-owned Rust lane
         run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
+      - name: Verify ONNX lowering, packages and operator import
+        if: success() || failure()
+        run: bash scripts/check_onnx_package.sh all
       - name: Run complete Model IR contracts including ONNX parser refusals
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
       - name: Execute converted graphs through the unchanged native kernels

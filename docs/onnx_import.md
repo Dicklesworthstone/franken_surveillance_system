@@ -1491,3 +1491,31 @@ quality, calibrated threat probabilities or absence of activity. The package com
 validation scope is documented separately. A broader exporter/model corpus, model
 qualification and local DSR qualification remain separate work. The existing
 Safetensors and canonical-graph import paths are unchanged.
+
+## Explicit feature-pyramid assembly for DFL detectors
+
+`decode_onnx_dfl_pyramid` accepts an `OnnxDflPyramidDecode` profile with
+1–8 explicitly ordered levels. Each level names a declared F32 output, unique stride
+and `Nchw` or `Nhwc` layout. For target `[H,W]`, a level must have
+`[1,4*bins+scores,H/s,W/s]` or `[1,H/s,W/s,4*bins+scores]` exactly.
+Names, layout and stride are never inferred from model family or graph output order.
+
+The adapter packs each level into row-major cells using frozen Transpose/Reshape
+operations, concatenates levels in caller order, and invokes the existing native DFL
+expected-bin decoder. The complete score tail is copied without applying an activation
+or selecting classes. The caller still supplies score semantics to the package detector.
+The temporary packed output is removed from the public outputs after composition;
+all original outputs remain in order and the new decoded output is appended.
+
+Full packing and decoding costs share the original source import's node, tensor,
+parameter, byte and work allowances. Validation reserves the complete expansion before
+generated payload construction and accounts for the final graph validation. Cancellation
+and quota refusal return no partly converted graph. Source bytes, original parameter
+bits and frozen IR/operator tables retain their meanings; the conversion implementation
+is included in the separate source-bound importer identity.
+
+The shared `tests/fixtures/model/onnx_dfl_pyramid.rs` fixture has nonzero RGB
+weights, three mixed-layout levels and an independent image-coordinate/binary64
+softmax oracle. The actual production scalar and optimized executors and real
+canonical/Safetensors reload are exercised by the `onnx_attention_execution` target.
+This is bounded detector-output assembly, not a general model-family or accuracy claim.

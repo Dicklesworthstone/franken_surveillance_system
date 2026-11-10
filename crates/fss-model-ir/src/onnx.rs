@@ -21,6 +21,7 @@ mod clip;
 mod constants;
 mod conv_transpose;
 mod dfl;
+mod dfl_pyramid;
 mod export;
 mod gather;
 mod gemm;
@@ -44,6 +45,9 @@ mod split;
 mod structure;
 
 pub use dfl::{OnnxDflHeadDecode, OnnxHeadLayout, decode_onnx_dfl_head};
+pub use dfl_pyramid::{
+    OnnxDflPyramidDecode, OnnxDflPyramidLayout, OnnxDflPyramidLevel, decode_onnx_dfl_pyramid,
+};
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
 pub use head_assembly::{OnnxSplitHeadAssembly, assemble_onnx_split_head};
 pub use preprocess::{OnnxChannelOrder, OnnxImageTransform, transform_onnx_image};
