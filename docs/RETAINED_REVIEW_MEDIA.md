@@ -139,9 +139,18 @@ condition, not an automatic physical deletion scheduler.
 Every managed read validates the durable review transition, exact reader,
 current source import/root, current mask-binding digest and ledger generation,
 committed deletion state, byte allowance and attested time interval. Final
-release checks these conditions again. A mask change invalidates an older
+release checks these conditions again. Both the source import and derivative
+must still have their exact durable root records on disk; cached publisher
+visibility cannot authorize a read after either record is lost or corrupted.
+A mask change invalidates an older
 derivative even if its retained pixels are still available. Narrowing the
 reader's byte allowance also prevents release of a previously loaded clip.
+
+Delivery rechecks the source's retained metadata and authority and hashes the
+derivative bytes and receipt. It does not reread every original source payload;
+complete native source verification occurs during rendering. The retained
+derivative is a separate delivery closure. Metadata inspection can still explain
+an existing grant after source-root damage, but cannot authorize media delivery.
 
 The source import and review root participate in the existing deletion graph.
 A committed source-deletion plan denies review access before the unlink phase

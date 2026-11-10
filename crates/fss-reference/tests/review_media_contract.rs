@@ -7,7 +7,7 @@ mod support;
 
 use std::{fs, path::PathBuf};
 
-use fss_container::demux::{AvcMp4, DemuxLimits};
+use fss_container::demux::{AvcMp4, DemuxLimits, VideoCodec};
 use fss_core::{
     BatchId, BudgetVector, CanonicalDecoder, CanonicalEncode, CaptureInterval, ContentDigest,
     ContextAuthority, EvidenceDelta, ObjectId, OperationId, Plane, PrincipalId, RootAuthoritySpec,
@@ -82,6 +82,7 @@ struct Fixture {
     owner: ContextAuthority,
     cx: ReplayCx,
     source: FileIngestReceipt,
+    codec: VideoCodec,
     dimensions: [u32; 2],
     root: PathBuf,
     _directory: Directory,
@@ -108,8 +109,9 @@ impl Fixture {
                 .join("../fss-container/tests/fixtures")
                 .join(name),
         )?;
-        let [width, height] =
-            AvcMp4::parse(&source_bytes, None, DemuxLimits::default())?.dimensions();
+        let movie = AvcMp4::parse(&source_bytes, None, DemuxLimits::default())?;
+        let codec = movie.codec();
+        let [width, height] = movie.dimensions();
         let dimensions = [u32::from(width), u32::from(height)];
         let input = directory.0.join("original.mp4");
         fs::write(&input, source_bytes)?;
@@ -136,6 +138,7 @@ impl Fixture {
             owner,
             cx,
             source,
+            codec,
             dimensions,
             root,
             _directory: directory,
@@ -143,10 +146,16 @@ impl Fixture {
     }
 
     fn request(&self) -> TestResult<ReviewMediaRequest> {
+        // The HEVC fixture's later CRA skips its leading RASL pictures. Keep this positive
+        // lifecycle case within its initial IDR range; separate renderer tests require refusal.
+        let (movie_start_tick, movie_end_tick) = match self.codec {
+            VideoCodec::Avc => (400, 800),
+            VideoCodec::Hevc => (0, 400),
+        };
         let movie = ReviewMovieRequest {
             import_identity: self.source.import_identity,
-            movie_start_tick: 400,
-            movie_end_tick: 800,
+            movie_start_tick,
+            movie_end_tick,
             limits: ReviewMovieLimits {
                 max_output_bytes: MEDIA_BOUND,
                 ..ReviewMovieLimits::default()
@@ -199,6 +208,7 @@ impl Fixture {
             owner,
             cx,
             source,
+            codec,
             dimensions,
             root,
             _directory,
@@ -210,6 +220,7 @@ impl Fixture {
             owner,
             cx,
             source,
+            codec,
             dimensions,
             root,
             _directory,
@@ -666,6 +677,105 @@ fn missing_or_corrupt_root_custody_never_claims_deletion_or_authorizes_cached_re
                 ),
                 Err(ReviewMediaError::CustodyMismatch)
             ));
+            assert_eq!(snapshot(&f.root)?, before);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_or_corrupt_source_root_refuses_hot_and_cold_review_release_without_writes() -> TestResult
+{
+    for damage in ["missing", "corrupt"] {
+        let mut f = Fixture::new(&format!("review-source-root-{damage}"), "indexed_avc.mp4")?;
+        let (request, record) = f.publish()?;
+        let (reader, cx) = f.reader(READER, MEDIA_BOUND)?;
+        let loaded = read_review_media(&f.deployment, record.root(), now(20, 21)?, &reader, &cx)?;
+        let source_manifest = f
+            .deployment
+            .publisher()
+            .spool()
+            .read(f.source.import_root)?;
+        let review_manifest = f.deployment.publisher().spool().read(record.root())?;
+        assert!(f.source.root_slot.as_str().starts_with("fi-"));
+        let source_record = f
+            .deployment
+            .publisher()
+            .root_dir()
+            .join(LOCAL_ROOTS_DIR)
+            .join(format!("{}{ROOT_RECORD_SUFFIX}", f.source.root_slot));
+        if damage == "missing" {
+            fs::remove_file(source_record)?;
+        } else {
+            let mut bytes = fs::read(&source_record)?;
+            *bytes.last_mut().ok_or("empty source root record")? ^= 1;
+            fs::write(source_record, bytes)?;
+        }
+        // Only the original import's durable root record is damaged. Its object graph and
+        // the complete reviewed derivative remain present, including the previously read bytes.
+        for cold in [false, true] {
+            if cold {
+                f = f.cold_reopen()?;
+            }
+            let before = snapshot(&f.root)?;
+            assert_eq!(
+                f.deployment
+                    .publisher()
+                    .spool()
+                    .read(f.source.import_root)?,
+                source_manifest
+            );
+            assert_eq!(
+                f.deployment.publisher().spool().read(record.root())?,
+                review_manifest
+            );
+            assert_eq!(
+                f.deployment
+                    .publisher()
+                    .spool()
+                    .read(record.media_digest())?,
+                loaded.bytes()
+            );
+            // Metadata inspection confers no authority to disclose this retained media.
+            assert_eq!(
+                inspect_review_media(&f.deployment, record.root(), &f.owner, &f.cx)?,
+                record
+            );
+            assert!(matches!(
+                prepare_review_media(&f.deployment, &request, &f.owner, &f.cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                commit_review_media(
+                    &mut f.deployment,
+                    &request,
+                    record.approval(),
+                    &f.owner,
+                    &f.cx
+                ),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                read_review_media(&f.deployment, record.root(), now(20, 21)?, &reader, &cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                revalidate_review_media(&f.deployment, &loaded, now(20, 21)?, &reader, &cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            if !cold {
+                // A different purpose has no existing review to recover. Its complete native
+                // render still cannot turn a cached source-root observation into current custody.
+                let mut fresh = request.clone();
+                fresh
+                    .access
+                    .purpose
+                    .push_str(" with a new local review purpose");
+                assert!(matches!(
+                    prepare_review_media(&f.deployment, &fresh, &f.owner, &f.cx),
+                    Err(ReviewMediaError::CustodyMismatch)
+                ));
+            }
             assert_eq!(snapshot(&f.root)?, before);
         }
     }

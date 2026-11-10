@@ -28,7 +28,10 @@ review family or reuse the reserved object namespace under another family.
 separately approved private local delivery, and idempotent withdrawal. Delivery
 checks the exact local recipient, explicitly attested current-time interval,
 current byte allowance, source/privacy state, revocation and committed deletion
-before releasing media. The file approval also binds the canonical destination
+before releasing media. Both source and derivative root records are checked on
+disk, so a cached publication cannot hide missing or corrupt source custody.
+Metadata inspection remains available after source-root damage; it does not
+authorize delivery. The file approval also binds the canonical destination
 and parent-directory identity; Linux delivery creates a new private `0600` file
 through the held protected directory. Source deletion covers the derivative
 closure and denies access at plan commitment, before unlink finishes.
@@ -40,33 +43,43 @@ physical erasure at expiry. Raw grayscale output is limited to short intervals
 and 64 MiB. See [the operator contract](docs/RETAINED_REVIEW_MEDIA.md).
 VIT-023 and FSS-068 advance; their broad beads remain open.
 
-**Validation on 2026-11-10:** seven grant contracts passed using the exact pinned
-compiler, actual complete `fss-core`, and production grant module. The only
-extracted values were the unchanged export-prepare capability and purpose bound;
-no authority or runtime implementation was substituted. The
-[retained grant log](docs/validation/2026-11-10-review-grant-tests.log) gives the
-commands and scope. All 25 existing movie component contracts also passed
-against the actual production sources: ten output-cache, eight timing and seven
-native RTSP timeline cases, including real AVC/HEVC decoding and Matroska output.
-The [native component log](docs/validation/2026-11-10-retained-review-movie-components-direct.log)
-records exact direct compiler commands. This does not execute the retained
-privacy/custody owner, new renderer lifecycle or CLI. Their seven renderer unit,
-ten lifecycle integration and seven CLI contracts are authored, with full
-runtime verification still pending at this checkpoint. Earlier full-reference
-attempts were killed while compiling unchanged Asupersync 0.5.0, and a Cargo
-component attempt was killed in unchanged `fss-core`; the successful direct
-component lane used the pinned compiler's default MIR settings. The automatic
-supplementary runner subsequently compiled the complete reference backend and
-unit-test executable, including the new review modules. Existing original export
-(23), deployment (15) and deployment recovery (36) contracts passed. The overall
-job exposed existing deletion-command module routing and catalog-test API
-blockers; those are corrected alongside explicit review CLI module paths and
-the new fixtures' privacy-owner calls. The
+**Validation on 2026-11-10:** all 14 new reference unit contracts passed on the
+exact pinned supplementary GitHub runner at `cf76bda5`: seven canonical grant
+cases and seven retained renderer cases, using the complete runtime and actual
+native AVC/HEVC fixtures. These cover exact screened pixels, B-picture timing,
+partial trims, repeated edits and holes, cancellation, cumulative limits, stable
+receipts, and refusal when a selected HEVC RASL picture is unavailable. The
+[runtime contract log](docs/validation/2026-11-10-review-runtime-contracts.log)
+records the executed target and scope. The eleven lifecycle integration and seven
+new CLI cases remain pending on the corrected integration checkpoint.
+
+All 25 existing movie component contracts also passed against the actual
+production sources: ten output-cache, eight timing and seven native RTSP timeline
+cases. The [native component log](docs/validation/2026-11-10-retained-review-movie-components-direct.log)
+records exact direct compiler commands. Seven grant cases also passed through
+the actual complete `fss-core` and production grant module in the separate
+[direct grant lane](docs/validation/2026-11-10-review-grant-tests.log); these
+overlap the full-runtime grant cases and are not additional distinct tests.
+Existing original export (23), deployment (15) and deployment recovery (36)
+contracts passed on the first checkpoint. The
 [retained build evidence](docs/validation/2026-11-10-review-reference-build.md)
-keeps these results separate from execution of the new review tests, which is
-still pending on the corrected checkpoint. A full local check remains in progress.
-No production dependency, pinned toolchain, runtime, quota or qualification gate
-was weakened.
+separates those regressions from the new review contract results.
+
+The positive HEVC lifecycle fixture now selects its valid initial IDR interval;
+the separate missing-RASL refusal contract is unchanged. A new hot/cold contract
+covers missing and corrupt source root records, including an already-loaded
+clip and a fresh-purpose preparation. The existing workflow now reports the
+focused review contracts in a separate early step while preserving the original
+export and CLI integration regression commands.
+
+The overall supplementary workflow is not green. Existing deletion-command
+module routing and catalog-test API blockers were corrected alongside explicit
+review CLI module paths and the new fixtures' privacy-owner calls. The final
+local Cargo checks were killed in unchanged Asupersync 0.5.0 before reaching FSS
+diagnostics; [the local build record](docs/validation/2026-11-10-review-local-build.md)
+documents this boundary. No local full-build pass or release qualification is
+claimed. No production dependency, pinned toolchain, runtime, quota or
+qualification gate was weakened.
 
 ## Pinned native acquisition, UTC selection and static detector controls
 

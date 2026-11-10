@@ -36,6 +36,14 @@ jobs:
         run: bash scripts/bootstrap_toolchain.sh
       - name: Verify owned runtime and recoverable effect transitions
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-runtime --all-targets --all-features
+      - name: Verify retained screened review lifecycle and private delivery
+        if: success() || failure()
+        run: |
+          review_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media:: || review_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test review_media_contract || review_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export review:: || review_exit=1
+          exit "$review_exit"
       - name: Verify retained ONVIF RTP metadata and operator commands
         if: success() || failure()
         run: |
@@ -72,8 +80,7 @@ jobs:
         if: success() || failure()
         run: |
           export_exit=0
-          cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test original_media_export_contract --test review_media_contract || export_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media:: || export_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test original_media_export_contract || export_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export --bin fss-review --test rtsp_event_media_export_cli || export_exit=1
           exit "$export_exit"
       - name: Verify deployment status inventory and bounded admission

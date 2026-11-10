@@ -1,0 +1,31 @@
+Retained review full-runtime unit evidence — 2026-11-10
+Source commit: cf76bda5835894ba3940f5621a7ebcd1cfe7e873
+Automatic run: https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42746997725
+Job: 129602041792
+Compiler: repository-pinned nightly-2026-08-31
+Command: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib review_media::
+
+Actual complete reference crate and unchanged Asupersync runtime; no component harness.
+Scope: seven grant and seven native retained-renderer unit tests. This block does not
+establish lifecycle integration or CLI execution; the overall job failed on command
+module routing and stale fixture API calls subsequently repaired in fa654de.
+
+Verbatim test output (timestamps and ANSI color removed):
+
+running 14 tests
+test review_media::grant::tests::canonical_scope_and_grant_round_trip_with_no_implicit_authority ... ok
+test review_media::grant::tests::conservative_lifetime_refuses_uncertain_issuance_and_expiry ... ok
+test review_media::grant::tests::current_authority_revocation_privacy_and_exact_receipt_are_required ... ok
+test review_media::grant::tests::preparation_is_capability_scoped_and_immutable_render_bound ... ok
+test review_media::grant::tests::every_source_privacy_recipient_time_and_byte_field_changes_request_identity ... ok
+test review_media::grant::tests::malformed_scope_refuses_before_encoding ... ok
+test review_media::grant::tests::checksum_truncation_trailing_and_oversized_records_fail_closed ... ok
+test review_media::render::tests::avc_review_preserves_b_picture_order_partial_trims_and_complete_read_only_receipts ... ok
+test review_media::render::tests::current_partial_mask_changes_only_declared_pixels_before_movie_caching ... ok
+test review_media::render::tests::cancellation_during_output_or_after_final_reads_releases_no_complete_result_or_writes ... ok
+test review_media::render::tests::complete_output_cache_work_and_source_revalidation_share_strict_limits ... ok
+test review_media::render::tests::hevc_idr_pixels_are_exact_and_missing_requested_rasl_refuses_complete_output ... ok
+test review_media::render::tests::receipt_remains_input_stable_after_an_unrelated_authority_append ... ok
+test review_media::render::tests::repeated_edits_reuse_pixels_and_preserve_leading_internal_trailing_holes ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2360 filtered out; finished in 0.26s

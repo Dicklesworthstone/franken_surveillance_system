@@ -2,7 +2,7 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-10",
   "timezone": "UTC",
-  "state": "functional_checkpoints_published_backend_compilation_verified_focused_review_execution_pending",
+  "state": "functional_checkpoints_published_full_runtime_grant_renderer_passed_lifecycle_cli_pending",
   "mission": {
     "goal": "Implement consequential remaining functionality after reading the comprehensive plan and beads; checkpoint meaningful changes directly to main through GitHub without PRs.",
     "initial_source_head": "904f350abab486225175ce9274da5aef9124b2cc",
@@ -30,8 +30,12 @@
       "change": "Four fss-export review commands, private destination-bound delivery, immediate durable-root custody checks, focused contracts, operator documentation and validation evidence."
     },
     {
-      "commit": "this_commit",
+      "commit": "fa654dea93e403337e127e0ca08957ba1aa250fd",
       "change": "Correct review/deletion command module routing and actual test API calls; retain backend compilation/regression evidence from supplementary runner."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Require current durable source-root custody before preparation and release; cover hot/cold source-root loss; use a valid HEVC positive fixture; retain full-runtime unit evidence and expose focused review validation early."
     }
   ],
   "delivered": [
@@ -40,7 +44,7 @@
     "Three-child derivative root retains media, render receipt and canonical grant record while preserving original media as provenance dependencies rather than delivery children.",
     "Exact prepare/commit approval, source/privacy revalidation, reserved authority families and object prefix, idempotent publication, cold managed reads, terminal revocation and deletion-plan-before-unlink refusal.",
     "Uncommitted graph recovery repeats the native renderer and verifies the original root publication basis; genuine historical but wrong anchors and fabricated source metadata cannot become issuance authority.",
-    "Missing or corrupt durable root files deny current and cold reads; deletion is reported only with verified deletion authority, never inferred from missing custody.",
+    "Missing or corrupt on-disk source or derivative root records deny preparation and current/cold media release; deletion is reported only with verified deletion authority. Metadata-only grant inspection remains possible after source-root damage.",
     "review, review-show, review-read and review-revoke integrate into fss-export with explicit local principal and caller-attested current time.",
     "Separately approved Linux file delivery binds the canonical destination and protected directory inode, creates only a new 0600 file, and revalidates grant/source/privacy/custody before and after output."
   ],
@@ -67,14 +71,19 @@
       "cargo_attempt_log": "docs/validation/2026-11-10-retained-review-movie-components.log"
     },
     "full_runtime": {
-      "status": "backend_library_and_unit_test_executable_compiled_new_review_execution_pending",
+      "status": "grant_and_renderer_unit_contracts_passed_lifecycle_and_cli_pending",
       "authored_renderer_unit_cases": 7,
-      "authored_lifecycle_integration_cases": 10,
+      "authored_lifecycle_integration_cases": 11,
       "authored_cli_cases": 7,
-      "local_observation": "Multiple exact pinned checks were killed in unchanged dependencies before project diagnostics. Default-MIR serial retry is in progress after direct component success.",
-      "automatic_github_run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42745633540",
-      "github_observation": "Backend library and complete unit-test executable compiled on d3d11ee. Existing original export23, deployment15 and recovery36 tests passed. Overall job failed on existing fss-event module routing, catalog staging API usage and formatting findings; these compiler blockers are corrected in this checkpoint.",
-      "backend_compilation_log": "docs/validation/2026-11-10-review-reference-build.md"
+      "local_observation": "Final exact pinned default-MIR serial and allocator-only checks both ended with signal 9 in unchanged Asupersync 0.5.0 before FSS diagnostics. No further local resource retries are running.",
+      "automatic_github_run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42746997725",
+      "github_observation": "At cf76bda5, all 14 selected new review unit tests passed using the complete runtime: seven grant and seven retained native renderer cases, zero failures. Whole workflow failed on module/API compile blockers corrected by fa654dea. Lifecycle and new CLI execution remain pending on the corrected source.",
+      "backend_compilation_log": "docs/validation/2026-11-10-review-reference-build.md",
+      "local_build_record": "docs/validation/2026-11-10-review-local-build.md",
+      "runtime_contract_log": "docs/validation/2026-11-10-review-runtime-contracts.log",
+      "passed_grant_unit_cases": 7,
+      "passed_renderer_unit_cases": 7,
+      "focused_workflow_step": "Verify retained screened review lifecycle and private delivery; original export and CLI integration regressions remain separately configured."
     },
     "scoped_semantic_import_check": {
       "review_modules": 14,
@@ -87,7 +96,7 @@
     "repository_manifest": "All18 paths in second checkpoint passed staged layered-manifest coverage. Whole-tree audit still fails on pre-existing mismatched/missing manifest entries; no global pass claimed."
   },
   "remaining_material_work": [
-    "Run the new renderer, lifecycle and CLI contracts on the corrected integration checkpoint; inspect new local/automatic compiler or runtime diagnostics and resolve them. Backend production and unit-test compilation is verified on d3d11ee.",
+    "Execute the 11 lifecycle and 7 new CLI contracts on corrected source, including the source-root durability guard and valid HEVC positive fixture; resolve concrete diagnostics. Complete-runtime grant 7 and native renderer 7 contracts already pass at cf76bda5.",
     "External reviewer authentication/FLDT rights integration and payment-zone mask attestation remain absent; local principal labels are trusted-caller inputs.",
     "External delivery or transfer receipts, remote access serving, automatic expiry deletion and recall of previously delivered copies are outside this local profile.",
     "Raw grayscale 64 MiB output targets short review intervals; color, audio, native compressed output and wider codec support remain separate features.",

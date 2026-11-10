@@ -308,6 +308,14 @@ fn source_current(
 ) -> Result<(), ReviewMediaError> {
     storage::not_deleted(d, record)?;
     let request = record.grant().request();
+    // Retained metadata can outlive the publisher's last observed root record. Delivery must
+    // prove current on-disk source custody as well as the derivative's own durable root.
+    let source_slot =
+        fss_publication::SlotName::parse(&format!("fi-{}", record::hex(request.import_identity)))
+            .map_err(|_| ReviewMediaError::CustodyMismatch)?;
+    d.publisher()
+        .require_durable_record(&source_slot)
+        .map_err(|_| ReviewMediaError::CustodyMismatch)?;
     let retained = RetainedFileImport::open(d, request.import_identity, record.read_limits(), cx)?;
     if retained.import_root() != request.import_root
         || retained.manifest_digest() != record.source_manifest()
@@ -356,8 +364,9 @@ pub fn prepare_review_media(
         rendered.receipt_digest(),
     )?;
     let record = ReviewMediaRecord::new(identity, request, grant, &rendered, authority_binding(a))?;
-    // The renderer has completed the source's full EOF and current-mask revalidation. Nothing
-    // here persists until exact approval is checked by commit_review_media.
+    // The renderer has completed the source's full EOF and current-mask revalidation; the
+    // approval additionally requires its current durable source root. Nothing persists here.
+    source_current(d, &record, cx)?;
     let (media, render_receipt) = rendered.into_parts();
     checkpoint(cx, "review_media:prepared")?;
     Ok(ReviewMediaPreview {
