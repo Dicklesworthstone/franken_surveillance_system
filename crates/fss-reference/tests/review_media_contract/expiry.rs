@@ -10,7 +10,7 @@ use fss_reference::deletion::review_expiry::{
     STAGE_REVIEW_EXPIRY_READ, assess_review_expiry, commit_review_expiry,
 };
 use fss_reference::deletion::{
-    CommitOutcome, DELETION_CUT_POINTS, DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN,
+    CommitOutcome, CommitReceipt, DELETION_CUT_POINTS, DELETION_REVIEW_EXPIRY_COMPLETION_DOMAIN,
     DELETION_REVIEW_EXPIRY_PLAN_DOMAIN, DeletionCompletion, DeletionIndex, DeletionPlan,
     plan_scope_deletion,
 };
@@ -32,7 +32,7 @@ fn hold(f: &mut Fixture, state: HoldState) -> TestResult {
     )?;
     let cx = ReplayCx::from_context_authority(&a, f.root.clone())?;
     let request = HoldRequest {
-        hold_id: "hold:review-expiry".into(),
+        hold_id: "review-expiry".into(),
         import_identity: f.source.import_identity,
         state,
         reason: "Owner preserves original evidence and its review derivatives".into(),
@@ -81,6 +81,320 @@ fn publish_later(f: &mut Fixture) -> TestResult<ReviewMediaRecord> {
         &f.cx,
     )?;
     Ok(record)
+}
+
+fn expire_reviews(f: &mut Fixture, at: i128) -> TestResult<CommitReceipt> {
+    let request = expiry_request(at, at)?;
+    let plan = assess_review_expiry(&f.deployment, &request, &f.cx)?
+        .deletion
+        .ok_or("missing expiry plan")?;
+    Ok(commit_review_expiry(
+        &mut f.deployment,
+        &request,
+        plan.digest()?,
+        plan.approval_digest(OWNER)?,
+        OWNER,
+        &f.cx,
+    )?)
+}
+
+fn import_peer(f: &mut Fixture) -> TestResult<FileIngestReceipt> {
+    let input = f._directory.0.join("independent.mp4");
+    fs::write(
+        &input,
+        fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../fss-container/tests/fixtures/indexed_avc.mp4"),
+        )?,
+    )?;
+    let source = FileIngestAdapter::ingest(
+        FileIngestRequest::new(
+            &input,
+            SensorId::parse(SENSOR)?,
+            StreamId::parse("stream:independent-review")?,
+        )
+        .with_receive_time(TimestampNs(2_000_000_000)),
+        &f.cx,
+        &mut f.deployment,
+    )?;
+    fs::remove_file(input)?;
+    assert_ne!(source.import_identity, f.source.import_identity);
+    Ok(source)
+}
+
+#[test]
+fn fresh_grants_after_completed_expiry_preserve_terminal_old_grants_and_future_custody()
+-> TestResult {
+    let mut f = Fixture::new("review-expiry-new-grant", "indexed_avc.mp4")?;
+    let (old_request, old) = f.publish()?;
+    let first = expire_reviews(&mut f, 100)?;
+    assert!(
+        !f.deployment
+            .publisher()
+            .spool()
+            .object_path(old.media_digest())
+            .exists()
+    );
+    let index = DeletionIndex::read(&f.deployment)?;
+    assert_eq!(
+        index
+            .review(old.root())
+            .and_then(|entry| entry.completion_anchor.as_ref()),
+        Some(f.deployment.current_anchor())
+    );
+
+    let mut renewal = f.request()?;
+    renewal.access.issued_at = TimestampNs(150);
+    renewal.access.expires_at = TimestampNs(200);
+    renewal.access.purpose = "A new explicitly approved review after prior expiry".into();
+    let before = snapshot(&f.root)?;
+    let preview = prepare_review_media(&f.deployment, &renewal, &f.owner, &f.cx)?;
+    let renewed = preview.record().clone();
+    assert_eq!(renewed.basis(), f.deployment.current_anchor());
+    assert_eq!(renewed.media_digest(), old.media_digest());
+    assert_eq!(renewed.render_receipt_digest(), old.render_receipt_digest());
+    assert_ne!(renewed.root(), old.root());
+    assert_ne!(preview.approval(), old.approval());
+    assert!(matches!(
+        commit_review_media(&mut f.deployment, &renewal, old.approval(), &f.owner, &f.cx),
+        Err(ReviewMediaError::StaleApproval)
+    ));
+    assert_eq!(snapshot(&f.root)?, before);
+    commit_review_media(
+        &mut f.deployment,
+        &renewal,
+        preview.approval(),
+        &f.owner,
+        &f.cx,
+    )?;
+    f = f.cold_reopen()?;
+    let (reader, cx) = f.reader(READER, MEDIA_BOUND)?;
+    assert_eq!(
+        read_review_media(&f.deployment, renewed.root(), now(160, 161)?, &reader, &cx)?
+            .media_digest(),
+        old.media_digest()
+    );
+    assert!(matches!(
+        read_review_media(&f.deployment, old.root(), now(20, 21)?, &reader, &cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    assert!(matches!(
+        prepare_review_media(&f.deployment, &old_request, &f.owner, &f.cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    let before = snapshot(&f.root)?;
+    let retry = commit_review_expiry(
+        &mut f.deployment,
+        &expiry_request(100, 100)?,
+        first.plan_digest,
+        first.plan.approval_digest(OWNER)?,
+        OWNER,
+        &f.cx,
+    )?;
+    assert_eq!(retry.outcome, CommitOutcome::AlreadyComplete);
+    assert_eq!(snapshot(&f.root)?, before);
+    assert_eq!(
+        read_review_media(&f.deployment, renewed.root(), now(160, 161)?, &reader, &cx)?
+            .media_digest(),
+        renewed.media_digest()
+    );
+
+    // Regenerated payloads have new live owners, and must participate in current holds.
+    hold(&mut f, HoldState::Held)?;
+    let held = assess_review_expiry(&f.deployment, &expiry_request(200, 200)?, &f.cx)?;
+    assert!(held.deletion.is_none());
+    assert_eq!(
+        held.selection.candidates()[0].disposition(),
+        ReviewExpiryDisposition::ClosureBlocked
+    );
+    hold(&mut f, HoldState::Released)?;
+    let second = expire_reviews(&mut f, 200)?;
+    assert!(
+        second
+            .plan
+            .deletable
+            .iter()
+            .any(|object| object.digest == renewed.media_digest())
+    );
+    assert!(
+        !f.deployment
+            .publisher()
+            .spool()
+            .object_path(renewed.media_digest())
+            .exists()
+    );
+    assert_eq!(
+        inspect_review_media(&f.deployment, old.root(), &f.owner, &f.cx)?,
+        old
+    );
+    assert_eq!(
+        inspect_review_media(&f.deployment, renewed.root(), &f.owner, &f.cx)?,
+        renewed
+    );
+    source_readable(&f)?;
+
+    // A third fresh grant checks all prior expiry receipts, then real source deletion must
+    // still collect this newly owned payload and preserve earlier expiry audit records.
+    renewal.access.issued_at = TimestampNs(250);
+    renewal.access.expires_at = TimestampNs(300);
+    let preview = prepare_review_media(&f.deployment, &renewal, &f.owner, &f.cx)?;
+    let latest = preview.record().clone();
+    assert_eq!(latest.media_digest(), old.media_digest());
+    commit_review_media(
+        &mut f.deployment,
+        &renewal,
+        preview.approval(),
+        &f.owner,
+        &f.cx,
+    )?;
+    let source_plan = plan_deletion(&f.deployment, f.source.import_identity, &f.cx)?;
+    assert!(
+        source_plan.blockers.is_empty(),
+        "{:?}",
+        source_plan.blockers
+    );
+    assert!(
+        source_plan
+            .deletable
+            .iter()
+            .any(|object| object.digest == latest.media_digest())
+    );
+    assert!(
+        !source_plan
+            .deletable
+            .iter()
+            .any(|object| object.digest == old.digest() || object.digest == renewed.digest())
+    );
+    commit_deletion(
+        &mut f.deployment,
+        source_plan.digest()?,
+        source_plan.approval_digest(OWNER)?,
+        OWNER,
+        &f.cx,
+    )?;
+    f = f.cold_reopen()?;
+    assert!(
+        DeletionIndex::read(&f.deployment)?
+            .import(f.source.import_identity)
+            .is_some()
+    );
+    assert!(
+        !f.deployment
+            .publisher()
+            .spool()
+            .object_path(latest.media_digest())
+            .exists()
+    );
+    assert!(matches!(
+        read_review_media(&f.deployment, latest.root(), now(260, 261)?, &reader, &cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    assert_eq!(
+        inspect_review_media(&f.deployment, old.root(), &f.owner, &f.cx)?,
+        old
+    );
+    assert_eq!(
+        inspect_review_media(&f.deployment, renewed.root(), &f.owner, &f.cx)?,
+        renewed
+    );
+    Ok(())
+}
+
+#[test]
+fn incomplete_expiry_cannot_rematerialize_payloads_that_resume_will_unlink() -> TestResult {
+    let mut f = Fixture::new("review-expiry-no-early-reuse", "indexed_avc.mp4")?;
+    let (_, old) = f.publish()?;
+    let request = expiry_request(100, 100)?;
+    let plan = assess_review_expiry(&f.deployment, &request, &f.cx)?
+        .deletion
+        .ok_or("missing expiry")?;
+    let stop = ReplayCx::from_context_authority(&f.owner, f.root.clone())?;
+    stop.set_cancel_at_checkpoint(STAGE_DELETION_RECORD_APPENDED);
+    assert!(matches!(
+        commit_review_expiry(
+            &mut f.deployment,
+            &request,
+            plan.digest()?,
+            plan.approval_digest(OWNER)?,
+            OWNER,
+            &stop
+        ),
+        Err(DeletionError::Cancelled { .. })
+    ));
+    assert!(
+        DeletionIndex::read(&f.deployment)?
+            .review(old.root())
+            .is_some_and(|entry| entry.completion_anchor.is_none())
+    );
+    let mut renewal = f.request()?;
+    renewal.access.expires_at = TimestampNs(200);
+    let before = snapshot(&f.root)?;
+    assert!(matches!(
+        prepare_review_media(&f.deployment, &renewal, &f.owner, &f.cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    assert_eq!(snapshot(&f.root)?, before);
+    f = f.cold_reopen()?;
+    assert!(matches!(
+        prepare_review_media(&f.deployment, &renewal, &f.owner, &f.cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    commit_review_expiry(
+        &mut f.deployment,
+        &request,
+        plan.digest()?,
+        plan.approval_digest(OWNER)?,
+        OWNER,
+        &f.cx,
+    )?;
+    assert!(prepare_review_media(&f.deployment, &renewal, &f.owner, &f.cx).is_ok());
+    Ok(())
+}
+
+#[test]
+fn source_deletion_payloads_cannot_be_reissued_under_the_expiry_exception() -> TestResult {
+    let mut f = Fixture::new("review-expiry-no-legacy-reuse", "indexed_avc.mp4")?;
+    let (_, old) = f.publish()?;
+    let peer = import_peer(&mut f)?;
+    let mut request = f.request()?;
+    request.movie.import_identity = peer.import_identity;
+    request.access.import_identity = peer.import_identity;
+    request.access.import_root = peer.import_root;
+    request.access.expires_at = TimestampNs(200);
+    // A preview proves the independently retained source would produce the same screened
+    // payload, but grants no publication authority and cannot shield it from source deletion.
+    let preview = prepare_review_media(&f.deployment, &request, &f.owner, &f.cx)?;
+    assert_eq!(preview.record().media_digest(), old.media_digest());
+    let plan = plan_deletion(&f.deployment, f.source.import_identity, &f.cx)?;
+    assert!(
+        plan.deletable
+            .iter()
+            .any(|object| object.digest == old.media_digest())
+    );
+    commit_deletion(
+        &mut f.deployment,
+        plan.digest()?,
+        plan.approval_digest(OWNER)?,
+        OWNER,
+        &f.cx,
+    )?;
+    let retained = RetainedFileImport::open(
+        &f.deployment,
+        peer.import_identity,
+        RetainedReadLimits::default(),
+        &f.cx,
+    )?;
+    assert_eq!(
+        retained.verify_source(&f.deployment, RetainedReadLimits::default(), &f.cx)?,
+        peer.input_sha256
+    );
+    let before = snapshot(&f.root)?;
+    assert!(matches!(
+        prepare_review_media(&f.deployment, &request, &f.owner, &f.cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    assert_eq!(snapshot(&f.root)?, before);
+    Ok(())
 }
 
 #[test]
@@ -427,26 +741,7 @@ fn source_hold_blocks_expiry_and_invalidates_an_earlier_approval() -> TestResult
 fn held_review_does_not_prevent_an_independent_expired_review_cleanup() -> TestResult {
     let mut f = Fixture::new("review-expiry-independent", "indexed_avc.mp4")?;
     let (_, held) = f.publish()?;
-    let input = f._directory.0.join("independent.mp4");
-    fs::write(
-        &input,
-        fs::read(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../fss-container/tests/fixtures/indexed_avc.mp4"),
-        )?,
-    )?;
-    let source = FileIngestAdapter::ingest(
-        FileIngestRequest::new(
-            &input,
-            SensorId::parse(SENSOR)?,
-            StreamId::parse("stream:independent-review")?,
-        )
-        .with_receive_time(TimestampNs(2_000_000_000)),
-        &f.cx,
-        &mut f.deployment,
-    )?;
-    fs::remove_file(input)?;
-    assert_ne!(source.import_identity, f.source.import_identity);
+    let source = import_peer(&mut f)?;
     let mut request = f.request()?;
     request.movie.import_identity = source.import_identity;
     request.access.import_identity = source.import_identity;

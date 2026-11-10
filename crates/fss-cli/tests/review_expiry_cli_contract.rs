@@ -456,6 +456,96 @@ fn changed_time_and_wrong_approval_cannot_reuse_preview_or_completed_cleanup() -
 }
 
 #[test]
+fn a_new_approved_review_can_recreate_expired_media_without_reviving_old_grants() -> Test {
+    let f = Fixture::new("reissue")?;
+    let preview = success(&f.cleanup("review-expiry-plan", "200:200", None)?)?;
+    let plan = field(&preview, "deletion_plan")?;
+    success(&f.cleanup(
+        "review-expiry-commit",
+        "200:200",
+        Some((text(plan, "plan_digest")?, text(plan, "approval_digest")?)),
+    )?)?;
+    let owner = authority(OWNER)?;
+    let cx = ReplayCx::from_context_authority(&owner, f.root.clone())?;
+    let deployment = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;
+    assert!(
+        !deployment
+            .publisher()
+            .spool()
+            .object_path(f.current.media_digest())
+            .exists()
+    );
+    let mask = current_mask(&deployment, &SensorId::parse(SENSOR)?)?
+        .digest()
+        .to_text();
+    drop(deployment);
+    cx.drain_and_finalize();
+
+    let publish = |approval: Option<&str>| -> Test<Value> {
+        let mut process = Command::new(EXPORT);
+        process.arg("review").arg("--root").arg(&f.root).args([
+            "--site",
+            SITE,
+            "--import-identity",
+            &f.source.import_identity.to_text(),
+            "--expected-import-root",
+            &f.source.import_root.to_text(),
+            "--sensor",
+            SENSOR,
+            "--movie-start-tick",
+            "400",
+            "--movie-end-tick",
+            "800",
+            "--privacy-digest",
+            &mask,
+            "--recipient",
+            READER,
+            "--purpose",
+            "A newly approved review of the preserved original",
+            "--issued-at-ns",
+            "300",
+            "--expires-at-ns",
+            "400",
+            "--max-media-bytes",
+            "1048576",
+        ]);
+        if let Some(approval) = approval {
+            process.args(["--approve", approval]);
+        }
+        success(&process.output_unlocked()?)
+    };
+    let before = snapshot(&f.root)?;
+    let prepared = publish(None)?;
+    assert_eq!(text(&prepared, "status")?, "awaiting_publication_approval");
+    assert_eq!(snapshot(&f.root)?, before, "new grant preview wrote media");
+    let published = publish(Some(text(&prepared, "approval_digest")?))?;
+    let new_root = ContentDigest::parse(text(&published, "review_root")?)?;
+    assert_ne!(new_root, f.expired.root());
+    assert_ne!(new_root, f.current.root());
+
+    let reader = authority(READER)?;
+    let cx = ReplayCx::from_context_authority(&reader, f.root.clone())?;
+    let deployment = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;
+    let media = read_review_media(&deployment, new_root, interval(300, 301)?, &reader, &cx)?;
+    assert_eq!(
+        ContentDigest::sha256(media.bytes()),
+        f.current.media_digest()
+    );
+    for root in [f.expired.root(), f.current.root()] {
+        assert!(read_review_media(&deployment, root, interval(20, 21)?, &reader, &cx).is_err());
+    }
+    RetainedFileImport::open(
+        &deployment,
+        f.source.import_identity,
+        RetainedReadLimits::default(),
+        &cx,
+    )?;
+    drop(deployment);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
 fn malformed_expiry_cli_refuses_before_opening_or_creating_a_deployment() -> Test {
     let directory = Directory::new("invalid")?;
     let missing = directory.0.join("must-not-exist");

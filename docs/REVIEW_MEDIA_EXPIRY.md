@@ -82,6 +82,21 @@ retry returns `already_complete` with the same completion digest. The request's
 original time and selected scope must still match. Recovery does not need the
 already removed derivative bytes and never invents a new approval.
 
+## Creating a new review after cleanup
+
+Preserving the original permits a later, separately approved review of the same
+movie interval. Native rendering may produce the same screened media bytes. They
+can be retained again only when every deletion of that payload was a completed
+review-expiry cleanup and the new grant's preparation basis includes each exact
+completion. A pending cleanup still refuses reuse because its resume may unlink
+those bytes. Source/sensor/event/retention deletion never grants this exception.
+
+The new request needs a new grant and exact approval. The expired root and its
+old grant remain unreadable, even after identical bytes have been recreated.
+Retrying the completed old cleanup returns its existing completion without
+unlinking the new review. New holds, later review expiry and eventual source
+deletion include the new publication in their ordinary closure.
+
 ## Bounds and remaining limits
 
 One inventory examines at most 256 retained reviews across the deployment and

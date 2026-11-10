@@ -11,7 +11,7 @@ pub(super) mod proof;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::{ContentDigest, EvidenceDeltaBatch};
+use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerAnchor};
 
 use super::DeletionError;
 use super::plan::DeletionPlan;
@@ -26,6 +26,9 @@ pub struct DeletionEntry {
     pub plan: DeletionPlan,
     /// Completion record identity, once appended.
     pub completion_digest: Option<ContentDigest>,
+    /// Verified authority position after the exact completion append. Absent for an
+    /// incomplete deletion; a staged completion payload does not establish this position.
+    pub completion_anchor: Option<LedgerAnchor>,
 }
 
 impl DeletionEntry {

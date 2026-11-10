@@ -77,8 +77,8 @@ reports deleted audit metadata, exact plan/completion and historical revocation
 separately. Agent orientation names the deleted reviews and retained sources.
 Original deletion v1/v2/v3 and live review-report formats remain unchanged.
 
-Nine reference lifecycle contracts, two canonical-selection unit contracts,
-four actual-process CLI contracts and three parser contracts cover expiry
+Twelve reference lifecycle contracts, two canonical-selection unit contracts,
+five actual-process CLI contracts and three parser contracts cover expiry
 uncertainty/boundaries, held and unheld cohorts, current sibling/shared-byte
 preservation, orphan-source preservation, every deletion cutpoint, cold retries,
 stale time/holds/approvals, metadata inspection, source deletion and strict
@@ -86,6 +86,15 @@ inventory limits. Pinned Rust parsing/formatting of changed clean files and
 whitespace checks pass; native execution is pending the supplemental focused
 hosted run. The unchanged local Asupersync compiler-memory blocker remains;
 no local full-build or release-qualification pass is claimed.
+
+A follow-up correction permits a newly approved grant to reconstruct identical
+screened payloads from a preserved original after completed derivative expiry.
+Every historical deletion of either reusable payload must be that narrow scope;
+the new preparation must include each verified completion anchor. Incomplete or
+source-scoped deletions still refuse, old grants remain denied, and an exact old
+completion retry cannot unlink the new publication. Regressions continue through
+a second expiry, a new hold and eventual source deletion. The reference hold
+fixture also now uses a valid identifier under the existing admission rules.
 
 This advances VIT-006 (`fss-vit-je36t.6`) and VIT-023
 (`fss-vit023-review-export-w8aai`). It provides exact local physical cleanup;

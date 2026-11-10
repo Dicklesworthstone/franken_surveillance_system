@@ -3,7 +3,7 @@
 
 use super::record::{hex, slot, valid_digest};
 use super::*;
-use crate::deletion::DeletionIndex;
+use crate::deletion::{DeletionIndex, DeletionScope};
 use fss_core::{BatchId, EvidenceDelta, ObjectId, Plane};
 use fss_object::ObjectManifest;
 use fss_publication::{
@@ -74,6 +74,45 @@ fn publication_children(record: &ReviewMediaRecord) -> Vec<ContentDigest> {
     children
 }
 
+/// A separately approved grant may reproduce its screened payload from still-retained
+/// originals after derivative expiry finished. Every deletion of the digest must be that
+/// narrow completed scope, already included in this new issuance's preparation basis.
+/// Old review roots/identities remain terminal, and global digest availability is unchanged.
+fn reusable_expired_payload(
+    deleted: &DeletionIndex,
+    record: &ReviewMediaRecord,
+    digest: ContentDigest,
+) -> bool {
+    if deleted.object(digest).is_none() {
+        return true;
+    }
+    // Check all generations, not only the latest deletion indexed for this digest. A later
+    // expiry must never hide a previous source/sensor/event/retention deletion declaration.
+    deleted
+        .entries()
+        .iter()
+        .filter(|entry| {
+            entry
+                .plan
+                .deletable
+                .binary_search_by_key(&digest, |object| object.digest)
+                .is_ok()
+        })
+        .all(|entry| {
+            if !matches!(&entry.plan.scope, DeletionScope::ReviewExpiry(selection)
+            if !selection.roots().contains(&record.root()))
+                || !entry.is_complete()
+            {
+                return false;
+            }
+            entry.completion_anchor.as_ref().is_some_and(|completed| {
+                let basis = record.basis();
+                basis.site_lineage == completed.site_lineage
+                    && (basis.commit_sequence > completed.commit_sequence || basis == completed)
+            })
+        })
+}
+
 pub(super) fn not_deleted(
     d: &ReferenceDeployment,
     record: &ReviewMediaRecord,
@@ -86,14 +125,15 @@ pub(super) fn not_deleted(
         || [
             record.root(),
             record.digest(),
-            record.media_digest(),
-            record.render_receipt_digest(),
             record.grant().request().import_root,
             record.source_manifest(),
         ]
         .into_iter()
         .any(|digest| deleted.object(digest).is_some())
         || deleted.unit_deleted(&format!("slot:{}", record.slot()?.as_str()))
+        || ![record.media_digest(), record.render_receipt_digest()]
+            .into_iter()
+            .all(|digest| reusable_expired_payload(&deleted, record, digest))
     {
         return Err(ReviewMediaError::Deleted);
     }
