@@ -86,7 +86,8 @@
     "crates/fss-reference/src/review_media.rs",
     "crates/fss-reference/src/review_media/record.rs",
     "crates/fss-reference/src/review_media/storage.rs",
-    "crates/fss-reference/src/review_media/render.rs"
+    "crates/fss-reference/src/review_media/render.rs",
+    "crates/fss-cli/src/bin/fss-export/review/execute.rs"
   ],
   "module_declarations": {
     "crates/fss-object/src/contracts.rs": "support",
@@ -979,6 +980,10 @@
     "crates/fss-cli/src/footage_query_cmd.rs": "ambiguous",
     "crates/fss-cli/src/lib.rs": "support",
     "crates/fss-cli/src/orient_cmd.rs": "ambiguous",
+    "crates/fss-cli/src/bin/fss-export/review.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/execute.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/options.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/tests.rs": "support",
     "crates/fss-reference/src/review_media.rs": "effect",
     "crates/fss-reference/src/review_media/grant.rs": "authority",
     "crates/fss-reference/src/review_media/grant_tests.rs": "support",
@@ -987,7 +992,8 @@
     "crates/fss-reference/src/review_media/render/output.rs": "support",
     "crates/fss-reference/src/review_media/render/tests.rs": "support",
     "crates/fss-reference/src/review_media/render/timing.rs": "support",
-    "crates/fss-reference/src/review_media/storage.rs": "effect"
+    "crates/fss-reference/src/review_media/storage.rs": "effect",
+    "crates/fss-cli/src/bin/fss-export/review/runtime_tests.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

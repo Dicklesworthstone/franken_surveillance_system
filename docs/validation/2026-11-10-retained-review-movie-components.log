@@ -1,0 +1,5 @@
+   Compiling fss-core v0.0.1 (/workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-core)
+error: could not compile `fss-core` (lib)
+
+Caused by:
+  process didn't exit successfully: `rustc --crate-name fss_core --edition=2024 crates/fss-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -Z embed-metadata=no -C embed-bitcode=no '--warn=clippy::all' '--deny=clippy::unwrap_used' --deny=unused_must_use --forbid=unsafe_code '--deny=clippy::panic' --warn=missing_docs '--deny=clippy::expect_used' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "test-support"))' -C metadata=3dc87e96007e5911 -C extra-filename=-6bcaefb1b83898ad --out-dir /workspace/scratch/0bca9ff0b013/franken_surveillance_system/target/debug/build/fss-core/6bcaefb1b83898ad/out -C strip=debuginfo -Zthreads=1 -Zmir-opt-level=0` (signal: 9, SIGKILL: kill)

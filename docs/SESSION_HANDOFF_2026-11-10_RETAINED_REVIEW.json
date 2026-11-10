@@ -1,0 +1,96 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-10",
+  "timezone": "UTC",
+  "state": "local_review_functionality_committed_focused_components_passed_full_runtime_verification_pending",
+  "mission": {
+    "goal": "Implement consequential remaining functionality after reading the comprehensive plan and beads; checkpoint meaningful changes directly to main through GitHub without PRs.",
+    "initial_source_head": "904f350abab486225175ce9274da5aef9124b2cc",
+    "bead_scope": [
+      "VIT-023 / fss-vit023-review-export-w8aai",
+      "FSS-068 / fss-x4a.13.8"
+    ],
+    "broad_beads_closed": false,
+    "selected_gap": "Retained privacy-screened derivatives and exact local review grants after approved source acquisition."
+  },
+  "situation_roots": {
+    "normative_plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-09_PINNED_UTC.json",
+    "operator_contract": "docs/RETAINED_REVIEW_MEDIA.md",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "d3d11eeb7665ad63088e6b7b2af371a37c8b617b",
+      "change": "Native retained screened movie rendering, canonical local recipient grants, guarded root-last lifecycle, exact recovery, revocation and deletion integration."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Four fss-export review commands, private destination-bound delivery, immediate durable-root custody checks, focused contracts, operator documentation and validation evidence."
+    }
+  ],
+  "delivered": [
+    "Native AVC/HEVC retained movie rendering reuses exact output/timing owners; applies current masks before caching, consumes complete decoder EOF, preserves B-picture presentation, partial trims, repeated edits and holes.",
+    "Canonical local grant binds source import/root, sensor, interval, mask binding/generation, recipient, purpose, issuance, expiry, byte limit, owner, site and renderer receipt.",
+    "Three-child derivative root retains media, render receipt and canonical grant record while preserving original media as provenance dependencies rather than delivery children.",
+    "Exact prepare/commit approval, source/privacy revalidation, reserved authority families and object prefix, idempotent publication, cold managed reads, terminal revocation and deletion-plan-before-unlink refusal.",
+    "Uncommitted graph recovery repeats the native renderer and verifies the original root publication basis; genuine historical but wrong anchors and fabricated source metadata cannot become issuance authority.",
+    "Missing or corrupt durable root files deny current and cold reads; deletion is reported only with verified deletion authority, never inferred from missing custody.",
+    "review, review-show, review-read and review-revoke integrate into fss-export with explicit local principal and caller-attested current time.",
+    "Separately approved Linux file delivery binds the canonical destination and protected directory inode, creates only a new 0600 file, and revalidates grant/source/privacy/custody before and after output."
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31 / rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "grant_contracts": {
+      "status": "passed",
+      "passed": 7,
+      "failed": 0,
+      "scope": "Actual complete fss-core plus actual grant.rs/grant_tests.rs, with only CAP_EXPORT_PREPARE and MAX_PURPOSE_BYTES extracted verbatim from the export owner. No authority, runtime or codec substitute.",
+      "log": "docs/validation/2026-11-10-review-grant-tests.log"
+    },
+    "native_movie_components": {
+      "status": "passed",
+      "passed": 25,
+      "failed": 0,
+      "targets": {
+        "movie_output_contract": 10,
+        "movie_timing_contract": 8,
+        "rtsp_movie_timeline_contract": 7
+      },
+      "scope": "Pinned direct compilation of actual core, packet, container, ledger and native codec sources; unchanged existing test targets now point to the shared production output/timing owners. Does not execute ReferenceDeployment, privacy owner, renderer lifecycle or CLI.",
+      "log": "docs/validation/2026-11-10-retained-review-movie-components-direct.log",
+      "cargo_attempt_log": "docs/validation/2026-11-10-retained-review-movie-components.log"
+    },
+    "full_runtime": {
+      "status": "pending_at_checkpoint",
+      "authored_renderer_unit_cases": 7,
+      "authored_lifecycle_integration_cases": 10,
+      "authored_cli_cases": 7,
+      "local_observation": "Multiple exact pinned checks were killed in unchanged dependencies before project diagnostics. Default-MIR serial retry is in progress after direct component success.",
+      "automatic_github_run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42745633540",
+      "github_observation": "Automatic first-checkpoint supplementary job passed its runtime stage; later reference stage failed, with full logs unavailable while the job continues. Cause not yet attributed."
+    },
+    "scoped_semantic_import_check": {
+      "review_modules": 14,
+      "findings": 0
+    },
+    "repository_semantic_checker": "Full checker fails with hundreds of existing registry omissions and unrelated cross-plane findings; scoped review-module import check passes. No global pass claimed.",
+    "production_dependencies_added": [],
+    "pins_changed": false,
+    "release_qualification": "not claimed"
+  },
+  "remaining_material_work": [
+    "Complete pinned full fss-reference and fss-export typecheck and run the new renderer, lifecycle and CLI contracts; inspect supplementary CI logs and repair actual diagnostics.",
+    "External reviewer authentication/FLDT rights integration and payment-zone mask attestation remain absent; local principal labels are trusted-caller inputs.",
+    "External delivery or transfer receipts, remote access serving, automatic expiry deletion and recall of previously delivered copies are outside this local profile.",
+    "Raw grayscale 64 MiB output targets short review intervals; color, audio, native compressed output and wider codec support remain separate features.",
+    "Always-on recorder doctrine still needs the explicit D7 decision already identified in the plan; this session does not choose it."
+  ],
+  "next_validation_commands": [
+    "cargo test --locked --offline -p fss-reference --lib review_media::",
+    "cargo test --locked --offline -p fss-reference --test review_media_contract",
+    "cargo test --locked --offline -p fss-cli --bin fss-export",
+    "python3 -B scripts/manifest_delta_gate.py --worktree"
+  ]
+}

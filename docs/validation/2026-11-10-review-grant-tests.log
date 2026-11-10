@@ -1,0 +1,58 @@
+Review grant contract validation — 2026-11-10
+
+Compiler: rustc 1.100.0-nightly (908501772 2026-08-30)
+Toolchain: nightly-2026-08-31-x86_64-unknown-linux-gnu
+
+Scope: The unmodified workspace fss-core crate was compiled directly from
+crates/fss-core/src/lib.rs. The test harness included the actual review_media/grant.rs
+source and its actual grant_tests.rs unit tests. The only extracted declarations
+were CAP_EXPORT_PREPARE and MAX_PURPOSE_BYTES, copied verbatim from
+crates/fss-reference/src/evidence_export.rs. No dependency implementation, runtime,
+canonical codec, authority contract, or tested grant function was substituted.
+
+This scoped execution does not typecheck or execute the complete fss-reference
+crate, native renderer, durable review lifecycle, or lifecycle integration tests.
+Checks requiring Asupersync encountered independent host resource limits.
+
+Exact compiler and execution commands, from the repository root:
+
+/home/agent/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --crate-name fss_core --crate-type rlib -C debuginfo=0 -Zthreads=1 crates/fss-core/src/lib.rs -o /workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib
+/home/agent/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --test -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/review-grant-validation/harness.rs --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib -o /workspace/scratch/0bca9ff0b013/review-grant-validation/grant_tests
+/workspace/scratch/0bca9ff0b013/review-grant-validation/grant_tests
+
+Reproducible harness recipe (run from a checkout; use its pinned rustc):
+
+review_repo="$(pwd)"
+review_out="$(mktemp -d)"
+python3 - "$review_repo" "$review_out" <<'PY'
+import json
+import sys
+from pathlib import Path
+root, out = map(Path, sys.argv[1:])
+source = (root / 'crates/fss-reference/src/evidence_export.rs').read_text()
+constants = [line for line in source.splitlines() if line.startswith(
+    ('pub const CAP_EXPORT_PREPARE:', 'pub const MAX_PURPOSE_BYTES:'))]
+assert len(constants) == 2
+(out / 'export_constants.rs').write_text('\n'.join(constants) + '\n')
+grant = json.dumps(str(root / 'crates/fss-reference/src/review_media/grant.rs'), ensure_ascii=False)
+(out / 'harness.rs').write_text(
+    '#![forbid(unsafe_code)]\n'
+    'mod evidence_export { include!("export_constants.rs"); }\n'
+    f'#[path = {grant}]\nmod grant;\n')
+PY
+rustc --edition 2024 --crate-name fss_core --crate-type rlib -C debuginfo=0 -Zthreads=1 crates/fss-core/src/lib.rs -o "$review_out/libfss_core.rlib"
+rustc --edition 2024 --test -C debuginfo=0 -Zthreads=1 "$review_out/harness.rs" --extern "fss_core=$review_out/libfss_core.rlib" -o "$review_out/grant_tests"
+"$review_out/grant_tests"
+
+Observed test output:
+
+running 7 tests
+test grant::tests::canonical_scope_and_grant_round_trip_with_no_implicit_authority ... ok
+test grant::tests::every_source_privacy_recipient_time_and_byte_field_changes_request_identity ... ok
+test grant::tests::malformed_scope_refuses_before_encoding ... ok
+test grant::tests::preparation_is_capability_scoped_and_immutable_render_bound ... ok
+test grant::tests::conservative_lifetime_refuses_uncertain_issuance_and_expiry ... ok
+test grant::tests::current_authority_revocation_privacy_and_exact_receipt_are_required ... ok
+test grant::tests::checksum_truncation_trailing_and_oversized_records_fail_closed ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s

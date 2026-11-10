@@ -14,7 +14,7 @@ use fss_core::{
     SensorId, StreamId, TimestampNs,
 };
 use fss_object::ObjectManifest;
-use fss_publication::SlotName;
+use fss_publication::{LOCAL_ROOTS_DIR, ROOT_RECORD_SUFFIX, SlotName};
 use fss_reference::deletion::{
     DeletionError, STAGE_DELETION_RECORD_APPENDED, commit_deletion, plan_deletion,
 };
@@ -550,7 +550,7 @@ fn cancellation_before_write_and_between_root_and_grant_has_exact_cold_retry() -
 #[test]
 fn committed_source_deletion_denies_review_before_any_payload_is_unlinked() -> TestResult {
     let mut f = Fixture::new("review-delete-source", "indexed_avc.mp4")?;
-    let (_, record) = f.publish()?;
+    let (request, record) = f.publish()?;
     let plan = plan_deletion(&f.deployment, f.source.import_identity, &f.cx)?;
     assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
     for digest in [
@@ -593,6 +593,86 @@ fn committed_source_deletion_denies_review_before_any_payload_is_unlinked() -> T
         read_review_media(&f.deployment, record.root(), now(20, 21)?, &reader, &cx),
         Err(ReviewMediaError::Deleted)
     ));
+    commit_deletion(&mut f.deployment, digest, approval, OWNER, &f.cx)?;
+    assert!(
+        f.deployment
+            .publisher()
+            .visible_roots()
+            .all(|root| root.root != record.root())
+    );
+    assert!(matches!(
+        read_review_media(&f.deployment, record.root(), now(20, 21)?, &reader, &cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    assert!(matches!(
+        prepare_review_media(&f.deployment, &request, &f.owner, &f.cx),
+        Err(ReviewMediaError::Deleted)
+    ));
+    Ok(())
+}
+
+#[test]
+fn missing_or_corrupt_root_custody_never_claims_deletion_or_authorizes_cached_reads() -> TestResult
+{
+    for damage in ["missing", "corrupt"] {
+        let mut f = Fixture::new(&format!("review-root-{damage}"), "indexed_avc.mp4")?;
+        let (request, record) = f.publish()?;
+        let (reader, cx) = f.reader(READER, MEDIA_BOUND)?;
+        let loaded = read_review_media(&f.deployment, record.root(), now(20, 21)?, &reader, &cx)?;
+        let visible = f
+            .deployment
+            .publisher()
+            .visible_roots()
+            .find(|root| root.root == record.root())
+            .ok_or("published review root is absent")?;
+        let path = f
+            .deployment
+            .publisher()
+            .root_dir()
+            .join(LOCAL_ROOTS_DIR)
+            .join(format!("{}{ROOT_RECORD_SUFFIX}", visible.slot));
+        if damage == "missing" {
+            fs::remove_file(path)?;
+        } else {
+            let mut bytes = fs::read(&path)?;
+            *bytes.last_mut().ok_or("empty root record")? ^= 1;
+            fs::write(path, bytes)?;
+        }
+        // First exercise the still-cached publisher view, then the cold missing/broken slot.
+        for cold in [false, true] {
+            if cold {
+                f = f.cold_reopen()?;
+            }
+            let before = snapshot(&f.root)?;
+            assert!(matches!(
+                prepare_review_media(&f.deployment, &request, &f.owner, &f.cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                inspect_review_media(&f.deployment, record.root(), &f.owner, &f.cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                read_review_media(&f.deployment, record.root(), now(20, 21)?, &reader, &cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                revalidate_review_media(&f.deployment, &loaded, now(20, 21)?, &reader, &cx),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert!(matches!(
+                commit_review_media(
+                    &mut f.deployment,
+                    &request,
+                    record.approval(),
+                    &f.owner,
+                    &f.cx
+                ),
+                Err(ReviewMediaError::CustodyMismatch)
+            ));
+            assert_eq!(snapshot(&f.root)?, before);
+        }
+    }
     Ok(())
 }
 

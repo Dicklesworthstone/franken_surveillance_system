@@ -1,0 +1,223 @@
+Native movie component validation — 2026-11-10
+Actual production Rust sources and existing three integration targets; no substitute implementation.
+The dependency-free actual fss-core artifact is reused from the successful grant validation.
+Its exact source compilation is recorded in 2026-11-10-review-grant-tests.log.
+This does not execute retained custody, privacy owners, review lifecycle, CLI, or Asupersync.
+CARGO_MANIFEST_DIR=/workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --version
+rustc 1.100.0-nightly (908501772 2026-08-30)
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --crate-name fss_packet --crate-type rlib -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-packet/src/lib.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation -o /workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_packet.rlib
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --crate-name fss_container --crate-type rlib -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/src/lib.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_packet=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_packet.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_container.rlib
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --crate-name fss_ledger --crate-type rlib -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-ledger/src/lib.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_ledger.rlib
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --crate-name fss_codec_h264 --crate-type rlib -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-codec-h264/src/lib.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib --extern fss_packet=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_packet.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h264.rlib
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --crate-name fss_codec_h265 --crate-type rlib -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-codec-h265/src/lib.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h265.rlib
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --test --crate-name movie_output_contract -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/movie_output_contract.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib --extern fss_packet=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_packet.rlib --extern fss_container=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_container.rlib --extern fss_ledger=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_ledger.rlib --extern fss_codec_h264=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h264.rlib --extern fss_codec_h265=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h265.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/movie_output_contract
+warning: constant `WORK_MODEL` is never used
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:21:18
+   |
+21 | pub(crate) const WORK_MODEL: &str = "logical_sha256_input_bytes";
+   |                  ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Movie` is never constructed
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:47:5
+   |
+45 | pub(crate) enum Timing {
+   |                 ------ variant in this enum
+46 |     Uniform(PlaybackRate),
+47 |     Movie {
+   |     ^^^^^
+   |
+   = note: `Timing` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `frame_receipts_digest`, `encoder`, `timing`, `last_frame_end_ns`, and `hashed_bytes` are never read
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:75:9
+   |
+71 | pub(crate) struct StreamReceipt {
+   |                   ------------- fields in this struct
+...
+75 |     pub frame_receipts_digest: ContentDigest,
+   |         ^^^^^^^^^^^^^^^^^^^^^
+76 |     pub encoder: ContentDigest,
+   |         ^^^^^^^
+77 |     pub dimensions: [u32; 2],
+78 |     pub timing: Timing,
+   |         ^^^^^^
+79 |     pub duration_ns: u64,
+80 |     pub last_frame_end_ns: u64,
+   |         ^^^^^^^^^^^^^^^^^
+81 |     pub hashed_bytes: u64,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `StreamReceipt` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `new_movie` and `frame_at` are never used
+   --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:106:19
+    |
+101 | impl<W: Write> Encoder<W> {
+    | ------------------------- associated items in this implementation
+...
+106 |     pub(crate) fn new_movie(
+    |                   ^^^^^^^^^
+...
+159 |     pub(crate) fn frame_at(
+    |                   ^^^^^^^^
+
+warning: 4 warnings emitted
+
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/review-movie-validation/movie_output_contract --test-threads=1
+
+running 10 tests
+test aggregate_luma_limit_reserves_each_whole_unique_frame_and_fences_late_refusal ... ok
+test cancellation_at_every_copy_checkpoint_and_finalization_checkpoint_refuses ... ok
+test count_and_decode_span_limits_apply_before_materialization ... ok
+test duplicate_missing_unwanted_shape_and_pixel_pin_failures_never_complete ... ok
+test lineage_binds_source_receipts_movie_intervals_edits_gaps_and_repeated_occurrences ... ok
+test malformed_plan_quotes_membership_and_interval_coverage_are_refused ... ok
+test real_avc_movie_selection_exports_exact_requested_pictures_in_movie_order ... ok
+test real_hevc_idr_selection_completes_but_selected_leading_rasl_cannot ... ok
+test repeated_backward_edits_reuse_unique_pixels_and_keep_every_occurrence ... ok
+test sparse_original_segment_indices_do_not_expand_the_luma_cache ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --test --crate-name movie_timing_contract -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/movie_timing_contract.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib --extern fss_packet=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_packet.rlib --extern fss_container=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_container.rlib --extern fss_ledger=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_ledger.rlib --extern fss_codec_h264=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h264.rlib --extern fss_codec_h265=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h265.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/movie_timing_contract
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/review-movie-validation/movie_timing_contract --test-threads=1
+
+running 8 tests
+test every_cancellation_cut_refuses_a_complete_timing_plan ... ok
+test leading_internal_and_trailing_holes_preserve_full_query_duration ... ok
+test malformed_rational_plans_refuse_without_reordering_or_clamping ... ok
+test nanosecond_collapse_and_duration_limits_refuse_but_large_origins_remain_exact ... ok
+test occurrence_ceiling_is_checked_before_any_unbounded_walk ... ok
+test rational_boundaries_are_rounded_independently_without_period_drift ... ok
+test real_b_picture_query_clips_both_edges_and_drives_native_timed_framing ... ok
+test repeated_or_backward_source_indices_do_not_reorder_presentation_time ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/rust-build-cache/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc --edition 2024 --test --crate-name rtsp_movie_timeline_contract -C debuginfo=0 -Zthreads=1 /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/rtsp_movie_timeline_contract.rs -L dependency=/workspace/scratch/0bca9ff0b013/review-movie-validation -L dependency=/workspace/scratch/0bca9ff0b013/review-grant-validation --extern fss_core=/workspace/scratch/0bca9ff0b013/review-grant-validation/libfss_core.rlib --extern fss_packet=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_packet.rlib --extern fss_container=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_container.rlib --extern fss_ledger=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_ledger.rlib --extern fss_codec_h264=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h264.rlib --extern fss_codec_h265=/workspace/scratch/0bca9ff0b013/review-movie-validation/libfss_codec_h265.rlib -o /workspace/scratch/0bca9ff0b013/review-movie-validation/rtsp_movie_timeline_contract
+warning: variant `Cancelled` is never constructed
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-reference/src/review_media/render/output.rs:44:5
+   |
+32 | pub enum MovieOutputError {
+   |          ---------------- variant in this enum
+...
+44 |     Cancelled,
+   |     ^^^^^^^^^
+   |
+   = note: `MovieOutputError` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `luma_bytes` is never read
+   --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-reference/src/review_media/render/output.rs:388:5
+    |
+385 | pub struct CompleteMovieOutput {
+    |            ------------------- field in this struct
+...
+388 |     luma_bytes: u64,
+    |     ^^^^^^^^^^
+
+warning: methods `unique_frames` and `luma_bytes` are never used
+   --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-reference/src/review_media/render/output.rs:405:12
+    |
+392 | impl CompleteMovieOutput {
+    | ------------------------ methods in this implementation
+...
+405 |     pub fn unique_frames(&self) -> usize {
+    |            ^^^^^^^^^^^^^
+...
+409 |     pub fn luma_bytes(&self) -> u64 {
+    |            ^^^^^^^^^^
+
+warning: variant `Cancelled` is never constructed
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-reference/src/review_media/render/timing.rs:24:5
+   |
+16 | pub enum MovieTimingError {
+   |          ---------------- variant in this enum
+...
+24 |     Cancelled,
+   |     ^^^^^^^^^
+   |
+   = note: `MovieTimingError` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: constant `WORK_MODEL` is never used
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:21:18
+   |
+21 | pub(crate) const WORK_MODEL: &str = "logical_sha256_input_bytes";
+   |                  ^^^^^^^^^^
+
+warning: variant `Uniform` is never constructed
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:46:5
+   |
+45 | pub(crate) enum Timing {
+   |                 ------ variant in this enum
+46 |     Uniform(PlaybackRate),
+   |     ^^^^^^^
+   |
+   = note: `Timing` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: multiple fields are never read
+  --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:72:9
+   |
+71 | pub(crate) struct StreamReceipt {
+   |                   ------------- fields in this struct
+72 |     pub bytes: u64,
+   |         ^^^^^
+...
+75 |     pub frame_receipts_digest: ContentDigest,
+   |         ^^^^^^^^^^^^^^^^^^^^^
+76 |     pub encoder: ContentDigest,
+   |         ^^^^^^^
+77 |     pub dimensions: [u32; 2],
+   |         ^^^^^^^^^^
+78 |     pub timing: Timing,
+   |         ^^^^^^
+79 |     pub duration_ns: u64,
+80 |     pub last_frame_end_ns: u64,
+   |         ^^^^^^^^^^^^^^^^^
+81 |     pub hashed_bytes: u64,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `StreamReceipt` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `new` and `frame` are never used
+   --> /workspace/scratch/0bca9ff0b013/franken_surveillance_system/crates/fss-container/tests/../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs:102:19
+    |
+101 | impl<W: Write> Encoder<W> {
+    | ------------------------- associated items in this implementation
+102 |     pub(crate) fn new(maximum: u64, maximum_frames: usize, rate: PlaybackRate) -> io::Result<Self> {
+    |                   ^^^
+...
+149 |     pub(crate) fn frame(
+    |                   ^^^^^
+
+warning: 8 warnings emitted
+
+exit_code=0
+$ /workspace/scratch/0bca9ff0b013/review-movie-validation/rtsp_movie_timeline_contract --test-threads=1
+
+running 7 tests
+test adjacent_independent_avc_windows_export_cross_fragment_clip_and_complete_envelope ... ok
+test adjacent_independent_hevc_windows_export_cross_fragment_clip_and_complete_envelope ... ok
+test gapped_native_windows_keep_exact_holes_and_restart_decoders_without_stretching_frames ... ok
+test native_avc_tfdt_leading_and_trailing_holes_keep_the_full_query_envelope ... ok
+test native_hevc_tfdt_leading_and_trailing_holes_keep_the_full_query_envelope ... ok
+test original_avc_rtp_fragments_select_reordered_clipped_pictures_on_native_movie_clock ... ok
+test original_hevc_rtp_fragments_select_reordered_clipped_pictures_on_native_movie_clock ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+
+exit_code=0
+All three actual-source native movie component targets completed successfully.

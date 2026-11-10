@@ -1,8 +1,64 @@
 # Implementation status
 
-**As of:** 2026-11-09 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-10 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Retained screened review clips and local delivery
+
+`fss-export review` adds the local acquisition-to-review step: an exact retained
+movie interval is decoded through the native AVC/HEVC owners, screened using
+the current mask binding, and retained as timed grayscale Matroska with a
+separate canonical recipient grant. Presentation order, partial trims, repeated
+edits and explicit holes retain their existing meaning. Source originals remain
+provenance dependencies and are not included in the derivative delivery graph.
+The grant binds the exact source/root, sensor, movie interval, privacy digest and
+generation, recipient, purpose, issuance/expiry and maximum bytes. Rendering,
+source verification, cached luma and output have independent bounded allowances.
+
+Publication requires exact approval and guarded authority transitions after
+root-last custody. A staged root without the issuance transition cannot be read.
+Recovery verifies the original root-publication basis and repeats the native
+renderer before admitting a candidate left by an interrupted publication; even
+a checksummed graph containing fabricated media, source claims or a genuine but
+wrong historical anchor refuses. Generic ledger appends cannot forge either
+review family or reuse the reserved object namespace under another family.
+
+`review-show`, `review-read` and `review-revoke` provide metadata inspection,
+separately approved private local delivery, and idempotent withdrawal. Delivery
+checks the exact local recipient, explicitly attested current-time interval,
+current byte allowance, source/privacy state, revocation and committed deletion
+before releasing media. The file approval also binds the canonical destination
+and parent-directory identity; Linux delivery creates a new private `0600` file
+through the held protected directory. Source deletion covers the derivative
+closure and denies access at plan commitment, before unlink finishes.
+
+This is a local trusted-caller profile. It does not authenticate external
+reviewers, integrate FLDT, attest payment-zone masks, certify capture time,
+retain an external delivery receipt, recall delivered copies, or schedule
+physical erasure at expiry. Raw grayscale output is limited to short intervals
+and 64 MiB. See [the operator contract](docs/RETAINED_REVIEW_MEDIA.md).
+VIT-023 and FSS-068 advance; their broad beads remain open.
+
+**Validation on 2026-11-10:** seven grant contracts passed using the exact pinned
+compiler, actual complete `fss-core`, and production grant module. The only
+extracted values were the unchanged export-prepare capability and purpose bound;
+no authority or runtime implementation was substituted. The
+[retained grant log](docs/validation/2026-11-10-review-grant-tests.log) gives the
+commands and scope. All 25 existing movie component contracts also passed
+against the actual production sources: ten output-cache, eight timing and seven
+native RTSP timeline cases, including real AVC/HEVC decoding and Matroska output.
+The [native component log](docs/validation/2026-11-10-retained-review-movie-components-direct.log)
+records exact direct compiler commands. This does not execute the retained
+privacy/custody owner, new renderer lifecycle or CLI. Their seven renderer unit,
+ten lifecycle integration and seven CLI contracts are authored, with full
+runtime verification still pending at this checkpoint. Earlier full-reference
+attempts were killed while compiling unchanged Asupersync 0.5.0, and a Cargo
+component attempt was killed in unchanged `fss-core`; the successful direct
+component lane used the pinned compiler's default MIR settings. A new full
+check and the automatic supplementary GitHub checks are being inspected. No
+production dependency, pinned toolchain, runtime, quota or qualification gate
+was weakened.
 
 ## Pinned native acquisition, UTC selection and static detector controls
 

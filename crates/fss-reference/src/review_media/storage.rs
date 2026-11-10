@@ -7,8 +7,8 @@ use crate::deletion::DeletionIndex;
 use fss_core::{BatchId, CanonicalEncode, EvidenceDelta, ObjectId, Plane};
 use fss_object::ObjectManifest;
 use fss_publication::{
-    ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY, root_reachability_batch_id,
-    root_reachability_object_id,
+    LocalPublicationState, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY,
+    root_reachability_batch_id, root_reachability_object_id,
 };
 
 fn interval(record: &ReviewMediaRecord) -> CaptureInterval {
@@ -261,6 +261,11 @@ pub(super) fn read_record(
     allow_revoked: bool,
 ) -> Result<ReviewMediaRecord, ReviewMediaError> {
     let record = graph_record(d, root, cx)?;
+    // The publisher's in-memory visibility is not a fresh proof that the durable root record
+    // still exists. Missing or corrupt custody is not a committed deletion declaration.
+    d.publisher()
+        .require_durable_record(&record.slot()?)
+        .map_err(|_| ReviewMediaError::CustodyMismatch)?;
     match state(d, &record, cx)? {
         None => Err(ReviewMediaError::CustodyMismatch),
         Some(true) if !allow_revoked => Err(ReviewMediaError::Revoked),
@@ -305,10 +310,20 @@ pub(super) fn recover_preview(
     a: &ContextAuthority,
     cx: &ReplayCx,
 ) -> Result<Option<ReviewMediaPreview>, ReviewMediaError> {
-    let Some(visible) = d.publisher().root(&slot(identity)?) else {
-        let object = ObjectId::parse(format!("{REVIEW_OBJECT_PREFIX}{}", hex(identity)))?;
-        if d.ledger().current().objects.contains_key(&object) {
+    let review_slot = slot(identity)?;
+    let Some(visible) = d.publisher().root(&review_slot) else {
+        let deleted = DeletionIndex::read(d).map_err(|_| ReviewMediaError::AuthorityChanged)?;
+        if deleted.unit_deleted(&format!("slot:{review_slot}")) {
             return Err(ReviewMediaError::Deleted);
+        }
+        let object = ObjectId::parse(format!("{REVIEW_OBJECT_PREFIX}{}", hex(identity)))?;
+        let root_object = root_reachability_object_id(&review_slot)
+            .map_err(|_| ReviewMediaError::CustodyMismatch)?;
+        if d.ledger().current().objects.contains_key(&object)
+            || d.ledger().current().objects.contains_key(&root_object)
+            || d.publisher().is_broken_slot(&review_slot)
+        {
+            return Err(ReviewMediaError::CustodyMismatch);
         }
         return Ok(None);
     };
@@ -326,6 +341,11 @@ pub(super) fn recover_preview(
         Some(false) => true,
         None => false,
     };
+    if already_committed || visible.state != LocalPublicationState::Staged {
+        d.publisher()
+            .require_durable_record(&review_slot)
+            .map_err(|_| ReviewMediaError::CustodyMismatch)?;
+    }
     source_current(d, &record, cx)?;
     if !already_committed {
         // A visible root is not a native-rendering witness. The low-level publisher can stage

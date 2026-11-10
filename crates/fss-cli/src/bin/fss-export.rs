@@ -23,6 +23,8 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-export/media.rs"]
 mod media;
+#[path = "fss-export/review.rs"]
+mod review;
 
 const HELP: &str = "fss-export event --root DIR --site SITE --event-id ID \
   --expected-revision sha256:HEX --recipient ID --purpose TEXT --expires-at-ns I128 \
@@ -323,7 +325,7 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
-        print!("{HELP}\n{}", media::HELP);
+        print!("{HELP}\n{}\n{}", media::HELP, review::HELP);
         return ExitCode::from(ExitIdentity::SUCCESS.code);
     }
     if matches!(
@@ -331,6 +333,12 @@ fn main() -> ExitCode {
         Some("media" | "media-verify")
     ) {
         return media::main(&args);
+    }
+    if matches!(
+        args.first().and_then(|value| value.to_str()),
+        Some("review" | "review-show" | "review-read" | "review-revoke")
+    ) {
+        return review::main(&args);
     }
     if args.first().and_then(|v| v.to_str()) == Some("show") {
         let options = match parse_show(&args) {
