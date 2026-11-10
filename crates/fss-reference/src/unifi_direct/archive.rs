@@ -18,7 +18,7 @@ use fss_publication::{
 };
 
 use super::{
-    av_evidence::{self, AudioConfigurationOrigin, PreparedAv},
+    av_evidence::{self, AudioConfigurationOrigin, PreparedAv, PreparedAvVideoOnly},
     av_recording,
     evidence::{DOMAIN, KIND, Prepared},
     source_evidence,
@@ -69,6 +69,7 @@ impl Pin {
             capture: plan.capture()?,
         })
     }
+
     fn slot(self) -> Result<SlotName, Error> {
         for digest in [self.root, self.retention] {
             if digest.algorithm() != DigestAlgorithm::Sha256
@@ -105,6 +106,14 @@ impl UnknownTimePin {
 
     /// Obtain an unknown-time candidate from an A/V graph with no capture bounds.
     pub fn from_av_plan(plan: &PreparedAv<'_>) -> Option<Self> {
+        plan.capture().is_none().then(|| Self {
+            root: plan.manifest().root(),
+            retention: plan.retention(),
+        })
+    }
+
+    /// Obtain a video-only A/V candidate with explicitly unknown capture time.
+    pub fn from_av_video_only_plan(plan: &PreparedAvVideoOnly<'_>) -> Option<Self> {
         plan.capture().is_none().then(|| Self {
             root: plan.manifest().root(),
             retention: plan.retention(),
@@ -320,6 +329,26 @@ pub fn publish_unknown_time_av_anchored(
     )
 }
 
+/// Publish a video-only A/V candidate with journaled intent and confirmation.
+/// It records no audio samples, not audio absence or complete coverage. Any
+/// uncertain outcome must be reconciled against the same root.
+pub fn publish_unknown_time_av_video_only_anchored(
+    plan: &PreparedAvVideoOnly<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, UnknownTimePublishError> {
+    let pin =
+        UnknownTimePin::from_av_video_only_plan(plan).ok_or(UnknownTimePublishError::Candidate)?;
+    publish_unknown_time_anchored(
+        plan, pin, deployment, authority, limits, work, cx, journal, keeper,
+    )
+}
+
 /// Retain one separately returned source record using a dedicated unknown-time
 /// journal and independent anchor. The source remains caller-owned on every
 /// return; an indeterminate result must be reconciled against the same pin.
@@ -357,6 +386,9 @@ fn publish_unknown_time_anchored(
     {
         return Err(UnknownTimePublishError::Candidate);
     }
+    keeper
+        .preflight_publication(journal, pin, cx)
+        .map_err(UnknownTimePublishError::BeforePublication)?;
     journal
         .prepare(pin, cx)
         .map_err(UnknownTimePublishError::BeforePublication)?;
@@ -480,6 +512,17 @@ pub struct PublishedUnknownTimeAvSegment {
     pub pin: UnknownTimePin,
     /// Actual ledger receipt.
     pub receipt: RootLedgerReceipt,
+    /// The graph profile; video-only does not establish audio absence.
+    pub kind: UnknownTimeAvKind,
+}
+
+/// The source-checked derivative profile for one unknown-time segment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnknownTimeAvKind {
+    /// One or more AAC samples are mapped into this fragment.
+    AudioVideo,
+    /// No AAC sample was emitted; audio coverage remains unknown.
+    VideoOnly,
 }
 
 /// Derive and publish one unknown-time segment under an anchored journal.
@@ -525,6 +568,7 @@ pub fn publish_next_unknown_time_av_segment_anchored(
         .with_fragment(
             input.av_initialization,
             input.segment,
+            true,
             |fragment, pending| {
                 let video = Prepared::new(
                     input.segment,
@@ -534,6 +578,42 @@ pub fn publish_next_unknown_time_av_segment_anchored(
                     input.evidence_limits,
                 )
                 .map_err(UnknownTimeSegmentError::Video)?;
+                if fragment.audio().is_empty() {
+                    let plan = match &input.audio {
+                        AvSegmentAudio::InBand(configuration) => PreparedAvVideoOnly::new(
+                            &video,
+                            configuration,
+                            input.av_initialization,
+                            fragment,
+                            input.evidence_limits,
+                        ),
+                        AvSegmentAudio::SuppliedUnverified(configuration) => {
+                            PreparedAvVideoOnly::new_with_unverified_audio_configuration(
+                                &video,
+                                configuration,
+                                input.av_initialization,
+                                fragment,
+                                input.evidence_limits,
+                            )
+                        }
+                    }
+                    .map_err(UnknownTimeSegmentError::AudioVideo)?;
+                    let pin = UnknownTimePin::from_av_video_only_plan(&plan)
+                        .ok_or(UnknownTimeSegmentError::PendingMismatch)?;
+                    if pending.is_some_and(|expected| expected != pin.access_pin()) {
+                        return Err(UnknownTimeSegmentError::PendingMismatch);
+                    }
+                    *pending = Some(pin.access_pin());
+                    let receipt = publish_unknown_time_av_video_only_anchored(
+                        &plan, deployment, authority, limits, work, cx, journal, keeper,
+                    )
+                    .map_err(UnknownTimeSegmentError::Publication)?;
+                    return Ok(PublishedUnknownTimeAvSegment {
+                        pin,
+                        receipt,
+                        kind: UnknownTimeAvKind::VideoOnly,
+                    });
+                }
                 let av = match &input.audio {
                     AvSegmentAudio::InBand(configuration) => PreparedAv::new(
                         &video,
@@ -563,7 +643,11 @@ pub fn publish_next_unknown_time_av_segment_anchored(
                     &av, deployment, authority, limits, work, cx, journal, keeper,
                 )
                 .map_err(UnknownTimeSegmentError::Publication)?;
-                Ok(PublishedUnknownTimeAvSegment { pin, receipt })
+                Ok(PublishedUnknownTimeAvSegment {
+                    pin,
+                    receipt,
+                    kind: UnknownTimeAvKind::AudioVideo,
+                })
             },
         )
         .map_err(|error| match error {
@@ -823,6 +907,7 @@ fn publish_next_av_segment_inner(
         .with_fragment(
             input.av_initialization,
             input.segment,
+            false,
             |fragment, pending| {
                 let video = Prepared::new_with_capture(
                     input.segment,
@@ -954,6 +1039,20 @@ impl Graph for PreparedAv<'_> {
         Box::new(self.payloads())
     }
 }
+impl Graph for PreparedAvVideoOnly<'_> {
+    fn manifest(&self) -> &ObjectManifest {
+        self.manifest()
+    }
+    fn capture(&self) -> Option<CaptureInterval> {
+        self.capture()
+    }
+    fn retention(&self) -> ContentDigest {
+        self.retention()
+    }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
+        Box::new(self.payloads())
+    }
+}
 impl Graph for source_evidence::Prepared<'_> {
     fn manifest(&self) -> &ObjectManifest {
         self.manifest()
@@ -967,6 +1066,180 @@ impl Graph for source_evidence::Prepared<'_> {
     fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
         Box::new(self.payloads())
     }
+}
+
+struct RecoveredConfirmedAvGraph {
+    manifest: ObjectManifest,
+    retention: ContentDigest,
+    children: Vec<Vec<u8>>,
+}
+
+struct ReplayRetainGate<'a> {
+    read: &'a dyn ReadAuthority,
+    retain: &'a dyn RetainAuthority,
+}
+impl RetainAuthority for ReplayRetainGate<'_> {
+    fn permits(&self, retention: ContentDigest, root: ContentDigest) -> bool {
+        self.read.permits(retention, root) && self.retain.permits(retention, root)
+    }
+}
+impl Graph for RecoveredConfirmedAvGraph {
+    fn manifest(&self) -> &ObjectManifest {
+        &self.manifest
+    }
+    fn capture(&self) -> Option<CaptureInterval> {
+        None
+    }
+    fn retention(&self) -> ContentDigest {
+        self.retention
+    }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
+        Box::new(self.children.iter().map(Vec::as_slice))
+    }
+}
+
+/// A confirmed A/V graph could not be verified or its exact replay refused.
+#[derive(Debug)]
+pub enum ConfirmedAvReplayError {
+    /// A verified prior confirmation, matching replay fence, and keeper are required.
+    History,
+    /// Current read authority, bounded graph readback, or source mapping failed.
+    Readback(Error),
+    /// Exact graph publication or its retained confirmation needs reconciliation.
+    Publication(UnknownTimePublishError),
+}
+impl fmt::Display for ConfirmedAvReplayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::History => "confirmed A/V history requires reconciliation",
+            Self::Readback(_) => "confirmed A/V graph readback refused",
+            Self::Publication(_) => "confirmed A/V replay requires reconciliation",
+        })
+    }
+}
+impl std::error::Error for ConfirmedAvReplayError {}
+
+/// Reconstruct and replay the exact *confirmed* unknown-time A/V graph from
+/// retained objects after reopening its anchored journal.
+///
+/// Both read and retention authorities are rechecked. This verifies the
+/// ledgered source mappings and every direct object before idempotently
+/// publishing the same root. It refuses pending candidates and a lagging
+/// keeper. Success clears only this in-memory replay fence; a later cold open
+/// must verify again. It does not rebuild muxer clocks, establish source
+/// identity, infer capture bounds, authorize a new connection, or prove
+/// independent retention of the keeper or its anchors.
+pub fn replay_confirmed_unknown_time_av_anchored(
+    deployment: &mut ReferenceDeployment,
+    read_authority: &dyn ReadAuthority,
+    retain_authority: &dyn RetainAuthority,
+    limits: Limits,
+    object_limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, ConfirmedAvReplayError> {
+    let pin = journal.confirmed().ok_or(ConfirmedAvReplayError::History)?;
+    if journal.pending().is_some()
+        || journal.replay_pin() != Some(pin)
+        || journal.inner.is_fenced()
+        || keeper.is_fenced()
+        || keeper.target() != journal.anchor()
+    {
+        return Err(ConfirmedAvReplayError::History);
+    }
+    if !(1..=8192).contains(&object_limits.max_objects)
+        || object_limits.max_object_bytes == 0
+        || object_limits.max_object_bytes > deployment.publisher().limits().spool.max_object_bytes
+        || !(1..=256 * 1024 * 1024).contains(&object_limits.max_total_bytes)
+    {
+        return Err(ConfirmedAvReplayError::Readback(Error::Limit));
+    }
+    let access = pin.access_pin();
+    let root = read_part_bounded(
+        deployment,
+        access,
+        pin.root,
+        object_limits.max_object_bytes,
+        read_authority,
+        work,
+        cx,
+    )
+    .map_err(ConfirmedAvReplayError::Readback)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root)
+        .map_err(storage)
+        .map_err(ConfirmedAvReplayError::Readback)?;
+    if manifest.root() != pin.root {
+        return Err(ConfirmedAvReplayError::Readback(Error::Mismatch));
+    }
+    // Dispatch only by the digest-checked root kind, then verify the complete
+    // ledgered source graph before replaying any effect. A read failure is
+    // never interpreted as evidence of a different profile.
+    match manifest.kind() {
+        av_evidence::KIND => drop(
+            read_unknown_time_av_clip(deployment, pin, read_authority, limits, work, cx)
+                .map_err(ConfirmedAvReplayError::Readback)?,
+        ),
+        av_evidence::VIDEO_ONLY_KIND => drop(
+            read_unknown_time_av_video_only_clip(deployment, pin, read_authority, limits, work, cx)
+                .map_err(ConfirmedAvReplayError::Readback)?,
+        ),
+        _ => return Err(ConfirmedAvReplayError::Readback(Error::Mismatch)),
+    }
+    if manifest.children().len() > object_limits.max_objects
+        || root.len() > object_limits.max_total_bytes
+    {
+        return Err(ConfirmedAvReplayError::Readback(Error::Limit));
+    }
+    let mut total = root.len();
+    let mut children = Vec::new();
+    children
+        .try_reserve_exact(manifest.children().len())
+        .map_err(|_| ConfirmedAvReplayError::Readback(Error::Limit))?;
+    for digest in manifest.children() {
+        let remaining = object_limits
+            .max_total_bytes
+            .checked_sub(total)
+            .ok_or(ConfirmedAvReplayError::Readback(Error::Limit))?;
+        let bytes = read_part_bounded(
+            deployment,
+            access,
+            *digest,
+            object_limits.max_object_bytes.min(remaining),
+            read_authority,
+            work,
+            cx,
+        )
+        .map_err(ConfirmedAvReplayError::Readback)?;
+        total = total
+            .checked_add(bytes.len())
+            .ok_or(ConfirmedAvReplayError::Readback(Error::Limit))?;
+        if total > object_limits.max_total_bytes {
+            return Err(ConfirmedAvReplayError::Readback(Error::Limit));
+        }
+        children.push(bytes);
+    }
+    if journal.pending().is_some()
+        || journal.confirmed() != Some(pin)
+        || journal.replay_pin() != Some(pin)
+        || keeper.target() != journal.anchor()
+    {
+        return Err(ConfirmedAvReplayError::History);
+    }
+    let plan = RecoveredConfirmedAvGraph {
+        manifest,
+        retention: pin.retention,
+        children,
+    };
+    let gate = ReplayRetainGate {
+        read: read_authority,
+        retain: retain_authority,
+    };
+    publish_unknown_time_anchored(
+        &plan, pin, deployment, &gate, limits, work, cx, journal, keeper,
+    )
+    .map_err(ConfirmedAvReplayError::Publication)
 }
 
 fn publish_graph(
@@ -1521,7 +1794,7 @@ fn require_child(
 pub struct AvAudioConfiguration {
     /// Whether a source record was retained or the codec bytes were supplied.
     pub origin: AudioConfigurationOrigin,
-    /// Content identity of the exact two configuration bytes.
+    /// Content identity of the exact original configuration bytes.
     pub digest: ContentDigest,
     /// Claimed track-local epoch, present only with an in-band record.
     pub claimed_epoch: Option<u64>,
@@ -1550,8 +1823,35 @@ fn read_av_audio_configuration_with_time(
     cx: &ReplayCx,
     capture_known: bool,
 ) -> Result<AvAudioConfiguration, Error> {
+    read_av_audio_configuration_profile(
+        deployment,
+        pin,
+        authority,
+        limits,
+        work,
+        cx,
+        capture_known,
+        false,
+    )
+}
+
+fn read_av_audio_configuration_profile(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+    video_only: bool,
+) -> Result<AvAudioConfiguration, Error> {
     use fss_packet::extended_flv::{self, Parse, Tag, aac};
 
+    let (kind, domain) = if video_only {
+        (av_evidence::VIDEO_ONLY_KIND, av_evidence::VIDEO_ONLY_DOMAIN)
+    } else {
+        (av_evidence::KIND, av_evidence::DOMAIN)
+    };
     let (manifest, metadata) = open_graph_kind_with_time(
         deployment,
         pin,
@@ -1559,15 +1859,18 @@ fn read_av_audio_configuration_with_time(
         limits,
         work,
         cx,
-        av_evidence::KIND,
-        av_evidence::DOMAIN,
+        kind,
+        domain,
         capture_known,
     )?;
     work.charge(metadata.len() as u64 * 4)?;
     let mut d = CanonicalDecoder::new(&metadata);
-    check_prefix_kind_with_time(&mut d, pin, av_evidence::DOMAIN, capture_known)?;
+    check_prefix_kind_with_time(&mut d, pin, domain, capture_known)?;
     let video_root = d.digest().map_err(storage)?;
     require_child(&manifest, video_root, work)?;
+    if video_only && (d.u8().map_err(storage)? != 0 || d.bool().map_err(storage)?) {
+        return Err(Error::Mismatch);
+    }
     let (origin, claimed_epoch, source) = match d.u8().map_err(storage)? {
         0 => {
             let epoch = d.u64().map_err(storage)?;
@@ -1589,7 +1892,15 @@ fn read_av_audio_configuration_with_time(
     };
     let digest = d.digest().map_err(storage)?;
     require_child(&manifest, digest, work)?;
-    let bytes = read_part_bounded(deployment, pin, digest, 2, authority, work, cx)?;
+    let bytes = read_part_bounded(
+        deployment,
+        pin,
+        digest,
+        aac::MAX_SUPPORTED_CONFIGURATION_BYTES,
+        authority,
+        work,
+        cx,
+    )?;
     aac::Configuration::parse_explicit(&bytes).map_err(storage)?;
     if let Some((entry, range)) = source {
         let source_bytes = checked_record_bytes(deployment, pin, &entry, authority, work, cx)?;
@@ -2336,15 +2647,14 @@ struct StoredRecord {
     tag: Option<(usize, u8, u32)>,
 }
 
-#[derive(Clone)]
 struct VideoContinuity {
     connection: u64,
     generation: u64,
     sequence: u32,
     first_decode: u64,
     end_decode: u64,
-    first_record: StoredRecord,
-    next_record: StoredRecord,
+    records: Vec<StoredRecord>,
+    lookahead: Vec<StoredRecord>,
 }
 struct StoredSample {
     start: usize,
@@ -2483,6 +2793,68 @@ pub fn read_av_video_clip(
     )
 }
 
+/// Source-checked video recovered without a claim about physical capture time.
+/// The connection and generation are caller-bound claims, not device identity.
+#[must_use]
+pub struct RecoveredUnknownTimeVideoClip {
+    bytes: Vec<u8>,
+    samples: usize,
+    source: fss_container::flv_avc::SourceKey,
+}
+
+impl RecoveredUnknownTimeVideoClip {
+    /// Video-only initialization and fragment after source and graph checks.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Number of structurally checked AVC samples, not a decoding guarantee.
+    pub fn samples(&self) -> usize {
+        self.samples
+    }
+
+    /// Caller-bound connection and generation, not authenticated identity.
+    pub fn claimed_source(&self) -> fss_container::flv_avc::SourceKey {
+        self.source
+    }
+}
+
+impl fmt::Debug for RecoveredUnknownTimeVideoClip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveredUnknownTimeVideoClip")
+            .field("bytes", &"<redacted>")
+            .field("samples", &self.samples)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Recover the video derivative nested in an unknown-time A/V graph, checking
+/// its retained original bytes and generated MP4 sample table. Audio mapping,
+/// decoding, camera identity, capture time, and continuity remain separate.
+pub fn read_unknown_time_av_video_clip(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredUnknownTimeVideoClip, Error> {
+    let access_pin = pin.access_pin();
+    let (_, _, video, metadata) =
+        open_av_video_graph_with_time(deployment, access_pin, authority, limits, work, cx, false)?;
+    let clip = recover_video_graph(
+        deployment, access_pin, &video, &metadata, authority, limits, work, cx, false,
+    )?;
+    Ok(RecoveredUnknownTimeVideoClip {
+        bytes: clip.bytes,
+        samples: clip.samples,
+        source: fss_container::flv_avc::SourceKey {
+            connection: clip.continuity.connection,
+            generation: clip.continuity.generation,
+        },
+    })
+}
+
 fn open_av_video_graph(
     deployment: &mut ReferenceDeployment,
     pin: Pin,
@@ -2503,6 +2875,33 @@ fn open_av_video_graph_with_time(
     cx: &ReplayCx,
     capture_known: bool,
 ) -> Result<(ObjectManifest, Vec<u8>, ObjectManifest, Vec<u8>), Error> {
+    open_av_video_graph_profile(
+        deployment,
+        pin,
+        authority,
+        limits,
+        work,
+        cx,
+        capture_known,
+        false,
+    )
+}
+
+fn open_av_video_graph_profile(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+    video_only: bool,
+) -> Result<(ObjectManifest, Vec<u8>, ObjectManifest, Vec<u8>), Error> {
+    let (kind, domain) = if video_only {
+        (av_evidence::VIDEO_ONLY_KIND, av_evidence::VIDEO_ONLY_DOMAIN)
+    } else {
+        (av_evidence::KIND, av_evidence::DOMAIN)
+    };
     let (outer, metadata) = open_graph_kind_with_time(
         deployment,
         pin,
@@ -2510,13 +2909,13 @@ fn open_av_video_graph_with_time(
         limits,
         work,
         cx,
-        av_evidence::KIND,
-        av_evidence::DOMAIN,
+        kind,
+        domain,
         capture_known,
     )?;
     work.charge(metadata.len() as u64 * 4)?;
     let mut decoder = CanonicalDecoder::new(&metadata);
-    check_prefix_kind_with_time(&mut decoder, pin, av_evidence::DOMAIN, capture_known)?;
+    check_prefix_kind_with_time(&mut decoder, pin, domain, capture_known)?;
     let video_root = decoder.digest().map_err(storage)?;
     work.charge(u64::from(usize::BITS) + 1)?;
     if outer.children().binary_search(&video_root).is_err() {
@@ -2612,6 +3011,9 @@ pub struct RecoveredUnknownTimeAvClip {
     bytes: Vec<u8>,
     video_samples: usize,
     audio: AvAudioSourceMapping,
+    source: fss_container::flv_avc::SourceKey,
+    initialization_len: usize,
+    continuity: VideoContinuity,
 }
 impl RecoveredUnknownTimeAvClip {
     /// Two-track initialization followed by the checked media fragment.
@@ -2629,6 +3031,10 @@ impl RecoveredUnknownTimeAvClip {
     /// Checked audio source mapping and configuration provenance.
     pub fn audio(&self) -> AvAudioSourceMapping {
         self.audio
+    }
+    /// Caller-bound connection and generation; this does not authenticate a camera.
+    pub fn claimed_source(&self) -> fss_container::flv_avc::SourceKey {
+        self.source
     }
 }
 impl fmt::Debug for RecoveredUnknownTimeAvClip {
@@ -2732,11 +3138,12 @@ pub fn read_av_sequence(
             .ok_or(Error::Mismatch)?;
         if let Some((last, audio)) = previous.as_ref() {
             let current = &clip.continuity;
+            work.charge(u64::try_from(last.lookahead.len()).map_err(|_| Error::Limit)?)?;
             if last.connection != current.connection
                 || last.generation != current.generation
                 || last.sequence.checked_add(1) != Some(current.sequence)
                 || last.end_decode != current.first_decode
-                || last.next_record != current.first_record
+                || !current.records.starts_with(&last.lookahead)
                 || audio.end_decode_ticks != clip.audio.first_decode_ticks
                 || audio.sample_rate != clip.audio.sample_rate
                 || initialization_len != init.len()
@@ -2866,6 +3273,471 @@ pub fn read_unknown_time_av_clip(
         bytes: clip.bytes,
         video_samples: clip.video_samples,
         audio: clip.audio,
+        initialization_len: clip.initialization_len,
+        source: fss_container::flv_avc::SourceKey {
+            connection: clip.continuity.connection,
+            generation: clip.continuity.generation,
+        },
+        continuity: clip.continuity,
+    })
+}
+
+/// A source-checked unknown-time segment with its actual stored profile.
+#[must_use]
+pub enum RecoveredUnknownTimeAv {
+    /// The fragment includes mapped audio samples.
+    AudioVideo(RecoveredUnknownTimeAvClip),
+    /// The fragment has no emitted audio samples; coverage remains unknown.
+    VideoOnly(RecoveredUnknownTimeAvVideoOnly),
+}
+
+impl RecoveredUnknownTimeAv {
+    /// Caller-supplied connection and generation claim, not device identity.
+    pub fn claimed_source(&self) -> fss_container::flv_avc::SourceKey {
+        match self {
+            Self::AudioVideo(clip) => clip.claimed_source(),
+            Self::VideoOnly(clip) => clip.claimed_source(),
+        }
+    }
+}
+
+/// Recover either supported profile, using the digest-checked root kind to
+/// select its full ledger and source verification. No error triggers fallback.
+pub fn read_unknown_time_av_any(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredUnknownTimeAv, Error> {
+    let bound = limits
+        .maximum_spool_object_bytes
+        .min(deployment.publisher().limits().spool.max_object_bytes);
+    let root = read_part_bounded(
+        deployment,
+        pin.access_pin(),
+        pin.root,
+        bound,
+        authority,
+        work,
+        cx,
+    )?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root).map_err(storage)?;
+    if manifest.root() != pin.root {
+        return Err(Error::Mismatch);
+    }
+    match manifest.kind() {
+        av_evidence::KIND => {
+            read_unknown_time_av_clip(deployment, pin, authority, limits, work, cx)
+                .map(RecoveredUnknownTimeAv::AudioVideo)
+        }
+        av_evidence::VIDEO_ONLY_KIND => {
+            read_unknown_time_av_video_only_clip(deployment, pin, authority, limits, work, cx)
+                .map(RecoveredUnknownTimeAv::VideoOnly)
+        }
+        _ => Err(Error::Mismatch),
+    }
+}
+
+/// One checked root in an unknown-time sequence. `None` does not establish
+/// audio absence or coverage; it identifies a video-only derivative.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveredUnknownTimeAvPart {
+    /// Exact separately authorized root.
+    pub pin: UnknownTimePin,
+    /// Structurally checked video samples.
+    pub video_samples: usize,
+    /// Checked audio mapping, if the derivative contains audio samples.
+    pub audio: Option<AvAudioSourceMapping>,
+}
+
+/// A bounded sequence of independently checked unknown-time fragments.
+#[must_use]
+pub struct RecoveredUnknownTimeAvSequence {
+    bytes: Vec<u8>,
+    parts: Vec<RecoveredUnknownTimeAvPart>,
+}
+impl RecoveredUnknownTimeAvSequence {
+    /// One checked initialization followed by the ordered media fragments.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Transfer the authorized media derivative.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+    /// Ordered roots and their source-mapping claims.
+    pub fn parts(&self) -> &[RecoveredUnknownTimeAvPart] {
+        &self.parts
+    }
+}
+impl fmt::Debug for RecoveredUnknownTimeAvSequence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveredUnknownTimeAvSequence")
+            .field("bytes", &"<redacted>")
+            .field("parts", &self.parts)
+            .finish()
+    }
+}
+
+/// Join unknown-time roots only when their independently verified source and
+/// video coordinates are contiguous and their initialization is identical.
+/// A video-only root is allowed only as the first fragment; later audio roots
+/// must have contiguous decode clocks. Every copied lookahead record must
+/// exactly match the corresponding prefix of the following source records.
+/// These checks do not establish physical time, camera identity, A/V sync or
+/// audio coverage. Authorities are rechecked after assembly, not atomically.
+pub fn read_unknown_time_av_sequence(
+    deployment: &mut ReferenceDeployment,
+    pins: &[UnknownTimePin],
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    sequence_limits: AvSequenceLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredUnknownTimeAvSequence, Error> {
+    if !(1..=32).contains(&sequence_limits.max_fragments)
+        || !(1..=128 * 1024 * 1024).contains(&sequence_limits.max_bytes)
+        || pins.is_empty()
+        || pins.len() > sequence_limits.max_fragments
+    {
+        return Err(Error::Limit);
+    }
+    let mut bytes = Vec::new();
+    let mut parts = Vec::new();
+    parts
+        .try_reserve_exact(pins.len())
+        .map_err(|_| Error::Limit)?;
+    let mut previous: Option<(VideoContinuity, Option<AvAudioSourceMapping>)> = None;
+    let mut initialization_len = 0;
+    for &pin in pins {
+        let (media, init_len, continuity, audio, video_samples) =
+            match read_unknown_time_av_any(deployment, pin, authority, limits, work, cx)? {
+                RecoveredUnknownTimeAv::AudioVideo(clip) => (
+                    clip.bytes,
+                    clip.initialization_len,
+                    clip.continuity,
+                    Some(clip.audio),
+                    clip.video_samples,
+                ),
+                RecoveredUnknownTimeAv::VideoOnly(clip) => (
+                    clip.bytes,
+                    clip.initialization_len,
+                    clip.continuity,
+                    None,
+                    clip.samples,
+                ),
+            };
+        let init = media.get(..init_len).ok_or(Error::Mismatch)?;
+        let fragment = media.get(init_len..).ok_or(Error::Mismatch)?;
+        if let Some((last, last_audio)) = &previous {
+            work.charge(u64::try_from(last.lookahead.len()).map_err(|_| Error::Limit)?)?;
+            if audio.is_none()
+                || last.connection != continuity.connection
+                || last.generation != continuity.generation
+                || last.sequence.checked_add(1) != Some(continuity.sequence)
+                || last.end_decode != continuity.first_decode
+                || !continuity.records.starts_with(&last.lookahead)
+                || initialization_len != init.len()
+                || bytes.get(..initialization_len) != Some(init)
+                || last_audio.zip(audio).is_some_and(|(a, b)| {
+                    a.end_decode_ticks != b.first_decode_ticks || a.sample_rate != b.sample_rate
+                })
+            {
+                return Err(Error::Mismatch);
+            }
+        } else {
+            initialization_len = init.len();
+            if init
+                .len()
+                .checked_add(fragment.len())
+                .is_none_or(|n| n > sequence_limits.max_bytes)
+            {
+                return Err(Error::Limit);
+            }
+            work.charge(u64::try_from(init.len()).map_err(|_| Error::Limit)?)?;
+            bytes
+                .try_reserve_exact(init.len())
+                .map_err(|_| Error::Limit)?;
+            bytes.extend_from_slice(init);
+        }
+        if bytes
+            .len()
+            .checked_add(fragment.len())
+            .is_none_or(|n| n > sequence_limits.max_bytes)
+        {
+            return Err(Error::Limit);
+        }
+        work.charge(u64::try_from(fragment.len()).map_err(|_| Error::Limit)?)?;
+        bytes
+            .try_reserve(fragment.len())
+            .map_err(|_| Error::Limit)?;
+        bytes.extend_from_slice(fragment);
+        parts.push(RecoveredUnknownTimeAvPart {
+            pin,
+            video_samples,
+            audio,
+        });
+        previous = Some((continuity, audio));
+    }
+    for part in &parts {
+        let (kind, domain) = if part.audio.is_some() {
+            (av_evidence::KIND, av_evidence::DOMAIN)
+        } else {
+            (av_evidence::VIDEO_ONLY_KIND, av_evidence::VIDEO_ONLY_DOMAIN)
+        };
+        let _ = open_graph_kind_with_time(
+            deployment,
+            part.pin.access_pin(),
+            authority,
+            limits,
+            work,
+            cx,
+            kind,
+            domain,
+            false,
+        )?;
+    }
+    Ok(RecoveredUnknownTimeAvSequence { bytes, parts })
+}
+
+/// An authorized, source-checked video-only fragment under an A/V initialization.
+/// It reports no emitted audio sample; audio coverage and capture time remain unknown.
+#[must_use]
+pub struct RecoveredUnknownTimeAvVideoOnly {
+    bytes: Vec<u8>,
+    samples: usize,
+    source: fss_container::flv_avc::SourceKey,
+    configuration_origin: AudioConfigurationOrigin,
+    initialization_len: usize,
+    continuity: VideoContinuity,
+}
+impl RecoveredUnknownTimeAvVideoOnly {
+    /// Two-track initialization followed by a video-only media fragment.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Transfer authorized media bytes to the caller.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+    /// Number of structurally verified video samples, not a decoder guarantee.
+    pub fn video_samples(&self) -> usize {
+        self.samples
+    }
+    /// Caller-supplied connection and generation claim, not device identity.
+    pub fn claimed_source(&self) -> fss_container::flv_avc::SourceKey {
+        self.source
+    }
+    /// Provenance of the AAC configuration, not proof of emitted audio.
+    pub fn configuration_origin(&self) -> AudioConfigurationOrigin {
+        self.configuration_origin
+    }
+}
+impl fmt::Debug for RecoveredUnknownTimeAvVideoOnly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveredUnknownTimeAvVideoOnly")
+            .field("bytes", &"<redacted>")
+            .field("samples", &self.samples)
+            .field("configuration_origin", &self.configuration_origin)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Reopen a ledgered video-only A/V graph with explicitly unknown capture time.
+/// Every source record in the owned segment is rechecked to contain no audio
+/// tag; the copied lookahead is verified as part of the nested video graph but
+/// remains on the next segment's side. This does not prove audio absence,
+/// physical capture time, identity, synchronization, decoding or coverage.
+pub fn read_unknown_time_av_video_only_clip(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredUnknownTimeAvVideoOnly, Error> {
+    use fss_packet::extended_flv::aac;
+    let access = pin.access_pin();
+    let configuration = read_av_audio_configuration_profile(
+        deployment, access, authority, limits, work, cx, false, true,
+    )?;
+    let (outer, metadata, video, video_metadata) =
+        open_av_video_graph_profile(deployment, access, authority, limits, work, cx, false, true)?;
+    let verified_video = recover_video_graph(
+        deployment,
+        access,
+        &video,
+        &video_metadata,
+        authority,
+        limits,
+        work,
+        cx,
+        false,
+    )?;
+    work.charge(metadata.len() as u64 * 4)?;
+    let mut d = CanonicalDecoder::new(&metadata);
+    check_prefix_kind_with_time(&mut d, access, av_evidence::VIDEO_ONLY_DOMAIN, false)?;
+    if d.digest().map_err(storage)? != video.root()
+        || d.u8().map_err(storage)? != 0
+        || d.bool().map_err(storage)?
+    {
+        return Err(Error::Mismatch);
+    }
+    let config_record_end = match d.u8().map_err(storage)? {
+        0 if configuration.origin == AudioConfigurationOrigin::InBand => {
+            if Some(d.u64().map_err(storage)?) != configuration.claimed_epoch {
+                return Err(Error::Mismatch);
+            }
+            let entry = record(&mut d, limits.maximum_spool_object_bytes)?;
+            let _start = d.u64().map_err(storage)?;
+            let _end = d.u64().map_err(storage)?;
+            Some(
+                entry
+                    .offset
+                    .checked_add(entry.length as u64)
+                    .ok_or(Error::Limit)?,
+            )
+        }
+        1 if configuration.origin == AudioConfigurationOrigin::SuppliedUnverified => None,
+        _ => return Err(Error::Mismatch),
+    };
+    if d.digest().map_err(storage)? != configuration.digest {
+        return Err(Error::Mismatch);
+    }
+    let initialization_digest = d.digest().map_err(storage)?;
+    let initialization_len = read_size(&mut d, limits.maximum_spool_object_bytes)?;
+    let fragment_digest = d.digest().map_err(storage)?;
+    let fragment_len = read_size(&mut d, limits.maximum_spool_object_bytes)?;
+    if d.u64().map_err(storage)? != 0
+        || d.u64().map_err(storage)? != 0
+        || initialization_len == 0
+        || fragment_len == 0
+        || outer
+            .children()
+            .binary_search(&initialization_digest)
+            .is_err()
+        || outer.children().binary_search(&fragment_digest).is_err()
+    {
+        return Err(Error::Mismatch);
+    }
+    d.ensure_finished().map_err(storage)?;
+    let config_bytes = read_part_bounded(
+        deployment,
+        access,
+        configuration.digest,
+        aac::MAX_SUPPORTED_CONFIGURATION_BYTES,
+        authority,
+        work,
+        cx,
+    )?;
+    let config = aac::Configuration::parse_explicit(&config_bytes).map_err(storage)?;
+    let mut initialization = read_part_bounded(
+        deployment,
+        access,
+        initialization_digest,
+        initialization_len,
+        authority,
+        work,
+        cx,
+    )?;
+    let fragment = read_part_bounded(
+        deployment,
+        access,
+        fragment_digest,
+        fragment_len,
+        authority,
+        work,
+        cx,
+    )?;
+    if initialization.len() != initialization_len || fragment.len() != fragment_len {
+        return Err(Error::Mismatch);
+    }
+    let mp4_limits = fss_container::Mp4Limits::default();
+    work.charge(
+        (verified_video.bytes().len() as u64)
+            .checked_add(initialization.len() as u64)
+            .and_then(|n| n.checked_add(fragment.len() as u64))
+            .and_then(|n| n.checked_mul(4))
+            .ok_or(Error::Limit)?,
+    )?;
+    fss_container::flv_av::verify_archived_initialization(
+        verified_video.bytes(),
+        &initialization,
+        &config,
+        mp4_limits,
+    )
+    .map_err(storage)?;
+    work.charge(
+        (video_metadata.len() as u64)
+            .checked_mul(4)
+            .ok_or(Error::Limit)?,
+    )?;
+    let mut v = CanonicalDecoder::new(&video_metadata);
+    check_prefix_kind_with_time(&mut v, access, DOMAIN, false)?;
+    let _connection = v.u64().map_err(storage)?;
+    let _generation = v.u64().map_err(storage)?;
+    let _sequence = v.u32().map_err(storage)?;
+    let _configuration = record(&mut v, limits.maximum_spool_object_bytes)?;
+    let _video_initialization_digest = v.digest().map_err(storage)?;
+    let video_initialization_len = read_size(&mut v, limits.maximum_spool_object_bytes)?;
+    let video_fragment_digest = v.digest().map_err(storage)?;
+    let video_fragment_len = read_size(&mut v, limits.maximum_spool_object_bytes)?;
+    let source_count = read_size(&mut v, 8192)?;
+    if source_count == 0 {
+        return Err(Error::Mismatch);
+    }
+    for index in 0..source_count {
+        work.charge(1)?;
+        let entry = record(&mut v, limits.maximum_spool_object_bytes)?;
+        if index == 0 && config_record_end.is_some_and(|end| end > entry.offset) {
+            return Err(Error::Mismatch);
+        }
+        // `recover_video_graph` already verifies each record and claimed kind.
+        // Audio types cannot be silently omitted from this segment's derivative.
+        if entry
+            .tag
+            .is_some_and(|(_, kind, _)| kind == 8 || kind == 10)
+        {
+            return Err(Error::Mismatch);
+        }
+    }
+    let video_fragment = verified_video
+        .bytes()
+        .get(video_initialization_len..)
+        .ok_or(Error::Mismatch)?;
+    if video_fragment.len() != video_fragment_len
+        || ContentDigest::sha256(video_fragment) != video_fragment_digest
+    {
+        return Err(Error::Mismatch);
+    }
+    fss_container::flv_av::verify_archived_video_only_fragment(
+        video_fragment,
+        &fragment,
+        mp4_limits,
+    )
+    .map_err(storage)?;
+    let total = initialization_len
+        .checked_add(fragment_len)
+        .filter(|n| *n <= 129 * 1024 * 1024)
+        .ok_or(Error::Limit)?;
+    work.charge((total as u64).checked_mul(2).ok_or(Error::Limit)?)?;
+    initialization
+        .try_reserve_exact(fragment.len())
+        .map_err(|_| Error::Limit)?;
+    initialization.extend_from_slice(&fragment);
+    read_authorize(access, authority, cx)?;
+    Ok(RecoveredUnknownTimeAvVideoOnly {
+        bytes: initialization,
+        samples: verified_video.samples(),
+        source: fss_container::flv_avc::SourceKey {
+            connection: verified_video.continuity.connection,
+            generation: verified_video.continuity.generation,
+        },
+        configuration_origin: configuration.origin,
+        initialization_len,
+        continuity: verified_video.continuity,
     })
 }
 
@@ -3048,7 +3920,7 @@ fn verify_av_graph_with_time(
         deployment,
         pin,
         configuration.digest,
-        2,
+        aac::MAX_SUPPORTED_CONFIGURATION_BYTES,
         authority,
         work,
         cx,
@@ -3249,7 +4121,7 @@ fn verify_av_graph_with_time(
         initialization_len,
         fragment_digest,
         fragment_len,
-        continuity: verified_video.continuity.clone(),
+        continuity: verified_video.continuity,
     })
 }
 
@@ -3542,8 +4414,8 @@ fn recover_video_graph(
                 .decode
                 .checked_add(u64::from(samples.last().ok_or(Error::Mismatch)?.duration))
                 .ok_or(Error::Limit)?,
-            first_record: records.first().ok_or(Error::Mismatch)?.clone(),
-            next_record: witnesses.first().ok_or(Error::Mismatch)?.clone(),
+            records,
+            lookahead: witnesses,
         },
     })
 }

@@ -126,6 +126,72 @@ pub fn segment_sender_clock_origin(
     Err(Error::NoAudio)
 }
 
+/// A clock hypothesis derived from an exact copied lookahead source record.
+/// The original remains on the next segment's side of the custody boundary;
+/// this observation neither consumes it nor asserts audio coverage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LookaheadClockOrigin {
+    /// Sender-clock mapping relative to the first video sample.
+    pub origin: SenderClockOrigin,
+    /// Connection-relative offset of the copied original record.
+    pub record_offset: u64,
+    /// Number of original record bytes included in the copied witness.
+    pub record_bytes: usize,
+    /// Digest of the exact copied record, not an identity assertion.
+    pub record_digest: fss_core::ContentDigest,
+    /// Sender timestamp on the selected AAC frame.
+    pub sender_timestamp_ms: u32,
+}
+
+/// Derive a clock hypothesis from the first usable copied lookahead AAC frame
+/// only when the segment itself contains no AAC frame. This does not move the
+/// record into the segment or authorize its publication as a sample there.
+pub fn lookahead_sender_clock_origin(
+    segment: &Segment,
+    config: &aac::Configuration<'_>,
+    max_separation_ms: u32,
+) -> Result<LookaheadClockOrigin, Error> {
+    match segment_sender_clock_origin(segment, config, max_separation_ms) {
+        Err(Error::NoAudio) => (),
+        Ok(_) => return Err(Error::Configuration),
+        Err(error) => return Err(error),
+    }
+    let video_ms = segment
+        .fragment()
+        .samples()
+        .first()
+        .ok_or(Error::Alignment)?
+        .decode_time_ms;
+    for record in segment.lookahead_copies() {
+        if let Some(frame) = aac_adts::source_frame(
+            config,
+            record,
+            extended_flv::Limits::default(),
+            aac::Limits::default(),
+        )
+        .map_err(Error::Source)?
+        {
+            if frame.provisional() {
+                return Err(Error::Alignment);
+            }
+            let origin = sender_clock_origin(
+                video_ms,
+                frame.timestamp_ms(),
+                config.sample_rate(),
+                max_separation_ms,
+            )?;
+            return Ok(LookaheadClockOrigin {
+                origin,
+                record_offset: record.offset(),
+                record_bytes: record.bytes().len(),
+                record_digest: fss_core::ContentDigest::sha256(record.bytes()),
+                sender_timestamp_ms: frame.timestamp_ms(),
+            });
+        }
+    }
+    Err(Error::NoAudio)
+}
+
 /// A source-record claim for the AAC configuration used by this owner.
 /// It does not authenticate the sender or independently prove the epoch.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,14 +213,23 @@ pub struct AudioSourceBinding {
 /// The supplied origin is expressed in AAC sample-rate ticks. It is a caller
 /// decision, not a measured relationship between the audio and video clocks.
 pub struct Muxer {
-    configuration: [u8; 2],
+    configuration: Vec<u8>,
     clock: aac_clock::Clock,
     session: flv_av::Session,
     limits: Mp4Limits,
     max_audio_frames: usize,
     source_binding: Option<AudioSourceBinding>,
+    expected_initial_audio: Option<ExpectedInitialAudio>,
     pending_publication: Option<Pin>,
     publication_scope: Option<ContentDigest>,
+}
+
+#[derive(Clone, Copy)]
+struct ExpectedInitialAudio {
+    witness: LookaheadClockOrigin,
+    first_video_digest: ContentDigest,
+    first_video_sequence: u32,
+    first_video_emitted: bool,
 }
 
 pub(crate) enum TransactionError<E> {
@@ -170,23 +245,32 @@ impl Muxer {
         &mut self,
         initialization: &flv_av::Initialization,
         segment: &'a Segment,
+        allow_initial_video_only: bool,
         consumer: impl FnOnce(&flv_av::Fragment<'a>, &mut Option<Pin>) -> Result<T, E>,
     ) -> Result<T, TransactionError<E>> {
         let mut candidate = Self {
-            configuration: self.configuration,
+            configuration: self.configuration.clone(),
             clock: self.clock.clone(),
             session: self.session.clone(),
             limits: self.limits,
             max_audio_frames: self.max_audio_frames,
             source_binding: self.source_binding.clone(),
+            expected_initial_audio: self.expected_initial_audio,
             // A candidate may derive the same segment while the live owner is
             // fenced; only the publication consumer may resolve that fence.
             pending_publication: None,
             publication_scope: None,
         };
-        let fragment = candidate
-            .fragment(initialization, segment)
-            .map_err(TransactionError::Media)?;
+        let fragment = if allow_initial_video_only
+            && candidate
+                .expected_initial_audio
+                .is_some_and(|expected| !expected.first_video_emitted)
+        {
+            candidate.fragment_without_audio(initialization, segment)
+        } else {
+            candidate.fragment(initialization, segment)
+        }
+        .map_err(TransactionError::Media)?;
         let result = consumer(&fragment, &mut self.pending_publication)
             .map_err(TransactionError::Consumer)?;
         candidate.publication_scope = self.publication_scope;
@@ -209,10 +293,7 @@ impl Muxer {
         if max_audio_frames == 0 || max_audio_frames > limits.max_samples {
             return Err(Error::Configuration);
         }
-        let configuration: [u8; 2] = config
-            .bytes()
-            .try_into()
-            .map_err(|_| Error::Configuration)?;
+        let configuration = config.bytes().to_vec();
         if initialization
             .bytes()
             .get(initialization.audio_configuration_range())
@@ -228,9 +309,86 @@ impl Muxer {
             limits,
             max_audio_frames,
             source_binding: None,
+            expected_initial_audio: None,
             pending_publication: None,
             publication_scope: None,
         })
+    }
+
+    /// Construct a muxer whose first audio sample must match the exact copied
+    /// lookahead witness from the supplied video-only initial segment. This
+    /// does not consume that witness or assert coverage or physical identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_lookahead(
+        initialization: &flv_av::Initialization,
+        config: &aac::Configuration<'_>,
+        segment: &Segment,
+        max_separation_ms: u32,
+        jitter_ms: u32,
+        max_epoch_frames: u64,
+        max_audio_frames: usize,
+        limits: Mp4Limits,
+    ) -> Result<(Self, LookaheadClockOrigin), Error> {
+        if initialization.source_key() != segment.fragment().key()
+            || initialization.video_configuration_sources()
+                != segment.fragment().configuration_sources()
+        {
+            return Err(Error::Configuration);
+        }
+        let witness = lookahead_sender_clock_origin(segment, config, max_separation_ms)?;
+        let mut owner = Self::new(
+            initialization,
+            config,
+            witness.origin.audio_ticks,
+            jitter_ms,
+            max_epoch_frames,
+            max_audio_frames,
+            limits,
+        )?;
+        owner.expected_initial_audio = Some(ExpectedInitialAudio {
+            witness,
+            first_video_digest: ContentDigest::sha256(segment.fragment().bytes()),
+            first_video_sequence: segment.fragment().sequence(),
+            first_video_emitted: false,
+        });
+        Ok((owner, witness))
+    }
+
+    /// Like `from_lookahead`, also binding the exact in-band AAC configuration
+    /// record and epoch. The caller must still establish common source custody.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_source_lookahead(
+        initialization: &flv_av::Initialization,
+        bound: &aac_track::BoundConfiguration<'_>,
+        segment: &Segment,
+        max_separation_ms: u32,
+        jitter_ms: u32,
+        max_epoch_frames: u64,
+        max_audio_frames: usize,
+        limits: Mp4Limits,
+    ) -> Result<(Self, LookaheadClockOrigin), Error> {
+        if bound.provisional() {
+            return Err(Error::Configuration);
+        }
+        let (mut owner, witness) = Self::from_lookahead(
+            initialization,
+            bound.configuration(),
+            segment,
+            max_separation_ms,
+            jitter_ms,
+            max_epoch_frames,
+            max_audio_frames,
+            limits,
+        )?;
+        let record = bound.record();
+        owner.source_binding = Some(AudioSourceBinding {
+            epoch: bound.epoch(),
+            record_offset: record.offset(),
+            record_bytes: record.bytes().len(),
+            record_digest: ContentDigest::sha256(record.bytes()),
+            configuration_source: bound.source(),
+        });
+        Ok((owner, witness))
     }
 
     /// Bind an observed in-band AAC configuration to its exact source record.
@@ -343,6 +501,12 @@ impl Muxer {
         frames
             .try_reserve_exact(segment.source().len().min(self.max_audio_frames))
             .map_err(|_| Error::Allocation)?;
+        if self
+            .expected_initial_audio
+            .is_some_and(|expected| !expected.first_video_emitted)
+        {
+            return Err(Error::Alignment);
+        }
         for record in segment.source() {
             if let Some(frame) = aac_adts::source_frame(
                 &config,
@@ -352,6 +516,17 @@ impl Muxer {
             )
             .map_err(Error::Source)?
             {
+                if frames.is_empty()
+                    && self.expected_initial_audio.is_some_and(|expected| {
+                        let witness = expected.witness;
+                        record.offset() != witness.record_offset
+                            || record.bytes().len() != witness.record_bytes
+                            || ContentDigest::sha256(record.bytes()) != witness.record_digest
+                            || frame.timestamp_ms() != witness.sender_timestamp_ms
+                    })
+                {
+                    return Err(Error::Alignment);
+                }
                 if frames.len() == self.max_audio_frames {
                     return Err(Error::Limit);
                 }
@@ -385,6 +560,60 @@ impl Muxer {
             )
             .map_err(Error::Mux)?;
         self.clock = candidate_clock;
+        self.expected_initial_audio = None;
         Ok(output)
+    }
+
+    /// Explicitly emit a video-only fragment when the segment contains no raw
+    /// AAC frame. Audio clock and cursor state remain unchanged. This does not
+    /// assert audio absence, authorize an omission, or publish a v1 A/V graph.
+    pub fn fragment_without_audio<'a>(
+        &mut self,
+        initialization: &flv_av::Initialization,
+        segment: &'a Segment,
+    ) -> Result<flv_av::Fragment<'a>, Error> {
+        if self.pending_publication.is_some() {
+            return Err(Error::PublicationPending);
+        }
+        if self.publication_scope.is_some() {
+            return Err(Error::JournalRequired);
+        }
+        if self.expected_initial_audio.is_some_and(|expected| {
+            !expected.first_video_emitted
+                && (segment.fragment().sequence() != expected.first_video_sequence
+                    || ContentDigest::sha256(segment.fragment().bytes())
+                        != expected.first_video_digest
+                    || !segment.lookahead_copies().iter().any(|record| {
+                        record.offset() == expected.witness.record_offset
+                            && record.bytes().len() == expected.witness.record_bytes
+                            && ContentDigest::sha256(record.bytes())
+                                == expected.witness.record_digest
+                    }))
+        }) {
+            return Err(Error::Alignment);
+        }
+        let config = aac::Configuration::parse_explicit(&self.configuration)
+            .map_err(|_| Error::Configuration)?;
+        for record in segment.source() {
+            if aac_adts::source_frame(
+                &config,
+                record,
+                extended_flv::Limits::default(),
+                aac::Limits::default(),
+            )
+            .map_err(Error::Source)?
+            .is_some()
+            {
+                return Err(Error::Configuration);
+            }
+        }
+        let fragment = self
+            .session
+            .fragment_without_audio(initialization, segment.fragment(), &config, self.limits)
+            .map_err(Error::Mux)?;
+        if let Some(expected) = self.expected_initial_audio.as_mut() {
+            expected.first_video_emitted = true;
+        }
+        Ok(fragment)
     }
 }

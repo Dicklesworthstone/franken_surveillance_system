@@ -17,6 +17,8 @@ use super::evidence::{self, Prepared};
 
 pub(super) const DOMAIN: &str = "fss.unifi-direct.flv-av-evidence.v1";
 pub(super) const KIND: &str = "unifi-direct-flv-av-v1";
+pub(super) const VIDEO_ONLY_DOMAIN: &str = "fss.unifi-direct.flv-av-video-only-evidence.v1";
+pub(super) const VIDEO_ONLY_KIND: &str = "unifi-direct-flv-av-video-only-v1";
 
 /// Whether audio configuration bytes were found in an original FLV record.
 /// Neither variant authenticates the camera or proves a shared source epoch.
@@ -82,6 +84,74 @@ pub struct PreparedAv<'a> {
     metadata: Vec<u8>,
     manifest: ObjectManifest,
 }
+
+/// A separately versioned candidate for a video-only fragment under an A/V
+/// initialization. It is not accepted by the existing audio-bearing A/V APIs;
+/// it uses the separately scoped video-only publication and recovery path.
+/// Zero emitted audio samples do not establish physical absence or coverage.
+pub struct PreparedAvVideoOnly<'a>(PreparedAv<'a>);
+
+impl<'a> PreparedAvVideoOnly<'a> {
+    /// Prepare with an independently bound original AAC configuration record.
+    pub fn new(
+        video: &'a Prepared<'a>,
+        audio_configuration: &'a aac_track::BoundConfiguration<'a>,
+        initialization: &'a flv_av::Initialization,
+        fragment: &'a flv_av::Fragment<'a>,
+        limits: evidence::Limits,
+    ) -> Result<Self, Error> {
+        PreparedAv::prepare(
+            video,
+            AudioConfiguration::InBand(audio_configuration),
+            initialization,
+            fragment,
+            limits,
+            true,
+        )
+        .map(Self)
+    }
+
+    /// Prepare with AAC configuration bytes whose original source is unknown.
+    pub fn new_with_unverified_audio_configuration(
+        video: &'a Prepared<'a>,
+        audio_configuration: &'a aac::Configuration<'a>,
+        initialization: &'a flv_av::Initialization,
+        fragment: &'a flv_av::Fragment<'a>,
+        limits: evidence::Limits,
+    ) -> Result<Self, Error> {
+        PreparedAv::prepare(
+            video,
+            AudioConfiguration::Supplied(audio_configuration),
+            initialization,
+            fragment,
+            limits,
+            true,
+        )
+        .map(Self)
+    }
+
+    /// Candidate root, not a durable receipt or retention grant.
+    pub fn manifest(&self) -> &ObjectManifest {
+        self.0.manifest()
+    }
+    /// Canonical versioned metadata; audio coverage remains explicitly unknown.
+    pub fn metadata(&self) -> &[u8] {
+        self.0.metadata()
+    }
+    /// Visit exact candidate objects without publishing or disclosing them.
+    pub fn visit_objects(&self, visitor: impl FnMut(ContentDigest, &[u8])) {
+        self.0.visit_objects(visitor);
+    }
+    pub(super) fn retention(&self) -> ContentDigest {
+        self.0.retention()
+    }
+    pub(super) fn capture(&self) -> Option<CaptureInterval> {
+        self.0.capture()
+    }
+    pub(super) fn payloads(&self) -> impl Iterator<Item = &[u8]> {
+        self.0.payloads()
+    }
+}
 impl fmt::Debug for PreparedAv<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PreparedAv")
@@ -106,6 +176,7 @@ impl<'a> PreparedAv<'a> {
             initialization,
             fragment,
             limits,
+            false,
         )
     }
 
@@ -125,6 +196,7 @@ impl<'a> PreparedAv<'a> {
             initialization,
             fragment,
             limits,
+            false,
         )
     }
 
@@ -134,6 +206,7 @@ impl<'a> PreparedAv<'a> {
         initialization: &'a flv_av::Initialization,
         fragment: &'a flv_av::Fragment<'a>,
         limits: evidence::Limits,
+        video_only: bool,
     ) -> Result<Self, Error> {
         let segment = video.segment();
         let record = audio_configuration.record();
@@ -181,7 +254,7 @@ impl<'a> PreparedAv<'a> {
             .ok_or(Error::Limit)?;
         if !(1..=256 * 1024 * 1024).contains(&limits.max_bytes)
             || total > limits.max_bytes
-            || fragment.audio().is_empty()
+            || (fragment.audio().is_empty() != video_only)
             || fragment.audio().len() > limits.max_records
             || !(1..=8192).contains(&limits.max_records)
             || segment
@@ -194,6 +267,17 @@ impl<'a> PreparedAv<'a> {
             || fragment.video().nals().len() > limits.max_nals
         {
             return Err(Error::Limit);
+        }
+        if video_only {
+            if fragment.video_target_shift() != 0 {
+                return Err(Error::Mismatch);
+            }
+            flv_av::verify_archived_video_only_fragment(
+                fragment.video().bytes(),
+                fragment.bytes(),
+                fss_container::Mp4Limits::default(),
+            )
+            .map_err(|_| Error::Mismatch)?;
         }
         let mut count = 0usize;
         for source in segment.source() {
@@ -237,7 +321,11 @@ impl<'a> PreparedAv<'a> {
             }
         }
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN);
+        e.text(if video_only {
+            VIDEO_ONLY_DOMAIN
+        } else {
+            DOMAIN
+        });
         e.digest(video.retention());
         match video.capture() {
             Some(capture) => {
@@ -248,6 +336,10 @@ impl<'a> PreparedAv<'a> {
             None => e.bool(false),
         }
         e.digest(video.manifest().root());
+        if video_only {
+            e.u8(0); // No audio sample emitted from this segment's owned source.
+            e.bool(false); // Physical audio absence and complete coverage are not asserted.
+        }
         match audio_configuration {
             AudioConfiguration::InBand(bound) => {
                 e.u8(0);
@@ -295,8 +387,12 @@ impl<'a> PreparedAv<'a> {
         children.insert(ContentDigest::sha256(initialization.bytes()));
         children.insert(ContentDigest::sha256(fragment.bytes()));
         children.remove(&metadata_digest);
-        let manifest = ObjectManifest::new(KIND, children, Some(metadata_digest))
-            .map_err(|_| Error::Encoding)?;
+        let manifest = ObjectManifest::new(
+            if video_only { VIDEO_ONLY_KIND } else { KIND },
+            children,
+            Some(metadata_digest),
+        )
+        .map_err(|_| Error::Encoding)?;
         Ok(Self {
             video,
             audio_configuration,

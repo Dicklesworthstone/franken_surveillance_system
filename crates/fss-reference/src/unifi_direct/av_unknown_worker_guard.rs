@@ -292,6 +292,10 @@ pub struct Retirement {
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO> {
+    pub(super) fn control_supervisor(&mut self) -> &mut supervisor::Supervisor<'scope, 'task, IO> {
+        &mut self.supervisor
+    }
+
     /// Build from a completed bootstrap without performing I/O or inventing
     /// capture bounds. All source and storage owners return on refusal.
     pub fn from_bootstrap(

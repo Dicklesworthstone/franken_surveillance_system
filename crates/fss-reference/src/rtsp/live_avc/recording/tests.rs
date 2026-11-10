@@ -295,6 +295,78 @@ fn invalid_recording_generation_refuses_before_network_authority() -> TestResult
 }
 
 #[test]
+fn actual_socket_lookahead_exposes_variable_source_timestamps() -> TestResult {
+    let mut f = Fixture::playing(4096, CollectorLimits::default())?;
+    f.driver.enable_timing_lookahead()?;
+    let data = nals();
+    let sps = data.iter().find(|n| n[0] & 31 == 7).ok_or("missing SPS")?;
+    let idr = data.iter().find(|n| n[0] & 31 == 5).ok_or("missing IDR")?;
+    f.receive(&wire(&rtp(1, 9_000, false, sps))?, 10)?;
+    let first = f.receive(&wire(&rtp(2, 9_000, true, idr))?, 11)?;
+    assert!(!first.iter().any(|step| matches!(step, LiveRecordingStep::Capture { event, .. } if matches!(**event, CapturePoll::TimingRequired(_)))));
+    assert!(f.driver.timing_lookahead().is_none());
+    assert_eq!(
+        f.driver.enable_timing_lookahead(),
+        Err(CaptureError::Backpressure)
+    );
+
+    let second = f.receive(&wire(&rtp(3, 11_970, true, idr))?, 12)?;
+    let request = second
+        .iter()
+        .find_map(|step| match step {
+            LiveRecordingStep::Capture { event, .. } => match **event {
+                CapturePoll::TimingRequired(request) => Some(request),
+                _ => None,
+            },
+            _ => None,
+        })
+        .ok_or("missing first timing request")?;
+    let next = f
+        .driver
+        .timing_lookahead()
+        .ok_or("missing second source picture")?;
+    assert_eq!((request.rtp_timestamp, next.rtp_timestamp), (9_000, 11_970));
+    assert_eq!(request.key, next.key);
+    assert!(matches!(
+        f.driver.supply_timing(
+            RecordingTiming {
+                decode_time: 0,
+                duration: 2_970,
+                composition_offset: 0,
+            },
+            13,
+            &f.authority
+        )?,
+        TimedCapture::Collected { .. }
+    ));
+
+    let third = f.receive(&wire(&rtp(4, 15_030, true, idr))?, 14)?;
+    assert!(third.iter().any(|step| matches!(step, LiveRecordingStep::Capture { event, .. }
+        if matches!(**event, CapturePoll::TimingRequired(request) if request.rtp_timestamp == 11_970))));
+    assert_eq!(
+        f.driver
+            .timing_lookahead()
+            .ok_or("missing third source picture")?
+            .rtp_timestamp,
+        15_030
+    );
+    let retired = f.driver.cancel().ok_or("missing retirement")?;
+    assert_eq!(
+        retired.capture.picture.as_ref().map(|p| p.timestamp()),
+        Some(11_970)
+    );
+    assert_eq!(
+        retired
+            .capture
+            .lookahead_picture
+            .as_ref()
+            .map(|p| p.timestamp()),
+        Some(15_030)
+    );
+    Ok(())
+}
+
+#[test]
 fn actual_socket_picture_requests_timing_and_backpressures_further_reads() -> TestResult {
     let mut f = Fixture::playing(7, CollectorLimits::default())?;
     let (original, picture) = f.idr()?;

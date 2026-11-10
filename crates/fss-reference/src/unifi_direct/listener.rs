@@ -36,6 +36,19 @@ pub trait Admission {
     fn listener(&self, requested: SocketAddrV4, bound: Option<SocketAddrV4>) -> bool;
     /// Permit a particular incoming peer for the actual bound listener.
     fn peer(&self, bound: SocketAddrV4, source: SocketAddrV4) -> bool;
+    /// Explicitly bind a shared controller listener to one camera resource
+    /// and its claimed source address. The default refuses sharing. This is
+    /// not peer authentication; setup still rechecks the camera admission,
+    /// listener resource, camera resource, and live task authority.
+    fn controller_camera(
+        &self,
+        _bound: SocketAddrV4,
+        _listener_resource: &str,
+        _camera_resource: &str,
+        _claimed_peer: Ipv4Addr,
+    ) -> bool {
+        false
+    }
 }
 
 /// Payload-free failure; a rejected connection is closed without reading it.
@@ -49,6 +62,8 @@ pub enum Error {
     Denied,
     /// Bind or accept did not complete within the finite wait.
     Deadline,
+    /// Another accept already owns this controller listener.
+    Busy,
     /// Listener setup or accept failed.
     Io(std::io::ErrorKind),
     /// The accepted source owner could not be created or task-bound.

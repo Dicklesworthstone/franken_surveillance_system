@@ -474,6 +474,22 @@ impl UnknownTimeAnchorKeeper {
         self.inner.fenced
     }
 
+    // Check both expected keeper advances before the journal prepares an
+    // intent. A preflight is not a disk reservation or a promise against
+    // later I/O failure; uncertain writes still require reconciliation.
+    pub(super) fn preflight_publication(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        pin: UnknownTimePin,
+        cx: &ReplayCx,
+    ) -> Result<(), Error> {
+        let will_prepare = journal.pending().is_none() && journal.confirmed() != Some(pin);
+        let will_confirm = will_prepare || journal.pending().is_some();
+        let first_advance = will_prepare || self.target() != journal.anchor();
+        let count = usize::from(first_advance) + usize::from(will_confirm);
+        self.inner.preflight(&journal.inner, count, cx)
+    }
+
     pub(super) fn retain(
         &mut self,
         journal: &UnknownTimeJournal,
@@ -528,6 +544,31 @@ fn decode_anchor(bytes: &[u8], scope: ContentDigest) -> Result<EffectJournalPin,
 }
 
 impl AnchorKeeper {
+    fn preflight(&mut self, journal: &Journal, count: usize, cx: &ReplayCx) -> Result<(), Error> {
+        checkpoint(cx)?;
+        if self.fenced || journal.fenced {
+            return Err(Error::Fenced);
+        }
+        if self.scope != journal.scope || !journal.store.contains(self.target) {
+            return Err(Error::Invalid);
+        }
+        if self
+            .store
+            .records()
+            .len()
+            .checked_add(count)
+            .is_none_or(|n| n > MAX_RECORDS)
+        {
+            return Err(Error::Invalid);
+        }
+        if count != 0 {
+            self.store
+                .reserve_capacity(count, MAX_RECORD_BYTES)
+                .map_err(Error::Storage)?;
+        }
+        Ok(())
+    }
+
     /// Create an independent, dedicated store bound to this journal's current
     /// prefix. The caller must retain the keeper's pin in another trust domain.
     pub fn create(

@@ -366,6 +366,76 @@ fn bounded_any_pre_hello_clock_accepts_fresh_nonlatest_correlations_with_limits(
 }
 
 #[test]
+fn continuing_clock_exchange_handles_correlated_requests_before_and_after_hello() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedContinuingClockExchange,
+    )?;
+    assert_eq!(c.startup_time_sync_limit(), 32);
+    let mut correlation = 0;
+    for camera_id in 100..110 {
+        let request = String::from_utf8(message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?
+            .replace("\"responseExpected\":false", "\"responseExpected\":true");
+        assert_eq!(c.observe(request.as_bytes())?, Observation::TimeSyncRequested);
+        let reply = c.prepare_time_sync(123_456, TIME)?;
+        assert_eq!(fields(reply.bytes())?.object().and_then(|v| v.get("inResponseTo")).and_then(Value::integer), Some(i128::from(camera_id)));
+        correlation = reply.id();
+        c.finish_dispatch(correlation, Dispatch::Written)?;
+    }
+    assert_eq!(c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?, Observation::Hello);
+    let hello = c.prepare_hello(TIME)?.id();
+    c.finish_dispatch(hello, Dispatch::Written)?;
+    let agreement = c.prepare_agreement(TIME, AGREEMENT_DELAY_NS)?.id();
+    c.finish_dispatch(agreement, Dispatch::Written)?;
+    assert_eq!(c.observe(&message("ubnt_avclient_paramAgreement", 501, agreement, "{}"))?, Observation::AgreementReply);
+    for chain in 0..3 {
+        correlation = 0;
+        for offset in 0..20 {
+            let camera_id = 1_000 + chain * 20 + offset;
+            assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?, Observation::TimeSyncRequested);
+            correlation = c.prepare_time_sync(123_456, TIME)?.id();
+            c.finish_dispatch(correlation, Dispatch::Written)?;
+        }
+    }
+    assert_eq!(c.phase(), Phase::AgreementReplyObserved);
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 1_059, 0, "{}")), Err(Error::UnexpectedMessage));
+    // Replay protection is a rolling window, not an unbounded history.
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 100, 0, "{}"))?, Observation::TimeSyncRequested);
+    let reply = c.prepare_time_sync(123_456, TIME)?.id();
+    c.finish_dispatch(reply, Dispatch::Written)?;
+    Ok(())
+}
+
+#[test]
+fn continuing_clock_exchange_fences_recent_replays_and_each_chain_limit() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedContinuingClockExchange,
+    )?;
+    let mut correlation = 0;
+    for camera_id in 100..132 {
+        assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?, Observation::TimeSyncRequested);
+        correlation = c.prepare_time_sync(123_456, TIME)?.id();
+        c.finish_dispatch(correlation, Dispatch::Written)?;
+    }
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 132, correlation, "{}")), Err(Error::TimeSyncLimit));
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 131, 0, "{}")), Err(Error::UnexpectedMessage));
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 200, 0, "{}"))?, Observation::TimeSyncRequested);
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 201, 0, "{}")), Err(Error::TimeSyncLimit));
+    let prepared = c.prepare_time_sync(123_456, TIME)?;
+    let id = prepared.id();
+    let bytes = prepared.bytes().to_vec();
+    c.finish_dispatch(id, Dispatch::NotWritten)?;
+    assert_eq!(c.prepared().ok_or("unwritten reply missing")?.bytes(), bytes);
+    c.finish_dispatch(id, Dispatch::Indeterminate)?;
+    assert_eq!(c.phase(), Phase::Indeterminate);
+    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 202, id, "{}")), Err(Error::InvalidState));
+    Ok(())
+}
+
+#[test]
 fn bounded_pre_hello_clock_exchange_follows_correlated_chain() -> TestResult {
     let identity = Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?;
     let mut c = Controller::new_with_time_sync_policy(

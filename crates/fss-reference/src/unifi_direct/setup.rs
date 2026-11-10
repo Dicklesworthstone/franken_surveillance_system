@@ -301,6 +301,7 @@ impl Admission for ReadyAdmission<'_, '_, '_, '_, '_, '_> {
             &self.clock,
             self.resource,
             self.endpoint,
+            *candidate.source().ip(),
         ) && self
             .inner
             .permits(candidate, camera, peer_admission, generation, fence)
@@ -583,7 +584,9 @@ impl Owner<'_, '_, '_> {
     ) -> Result<Outcome, Error> {
         let resource = format!("camera:{}", cfg.camera.to_text());
         let endpoint = SocketAddrV4::new(cfg.destination, expected_port);
-        if !listener.ready_for(self.task, self.cx, &self.clock, &resource, endpoint) {
+        let peer = *cfg.report.cameras.get(cfg.index)
+            .ok_or(Error::Configuration)?.source().ip();
+        if !listener.ready_for(self.task, self.cx, &self.clock, &resource, endpoint, peer) {
             return Err(Error::ControllerUnavailable);
         }
         let admitted = ReadyAdmission {

@@ -18,26 +18,26 @@ use fss_core::json_input::{self, Value};
 
 /// Authorized ledgered FLV evidence publication.
 pub mod archive;
-/// Source-linked A/V evidence graph preparation.
-pub mod av_evidence;
-/// Owned A/V archival inputs suitable for a separately supervised worker.
-pub mod av_owned_sink;
 /// Source-preserving collection of the first A/V archive inputs.
 pub mod av_bootstrap;
 /// Task-owned supervisor-to-bootstrap collection and audio-event pairing.
 pub mod av_bootstrap_driver;
+/// Source-linked A/V evidence graph preparation.
+pub mod av_evidence;
+/// Owned A/V archival inputs suitable for a separately supervised worker.
+pub mod av_owned_sink;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
+/// Bounded ownership handoff from the session loop to its caller.
+pub mod av_session_inbox;
 /// Bounded ownership and backpressure for A/V archive handoff.
 pub mod av_sink;
+/// Supervisor bridge to the unknown-capture-time archive worker.
+pub mod av_unknown_worker_guard;
 /// Region-owned asynchronous handoff to the archival persistence worker.
 pub mod av_worker;
 /// Supervised camera-to-worker handoff with bounded backpressure.
 pub mod av_worker_guard;
-/// Supervisor bridge to the unknown-capture-time archive worker.
-pub mod av_unknown_worker_guard;
-/// Bounded ownership handoff from the session loop to its caller.
-pub mod av_session_inbox;
 /// Task-owned, bounded local D-Bus observation for future BlueZ transport.
 pub mod bluez_bus;
 /// Task-owned BlueZ scan and claim-projection lifecycle.
@@ -80,12 +80,16 @@ pub mod pipeline;
 pub mod receive;
 /// Bounded source-preserving FLV-to-MP4 segment owner.
 pub mod recording;
+/// Owns direct-camera bootstrap and recording as one task-scoped session.
+pub mod recording_session;
+/// Fresh, task-authorized storage for a direct recording session.
+pub mod recording_storage;
 /// Task-owned discovery-candidate handoff orchestration.
 pub mod setup;
-/// Exact standalone source-record evidence for separately returned media.
-pub mod source_evidence;
 /// Source-aware session and archive coordination.
 pub mod source_coordinator;
+/// Exact standalone source-record evidence for separately returned media.
+pub mod source_evidence;
 /// Custody-preserving handoff from session events to standalone source storage.
 pub mod source_handoff;
 /// Task-owned durable publication of separately returned source records.
@@ -531,6 +535,13 @@ pub enum TimeSyncPolicy {
     /// with a particular camera is unproven. The 32-reply, replay, pending
     /// reply and per-effect admission limits remain in force.
     BoundedAnyPreHelloClockExchange,
+    /// Permit fresh time-sync requests, including correlated requests, both
+    /// before and after hello. At most 32 replies are allowed per chain; a
+    /// fresh uncorrelated request starts a new chain. The 32 most recent
+    /// request IDs remain replay-fenced across chains. This experimental
+    /// policy grants no effect authority or rate limit: each reply still
+    /// needs a distinct journaled operation and current task admission.
+    BoundedContinuingClockExchange,
 }
 
 /// One owner-driven session. No socket, clock, task, or peer identity is held.
@@ -553,10 +564,19 @@ pub struct Controller {
     time_sync_reply_count: usize,
     last_written_time_sync_reply: Option<u64>,
     pending_pre_hello_sync: bool,
+    continuing_clock: Option<Box<ContinuingClock>>,
     event_reply: Option<(u64, fss_core::ContentDigest)>,
     event_reply_is_startup_request: bool,
     replied_event_ids: [u64; MAX_EVENT_REPLIES],
     replied_event_count: usize,
+}
+
+struct ContinuingClock {
+    request_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
+    request_len: usize,
+    request_next: usize,
+    chain_replies: usize,
+    pending: bool,
 }
 
 impl fmt::Debug for Controller {
@@ -605,6 +625,16 @@ impl Controller {
             time_sync_reply_count: 0,
             last_written_time_sync_reply: None,
             pending_pre_hello_sync: false,
+            continuing_clock: (time_sync_policy == TimeSyncPolicy::BoundedContinuingClockExchange)
+                .then(|| {
+                    Box::new(ContinuingClock {
+                        request_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
+                        request_len: 0,
+                        request_next: 0,
+                        chain_replies: 0,
+                        pending: false,
+                    })
+                }),
             event_reply: None,
             event_reply_is_startup_request: false,
             replied_event_ids: [0; MAX_EVENT_REPLIES],
@@ -644,6 +674,7 @@ impl Controller {
             self.time_sync_policy,
             TimeSyncPolicy::BoundedPreHelloClockExchange
                 | TimeSyncPolicy::BoundedAnyPreHelloClockExchange
+                | TimeSyncPolicy::BoundedContinuingClockExchange
         ) {
             MAX_PRE_HELLO_TIME_SYNC_REPLIES
         } else {
@@ -739,12 +770,14 @@ impl Controller {
             "ubnt_avclient_timeSync" => {
                 // Blindly echoing correlated replies can create a response loop.
                 // Opt-in policies retain finite quotas and the single
-                // pending-reply slot; the exchange policies apply only before hello.
+                // pending-reply slot. Only the continuing policy applies after hello.
                 let pre_hello_exchange = matches!(
                     self.time_sync_policy,
                     TimeSyncPolicy::BoundedPreHelloClockExchange
                         | TimeSyncPolicy::BoundedAnyPreHelloClockExchange
                 ) && self.phase == Phase::AwaitHello;
+                let continuing_exchange =
+                    self.time_sync_policy == TimeSyncPolicy::BoundedContinuingClockExchange;
                 if response_to != 0 {
                     self.time_sync_counts.correlated =
                         self.time_sync_counts.correlated.saturating_add(1);
@@ -761,13 +794,14 @@ impl Controller {
                             .correlated_response_expected
                             .saturating_add(1);
                         if to_last_written {
-                            self.time_sync_counts.correlated_expected_to_last_written_reply = self
+                            self.time_sync_counts
+                                .correlated_expected_to_last_written_reply = self
                                 .time_sync_counts
                                 .correlated_expected_to_last_written_reply
                                 .saturating_add(1);
                         }
                     }
-                    if pre_hello_exchange {
+                    if !continuing_exchange && pre_hello_exchange {
                         if self.time_sync_policy == TimeSyncPolicy::BoundedPreHelloClockExchange
                             && self.time_sync_reply_count > 0
                             && self.time_sync_reply_ids[self.time_sync_reply_count - 1]
@@ -775,7 +809,7 @@ impl Controller {
                         {
                             return Ok(Observation::Other);
                         }
-                    } else {
+                    } else if !continuing_exchange {
                         if self.time_sync_reply_ids[..self.time_sync_reply_count]
                             .contains(&response_to)
                         {
@@ -799,7 +833,26 @@ impl Controller {
                 if self.time_sync.is_some() {
                     return Err(Error::TimeSyncLimit);
                 }
-                if pre_hello_exchange {
+                if continuing_exchange {
+                    let clock = self
+                        .continuing_clock
+                        .as_mut()
+                        .expect("continuing clock policy state");
+                    if clock.request_ids[..clock.request_len].contains(&id) {
+                        return Err(Error::UnexpectedMessage);
+                    }
+                    if response_to == 0 {
+                        clock.chain_replies = 0;
+                    }
+                    if clock.chain_replies == MAX_PRE_HELLO_TIME_SYNC_REPLIES {
+                        return Err(Error::TimeSyncLimit);
+                    }
+                    clock.request_ids[clock.request_next] = id;
+                    clock.request_next = (clock.request_next + 1) % MAX_PRE_HELLO_TIME_SYNC_REPLIES;
+                    clock.request_len =
+                        (clock.request_len + 1).min(MAX_PRE_HELLO_TIME_SYNC_REPLIES);
+                    clock.pending = true;
+                } else if pre_hello_exchange {
                     if self.time_sync_reply_count == MAX_PRE_HELLO_TIME_SYNC_REPLIES {
                         return Err(Error::TimeSyncLimit);
                     }
@@ -1255,6 +1308,12 @@ impl Controller {
                     }
                     MessageKind::TimeSyncReply => {
                         self.last_written_time_sync_reply = Some(id);
+                        if let Some(clock) = &mut self.continuing_clock {
+                            if clock.pending {
+                                clock.chain_replies += 1;
+                                clock.pending = false;
+                            }
+                        }
                         if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
                             || self.pending_pre_hello_sync
                         {

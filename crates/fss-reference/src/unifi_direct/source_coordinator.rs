@@ -261,6 +261,116 @@ pub struct Coordinator {
     start_armed: bool,
 }
 
+/// Owns both archive paths after stopping admission and requesting cancellation.
+///
+/// Each join returns its completion directly, so a dropped pending join leaves
+/// the corresponding worker owned here. Account for each returned completion
+/// before joining another path or releasing the owners.
+#[must_use = "join both archive attempts and account for their completions"]
+pub struct Shutdown<'scope, 'task, IO> {
+    coordinator: Coordinator,
+    guard: Box<Guard<'scope, 'task, IO>>,
+}
+
+/// Owns bootstrap and its source worker after stopping new work.
+///
+/// The driver and A/V resources remain intact while an in-flight source
+/// attempt is cancelled and joined. A dropped pending join leaves the worker
+/// here; the completion must be retained by the caller once returned.
+#[must_use = "join the source attempt and account for its completion"]
+pub struct BootstrapShutdown<'scope, 'task, IO> {
+    coordinator: Coordinator,
+    driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+    resources: Box<av_unknown_worker_guard::BootstrapResources>,
+}
+
+impl<'scope, 'task, IO> BootstrapShutdown<'scope, 'task, IO> {
+    /// Stop admitting source work and request cancellation of the attempt.
+    pub fn request(
+        mut coordinator: Coordinator,
+        driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+        resources: Box<av_unknown_worker_guard::BootstrapResources>,
+    ) -> Self {
+        coordinator.start_armed = false;
+        coordinator.worker.abort();
+        Self {
+            coordinator,
+            driver,
+            resources,
+        }
+    }
+
+    /// Whether the active worker has observed its cancellation request.
+    pub fn cancellation_observed(&self) -> bool {
+        self.coordinator.worker.cancellation_observed()
+    }
+
+    /// Join the exact source attempt, returning its completion at most once.
+    pub async fn join_source(&mut self) -> Option<source_worker::Completion> {
+        self.coordinator.worker.join().await
+    }
+
+    /// Recover all owners after the source attempt is no longer running.
+    /// Pending or indeterminate source custody remains with the coordinator;
+    /// this does not establish successful publication or camera quiescence.
+    pub fn finish(
+        self,
+    ) -> Result<
+        (
+            Coordinator,
+            Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,
+            Box<av_unknown_worker_guard::BootstrapResources>,
+        ),
+        Self,
+    > {
+        if self.coordinator.worker.is_running() {
+            return Err(self);
+        }
+        Ok((self.coordinator, self.driver, self.resources))
+    }
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Shutdown<'scope, 'task, IO> {
+    /// Stop admitting session work and request cancellation of both attempts.
+    pub fn request(mut coordinator: Coordinator, guard: Box<Guard<'scope, 'task, IO>>) -> Self {
+        coordinator.start_armed = false;
+        coordinator.worker.abort();
+        guard.abort_archive();
+        Self { coordinator, guard }
+    }
+
+    /// Whether each running worker has observed its cancellation request.
+    pub fn cancellation_observed(&self) -> (bool, bool) {
+        (
+            self.coordinator.worker.cancellation_observed(),
+            self.guard.cancellation_observed(),
+        )
+    }
+
+    /// Join the separate-source attempt, returning its exact completion once.
+    pub async fn join_source(&mut self) -> Option<source_worker::Completion> {
+        self.coordinator.worker.join().await
+    }
+
+    /// Join the A/V attempt, returning its exact completion once.
+    pub async fn join_av(&mut self) -> Option<av_worker::UnknownTimeCompletion> {
+        self.guard.join_archive().await
+    }
+
+    /// Return both owners only after neither archive attempt is running.
+    ///
+    /// Returned owners may retain pending or indeterminate work and are not a
+    /// quiescence or successful-publication receipt.
+    pub fn finish(self) -> Result<(Coordinator, Box<Guard<'scope, 'task, IO>>), Self> {
+        if self.coordinator.worker.is_running()
+            || self.guard.archive_state() == super::av_worker_guard::ArchiveState::Running
+        {
+            return Err(self);
+        }
+        Ok((self.coordinator, self.guard))
+    }
+}
+
 impl Coordinator {
     /// Attach a worker without starting or retrying existing work.
     pub fn new(worker: source_worker::Worker, key: SourceKey, camera_claim: ContentDigest) -> Self {
@@ -587,7 +697,7 @@ fn prepare_transition<'coordinator, 'scope, 'task, IO: AsyncRead + AsyncWrite + 
     })
 }
 
-fn bootstrap_is_terminal(step: &BootstrapStep) -> bool {
+pub(super) fn bootstrap_is_terminal(step: &BootstrapStep) -> bool {
     match step {
         BootstrapStep::Driver(
             av_bootstrap_driver::Step::Ready
@@ -620,7 +730,7 @@ fn bootstrap_is_terminal(step: &BootstrapStep) -> bool {
     }
 }
 
-fn is_terminal(step: &Step) -> bool {
+pub(super) fn is_terminal(step: &Step) -> bool {
     match step {
         Step::Session(SessionEvent::Advance(advance)) => {
             av_unknown_worker_guard::advance_is_terminal(advance)

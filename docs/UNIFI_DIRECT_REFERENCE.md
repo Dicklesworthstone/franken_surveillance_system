@@ -7421,3 +7421,2234 @@ Both jobs exited zero, were acknowledged, and released their sources and
 execution pairs. This qualifies the exercised simulated-controller path only;
 it does not establish a working Rust recorder on the physical G4, automatic
 camera setup, or 30 days of recording.
+
+The source coordinator now has a shutdown owner that consumes the coordinator
+and A/V guard, requests cancellation of both archive paths, and returns each
+join result separately. It refuses to release the owners while either attempt
+is still running; returned owners may still contain pending work or require
+reconciliation. The fixture parks both blocking workers inside their retention
+checks, observes both cancellation requests, drops pending join futures,
+checks that neither owner can be released early, and recovers the separate
+original record and A/V segment after joining both attempts.
+
+Strict-remote job `30101959465763669` failed because the fixture allowed only
+one blocking worker and the second could not enter while the first was parked.
+After configuring two blocking workers for this case, job
+`30101959465763670` reached the final cleanup check but failed because it
+expected control messages that this scenario does not send. The corrected
+fixture passed in strict-remote job `30101959465763671`: one passed, none
+failed or ignored, and 55 were filtered. Its base was
+`787c4e31fb15a4a9327b0828d13869aae9be51f7` and clean-overlay fingerprint
+`1f8fc5eb080ded341fd2b8d3d7d8ed4cf27c3e3ee62bde54d42fe9efb0a1943e`.
+Job `30101959465763672` then passed seven source-session tests and repeated
+the shutdown case ten times, all passing, with executable SHA-256
+`8aad18e52e1bf2f9fb8c9da768a5f57909c00184bfcf68a0111dd1f64a5d1088`
+unchanged before and after. All four jobs were acknowledged and released
+their sources and execution pairs; the first two exited 101 and the latter
+two exited zero. This is a simulated-controller cancellation check, not proof
+of a running unattended recorder or physical-camera interoperability.
+
+`recording_session::Session` now owns a bootstrap driver, source coordinator,
+and A/V resources, moves to the recording guard on the ready outcome, and can
+transfer the recording phase into the coordinated shutdown owner. The caller
+still supplies each operation and accounts for every returned event, explicit
+retry, refused transition and shutdown completion. A dropped pending step
+leaves the phase owners in the session; that property has not yet been tested
+at every yield point. Shutdown during bootstrap returns the intact session.
+
+The first two remote fixture runs, `30101959465763674` and
+`30101959465763675`, failed because the fixture did not account for a
+time-sync control result. After the fixture checked the journaled permit and
+any paired source completion, job `30101959465763676` passed. The final
+fixture also checks the bootstrap shutdown refusal and retains control results
+that accompany A/V completion. Job `30101959465763680` passed that exact
+case: one passed, none failed or ignored, and 56 were filtered. Its base was
+`4d1e663fd8ae2f48630a3d6349606023676bb1ae` and clean-overlay fingerprint
+`287f6b64807055ec6d641129c757963572fa81fd39e1d358c376f3bad44b0ab8`.
+Job `30101959465763682` then passed seven source-related cases, the coordinated
+shutdown case, and ten repeats of the owned-session case. The executable
+SHA-256 was `0149719449b3b6a6b06e5a95a9706128cc7387f8bc10c428a01e15aeb120d2e1`
+before and after. All named jobs were acknowledged and released sources and
+execution pairs; the first two exited 101 and the others exited zero. These
+are simulated-controller tests and do not establish a deployed recorder,
+real-camera streaming, automatic setup, or 30-day retention.
+
+The owned session now exposes control-only access to the existing supervisor
+during both bootstrap and recording. Event reply, motion and quiesce dispatch
+still require the original committed-effect and authority checks; obtaining
+control does not grant permission or expose the media owner. The fixture
+prepares and abandons an inert quiesce request in each phase, checking the
+returned message ID and kind. A second fixture journals and writes a reply to
+a synthetic camera event while a separate source archive is blocked, then
+releases that archive, publishes A/V, and reads back the original source.
+
+Strict-remote job `30101959465763683` failed to compile its earlier fixture
+because two abandonment receipts were not used. After the test checked those
+receipts, job `30101959465763694` passed both owned-session cases: two passed,
+none failed or ignored, and 56 were filtered. It used base
+`4d1e663fd8ae2f48630a3d6349606023676bb1ae` and clean-overlay fingerprint
+`1df415648536a1312fa15ece1927d80ea06907d2176d61b86bcaf77c860e2078`.
+Job `30101959465763695` passed seven source-related cases, the coordinated
+shutdown case, and ten repeats of the event-reply case. Its executable SHA-256
+was `70007226274b2042cf2001d725a721558c0dc37599660b1fea9b312e76eac9ce`
+before and after. These three jobs were acknowledged and released their
+sources and execution pairs; the first exited 101 and the latter two exited
+zero. Motion and quiesce dispatch were not exercised by this fixture. These
+checks do not establish real-camera compatibility or a deployed recorder.
+
+A concurrent older-snapshot job, `30101959465763691`, was superseded after
+the receipt fix. A cooperative cancellation request was unconfirmed; the
+original wrapper then reported exit 137 and `RCH-E330` because its disk
+supervisor did not publish a complete receipt. Same-job recovery recorded
+delivery exit 120, acknowledged the terminal state, and released sources and
+the execution pair. The two exit classifications differ; no test verdict is
+claimed for that job and it was not replayed.
+
+A read-only `trj` service check during this work reported the fallback G4
+recorder active with restart count 83. A separate root-scoped read-only count
+found 12 fallback MP4 files modified in the preceding 15 minutes. This shows
+recent archive activity, not gap-free recording or a 30-day retention outcome.
+
+An additional passive observation of the existing controller used the local
+`passive_control_summary.py` SHA-256
+`c992a8c8aa99160a656b8787d543ccb5554d1f885f36000dec2357d544f4b05e`,
+streamed to the host process without saving payloads. In a 45-second tracing
+interval it counted one incoming uncorrelated time-sync request, nine
+incoming correlated requests, and ten correlated outgoing replies; all ten
+incoming requests claimed a reply was expected. It also counted nine incoming
+smart-audio events. The ten requests and replies were observed in a burst of
+about 0.82 seconds. The tracer groups only complete eligible WebSocket frames
+at TLS calls, does not attribute them to a particular socket, and does not
+record IDs or payloads. One established connection to the controller port was
+observed afterward, but that does not establish which peer generated these
+frames or whether the burst was startup or an established-session exchange.
+The selected controller process remained present and the fallback recorder
+remained active with restart count 83 after the observation.
+
+An explicitly selected continuing clock-exchange policy is under test in the
+Rust controller and laboratory trial. Unlike the existing pre-hello-only
+policies, it accepts fresh correlated requests after hello as well. It limits
+each chain to 32 locally written replies and retains a rolling window of 32
+request IDs for replay detection; a fresh uncorrelated request begins a new
+chain. The caller must still meter and authorize every effect. This is an
+experimental policy, not a claim that the observed frames were sent by the G4
+or that the G4 will accept the Rust controller. No camera setting was changed.
+
+The initial implementation stored the new replay window inline. Strict-remote
+job `30101959465763700` aborted on a test-thread stack overflow in the existing
+bootstrap integration case; it exited 101, was acknowledged, and released its
+resources. The continuing-policy state was then boxed and allocated only when
+that policy is selected. On the revised source, strict-remote job
+`30101959465763703` passed the complete controller contract suite (32 passed)
+and task-effect suite (54 passed, four private-camera-input cases ignored).
+It used base `a5c9394684c801f7ecfcc5b26349df0179bbb319` and clean-overlay
+fingerprint `2011aecdbb309035cbcfb6381a14d795f23a5fad67bdb3abef5cd1e1274b95f7`,
+exited zero, was acknowledged, and released sources and its execution pair.
+
+The prior inline-state trial executable passed one disposable encrypted
+fixture and five repetitions: each exercised ten pre-hello replies and two
+post-hello chains totaling twenty replies, with no clip. Those results do not
+qualify the later heap-backed revision. The revised Linux trial built in job
+`30101959465763704`, but the wrapper exited 102 after rejecting a Linux
+artifact transfer to macOS. The subsequent fixture job
+`30101959465763705` did not produce a test verdict when local disk exhaustion
+prevented durable job-state recording; same-job recovery reported exit 1,
+acknowledged it, and released sources and its execution pair. A further
+fixture submission was refused before admission while the worker was marked
+unavailable. The final heap-backed executable then passed five encrypted
+process-fixture runs in job `30101959465763707`. Each run exercised ten
+pre-hello replies and three post-hello chains totaling thirty replies, with no
+clip. The executable SHA-256 was
+`f9228157e4893fafc964b566da2bf660029692474d9cade9594f5dd06bcbddb5`
+and the fixture SHA-256 was
+`9027991e0a1848cf445b5bbb895a84034481a20d5527a5c5234b0191c2002581`;
+both matched before and after the runs. The job exited zero, was acknowledged,
+and released its sources and execution pair. This was a disposable synthetic
+peer and does not establish physical-camera compatibility.
+
+A redundant backup build, job `30101959465763706`, was stopped after the
+fixture passed elsewhere. Its wrapper reported exit 137 and `RCH-E330` because
+the disk supervisor did not publish a complete receipt; same-job recovery
+reported delivery exit 120, acknowledged the terminal state, and released
+sources and the execution pair. The exit classifications differ and no test
+verdict is claimed for that job.
+
+The continuing policy is now also covered through an owned Asupersync
+conversation with a local TCP fixture and the file-backed effect journal.
+The fixture writes twelve pre-hello replies, requests a stream, then writes
+thirty further clock replies across three chains. It checks the correlation
+of every fixture reply and checks that each post-request write returns its
+own journal-backed permit; all 42 clock operations and the three startup
+operations are checked as committed afterward. It observes a stream-settings
+reply but does not connect or receive a media stream. The synchronous test
+journal and local peer are not a deployed recorder or a physical camera.
+
+Strict-remote job `30101959465763709` ran the seven `clock_` cases in
+`unifi_direct_task_effect_contract`: seven passed, none failed or ignored,
+and 52 were filtered. It used base
+`a5c9394684c801f7ecfcc5b26349df0179bbb319` and overlay fingerprint
+`06f49f262933147c76c246c009f6b0f70e86eaa319d230216324e3b318097966`;
+it exited zero and was acknowledged. An earlier version with twenty later
+replies passed the same seven cases in job `30101959465763708`. The fallback
+recorder service on `trj` was observed active during this work; that check
+does not establish its retention or continuity.
+
+The owned recording session now provides a bounded `run_slice` across its
+bootstrap-to-recording transition. Its observer supplies an operation identity
+for every step and receives complete outcomes. Actionable and terminal outcomes
+are returned to the caller, as are events the observer refuses; workers and
+their owners remain in the session until explicitly resumed or shut down.
+The observer is responsible for reserving identities across restarts. This
+does not itself assemble or deploy an unattended recorder.
+
+Strict-remote job `30101959465763711` exercised the revised owner in two
+simulated bootstrap-to-archive scenarios. Both reached their final journal
+assertion and failed because the fixture still expected a fixed clock-effect
+operation ID; the owner now obtains a fresh per-step ID from the observer.
+The job exited 101 and was acknowledged. The fixture has been corrected to
+verify the actual clock trace against the effect journal and require a clock
+reply, but the corrected tests have not yet been verified. Their subsequent
+request, wrapper `rchw-46542ba1-8336-44a1-8cf4-ebf53ec3b094`, lost its
+selection response. Attach and cancellation were unconfirmed, and same-job
+recovery reported that terminal acknowledgement must wait until the lease is
+24 hours old. The job must not be replayed while its outcome is uncertain;
+its lease remains for same-identity recovery. No physical camera was tested.
+
+A separate strict-remote compilation check of the corrected test target,
+job `30102779754184705`, completed successfully without running tests. It
+used base `a5c9394684c801f7ecfcc5b26349df0179bbb319` and overlay fingerprint
+`6d4926145b1f4d3addf5efc36a2b826276e0d5c4f0266915a5a45837f2d364d3`,
+exited zero, was acknowledged, and released its source and execution pair.
+It does not resolve the unconfirmed test request or prove the fixture passes.
+In a separate read-only service observation, the existing recorder was active,
+the upload and bulk-fallback timers and latest service outcomes reported
+success, and twelve fallback MP4 files had been modified in the preceding
+15 minutes. `/bulk` reported 3.8 TiB available. These observations establish
+recent activity, not gap-free footage or a successful 30-day deletion.
+
+The owned session now has a bootstrap-specific shutdown path. It disarms the
+coordinator's source admission, requests cancellation, and retains the driver,
+archive resources and source worker until the source attempt has been joined.
+Finishing returns those exact owners; it does not assert camera quiescence,
+successful publication, or resolved pending source custody. Recording-phase
+shutdown and transition-refusal recovery remain separate paths.
+
+The first simulated bootstrap-shutdown fixture, strict-remote job
+`30102779754184706`, failed because it closed the fixture controller before
+answering an outstanding post-start clock request. The job exited 101, was
+acknowledged, and released its source and execution pair. After the fixture
+waited for that separately journaled reply while the source archive remained
+blocked, strict-remote job `30102779754184707` passed one test, with none
+failed or ignored and 59 filtered. The test witnessed the worker enter, waited
+for cancellation acknowledgement, refused to release the running owner,
+dropped a pending join, joined its later refusal, and compared the retained
+original source bytes with the fixture input. It used base
+`a5c9394684c801f7ecfcc5b26349df0179bbb319` and overlay fingerprint
+`2a837c2626a04cbecb7c4ba73d4469d39144586a3324612d10e49818fb97d372`,
+exited zero, was acknowledged, and released its source and execution pair.
+This is a simulated controller and archive, not a physical-camera shutdown or
+proof of an unattended recorder. The earlier unconfirmed test request remains
+separately unresolved.
+
+An event-reply trace is now available through the supervisor and the owned
+recording session's control view. It retains the operation ID, source-bound
+intent, pending permit, and returned local outcome in caller-owned state. If
+the dispatch future is dropped after taking the permit, the trace retains the
+operation and intent without claiming an outcome; a later supervisor step or
+retirement fences an interrupted write. The journal remains authoritative,
+and the caller must reconcile the effect rather than retry it automatically.
+The original direct dispatch interface remains available and does not acquire
+this trace automatically.
+
+Strict-remote job `30102779754184713` passed the five `event_reply` cases in
+`unifi_direct_task_effect_contract`, none failed or ignored and 57 filtered.
+The new cases exercised a pre-write refusal with its permit, a successfully
+written and correlated response, and cancellation while a simulated socket
+write was pending. The cancellation case retained the exact operation and
+source digest, refused reuse of the trace, fenced the controller as
+indeterminate, and left the journaled effect committed for reconciliation.
+The job used base `7ae0c80ca143275144714224c9a893ed1cac0af8` and overlay
+fingerprint `cf18c77163e31e94e3dcb8567cd406c4b7a039732e68431fafaaea3090357da4`;
+it exited zero, was acknowledged, and released its source and execution pair.
+These are synthetic peer tests; they do not prove a physical G4 event,
+remote delivery after interruption, or a deployed native recorder.
+
+The supervisor and owned recording control view can now prepare a
+source-bound event reply and obtain its committed permit through the existing
+task, lease, approval and effect journal before dispatch. They return the
+caller-owned cancellation trace directly; a commitment error returns the
+operation identity and prepared intent for journal inspection and possible
+local abandonment. This does not grant disclosure authority or authorize an
+automatic retry. The owned recording fixture has been updated to use this
+path, but the earlier unconfirmed request for that fixture remains unresolved.
+
+Strict-remote job `30102779754184714` ran the six `event_reply` cases in
+`unifi_direct_task_effect_contract`: six passed, none failed or ignored, and
+57 filtered. The new denial case verified that rejected approval leaves the
+source-bound intent and prepared journal obligation visible and sends no
+reply. The other selected tests covered completed and interrupted dispatch
+and the existing disclosure checks. The job used base
+`7ae0c80ca143275144714224c9a893ed1cac0af8` and overlay fingerprint
+`92649a0aedeed4676f69045520ff6f91b0465aa7213d49219bd367c32e3a9221`,
+exited zero, was acknowledged, and released its source and execution pair.
+A later comment-only correction clarified that failure to return an intent can
+still leave a locally prepared message. These tests use simulated peers; they
+do not prove real-camera operation or an unattended native recorder.
+
+The owned recording-session fixture now has an ignored, bounded stdin replay
+for camera-derived media. A fresh passive G4 stream sample was collected while
+the existing recorder remained in control; the initial default-stack run
+aborted with a stack overflow. Its separately built Linux test executable was
+stripped to SHA-256
+`37ec1d50320c067a66e37ef3d857d85fbcb25795cb9d3ce959b7539a607b7595`.
+The same failure reproduced on a synthetic stream in strict-remote job
+`30102779754184717`; it exited 101, was acknowledged, and released resources.
+A debugger observation on that synthetic case placed roughly 1.5 MiB of stack
+in the large integration-fixture future before the supervisor receive path.
+Boxing that receive future did not fix the failure in job `30102779754184720`
+and was reverted. That job also exited 101, was acknowledged, and released
+resources. A synthetic control with an 8 MiB test-thread stack passed; this is
+diagnostic evidence and does not qualify the normal-stack path.
+
+On a subsequent G4-derived sample with an 8 MiB diagnostic test stack, the
+owned session reached a successful A/V publication but failed its fixture
+accounting check: it had no separately returned bootstrap source records,
+while that assertion required at least one. The accounting check now permits
+zero such records only for camera-derived input and still requires every
+offered record to have its publication pin. The fixture was also extended to
+retain the A/V publication pin, reopen its unknown-time archive graph, and
+require nonempty source-checked video and audio readback. On a further fresh
+passive sample, the 8 MiB diagnostic replay passed and read back 150 video
+samples and 78 audio frames. A synthetic control with the same stack size
+read back three video samples and two audio frames. The Linux executable
+used for these runs was built alongside six passing event-reply tests in
+strict-remote job `30102779754184727`, base
+`7ae0c80ca143275144714224c9a893ed1cac0af8`, overlay fingerprint
+`a6c49b705aae8b8356dd07c38eb4a9dd5d27517eedbb39dd8d94548f7422d515`;
+the job exited zero, was acknowledged, and released resources. The stripped
+executable SHA-256 was
+`26c2535e474800542bd9c20c2f3ef7cdc834fb8e69b9314785903aca8bff46f2`,
+matched before and after the live replay. The stack-diagnostic harness and
+capture helper SHA-256 values were
+`fa5bcb95c4a3b982412efa466b3e33c75c4b40b62f066f66aae6efc6f6d6582c`
+and `db0ac13c5f2a8f53a671078c56f0707db4f73f5f53805c288a473bd5cf1cdbd8`.
+
+This result uses a simulated controller, a synthetic FLV start and video
+configuration tag, and relay-supplied unverified audio/video configuration;
+the source epoch, device identity, capture time and A/V alignment remain
+unverified. Readback checks writer/source mapping, not codec decoding. It does
+not establish a direct Rust controller handoff, normal-stack operation,
+continuous recording, or retention. The fallback recorder was active with
+restart count 83 after the capture, and twelve fallback files had changed in
+the preceding 15 minutes. Aborted diagnostic processes left private test
+artifacts in the newly created `ts1` RAM-backed directory
+`/dev/shm/fss-g4-guard-replay.bpBtexp2`. Automated safety review blocked its
+recursive removal as an absolute system path, so it remains; no other files
+were removed.
+
+A focused replay fixture now avoids the large integration future while using
+the same owned session, effect journal, source coordinator, archive workers,
+and A/V readback. Its first normal-stack synthetic run reached archive
+admission but failed because the new fixture omitted the blocking pool; this
+was a fixture configuration failure, not a passing test. After configuring
+one blocking worker, strict-remote job `30102779754184746` passed one selected
+synthetic test and read back three video samples and two audio frames. It used
+base `ac585c03b66e696e9917374f2140b85536a79520`, overlay fingerprint
+`9afded1ef6c6cd0ec6333c4f41eda46919ffab8ffd256551207e1bb954b7b332`;
+the job exited zero, was acknowledged, and released its source and pair.
+
+The same Linux test build was replayed at the default test-thread stack size
+on `ts1` with a fresh 20-second passive G4-derived sample. It passed and read
+back 150 video samples and 77 audio frames from its private temporary archive.
+The stripped executable SHA-256
+`10a25741bdb474830fcfde77336de2c91cbd9fd1743e20f010dcd24e59205f37`
+matched before and after replay; its temporary archive directory was empty
+after the test. The fallback recorder remained active, with restart count 83
+both before and after, and 12 recently modified files at each check.
+
+This establishes a normal-stack test-harness path for those bounded inputs,
+not a production recorder qualification. The source epoch, camera identity,
+codec configuration and capture time remain independently unverified; the
+test uses a simulated controller, synthetic FLV start and video configuration,
+and relay-supplied audio configuration. Readback checks source mapping rather
+than decoding. It does not establish a native physical-camera controller,
+automatic enrollment, uninterrupted recording, or 30-day retention.
+
+The focused fixture now attaches its bootstrap driver before consuming the
+first FLV record, instead of manually draining the prefix and preloading the
+video configuration. Its source-archive readback requires a nonempty record
+at offset zero and compares every separately archived record with the input.
+Strict-remote job `30102779754184748` passed the synthetic control with three
+video samples, two audio frames, and a matching stream-start record, on the
+default test stack. It used base `ac585c03b66e696e9917374f2140b85536a79520`
+and overlay fingerprint
+`3e793cf17c7f36c44a6c1b2e0e9e2940d1df46c5f3e1ba0f4e8d95600185d1af`;
+the job exited zero, was acknowledged, and released its source and pair.
+
+The same build passed a fresh passive G4-derived replay on `ts1`, with 150
+video samples and 78 audio frames and a matching archived first record. That
+record is the **synthetic** FLV header supplied to the replay, not a verified
+original camera connection start. The stripped binary SHA-256
+`542bbae841d95f933007c44bc81c18c172cb83fbd0cc04fc5e7cd53e950ed2df`
+matched before and after; the test archive directory was empty afterward.
+The fallback recorder remained active at restart count 83 before and after;
+the checks found 12 and 13 recently modified files, respectively. All the
+simulated-controller, unverified configuration and capture-time, codec-decode,
+continuous-service, and retention limits stated above still apply.
+
+`recording_session::Session::begin` now assembles a fresh session directly
+from the admitted supervisor, bootstrap collector, source coordinator and A/V
+archive owners. It enables audio observation before media processing and
+performs no I/O. A refusal returns every supplied owner, including the exact
+audio setup error or the driver's returned parts; it does not restart a
+pipeline or infer authority. Strict-remote job `30102779754184752` passed two
+selected tests: fresh startup and duplicate-audio refusal followed by recovery
+and archive readback. One private-stdin camera replay was ignored. The job
+used base `ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`fb74a874492431fb22d3e81b8e52fefffa0e3c256a70cc4b4008a150031fe5e6`;
+it exited zero, was acknowledged, and released its source and pair. These are
+simulated-controller tests, and the laboratory executable has not yet been
+wired to this entry point. The physical handoff obligation described earlier
+also remains unresolved.
+
+`recording_storage::create` now assembles the two exclusive archive owners
+needed by a fresh session, with separate source and A/V deployments, intent
+journals and keeper files. It requires a task-bound clock, current staging
+grant, two replay authorities scoped to the new directory's parent, distinct
+journal scopes, valid digest claims and bounded source/work limits. It
+creates a new owner-only Unix directory and refuses an existing root. Failure
+can leave a partial directory for inspection; this is not restart recovery,
+and the two keeper files are not claimed to have independent failure domains.
+Other platforms currently refuse directory creation.
+
+Strict-remote job `30102779754184760` passed two selected owned-session tests
+using this initializer, including synthetic A/V and source readback,
+duplicate-root refusal, invalid-scope and pre-creation cancellation refusal,
+and owner-only directory permissions. One private-stdin test was ignored.
+The job used base `ac585c03b66e696e9917374f2140b85536a79520` and overlay
+fingerprint `1d19904418cbfe1051046f1b54d74ebc917a8b0ac82ff7a1a16749ad385552f9`;
+it exited zero, was acknowledged, and released its source and pair. An earlier
+build `30102779754184756` failed with a clock/task lifetime error, which was
+corrected; a subsequent submission was refused before execution because its
+overlay changed during transfer.
+
+The same build passed a fresh passive G4-derived replay on `ts1`, reading back
+150 video samples and 78 audio frames through these new storage owners. Its
+stripped executable SHA-256 was
+`6dee9c6df3517950958f1dc693cca0f1aed336d6fc0220987ac93b93379eb805`,
+matching before and after; the private temporary archive was empty after the
+test. The fallback recorder remained active with restart count 83 and twelve
+recently modified files at each check. The existing simulated-controller,
+synthetic-header, unverified configuration and capture-time, and no-decode
+limitations apply. The executable has not yet been wired to this initializer;
+no native service, physical-camera handoff, automatic setup, restart recovery,
+continuous coverage, or 30-day retention is established.
+
+The recording session now has a phase-aware `stop` operation that returns
+either the bootstrap shutdown owner, the recording shutdown owner, or the
+exact refused transition and source coordinator. The caller must still join
+workers and account for their results; this does not itself settle effects or
+quiesce the camera. Strict-remote job `30102779754184766` passed two selected
+simulated-controller tests, exercising idle bootstrap stop/recovery and idle
+recording stop followed by source and A/V readback. One private-stdin test
+was ignored. The job used base `ac585c03b66e696e9917374f2140b85536a79520`,
+overlay fingerprint `24c9a1daf34c78beb45f7033b21a30fca0e8c2cf6aefef9cfc81d67e534048ab`,
+exited zero, was acknowledged and released its source and pair. This test did
+not exercise the new entry point with a running worker or refused transition.
+
+A read-only check of the existing fallback found `RETENTION` set to 30 days
+in its active v3 archive script and its latest oneshot service result was
+success. This establishes configuration and that run's reported result, not
+that a 30-day-old segment was actually pruned or that coverage was continuous.
+
+The standalone direct trial now has an explicit `--lab-owned-archive` mode.
+After the admitted controller and media listener start, it creates the fresh
+source and A/V archive owners, enables audio observation before polling media,
+and drives the owned session until one A/V publication or a bounded stop. It
+uses a single blocking worker and a task grant for publication, joins active
+archive attempts on its ordinary stop path, and checks for unresolved held
+source before reporting success. Unknown control observations stop the trial;
+it does not yet implement all event replies or autonomous recovery. The mode
+requires an explicit or in-band AAC configuration and writes a new private
+archive directory rather than an MP4 clip. Its trial retention authority,
+same-root keeper placement and network camera claim are experimental; they
+do not authenticate the camera or establish production retention.
+
+Strict-remote job `30102779754184776` passed the selected
+`direct_trial_process_publishes_owned_archive` process test (1 passed, 23
+filtered): a synthetic camera completed TLS, controller negotiation and
+synthetic audio/video publication through the executable. This checks the
+reported publication and private archive layout, not independent readback,
+codec decoding, a physical camera or failure-path cancellation. The existing
+clip mode also passed its selected process test in job `30102779754184775`.
+Both jobs exited zero, were acknowledged and released sources and pairs. The
+archive-mode job used base `ac585c03b66e696e9917374f2140b85536a79520` and
+overlay fingerprint
+`194b5e6f714b3e1e69a32465304deb7306b4f710bbafd253d586862d014f1a2a`.
+An earlier no-run build `30102779754184769` completed compilation but the
+wrapper returned `RCH-E327` while rejecting foreign artifacts; no test was
+credited to that build. Subsequent tests ran on the worker. The physical
+handoff and clock effects described earlier remain unreconciled, so this is
+not evidence for a new G4 takeover, continuous recording, automatic camera
+setup, restart recovery, or 30-day deletion. A read-only check after the work
+found the existing recorder active, restart count 83, and 13 files modified in
+the previous 15 minutes; that is not gap-free coverage proof.
+
+The experimental executable mode now accepts the existing bounded segment
+limit of one through eight and continues after each confirmed publication.
+Its initial two-segment process test failed after the first publication on an
+unhandled ordinary supervisor result; after handling that, a later run stopped
+on an ordinary audio observation. The loop now accepts those observations
+while continuing to stop on audio fences and configuration changes. Failed
+strict-remote jobs `30102779754184777`, `30102779754184778` and
+`30102779754184779` exited 101, were acknowledged and released their sources
+and pairs. Job `30102779754184780` passed the one- and two-segment synthetic
+process tests; a subsequent build with the private-stdin replay fixture,
+`30102779754184781`, passed both tests again (2 passed, 24 filtered), exited
+zero, was acknowledged and released its source and pair. The latter used
+base `ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`0bf1d30761ef9a26898917337c4214e181223990a3c20fd3ea15a5df299e177a`.
+
+The resulting executable was also exercised on the worker with a fresh
+20-second passive G4-derived sample supplied in memory to the simulated camera
+process. It reported two published segments. The source selection, FLV header,
+video configuration tag and trailer were constructed by the replay helper;
+audio/video configuration came from the existing relay and was unverified.
+The controller was simulated, capture time and identity remained unknown, and
+the private archive was in tmpfs. This process test checked the publication
+report and archive layout, not independent media readback or decoding. The
+test and child executable SHA-256 values were respectively
+`e2d9a1ac8846898c6a4b0d9116c0fd47479a8aa53c206ce9c04d7a6a093ae924` and
+`c2d4676bdfa8977841a812cae1932887869e4cbddf6868cfae9c3f077cccf1e2`,
+verified before and after the replay; the helper SHA-256 was
+`de48f5567f29de3d62ab2429067d8b91ccd90ae1ff1b6bafedc6bfa9d4393041`.
+The private test directory was empty afterward. The existing recorder remained
+active with restart count 83 and twelve recently modified files at both
+checks. This does not establish direct camera handoff, complete source
+continuity, continuous service, automatic setup, restart recovery, or 30-day
+retention.
+
+The bounded owned-archive executable can now handle a camera event request
+through its existing source-bound, journaled reply path when `--reply-events`
+is explicitly enabled. Without that option, a response-required event stops
+the trial without sending a reply. A reply is reported as written only after
+the journal-backed permit returns; it is still an unsettled external effect.
+The event's original source bytes are explicitly reported as omitted. The loop
+accounts for both a control result and an archive completion when they arrive
+in the same step, and does not initiate an event reply after a failed archive
+completion.
+
+Strict-remote job `30102779754184786` passed two executable process tests:
+a simulated camera received a matching reply with the option enabled, and
+received no reply when it was disabled. These tests inject the event during
+bootstrap; they do not prove real-camera event handling or exercise this
+executable's reply while an archive worker is active. Job `30102779754184789`
+passed the one- and two-segment simulated-camera process tests (2 passed in
+each job); both jobs exited zero, were acknowledged and released their source
+and pair. Both used base `ac585c03b66e696e9917374f2140b85536a79520` and overlay
+fingerprint `3045d58d8561d14def94cd8fb0a2a48f78bc37541852c03ffd634aa2d250ca7a`.
+
+The same executable revision passed a fresh passive G4-derived replay of two
+segments on the worker. Its test and child executable SHA-256 values were
+`59cebcc656f090ff6e33e88ea39d7b69c94d9a7b50842be92863f3a120b2d524` and
+`db839b4831b228a1b8a8f1e8625d9697dc4e4a5b1ac25950d2333055e7ceed28`;
+the helper verified them before and after. This replay injected no event and
+used a simulated controller, synthetic stream start and video configuration,
+relay-supplied unverified configuration, unknown capture time and a private
+tmpfs archive. It checked the publication report and layout, not independent
+readback or decoding. The temporary test directory was empty afterward. The
+existing recorder remained active with restart count 83 and twelve recently
+modified files at both checks. The production, direct-handoff, automatic
+setup, continuity, recovery and retention limitations remain unchanged.
+
+The bounded owned-archive trial now retains each published A/V root, refuses
+to count a repeated root as another segment, and reopens every published root
+through the authorized unknown-time archive reader before reporting success.
+Each readback must contain nonempty source-mapped video and audio; this checks
+the writer/source relationship, not codec decoding or physical continuity.
+Readback runs after worker drain and has an explicit task read checkpoint.
+Simultaneous source/control or A/V/control failure outcomes are now reported
+without silently hiding the second failure classification.
+
+Strict-remote job `30102779754184801` passed the one- and two-segment
+simulated-camera process tests, each requiring readback of all reported roots.
+Job `30102779754184802` passed the enabled/disabled simulated event-reply
+tests on the same revision. Both ran two tests, exited zero, were acknowledged
+and released their source and pair. The base was
+`ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint was
+`6ee6ed7f1a5329572a066af9911ea2835ef3ee3997e2a78d4df43db6c6d47ab0`.
+
+On the worker, the same build passed a fresh passive G4-derived replay and
+source-checked readback of two published roots. The test and executable SHA-256
+values were `b94536093b07a3726543566420fbe758153cd514aacce3baac6cb19d7c10d5e5`
+and `d08cd7b372da4bfbe7c23ac3d18626bdc2d56433c55082e870e2267bf3ff659c`;
+the helper, SHA-256
+`ca953bdb70a510fb4d8b9232601022105dd16bc6a84ce83f07406bfc92ccb4e3`,
+verified both binaries before and after. This used a simulated controller,
+synthetic stream start/video configuration, relay-supplied unverified audio
+configuration and unknown capture time. It did not establish an original
+connection-start record, codec decoding, camera identity, direct handoff or
+coverage. The private tmpfs directory was empty after the test; the existing
+recorder remained active with restart count 83 and 13 recent files at both
+checks. Continuous service, automatic setup, restart recovery, independent
+anchor retention and 30-day deletion remain unproven.
+
+`recording_storage::recover_histories` now reopens the source and A/V
+publication journals and their keeper histories against four caller-supplied
+minimum anchors. It verifies their existing namespaces, scopes and chains,
+returns the exact pending, confirmed, replay-required and keeper-caught-up
+states, and does not start a session or authorize an effect retry. A supplied
+minimum absent from verified history is classified separately from cancellation
+and other recovery errors.
+The caller must retain the minima independently and perform reconciliation;
+the function does not establish that the supplied anchors are independent,
+open the archive deployments, restore muxer state or resume recording.
+
+Strict-remote job `30102779754184805` passed two owned-session tests. After
+publishing and source-checking synthetic media, each test reopened both
+histories, checked the confirmed roots and replay-required state, rejected
+incorrect journal and keeper minima, and rejected a cancelled recovery.
+It exited zero, was acknowledged and released its source and pair. Its base
+was `ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`abcfa1197a9a695d966547ed43712ca452eeab684937063e6c3a38d6f859da90`.
+The fixture carried the anchors in the same process; this is not proof of
+independent persistence, restart, crash recovery or resolution of the older
+physical-camera effect journals.
+
+The same test build passed a fresh passive G4-derived replay on `ts1`, with
+150 video samples and 78 audio frames read back, both publication histories
+reopened, incorrect minima rejected and reconciliation still required. The
+stripped test executable SHA-256
+`7f6da5a6f52d31e22f3f836f991fb61399e7c3a666acfc7c903a3c808644bad7`
+matched before and after; the helper SHA-256 was
+`104b1d4872e79626f7a70b5eee0126d45f76159bb88e937b452454795b28e2d3`.
+The controller was simulated, stream start and video configuration were
+synthetic, relay configuration was unverified, and capture time was unknown.
+The private temporary archive directory was empty afterward. The existing
+recorder remained active with restart count 83 and 12 recent files before and
+after; this is not proof of gap-free recording. The historical G4 controller
+and clock journals remain unresolved, and no new physical handoff was made.
+
+The storage initializer now also accepts four caller-provided pin retainers,
+one for each source/A/V journal and keeper. The retained-journal wrappers
+require the corresponding custodian to retain an acknowledged prefix before
+the append is acknowledged. A custodian failure leaves a potentially partial
+root for explicit recovery; the initializer refuses to recreate that root.
+This API does not establish the custodians' physical independence or protect
+against rollback of an operator-trusted root itself.
+
+The bounded executable exposes this through `--lab-anchor-root=DIR`, which
+requires owned-archive mode and an absent, absolute, distinct root beneath a
+private parent. It creates four scoped trusted-root stores under that path and
+reports the trust boundary as operator selected and independence unverified.
+It does not yet reopen those stores to resume recording automatically.
+
+Strict-remote job `30102779754184808` passed two owned-session tests including
+reopening the four test custodians, comparing their retained minima to the
+publication histories, recovering both histories, and a simulated custodian
+failure followed by refusal to recreate the partial root. Job
+`30102779754184810` passed three simulated-camera executable process tests,
+including two segments with retained anchors and reopening all four root
+stores. Job `30102779754184811` passed two event-policy process tests. Each
+job exited zero, was acknowledged and released its source and pair. The final
+process-test base was `ac585c03b66e696e9917374f2140b85536a79520` with overlay
+fingerprint `42f90c28a9b710848bea2f06caf93f763d895cdc3bb9ff75386931fa38e4f78b`.
+The test anchor stores shared a temporary filesystem with their archives; this
+does not prove independent failure domains, crash recovery or durable restart.
+
+The same executable revision passed a fresh passive G4-derived replay with
+two published and source-checked A/V segments, and the test reopened all four
+anchor stores and found retained prefixes. The test and executable SHA-256
+values were `06b11a6e78d648b482dfbfdd92a3354709325f0a9f9e64cfdb9aa034db4fcb75`
+and `433dac1ce585814f78e79ae9e25ea3bb6178a07f85b59d7a7b5a618ab006dbf1`;
+the helper SHA-256 was
+`e20570f0c7e62bf41b727bd1be5f96bc647f561d3b341b1dda001d340c28cb98`,
+and both executable hashes matched before and after. The controller was
+simulated; stream start/video configuration were synthetic, relay configuration
+unverified, capture time unknown, and the archive and anchors were on tmpfs.
+The test did not independently compare those four prefixes to the reopened
+histories; that comparison was made in the separate synthetic session tests.
+The temporary test directory was empty afterward. The existing recorder stayed
+active with restart count 83 and 12 recent files at both checks. Direct G4
+handoff, automatic setup, continuous service, crash recovery and 30-day
+retention remain unproven.
+
+The standalone trial now exposes `--inspect-owned-archive ARCHIVE_DIR
+ANCHOR_DIR CAMERA_MAC_HEX --owner-authorized`. In a separate task it opens the
+four operator-trusted root stores, obtains their retained minimum prefixes and
+reopens both archive histories against those minima. It reports confirmed,
+pending, replay-required and keeper-caught-up states. The command acquires
+storage locks, trusts the selected root storage, and performs no camera
+operation or redispatch. It does not authenticate the MAC claim, prove that
+the trust root is independent or rollback-resistant, resolve a replay
+obligation, restore the muxer, or resume recording.
+
+Strict-remote job `30102779754184814` passed one selected process test: a
+simulated-camera capture published two source-checked segments, exited, and
+a separate executable process reopened both histories from the four retained
+root stores. The inspection reported both confirmed roots, no pending roots,
+both replay obligations and caught-up keepers. The test also rejected a
+different camera scope and a request without owner authorization. The job
+exited zero, was acknowledged and released its source and pair. It used base
+`ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`e238ef4a6dfd1b0e86a7466f99f4b059824de69ba2b92342ec2b33f52131d6eb`.
+
+The same revision passed a fresh passive G4-derived replay through the same
+capture and separate-process inspection fixture, including two source-checked
+segments and all four retained anchors. The test and executable SHA-256 values
+were `8d773da9d12f31d810cdc81670136b6354550f7ed3f8f41639c79cc671fb8101`
+and `8acb9705270ef8c9eb8fe9ddb63531dcb2bc94aaf5f09840bced3e989585066b`;
+the helper SHA-256 was
+`e20570f0c7e62bf41b727bd1be5f96bc647f561d3b341b1dda001d340c28cb98`,
+and both executable hashes matched before and after. The source was selected
+passively, the controller was simulated, stream start/video configuration were
+synthetic, relay configuration unverified, capture time unknown, and archive
+and anchors shared tmpfs. The private test directory was empty afterward. The
+existing recorder remained active with restart count 83 and 12 recent files
+before and after. This is a clean-exit inspection, not a crash, independent
+failure-domain, real-camera takeover, automatic restart, coverage or retention
+proof. The older physical-camera effects remain unresolved.
+
+The retained-history path now also offers an explicit
+`--verify-owned-archive ARCHIVE_DIR ANCHOR_DIR CAMERA_MAC_HEX
+--owner-authorized` experiment. After opening the histories against the four
+selected root stores, it opens the existing source and A/V deployments and
+checks the latest confirmed source record and A/V graph under read authority.
+It reports the recorded connection claim and sample counts, leaves pending
+publications and replay obligations unchanged, and does not open a camera
+connection. Deployment open takes locks and can perform local publisher
+recovery; this is not a strictly read-only filesystem operation. Readback does
+not decode, authenticate the device, verify older roots, establish physical
+capture time, or authorize session restart. The initial implementation
+incorrectly required the prior connection claim to equal a fresh-session
+placeholder; the fixture's pre-effect reconnects exposed that error. The
+readback now returns the recorded claim and checks the camera claim separately.
+
+Strict-remote job `30102779754184821` (wrapper
+`rchw-f1da03eb-fdba-43db-adad-91c5ad92b27f`) passed one selected
+simulated-camera process test, with 29 tests filtered. After two segments were
+published and the capture process exited, a separate process reopened a
+nonempty confirmed source and A/V graph, reported a connection greater than
+one, and retained both replay obligations. The test temporarily moved the
+fixture's A/V deployment, confirmed that readback refused it, and restored it;
+wrong camera scope and missing owner authorization were also refused. The job
+exited zero, was acknowledged, and released its source and pair. The clean
+snapshot used base `ac585c03b66e696e9917374f2140b85536a79520` and overlay
+fingerprint `37f5b0b6b241e95993ee4c4c1b1b51d82f1d15fe3ce55d43320bb855860625f4`.
+
+A fresh passive G4-derived replay passed the same two-segment executable
+fixture, including the separate-process readback and missing-deployment
+refusal. The test and executable SHA-256 values were
+`c42b457dd0ac1d16302406095e367f0aaa4cea2b22716e83098a8468d66eb4b8` and
+`047783925132b3685363122b1de96d71f6fc43d82ee6deb492308829a83954d6`;
+the helper verified both before and after. The controller was simulated,
+start and video configuration were synthetic, audio configuration was relay
+supplied and unverified, capture bounds were unknown, and archives and anchors
+shared tmpfs. The private temporary directory was empty afterward. The
+existing recorder stayed active with restart count 83 and 13 recent files at
+both checks. These observations do not establish native camera takeover,
+crash recovery, independent anchor custody, uninterrupted recording or 30-day
+retention. The historical physical-camera effects remain unresolved.
+
+`recording_storage::recover_histories_retained` now reattaches all four
+caller-supplied pin custodians to reopened source and A/V histories. It
+requires each verified retained target to equal the complete current journal
+head; a missing or lagging target is refused without advancing the history.
+The exact candidate replay fences remain intact. This is a custody handoff,
+not proof of independent storage, automatic service restart, or recovery of
+the A/V muxer.
+
+Strict-remote job `30102779754184828` (wrapper
+`rchw-148986f0-9d28-4bb7-8e92-d27b3aec27f6`) passed the selected synthetic
+owned-session test, with 65 tests filtered. After the session stopped and its
+file owners were closed, the test reopened the four custody stores, refused
+an absent source-journal custodian, and rejected a different source candidate
+until the confirmed source was replayed. It then published a different,
+previously ledgered source candidate, reopened its two custodian stores, and
+verified that their retained heads had advanced to the new journal and keeper
+heads. The A/V journal's replay obligation remained set. This is a same-process
+close/reopen fixture; the second source candidate was already in the fixture
+ledger, not new live footage. The job exited zero, was acknowledged, and
+released its source and pair. It used base
+`ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`01b961874c12b6b333a0d0871ea924192016d960e56501340005fd151c2ee8ed`.
+
+Two initial passive G4-derived runs reached A/V readback but failed a fixture
+assertion that required two separate source records; those captures produced
+one. The fixture was corrected to retain the two-source requirement in the
+synthetic test and report the one-source case explicitly. A fresh G4-derived
+replay then passed with 150 video samples and 78 audio frames. It reopened the
+four retained histories and replayed its single confirmed source; it did not
+advance to a different source root. The controller was simulated, the stream
+start and video configuration synthetic, audio configuration relay supplied
+and unverified, capture time unknown, and archive and anchors shared tmpfs.
+The exact test binary SHA-256 was
+`82610a952e8bec9fd72561b3a49de913019289f0dea3f5f8d2a4851501dfee19`,
+checked before and after; the helper SHA-256 was
+`44c1f3586c771b3597d078718ea3d67fc5f01438019fcbb3ed57e616a3a97d40`.
+The temporary directory was empty afterward. The existing recorder remained
+active, restart count 83 and 12 recent files at both checks. This does not
+settle the older physical-camera effects or prove camera takeover, crash
+recovery, continuous coverage or retention.
+
+The archive now supports exact replay of a *confirmed* unknown-time A/V
+root after reopening. It checks the ledgered A/V source mappings and reads
+every direct manifest object under bounded current read authority, then
+replays the identical graph with both read and retention permissions checked
+through staging and publication. A pending root, unmatched replay fence or
+lagging keeper is refused. A successful replay clears the in-memory fence;
+a later cold open requires replay again. This does not reconstruct muxer
+clocks, resume a camera connection, authenticate its source claim, establish
+capture time, or settle an unconfirmed publication.
+
+Strict-remote job `30102779754184832` (wrapper
+`rchw-cd4efe71-6988-46e1-b882-b6c5b020fca5`) passed one selected synthetic
+owned-session test, with 65 tests filtered. It refused denied read and denied
+retention while retaining the A/V fence, verified that the successful replay
+returned the existing ledgered root, rejected a second replay without a new
+fence, and reopened both retained histories to confirm that the A/V fence
+returned. It also retained the earlier source replay and custodian checks.
+The job exited zero, was acknowledged and released its source and pair. The
+base was `ac585c03b66e696e9917374f2140b85536a79520`, with overlay fingerprint
+`58bdf44ffe30788682c67b711d451c687fb01dba94e7c4bb30373660052c1fbe`.
+
+A fresh passive G4-derived replay passed the same test with 150 video samples
+and 78 audio frames. It verified and replayed the confirmed A/V root, reopened
+the histories and observed the fence again. The controller was simulated,
+the stream header and video configuration synthetic, relay audio configuration
+unverified, capture bounds unknown, and archive and anchors shared tmpfs. The
+test binary SHA-256 was
+`202bbfb45f95e4951940934ead9d55551f5ac1e66867e930dafba03154ae6902`,
+checked before and after; the helper SHA-256 was
+`1aead2e21d8ef9a8a4085ee35f81c615af53fb48496ff099901b83498486f0ae`.
+Its temporary directory was empty afterward. The existing recorder stayed
+active with restart count 83 and 12 then 13 recent files. These observations
+do not prove uninterrupted recording, independent anchor custody, native
+camera takeover, 30-day retention, or resolution of the older camera effects.
+
+`recording_storage::resume_confirmed` now reopens the two existing archive
+deployments under task grants, checks their confirmed source and A/V graphs,
+requires the same prior connection claim in both, and replays the exact roots
+before transferring retained owners for a new connection. The selected new
+source key must be strictly later than the prior claim. A `RestartBoundary`
+retains both root pins and old/new connection claims with no physical time or
+continuous-coverage claim. `Resumed::into_owners` requires a caller-provided
+`RestartBoundaryAuthority` decision for that exact boundary and returns the
+owners intact on refusal. The trait is a decision over separately retained
+canonical evidence; no production implementation or durable boundary record
+is supplied by this change. The caller must reserve globally unique keys,
+retain that boundary, settle camera-control effects and bootstrap a fresh
+muxer before consuming media. The old muxer clocks are not reconstructed.
+Failure returns the histories, including any in-memory replay progress, for
+inspection or recovery; reopening restores the replay fences.
+
+Strict-remote job `30102779754184835` (wrapper
+`rchw-d44f195f-6127-46ea-b7df-fb667dbcee8b`) passed the selected
+`owned_session_camera_fixture_stack_control` test, with 65 tests filtered. It
+refused missing retained custody, old connection reuse, denied read authority
+and denied boundary admission; after a simulated boundary admission, a second
+loopback camera session bootstrapped a fresh muxer, published new source and
+A/V roots, read back the A/V root, and advanced all four retained anchors. Both
+sessions used simulated controller effects, which remain unsettled, and the
+fixture did not persist canonical boundary evidence. It is a same-process
+close/reopen test, not a crash test. The job exited zero, was acknowledged
+and released source and pair. Base
+`ac585c03b66e696e9917374f2140b85536a79520`, overlay fingerprint
+`6088b370b2f3dc7bef6b1347856803f63ffd843247112af0c740831b322cc16d`.
+
+A fresh passive G4-derived replay passed the same two-session fixture with
+150 video samples and 78 audio frames. The same single passive capture was
+replayed into both simulated sessions; the controller was simulated, stream
+header and video configuration synthetic, relay audio configuration
+unverified, capture time unknown, and archive and anchors shared tmpfs. The
+test binary SHA-256 was
+`d6f2b6186940555fa945735391277dbfdb891b50fd67b615524ed957a49fc60c`,
+verified before and after; the helper SHA-256 was
+`8102ae5a9b3aeb6337583fcf3f398447707e50cbc2b30e8c5f9aaaac64b4cefb`.
+The temporary directory was empty afterward. The existing recorder stayed
+active, restart count 83 and 13 recent files at both checks. This does not
+prove a physical camera takeover, crash recovery, independent anchor custody,
+gap-free recording, 30-day retention or resolution of older camera effects.
+
+Follow-up strict-remote job `30102779754184838` (wrapper
+`rchw-66ca0872-3f8b-4437-941f-cf27644f85c1`) passed the same single
+synthetic test with 65 filtered, adding a byte-for-byte authorized readback of
+every separately retained second-session source record and checking its new
+connection claim. The job exited zero, was acknowledged and released source
+and pair. The base was `ac585c03b66e696e9917374f2140b85536a79520` and the
+overlay fingerprint was
+`de21e2602c1a006c4f0ab7a55abcf509ff0cd23975f49f82ce3a1adc240b4451`.
+
+A fresh passive G4-derived capture passed that expanded fixture with 150 video
+samples and 78 audio frames. Both simulated connections replayed the same
+single capture; the second source readback matched the input and new
+connection claim. The exact test binary SHA-256 was
+`89881d1ff4d206618e37f3f2ed529ed7f2a79ed3e4f47a086105d12de79d5f8a`,
+verified before and after. All limitations in the preceding paragraph remain:
+the controller and boundary admission were simulated, no canonical boundary
+was retained, stream header/video configuration were synthetic, audio
+configuration relay-supplied and unverified, capture time unknown, and the
+archive and anchors shared tmpfs. The temporary directory was empty afterward;
+the existing recorder stayed active with restart count 83 and 13 recent files
+before and after. No physical camera settings were changed.
+
+The simulated `RestartBoundaryAuthority` handoff described above has been
+replaced by a concrete ledger-backed boundary operation in
+`recording_storage::boundary`. A caller prepares and separately retains an
+exact candidate pin, publishes its metadata-only graph root-last into the
+A/V deployment's canonical ledger, then revalidates the selected root,
+metadata bytes, unknown-time ledger marker, tombstones and current read and
+retention authority before the resumed owners are released. An indeterminate
+publication must be inspected against that same candidate. The metadata binds
+the caller-supplied camera claim, old/new connection claims, and prior source
+and A/V root/retention identities. Those prior roots are references in the
+metadata, not children in this boundary graph. Capture time and continuity are
+explicitly unknown. The canonical domain and bounds are registered in
+`registries/DIGEST_DOMAINS.md` and `registries/unifi_restart_boundary.json`.
+The API does not independently retain its candidate pin, establish globally
+unique source keys, authenticate the camera, settle control effects, or
+provide a physical coverage-gap duration.
+
+Strict-remote job `30102779754184846` (wrapper
+`rchw-7f9937d6-4972-46cb-ad22-588336c91a5d`) passed the selected synthetic
+two-session test, with 65 tests filtered. It refused owner release before the
+boundary was ledgered and under denied read authority, published the exact
+root, verified it, then recorded and read back the second session. After the
+A/V deployment was closed and reopened in the same process, the test
+reconstructed and verified the same boundary and refused a different candidate
+and denied read authority. This is not a separate-process, crash, rollback or
+independent-failure-domain test. The job exited zero, was acknowledged and
+released source and pair. Base
+`ac585c03b66e696e9917374f2140b85536a79520`; overlay fingerprint
+`b97a9dd46723fe8c37aabbe5c31f25ced422e40956b05bb0b7c20ffbbabfc5d5`.
+
+A fresh passive G4-derived capture passed the same expanded fixture with 150
+video samples and 78 audio frames. The same capture was replayed into both
+simulated controller sessions; the stream header/video configuration were
+synthetic, relay audio configuration unverified, capture bounds unknown, and
+archive and anchors shared tmpfs. Its test binary SHA-256 was
+`51dd7330f079b2f5427db4dbdc6d6e98901df8b6e7f682bbc23641bbbc13859e`,
+checked before and after; helper SHA-256 was
+`5cbc670c7819a0660e33b2ecd8d6ab19fa0d5e55b44ff161b4d5752e24fc9506`.
+The temporary directory was empty afterward. The existing recorder stayed
+active, restart count 83, with 12 recent files at both checks. No physical
+camera settings changed. Native takeover, crash recovery, independent anchor
+custody, continuous coverage, 30-day retention and prior camera-effect
+reconciliation remain unproven.
+
+The boundary handoff now requires `boundary::Custody`: one exact canonical
+boundary metadata record in a `PinRetainedEffectJournal`. Before boundary
+publication and again before releasing the resumed recording owners, custody
+rechecks the journal head and all retained targets against the caller-supplied
+pin retainer. An ambiguous custody append fences that owner; it must reopen
+the same history and independently retained head. `Custody::reopen` decodes
+the exact candidate from the verified one-record history, so a later process
+does not need an in-memory boundary. The new runtime revalidation method
+poisons the journal owner on mismatch. The caller still has to establish that
+its chosen custody stores actually occupy appropriate independent failure
+domains; the API does not prove that property.
+
+Strict-remote job `30102779754184849` (wrapper
+`rchw-4a093929-29c0-4a15-8400-ce588742a98a`) passed the selected
+`owned_boundary_survives_writer_process_exit` test with 67 tests filtered.
+The simulated writer created retained source, A/V and boundary histories,
+published the boundary and a second connection, and exited. A new process
+reopened the boundary custody and ledgered root; wrong boundary and custody
+pins were refused. The writer fixture also exercised an indeterminate
+custody append and a wrong retained journal head. This is clean process exit,
+not a crash or power-loss test. The job exited zero, was acknowledged and
+released source and pair. Base
+`ac585c03b66e696e9917374f2140b85536a79520`; overlay fingerprint
+`b0c6c8979dfe6534c4be6097a5baf239bd3bdad644ecb40167ce3ef1b7910efa`.
+Strict-remote job `30102779754184850` (wrapper
+`rchw-ebef4bac-5e43-41f1-9078-20bb79f5357d`) passed one selected runtime
+test with 16 filtered: losing a retained head fenced the owner even after the
+test restored the pin, and a later append was refused. It exited zero, was
+acknowledged and released source and pair; its overlay fingerprint was
+`cd31b6bfe7fce82313c86ca5dff17069efefddc7165ffa6a267a1e8f2d8c6d99`.
+
+A fresh passive G4-derived capture passed the two-session fixture with 150
+video samples and 78 audio frames. After its writer process exited, a separate
+process reopened the boundary custody and verified the ledgered boundary.
+The same capture was replayed in both simulated controller sessions; header
+and video configuration were synthetic, relay audio configuration unverified,
+and capture time unknown. The archive, custody journal, retained root and
+handoff receipt all shared tmpfs, so this is not independent-storage proof.
+The test binary SHA-256 was
+`e50dbc989b8a0210cca43acaeaf1ffa9ce557fcf24952110a90f87cfe2cb0ecf`,
+checked before and after; helper SHA-256 was
+`97ba78446752801d1a601505352fd1987160ad068219a429973fd244766a86f0`.
+The test's private temporary directory was empty afterward. The existing
+recorder stayed active, restart count 83 and 12 then 13 recent files. No
+camera settings changed. Native takeover, crash recovery, physically
+independent custody, continuous coverage, 30-day retention and the older
+camera-effect obligations remain unproven.
+
+The Linux `unifi_camera_probe` also accepts an optional owner-authorized
+`--save-snapshot=ABSOLUTE_PATH`. It decodes the JPEG before export, requires
+a private parent directory and a new file, creates the file with mode 0600,
+and syncs it. This is a one-shot owner export, not a ledgered recording or
+an atomic publication: an I/O failure can leave a partial new file.
+Strict-remote job `30102779754184852` passed its single process/TLS fixture:
+in-memory observation, exact JPEG export and permissions, existing-file
+refusal, and wrong-pin refusal before credential access. It exited zero, was
+acknowledged, and released its source and pair; its clean overlay fingerprint
+was `567423442fec8b14558e412a894aadca7e66586a1e2caad6f75e28ad300`.
+
+A debug-stripped copy of that build, SHA-256
+`5fe21251bfd37534aeb937bb8241c2de94de56b0e67bf1f479816120f76b41b4`,
+was hash-checked on `trj` and exercised against the physical G4. It reported
+a matching camera certificate, decoded and exported a 640 x 360 JPEG, and
+reported no settings writes. The copied image matched the reported digest;
+the fallback recorder service remained active afterward. The certificate was
+previously observed over the network and is not independent physical identity
+proof. This one snapshot does not establish video streaming, controller
+takeover, automatic enrollment, native continuous recording or retention, or
+settle the older indeterminate effects.
+
+The direct trial now allocates a fresh 128-bit run namespace from the
+laboratory TLS provider's entropy source under a task checkpoint. Handoff,
+hello, agreement, stream, clock, and event effects use distinct operation and
+idempotency identities within that namespace. This avoids the previous
+cross-run reuse of fixed trial effect IDs; it does not resolve an older effect,
+authorize a retry, establish independent journal custody, or change the
+experimental provider's production-admission status. The enclosing trial
+trace and root operation still use their existing fixed identities.
+
+Strict-remote job `30102779754184857` ran two selected tests: a run-identity
+test and a process fixture that ran two separate simulated-controller trials,
+reopened each anchored journal for reconciliation, checked every recorded
+effect against its reported run namespace, and checked the two namespaces
+differed. Both passed; 29 other tests were filtered. The job used base
+`ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`ce0ef8d17c8eba5baebb11469e4aa0bed0fa422bd64f751ce9f9776007901059`;
+it exited zero, was acknowledged, and released its source and pair. This is a
+synthetic local fixture and does not establish physical-camera compatibility.
+
+The previously unqualified `RecordingCapture` lookahead contract was executed
+in strict-remote job `30102779754184863`: all 22 tests passed, including the
+end-of-input ownership case. The job used base
+`ac585c03b66e696e9917374f2140b85536a79520` and overlay fingerprint
+`d5d1754c9d9652bfbd3cbc813819792aa7140e109c2dce7e538005193b14f9e6`;
+it exited zero, was acknowledged, and released source and pair.
+
+`LiveAvcRecording` now exposes opt-in complete-picture timing lookahead and
+the next picture's metadata. Strict-remote job `30102779754184866` passed one
+real loopback-socket test, with 2,360 other library tests filtered. The fixture
+received three synthetic AVC pictures at RTP timestamps 9000, 11970 and
+15030, supplied the first picture's duration, and verified that cancellation
+returned both remaining pictures. Its initial build-only invocation selected
+zero tests because of an incorrect exact-name filter; the passing job used the
+correct filter. It used the same base and overlay fingerprint
+`edaff2b74fbcbe98b45289c0309cd4b17156eb89ce849c8b8ad8887ed9b2b62e`,
+exited zero, was acknowledged, and released source and pair. The test source
+was formatted afterward without a semantic change. This receiver-level
+facility is not yet wired into the RTSP recording command's timing decisions,
+does not establish sender identity, continuous recording, native direct-camera
+video or safe restoration, and has not been exercised on the physical G4.
+
+The laboratory controller accepts `--video-channel=1|2|3`; omitting it retains
+the previous channel-2 default. Channel 1 is the reference plugin's high
+profile, but a channel name does not prove the camera's configured or delivered
+resolution. The selected channel still goes through the existing stream-setting
+effect and its authorization and reconciliation boundaries. Strict-remote job
+`30102779754184875` passed three process tests: the channel-1 request, the
+channel-2 default, and invalid-channel refusal before I/O. It used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`9c4919ecb08c95068dfb8283b7161995e556a031219941e925985a97c0485aea`;
+it exited zero, was acknowledged, and released source and pair. The media and
+camera were simulated; no G4 high-resolution frame or live takeover is claimed.
+
+Seven previously untracked files disappeared from the shared checkout while
+the checkout's committed HEAD advanced. Their prior contents were reconstructed
+in an isolated directory by replaying recorded successful patches, and copied
+back only to absent paths. The recovered continuing-clock fixture matched its
+previously recorded SHA-256. Strict-remote job `30102779754184871` then passed
+the two run-identity/journal fixture tests using base
+`ac585c03b66e696e9917374f2140b85536a79520` and exactly the earlier tested
+overlay fingerprint `ce0ef8d17c8eba5baebb11469e4aa0bed0fa422bd64f751ce9f9776007901059`;
+it exited zero, was acknowledged, and released source and pair. That fingerprint
+does not cover the separately verified continuing-clock fixture or registry.
+The isolated reconstruction remains available for comparison.
+
+A subsequent owner-authorized, read-only HTTPS settings observation of the G4
+reported video1 as 2688 x 1512 at 30 fps, video2 as 1280 x 720 at 30 fps,
+video3 as 640 x 360 at 15 fps, and the JPEG profile as 640 x 360 at 2 fps.
+The diagnostic checked the camera certificate against the previously observed
+same-network pin before sending the protected credential and disclosed only
+numeric profile fields and codec types. It made two login attempts: the first
+did not complete the settings read because its cookie handling was incompatible;
+the second completed. Session expiry is unknown. This is a point-in-time camera
+claim, not proof of video delivery, physical identity, safe takeover, or current
+resolution after a future settings change.
+
+The native camera settings projection now exposes bounded typed width, height,
+and FPS claims for video1, video2, video3 and the JPEG profile. Missing and
+unsupported values remain distinct; no profile implies decoded media, identity,
+freshness, or authority to change the camera. The `unifi_camera_probe`
+supports an explicit `--observe-profiles` read. Strict-remote job
+`30102779754184878` passed all 11 camera API contract tests at base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`61eb09a6aed53213843bfe3bf2d5adaec20fc2c8840e0ae5c37152e170cd3324`.
+Job `30102779754184882` passed the single independent TLS process fixture,
+including the new settings read and destination-redaction check, at the same
+base and overlay fingerprint
+`e78a9832928fe50fe496454f34097e3e2f2899f684ea039f9771015b5378988c`.
+Both exited zero, were acknowledged, and released source and pair. The parser
+and its contract source were formatted after these snapshots without semantic
+changes. A request to another worker timed out before admission and ran no test.
+
+A debug-stripped copy of the fixture-tested probe, SHA-256
+`74387f260c3410e0c8ae37affd7a108bdc9897d07fa3340b872e04441be550f1`,
+was hash-checked on `trj` and performed an authenticated read of the physical
+G4. The Rust projection reported the same four profiles above, decoded a
+640 x 360 snapshot in memory, and reported no settings writes or persisted
+media. The existing recorder remained active afterward. The same-network
+certificate pin is not independent physical identity proof, and the new
+camera login session's expiry is unknown. No full-resolution video was received.
+
+The laboratory controller-restoration command now supports optional
+`--anchored-journal=KEEPER,ROOT,SCOPE,MAC_HEX`, using the existing
+reconciliation-only effect journal and a fresh per-attempt operation identity.
+It refuses existing or overlapping store paths, including the tested
+symlink-ancestor alias, before network access. An already-restored no-op creates
+no journal or anchor. Each selected parent must be private; the caller remains
+responsible for the selected storage's availability and independence. The
+laboratory entropy and TLS providers are not production-admitted, and the root
+store's own rollback is still a trust boundary. A committed or uncertain
+restore remains unresolved and is not automatically retried.
+
+Strict-remote job `30102779754184896` passed one process fixture containing
+14 synthetic camera scenarios and two pre-network path-alias checks. It covered
+anchored success and dropped response, reconciliation-only reopen and exact
+effect identity, no-op, stale settings, wrong certificate, and legacy modes;
+the separate systemd-timer fixture was filtered. The job used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`5f8a22cef5a9e7398f72bdd718647c8efd97770a01a7848e642c00edee96680e`;
+it exited zero, was acknowledged, and released source and pair. This fixture
+uses one worker and does not establish independently powered custody, physical
+camera restoration, or resolution of the older physical-trial effects.
+
+A read-only mount inspection found the current recorder host's `/data` on
+Btrfs and `/bulk` on a ZFS mirror. They share the host and power, and there was
+no existing NFS/CIFS/SSHFS mount on `ts1` or `trj` suitable for an independently
+hosted anchor in that check. No mount, camera setting, or recorder was changed.
+
+Strict-remote job `30102779754184898` subsequently ran both restoration
+process tests on `vmi1264463`: both passed, none were filtered. The timer test
+scheduled both the original and the anchored restore as distinct transient
+systemd services against a synthetic loopback TLS camera. After the anchored
+service exited, the test reopened its three stores for reconciliation and
+verified one recorded effect. The job used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`53df60816bc1d4498e8ac63cda9d2b9c329cd72d51fa328dc0b5f0a8a949edd5`;
+it exited zero, was acknowledged, and released source and pair. This proves a
+synthetic scheduled process, not an independently powered store or a real G4
+restore. The earlier physical effects remain indeterminate.
+
+A synthetic cross-host recovery experiment placed the effect journal and
+keeper on `ts1` and the root anchor on `trj` through a temporary NFSv4.2
+mount over Tailscale. The export was restricted to the test client, squashed
+to an unprivileged account, and mounted with `nosuid,nodev,noexec`; it was
+removed after the test along with the client mount. Existing exports were
+left in place, and the test stores were retained. A synthetic marker written
+through the mount was file- and directory-synchronized and read back on the
+server. This establishes neither independently powered durability nor a test
+of power loss. NFS used `sec=sys`: the network tunnel protects transport, but
+the mount is not an independent cryptographic identity or protection from
+server-root compromise.
+
+The previously fixture-tested Linux trial binary (debug-stripped SHA-256
+`8cc636be93495f1a6cf58a8d8d9a9d06a0f86ddcef4060569dee675f426ad9e7`)
+served a synthetic loopback peer. After it exited, a separate Rust process
+reopened 43 effects as unresolved and reconciliation-only; a different scope
+was refused. The same inspection succeeded after unmounting, removing the
+export, and exporting and mounting the retained stores again. This synthetic
+fixture did not access or modify the physical camera or settle its older
+uncertain effects. The existing G4 recorder service was active after cleanup.
+
+Two small synthetic timing comparisons found median startup replies of 813
+and 1194 ms with the cross-host anchor, versus 175 and 203 ms with a local
+anchor; medians for established replies were 741 and 934 ms remotely versus
+205 and 220 ms locally. These samples include host and fixture overhead and
+do not establish a physical G4 timeout. The delay is a compatibility risk for
+its burst of time-sync requests, so this mount is not yet a qualified physical
+handoff configuration. A syscall summary of a synthetic remote run counted
+1,326 `fsync` calls, 261 renames, and many `openat` and `fcntl` calls across
+all traced processes, including the fixture and inspection. Journal persistence
+also rechecks prior pins on append, making cumulative history a candidate for
+additional cost. Neither observation alone isolates a cause or justifies
+weakening the integrity checks. The synthetic fixture source and retained
+stores are available for follow-up; the mount is intentionally not persistent.
+
+The synthetic cross-host cost fixture is retained as
+`experiments/unifi_tls_05_server_lab/anchored_clock_cost_fixture.py` (SHA-256
+`fdaabe3c3a04de770ea911ba543c790c110be25e0f523affbcdcf4cc64ee1305`),
+alongside its existing `prehello_fixture.py` dependency. It accepts an absolute
+Rust trial binary, a new local fixture directory, and an existing private anchor
+parent; it generates disposable credentials, uses loopback synthetic traffic,
+and intentionally retains its evidence directories. It requires OpenSSL and
+Python only as laboratory fixtures, not as a production controller.
+
+One traced run on each storage layout used that same fixture and Rust binary;
+these are small, sequential samples under changing host load, not an SLO or
+an optimized implementation. Both completed 10 startup replies, 30 established
+replies, and a separate reconciliation-only inspection of 43 unresolved
+synthetic operations. `strace -f -w -c` recorded 14,054 `openat` calls in
+each run: their summed elapsed times were 23.19 seconds with the NFS anchor
+and 0.24 seconds with the local anchor. The 1,326 `fsync` calls totaled 11.32
+and 7.67 seconds respectively; 261 rename calls totaled 5.00 and 0.012 seconds.
+These counts and durations span the Python fixture, TLS helpers, controller,
+and cold inspection, and summed syscall elapsed times may overlap across
+processes; they are not a per-effect critical-path breakdown. The traced reply
+medians were 799 ms startup and 901 ms established for the remote anchor,
+versus 212 and 291 ms locally. The existing per-append prefix-integrity oracle
+rejects missing or corrupted non-tip records and unexpected committed entries;
+any performance change must preserve those refusals and the crash/uncertainty
+semantics. No performance optimization or physical handoff is claimed here.
+
+The experimental owned-recording controller previously generated clock-step and
+event effect IDs from a counter alone, so separate runs could reuse the same
+IDs. These effects now include the already-admitted trial run identity as well
+as their distinct kind and counter. This changes neither authority nor the
+reconciliation requirement, and the laboratory entropy provider is still not
+a production-admitted identity source.
+
+Strict-remote job `30102779754184914` passed the one synthetic owned-event
+process test: it sent both a clock request and an event, then reopened the
+effect journal in reconciliation-only mode and checked that both effects and
+all other journaled operations carried the observed run identity. Job
+`30102779754184915` passed two run-identity tests, including two separately
+started anchored trial processes. Both used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`b215232d34e7cbc0af583ce6062dbe61af1ef4953c6a9b7727b5e43a37935fa3`;
+both exited zero, were acknowledged, and released source and pair. The first
+attempt, job `30102779754184908`, failed because the test put an option in the
+wrong parser position. Job `30102779754184911` reached TLS but failed because
+its disposable certificate was a CA, not an acceptable end-entity certificate.
+Both failures were acknowledged and released; the successful tests used a new
+localhost-only fixture certificate. These are synthetic tests and do not prove
+physical-camera compatibility, continuous recording, or resolution of earlier
+physical effects.
+
+The laboratory process fixture now also exercises a synthetic 2688 x 1512
+AVC source and selects channel 1. The loopback peer receives the Rust
+controller's channel-1 request, sends synthetic FLV video, and the Rust trial
+writes a private MP4 and decodes at least one frame at exactly 2688 x 1512.
+The original smaller fixture continues to pass through the shared media builder.
+The generated input is a constant gray, constrained-baseline, four-picture
+H.264 sequence; the fixture wraps seven selected/repeated pictures using
+40 ms FLV timestamps. It is not camera-derived, does not prove the G4's codec
+features, 30 fps throughput, sustained recording, or actual camera streaming,
+and its MP4 is not retained camera evidence.
+
+The 48,828-byte laboratory input is
+`experiments/unifi_tls_05_server_lab/tests/fixtures/synthetic_g4_resolution.264`,
+SHA-256 `792675cd56a7c2177f4de68fa1c2536cfb95d080d0087cc04428621d7e2af03b`.
+It was produced with FFmpeg 8.0.1 and libx264 in a private temporary directory:
+
+```text
+ffmpeg -f lavfi -i color=c=gray:s=2688x1512:r=30 -frames:v 4 \
+  -pix_fmt yuv420p -c:v libx264 -preset ultrafast -profile:v baseline \
+  -x264-params keyint=1:scenecut=0:threads=1:slices=1 -f h264 OUTPUT
+```
+
+FFmpeg was only a synthetic fixture generator and independent input inspector;
+the controller, MP4 creation, and H.264 decoding under test were Rust. Strict-
+remote jobs `30102779754184920` and `30102779754184922` each passed one test,
+respectively the full-resolution and smaller synthetic process fixtures. Both
+used base `ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`5caa7a43b8e3f7ecb7cd8f6f000254ee8861877c952abdcea166a4519785db96`; both
+exited zero, were acknowledged, and released source and pair. No physical
+camera settings or recorder configuration were changed.
+
+The process fixture can now run the Rust trial executable from an explicitly
+supplied absolute laboratory path, allowing the same tested executables to be
+copied to a local recorder-side host. Its new private-stdin case combines two
+segments of camera-derived media with simulated clock and event requests. It
+reopens the anchored effect journal after exit and requires the clock and
+event identities to belong to the observed run. The input source is not used
+as an authentication claim, and these synthetic control messages are not
+observations of real camera events.
+
+Strict-remote job `30102779754184928` passed the existing synthetic owned-event
+process fixture, at base `ad252a5dfc870413e714ac8ca452c54222e34894` and overlay
+fingerprint `8526cf5b6ae8acb7a1940ee231db2cf8932715af2eb869424aaa58bbfecfb55e`.
+It exited zero, was acknowledged, and released source and pair. Debug-stripped
+copies of the same test and trial executables, SHA-256 respectively
+`a927d261d775d1f2f4b19528b0ba34e7172b18ffc668231c20b3fd758355d225` and
+`d3a6689275d82b99dd663ae8be79c7585cd368fcb9514b0d9d3de7f555cab4ef`,
+were hash-checked on `ts1`. The existing synthetic control fixture passed
+there with the supplied executable path. A generic FFmpeg-generated FLV fed
+to the new private-stdin case failed with `source custody requires
+reconciliation`; its cause is not established and it remains negative
+evidence, not a passing generic-FLV compatibility claim.
+
+A fresh bounded passive G4-derived sample then passed that private-stdin case
+on `ts1`, publishing and checking two temporary segments while the synthetic
+controller handled a clock request and an event. The test's effect journal
+reopened for reconciliation and contained both run-scoped effects. The passive
+sample traveled only among the local hosts and memory; its FLV header and
+video-configuration tag were synthetic, and the audio configuration came from
+the relay without independent epoch or camera-identity verification. The
+recording graph was checked, not decoded in this test. The copied executable
+hashes matched afterward, the test's private tmpfs directory was removed, and
+the current recorder remained active at restart count 83. Twelve fallback
+files had been modified within 15 minutes when checked with the required root
+read authority. This is not a direct Rust camera handoff, full-resolution G4
+video, continuous-service proof, 30-day retention proof, or reconciliation of
+the earlier physical effects.
+
+The owned-trial diagnostic now retains the original payload-free capture-stop
+reason when subsequent custody checks fail, reports whether source custody is
+pending or fenced, and classifies unhandled supervisor results without printing
+source or event payloads. The loopback fixture similarly includes bounded
+stage labels when the child fails. Repeating the previously failed synthetic
+generic-FLV case showed `Aac(UnsupportedConfiguration)`, followed by an audio
+fence and a pending source (`pending=true`, `fenced=false`). This
+is a refusal and reconciliation obligation, not a published recording.
+
+The exact generated synthetic input's AAC-LC configuration was
+`14 08 56 e5 00`, whereas the currently admitted parser accepts only a complete
+two-byte configuration. FFmpeg's encoder source describes its appended sync
+extension as explicitly marking SBR absent:
+<https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/aacenc.c>.
+This is evidence for the synthetic input only, not the G4's configuration.
+Supporting that variant needs an end-to-end change: preserve all original
+configuration bytes in source evidence, remove the two-byte assumptions in
+the A/V session and muxer, encode correct variable descriptor lengths, and
+test refusal of unsupported or active extensions. The parser has not been
+broadened in isolation.
+
+Strict-remote jobs `30102779754184935` and `30102779754184937` failed their
+synthetic owned-event test with a peer EOF; the latter identified
+`time_sync_stopped` before shutdown. Their cause was not established. Job
+`30102779754184939` passed the same one selected test, using base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`f5f9b5e478ec3f1898e8f1cf95269d09a641b433641065127fa84361d76ea037`.
+All three were acknowledged and released source and pair. Ten subsequent
+direct executions of a hash-checked copy of that synthetic test and trial on
+the same worker passed; they do not erase the earlier failures. The owned
+trial currently uses a 100 ms wait for both idle polling and a journaled clock
+reply at the time of those runs. Slow storage is a candidate explanation for
+the intermittent stop, not a verified cause; those runs changed no deadline or
+camera setting.
+
+The AAC-LC path now admits the complete five-byte form with the exact
+`56 e5 00` suffix declaring SBR absent, in addition to the original two-byte
+form. Active SBR, unknown extensions, truncation, and nonzero padding remain
+refused. The complete original bytes are retained as the configuration
+identity. The A/V session and recording muxer retain that bounded identity;
+MP4 descriptor lengths vary with the configuration; and both archive
+readback sites use the same five-byte maximum before parsing and checking the
+source binding. The two-byte and five-byte forms are not interchangeable as
+source identities, even where their base codec properties agree. Explicitly
+supplied laboratory bootstrap audio remains limited to two bytes; the
+five-byte form is exercised as an in-band source.
+
+At base `ad252a5dfc870413e714ac8ca452c54222e34894`, strict-remote job
+`30102779754184959` passed seven packet AAC contracts with one private-input
+case ignored; job `30102779754184957` passed 22 recording contracts with one
+private-input case ignored. Both used overlay fingerprint
+`73e8b23f10f3f2d955159c50a6d893623adbd2a300cce0826d23f6782a0c98be`.
+Job `30102779754184943` passed seven container contracts with one external
+fixture ignored at overlay
+`cd785e53618ebe612e4cc700530bde328fc71a71e3458c8678f983332890af60`.
+That suite covers exact descriptor lengths, multi-fragment sequencing, and
+same-profile configuration mismatch refusal. Job `30102779754184945` ran the
+separate synthetic external-decoder fixture at overlay
+`28a088bf6bcc9efeccac6fc7dcad28e6bb174b3519dffc2332ce2ef1a3614c93`.
+An independent FFmpeg probe and decode of its Rust-generated MP4 verified
+three H.264 frames, two AAC-LC frames at 16 kHz mono, and the exact five-byte
+configuration. FFmpeg was only a synthetic generator and independent oracle.
+All four jobs exited zero, were acknowledged, and released source and pair.
+
+The previously failing generic synthetic FLV was retried with its in-band
+five-byte configuration. The first two updated trials each published two
+temporary segments but failed archive readback because separate read sites
+still had two-byte ceilings. After both sites were updated, a stripped copy
+of the fixture-tested Rust trial passed the same generated input and read
+back two temporary segments; this run used a simulated controller and is not
+camera footage. Job `30102779754184956` built and passed the ordinary synthetic
+owned-event process fixture at overlay
+`841d4cea0caa7034ffdbcf221319a1f356cccd7d42054b9c101cd38dc53f20de`;
+it exited zero, was acknowledged, and released source and pair. The stripped
+test and trial SHA-256 values were respectively
+`bf561286ad07b74ad2877f83fb001fda80a86ec071bf44b4048ee009ca4cf5d5` and
+`e6081291dd395fb2713c28d381e4a53123afe64ea84455af1dd4d55f0cb4e2ed`.
+
+The same hash-checked executables also passed a fresh passive G4-derived
+two-segment replay on `ts1` with synthetic clock and event requests, using the
+existing two-byte relay-supplied configuration. Its FLV header and video
+configuration were synthetic; capture time, source identity, audio/video
+alignment and relay configuration epoch remain unverified. The temporary
+replay directory was removed; the existing recorder stayed active with the
+same restart count, and 13 fallback files had changed in the preceding 15
+minutes. Neither replay establishes a direct Rust camera handoff, continuous
+service, actual full-resolution G4 video, or 30-day retention.
+
+The supervisor now has an optional, separately bounded clock-reply allowance;
+its default remains the caller's poll wait. The owned trial apportions the
+remaining capture budget between the poll and a reply allowance capped at five
+seconds. A running or stopped reply cannot be reconfigured, and cancellation
+still retains the reply trace for reconciliation. The change is not deployed, and no physical camera interaction was attempted.
+A synchronous journal operation can still run past a wall-clock deadline, and
+a longer allowance neither proves delivery nor explains the earlier EOF.
+
+The clock contract fixture now includes deliberately delayed journal appends,
+a comparison between the original poll-bound allowance and an explicit reply
+allowance, and a cancelled-dispatch custody case. The first strict-remote test
+attempt timed out in the cached worker's queue without executing. An alternate
+worker admitted job `30102779754184969` but rejected it before Cargo execution
+because active disk reservations and its protected free-space floor could not
+both be met. A second queued attempt on the cached worker also timed out without execution.
+The four changed Rust files also parsed successfully with `rustfmt --emit
+stdout`; that parser check is not a compile or behavioral test.
+
+
+Strict-remote job `30102779754184976` then compiled the reference crate
+and ran ten selected clock and cancellation contracts: ten passed, zero failed,
+none ignored. The job used base `ad252a5dfc870413e714ac8ca452c54222e34894`
+and overlay fingerprint
+`2e0aae4648dd7871f350d652ae488ca6080e5cb83a75fcbc18c772730c31fa54`;
+it exited zero and its terminal outcome was acknowledged. In the synthetic
+fixture, two journal appends each delayed by 175 ms exceeded the 100 ms poll
+allowance. With the default allowance, the committed permit remained unwritten;
+with a separate three-second allowance, a correlated reply was locally written
+and its journaled permit retained. Another case cancelled a pending dispatch
+with the separate allowance and recovered its indeterminate trace. These are
+controlled local-loopback tests, not proof of real-camera protocol timing,
+receipt, current identity, continuous recording, or the cause of prior EOF.
+
+A fresh read-only inventory of the two earlier physical-trial journals found
+five regular files in each and matched their previously recorded late manifest
+hashes. This detects changes since those late observations; it does not create
+an independent pre-effect pin or resolve either historical obligation.
+
+Strict-remote full-process job `30102779754184985` failed before its fixture
+ran: the new local `control` binding shadowed an existing function, causing two
+Rust E0618 errors in the trial binary. The binding has since been renamed and
+scoped, and the file parsed. At that point the corrected process had not yet
+been compiled or tested. The earlier ten passing contracts did not compile
+the trial binary.
+
+The corrected process passed the synthetic owned-event recording fixture in
+strict-remote job `30102779754184990` (one passed, zero failed; 35 filtered),
+with base `ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`66808e411ff91d08990bac03fab1774d79ad5b6d1df949cb96844034a89311b3`.
+The job exited zero, its terminal result was acknowledged, and its source root
+was reaped. This supersedes the failed compilation above; it does not establish
+why the earlier intermittent synthetic stops occurred.
+
+Stripped copies of that test and trial, SHA-256 respectively
+`0846dd047f2d9806afbf43d211ef5ca8a8040216c5c1da237107d21d6df9ad23` and
+`709ec51ea8f08b857c563e59c587d932bdb82dff815d51595e15b40a3450e48c`,
+were transferred to `ts1` and hash-checked. Two initial passive G4-derived
+replays failed before recording. The first failure was unclassified and used
+an IP-only certificate and RSA key; the second reported connection refusal.
+A separate synthetic run with that second certificate revealed that the trial
+rejects RSA private keys. A new ECDSA P-256 certificate with `localhost` in
+its DNS subject alternative name passed the same synthetic process case on
+`ts1`. A fresh passive G4-derived replay then passed with two temporary
+segments, with the binary hashes checked before and after. These are separate
+samples; they do not retrospectively prove the first unclassified failure's
+cause. Its controller and initial video configuration were synthetic, the
+AAC configuration was relay-supplied without independent epoch validation,
+and capture bounds and camera identity were not established. The Rust process
+did not directly control the physical camera; this is not a full-resolution
+G4 capture, continuous-service proof, or evidence settling the old effects.
+
+The three disposable certificate directories on `ts1` and the remote transfer
+copies were removed after the checks. The tested executables remain in the
+private directory `/var/tmp/fss-clock-owned.aazjOjs8` on `ts1`. The fallback
+recorder was still active afterward at restart count 83; twelve fallback files
+had been modified within the preceding 15 minutes.
+
+The archive now offers a video-only readback for unknown-time A/V roots. It
+checks the retained source graph and preserves the connection and generation as
+unverified claims without returning a fabricated capture interval. Strict-remote
+job `30102779754184992` passed the selected source-object contract (one passed,
+zero failed, 22 filtered) at base `ad252a5dfc870413e714ac8ca452c54222e34894`
+and overlay `c24255d832e273822f81f1e52812192e8f0e4c84d6749a1a5cef905fddbf8565`.
+It checked exact recovered video bytes, sample count, source claim, redacted
+Debug output, and access refusal. This is a synthetic contract, not physical
+camera decode.
+
+The laboratory owned-capture path has an opt-in post-publication Rust decoder
+check of one source-checked video fragment. The first process build, job
+`30102779754184994`, failed before running its test because a retired source
+worker binding shadowed the source-key parameter (E0308). That binding was
+renamed; at that point the corrected process had not yet completed verification.
+
+
+The corrected decode-enabled process passed its synthetic owned-event fixture
+in strict-remote job `30102779754184995` (one passed, zero failed, 35 filtered),
+base `ad252a5dfc870413e714ac8ca452c54222e34894`, overlay fingerprint
+`71c72ceba59eea7618474b85c67729608f88120d62bcda8b875b4111039d3553`.
+It decoded three 160 x 128 synthetic frames from the source-checked archived
+video. The job exited zero, was acknowledged, and its source root was reaped.
+
+Stripped copies of the tested process and trial were hash-checked on `ts1`,
+with SHA-256 respectively
+`dbac5af78fe5644b782ff542c4fc80978cd32cf09e54704aee5dbda0e85f6f4a` and
+`9171559dc9552d186e0ce8c2cd99d5d568a870fb51d9c9b0470cd8827191e079`.
+The same synthetic fixture passed on `ts1`. A fresh passive G4-derived sample
+then passed the two-segment owned-archive replay, and the native Rust H.264
+decoder reconstructed three 1280 x 720 frames from its source-checked video.
+The controller and initial stream/video-configuration framing were synthetic;
+the audio configuration came from the relay without independent epoch proof.
+The sample is not an independently authenticated camera identity, a direct
+Rust G4 handoff, a 2688 x 1512 recording, a capture-time claim, or proof of
+continuous operation or retention. The camera settings were not changed.
+
+The private temporary replay archive and its disposable TLS certificate were
+removed after the test; the exact tested executable copies remain on `ts1` in
+`/var/tmp/fss-archive-decoder.o6ZdJg04`. The fallback recorder was active at
+restart count 83 afterward, with 13 fallback files modified within 15 minutes.
+
+A bounded fleet coordinator now matches a complete discovery window against
+up to 128 caller-supplied inventory bindings. It retains unmatched claims and
+reports missing and conflicting owner entries, exposes ready entries in owner
+inventory order, and delegates each attempted setup to the existing tracked,
+listener-bound setup owner. Certificate and credential handles are caller
+claims: an independently bound transport, live authority, a lease and actual
+credential resolution remain the caller's responsibility. The coordinator
+stores the unique operation identity and an `InFlight` state across future
+cancellation and does not retry an entered attempt through that instance.
+This in-memory state does not survive restart and cannot reconcile a journal;
+new plans must not erase prior unresolved effects.
+
+A shared controller listener can now serve a different camera resource only if
+its policy explicitly permits that camera resource and claimed peer. The
+original same-resource path remains unchanged; the shared path also checks
+both listener and camera resources under the same task and clock. Setup
+rechecks that binding while it operates. This does not authenticate the
+controller connection or route multiple accepted sessions on its own.
+
+Strict-remote job `30102779754185006` passed three fleet matching and
+cancellation tests (zero failed, 2,375 filtered) at base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`3b81fc8d245e25001dd5439010a7722d20ca12a79d400e255a89d45f272eba10`.
+It exited zero, was acknowledged, and its source root was reaped. Those tests
+cover complete versus incomplete reports, conflicting and unregistered claims,
+duplicate owner bindings and operation IDs, and cancellation retaining an
+in-flight entry while another remains ready. A separate listener/setup
+integration fixture then passed as strict-remote job `30102779754185005`
+(one selected test, three synthetic scenarios) at overlay
+`ee047b104ac02f680ab0d04b0c63ee06c59fa6295627656778d5d08739625106`.
+It exercised a successful journaled setup, cancellation retaining the
+committed permit, rejected bindings, and revocation of the shared-listener
+policy before dispatch. The job exited zero and its source root was reaped.
+The fleet file later received formatting and two accessors; a broader setup
+suite was subsequently run as described below. No physical camera was changed
+by this work. This is not yet an automatic fleet service, multi-camera session routing,
+Wi-Fi provisioning, or direct physical-camera recording.
+
+Strict-remote job `30102779754185011` ran the complete handoff contract suite
+with its private-interface cases enabled: 20 passed, none failed, ignored or
+filtered. Its overlay fingerprint was
+`3bc98cf2d83b34b55f3fc7e15b2c06bd482511907672e29e52ca18b5eb1eb7b7`.
+The new two-camera case sent two untrusted discovery claims from distinct
+loopback sources, matched two owner inventory entries, and ran two separately
+journaled synthetic HTTP setup attempts through one shared bound controller
+listener. It retained both distinct committed effects for reconciliation. The
+HTTP transports and peer-admission claims were fixtures, not physical-camera
+TLS or authentication; this does not prove accepted-session routing or live
+streams from multiple cameras. The job exited zero and its source root was
+reaped. A subsequent source edit moved listener and camera task checks after
+policy evaluation to account for policy time and revocation.
+
+
+Strict-remote job `30102779754185012` reran the complete 20-test handoff
+contract after that edit: all 20 passed with no ignored or filtered tests.
+Its base was `ad252a5dfc870413e714ac8ca452c54222e34894` and its overlay
+fingerprint was `cf79f33e74fa3ff34dc59ac61aa74e02656dd5411a9e420e5f1ac58ed34ebedd`.
+The job exited zero, was acknowledged, and the source root was reaped. The
+previous fleet unit tests exercised the same inventory coordinator; this run
+qualifies the changed listener against the synthetic setup and cancellation
+fixtures. No test establishes direct G4 adoption, shared live-session routing,
+production TLS qualification, continuous recording, or automatic provisioning.
+After the work, the existing G4 recorder remained active at restart count 83
+and 12 fallback files had changed within the preceding 15 minutes.
+
+The fleet coordinator now has a bounded one-connection routing operation for
+entries whose setup returned an eligible outcome. It selects by the untrusted
+accepted source address, refuses unknown or duplicate active sources, and
+returns a camera-scoped socket whose active slot remains held until the socket
+owner is dropped. The route gate rechecks the listener, peer and explicit
+shared-camera policy and permanently fences after refusal; raw socket polls
+also recheck the camera resource. Callers must still bind an independently
+verified peer and apply the gate and camera-scoped metering above TLS. The
+active-slot guard is process-local to this fleet instance and is not restart
+recovery or coordination with another instance. The routing change has not
+been exercised on a physical camera.
+
+
+Strict-remote job `30103409168220161` passed the complete handoff and routing
+suite: 20 passed, none failed, ignored, or filtered. It used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`dac01f93d998234f317ee3aaaf5a0c5f4cc8d1381d517be373ac45a9b461cca5`.
+The two-camera synthetic fixture routed simultaneous sockets arriving in the
+opposite order from inventory, checked their independent bytes and indexes,
+refused a duplicate and an unknown source, fenced both routes after shared
+policy revocation, and allowed a new route only after the first owner dropped.
+A separate fixture checked that an explicit camera setup refusal does not
+admit a route. The job exited zero, was acknowledged, and its source root was
+reaped. These tests use unencrypted synthetic peers; they do not validate TLS,
+physical identity, real G4 adoption, or persistent fleet supervision.
+The recorder on `trj` remained active at restart count 83, with 13 fallback
+files modified within 15 minutes.
+
+A read-only inspection of one recent fallback MP4 on `trj` reported
+1280 x 720 video via ffprobe, while the existing recorder service was active.
+This is a single sampled recording, not evidence of its other files, a native
+Rust camera handoff, or delivery of the camera-reported 2688 x 1512 profile.
+
+Strict-remote job `30103409168220166` on `vmi1153651` passed all three
+fleet unit tests, with 2,375 unrelated tests filtered. It used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and the same source overlay
+fingerprint `dac01f93d998234f317ee3aaaf5a0c5f4cc8d1381d517be373ac45a9b461cca5`
+as the 20-test integration run above. It exited zero, was terminally
+acknowledged, and its source root was reaped. The tests use synthetic inputs.
+
+The laboratory fleet route now carries its selected inventory MAC, task clock,
+resource, and admission gate through the TLS and WebSocket upgrade. The
+upgrade intersects the route's claimed MAC with the caller's independent
+admission decision; neither the source address nor the MAC is physical-device
+authentication. The returned session owns the routed transport and its active
+slot. TLS handshake and upgrade share one bounded deadline, and failed or
+cancelled handshakes drop the transport. Plaintext is metered with the route's
+camera resource and the same task clock as its encrypted wire. The TLS provider
+remains experimental, with no production cryptographic or physical-peer
+qualification, persistent supervision, media handoff, or live-camera claim.
+
+On `vmi1153651`, strict-remote job `30103409168220186` passed both ignored
+private-interface TLS setup tests: two passed, zero failed, ignored, or
+filtered. A synthetic fleet camera completed setup and upgraded over TLS; its
+active session refused a duplicate source, a different claimed MAC was denied
+even with a permissive callback, and after each case a fresh route could be
+accepted. The prior single-camera test also passed. This fixture has one fleet
+camera, not concurrent multi-camera TLS or a physical G4. The job used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and clean-overlay fingerprint
+`7963a3b711f8e8e47e32f488ccace1214ec2841fb6ee211805551e8f6cebff14`;
+it exited zero, was terminally acknowledged, and released source and pair.
+An earlier obsolete snapshot was cancelled through RCH; its cancellation was
+initially unconfirmed and the wrapper reported a disk-supervisor failure.
+Same-job recovery reported exit 120, terminal acknowledgment, and release of
+its source and pair; it did not establish a test result. At the subsequent
+read-only check, the existing G4 recorder on `trj` was active with restart
+count 83 and 12 fallback MP4s modified within the preceding 15 minutes. This
+is not proof of uninterrupted recording or a Rust-owned camera stream.
+
+The fleet TLS laboratory fixture now continues through the normal startup and
+video-only recording owners. The synthetic camera verifies that `video1` was
+requested, sends synthetic 2688 x 1512 AVC, and the native Rust decoder checks
+at least one decoded frame's exact dimensions after source-checked MP4
+fragment construction. It also retains the earlier route duplicate and
+mismatched-MAC cases. This is a single simulated camera and no camera media,
+physical identity, recording durability, live retention, or uninterrupted
+operation is established by this test. The fixture does not archive its
+synthetic source records.
+
+The first extended run, strict-remote job `30103409168220187`, failed one of
+its two tests with `Mux(UnverifiedPicture)` and passed the existing setup test.
+The high-resolution fixture had repeated a three-picture subset of a
+four-picture all-IDR stream; the repeat created adjacent identical picture
+identities. The fixture was corrected to cycle all four pictures; no picture
+verification was weakened. Strict-remote job `30103409168220188` then passed
+both TLS setup tests, 2 passed with none failed, ignored or filtered. Its base
+was `ad252a5dfc870413e714ac8ca452c54222e34894`, clean-overlay fingerprint
+`02a138fb4b435a3e59d5317de37420ec04e60f1a0ec23327caf454b4795e5784`;
+it exited zero, was terminally acknowledged, and released source and pair.
+Strict-remote job `30103409168220189` at that same overlay passed all 20
+handoff dispatch tests, with none failed, ignored or filtered; it exited zero,
+was acknowledged, and released source and pair.
+
+The older direct-trial process fixture used the same three-picture repeat for
+its four-picture high-resolution input. It was corrected as well; earlier
+process results do not establish that the repeated input was suitable for the
+stricter picture verifier. Strict-remote job `30103409168220190` on
+`vmi1153651` ran four selected process tests: the corrected high-resolution
+case and the default-channel case passed, but both discovery/setup cases
+failed their preflight because the worker rewrote its bound private source
+address. The job exited 101 and was acknowledged and released. Debug-stripped
+copies of its test executable and trial executable were hash-checked and run
+on `ts1`, where a separate socket check showed the private source address was
+preserved. All four selected cases passed there, 4 passed and 32 filtered. The
+respective stripped executable SHA-256 values were
+`c6b1bcadaac0f6bdd6738e5ecd9599bebed4e54619d6b1bc65539aed8c4f0565` and
+`93e092df0cb8201dacb6fdf97e75444e0f21566074419a810d45c6301096869c`.
+Those are direct synthetic process results on `ts1`, not a passing remote
+worker job or physical-camera test. After this work the existing recorder on
+`trj` was active at restart count 83, with 13 fallback MP4s modified in the
+preceding 15 minutes.
+
+Fleet setup now keeps per-camera state and operation reservations in the
+single-threaded fleet owner rather than exclusively borrowing the whole fleet
+for the duration of setup. The shared controller listener permits a setup to
+retain its listener reference while one accept is pending. Its bounded accept
+lease rejects a second concurrent accept with `Busy` and releases on return or
+future drop. Operation identities remain single-use within the fleet; dropping
+a setup future leaves its camera `InFlight` and does not authorize a retry.
+This is process-local scheduling, not restart recovery, identity proof, or a
+persistent fleet service. A connection from the camera whose setup is itself
+still in flight is not yet held for its readback: the current router closes it
+as an unknown eligible peer. The caller must account for that limitation.
+
+Strict-remote job `30103409168220191` passed all 20 handoff tests, including a
+fixture that paused camera two's setup while routing camera one's connection,
+refused a second pending accept, and accepted again after dropping the first
+accept future. Job `30103409168220192` passed all three fleet unit tests with
+2,375 unrelated tests filtered, including simultaneous in-flight and completed
+camera attempts, duplicate-operation refusal, and cancellation fencing. Job
+`30103409168220196` passed both laboratory TLS setup tests including synthetic
+2688 x 1512 decoding. All three used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and clean-overlay fingerprint
+`0b8dde2156bc6be74185b86e260080534c8cadd3236433af8dd4a586a347d64c`; each
+exited zero, was acknowledged, and released its source and pair. Two subsequent
+edits only removed unnecessary `mut` from fixture bindings. A requested final
+handoff rerun after that cleanup was refused before execution because the
+selected worker had no free slots; it is not an additional passing run. The
+existing recorder on `trj` was active at restart count 83, with 12 fallback
+MP4s modified in the preceding 15 minutes. None of these tests used the real
+G4 or proves full-resolution capture from it.
+
+The earlier connection-race limitation is now addressed in the in-memory
+fleet router. After source-address and listener/camera policy checks, it can
+hold one early socket per camera while that camera's setup remains active.
+Accept and setup-wait share one caller-supplied deadline, capped at 30 seconds;
+no socket data is read while held. The listener remains available for other
+cameras. Duplicate early connections are refused, and a later connection cannot
+overtake a held one after setup completes. Dropping the wait releases its
+socket and slot; an interrupted setup wakes the waiter while preserving the
+in-flight effect, and a rejected setup closes the held socket. The final route
+rechecks policy and task authority before ownership transfers. This routing
+still uses an untrusted source-address claim and requires separate peer
+identity, protocol admission, supervision, and restart reconciliation. Policy
+revocation while waiting is checked before eventual routing; this test does not
+prove immediate wakeup on revocation or native task-context cancellation.
+The maximum number of fleet entries remains 128, with at most one held early
+socket per entry.
+
+Strict-remote job `30103409168220204` passed all 20 handoff integration tests,
+including early-socket timeout, dropped waiter, duplicate, rejection,
+interrupted setup, ordering after setup completion, and concurrent routing of
+another camera. Job `30103409168220205` passed three fleet unit tests with
+2,375 unrelated tests filtered. Job `30103409168220208` passed both laboratory
+TLS/media tests including synthetic 2688 x 1512 decoding. All used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and clean-overlay fingerprint
+`13d5c3f6f91d3af16baf567713a1ec70b82fe9deb148c7fce5eba375bcd2a4d7`;
+each exited zero, was terminally acknowledged, and released source and pair.
+The earlier job `30103409168220201` passed the same 20-test suite before later
+ordering and cancellation refinements, so it is not proof of those refinements.
+The existing recorder on `trj` remained active at restart count 83, with 13
+fallback MP4s modified within the preceding 15 minutes. The tests did not
+contact the physical G4, establish continuity or 30-day retention, or prove a
+full-resolution camera capture.
+
+The fleet API now exposes `accept_one`, which returns either an already-routed
+socket or a `PendingRoute` that owns an early socket and its pending slot. A
+caller-owned `Router` can poll a bounded number of pending routes while keeping
+one listener accept active; it returns one ready route or refusal at a time and
+spawns no tasks. Dropping `next` preserves the router's pending owners; dropping
+the router closes them. When capacity is full, a newly matched pending socket
+is refused and closed. Callers must keep polling and must supervise the returned
+sessions. In particular, a `PendingRoute` retained without polling can remain
+open past its deadline; the deadline is checked when resolution is polled or
+its owner is dropped. The source address and MAC remain unauthenticated claims.
+This is a reusable orchestration component, not a deployed fleet service,
+identity mechanism, automatic credential enrollment, or restart recovery.
+
+Strict-remote job `30103409168220213` passed all 20 handoff integration tests
+at base `ad252a5dfc870413e714ac8ca452c54222e34894` and clean-overlay
+fingerprint `97e93071c8f03b2d128c430cb951d35f8fef6a1e3c883b424f8725d6b80dab94`.
+It included a router holding one early camera while returning a ready camera,
+then returning the held camera after setup. Job `30103409168220214` passed the
+selected two-camera test after adding a router-drop socket-closure check; 19
+other tests were filtered. Job `30103409168220215` passed three fleet unit
+tests with 2,375 unrelated tests filtered at the same overlay as that selected
+test (`47ad6ac4f92c7d9c233f9231445bf5e6a5de1ca073db663a958be4186e362e0f`).
+Job `30103409168220216` passed the selected two-camera test with 19 filtered
+at overlay `2f648d10637606e5abfa5f9492a75431442917742a238fab1fdec3d06d1660ef`,
+including two simultaneous in-flight setups, a one-pending-socket limit and
+refusal of the second early connection. Job `30103409168220224` passed both
+laboratory TLS/media tests with none filtered at overlay
+`e813120c4e1981932c74ccfff2aca7abb786fdd24a36bd52bc26f8d9b9770fb6`.
+That fixture held an early synthetic connection through setup, routed it,
+completed TLS and WebSocket startup, selected video1, and decoded at least one
+synthetic 2688 x 1512 frame. Each stated passing job exited zero, was
+terminally acknowledged, and released source and pair. The intermediate TLS
+request on the first worker timed out in its queue; a first retry on the second
+worker was refused before execution pending a refreshed disk-headroom sample.
+Neither was a passing run. These tests do not establish physical G4 identity,
+real-camera capture, continuous recording, or 30-day retention. At the final
+read-only check, the current recorder on `trj` was active with restart count
+83 and 12 fallback MP4s modified within the preceding 15 minutes.
+
+### Experimental bounded fleet handshake owner (work in progress)
+
+The laboratory now has a caller-owned `FleetAcceptor` that polls the existing
+fleet router alongside a bounded set of TLS/WebSocket upgrades. The owner
+retains in-flight work if an individual `next` wait is dropped; dropping the
+owner retires its pending handshakes and sockets. It returns explicit routing,
+capacity and handshake failures, and starts no detached tasks. The caller must
+keep polling it and supervise every returned session. The admission callback,
+source address and MAC do not independently prove physical device identity.
+
+The expanded synthetic TLS/media fixture holds a handshake while connecting a
+duplicate peer, then releases it for the existing full-resolution media path.
+Earlier requests on
+`vmi1153651` and `vmi1152480` did not execute because of worker admission and
+queue timeout, respectively. A first request on `vmi1264463` was refused
+before Cargo because the input changed during source transfer. Job
+`30103409168220229` compiled but failed all three TLS tests using a disposable
+certificate with `CA:TRUE`; the previously passing fixture certificate had
+`CA:FALSE`. The corrected certificate was tested in strict-remote job
+`30103409168220232`: all three tests passed, none were filtered or ignored,
+and terminal exit zero, acknowledgement, source release, and pair release
+were recorded. Its base was `ad252a5dfc870413e714ac8ca452c54222e34894`
+and its clean-overlay fingerprint was
+`80001151b34f2c49a99e78853953585830bf798aedb3875e4b28a8b9ba5f2989`.
+
+The new two-camera synthetic fixture stalled the first connection before TLS
+while a second completed TLS and WebSocket setup. With capacity one, it instead
+verified the second connection was refused and closed. It also verified that
+dropping the acceptor closed the first stalled socket. The earlier single-camera
+fixture retained a stalled handshake while processing a duplicate connection,
+then completed its synthetic full-resolution media path. Production TLS,
+physical G4 capture, effect reconciliation, and 30-day retention remain
+unproven. No physical camera or recorder was modified by this work.
+
+### Full-resolution owned-archive process fixture and initial-audio gap
+
+The direct trial process fixture now combines synthetic discovery and HTTPS
+setup, channel `video1`, TLS/WebSocket control, two owned archive segments,
+retained journal anchors, source-checked readback and Rust video decoding. Its
+new gray 2688 x 1512 fixture has one IDR followed by three non-IDR pictures,
+repeated by the test; the four-picture H.264 file has SHA-256
+`96b8a619aee7dd640de62cfac3d67a82dc561410f35dc443d180c53206a9731e`.
+It was generated using FFmpeg's `color` source at 25 fps and libx264 with
+`keyint=4:min-keyint=4:scenecut=0:bframes=0`, `yuv420p`, and four frames.
+The test supplies synthetic AAC framing and an unverified AAC configuration;
+it does not decode audio or establish real-camera A/V timing.
+
+Strict-remote job `30103409168220241` passed this selected process test,
+with 37 other tests filtered; readback decoded three frames at 2688 x 1512.
+Job `30103409168220242` passed the separate all-keyframe negative regression,
+also with 37 filtered. Both used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and clean-overlay fingerprint
+`da222f77c062e634272b410bcda6958a845866e4cfa726ed6430f0e7ac0db126`,
+exited zero, were acknowledged, and released their source and pair. The tests
+ran in a disposable Linux network namespace because this worker rewrites the
+source of connections to its host private bridges. The host network was not
+changed. An earlier request, `30103409168220235`, refused that rewritten
+source before setup and is not a pass.
+
+The all-keyframe fixture reproduces a real limitation in the owned A/V
+bootstrap: the first completed video segment can lack original audio because
+interleaved records after its final video sample remain on the next segment's
+side of the boundary. Bootstrap currently requires audio in the first segment
+and refuses with `Media(NoAudio)`, returning the transition owners for reconciliation.
+Jobs `30103409168220237` and `30103409168220238` failed while exposing that
+limitation; the latter added payload-free transition diagnostics. The negative
+regression verifies that refusal, not a fix. Supporting this case requires an
+explicit video-only or delayed-A/V boundary that preserves source custody,
+sequence, clock and coverage semantics. Do not treat these synthetic tests as
+evidence of physical G4 capture, continuous recording or 30-day retention.
+
+The container now has an explicit video-only fragment path under an A/V
+initialization. It copies the source-linked video fragment without an audio
+track fragment, preserves sequence and video timing, and leaves the audio
+cursor unchanged. The separate verifier checks its exact byte equality and
+supported video-box layout. Neither this path nor an empty mapping asserts
+that audio was absent or that coverage was complete; callers must account for
+the omission. The existing audio-required fragment path is unchanged.
+
+The reference muxer can derive an initial sender-clock hypothesis from an
+exact copied lookahead AAC record, only when the first segment itself has no
+AAC sample. The returned observation includes its offset, byte count, digest
+and timestamp. An opt-in muxer binds that witness to the first video-only
+fragment and requires the first later audio sample to match the same record;
+refusal leaves the owners available for retry. The witness remains on the next
+segment's side of the original custody boundary. These operations do not
+authorize publication, authenticate the camera, or establish synchronization.
+The existing v1 A/V archive still requires at least one audio mapping, so
+these components are not yet connected to archive publication and the
+all-keyframe process regression still expects `Media(NoAudio)`.
+
+Strict-remote job `30103409168220244` passed eight container tests, with one
+independent-output test ignored, at clean-overlay fingerprint
+`b1e168161c0da95cd3be9f8379729834d221005862d58d96c7b7e976c1179588`.
+The first reference test request, `30103409168220245`, failed because its
+fixture repeated the same key picture and was refused as `UnverifiedPicture`.
+After switching to distinct synthetic keyframes, job `30103409168220249`
+passed three reference tests, with one independent-output test ignored, at
+overlay `10191c5bb94be7c49b140df989b3279030c83e0db56cc7ab97d9bb46af22fb41`.
+The corrected test refuses a changed initial witness and a changed later
+audio record, then accepts the original next audio sample. Both passing jobs
+used base `ad252a5dfc870413e714ac8ca452c54222e34894`, exited zero, were
+acknowledged and released their source and pair. The container and reference
+jobs cover different snapshots; neither is an end-to-end archive proof.
+
+`PreparedAvVideoOnly` now constructs a separate, preparation-only candidate
+with manifest kind `unifi-direct-flv-av-video-only-v1` and registered metadata
+domain `fss.unifi-direct.flv-av-video-only-evidence.v1`. Its metadata binds the
+original nested video graph, AAC configuration provenance and bytes, A/V
+initialization and byte-identical video-only derivative. A tagged no-emitted-
+sample value and an explicit false coverage marker do not claim physical audio
+absence. Preparation verifies that no raw audio appears in the owned segment,
+that the video derivative and mapping agree, and that the supplied audio
+configuration matches. The existing audio-bearing candidate rejects the empty
+fragment, and this new candidate rejects an audio-bearing fragment.
+
+Strict-remote job `30103409168220253` passed 22 recording contracts and three
+sender-segment contracts, with one ignored test in each suite, at base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and clean-overlay fingerprint
+`1e315560dde19136d09c2441270f41c777455ba7c8eb64753cf823639cc605c0`.
+Job `30103409168220254` passed the three sender-segment contracts with one
+ignored at overlay `4c269bbcadf3e7aae919434dd65c8bde5bfaccc8f1b717a7f0d77dfcf6e3f245`,
+including a complete decode of the new metadata and its zero-audio marker.
+Both exited zero, were acknowledged, and released source and pair. The new
+type cannot be passed to the existing A/V publishing API: a matching ledgered
+reader, source revalidation, publication/reconciliation path and sequence
+assembly are still needed. The all-keyframe recording problem is not fixed.
+
+The video-only candidate now has its own unknown-time anchored publication and
+recovery APIs. The reader independently reopens the ledgered root, checks the
+registered format and explicit unknown-coverage marker, verifies the nested
+video graph and AAC configuration, rejects audio tags in the owned segment,
+and checks that the video-only derivative exactly matches the retained video
+fragment. It retains no physical-time, audio-coverage, device-identity or decode
+claim. The audio-bearing v1 reader refuses this separate kind. The publication
+API uses the existing journal and keeper; a failed or uncertain publication
+still requires reconciliation against the same root.
+
+Strict-remote job `30103409168220256` passed 22 recording contracts and three
+sender-segment contracts, with one ignored in each suite, at clean-overlay
+fingerprint `08374c8b0a8112f331e366b65db3533ef7099962a2c372798645c4499b6186bc`.
+Job `30103409168220258` passed the three sender-segment contracts with one
+ignored at overlay `2e36a4c9e42a8edca65917022cdf35137438bda982f47bdd812f48d1fb393766`.
+The latter tests a denied publication followed by same-root retry, reopening
+the journal and keeper at retained minima, reopening the deployment and
+reading the checked video-only result, a denied and mid-read revoked policy,
+and refusal by the audio-bearing reader. The fixture uses an explicitly
+unverified supplied AAC configuration; the in-band configuration path was
+not separately exercised by this new test. Both jobs used base
+`ad252a5dfc870413e714ac8ca452c54222e34894`, exited zero, were acknowledged,
+and released source and pair. These are synthetic checks on one worker, not
+proof of independent durable anchors, physical G4 capture, continuous
+recording, retention or mixed-format sequence assembly. The recording session
+does not yet choose this new path; the all-keyframe process still refuses.
+
+### Initial video-only session path and qualification (2026-11-10)
+
+The unknown-time owned recording path can now opt in to publishing an initial
+video-only fragment if the exact first audio sample is already bound as a copied
+lookahead witness. The publication is explicitly tagged `VideoOnly`; a later
+fragment with audio is tagged `AudioVideo`, and the laboratory reader selects
+its matching source-verifying archive reader. Other policy literals remain
+opted out. The path does not claim audio coverage for the initial fragment. It
+still stops if the required lookahead is missing or a subsequent segment has no
+audio. Known-time publication does not support this opt-in path.
+
+At base `ad252a5dfc870413e714ac8ca452c54222e34894`, strict-remote job
+`30103409168220261` passed the one selected all-keyframe process test (37
+filtered), publishing a video-only segment followed by an audio-bearing segment
+and decoding one synthetic 2688 x 1512 frame on source-checked readback. Job
+`30103409168220264` passed the one selected ordinary-GOP process test (37
+filtered), decoding three synthetic 2688 x 1512 frames. Job
+`30103409168220266` passed 22 sender-segment and 3 recording-contract tests,
+with 2 ignored, including denied publication followed by same-root retry and
+rejection of an altered lookahead witness. Its clean-overlay fingerprint was
+`a71022b51acb0d22c667660eac40b6c0940b393c6101eb0d14a79fe2ac589147`.
+All three jobs exited zero, were acknowledged, and released source and pair.
+
+The owned-session filter on the default test-thread stack **aborted with stack
+overflow** in job `30103409168220268`; it is not a pass. Diagnostic job
+`30103409168220270` passed the two selected tests (69 filtered) using
+`RUST_MIN_STACK=8388608`, on the same base and overlay as job 20266. Both jobs
+were acknowledged and released source and pair. The larger-stack diagnostic
+does not resolve the default-stack failure.
+
+These are synthetic fixtures with supplied, unverified AAC configuration and no
+audio decode. They do not prove physical G4 capture or identity, uninterrupted
+recording, or 30-day retention. The two archive kinds are read independently;
+mixed-sequence assembly, restart supervision, and recovery of the last confirmed
+video-only root remain unqualified. This is not a production replacement for
+the existing recorder. No physical camera or recorder was modified.
+
+A subsequent synthetic contract also constructs the initial lookahead path
+from an AAC configuration observed in the original source, checks the exact
+record binding, prepares the video-only evidence, and emits audio from the next
+segment. Strict-remote job `30103409168220272` passed 4 sender-segment tests,
+with 1 ignored, at the same base and overlay fingerprint
+`01cfbe0b829837175dc7e29e93a94cf2c0f7a99ba3d08c1a3ef64b395c47e0d8`;
+it exited zero, was acknowledged, and released source and pair. This is a
+source-binding and mux fixture, not an in-band full-process or audio-decode test.
+
+### Recovering a confirmed video-only root (2026-11-10)
+
+Unknown-time archive recovery now dispatches by the content-digest-checked
+manifest kind, and then performs the matching complete ledger and source-graph
+verification; a failed read is never treated as a reason to try another kind.
+The confirmed-root replay path accepts either supported kind, retaining the
+same read/retain authority checks, exact-root replay fence and keeper checks.
+Recording-storage readback and restart use this dispatch and report a typed
+video-only result with audio coverage unknown, rather than equating a zero
+sample count with physical absence of audio.
+
+Strict-remote job `30103409168220276` passed 22 recording-contract and 4
+sender-segment tests, with one ignored in each suite. Its synthetic video-only
+fixture reopens the journal, keeper and deployment, rejects denied readback and
+replay without clearing the replay pin, and confirms exact-root replay with an
+`AlreadyLedgered` receipt. It used base
+`ad252a5dfc870413e714ac8ca452c54222e34894` and overlay fingerprint
+`282f7afc6b1baabdf5f848a1c0dbf760a636a2d568c05c68526d1829d2e4a193`.
+
+Strict-remote job `30103409168220279` passed the selected separate-process
+synthetic cold-readback test (1 passed, 38 filtered), at the same base and
+overlay fingerprint
+`0e96a953602cb0d18fe21ae81188dd7a9f030159594c8b8e3ccd63b9a75e54bf`.
+The first process published one all-keyframe video-only fragment and decoded a
+2688 x 1512 frame; a second process reopened the retained archive and reported
+unknown audio coverage. It also exercised refusal of missing storage, wrong
+camera claim and absent owner authorization. The earlier invocation
+`30103409168220278` ran no tests and exited 101 because the lab manifest was
+not selected. These fixtures use synthetic media and a simulated controller.
+They do not qualify a full video-only `resume_confirmed` transition, mixed
+sequence assembly, independent custody, physical camera takeover, continuous
+recording or 30-day retention. The default-stack large integration-fixture
+overflow remains unresolved.
+
+The ordinary audio-bearing owned-session restart regression then passed at the
+normal test-thread stack: strict-remote job `30103409168220281` ran one selected
+synthetic test (70 filtered), including replay refusal on revoked read/retain
+authority, exact-root replay, and the retained-history restart boundary. It used
+the same base and overlay as job 20279. Jobs 20276, 20278, 20279 and 20281 were
+acknowledged and released their source and execution pair. The passing lean
+fixture does not resolve the separate large integration-fixture stack overflow.
+
+### Video-only restart and mixed-root readback (2026-11-10)
+
+The owned-session synthetic fixture now starts with an all-IDR 2688 x 1512
+video-only root, recovers retained histories, refuses stale connection and
+unauthorized restart, publishes and cold-verifies its restart boundary, and
+archives an audio/video fragment on a second connection. Strict-remote job
+`30103409168220283` passed the selected test (1 passed, 71 filtered), on the
+normal test-thread stack, at base `ad252a5dfc870413e714ac8ca452c54222e34894`
+and overlay fingerprint
+`40e2c3a2f64887b93ea6dc41f6b70a2efa8a3e47c3db75791c484a6d5d180bbc`.
+The fixture uses local synthetic peers, locally selected retention anchors, and
+unverified supplied AAC configuration; its controller effects remain unsettled.
+
+Unknown-time archive readback now also supports a bounded sequence of checked
+roots, including a video-only first fragment followed by audio/video fragments.
+It requires the same initialization, matching source/generation, adjacent video
+sequence and decode coordinates, exact first-lookahead/next-record match, and
+contiguous audio decode clocks after audio begins. Each root is reauthorized
+after assembly. An audio-free first derivative remains explicitly unknown for
+audio coverage; no physical timing, camera identity, A/V sync, or uninterrupted
+coverage is inferred. Strict-remote job `30103409168220285` passed 4 sender
+contracts (1 ignored) at overlay
+`6d73f90d393d5714a57ba693d7f9b6e04141288e25a14343d9c9bf005f3ecc28`,
+including a mixed-kind join and refusal of denied access, a denied second root,
+reordered or duplicated roots, and fragment-count overflow. The earlier job
+`30103409168220284` passed the preceding version (4 passed, 1 ignored) at overlay
+`720cbdeed7be7f91075a71c5b65d62d722c893cccd1331204acb0100c69ce01b`.
+
+The lab's optional decode path now joins the checked roots before decoding.
+Strict-remote job `30103409168220286` passed the selected all-IDR process test
+(1 passed, 38 filtered) and decoded two synthetic 2688 x 1512 frames across
+the video-only / audio-video fragment boundary. It used the same base and
+overlay as job 20285. Job `30103409168220287` passed the ordinary-GOP A/V
+process regression (1 passed, 38 filtered) and decoded three synthetic frames
+at 2688 x 1512; its overlay fingerprint was
+`2bee211a6c91f172352d1053758f3548ead6a50fc3550e3df4aab1c7bede362c`.
+Both used the isolated network namespace and disposable synthetic TLS peer.
+All jobs 20283 through 20287 exited zero, were acknowledged, and released
+source and pair. A prior process-test request was refused before execution by
+stale worker capacity; a successful worker probe preceded job 20286.
+
+These results qualify bounded synthetic paths, not physical G4 takeover or a
+production service. They do not establish independent physical device identity,
+resolve earlier camera-control obligations, verify real full-resolution media,
+continuous operation or 30-day retention. The large default-stack integration
+fixture still overflows. The temporary fallback recorder was not modified.
+
+### Fresh camera-derived mixed-root replay (2026-11-10)
+
+A fresh 20-second passive observation of the current G4 push was processed in
+memory and replayed to the previously tested Rust process on `ts1`. The process
+published and source-checked two temporary archive roots, assembled their
+unknown-time sequence, and the Rust H.264 decoder produced three 1280 x 720
+frames from the assembled output. This check does not establish that the three
+decoded frames crossed the segment boundary. The physical camera was not
+reconfigured; the controller peer was simulated, the stream header and AVC
+configuration tag were synthesized, the audio configuration was supplied by
+the existing relay without independent epoch verification, and camera identity
+and capture time remain unverified. The passive media was sent only to the
+local `ts1` replay target, not to the remote compilation worker.
+
+The source executables came from the build used by strict-remote jobs
+`30103409168220286` and `30103409168220287`. Debug-stripped copies had SHA-256
+`e4d50aafd361df084bf14b7834fa379027cab01d609157b0232a77a911a06070`
+(test) and `9a4f5e317b7a48966b6dc091e243a05eade4551253de23d1734b4b5fc58d322c`
+(trial); both matched on `ts1` before and after the replay. A separate synthetic
+two-segment control passed on `ts1` and decoded three 160 x 128 frames. The
+local helper `work/g4-owned-sequence-local-replay.py` SHA-256 was
+`52ad3c807158938c6674fb8b852e3f639a27aedd5c44ad647af1762e7acda0ae`, and the
+passive-capture helper SHA-256 was
+`db0ac13c5f2a8f53a671078c56f0707db4f73f5f53805c288a473bd5cf1cdbd8`.
+The private replay archive, copied binaries and disposable certificate/key were
+removed after the test. The `unifi-g4-staged-recorder` container and fallback
+timer were active before and after; the inspected container reported restart
+count zero at both observations, and 12 fallback MP4s had been modified in the
+preceding 15 minutes at each check. These are bounded point-in-time checks, not
+proof of gap-free recording or the source of earlier restart counts.
+
+A direct remote-to-remote shell pipeline for transferring the executable files
+was blocked by the local DCG safety review because it could not verify the
+pipeline consumer. The binaries were instead copied as files through a private
+local temporary directory and their hashes verified before execution. No
+camera media was written to that directory. This replay does not establish a
+native physical controller handoff, full-resolution physical video, continuous
+operation, independent durable anchor custody, or 30-day retention.
+
+### Full boundary-witness continuity (2026-11-10)
+
+The sequence readers previously compared only the first copied lookahead
+record with the next segment's first source record. That was insufficient to
+exclude two independently valid source branches that agree initially but differ
+in a later copied boundary record. Both known-time and unknown-time A/V
+sequence readers now retain the bounded verified record metadata and require
+all copied lookahead records to match the corresponding next-source prefix;
+the work budget charges this comparison. No stored format or root is changed.
+
+Strict-remote job `30103409168220290` passed 22 recording contracts and 4
+sender-segment contracts (one ignored in each suite), including separately
+valid synthetic branches with an identical first boundary record and a changed
+later record. It used base `ad252a5dfc870413e714ac8ca452c54222e34894` and
+overlay fingerprint
+`b1b7b05f9e7b4cac07967289e4bfc2721fa83e0928c97a7549305fba2286275d`.
+This is archive-source continuity evidence, not authenticated camera identity,
+physical time, decoded audio, or proof of continuous coverage.
+
+The previous reader was tested separately with the same divergent-boundary
+fixture in strict-remote job `30103409168220289`: its expected-mismatch
+assertion failed (0 passed, 1 failed, 4 filtered, exit 101). The assertion did
+not log the returned variant, so that run alone does not distinguish acceptance
+from an unexpected error. The corrected reader passed the same assertion in
+job 20290. Both jobs were acknowledged and released source and pair.
+
+Strict-remote job `30103409168220302` passed the selected all-keyframe
+full-process test (1 passed, 38 filtered), including decoding two synthetic
+2688 x 1512 frames across the initial video-only / A/V boundary. It used base
+`ad252a5dfc870413e714ac8ca452c54222e34894`, overlay fingerprint
+`987a22c0b4e71fa38fb7a4cb678aef801c87d7d771978ffeff8605b0d6f44a64`, and
+was acknowledged with source and pair released.
+
+The same revision was also exercised on a fresh 20-second passive G4-derived
+sample, sent only to `ts1`: two source-checked archive segments were assembled
+and the Rust decoder produced three 1280 x 720 frames from the sequence. The
+controller was simulated, FLV start and video configuration synthesized, and
+AAC configuration was relay-supplied without independent epoch verification.
+The check did not establish whether the decoded frames cross a segment boundary,
+physical identity, direct camera takeover or full-resolution physical capture.
+A separate synthetic two-segment control passed on `ts1` before that replay.
+
+The debug-stripped test and trial executables had SHA-256 respectively
+`c6b9a626d80a08b52c0e196d4b0b027e0df48f39144072eb0323b5ac30b691aa` and
+`30fd2047300d5776cd8a8140c79e3e4a9d9c2fd708e3b9034be06fe2e53e9aa2`, verified
+on `ts1` before and after. The local private replay helper
+`work/g4-owned-sequence-boundary-replay.py` had SHA-256
+`cafa9d52da59d127faa66511b519b6b03b72975201c9d4880011e15b14b41086`; the
+passive-capture helper had SHA-256
+`db0ac13c5f2a8f53a671078c56f0707db4f73f5f53805c288a473bd5cf1cdbd8`.
+Disposable binary copies, certificate/key and private replay archive were
+removed. The staged recorder and fallback timer remained active; the staged
+container reported restart count zero both before and after, and 13 fallback
+MP4s had changed within the preceding 15 minutes at both observations. This
+is not proof of gap-free recording or a 30-day retention outcome.
+
+### Explicit archive capacities and recovery (2026-11-10)
+
+The owned-recording configuration now requires explicit deployment limits for
+its source and A/V stores. Creation uses those limits and confirmed recovery
+reopens the existing layouts with the same digest-bound values. Invalid owner,
+publication and object-size bounds are rejected before creating the storage
+root. These limits bound capacity; they do not reserve free disk space.
+
+Strict-remote job `30103409168220323` created 129 synthetic source archive roots
+under an explicit 160-root limit, verified the keeper and cold-reopened all 129
+roots (1 passed). An earlier run of this same new test, job
+`30103409168220322`, failed its final task-cleanup assertion because the assertion
+was inverted; it reached the 129-root and reopen checks before failing. After the
+assertion was corrected, job 20323 passed.
+
+Job `30103409168220325` passed the selected video-only to A/V restart contract
+(1 passed, 71 filtered), including non-default source and A/V limits and refusal
+of wrong limits on confirmed readback and resume. Job `30103409168220326`
+passed the separate writer-exit / child-process boundary recovery contract
+(1 passed, 71 filtered) with the same non-default A/V limit. These runs used
+base `3203ed0ceae9679fd9516cb285d9b949f0a23a9f` and overlay fingerprint
+`a8ce254394be42964c3bdfad54fa1f54b91779b507035b29a0ebab586f601715`.
+The process test models clean exit, not a crash or power loss. No physical
+camera or existing recorder was changed. The separate effect journals still
+have bounded record counts and cumulative read budgets; rollover, autonomous
+service, storage deletion, actual 30-day retention and physical full-resolution
+recording remain unproved.
+
+The 129-root test is a capacity regression, not a sizing recommendation. The
+current standalone-source fixture publishes one evidence root per source record
+that is returned outside a segment; records incorporated into A/V segments have
+a different publication path. The earlier eight-second passive sample had 318
+structurally framed tag candidates, but that count does not establish how many
+standalone source roots a normal continuous session would create. Earlier
+bounded G4-derived replay fixtures reported zero separately returned bootstrap
+records in one sample and one in two other samples; these do not establish a
+steady-state rate. Raising the root bound alone does not establish practical
+continuous retention. Realistic source-publication rates, any needed batching,
+effect-journal rollover with retained continuity, and authorized age-based
+deletion require further work.
+
+In the normal new-candidate path, `publish_unknown_time_anchored` prepares and
+confirms the publication journal and retains the keeper after each transition.
+The default journal limit is 4,096 records. Even apart from byte/read budgets,
+a single unrolled journal cannot support an unlimited run: at two new journal
+records per successful candidate and one initial genesis record, at most
+2,047 fresh candidates fit before the next pair is refused. The actual usable
+count can be lower due to recovery or other records, and the
+candidate rate is workload-dependent. This is a design constraint, not a
+measurement of the existing fallback recorder.
+
+Strict-remote full-process job `30103409168220324` built the updated laboratory
+trial and passed the selected synthetic all-keyframe video-only to A/V archive
+case (1 passed, 38 filtered). Its source-checked readback decoded two synthetic
+2688 x 1512 frames. It used the same base and overlay fingerprint as the other
+capacity jobs above. The peer, controller and media were simulated; this is not
+a full-resolution recording from the physical G4 or a continuous-service test.
+
+### Keeper capacity preflight (working tree, not yet qualified)
+
+The unknown-time anchored publication path now preflights the keeper's bounded
+capacity before preparing the journal. It counts the two keeper updates for a
+new candidate, one for a caught-up pending retry, and zero for an already
+confirmed, caught-up candidate. A capacity refusal is returned before journal
+preparation or root publication. This preflight does not allocate disk space or
+predict I/O failure; ambiguous writes still require exact reconciliation.
+The known-time anchored A/V path has the same two-update exposure and has not
+yet been changed. This does not implement rollover or 30-day retention.
+
+A new local test fixture covers a keeper with just one free slot, reopening
+with enough space, idempotent confirmed replay, and a pending-candidate retry
+with one slot left. This working-tree change and fixture have not yet passed a
+Rust test. Job `30103409168220332` was refused at remote disk admission before
+Cargo began. A subsequent pre-change regression attempt, job
+`30103409168220334`, started compilation but its remote disk supervisor did not
+return a complete receipt; the wrapper ended with `RCH-E504` and the daemon
+release was unacknowledged. Its job record reported source and pair released,
+but terminal acknowledgment remained false, and no test result was produced.
+The RCH daemon process remained alive with its socket path missing, while other
+jobs had been active. Same-ID recovery could not contact the missing socket.
+Do not infer that either attempt passed or replay the uncertain job without
+first reconciling its original identity and shared-daemon state.

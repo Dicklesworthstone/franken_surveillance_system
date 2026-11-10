@@ -1850,7 +1850,7 @@ fn owned_unknown_time_sink_preserves_source_and_retries() -> TestResult {
         first_segment: first,
         retention: ContentDigest::sha256(b"unknown owned sink retention"),
         policy: av_owned_sink::BootstrapPolicy {
-            max_separation_ms: 5_000,
+            allow_initial_video_only: false, max_separation_ms: 5_000,
             jitter_ms: 0,
             max_epoch_frames: 8,
             max_audio_frames: 8,
@@ -2532,6 +2532,15 @@ fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult
 
 #[test]
 fn av_owner_preserves_segment_source_and_rolls_back_failed_clock_attempts() -> TestResult {
+    av_owner_with_configuration(&[0x14, 0x08])
+}
+
+#[test]
+fn av_owner_preserves_explicit_absent_sbr_configuration() -> TestResult {
+    av_owner_with_configuration(&[0x14, 0x08, 0x56, 0xe5, 0x00])
+}
+
+fn av_owner_with_configuration(bytes: &[u8]) -> TestResult {
     use fss_container::{Mp4Error, Mp4Limits};
     use fss_packet::extended_flv::{aac, aac_clock};
     use fss_reference::unifi_direct::av_recording;
@@ -2539,8 +2548,7 @@ fn av_owner_preserves_segment_source_and_rolls_back_failed_clock_attempts() -> T
     // Deliberately synthetic: 40 ms video and 64 ms AAC timestamps exercise
     // independent clocks without claiming these samples are synchronized.
     let (wire, records) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
-    let bytes = [0x14, 0x08];
-    let config = aac::Configuration::parse_explicit(&bytes)?;
+    let config = aac::Configuration::parse_explicit(bytes)?;
     let mut recorder = Recorder::new(KEY, Limits::default())?;
     let mut initialization = None;
     let mut segments = Vec::new();
@@ -2696,6 +2704,15 @@ fn av_owner_preserves_segment_source_and_rolls_back_failed_clock_attempts() -> T
 
 #[test]
 fn av_owner_retains_in_band_audio_configuration_binding() -> TestResult {
+    av_owner_in_band_configuration(&[0x14, 0x08])
+}
+
+#[test]
+fn av_owner_retains_in_band_absent_sbr_configuration_binding() -> TestResult {
+    av_owner_in_band_configuration(&[0x14, 0x08, 0x56, 0xe5, 0x00])
+}
+
+fn av_owner_in_band_configuration(config_bytes: &[u8]) -> TestResult {
     use fss_container::Mp4Limits;
     use fss_core::ContentDigest;
     use fss_packet::extended_flv::{aac, aac_track};
@@ -2704,7 +2721,9 @@ fn av_owner_retains_in_band_audio_configuration_binding() -> TestResult {
     let (mut wire, original) = fixture(0, false, false)?;
     let insertion = usize::try_from(original[1].offset())? + original[1].bytes().len();
     let mut audio_configuration = vec![0x77; 3];
-    audio_configuration.extend(tag(8, 0, &[0xaf, 0, 0x14, 0x08]));
+    let mut payload = vec![0xaf, 0];
+    payload.extend_from_slice(config_bytes);
+    audio_configuration.extend(tag(8, 0, &payload));
     wire.splice(insertion..insertion, audio_configuration);
     let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
     framer.append(0, &wire)?;
@@ -2723,6 +2742,7 @@ fn av_owner_retains_in_band_audio_configuration_binding() -> TestResult {
     let (observation, record) = captured.ok_or("missing audio configuration")?;
     let binding =
         observation.bind_configuration(&record, FlvLimits::default(), aac::Limits::default())?;
+    assert_eq!(binding.configuration().bytes(), config_bytes);
     let initialization = recorder
         .av_initialization(binding.configuration())?
         .ok_or("missing A/V initialization")?;
@@ -4098,6 +4118,20 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
         segment.fragment().samples().len()
     );
     assert!(unknown_clip.audio().frames > 0);
+    let unknown_video = archive::read_unknown_time_av_video_clip(
+        &mut unknown_target,
+        unknown_pin,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(10_000_000_000),
+        &cx,
+    )?;
+    let mut expected_unknown_video = video_init.bytes().to_vec();
+    expected_unknown_video.extend_from_slice(segment.fragment().bytes());
+    assert_eq!(unknown_video.bytes(), expected_unknown_video);
+    assert_eq!(unknown_video.samples(), segment.fragment().samples().len());
+    assert_eq!(unknown_video.claimed_source(), KEY);
+    assert!(!format!("{unknown_video:?}").contains("ftyp"));
     let forged_known_pin = archive::Pin {
         root: unknown_pin.root,
         retention: unknown_pin.retention,
@@ -4141,6 +4175,17 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
     ));
     assert!(matches!(
         archive::read_unknown_time_av_clip(
+            &mut unknown_target,
+            unknown_pin,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(10_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Denied)
+    ));
+    assert!(matches!(
+        archive::read_unknown_time_av_video_clip(
             &mut unknown_target,
             unknown_pin,
             &access,
@@ -4771,7 +4816,7 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
         None,
         retention,
         av_owned_sink::BootstrapPolicy {
-            max_separation_ms: 5_000,
+            allow_initial_video_only: false, max_separation_ms: 5_000,
             jitter_ms: 0,
             max_epoch_frames: 8,
             max_audio_frames: 8,
@@ -4931,7 +4976,7 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
         Some([0x14, 0x08]),
         retention,
         av_owned_sink::BootstrapPolicy {
-            max_separation_ms: 5_000,
+            allow_initial_video_only: false, max_separation_ms: 5_000,
             jitter_ms: 5,
             max_epoch_frames: 1_000_000,
             max_audio_frames: limits.max_samples,
@@ -5338,7 +5383,7 @@ fn owned_sink_bootstrap_rejects_late_or_mismatched_sources_without_losing_them()
         first_segment: second,
         retention: ContentDigest::sha256(b"bootstrap fixture retention"),
         policy: av_owned_sink::BootstrapPolicy {
-            max_separation_ms: 5_000,
+            allow_initial_video_only: false, max_separation_ms: 5_000,
             jitter_ms: 0,
             max_epoch_frames: 8,
             max_audio_frames: 8,
@@ -5400,7 +5445,7 @@ fn collector_preserves_mismatches_later_segments_and_interrupted_custody() -> Te
     use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, evidence, pipeline};
 
     let policy = av_owned_sink::BootstrapPolicy {
-        max_separation_ms: 5_000,
+        allow_initial_video_only: false, max_separation_ms: 5_000,
         jitter_ms: 0,
         max_epoch_frames: 8,
         max_audio_frames: 8,

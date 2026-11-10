@@ -1084,10 +1084,26 @@ impl ReferenceDeployment {
         site_lineage: &str,
         cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<Self, ReferenceError> {
-        Self::open_with_mode(
+        Self::open_existing_with_limits_without_effect_reconciliation(
             root,
             site_lineage,
             DeploymentLimits::standard(),
+            cx,
+        )
+    }
+
+    /// Reopens an existing deployment under its exact persisted capacity
+    /// limits without reconciling effects. This does not create a deployment.
+    pub(crate) fn open_existing_with_limits_without_effect_reconciliation(
+        root: &Path,
+        site_lineage: &str,
+        limits: DeploymentLimits,
+        cx: &ReplayCx<impl ReplayAdmission>,
+    ) -> Result<Self, ReferenceError> {
+        Self::open_with_mode(
+            root,
+            site_lineage,
+            limits,
             cx,
             &|_: &Path| {},
             DeploymentOpenMode::ExistingWithoutEffectReconciliation,

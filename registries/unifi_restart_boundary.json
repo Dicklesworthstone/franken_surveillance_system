@@ -1,0 +1,14 @@
+{
+  "format": "fss.unifi_restart_boundary_registry.v1",
+  "status": "reference_implementation_unqualified",
+  "owner": "fss-reference::unifi_direct::recording_storage::boundary",
+  "kind": "unifi_restart_boundary_v1",
+  "metadata_domain": "fss.unifi_restart_boundary.v1",
+  "slot": "ufrb1-<boundary-root-sha256-hex>",
+  "publication": "root_last_canonical_ledger_reachability",
+  "fields": ["domain:text", "camera_claim:sha256", "previous_connection:u64", "previous_generation:u64", "next_connection:u64", "next_generation:u64", "source_root:sha256", "source_retention:sha256", "av_root:sha256", "av_retention:sha256", "physical_capture_known:false", "continuity_established:false"],
+  "metadata_max_bytes": 2048,
+  "custody": "one_canonical_boundary_record_in_a_journal_whose_head_is_separately_retained_and_reverified",
+  "release": "verify_custody_head_and_exact_ledgered_root_and_payload_under_current_authority_before_transferring_owners",
+  "non_claims": ["physical_time", "continuous_coverage", "camera_authentication", "control_effect_reconciliation", "globally_unique_source_keys", "independent_anchor_custody", "automatic_resume"]
+}

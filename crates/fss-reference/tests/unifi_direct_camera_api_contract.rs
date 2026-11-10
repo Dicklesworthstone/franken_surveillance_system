@@ -4,12 +4,38 @@ use asupersync::http::h1::Response;
 use fss_core::ContentDigest;
 use fss_reference::unifi_direct::camera_api::{
     ControllerAddress, ControllerPort, Error, Phase, Session, StatusShape, VideoDestinationShape,
-    WriteOutcome,
+    VideoMetric, VideoProfile, WriteOutcome,
 };
 use std::{error::Error as StdError, net::Ipv4Addr};
 
 type Test = Result<(), Box<dyn StdError>>;
 const CREDENTIAL: &[u8] = br#"{"username":"test-user-canary","password":"test-password-canary"}"#;
+
+#[test]
+fn settings_report_video_profiles_without_inventing_missing_or_malformed_values() -> Test {
+    use VideoMetric::{NotReported as N, Reported as R, Unsupported as U};
+    let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut s)?;
+    status(&mut s)?;
+    let cases: &[(&[u8], [VideoProfile; 3], VideoProfile)] = &[
+        (br#"{"av":{"video":{"video1":{"width":2688,"height":1512,"fps":30},"video2":{"width":1280,"height":720,"fps":30},"video3":{"width":640,"height":360,"fps":15},"mjpg":{"width":640,"height":360,"fps":2}}}}"#,
+         [VideoProfile{width:R(2688),height:R(1512),fps:R(30)}, VideoProfile{width:R(1280),height:R(720),fps:R(30)}, VideoProfile{width:R(640),height:R(360),fps:R(15)}], VideoProfile{width:R(640),height:R(360),fps:R(2)}),
+        (br#"{"av":{"video":{"video1":{"width":0,"height":-1,"fps":"30"},"video2":{"width":4294967296,"height":null,"fps":2.5},"video3":false}}}"#,
+         [VideoProfile{width:U,height:U,fps:U}, VideoProfile{width:U,height:N,fps:U}, VideoProfile{width:U,height:U,fps:U}], VideoProfile{width:N,height:N,fps:N}),
+        (br#"{"av":{"video":false}}"#,
+         [VideoProfile{width:U,height:U,fps:U};3], VideoProfile{width:U,height:U,fps:U}),
+        (br#"{}"#,
+         [VideoProfile{width:N,height:N,fps:N};3], VideoProfile{width:N,height:N,fps:N}),
+    ];
+    for (body, expected, snapshot) in cases {
+        let request = s.prepare_settings()?;
+        s.finish_write(request, WriteOutcome::Written)?;
+        let observation = s.accept_settings(Response::new(200, "OK", body.to_vec()))?;
+        assert_eq!(observation.video_profiles, *expected);
+        assert_eq!(observation.snapshot_profile, *snapshot);
+    }
+    Ok(())
+}
 
 fn login(s: &mut Session) -> Test {
     let request = s.prepare_login(CREDENTIAL)?;

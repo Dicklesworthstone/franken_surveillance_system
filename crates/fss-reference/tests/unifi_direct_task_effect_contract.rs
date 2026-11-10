@@ -53,6 +53,7 @@ type Test = Result<(), Box<dyn Error>>;
 const HEAD: &str = "GET / HTTP/1.1\r\nHost: camera.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCamera-Mac: 001122aabbcc\r\nSec-WebSocket-Protocol: secure_transfer\r\n\r\n";
 const HELLO:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_hello","messageId":7,"payload":{}}"#;
 const EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventSmartDetect","messageId":20,"payload":{"edgeType":"enter","descriptors":[{"objectType":"person","trackerID":1,"confidenceLevel":80,"coord":[0,1,500,1000]}]}}"#;
+const REPLY_EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventExample","messageId":20,"responseExpected":true,"payload":{"private":"fixture"}}"#;
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
@@ -97,6 +98,15 @@ impl ManagementAuthority for Guard<'_, '_, '_> {
                 .is_ok()
     }
 }
+struct EventGuard<'a, 'scope, 'task> { guard: &'a Guard<'a, 'scope, 'task> }
+impl ManagementAuthority for EventGuard<'_, '_, '_> {
+    fn permits(&self, mac:[u8;6], intent:Intent, permit:&CommittedEffect)->bool {
+        ManagementAuthority::permits(self.guard,mac,intent,permit)
+    }
+    fn permits_event_reply(&self, mac:[u8;6], intent:Intent, permit:&CommittedEffect)->bool {
+        ManagementAuthority::permits(self.guard,mac,intent,permit)
+    }
+}
 impl StreamAuthority for Guard<'_, '_, '_> {
     fn permits(&self, mac: [u8; 6], intent: intent::Intent, permit: &CommittedEffect) -> bool {
         let Ok(now) = self.clock.now() else {
@@ -138,25 +148,52 @@ fn management_revoked_after_partial_write_fences_session() -> Test {
 
 #[test]
 fn clock_reply_deadline_retains_committed_unwritten_permit() -> Test {
-    clock_reply_deadline_scenario(false,false,false)
+    clock_reply_deadline_scenario(false,false,false,false,false)
 }
 
 #[test]
 fn supervisor_clock_deadline_returns_committed_unwritten_permit() -> Test {
-    clock_reply_deadline_scenario(true,false,false)
+    clock_reply_deadline_scenario(true,false,false,false,false)
+}
+
+#[test]
+fn supervisor_clock_poll_budget_refuses_slow_storage_without_reply_override() -> Test {
+    clock_reply_deadline_scenario(true,false,false,true,false)
+}
+
+#[test]
+fn supervisor_separates_clock_reply_budget_from_idle_poll_under_slow_storage() -> Test {
+    clock_reply_deadline_scenario(true,false,false,true,true)
 }
 
 #[test]
 fn startup_hello_deadline_retains_committed_unwritten_permit() -> Test {
-    clock_reply_deadline_scenario(false,true,false)
+    clock_reply_deadline_scenario(false,true,false,false,false)
 }
 
 #[test]
 fn startup_retains_original_retirement_if_peer_closes_before_hello() -> Test {
-    clock_reply_deadline_scenario(false,true,true)
+    clock_reply_deadline_scenario(false,true,true,false,false)
 }
 
-fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_hello: bool) -> Test {
+fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_hello: bool, slow_storage: bool, reply_override: bool) -> Test {
+    use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
+    #[derive(Debug)]
+    struct SlowStore(FileEffectJournal, Arc<std::sync::atomic::AtomicUsize>);
+    impl EffectJournalStore for SlowStore {
+        fn head(&self) -> Option<EffectJournalPin> { self.0.head() }
+        fn records(&self) -> &[Vec<u8>] { self.0.records() }
+        fn contains(&self, pin: EffectJournalPin) -> bool { self.0.contains(pin) }
+        fn reserve_capacity(&mut self, records: usize, bytes: usize) -> Result<(), EffectPersistenceError> {
+            self.0.reserve_capacity(records, bytes)
+        }
+        fn append(&mut self, expected: Option<EffectJournalPin>, record: &[u8]) -> Result<EffectJournalPin, EffectPersistenceError> {
+            // Deliberate fixture fault: both durable appends take longer than an idle poll.
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(175));
+            self.0.append(expected, record)
+        }
+    }
     struct SlowApproval;
     impl conversation::Approval for SlowApproval {
         fn approve(&self, prepared: &PreparedEffect) -> Option<CommitApproval> {
@@ -166,11 +203,13 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
         }
     }
     const SYNC: &[u8] = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":42,"inResponseTo":0}"#;
-    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-sync-deadline-{}-{supervised}-{startup}-{close_before_hello}",std::process::id()));
+    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-sync-deadline-{}-{supervised}-{startup}-{close_before_hello}-{slow_storage}-{reply_override}",std::process::id()));
     std::fs::create_dir(&path)?;
     let temp=Temp(path);
     let store=FileEffectJournal::create(temp.0.join("journal"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
-    let mut effects=EffectCoordinator::with_journal(Box::new(store))?;
+    let slow_appends=Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let journal: Box<dyn EffectJournalStore> = if slow_storage { Box::new(SlowStore(store,Arc::clone(&slow_appends))) } else { Box::new(store) };
+    let mut effects=EffectCoordinator::with_journal(journal)?;
     let mut budget=BudgetVector::ZERO; budget.network_bytes=1_000_000; budget.bytes=1_000_000;
     let (mut authority,mut tree)=AuthorityCx::root(RootAuthoritySpec {
         trace_id:"trace:sync-deadline".into(),operation_id:OperationId::parse("operation:sync-deadline-owner")?,principal:"principal:fixture".into(),
@@ -195,15 +234,25 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
                     let mut header=Vec::new(); let mut byte=[0u8;1];
                     while !header.ends_with(b"\r\n\r\n") { socket.read_exact(&mut byte)?; header.push(byte[0]); if header.len()>4096 {return Err(io::Error::other("upgrade limit"));} }
                     if !header.starts_with(b"HTTP/1.1 101 ") {return Err(io::Error::other("upgrade refused"));}
-                    socket.set_read_timeout(Some(Duration::from_millis(600)))?;
-                    match socket.read(&mut byte) { Ok(0) if close_before_hello=>Ok(()), Err(error) if matches!(error.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::TimedOut)=>Ok(()), _=>Err(io::Error::other("unexpected write or close")) }
+                    if reply_override {
+                        let response=receive_binary(&mut socket)?;
+                        let parsed=fss_core::json_input::parse(std::str::from_utf8(&response).map_err(io::Error::other)?).map_err(io::Error::other)?;
+                        let fields=parsed.object().ok_or_else(||io::Error::other("clock reply object"))?;
+                        if fields.get("inResponseTo").and_then(|v|v.integer())!=Some(42) {return Err(io::Error::other("clock reply correlation"));}
+                        Ok(())
+                    } else {
+                        socket.set_read_timeout(Some(Duration::from_millis(600)))?;
+                        match socket.read(&mut byte) { Ok(0) if close_before_hello=>Ok(()), Err(error) if matches!(error.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::TimedOut)=>Ok(()), _=>Err(io::Error::other("unexpected write or close")) }
+                    }
                 });
                 let (socket,_)=timeout(cx.now(),Duration::from_secs(5),listener.accept()).await??;
                 let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
                 let io=MeteredIo::with_clock(socket,clock,"fixture:camera",4096)?;
                 let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
                 let mut session=owner::accept(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,controller,Duration::from_secs(5)).await?;
-                let guard=Guard {leases:&leases,clock}; let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&SlowApproval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
+                let guard=Guard {leases:&leases,clock}; let normal_approval=FixtureApproval {revoke_stream:None};
+                let approval: &dyn conversation::Approval=if slow_storage {&normal_approval} else {&SlowApproval};
+                let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
                 let (mut trace,retirement)=if supervised {
                     let media_listener=TcpListener::bind("127.0.0.1:0").await?;
                     let media_peer=std::net::TcpStream::connect_timeout(&media_listener.local_addr()?,Duration::from_secs(5))?;
@@ -213,8 +262,13 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
                     let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
                     let pipeline=pipeline::Pipeline::new(DirectIngress::new(ingress,framer),recorder);
                     let mut supervisor=supervisor::Supervisor::new(session,pipeline,conditions);
+                    assert_eq!(supervisor.set_time_sync_reply_wait(Some(Duration::ZERO)),Err(conversation::Error::Configuration));
+                    assert_eq!(supervisor.set_time_sync_reply_wait(Some(Duration::from_secs(31))),Err(conversation::Error::Configuration));
+                    supervisor.set_time_sync_reply_wait(Some(Duration::from_secs(3)))?;
+                    if !reply_override {supervisor.set_time_sync_reply_wait(None)?;}
                     let trace=match supervisor.step_control(&mut owner,&operation,Duration::from_millis(100)).await {
-                        supervisor::Step::TimeSyncStopped {error:conversation::Error::Deadline,trace}=>trace,
+                        supervisor::Step::TimeSyncWritten {trace} if reply_override=>trace,
+                        supervisor::Step::TimeSyncStopped {error:conversation::Error::Deadline,trace} if !reply_override=>trace,
                         other=>return Err(format!("unexpected supervisor result: {other:?}").into()),
                     };
                     peer.join().map_err(|_|"fixture peer panic")??;
@@ -249,32 +303,47 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
                     peer.join().map_err(|_|"fixture peer panic")??;
                     (trace,session.retire())
                 };
-                assert_eq!(trace.operation(),Some(&operation)); assert!(!trace.dispatch_started());
-                let permit=trace.take_pending_permit().ok_or("committed permit lost")?;
-                assert!(permit.journal_backed()); assert!(trace.take_written().is_none() && trace.take_refusal().is_none());
+                assert_eq!(trace.operation(),Some(&operation));
+                if reply_override {
+                    assert!(trace.dispatch_started());
+                    assert!(trace.take_pending_permit().is_none());
+                    match trace.take_written() {Some(ManagementWrite::Written {permit}) if permit.journal_backed()=>(),_=>return Err("written clock permit lost".into())}
+                    assert!(trace.take_refusal().is_none());
+                } else {
+                    assert!(!trace.dispatch_started());
+                    let permit=trace.take_pending_permit().ok_or("committed permit lost")?;
+                    assert!(permit.journal_backed()); assert!(trace.take_written().is_none() && trace.take_refusal().is_none());
+                }
                 if startup {assert_eq!(retirement.hello_request_id,Some(7));}
+                else if reply_override {assert_eq!(retirement.time_sync_request_id,None);}
                 else {assert_eq!(retirement.time_sync_request_id,Some(42));}
                 Ok(())
             }.await;
-            let outcome=if output.is_err(){TaskOutcome::Failed("sync deadline fixture failed".into())}else if close_before_hello {TaskOutcome::Success}else{TaskOutcome::Indeterminate("committed but unwritten test effect requires reconciliation".into())};
+            let outcome=if output.is_err(){TaskOutcome::Failed("sync deadline fixture failed".into())}else if close_before_hello {TaskOutcome::Success}else{TaskOutcome::Indeterminate("clock reply effect requires reconciliation".into())};
             TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
         }).await?;
         result.receipt?;result.output
     })?;
+    if slow_storage {assert!(slow_appends.load(std::sync::atomic::Ordering::Relaxed)>=2);}
     Ok(())
 }
 
 #[test]
 fn cancelled_clock_dispatch_is_returned_by_the_next_supervisor_step() -> Test {
-    cancelled_clock_dispatch_scenario(false)
+    cancelled_clock_dispatch_scenario(false, false)
 }
 
 #[test]
 fn cancelled_clock_dispatch_is_returned_on_supervisor_retirement() -> Test {
-    cancelled_clock_dispatch_scenario(true)
+    cancelled_clock_dispatch_scenario(true, false)
 }
 
-fn cancelled_clock_dispatch_scenario(retire_directly: bool) -> Test {
+#[test]
+fn cancelled_clock_dispatch_with_separate_reply_budget_retains_its_trace() -> Test {
+    cancelled_clock_dispatch_scenario(false, true)
+}
+
+fn cancelled_clock_dispatch_scenario(retire_directly: bool, separate_budget: bool) -> Test {
     use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
     use std::{pin::Pin, task::Context};
     struct PendingWrite<IO> { inner: IO, armed: Rc<Cell<bool>>, entered: Rc<Cell<bool>> }
@@ -291,7 +360,7 @@ fn cancelled_clock_dispatch_scenario(retire_directly: bool) -> Test {
         fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {Pin::new(&mut self.inner).poll_shutdown(cx)}
     }
     const SYNC: &[u8] = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":42,"inResponseTo":0}"#;
-    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-sync-cancel-{}-{retire_directly}",std::process::id()));
+    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-sync-cancel-{}-{retire_directly}-{separate_budget}",std::process::id()));
     std::fs::create_dir(&path)?; let temp=Temp(path);
     let store=FileEffectJournal::create(temp.0.join("journal"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
     let mut effects=EffectCoordinator::with_journal(Box::new(store))?;
@@ -332,10 +401,12 @@ fn cancelled_clock_dispatch_scenario(retire_directly: bool) -> Test {
                 let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
                 let pipeline=pipeline::Pipeline::new(DirectIngress::new(ingress,framer),recorder);
                 let mut supervisor=supervisor::Supervisor::new(session,pipeline,conditions);
+                if separate_budget {supervisor.set_time_sync_reply_wait(Some(Duration::from_secs(3)))?;}
                 let guard=Guard {leases:&leases,clock}; let approval=FixtureApproval {revoke_stream:None};
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
                 armed.set(true);
-                let mut future=Box::pin(supervisor.step_control(&mut owner,&operation,Duration::from_secs(5)));
+                let poll_wait=if separate_budget {Duration::from_millis(100)} else {Duration::from_secs(5)};
+                let mut future=Box::pin(supervisor.step_control(&mut owner,&operation,poll_wait));
                 timeout(cx.now(),Duration::from_secs(3),poll_fn(|context| {
                     let state=future.as_mut().poll(context);
                     if entered.get() {return Poll::Ready(Ok::<(),&'static str>(()));}
@@ -343,6 +414,7 @@ fn cancelled_clock_dispatch_scenario(retire_directly: bool) -> Test {
                     context.waker().wake_by_ref(); Poll::Pending
                 })).await??;
                 drop(future);
+                if separate_budget {assert_eq!(supervisor.set_time_sync_reply_wait(None),Err(conversation::Error::Configuration));}
                 let (mut trace,retirement)=if retire_directly {
                     let mut retired=supervisor.retire();
                     let trace=retired.time_sync.take().ok_or("retirement lost clock trace")?;
@@ -367,6 +439,138 @@ fn cancelled_clock_dispatch_scenario(retire_directly: bool) -> Test {
         }).await?; result.receipt?;result.output
     })?;
     assert_eq!(effects.journal().operation(&operation).ok_or("missing clock effect")?.state,fss_core::EffectState::Committed);
+    Ok(())
+}
+
+#[test]
+fn cancelled_event_reply_retains_its_operation_and_fences_controller() -> Test {
+    event_reply_trace_scenario(true, false)
+}
+
+#[test]
+fn completed_event_reply_trace_retains_written_permit() -> Test {
+    event_reply_trace_scenario(false, false)
+}
+
+#[test]
+fn journaled_event_reply_denial_retains_intent_and_prepared_obligation() -> Test {
+    event_reply_trace_scenario(false, true)
+}
+
+fn event_reply_trace_scenario(cancelled: bool, denied: bool) -> Test {
+    use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use std::{pin::Pin, task::Context};
+    struct PendingWrite<IO> { inner: IO, armed: Rc<Cell<bool>>, entered: Rc<Cell<bool>> }
+    impl<IO: AsyncRead + Unpin> AsyncRead for PendingWrite<IO> {
+        fn poll_read(mut self:Pin<&mut Self>,cx:&mut Context<'_>,out:&mut ReadBuf<'_>)->Poll<io::Result<()>> {Pin::new(&mut self.inner).poll_read(cx,out)}
+    }
+    impl<IO: AsyncWrite + Unpin> AsyncWrite for PendingWrite<IO> {
+        fn poll_write(mut self:Pin<&mut Self>,cx:&mut Context<'_>,bytes:&[u8])->Poll<io::Result<usize>> {
+            if self.armed.get(){self.entered.set(true);Poll::Pending}else{Pin::new(&mut self.inner).poll_write(cx,bytes)}
+        }
+        fn poll_flush(mut self:Pin<&mut Self>,cx:&mut Context<'_>)->Poll<io::Result<()>> {Pin::new(&mut self.inner).poll_flush(cx)}
+        fn poll_shutdown(mut self:Pin<&mut Self>,cx:&mut Context<'_>)->Poll<io::Result<()>> {Pin::new(&mut self.inner).poll_shutdown(cx)}
+    }
+    struct DenyApproval;
+    impl conversation::Approval for DenyApproval {
+        fn approve(&self,_:&PreparedEffect)->Option<CommitApproval>{None}
+    }
+    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-event-cancel-{}-{cancelled}-{denied}",std::process::id()));
+    std::fs::create_dir(&path)?;let temp=Temp(path);
+    let store=FileEffectJournal::create(temp.0.join("journal"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+    let mut effects=EffectCoordinator::with_journal(Box::new(store))?;
+    let mut budget=BudgetVector::ZERO;budget.network_bytes=1_000_000;budget.bytes=1_000_000;
+    let (mut authority,mut tree)=AuthorityCx::root(RootAuthoritySpec {
+        trace_id:"trace:event-cancel".into(),operation_id:OperationId::parse("operation:event-cancel-owner")?,principal:"principal:fixture".into(),
+        capabilities:vec![RuntimeGrant::AdapterNet.as_str().into(),RuntimeGrant::CameraManagementPrepare.as_str().into(),RuntimeGrant::CameraManagementCommit.as_str().into(),RuntimeGrant::ReadMedia.as_str().into()],
+        deadline:Some(TimestampNs(60_000_000_000)),priority:1,budgets:budget,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"event cancel fixture"),generation:1,
+    },RegionId::new("region:event-cancel")?,RegionKind::Process,budget,TimestampNs(1))?;
+    let camera=ContentDigest::sha256(b"fixture camera");let resource=format!("camera:{}",camera.to_text());
+    let mut leases=LeaseRegistry::new();let fence=leases.acquire(&resource,authority.region().as_str(),None,TimestampNs(2))?.fence;let leases=RefCell::new(leases);
+    let conditions=Preconditions {camera,peer_admission:ContentDigest::sha256(b"fixture peer"),session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
+    let operation=OperationId::parse("operation:event-cancel")?;
+    let runtime=RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:event-cancel")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let output:Test=async {
+                let listener=TcpListener::bind("127.0.0.1:0").await?;let address=listener.local_addr()?;
+                let peer=std::thread::spawn(move || -> io::Result<()> {
+                    let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    let mut request=HEAD.as_bytes().to_vec();request.extend(frame(REPLY_EVENT));socket.write_all(&request)?;
+                    let mut header=Vec::new();let mut byte=[0u8;1];while !header.ends_with(b"\r\n\r\n") {socket.read_exact(&mut byte)?;header.push(byte[0]);if header.len()>4096{return Err(io::Error::other("upgrade limit"));}}
+                    if !header.starts_with(b"HTTP/1.1 101 "){return Err(io::Error::other("upgrade refused"));}
+                    if cancelled || denied {
+                        match socket.read(&mut byte){Ok(0)=>Ok(()),_=>Err(io::Error::other("unexpected event reply bytes"))}
+                    } else {
+                        let response=receive_binary(&mut socket)?;
+                        let parsed=fss_core::json_input::parse(std::str::from_utf8(&response).map_err(io::Error::other)?).map_err(io::Error::other)?;
+                        if parsed.object().and_then(|fields|fields.get("inResponseTo")).and_then(|v|v.integer())!=Some(20){return Err(io::Error::other("wrong event correlation"));}
+                        Ok(())
+                    }
+                });
+                let (socket,_)=timeout(cx.now(),Duration::from_secs(5),listener.accept()).await??;
+                let armed=Rc::new(Cell::new(false));let entered=Rc::new(Cell::new(false));let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
+                let io=MeteredIo::with_clock(PendingWrite {inner:socket,armed:armed.clone(),entered:entered.clone()},clock,"fixture:camera",4096)?;
+                let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
+                let session=owner::accept(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,controller,Duration::from_secs(5)).await?;
+                let media_listener=TcpListener::bind("127.0.0.1:0").await?;let media_peer=std::net::TcpStream::connect_timeout(&media_listener.local_addr()?,Duration::from_secs(5))?;
+                let (media_socket,_)=timeout(cx.now(),Duration::from_secs(5),media_listener.accept()).await??;
+                let ingress=TcpIngress::new(media_socket,"fixture:camera",4096,1_000_000)?;
+                let framer=Framer::new(FlvLimits::default(),1024*1024)?;let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
+                let mut supervisor=supervisor::Supervisor::new(session,pipeline::Pipeline::new(DirectIngress::new(ingress,framer),recorder),conditions);
+                let guard=Guard {leases:&leases,clock};let event_guard=EventGuard {guard:&guard};let approval=FixtureApproval {revoke_stream:None};
+                let deny=DenyApproval;let approval:&dyn conversation::Approval=if denied {&deny}else{&approval};
+                let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval,management_authority:&event_guard,stream_authority:&guard,wall:&FixtureClock};
+                let event=match supervisor.step_control(&mut owner,&operation,Duration::from_secs(5)).await {supervisor::Step::CameraEvent(event)=>event,_=>return Err("missing event".into())};
+                let prepared=supervisor.prepare_journaled_event_reply(&mut owner,&event,"2026-11-05T10:00:00.000Z",&operation);
+                if denied {
+                    match prepared {
+                        Err(supervisor::EventReplyPreparationError::Commit {operation:actual,intent,error:conversation::Error::Effect})=>{assert_eq!(actual,operation);assert_eq!(intent.source_digest(),Some(event.digest()));},
+                        _=>return Err("denied event did not preserve intent".into()),
+                    }
+                    assert_eq!(owner.effects.journal().operation(&operation).ok_or("prepared effect missing")?.state,fss_core::EffectState::Prepared);
+                    supervisor.abandon_event_reply(&owner,&event)?;
+                    drop(supervisor);drop(media_peer);peer.join().map_err(|_|"peer panic")??;
+                    return Ok(());
+                }
+                let mut trace=prepared.map_err(|error|format!("event preparation failed: {error:?}"))?;
+                let intent=trace.intent();
+                supervisor.dispatch_event_reply_tracked(&owner,conditions,Duration::ZERO,&mut trace).await.map_err(|_|"first trace refused")?;
+                let refusal=trace.take_outcome().ok_or("refusal missing")?.err().ok_or("zero wait accepted")?;
+                assert_eq!(refusal.reason,fss_reference::unifi_direct::receive::Error::WaitLimit);
+                assert!(supervisor.dispatch_event_reply_tracked(&owner,conditions,Duration::from_secs(1),&mut trace).await.is_err());
+                let mut trace=supervisor::EventReplyTrace::new(intent,refusal.permit);
+                if !cancelled {
+                    supervisor.dispatch_event_reply_tracked(&owner,conditions,Duration::from_secs(5),&mut trace).await.map_err(|_|"event trace refused")?;
+                    assert_eq!(trace.operation(),&operation);assert!(trace.dispatch_started());
+                    assert!(matches!(trace.take_outcome(),Some(Ok(ManagementWrite::Written {permit})) if permit.journal_backed()));
+                    assert!(supervisor.dispatch_event_reply_tracked(&owner,conditions,Duration::from_secs(1),&mut trace).await.is_err());
+                    drop(supervisor);drop(media_peer);peer.join().map_err(|_|"peer panic")??;
+                    return Ok(());
+                }
+                armed.set(true);
+                let mut future=Box::pin(supervisor.dispatch_event_reply_tracked(&owner,conditions,Duration::from_secs(5),&mut trace));
+                timeout(cx.now(),Duration::from_secs(3),poll_fn(|context| {
+                    let state=future.as_mut().poll(context);
+                    if entered.get(){return Poll::Ready(Ok::<(),&'static str>(()));}
+                    if state.is_ready(){return Poll::Ready(Err("event dispatch finished before cancellation"));}
+                    context.waker().wake_by_ref();Poll::Pending
+                })).await??;
+                drop(future);
+                assert_eq!(trace.operation(),&operation);assert_eq!(trace.intent().source_digest(),Some(event.digest()));assert!(trace.dispatch_started());
+                assert!(trace.take_pending_permit().is_none() && trace.take_outcome().is_none());
+                assert!(supervisor.dispatch_event_reply_tracked(&owner,conditions,Duration::from_secs(1),&mut trace).await.is_err());
+                let retired=supervisor.retire();
+                assert_eq!(retired.controller.previous_phase,fss_reference::unifi_direct::Phase::Indeterminate);
+                drop(media_peer);peer.join().map_err(|_|"peer panic")??;
+                Ok(())
+            }.await;
+            let outcome=if output.is_ok(){TaskOutcome::Indeterminate("cancelled event reply requires reconciliation".into())}else{TaskOutcome::Failed("event cancellation fixture failed".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
+        }).await?;result.receipt?;result.output
+    })?;
+    assert_eq!(effects.journal().operation(&operation).ok_or("event effect missing")?.state,if denied {fss_core::EffectState::Prepared}else{fss_core::EffectState::Committed});
     Ok(())
 }
 
@@ -995,10 +1199,11 @@ fn flv_tag(timestamp: u32, payload: &[u8]) -> Vec<u8> {
 }
 
 fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
-    let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(include_bytes!(
-        "../../fss-packet/tests/fixtures/avc/baseline.264"
-    ))
-    .collect();
+    media_fixture_with_pictures(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3)
+}
+
+fn media_fixture_with_pictures(input: &[u8], picture_cycle: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(input).collect();
     let sps = nals
         .iter()
         .copied()
@@ -1030,7 +1235,7 @@ fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
         let mut audio=flv_tag(index as u32 * 64,&[0xaf,1,2]);
         audio[0]=8;
         result.extend(audio);
-        let nal = pictures[index % 3];
+        let nal = pictures[index % picture_cycle];
         let mut payload = vec![0x17, 1, 0, 0, 0];
         payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
         payload.extend_from_slice(nal);
@@ -1272,6 +1477,209 @@ where
     })
 }
 
+struct OwnedEventProbe<'a> {
+    signal: &'a std::sync::mpsc::Sender<()>,
+    source_block: &'a std::sync::atomic::AtomicBool,
+    conditions: Preconditions,
+    operation: &'a OperationId,
+}
+
+fn drive_owned_recording<'run, 'owner, 'scope, 'task, IO>(
+    session: fss_reference::unifi_direct::recording_session::Session<'scope, 'task, IO>,
+    owner: &'run mut conversation::Owner<'owner, 'scope, 'task>,
+    operation: &'run OperationId,
+    stream_conditions: intent::Preconditions,
+    probe: Option<OwnedEventProbe<'run>>,
+    camera_replay: bool,
+    expect_video_only: bool,
+    read_authority: &'run dyn fss_reference::unifi_direct::archive::ReadAuthority,
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(fss_reference::unifi_direct::source_coordinator::Coordinator,Vec<fss_reference::unifi_direct::archive::UnknownTimePin>,fss_reference::unifi_direct::recording_storage::HistoryMinimum,fss_reference::unifi_direct::archive::UnknownTimePin),Box<dyn std::error::Error>>> + 'run>>
+where
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin + 'run,
+    'owner: 'run,
+    'scope: 'run,
+    'task: 'run,
+{
+    use fss_reference::unifi_direct::{av_bootstrap_driver, av_unknown_worker_guard as unknown, av_worker, recording_session, source_coordinator, source_handoff, source_worker};
+    Box::pin(async move {
+        struct SessionObserver {
+            prefix: OperationId,
+            sequence: u64,
+            enabled: bool,
+            refuse: bool,
+            event: Option<Box<recording_session::Step>>,
+        }
+        impl recording_session::Observer for SessionObserver {
+            fn next_operation(&mut self) -> Option<OperationId> {
+                if !self.enabled { return None; }
+                let operation=OperationId::parse(format!("{}:owned-{:016x}",self.prefix.as_str(),self.sequence)).ok()?;
+                self.sequence=self.sequence.checked_add(1)?;
+                Some(operation)
+            }
+            fn observe(&mut self,event:Box<recording_session::Step>)->Result<source_coordinator::Decision,Box<recording_session::Step>> {
+                if self.refuse {self.refuse=false;return Err(event);}
+                assert!(self.event.is_none());
+                self.event=Some(event);
+                Ok(source_coordinator::Decision::Yield)
+            }
+        }
+        let mut bootstrap=match session.stop() {recording_session::Stop::Bootstrap(shutdown)=>shutdown,_=>return Err("wrong bootstrap stop phase".into())};
+        if bootstrap.join_source().await.is_some(){return Err("unexpected bootstrap source attempt".into());}
+        let (coordinator,driver,resources)=bootstrap.finish().map_err(|_|"bootstrap stop did not finish")?;
+        let session=recording_session::Session::new(coordinator,driver,resources);
+        let mut session=Box::new(session);
+        {
+            let mut control=session.control().ok_or("bootstrap control unavailable")?;
+            let intent=control.prepare_quiesce(owner,VideoChannel::Video2,AudioCodec::Aac,"2026-11-05T10:00:00.000Z",stream_conditions)?;
+            let id=intent.message_id();
+            let abandoned=control.abandon_prepared_stream(owner,intent)?;
+            assert_eq!((abandoned.id,abandoned.kind),(id,fss_reference::unifi_direct::MessageKind::QuiesceStream(VideoChannel::Video2)));
+        }
+        let av=source_coordinator::ArchiveAdmission {resource:"fixture:bootstrap-av",cost:&BudgetVector::ZERO};
+        let source=source_coordinator::ArchiveAdmission {resource:"fixture:bootstrap-source",cost:&BudgetVector::ZERO};
+        let mut observer=SessionObserver {prefix:operation.clone(),sequence:0,enabled:false,refuse:true,event:None};
+        assert!(matches!(Box::pin(session.run_slice(owner,Duration::ZERO,1,task,cx,clock,av,source,&mut observer)).await,recording_session::SliceStop::Configuration));
+        assert_eq!(observer.sequence,0);
+        assert!(matches!(Box::pin(session.run_slice(owner,Duration::from_millis(100),1,task,cx,clock,av,source,&mut observer)).await,recording_session::SliceStop::OperationUnavailable));
+        assert_eq!(observer.sequence,0);
+        observer.enabled=true;
+        let mut refused=false;
+        let mut pins=Vec::new();let mut av_pin=None;let mut offered=0;let mut paired=0;let mut syncs=0;let mut started=false;let mut queued=false;let mut archive_started=false;let mut event_replied=false;
+        fn accept_sync(mut trace:conversation::TimeSyncTrace,effects:&EffectCoordinator)->Result<(),&'static str> {
+            let operation=trace.operation().ok_or("owned recorder sync operation missing")?;
+            if !trace.dispatch_started() || effects.journal().operation(operation).map(|entry|entry.state)!=Some(fss_core::EffectState::Committed){return Err("owned recorder sync trace or journal missing");}
+            match trace.take_written() {
+                Some(ManagementWrite::Written {permit}) if permit.journal_backed()=>Ok(()),
+                _=>Err("owned recorder sync permit missing"),
+            }
+        }
+        fn accept_source(completion:source_worker::Completion,pins:&mut Vec<fss_reference::unifi_direct::archive::UnknownTimePin>)->Result<(),&'static str> {
+            if completion.runtime.is_err(){return Err("owned bootstrap source runtime failed");}
+            match completion.outcome {source_worker::Outcome::Publication(source_worker::Publication::Published {pin,..})=>{pins.push(pin);Ok(())},_=>Err("owned bootstrap source publication failed")}
+        }
+        fn accept_av(completion:av_worker::UnknownTimeCompletion)->Result<fss_reference::unifi_direct::archive::UnknownTimePin,&'static str> {
+            if completion.runtime.is_err(){return Err("owned A/V runtime failed");}
+            match completion.outcome {av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(published))=>Ok(published.pin),_=>Err("owned A/V publication failed")}
+        }
+        timeout(cx.now(),Duration::from_secs(if camera_replay {45}else{15}),async {
+            loop {
+                let stop=Box::pin(session.run_slice(owner,Duration::from_millis(100),1,task,cx,clock,av,source,&mut observer)).await;
+                let step=match stop {
+                    recording_session::SliceStop::ObserverRefused(step) if !refused=>{refused=true;*step},
+                    recording_session::SliceStop::ObserverYielded=>*observer.event.take().ok_or("owned observer lost an accepted event")?,
+                    recording_session::SliceStop::Halted(step)=>{
+                        match &*step {
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceStartRefused(error))=>eprintln!("owned recorder source start refused {error:?}"),
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(event))=>eprintln!("owned recorder halted driver {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Bootstrap(event)=>eprintln!("owned recorder halted bootstrap {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Recording(event)=>eprintln!("owned recorder halted recording {:?}",std::mem::discriminant(event)),
+                            _=>eprintln!("owned recorder halted session {:?}",std::mem::discriminant(&*step)),
+                        }
+                        return Err("owned recorder halted");
+                    },
+                    _=>return Err("owned recorder slice stopped unexpectedly"),
+                };
+                match step {
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceOffered(source_handoff::BootstrapResult::Accepted {audio,..}))=>{
+                        offered+=1;
+                        if matches!(audio,Some(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::UnconfiguredSample {..}))){paired+=1;}
+                    },
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceStarted)=>{
+                        if let Some(probe)=&probe {probe.signal.send(()).map_err(|_|"owned event signal failed")?;}
+                    },
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Retained) | source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::Idle)))=>(),
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Supervisor(supervisor::Step::TimeSyncWritten {trace})))=>{accept_sync(trace,owner.effects)?;syncs+=1;},
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Forward {push:recording::Push::Buffered,..}))=>(),
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Completed(completion)))=>accept_source(completion,&mut pins)?,
+                    recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Control {step,completion}))=>{
+                        if let Some(completion)=completion {accept_source(completion,&mut pins)?;}
+                        match step {
+                            supervisor::Step::Idle=>(),
+                            supervisor::Step::TimeSyncWritten {trace}=>{accept_sync(trace,owner.effects)?;syncs+=1;},
+                            supervisor::Step::CameraEvent(frame)=>{
+                                let probe=probe.as_ref().ok_or("unexpected owned camera event")?;
+                                if event_replied || frame.source()!=REPLY_EVENT || !frame.response_expected(){return Err("wrong owned camera event");}
+                                let mut trace=session.control().ok_or("event control unavailable")?.prepare_journaled_event_reply(owner,&frame,"2026-11-05T10:00:00.000Z",probe.operation).map_err(|_|"event journal preparation refused")?;
+                                let mut control=session.control().ok_or("event control disappeared")?;
+                                Box::pin(control.dispatch_event_reply_tracked(owner,probe.conditions,Duration::from_secs(5),&mut trace)).await.map_err(|_|"event trace unavailable")?;
+                                match trace.take_outcome() {
+                                    Some(Ok(ManagementWrite::Written {permit})) if permit.journal_backed()=>(),
+                                    _=>return Err("owned event dispatch did not complete"),
+                                }
+                                event_replied=true;
+                                probe.source_block.store(false,std::sync::atomic::Ordering::Release);
+                            },
+                            _=>return Err("owned bootstrap control stopped"),
+                        }
+                    },
+                    recording_session::Step::RecordingStarted(origin)=>{
+                        if started || (!camera_replay && origin.audio_ticks!=1024){return Err("owned recording started incorrectly");}
+                        let mut control=session.control().ok_or("recording control unavailable")?;
+                        let intent=control.prepare_quiesce(owner,VideoChannel::Video2,AudioCodec::Aac,"2026-11-05T10:00:00.000Z",stream_conditions).map_err(|_|"recording quiesce preparation refused")?;
+                        let id=intent.message_id();
+                        let abandoned=control.abandon_prepared_stream(owner,intent).map_err(|_|"recording quiesce abandonment refused")?;
+                        assert_eq!((abandoned.id,abandoned.kind),(id,fss_reference::unifi_direct::MessageKind::QuiesceStream(VideoChannel::Video2)));
+                        started=true;
+                    },
+                    recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::SourceQueued))))=>queued=true,
+                    recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::ArchiveStarted)))=>archive_started=true,
+                    recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Archive(completion)))))=>{
+                        av_pin=Some(accept_av(completion)?);
+                        break Ok(());
+                    },
+                    recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Control {step,completion}))))=>{
+                        match step {supervisor::Step::Idle=>(),supervisor::Step::TimeSyncWritten {trace}=>{accept_sync(trace,owner.effects)?;syncs+=1;},_=>return Err("owned recording control stopped")}
+                        if let Some(completion)=completion {
+                            av_pin=Some(accept_av(completion)?);
+                            break Ok(());
+                        }
+                    },
+                    other=>{
+                        match &other {
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(event))=>eprintln!("owned recorder unexpected driver {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Control {step,..}))=>eprintln!("owned recorder unexpected control {:?}",std::mem::discriminant(step)),
+                            recording_session::Step::Bootstrap(event)=>eprintln!("owned recorder unexpected bootstrap {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(event)))=>eprintln!("owned recorder unexpected advance {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Recording(event)=>eprintln!("owned recorder unexpected recording {:?}",std::mem::discriminant(event)),
+                            _=>eprintln!("owned recorder unexpected session phase"),
+                        }
+                        return Err("owned recorder returned an unexpected step");
+                    },
+                }
+            }
+        }).await??;
+        let prior_sync=owner.effects.journal().operation(operation).is_some_and(|entry|entry.state==fss_core::EffectState::Committed);
+        if !refused || observer.sequence<2 || (syncs==0 && !(camera_replay && prior_sync)) || !started || !queued || !archive_started || (!camera_replay && (offered==0 || paired==0)) || paired>offered || pins.len()!=offered || (probe.is_some() && !event_replied) {
+            eprintln!("owned_accounting refused={refused} steps={} syncs={syncs} prior_sync={prior_sync} started={started} queued={queued} archive_started={archive_started} offered={offered} paired={paired} pins={} event_required={} event_replied={event_replied}",observer.sequence,pins.len(),probe.is_some());
+            return Err("owned recorder did not account for source, A/V or event".into());
+        }
+        let mut shutdown=match (*session).stop() {recording_session::Stop::Recording(shutdown)=>shutdown,_=>return Err("wrong recording stop phase".into())};
+        if shutdown.join_source().await.is_some() || shutdown.join_av().await.is_some(){return Err("owned recorder had an unexpected running archive".into());}
+        let (coordinator,guard)=shutdown.finish().map_err(|_|"owned recorder shutdown did not finish")?;
+        let retired=(*guard).retire().map_err(|_|"owned recorder guard retirement refused")?;
+        let mut parts=retired.worker.parts;
+        if retired.held.is_some() || parts.sink.retire().pending.is_some(){return Err("owned recorder left an A/V source pending".into());}
+        let av_pin=av_pin.ok_or("owned A/V pin missing")?;
+        use fss_reference::unifi_direct::archive::{read_unknown_time_av_any, RecoveredUnknownTimeAv};
+        let clip=read_unknown_time_av_any(&mut parts.deployment,av_pin,read_authority,fss_reference::unifi_direct::archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&parts.replay)?;
+        match clip {
+            RecoveredUnknownTimeAv::AudioVideo(clip) if !expect_video_only && clip.video_samples()>0 && clip.audio().frames>0 => {
+                if camera_replay {println!("owned_av_readback video_samples={} audio_frames={} capture_bounds=unknown",clip.video_samples(),clip.audio().frames);}
+            },
+            RecoveredUnknownTimeAv::VideoOnly(clip) if expect_video_only && clip.video_samples()>0 => {
+                println!("owned_av_readback video_samples={} audio_coverage=unknown capture_bounds=unknown",clip.video_samples());
+            },
+            _=>return Err("owned recording profile or readback was incorrect".into()),
+        }
+        drop(retired.supervisor);
+        let av_minimum=fss_reference::unifi_direct::recording_storage::HistoryMinimum {journal:parts.journal.anchor(),keeper:parts.keeper.anchor()};
+        Ok((coordinator,pins,av_minimum,av_pin))
+    })
+}
+
 fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8, emit_event: bool, archive_guard: bool, async_archive: bool, cancel_archive: bool, audio_change: bool, unknown_archive: bool, replay_wire: Option<Vec<u8>>, late_audio_change: u8) -> Test {
     let camera_replay = replay_wire.is_some();
     static NEXT_SCENARIO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1351,8 +1759,10 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
         OperationId::parse("operation:conversation-later-time-sync")?,
         OperationId::parse("operation:guard-capture-time-sync")?,
         OperationId::parse("operation:guard-archive-time-sync")?,
+        OperationId::parse("operation:owned-event-reply")?,
     ];
-    let runtime = RuntimeBuilder::current_thread().blocking_threads(1, 1).build()?;
+    let blocking_workers=if late_audio_change==11 {2} else {1};
+    let runtime = RuntimeBuilder::current_thread().blocking_threads(blocking_workers, blocking_workers).build()?;
     runtime.block_on(async {
         let cx=asupersync::Cx::current().ok_or("missing runtime")?;
         let result=run_owned_async(&mut authority,&mut tree,TaskSpec { task_id:TaskId::new("task:conversation")?, started_at:TimestampNs(3) },&cx,async |task,cx| {
@@ -1547,9 +1957,17 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                         drop(media);
                         None
                     };
+                    if late_audio_change==13 {
+                        control_probe_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+                        socket.write_all(&frame(REPLY_EVENT))?;
+                        let response=receive_binary(&mut socket)?;
+                        let parsed=fss_core::json_input::parse(std::str::from_utf8(&response).map_err(io::Error::other)?).map_err(io::Error::other)?;
+                        let fields=parsed.object().ok_or_else(||io::Error::other("event response object"))?;
+                        if fields.get("functionName").and_then(|v|v.text())!=Some("EventExample") || fields.get("inResponseTo").and_then(|v|v.integer())!=Some(20) {return Err(io::Error::other("wrong event response"));}
+                    }
                     if archive_guard && !audio_change {
                         for id in [14_u32,15] {
-                            if late_audio_change==10 || (late_audio_change==5 && id==15) {break;}
+                            if matches!(late_audio_change,10|11|12|13|14) || (late_audio_change==5 && id==15) {break;}
                             control_probe_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
                             let message=format!(r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":{id}}}"#);
                             socket.write_all(&frame(message.as_bytes()))?;
@@ -1575,13 +1993,15 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 let mut session=owner::accept_guarded(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,gate,controller,Duration::from_secs(5)).await?;
                 if emit_event {session.bind_startup_events(&startup_events)?;}
                 let guard=Guard { leases:&leases, clock };
+                let event_guard=EventGuard {guard:&guard};
                 let request=StreamStart::new(VideoChannel::Video2,SocketAddrV4::new(Ipv4Addr::LOCALHOST,17551),VideoCodec::H264,AudioCodec::Aac,"0123456789abcdef")?;
                 let config=conversation::Config { hello:&operations[0], agreement:&operations[1], stream:&operations[2], time_sync:&operations[3..6], management:conditions, stream_conditions, request:&request, wait:Duration::from_secs(5) };
                 let approval=FixtureApproval {revoke_stream:revoke_stream.then_some(&policy.listen)};
                 let other_clock=MeteredClock::new(task,cx,TimestampNs(5))?;
                 let mut wrong_owner=conversation::Owner { cx, task, clock:other_clock, effects:&mut effects, leases:&leases, approval:&approval, management_authority:&guard, stream_authority:&guard, wall:&FixtureClock };
                 assert_eq!(wrong_owner.start(&mut session,&config).await,Err(conversation::Error::Configuration));
-                let mut owner=conversation::Owner { cx, task, clock, effects:&mut effects, leases:&leases, approval:&approval, management_authority:&guard, stream_authority:&guard, wall:&FixtureClock };
+                let management_authority:&dyn ManagementAuthority=if late_audio_change==13 {&event_guard} else {&guard};
+                let mut owner=conversation::Owner { cx, task, clock, effects:&mut effects, leases:&leases, approval:&approval, management_authority, stream_authority:&guard, wall:&FixtureClock };
                 let duplicate=conversation::Config { agreement:&operations[0], ..config };
                 assert_eq!(owner.start(&mut session,&duplicate).await,Err(conversation::Error::Configuration));
                 let mismatched=conversation::Config { stream_conditions:intent::Preconditions { lease_fence:fence+1, ..stream_conditions }, ..config };
@@ -1726,7 +2146,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                     if !pending {return Err("audio event was not produced".into());}
                     assert!(supervisor.has_pending_audio());
                     let collector=fss_reference::unifi_direct::av_bootstrap::Collector::new(None,ContentDigest::sha256(b"pending audio test"),
-                        fss_reference::unifi_direct::av_owned_sink::BootstrapPolicy {max_separation_ms:5_000,jitter_ms:0,max_epoch_frames:8,max_audio_frames:8,
+                        fss_reference::unifi_direct::av_owned_sink::BootstrapPolicy {allow_initial_video_only: false, max_separation_ms:5_000,jitter_ms:0,max_epoch_frames:8,max_audio_frames:8,
                             media_limits:fss_container::Mp4Limits::default(),evidence_limits:fss_reference::unifi_direct::evidence::Limits::default()});
                     let parts=match fss_reference::unifi_direct::av_bootstrap_driver::Driver::attach(supervisor,collector) {
                         Err(parts)=>parts, Ok(_)=>return Err("driver accepted unmatched audio".into()),
@@ -1811,11 +2231,11 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                     impl Drop for Unblock { fn drop(&mut self) { self.0.block.store(false, Ordering::Release); } }
                                     let mut collector=av_bootstrap::Collector::new(Some(audio_bytes),
                                         ContentDigest::sha256(b"worker guard retention"),
-                                        av_owned_sink::BootstrapPolicy { max_separation_ms:5_000, jitter_ms:if camera_replay {5} else {0}, max_epoch_frames:if camera_replay {1_000_000} else {8}, max_audio_frames:if camera_replay {fss_container::Mp4Limits::default().max_samples} else {8},
+                                        av_owned_sink::BootstrapPolicy { allow_initial_video_only: false, max_separation_ms:5_000, jitter_ms:if camera_replay {5} else {0}, max_epoch_frames:if camera_replay {1_000_000} else {8}, max_audio_frames:if camera_replay {fss_container::Mp4Limits::default().max_samples} else {8},
                                             media_limits:fss_container::Mp4Limits::default(), evidence_limits:evidence::Limits::default() });
                                     assert!(matches!(collector.collect(recording::Push::Source {record,disposition},None),av_bootstrap::Collected::Retained));
                                     let mut driver=av_bootstrap_driver::Driver::attach(supervisor,collector).map_err(|_|"bootstrap driver attachment refused")?;
-                                    if late_audio_change==10 {
+                                    if matches!(late_audio_change,10|12|13|14) {
                                         return Box::pin(async {
                                         use fss_reference::unifi_direct::{av_unknown_worker_guard as unknown,source_coordinator,source_handoff,source_worker};
                                         let mut driver=Box::new(driver);
@@ -1831,7 +2251,8 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let journal=archive::journal::UnknownTimeJournal::create(Box::new(store),ContentDigest::sha256(b"bootstrap source scope"),&replay)?;
                                         let store=FileEffectJournal::create(temp.0.join("bootstrap-source-anchor"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
                                         let keeper=archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store),&journal,&replay)?;
-                                        let source_access=Arc::new(Retention {block:AtomicBool::new(false),entered:AtomicBool::new(false),allow:AtomicBool::new(true)});
+                                        let source_access=Arc::new(Retention {block:AtomicBool::new(matches!(late_audio_change,13|14)),entered:AtomicBool::new(false),allow:AtomicBool::new(true)});
+                                        let _unblock_owned=Unblock(source_access.clone());
                                         let worker=source_worker::Worker::new(source_worker::Parts {deployment,journal,keeper,replay,authority:source_access.clone(),retention:ContentDigest::sha256(b"bootstrap source retention"),limits:archive::Limits::default(),max_source_bytes:1024*1024,work_limit:4_000_000_000}).map_err(|_|"bootstrap source worker configuration")?;
                                         let mut coordinator=source_coordinator::Coordinator::new(worker,SourceKey {connection:1,generation:1},ContentDigest::sha256(b"fixture camera"));
                                         let av_replay=fss_reference::ReplayCx::from_context_authority(&authority,temp.0.clone())?;
@@ -1841,6 +2262,75 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let store=FileEffectJournal::create(temp.0.join("bootstrap-av-anchor"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
                                         let av_keeper=archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store),&av_journal,&av_replay)?;
                                         let mut av_resources=Box::new(unknown::BootstrapResources {deployment:av_deployment,journal:av_journal,keeper:av_keeper,replay:av_replay,authority:source_access.clone(),limits:archive::Limits::default(),work_limit:4_000_000_000});
+                                        if late_audio_change==14 {
+                                            use fss_reference::unifi_direct::recording_session;
+                                            let mut session=Box::new(recording_session::Session::new(coordinator,driver,av_resources));
+                                            let av=source_coordinator::ArchiveAdmission {resource:"fixture:bootstrap-av",cost:&BudgetVector::ZERO};
+                                            let source=source_coordinator::ArchiveAdmission {resource:"fixture:bootstrap-source",cost:&BudgetVector::ZERO};
+                                            let mut offered=false;
+                                            timeout(cx.now(),Duration::from_secs(10),async {
+                                                loop {
+                                                    match Box::pin(session.step(&mut owner,&operations[6],Duration::from_millis(100),task,cx,clock,av,source)).await {
+                                                        recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceOffered(source_handoff::BootstrapResult::Accepted {..}))=>offered=true,
+                                                        recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceStarted)=>break Ok(()),
+                                                        recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Retained | av_bootstrap_driver::Step::Forward {..} | av_bootstrap_driver::Step::Audio(_) | av_bootstrap_driver::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::Idle)))=>(),
+                                                        recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Supervisor(supervisor::Step::TimeSyncWritten {mut trace})))=>{
+                                                            if !matches!(trace.take_written(),Some(ManagementWrite::Written {permit}) if permit.journal_backed()){return Err("bootstrap shutdown clock permit missing");}
+                                                        },
+                                                        _=>return Err("bootstrap shutdown did not reach source start"),
+                                                    }
+                                                }
+                                            }).await??;
+                                            if !offered {return Err("bootstrap shutdown source not offered".into());}
+                                            timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await?;
+                                            if owner.effects.journal().operation(&operations[6]).is_none() {
+                                                timeout(cx.now(),Duration::from_secs(5),async {
+                                                    loop {
+                                                        match Box::pin(session.step(&mut owner,&operations[6],Duration::from_millis(100),task,cx,clock,av,source)).await {
+                                                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::TimeSyncWritten {mut trace},completion:None}))=>{
+                                                                if !matches!(trace.take_written(),Some(ManagementWrite::Written {permit}) if permit.journal_backed()){return Err("bootstrap shutdown clock permit missing");}
+                                                                break Ok(());
+                                                            },
+                                                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Control {step:supervisor::Step::Idle,completion:None}))=>(),
+                                                            _=>return Err("bootstrap shutdown clock was not serviced"),
+                                                        }
+                                                    }
+                                                }).await??;
+                                            }
+                                            let mut shutdown=(*session).request_bootstrap_shutdown().map_err(|_|"bootstrap shutdown refused")?;
+                                            timeout(cx.now(),Duration::from_secs(5),async {while !shutdown.cancellation_observed() {asupersync::runtime::yield_now().await;}}).await?;
+                                            shutdown=match shutdown.finish(){Err(shutdown)=>shutdown,Ok(_)=>return Err("bootstrap shutdown released running source".into())};
+                                            assert!(poll_fn(|context| {let mut join=std::pin::pin!(shutdown.join_source()); Poll::Ready(join.as_mut().poll(context).is_pending())}).await);
+                                            shutdown=match shutdown.finish(){Err(shutdown)=>shutdown,Ok(_)=>return Err("dropped join released running source".into())};
+                                            source_access.block.store(false,Ordering::Release);
+                                            let completion=timeout(cx.now(),Duration::from_secs(5),shutdown.join_source()).await?.ok_or("bootstrap shutdown completion missing")?;
+                                            assert!(completion.runtime.is_ok());
+                                            assert!(matches!(completion.outcome,source_worker::Outcome::Publication(source_worker::Publication::Refused {..})));
+                                            assert!(shutdown.join_source().await.is_none());
+                                            let (coordinator,driver,resources)=shutdown.finish().map_err(|_|"bootstrap shutdown did not drain")?;
+                                            let retired=coordinator.into_worker().retire().map_err(|_|"bootstrap source did not retire")?;
+                                            let Some(source_worker::Input::Original {record,..})=retired.pending else {return Err("bootstrap shutdown lost original source".into());};
+                                            let start=usize::try_from(record.offset())?;let end=start.checked_add(record.bytes().len()).ok_or("source offset overflow")?;
+                                            if expected.get(start..end)!=Some(record.bytes()){return Err("bootstrap shutdown changed original source".into());}
+                                            let parts=(*driver).into_parts();drop(parts.supervisor);drop(parts.collector);drop(resources);
+                                            peer.join().map_err(|_|"bootstrap shutdown peer panic")??;
+                                            return Ok::<(),Box<dyn std::error::Error>>(());
+                                        }
+                                        if matches!(late_audio_change,12|13) {
+                                            let probe=(late_audio_change==13).then_some(OwnedEventProbe {signal:&control_probe_tx,source_block:&source_access.block,conditions,operation:&operations[9]});
+                                            let session=fss_reference::unifi_direct::recording_session::Session::new(coordinator,driver,av_resources);
+                                            let (coordinator,pins,_,_)=drive_owned_recording(session,&mut owner,&operations[6],stream_conditions,probe,camera_replay,false,source_access.as_ref(),task,cx,clock).await?;
+                                            let retired=coordinator.into_worker().retire().map_err(|_|"owned source worker retirement refused")?;
+                                            if retired.fenced || retired.pending.is_some(){return Err("owned source custody remained unresolved".into());}
+                                            let mut parts=retired.parts;
+                                            for pin in pins {
+                                                let recovered=archive::read_unknown_time_source(&mut parts.deployment,pin,source_access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&parts.replay)?;
+                                                let start=usize::try_from(recovered.offset())?;let end=start.checked_add(recovered.bytes().len()).ok_or("owned source offset overflow")?;
+                                                if expected.get(start..end)!=Some(recovered.bytes()){return Err("owned source bytes differ from input".into());}
+                                            }
+                                            peer.join().map_err(|_|"owned recorder peer panic")??;
+                                            return Ok::<(),Box<dyn std::error::Error>>(());
+                                        }
                                         (driver,av_resources)=match coordinator.prepare_recording_guard(driver,av_resources) {
                                             Err(source_coordinator::TransitionRefusal::NotReady {driver,resources})=>(driver,resources),
                                             _=>return Err("incomplete bootstrap transition was not retained".into()),
@@ -2012,7 +2502,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let segment=guard.held_segment().ok_or("missing unknown held source")?;
                                         assert_eq!(ContentDigest::sha256(segment.fragment().bytes()),first_digest);
                                         for source in segment.source() { originals.extend_from_slice(source.bytes()); }
-                                        if matches!(late_audio_change,8|9) {
+                                        if matches!(late_audio_change,8|9|11) {
                                             use fss_reference::unifi_direct::{source_coordinator,source_handoff,source_worker};
                                             use fss_packet::extended_flv::stream::Next;
                                             let source_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?;
@@ -2029,6 +2519,39 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             let record=match framer.take()? {Next::Record(record)=>record,Next::NeedMore=>return Err("source header missing".into())};
                                             let key=SourceKey {connection:1,generation:1};
                                             let claim=ContentDigest::sha256(b"fixture camera");
+                                            if late_audio_change==11 {
+                                                guard.start_archive(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("A/V shutdown start: {e:?}"))?;
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"A/V shutdown worker did not enter")?;
+                                                let mut coordinator=source_coordinator::Coordinator::new(source,key,claim);
+                                                let event=unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,disposition:recording::SourceDisposition::Header})))));
+                                                assert!(matches!(coordinator.offer(event),source_handoff::Result::Accepted { .. }));
+                                                let av=source_coordinator::ArchiveAdmission {resource:"fixture:archive",cost:&BudgetVector::ZERO};
+                                                let separate=source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&BudgetVector::ZERO};
+                                                assert!(matches!(Box::pin(coordinator.step(&mut guard,&mut owner,&operations[7],Duration::from_secs(1),task,cx,clock,av,separate)).await,source_coordinator::Step::SourceStarted));
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !source_access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"source shutdown worker did not enter")?;
+                                                let mut shutdown=source_coordinator::Shutdown::request(coordinator,Box::new(guard));
+                                                timeout(cx.now(),Duration::from_secs(5),async {while shutdown.cancellation_observed()!=(true,true) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"both cancellations were not observed")?;
+                                                shutdown=match shutdown.finish(){Err(shutdown)=>shutdown,Ok(_)=>return Err("shutdown released running archives".into())};
+                                                assert!(poll_fn(|context| {let mut join=std::pin::pin!(shutdown.join_source()); Poll::Ready(join.as_mut().poll(context).is_pending())}).await);
+                                                assert!(poll_fn(|context| {let mut join=std::pin::pin!(shutdown.join_av()); Poll::Ready(join.as_mut().poll(context).is_pending())}).await);
+                                                source_access.block.store(false,Ordering::Release);
+                                                let source_result=timeout(cx.now(),Duration::from_secs(5),shutdown.join_source()).await?.ok_or("source shutdown completion missing")?;
+                                                shutdown=match shutdown.finish(){Err(shutdown)=>shutdown,Ok(_)=>return Err("shutdown released the running A/V archive".into())};
+                                                access.block.store(false,Ordering::Release);
+                                                let av_result=timeout(cx.now(),Duration::from_secs(5),shutdown.join_av()).await?.ok_or("A/V shutdown completion missing")?;
+                                                assert!(source_result.runtime.is_ok() && av_result.runtime.is_ok());
+                                                assert!(matches!(source_result.outcome,source_worker::Outcome::Publication(source_worker::Publication::Refused {..})));
+                                                assert!(matches!(av_result.outcome,av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {..})));
+                                                let (coordinator,guard)=shutdown.finish().map_err(|_|"drained shutdown refused")?;
+                                                let source=coordinator.into_worker().retire().map_err(|_|"shutdown source retirement refused")?;
+                                                match source.pending {Some(source_worker::Input::Original {record,..})=>assert_eq!(record.bytes(),b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00"),_=>return Err("shutdown lost separate original".into())}
+                                                let retired=(*guard).retire().map_err(|_|"shutdown A/V retirement refused")?;
+                                                let segment=retired.worker.parts.sink.retire().pending.ok_or("shutdown lost A/V segment")?;
+                                                assert_eq!(ContentDigest::sha256(segment.fragment().bytes()),first_digest);
+                                                drop(retired.supervisor);
+                                                peer.join().map_err(|_|"shutdown peer panic")??;
+                                                return Ok(());
+                                            }
                                             let completion=if late_audio_change==8 {
                                                 source.offer(source_worker::Input::Original {record,key,disposition:recording::SourceDisposition::Header,camera_claim:claim}).map_err(|_|"source offer refused")?;
                                                 assert!(matches!(guard.advance_with_source(&mut source,&mut owner,&operations[7],Duration::from_secs(5),task,cx,clock,"fixture:source",&BudgetVector::ZERO).await,unknown::SourceAdvance::SourcePending));
@@ -2706,8 +3229,8 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
     for (index, operation) in operations.iter().enumerate() {
         if index == 4 && !reply_after_media { continue; }
         if index == 5 && !early_reply { continue; }
-        if index == 6 && (revoke_stream || revoke_after_start || revoke_audio_pending || stop_mode != 0) { continue; }
-        if index >= 7 && (!archive_guard || audio_change || late_audio_change==10 || (matches!(late_audio_change,5|7) && index>=8)) { continue; }
+        if index == 6 && (revoke_stream || revoke_after_start || revoke_audio_pending || stop_mode != 0 || matches!(late_audio_change,12|13)) { continue; }
+        if index >= 7 && (!archive_guard || audio_change || (matches!(late_audio_change,10|11|12|13|14) && !(late_audio_change==13 && index==9)) || (matches!(late_audio_change,5|7) && index>=8) || (index>=9 && late_audio_change!=13)) { continue; }
         assert_eq!(
             effects
                 .journal()
@@ -2749,6 +3272,26 @@ fn unknown_time_source_scheduler_keeps_control_live_and_media_held() -> Test {
 #[test]
 fn unknown_time_source_coordinator_starts_and_drains_source() -> Test {
     conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,9)
+}
+
+#[test]
+fn coordinated_shutdown_drains_both_archive_workers() -> Test {
+    conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,11)
+}
+
+#[test]
+fn bootstrap_shutdown_drains_running_source_and_preserves_original() -> Test {
+    conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,14)
+}
+
+#[test]
+fn owned_recording_session_archives_bootstrap_and_av() -> Test {
+    conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,12)
+}
+
+#[test]
+fn owned_recording_session_replies_to_event_during_archive() -> Test {
+    conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,13)
 }
 
 #[test]
@@ -2833,6 +3376,523 @@ fn unknown_inbox_camera_replay_from_stdin() -> Test {
 }
 
 #[test]
+#[ignore = "requires private bounded camera-derived replay input on stdin"]
+fn owned_session_camera_replay_from_stdin() -> Test {
+    let mut wire=Vec::new();
+    std::io::stdin().lock().take((8*1024*1024+1) as u64).read_to_end(&mut wire)?;
+    if wire.is_empty() || wire.len()>8*1024*1024 {return Err("bounded replay input refused".into());}
+    lean_owned_session_replay(wire,false,false,false)?;
+    println!("owned_session_camera_replay=passed");
+    Ok(())
+}
+
+#[test]
+fn owned_session_camera_fixture_stack_control() -> Test {
+    lean_owned_session_replay(media_fixture()?,false,true,false)
+}
+
+#[test]
+fn owned_session_begin_refusal_returns_all_owners() -> Test {
+    lean_owned_session_replay(media_fixture()?,true,true,false)
+}
+
+#[test]
+fn owned_video_only_restart_archives_new_connection() -> Test {
+    let wire=media_fixture_with_pictures(include_bytes!("../../../experiments/unifi_tls_05_server_lab/tests/fixtures/synthetic_g4_resolution.264"),4)?;
+    lean_owned_session_replay(wire,false,true,true)
+}
+
+fn owned_source_limits() -> fss_reference::DeploymentLimits {
+    fss_reference::DeploymentLimits {max_roots:256,spool_total_max_bytes:1024*1024*1024,..fss_reference::DeploymentLimits::standard()}
+}
+
+fn owned_av_limits() -> fss_reference::DeploymentLimits {
+    fss_reference::DeploymentLimits {max_roots:384,spool_total_max_bytes:1536*1024*1024,..fss_reference::DeploymentLimits::standard()}
+}
+
+#[test]
+#[ignore = "invoked by the bounded separate-process boundary fixture"]
+fn owned_boundary_child_reader() -> Test {
+    use fss_reference::unifi_direct::{archive,recording_storage::boundary};
+    use fss_runtime::effect_journal::{EffectJournalPin,PinRetainedEffectJournal};
+    struct Access;
+    impl archive::ReadAuthority for Access {fn permits(&self,_:ContentDigest,_:ContentDigest)->bool{true}}
+    impl archive::RetainAuthority for Access {fn permits(&self,_:ContentDigest,_:ContentDigest)->bool{true}}
+    let root=PathBuf::from(std::env::var("FSS_TEST_BOUNDARY_ROOT")?);
+    let expected_head=EffectJournalPin {sequence:1,root:ContentDigest::parse(std::env::var("FSS_TEST_BOUNDARY_HEAD")?)?};
+    let expected_root=ContentDigest::parse(std::env::var("FSS_TEST_BOUNDARY_PIN")?)?;
+    let expected_retention=ContentDigest::parse(std::env::var("FSS_TEST_BOUNDARY_RETENTION")?)?;
+    let replay_authority=fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {trace_id:"trace:boundary-child-replay".into(),operation_id:OperationId::parse("operation:boundary-child-replay")?,principal:"principal:fixture".into(),capabilities:vec!["ADP-REPLAY-001".into()],deadline:None,priority:1,budgets:BudgetVector::builder().bytes(64*1024*1024).build()?,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"boundary child fixture"),generation:1})?;
+    let mut budget=BudgetVector::ZERO;budget.bytes=64*1024*1024;
+    let (mut authority,mut tree)=AuthorityCx::root(RootAuthoritySpec {trace_id:"trace:boundary-child".into(),operation_id:OperationId::parse("operation:boundary-child")?,principal:"principal:fixture".into(),capabilities:vec![RuntimeGrant::ObjectStage.as_str().into(),RuntimeGrant::ObjectPublish.as_str().into(),RuntimeGrant::ReadMedia.as_str().into()],deadline:Some(TimestampNs(60_000_000_000)),priority:1,budgets:budget,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"boundary child fixture"),generation:1},RegionId::new("region:boundary-child")?,RegionKind::Process,budget,TimestampNs(1))?;
+    let runtime=RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:boundary-child")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let clock=MeteredClock::new(task,cx,TimestampNs(4)).expect("fixture clock");
+            let output=(|| -> Test {
+                let witness=root.join("witness");let journal_path=witness.join("boundary-journal");
+                task.checkpoint_for(RuntimeGrant::ObjectStage,journal_path.to_str().ok_or("journal path")?,clock.now()?,&BudgetVector::ZERO)?;
+                let store=FileEffectJournal::open(&journal_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo),expected_head)?;
+                let retainer=fss_object::effect_journal::FileTrustedRootPinRetainer::open_trusting_storage(witness.join("boundary-retainer"),EffectJournalLimits::default(),Arc::new(HostSpoolIo),ContentDigest::sha256(b"owned-witness:boundary-retainer"))?;
+                let wrapped=PinRetainedEffectJournal::for_reconciliation(Box::new(store),Box::new(retainer))?;
+                let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,root.clone())?;
+                let custody=boundary::Custody::reopen(wrapped,journal_path.to_str().ok_or("journal path")?.to_string(),replay,task,cx,clock)?;
+                if custody.head()!=expected_head || custody.plan().pin()!=(boundary::Pin {root:expected_root,retention:expected_retention}) {return Err("boundary child pin mismatch".into());}
+                let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,root.clone())?;
+                let mut deployment=fss_reference::ReferenceDeployment::open_with_limits(&root.join("owned-storage/av"),"site:owned-replay",owned_av_limits(),&replay)?;
+                boundary::verify_retained(&mut deployment,&replay,&Access,custody.plan(),task,cx,clock,&Access,&mut fss_geometry::WorkBudget::new(1_000_000_000))?;
+                println!("owned_boundary_child=verified");
+                Ok(())
+            })();
+            let outcome=if output.is_ok(){TaskOutcome::Success}else{TaskOutcome::Failed("boundary child refused".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
+        }).await?;
+        result.receipt?;result.output
+    })
+}
+
+#[test]
+fn owned_boundary_survives_writer_process_exit() -> Test {
+    use std::{os::unix::fs::DirBuilderExt,process::{Command,Stdio}};
+    let root=std::env::temp_dir().join(format!("fss-boundary-process-{}",std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let root=std::fs::canonicalize(root)?;let _temp=Temp(root.clone());
+    let exe=std::env::current_exe()?;
+    let writer=Command::new(&exe).arg("owned_session_camera_fixture_stack_control").arg("--exact").arg("--nocapture").arg("--test-threads=1")
+        .env("TMPDIR",&root).env("FSS_TEST_PRESERVE_BOUNDARY","1").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let writer_pid=writer.id();let output=writer.wait_with_output()?;
+    if !output.status.success() || !String::from_utf8_lossy(&output.stdout).contains("owned_restart=second_connection_archived") {return Err(format!("boundary writer failed: {}",String::from_utf8_lossy(&output.stderr)).into());}
+    let writer_root=root.join(format!("fss-unifi-owned-replay-{writer_pid}"));
+    let receipt=std::fs::read_to_string(writer_root.join("boundary-test-receipt"))?;
+    if receipt.len()>1024{return Err("boundary receipt exceeded bound".into());}
+    let fields:Vec<_>=receipt.lines().collect();if fields.len()!=3{return Err("boundary receipt shape".into());}
+    let run=|head:&str,pin:&str| -> io::Result<std::process::Output> {
+        Command::new(&exe).arg("owned_boundary_child_reader").arg("--ignored").arg("--exact").arg("--nocapture").arg("--test-threads=1")
+            .env("FSS_TEST_BOUNDARY_ROOT",&writer_root).env("FSS_TEST_BOUNDARY_HEAD",head)
+            .env("FSS_TEST_BOUNDARY_PIN",pin).env("FSS_TEST_BOUNDARY_RETENTION",fields[2]).output()
+    };
+    let child=run(fields[0],fields[1])?;
+    if !child.status.success() || !String::from_utf8_lossy(&child.stdout).contains("owned_boundary_child=verified") {return Err(format!("boundary child failed: {}",String::from_utf8_lossy(&child.stderr)).into());}
+    let wrong=ContentDigest::sha256(b"wrong boundary pin").to_text();
+    if run(fields[0],&wrong)?.status.success() || run(&wrong,fields[1])?.status.success() {return Err("wrong boundary pin or custody head accepted".into());}
+    println!("owned_boundary_process=writer_exited_reader_verified wrong_pins_refused=true");
+    Ok(())
+}
+
+/// Focused owned-session replay. The synthetic peer only supplies transport;
+/// the caller's bounded FLV bytes remain the source used for archive checks.
+fn lean_owned_session_replay(wire: Vec<u8>, test_refusal: bool, require_distinct: bool, initial_video_only: bool) -> Test {
+    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-owned-replay-{}",std::process::id()));
+    std::fs::create_dir(&path)?;let temp=Temp(path);
+    let store=FileEffectJournal::create(temp.0.join("effects"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+    let mut effects=EffectCoordinator::with_journal(Box::new(store))?;
+    let mut budget=BudgetVector::ZERO;budget.network_bytes=32_000_000;budget.bytes=32_000_000;
+    let (mut authority,mut tree)=AuthorityCx::root(RootAuthoritySpec {
+        trace_id:"trace:owned-replay".into(),operation_id:OperationId::parse("operation:owned-replay-owner")?,principal:"principal:fixture".into(),
+        capabilities:vec![RuntimeGrant::AdapterNet.as_str().into(),RuntimeGrant::CameraManagementPrepare.as_str().into(),RuntimeGrant::CameraManagementCommit.as_str().into(),RuntimeGrant::CameraSettingPrepare.as_str().into(),RuntimeGrant::CameraSettingCommit.as_str().into(),RuntimeGrant::ReadMedia.as_str().into(),RuntimeGrant::ObjectStage.as_str().into(),RuntimeGrant::ObjectPublish.as_str().into()],
+        deadline:Some(TimestampNs(60_000_000_000)),priority:1,budgets:budget,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"owned replay fixture"),generation:1,
+    },RegionId::new("region:owned-replay")?,RegionKind::Process,budget,TimestampNs(1))?;
+    let camera=ContentDigest::sha256(b"verified fixture camera");let resource=format!("camera:{}",camera.to_text());
+    let mut leases=LeaseRegistry::new();let fence=leases.acquire(&resource,authority.region().as_str(),None,TimestampNs(2))?.fence;let leases=RefCell::new(leases);
+    let management=Preconditions {camera,peer_admission:ContentDigest::sha256(b"fixture admission"),session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
+    let stream=intent::Preconditions {camera,peer_admission:management.peer_admission,stream_generation:1,previous_settings:None,lease_fence:fence};
+    let operations=[OperationId::parse("operation:lean-hello")?,OperationId::parse("operation:lean-agreement")?,OperationId::parse("operation:lean-stream")?,OperationId::parse("operation:lean-clock-startup")?,OperationId::parse("operation:lean-clock-live")?];
+    let runtime=RuntimeBuilder::current_thread().blocking_threads(1,1).build()?;
+    runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:owned-replay")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let output=Box::pin(lean_owned_session_task(task,cx,&mut effects,&leases,management,stream,&operations,&temp.0,wire,test_refusal,require_distinct,initial_video_only)).await;
+            let outcome=if output.is_ok(){TaskOutcome::Indeterminate("fixture effects require reconciliation".into())}else{TaskOutcome::Failed("owned replay failed".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
+        }).await?;
+        result.receipt?;result.output
+    })?;
+    for operation in &operations[..4] {
+        assert_eq!(effects.journal().operation(operation).ok_or("startup effect missing")?.state,fss_core::EffectState::Committed);
+    }
+    assert!(!authority.finalize_report(&tree)?.is_empty());
+    if std::env::var("FSS_TEST_PRESERVE_BOUNDARY").as_deref()==Ok("1") {std::mem::forget(temp);}
+    Ok(())
+}
+
+async fn lean_owned_session_task<'scope,'task>(
+    task:&'scope fss_runtime::execution::TaskCx<'task>,cx:&'scope asupersync::Cx,
+    effects:&mut EffectCoordinator,leases:&RefCell<LeaseRegistry>,management:Preconditions,
+    stream:intent::Preconditions,operations:&[OperationId],temp:&std::path::Path,wire:Vec<u8>,test_refusal:bool,require_distinct:bool,initial_video_only:bool,
+) -> Test {
+    use fss_reference::unifi_direct::{archive,av_bootstrap,av_bootstrap_driver,av_owned_sink,recording_storage};
+    struct Retention;
+    impl archive::RetainAuthority for Retention {fn permits(&self,_:ContentDigest,_:ContentDigest)->bool{true}}
+    impl archive::ReadAuthority for Retention {fn permits(&self,_:ContentDigest,_:ContentDigest)->bool{true}}
+    struct Deny;
+    impl archive::RetainAuthority for Deny {fn permits(&self,_:ContentDigest,_:ContentDigest)->bool{false}}
+    impl archive::ReadAuthority for Deny {fn permits(&self,_:ContentDigest,_:ContentDigest)->bool{false}}
+    #[derive(Debug)] struct RejectRetain;
+    impl fss_runtime::effect_journal::EffectPinRetainer for RejectRetain {
+        fn retained_pin(&mut self)->Result<Option<fss_runtime::effect_journal::EffectJournalPin>,fss_runtime::effect_journal::EffectPersistenceError>{Ok(None)}
+        fn reserve_capacity(&mut self,_:usize)->Result<(),fss_runtime::effect_journal::EffectPersistenceError>{Ok(())}
+        fn verify_effect_history(&mut self,_:&dyn fss_runtime::effect_journal::EffectJournalStore)->Result<(),fss_runtime::effect_journal::EffectPersistenceError>{Ok(())}
+        fn retain(&mut self,_:Option<fss_runtime::effect_journal::EffectJournalPin>,_:fss_runtime::effect_journal::EffectJournalPin)->Result<(),fss_runtime::effect_journal::EffectPersistenceError>{Err(fss_runtime::effect_journal::EffectPersistenceError::Storage("fixture custody failure".into()))}
+    }
+    let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
+    let policy=FixtureMediaAdmission {listen:Cell::new(true),peer:Cell::new(true)};
+    let bind=SocketAddrV4::new(Ipv4Addr::LOCALHOST,0);
+    let control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+    let address=SocketAddr::V4(control.local_addr());let expected=wire.clone();
+    let peer=std::thread::spawn(move || -> io::Result<()> {
+        let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut request=HEAD.as_bytes().to_vec();request.extend(frame(HELLO));socket.write_all(&request)?;
+        let mut header=Vec::new();let mut byte=[0u8;1];while !header.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte)?;header.push(byte[0]);if header.len()>4096{return Err(io::Error::other("upgrade limit"));}}
+        if !header.starts_with(b"HTTP/1.1 101 "){return Err(io::Error::other("upgrade refused"));}
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_hello".len()).any(|w|w==b"ubnt_avclient_hello"){return Err(io::Error::other("hello reply"));}
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":10}"#))?;
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync"){return Err(io::Error::other("startup clock reply"));}
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_paramAgreement".len()).any(|w|w==b"ubnt_avclient_paramAgreement"){return Err(io::Error::other("agreement"));}
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":3}"#))?;
+        let request=receive_binary(&mut socket)?;let text=std::str::from_utf8(&request).map_err(io::Error::other)?;
+        let destination:SocketAddr=text.split_once("tcp://").and_then(|(_,s)|s.split_once('?')).map(|(s,_)|s).ok_or_else(||io::Error::other("stream destination"))?.parse().map_err(io::Error::other)?;
+        if !matches!(destination,SocketAddr::V4(addr) if addr.ip().is_loopback() && addr.port()!=0){return Err(io::Error::other("stream destination scope"));}
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+        let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;media.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let split=wire.len().min(100);media.write_all(&wire[..split])?;
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync"){return Err(io::Error::other("live clock reply"));}
+        let writer=std::thread::spawn(move || media.write_all(&wire[split..]));
+        let closed=matches!(socket.read(&mut byte),Ok(0));
+        match writer.join().map_err(|_|io::Error::other("media writer panic"))? {
+            Ok(())=>(),Err(error) if closed && matches!(error.kind(),io::ErrorKind::BrokenPipe|io::ErrorKind::ConnectionReset)=>(),Err(error)=>return Err(error),
+        }
+        if closed{Ok(())}else{Err(io::Error::other("controller did not retire"))}
+    });
+    let (io,gate)=control.accept(4096,Duration::from_secs(5)).await?;
+    let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
+    let mut session=owner::accept_guarded(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,gate,controller,Duration::from_secs(5)).await?;
+    let guard=Guard {leases,clock};let approval=FixtureApproval {revoke_stream:None};
+    let mut owner=conversation::Owner {cx,task,clock,effects,leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
+    let start=listener::Start {bind,resource:"fixture:camera",admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&operations[0],agreement:&operations[1],stream:&operations[2],time_sync:&operations[3..4],management,stream_conditions:stream,chunk_bytes:4096,max_bytes:u64::try_from(expected.len())?+1,bind_wait:Duration::from_secs(5),conversation_wait:Duration::from_secs(5),accept_wait:Duration::from_secs(5)};
+    let framer=Framer::with_mode(FlvLimits::default(),fss_packet::extended_flv::stream::MAX_BUFFER_BYTES,fss_packet::extended_flv::stream::SearchMode::ZeroStreamId)?;
+    let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
+    let mut trace=listener::StartTrace::default();
+    let started=listener::start_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace).await?;
+    let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,management);
+    let collector=av_bootstrap::Collector::new(Some([0x14,0x08]),ContentDigest::sha256(b"worker guard retention"),av_owned_sink::BootstrapPolicy {allow_initial_video_only: initial_video_only, max_separation_ms:5_000,jitter_ms:5,max_epoch_frames:1_000_000,max_audio_frames:fss_container::Mp4Limits::default().max_samples,media_limits:fss_container::Mp4Limits::default(),evidence_limits:fss_reference::unifi_direct::evidence::Limits::default()});
+    let replay_authority=fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {trace_id:"trace:owned-replay-storage".into(),operation_id:OperationId::parse("operation:owned-replay-storage")?,principal:"principal:fixture".into(),capabilities:vec!["ADP-REPLAY-001".into()],deadline:None,priority:1,budgets:BudgetVector::builder().bytes(64*1024*1024).build()?,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"site:owned-replay"),generation:1})?;
+    let access=Arc::new(Retention);
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let root=temp.join("owned-storage");
+    let storage_cfg=recording_storage::Configuration {
+        root:&root,site_lineage:"site:owned-replay",source:SourceKey {connection:1,generation:1},
+        camera_claim:ContentDigest::sha256(b"fixture camera"),source_retention:ContentDigest::sha256(b"owned retention"),
+        source_scope:ContentDigest::sha256(b"owned source scope"),av_scope:ContentDigest::sha256(b"owned av scope"),
+        source_deployment_limits:owned_source_limits(),av_deployment_limits:owned_av_limits(),
+        limits:archive::Limits::default(),max_source_bytes:1024*1024,work_limit:4_000_000_000,
+    };
+    let bad_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_cfg=recording_storage::Configuration {av_scope:storage_cfg.source_scope,..storage_cfg};
+    assert!(matches!(recording_storage::create(task,cx,clock,bad_cfg,bad_source,bad_av,access.clone()),Err(recording_storage::Error::Configuration)));
+    assert!(!root.exists());
+    let bad_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_cfg=recording_storage::Configuration {limits:archive::Limits {maximum_spool_object_bytes:64*1024*1024+1,maximum_ledger_deltas:65_536},..storage_cfg};
+    assert!(matches!(recording_storage::create(task,cx,clock,bad_cfg,bad_source,bad_av,access.clone()),Err(recording_storage::Error::Configuration)));
+    assert!(!root.exists());
+    let bad_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_limits=fss_reference::DeploymentLimits {max_roots:0,..owned_source_limits()};
+    let bad_cfg=recording_storage::Configuration {source_deployment_limits:bad_limits,..storage_cfg};
+    assert!(matches!(recording_storage::create(task,cx,clock,bad_cfg,bad_source,bad_av,access.clone()),Err(recording_storage::Error::Configuration)));
+    assert!(!root.exists());
+    let cancelled=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    cancelled.request_cancellation();
+    let other=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::create(task,cx,clock,storage_cfg,cancelled,other,access.clone()),Err(recording_storage::Error::Admission)));
+    assert!(!root.exists());
+    let failed_root=temp.join("refused-storage");
+    let failed_cfg=recording_storage::Configuration {root:&failed_root,..storage_cfg};
+    let failed_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let failed_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let reject=recording_storage::Retainers {source_journal:Box::new(RejectRetain),source_keeper:Box::new(RejectRetain),av_journal:Box::new(RejectRetain),av_keeper:Box::new(RejectRetain)};
+    assert!(matches!(recording_storage::create_retained(task,cx,clock,failed_cfg,failed_source,failed_av,access.clone(),reject),Err(recording_storage::Error::Storage)));
+    assert!(failed_root.is_dir());
+    let failed_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let failed_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::create(task,cx,clock,failed_cfg,failed_source,failed_av,access.clone()),Err(recording_storage::Error::Root)));
+    let witness=temp.join("witness");
+    task.checkpoint_for(RuntimeGrant::ObjectStage,witness.to_str().ok_or("witness path")?,clock.now()?,&BudgetVector::ZERO)?;
+    std::fs::create_dir(&witness)?;
+    let scope=|name:&str| ContentDigest::sha256(format!("owned-witness:{name}").as_bytes());
+    let retainer=|name:&str| -> Result<Box<dyn fss_runtime::effect_journal::EffectPinRetainer>,Box<dyn std::error::Error>> {
+        Ok(Box::new(fss_object::effect_journal::FileTrustedRootPinRetainer::create(witness.join(name),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope(name))?))
+    };
+    let retainers=recording_storage::Retainers {source_journal:retainer("source-journal")?,source_keeper:retainer("source-keeper")?,av_journal:retainer("av-journal")?,av_keeper:retainer("av-keeper")?};
+    let recording_storage::Created {coordinator,av:resources}=recording_storage::create_retained(task,cx,clock,storage_cfg,replay,av_replay,access.clone(),retainers)?;
+    assert_eq!(*resources.deployment.limits(),owned_av_limits());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&root)?.permissions().mode() & 0o077,0);
+    }
+    let retry_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let retry_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::create(task,cx,clock,storage_cfg,retry_source,retry_av,access.clone()),Err(recording_storage::Error::Root)));
+    let owned=if test_refusal {
+        use fss_reference::unifi_direct::recording_session::{BeginRefusal,Session};
+        supervisor.enable_audio_tracking()?;
+        let refusal=match Session::begin(supervisor,collector,coordinator,resources) {Err(refusal)=>refusal,Ok(_)=>return Err("duplicate audio setup unexpectedly accepted".into())};
+        let BeginRefusal::Audio {supervisor,collector,coordinator,resources,error:pipeline::AudioSetupError::AlreadyEnabled}=refusal else {return Err("wrong begin refusal".into());};
+        let driver=av_bootstrap_driver::Driver::attach(supervisor,collector).map_err(|_|"recovered bootstrap driver refused")?;
+        Session::new(coordinator,Box::new(driver),resources)
+    } else {
+        fss_reference::unifi_direct::recording_session::Session::begin(supervisor,collector,coordinator,resources).map_err(|_|"fresh recording session refused")?
+    };
+    let (coordinator,pins,av_minimum,av_pin)=drive_owned_recording(owned,&mut owner,&operations[4],stream,None,true,initial_video_only,access.as_ref(),task,cx,clock).await?;
+    let retired=coordinator.into_worker().retire().map_err(|_|"source worker retirement refused")?;
+    if retired.fenced || retired.pending.is_some(){return Err("source custody unresolved".into());}
+    let mut parts=retired.parts;
+    assert_eq!(*parts.deployment.limits(),owned_source_limits());
+    let mut archived_stream_start=false;
+    let last_source_pin=*pins.last().ok_or("source pin missing")?;
+    let first_source_pin=*pins.first().ok_or("first source pin missing")?;
+    for pin in &pins {
+        let recovered=archive::read_unknown_time_source(&mut parts.deployment,*pin,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&parts.replay)?;
+        let start=usize::try_from(recovered.offset())?;let end=start.checked_add(recovered.bytes().len()).ok_or("source offset overflow")?;
+        if expected.get(start..end)!=Some(recovered.bytes()){return Err("source bytes mismatch".into());}
+        archived_stream_start |= start==0 && !recovered.bytes().is_empty();
+    }
+    if !archived_stream_start{return Err("stream start was not archived".into());}
+    println!("owned_source_readback stream_start=matched");
+    let source_minimum=recording_storage::HistoryMinimum {journal:parts.journal.anchor(),keeper:parts.keeper.anchor()};
+    drop(parts);
+    use fss_runtime::effect_journal::EffectPinRetainer;
+    let retained=|name:&str| -> Result<fss_runtime::effect_journal::EffectJournalPin,Box<dyn std::error::Error>> {
+        let mut root=fss_object::effect_journal::FileTrustedRootPinRetainer::open_trusting_storage(witness.join(name),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope(name))?;
+        root.retained_pin()?.ok_or_else(||"missing witness anchor".into())
+    };
+    let durable_source=recording_storage::HistoryMinimum {journal:retained("source-journal")?,keeper:retained("source-keeper")?};
+    let durable_av=recording_storage::HistoryMinimum {journal:retained("av-journal")?,keeper:retained("av-keeper")?};
+    assert_eq!((durable_source.journal,durable_source.keeper),(source_minimum.journal,source_minimum.keeper));
+    assert_eq!((durable_av.journal,durable_av.keeper),(av_minimum.journal,av_minimum.keeper));
+    let source_minimum=durable_source;let av_minimum=durable_av;
+    let bad=fss_runtime::effect_journal::EffectJournalPin {sequence:av_minimum.journal.sequence,root:ContentDigest::sha256(b"wrong retained anchor")};
+    let bad_av=recording_storage::HistoryMinimum {journal:bad,keeper:av_minimum.keeper};
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::recover_histories(task,cx,clock,storage_cfg,source_minimum,bad_av,replay,av_replay),Err(recording_storage::Error::MinimumMismatch)));
+    let bad_keeper=fss_runtime::effect_journal::EffectJournalPin {sequence:source_minimum.keeper.sequence,root:ContentDigest::sha256(b"wrong keeper anchor")};
+    let bad_source=recording_storage::HistoryMinimum {journal:source_minimum.journal,keeper:bad_keeper};
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::recover_histories(task,cx,clock,storage_cfg,bad_source,av_minimum,replay,av_replay),Err(recording_storage::Error::MinimumMismatch)));
+    let cancelled=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    cancelled.request_cancellation();
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::recover_histories(task,cx,clock,storage_cfg,source_minimum,av_minimum,cancelled,av_replay),Err(recording_storage::Error::Admission)));
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let recovered=recording_storage::recover_histories(task,cx,clock,storage_cfg,source_minimum,av_minimum,replay,av_replay)?;
+    assert!(recovered.source.keeper_caught_up() && recovered.av.keeper_caught_up());
+    assert_eq!(recovered.source.journal.pending(),None);
+    assert_eq!(recovered.av.journal.pending(),None);
+    assert_eq!(recovered.source.journal.confirmed(),Some(last_source_pin));
+    assert_eq!(recovered.av.journal.confirmed(),Some(av_pin));
+    assert_eq!(recovered.source.journal.replay_pin(),Some(last_source_pin));
+    assert_eq!(recovered.av.journal.replay_pin(),Some(av_pin));
+    println!("owned_history_recovery=verified replay_required=true");
+    let without_custody=match recording_storage::resume_confirmed(task,cx,clock,storage_cfg,recovered,access.as_ref(),access.clone(),archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:256*1024*1024}) {Err(refusal)=>refusal,Ok(_)=>return Err("restart without retained custody accepted".into())};
+    assert_eq!(without_custody.reason,recording_storage::Error::Custody);
+    drop(without_custody);
+    let open_retainer=|name:&str| -> Result<Box<dyn fss_runtime::effect_journal::EffectPinRetainer>,Box<dyn std::error::Error>> {
+        Ok(Box::new(fss_object::effect_journal::FileTrustedRootPinRetainer::open_trusting_storage(witness.join(name),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope(name))?))
+    };
+    let bad_retainers=recording_storage::Retainers {source_journal:Box::new(RejectRetain),source_keeper:open_retainer("source-keeper")?,av_journal:open_retainer("av-journal")?,av_keeper:open_retainer("av-keeper")?};
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::recover_histories_retained(task,cx,clock,storage_cfg,source_minimum,av_minimum,replay,av_replay,bad_retainers),Err(recording_storage::Error::MinimumMismatch)));
+    let retainers=recording_storage::Retainers {source_journal:open_retainer("source-journal")?,source_keeper:open_retainer("source-keeper")?,av_journal:open_retainer("av-journal")?,av_keeper:open_retainer("av-keeper")?};
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let mut recovered=recording_storage::recover_histories_retained(task,cx,clock,storage_cfg,source_minimum,av_minimum,replay,av_replay,retainers)?;
+    let mut av_deployment=fss_reference::ReferenceDeployment::open_with_limits(&root.join("av"),"site:owned-replay",owned_av_limits(),&recovered.av.replay)?;
+    let object_limits=archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:256*1024*1024};
+    assert!(matches!(archive::replay_confirmed_unknown_time_av_anchored(&mut av_deployment,&Deny,access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&recovered.av.replay,&mut recovered.av.journal,&mut recovered.av.keeper),Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied))));
+    assert_eq!(recovered.av.journal.replay_pin(),Some(av_pin));
+    assert!(matches!(archive::replay_confirmed_unknown_time_av_anchored(&mut av_deployment,access.as_ref(),&Deny,archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&recovered.av.replay,&mut recovered.av.journal,&mut recovered.av.keeper),Err(archive::ConfirmedAvReplayError::Publication(archive::UnknownTimePublishError::Archive(archive::Error::Denied)))));
+    assert_eq!(recovered.av.journal.replay_pin(),Some(av_pin));
+    let av_receipt=archive::replay_confirmed_unknown_time_av_anchored(&mut av_deployment,access.as_ref(),access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&recovered.av.replay,&mut recovered.av.journal,&mut recovered.av.keeper)?;
+    assert_eq!(av_receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);
+    assert_eq!(av_receipt.root,av_pin.root);
+    assert_eq!(recovered.av.journal.replay_pin(),None);
+    assert_eq!(recovered.av.journal.confirmed(),Some(av_pin));
+    assert!(recovered.av.keeper_caught_up());
+    assert!(matches!(archive::replay_confirmed_unknown_time_av_anchored(&mut av_deployment,access.as_ref(),access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&recovered.av.replay,&mut recovered.av.journal,&mut recovered.av.keeper),Err(archive::ConfirmedAvReplayError::History)));
+    drop(av_deployment);
+    let mut deployment=fss_reference::ReferenceDeployment::open_with_limits(&root.join("source"),"site:owned-replay",owned_source_limits(),&recovered.source.replay)?;
+    let last=archive::read_unknown_time_source(&mut deployment,last_source_pin,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&recovered.source.replay)?;
+    let old=archive::read_unknown_time_source(&mut deployment,first_source_pin,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&recovered.source.replay)?;
+    let old_plan=fss_reference::unifi_direct::source_evidence::Prepared::from_recovered(&old);
+    let distinct_source=first_source_pin!=last_source_pin;
+    if require_distinct && !distinct_source {return Err("distinct source roots required".into());}
+    if distinct_source {
+        assert!(matches!(archive::publish_unknown_time_source_anchored(&old_plan,&mut deployment,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&recovered.source.replay,&mut recovered.source.journal,&mut recovered.source.keeper),Err(archive::UnknownTimePublishError::Candidate)));
+    }
+    let last_plan=fss_reference::unifi_direct::source_evidence::Prepared::from_recovered(&last);
+    let receipt=archive::publish_unknown_time_source_anchored(&last_plan,&mut deployment,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&recovered.source.replay,&mut recovered.source.journal,&mut recovered.source.keeper)?;
+    assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);
+    assert_eq!(recovered.source.journal.replay_pin(),None);
+    if distinct_source {
+        archive::publish_unknown_time_source_anchored(&old_plan,&mut deployment,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&recovered.source.replay,&mut recovered.source.journal,&mut recovered.source.keeper)?;
+        assert_eq!(recovered.source.journal.confirmed(),Some(first_source_pin));
+    }
+    assert!(recovered.source.keeper_caught_up());
+    assert_eq!(recovered.av.journal.replay_pin(),None);
+    let source_after=recording_storage::HistoryMinimum {journal:recovered.source.journal.anchor(),keeper:recovered.source.keeper.anchor()};
+    if distinct_source {
+        assert!(source_after.journal.sequence>source_minimum.journal.sequence && source_after.keeper.sequence>source_minimum.keeper.sequence);
+    } else {
+        assert_eq!((source_after.journal,source_after.keeper),(source_minimum.journal,source_minimum.keeper));
+    }
+    drop(deployment);drop(recovered);
+    let retainers=recording_storage::Retainers {source_journal:open_retainer("source-journal")?,source_keeper:open_retainer("source-keeper")?,av_journal:open_retainer("av-journal")?,av_keeper:open_retainer("av-keeper")?};
+    let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let reopened=recording_storage::recover_histories_retained(task,cx,clock,storage_cfg,source_after,av_minimum,replay,av_replay,retainers)?;
+    assert_eq!(reopened.av.journal.replay_pin(),Some(av_pin));
+    assert!(reopened.av.keeper_caught_up());
+    assert_eq!(reopened.source.journal.replay_pin(),reopened.source.journal.confirmed());
+    let wrong_source_cfg=recording_storage::Configuration {source_deployment_limits:fss_reference::DeploymentLimits::standard(),..storage_cfg};
+    assert!(matches!(recording_storage::readback_confirmed(task,cx,clock,wrong_source_cfg,&reopened,access.as_ref()),Err(recording_storage::Error::SourceReadbackOpen)));
+    let wrong_av_cfg=recording_storage::Configuration {av_deployment_limits:fss_reference::DeploymentLimits::standard(),..storage_cfg};
+    assert!(matches!(recording_storage::readback_confirmed(task,cx,clock,wrong_av_cfg,&reopened,access.as_ref()),Err(recording_storage::Error::AvReadbackOpen)));
+    let refused=match recording_storage::resume_confirmed(task,cx,clock,wrong_source_cfg,reopened,access.as_ref(),access.clone(),object_limits) {Err(refusal)=>refusal,Ok(_)=>return Err("wrong source limits accepted".into())};
+    assert_eq!(refused.reason,recording_storage::Error::SourceReadbackOpen);
+    let refused=match recording_storage::resume_confirmed(task,cx,clock,wrong_av_cfg,refused.histories,access.as_ref(),access.clone(),object_limits) {Err(refusal)=>refusal,Ok(_)=>return Err("wrong av limits accepted".into())};
+    assert_eq!(refused.reason,recording_storage::Error::AvReadbackOpen);
+    let refused=match recording_storage::resume_confirmed(task,cx,clock,storage_cfg,refused.histories,access.as_ref(),access.clone(),object_limits) {Err(refusal)=>refusal,Ok(_)=>return Err("old connection reused".into())};
+    assert_eq!(refused.reason,recording_storage::Error::RestartBoundary);
+    let next_key=SourceKey {connection:2,generation:1};
+    let resumed_cfg=recording_storage::Configuration {source:next_key,work_limit:100_000_000_000,..storage_cfg};
+    let refused=match recording_storage::resume_confirmed(task,cx,clock,resumed_cfg,refused.histories,&Deny,access.clone(),object_limits) {Err(refusal)=>refusal,Ok(_)=>return Err("unauthorized restart accepted".into())};
+    assert_eq!(refused.reason,recording_storage::Error::SourceReadback);
+    let resumed=recording_storage::resume_confirmed(task,cx,clock,resumed_cfg,refused.histories,access.as_ref(),access.clone(),object_limits)?;
+    let boundary=resumed.boundary();
+    assert_eq!(boundary.previous,storage_cfg.source);
+    assert_eq!(boundary.next,next_key);
+    assert_eq!(boundary.av_root,av_pin);
+    let plan=resumed.prepare_boundary()?;
+    let boundary_pin=plan.pin();
+    let failed_path=witness.join("failed-boundary-journal");
+    let failed_store=FileEffectJournal::create(&failed_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+    let failed_wrapped=fss_runtime::effect_journal::PinRetainedEffectJournal::new(Box::new(failed_store),Box::new(RejectRetain))?;
+    let failed_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    assert!(matches!(recording_storage::boundary::Custody::create(failed_wrapped,&plan,failed_path.to_str().ok_or("failed custody path")?.to_string(),failed_replay,task,cx,clock),Err(recording_storage::boundary::Error::CustodyIndeterminate)));
+    let custody_path=witness.join("boundary-journal");
+    let custody_store=FileEffectJournal::create(&custody_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+    let custody_retainer=fss_object::effect_journal::FileTrustedRootPinRetainer::create(witness.join("boundary-retainer"),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope("boundary-retainer"))?;
+    let wrapped=fss_runtime::effect_journal::PinRetainedEffectJournal::new(Box::new(custody_store),Box::new(custody_retainer))?;
+    let custody_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let custody_resource=custody_path.to_str().ok_or("boundary custody path")?.to_string();
+    let mut custody=recording_storage::boundary::Custody::create(wrapped,&plan,custody_resource.clone(),custody_replay,task,cx,clock)?;
+    let custody_head=custody.head();
+    let refused=match resumed.into_owners(&plan,&mut custody,task,cx,clock,access.as_ref(),&mut fss_geometry::WorkBudget::new(1_000_000_000)) {Err(refused)=>refused,Ok(_)=>return Err("unpublished boundary admitted".into())};
+    assert_eq!(refused.reason,recording_storage::boundary::Error::NotLedgered);
+    let mut resumed=refused.resumed;
+    assert_eq!(resumed.boundary(),boundary);
+    assert!(matches!(resumed.publish_boundary(&plan,&mut custody,task,cx,clock,&Deny,&mut fss_geometry::WorkBudget::new(1_000_000_000)),Err(recording_storage::boundary::Error::Denied)));
+    let boundary_receipt=resumed.publish_boundary(&plan,&mut custody,task,cx,clock,access.as_ref(),&mut fss_geometry::WorkBudget::new(1_000_000_000))?;
+    assert_eq!(boundary_receipt.root,boundary_pin.root);
+    let refused=match resumed.into_owners(&plan,&mut custody,task,cx,clock,&Deny,&mut fss_geometry::WorkBudget::new(1_000_000_000)) {Err(refused)=>refused,Ok(_)=>return Err("unauthorized boundary admitted".into())};
+    assert_eq!(refused.reason,recording_storage::boundary::Error::Denied);
+    let owners=match refused.resumed.into_owners(&plan,&mut custody,task,cx,clock,access.as_ref(),&mut fss_geometry::WorkBudget::new(1_000_000_000)) {Ok(owners)=>owners,Err(refusal)=>return Err(format!("boundary verification refused: {:?}",refusal.reason).into())};
+    peer.join().map_err(|_|"peer panic")??;
+    let control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+    let address=SocketAddr::V4(control.local_addr());let restart_expected=if initial_video_only {media_fixture()?} else {expected.clone()};let wire=restart_expected.clone();
+    let peer=std::thread::spawn(move || -> io::Result<()> {
+        let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut request=HEAD.as_bytes().to_vec();request.extend(frame(HELLO));socket.write_all(&request)?;
+        let mut header=Vec::new();let mut byte=[0u8;1];while !header.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte)?;header.push(byte[0]);if header.len()>4096{return Err(io::Error::other("upgrade limit"));}}
+        if !header.starts_with(b"HTTP/1.1 101 "){return Err(io::Error::other("upgrade refused"));}
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_hello".len()).any(|w|w==b"ubnt_avclient_hello"){return Err(io::Error::other("hello reply"));}
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":10}"#))?;
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync"){return Err(io::Error::other("startup clock reply"));}
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_paramAgreement".len()).any(|w|w==b"ubnt_avclient_paramAgreement"){return Err(io::Error::other("agreement"));}
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":3}"#))?;
+        let request=receive_binary(&mut socket)?;let text=std::str::from_utf8(&request).map_err(io::Error::other)?;
+        let destination:SocketAddr=text.split_once("tcp://").and_then(|(_,s)|s.split_once('?')).map(|(s,_)|s).ok_or_else(||io::Error::other("stream destination"))?.parse().map_err(io::Error::other)?;
+        if !matches!(destination,SocketAddr::V4(addr) if addr.ip().is_loopback() && addr.port()!=0){return Err(io::Error::other("stream destination scope"));}
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+        let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;media.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let split=wire.len().min(100);media.write_all(&wire[..split])?;
+        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
+        if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync"){return Err(io::Error::other("live clock reply"));}
+        let writer=std::thread::spawn(move || media.write_all(&wire[split..]));let closed=matches!(socket.read(&mut byte),Ok(0));
+        match writer.join().map_err(|_|io::Error::other("media writer panic"))? {Ok(())=>(),Err(error) if closed && matches!(error.kind(),io::ErrorKind::BrokenPipe|io::ErrorKind::ConnectionReset)=>(),Err(error)=>return Err(error)}
+        if closed{Ok(())}else{Err(io::Error::other("controller did not retire"))}
+    });
+    let restart_operations=[OperationId::parse("operation:restart-hello")?,OperationId::parse("operation:restart-agreement")?,OperationId::parse("operation:restart-stream")?,OperationId::parse("operation:restart-clock-startup")?,OperationId::parse("operation:restart-clock-live")?];
+    let restart_management=Preconditions {session_generation:2,..management};
+    let restart_stream=intent::Preconditions {stream_generation:2,..stream};
+    let (io,gate)=control.accept(4096,Duration::from_secs(5)).await?;
+    let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
+    let mut session=owner::accept_guarded(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,gate,controller,Duration::from_secs(5)).await?;
+    let start=listener::Start {bind,resource:"fixture:camera",admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&restart_operations[0],agreement:&restart_operations[1],stream:&restart_operations[2],time_sync:&restart_operations[3..4],management:restart_management,stream_conditions:restart_stream,chunk_bytes:4096,max_bytes:u64::try_from(restart_expected.len())?+1,bind_wait:Duration::from_secs(5),conversation_wait:Duration::from_secs(5),accept_wait:Duration::from_secs(5)};
+    let framer=Framer::with_mode(FlvLimits::default(),fss_packet::extended_flv::stream::MAX_BUFFER_BYTES,fss_packet::extended_flv::stream::SearchMode::ZeroStreamId)?;
+    let recorder=recording::Recorder::new(next_key,recording::Limits::default())?;let mut trace=listener::StartTrace::default();
+    let started=listener::start_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace).await?;
+    let supervisor=supervisor::Supervisor::new(session,started.pipeline,restart_management);
+    let collector=av_bootstrap::Collector::new(Some([0x14,0x08]),boundary.av_root.retention,av_owned_sink::BootstrapPolicy {allow_initial_video_only: false, max_separation_ms:5_000,jitter_ms:5,max_epoch_frames:1_000_000,max_audio_frames:fss_container::Mp4Limits::default().max_samples,media_limits:fss_container::Mp4Limits::default(),evidence_limits:fss_reference::unifi_direct::evidence::Limits::default()});
+    let recording_storage::Created {coordinator,av}=owners;
+    let session=fss_reference::unifi_direct::recording_session::Session::begin(supervisor,collector,coordinator,av).map_err(|_|"resumed recording session refused")?;
+    let (coordinator,new_pins,new_av_minimum,new_av_pin)=drive_owned_recording(session,&mut owner,&restart_operations[4],restart_stream,None,true,false,access.as_ref(),task,cx,clock).await?;
+    let mut retired=coordinator.into_worker().retire().map_err(|_|"resumed source retirement refused")?;
+    if retired.fenced || retired.pending.is_some(){return Err("resumed source unresolved".into());}
+    for pin in &new_pins {
+        let source=archive::read_unknown_time_source(&mut retired.parts.deployment,*pin,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&retired.parts.replay)?;
+        let start=usize::try_from(source.offset())?;let end=start.checked_add(source.bytes().len()).ok_or("restart source offset overflow")?;
+        if source.key()!=next_key || restart_expected.get(start..end)!=Some(source.bytes()){return Err("resumed source readback mismatch".into());}
+    }
+    let source_final=recording_storage::HistoryMinimum {journal:retired.parts.journal.anchor(),keeper:retired.parts.keeper.anchor()};
+    assert!(!new_pins.is_empty() && new_pins.iter().all(|pin|*pin!=boundary.source_root));
+    assert_ne!(new_av_pin,boundary.av_root);
+    assert!(source_final.journal.sequence>source_after.journal.sequence && new_av_minimum.journal.sequence>av_minimum.journal.sequence);
+    drop(retired);peer.join().map_err(|_|"restart peer panic")??;
+    drop(custody);
+    let wrong_head=fss_runtime::effect_journal::EffectJournalPin {sequence:custody_head.sequence,root:ContentDigest::sha256(b"wrong boundary custody head")};
+    assert!(matches!(FileEffectJournal::open(&custody_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo),wrong_head),Err(fss_runtime::effect_journal::EffectPersistenceError::PinMismatch)));
+    let custody_store=FileEffectJournal::open(&custody_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo),custody_head)?;
+    let custody_retainer=fss_object::effect_journal::FileTrustedRootPinRetainer::open_trusting_storage(witness.join("boundary-retainer"),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope("boundary-retainer"))?;
+    let wrapped=fss_runtime::effect_journal::PinRetainedEffectJournal::for_reconciliation(Box::new(custody_store),Box::new(custody_retainer))?;
+    let custody_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let custody=recording_storage::boundary::Custody::reopen(wrapped,custody_resource,custody_replay,task,cx,clock)?;
+    assert_eq!(custody.head(),custody_head);
+    assert_eq!(custody.plan().pin(),boundary_pin);
+    assert_eq!(custody.plan().boundary(),boundary);
+    let cold_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let mut cold=fss_reference::ReferenceDeployment::open_with_limits(&root.join("av"),"site:owned-replay",owned_av_limits(),&cold_replay)?;
+    assert!(matches!(recording_storage::boundary::verify_retained(&mut cold,&cold_replay,access.as_ref(),custody.plan(),task,cx,clock,&Deny,&mut fss_geometry::WorkBudget::new(1_000_000_000)),Err(recording_storage::boundary::Error::Denied)));
+    recording_storage::boundary::verify_retained(&mut cold,&cold_replay,access.as_ref(),custody.plan(),task,cx,clock,access.as_ref(),&mut fss_geometry::WorkBudget::new(1_000_000_000))?;
+    let wrong=recording_storage::boundary::prepare(recording_storage::RestartBoundary {next:SourceKey {connection:3,generation:1},..boundary})?;
+    assert!(matches!(recording_storage::boundary::verify_retained(&mut cold,&cold_replay,access.as_ref(),&wrong,task,cx,clock,access.as_ref(),&mut fss_geometry::WorkBudget::new(1_000_000_000)),Err(recording_storage::boundary::Error::NotLedgered)));
+    drop(cold);
+    assert_eq!(retained("source-journal")?,source_final.journal);
+    assert_eq!(retained("source-keeper")?,source_final.keeper);
+    assert_eq!(retained("av-journal")?,new_av_minimum.journal);
+    assert_eq!(retained("av-keeper")?,new_av_minimum.keeper);
+    if std::env::var("FSS_TEST_PRESERVE_BOUNDARY").as_deref()==Ok("1") {
+        use std::os::unix::fs::OpenOptionsExt;
+        let receipt_path=temp.join("boundary-test-receipt");
+        task.checkpoint_for(RuntimeGrant::ObjectStage,receipt_path.to_str().ok_or("receipt path")?,clock.now()?,&BudgetVector::ZERO)?;
+        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(receipt_path)?;
+        writeln!(file,"{}\n{}\n{}",custody_head.root.to_text(),boundary_pin.root.to_text(),boundary_pin.retention.to_text())?;
+    }
+    println!("owned_retained_recovery=source_replayed source_reanchored={distinct_source} av_replayed=true old_muxer_state=not_reconstructed");
+    println!("owned_restart=second_connection_archived boundary_time=unknown boundary_custody=reopened boundary_evidence=cold_verified controller_effects=unsettled");
+    Ok(())
+}
+
+#[test]
 fn asynchronous_guard_cancels_drains_and_retries_source() -> Test {
     conversation_scenario_with_worker_guard(false, false, false, false, false, false, 0, false, true, true, true, false)
 }
@@ -2909,19 +3969,24 @@ fn revoked_controller_withholds_pending_audio_and_returns_it_at_retirement() -> 
 
 #[test]
 fn correlated_clock_chain_reaches_hello_and_stream_with_distinct_effects() -> Test {
-    clock_requests_reach_stream(false)
+    clock_requests_reach_stream(false, false)
 }
 
 #[test]
 fn mixed_clock_requests_reach_hello_and_stream_with_distinct_effects() -> Test {
-    clock_requests_reach_stream(true)
+    clock_requests_reach_stream(true, false)
+}
+
+#[test]
+fn continuing_clock_chain_remains_journaled_after_stream_start() -> Test {
+    clock_requests_reach_stream(false, true)
 }
 
 /// Exercise clock requests through the owned conversation, local TCP,
 /// per-reply effect journal and the camera-shaped peer.
-fn clock_requests_reach_stream(mixed: bool) -> Test {
+fn clock_requests_reach_stream(mixed: bool, continuing: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?
-        .join(format!("fss-unifi-clock-chain-{}-{mixed}", std::process::id()));
+        .join(format!("fss-unifi-clock-chain-{}-{mixed}-{continuing}", std::process::id()));
     std::fs::create_dir(&path)?;
     let temp = Temp(path);
     let store = FileEffectJournal::create(
@@ -2983,7 +4048,7 @@ fn clock_requests_reach_stream(mixed: bool) -> Test {
     let hello = OperationId::parse("operation:clock-chain-hello")?;
     let agreement = OperationId::parse("operation:clock-chain-agreement")?;
     let stream = OperationId::parse("operation:clock-chain-stream")?;
-    let syncs: Vec<_> = (0..32)
+    let syncs: Vec<_> = (0..42)
         .map(|i| OperationId::parse(format!("operation:clock-chain-sync-{i:02}")))
         .collect::<Result<_, _>>()?;
     let runtime = RuntimeBuilder::current_thread().build()?;
@@ -3051,6 +4116,16 @@ fn clock_requests_reach_stream(mixed: bool) -> Test {
                         let stream_id = field(&stream, "messageId")?;
                         let reply = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ChangeVideoSettings\",\"messageId\":301,\"inResponseTo\":{stream_id}}}");
                         socket.write_all(&frame(reply.as_bytes()))?;
+                        if continuing {
+                            for camera_id in 400..430u64 {
+                                let response_to = if camera_id == 410 || camera_id == 420 { 0 } else { correlation };
+                                let message = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_timeSync\",\"messageId\":{camera_id},\"inResponseTo\":{response_to},\"responseExpected\":true}}");
+                                socket.write_all(&frame(message.as_bytes()))?;
+                                let reply = receive_binary(&mut socket)?;
+                                if field(&reply, "inResponseTo")? != camera_id { return Err(io::Error::other("continuing clock correlation")); }
+                                correlation = field(&reply, "messageId")?;
+                            }
+                        }
                         let mut last = [0u8; 1];
                         match socket.read(&mut last) { Ok(0) => Ok(()), _ => Err(io::Error::other("controller did not retire")) }
                     });
@@ -3058,7 +4133,7 @@ fn clock_requests_reach_stream(mixed: bool) -> Test {
                     let controller = Controller::new_with_time_sync_policy(
                         Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
                         1,
-                        fss_reference::unifi_direct::TimeSyncPolicy::BoundedPreHelloClockExchange,
+                        if continuing { fss_reference::unifi_direct::TimeSyncPolicy::BoundedContinuingClockExchange } else { fss_reference::unifi_direct::TimeSyncPolicy::BoundedPreHelloClockExchange },
                     )?;
                     let mut session = owner::accept_guarded(io, ProtocolPolicy::RequireOffer, &FixtureAdmission, gate, controller, Duration::from_secs(10)).await?;
                     let guard = Guard { leases: &leases, clock };
@@ -3073,11 +4148,24 @@ fn clock_requests_reach_stream(mixed: bool) -> Test {
                         VideoCodec::H264, AudioCodec::Aac, "0123456789abcdef",
                     )?;
                     let cfg = conversation::Config {
-                        hello: &hello, agreement: &agreement, stream: &stream, time_sync: &syncs,
+                        hello: &hello, agreement: &agreement, stream: &stream, time_sync: &syncs[..12],
                         management, stream_conditions, request: &request, wait: Duration::from_secs(20),
                     };
                     let reply = owner.start(&mut session, &cfg).await?;
                     assert_eq!(reply.time_syncs, 12);
+                    if continuing {
+                        for operation in &syncs[12..] {
+                            assert_eq!(session.next(Duration::from_secs(10)).await?, Step::Observation(Observation::TimeSyncRequested));
+                            let mut trace = conversation::TimeSyncTrace::default();
+                            owner.answer_time_sync_tracked(&mut session, operation, management, Duration::from_secs(10), &mut trace).await?;
+                            assert_eq!(trace.operation(), Some(operation));
+                            assert!(trace.dispatch_started());
+                            match trace.take_written() {
+                                Some(ManagementWrite::Written { permit }) if permit.journal_backed() => (),
+                                _ => return Err("continuing clock write did not retain its journaled permit".into()),
+                            }
+                        }
+                    }
                     drop(session);
                     peer.join().map_err(|_| "fixture peer panic")??;
                     Ok(())
@@ -3093,10 +4181,11 @@ fn clock_requests_reach_stream(mixed: bool) -> Test {
         result.receipt?;
         result.output
     })?;
-    for operation in [&hello, &agreement, &stream].into_iter().chain(syncs[..12].iter()) {
+    let used = if continuing { syncs.len() } else { 12 };
+    for operation in [&hello, &agreement, &stream].into_iter().chain(syncs[..used].iter()) {
         assert_eq!(effects.journal().operation(operation).ok_or("missing effect")?.state, fss_core::EffectState::Committed);
     }
-    for operation in &syncs[12..] {
+    for operation in &syncs[used..] {
         assert!(effects.journal().operation(operation).is_none());
     }
     assert!(!authority.finalize_report(&tree)?.is_empty());

@@ -465,6 +465,28 @@ pub struct Owner<'a, 'scope, 'task> {
 }
 
 impl Owner<'_, '_, '_> {
+    /// Prepare and commit one source-bound event reply using this owner's
+    /// existing task, approval, journal and lease. Errors may leave a prepared
+    /// or indeterminate operation in the journal and never authorize retry.
+    pub(super) fn permit_event_reply(
+        &mut self,
+        operation: &OperationId,
+        intent: management::Intent,
+    ) -> Result<CommittedEffect, Error> {
+        if intent.kind() != super::MessageKind::EventReply || intent.source_digest().is_none() {
+            return Err(Error::Configuration);
+        }
+        self.permit(
+            operation,
+            intent.request_digest(),
+            intent.precondition_digest(),
+            &intent.resource(),
+            intent.fence(),
+            RuntimeGrant::CameraManagementPrepare,
+            RuntimeGrant::CameraManagementCommit,
+        )
+    }
+
     fn permit(
         &mut self,
         operation: &OperationId,

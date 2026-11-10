@@ -89,6 +89,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Driver<'scope, 'task, IO
         self.parts.supervisor.matches_clock(clock)
     }
 
+    pub(super) fn control_supervisor(&mut self) -> &mut supervisor::Supervisor<'scope, 'task, IO> {
+        &mut self.parts.supervisor
+    }
+
     pub(super) fn ready_for_handoff(&self) -> bool {
         self.parts.pending.is_none()
             && !self.parts.fenced

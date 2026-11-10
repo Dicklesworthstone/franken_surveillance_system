@@ -29,6 +29,9 @@ pub enum Audio {
 /// Explicit limits and sender-clock assumptions for the first A/V segment.
 #[derive(Clone, Copy, Debug)]
 pub struct BootstrapPolicy {
+    /// Permit an unknown-time initial video-only segment when its first AAC
+    /// sample is bound to a copied lookahead witness. No coverage is implied.
+    pub allow_initial_video_only: bool,
     /// Maximum allowed sender-time separation between the first audio and video.
     pub max_separation_ms: u32,
     /// Allowed timestamp jitter under the selected AAC clock hypothesis.
@@ -301,36 +304,67 @@ impl OwnedSink {
             let initialize = |config: &aac::Configuration<'_>,
                               bound: Option<&aac_track::BoundConfiguration<'_>>|
              -> Result<_, BootstrapError> {
-                let origin = av_recording::segment_sender_clock_origin(
+                let normal_origin = av_recording::segment_sender_clock_origin(
                     segment,
                     config,
                     inputs.policy.max_separation_ms,
-                )
-                .map_err(BootstrapError::Media)?;
+                );
                 let initialization = video
                     .av_initialization(config)
                     .map_err(BootstrapError::Video)?;
-                let muxer = match bound {
-                    Some(bound) => av_recording::Muxer::from_source(
-                        &initialization,
-                        bound,
-                        origin.audio_ticks,
-                        inputs.policy.jitter_ms,
-                        inputs.policy.max_epoch_frames,
-                        inputs.policy.max_audio_frames,
-                        inputs.policy.media_limits,
-                    ),
-                    None => av_recording::Muxer::new(
-                        &initialization,
-                        config,
-                        origin.audio_ticks,
-                        inputs.policy.jitter_ms,
-                        inputs.policy.max_epoch_frames,
-                        inputs.policy.max_audio_frames,
-                        inputs.policy.media_limits,
-                    ),
-                }
-                .map_err(BootstrapError::Media)?;
+                let (muxer, origin) = match normal_origin {
+                    Ok(origin) => {
+                        let muxer = match bound {
+                            Some(bound) => av_recording::Muxer::from_source(
+                                &initialization,
+                                bound,
+                                origin.audio_ticks,
+                                inputs.policy.jitter_ms,
+                                inputs.policy.max_epoch_frames,
+                                inputs.policy.max_audio_frames,
+                                inputs.policy.media_limits,
+                            ),
+                            None => av_recording::Muxer::new(
+                                &initialization,
+                                config,
+                                origin.audio_ticks,
+                                inputs.policy.jitter_ms,
+                                inputs.policy.max_epoch_frames,
+                                inputs.policy.max_audio_frames,
+                                inputs.policy.media_limits,
+                            ),
+                        }
+                        .map_err(BootstrapError::Media)?;
+                        (muxer, origin)
+                    }
+                    Err(av_recording::Error::NoAudio) if inputs.policy.allow_initial_video_only => {
+                        let (muxer, witness) = match bound {
+                            Some(bound) => av_recording::Muxer::from_source_lookahead(
+                                &initialization,
+                                bound,
+                                segment,
+                                inputs.policy.max_separation_ms,
+                                inputs.policy.jitter_ms,
+                                inputs.policy.max_epoch_frames,
+                                inputs.policy.max_audio_frames,
+                                inputs.policy.media_limits,
+                            ),
+                            None => av_recording::Muxer::from_lookahead(
+                                &initialization,
+                                config,
+                                segment,
+                                inputs.policy.max_separation_ms,
+                                inputs.policy.jitter_ms,
+                                inputs.policy.max_epoch_frames,
+                                inputs.policy.max_audio_frames,
+                                inputs.policy.media_limits,
+                            ),
+                        }
+                        .map_err(BootstrapError::Media)?;
+                        (muxer, witness.origin)
+                    }
+                    Err(error) => return Err(BootstrapError::Media(error)),
+                };
                 Ok((initialization, muxer, origin))
             };
             let (initialization, muxer, origin) = match &inputs.audio {

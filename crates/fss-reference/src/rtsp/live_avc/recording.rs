@@ -10,7 +10,8 @@ use fss_packet::avc::AvcReceivePoll;
 use super::*;
 use crate::rtsp::recording::RecordingScope;
 use crate::rtsp::recording_capture::{
-    CaptureError, CapturePoll, CaptureRetirement, RecordingCapture, TimedCapture,
+    CaptureError, CapturePoll, CaptureRetirement, PictureTimingRequest, RecordingCapture,
+    TimedCapture,
 };
 use crate::rtsp::recording_collector::{
     CollectorError, CollectorLimits, RecordingCollector, RecordingTiming,
@@ -238,6 +239,17 @@ impl LiveAvcRecording {
     /// Immutable collection accounting, without an injection or mutable bypass of event order.
     pub fn collector(&self) -> &RecordingCollector {
         self.capture.collector()
+    }
+    /// Opt into one complete-picture lookahead before accepting media. This
+    /// changes local buffering only; it does not grant a network effect or
+    /// infer timing, identity, continuity, or a final picture's duration.
+    pub fn enable_timing_lookahead(&mut self) -> Result<(), CaptureError> {
+        self.capture.enable_timing_lookahead()
+    }
+    /// Return the next retained picture's source metadata, if available.
+    /// The caller must validate its relationship to the requested picture.
+    pub fn timing_lookahead(&self) -> Option<PictureTimingRequest> {
+        self.capture.timing_lookahead()
     }
     /// Live transport observations; final values transfer with terminal network ownership.
     pub fn totals(&self) -> Option<TcpTotals> {

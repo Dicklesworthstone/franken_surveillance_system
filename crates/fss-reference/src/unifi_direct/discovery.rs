@@ -17,6 +17,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "discovery_fleet.rs"]
+pub mod fleet;
+
 const MAX_PACKETS: usize = 128;
 const MAX_TARGETS: usize = 64;
 const MAX_COMBINED_WINDOWS: usize = 4;

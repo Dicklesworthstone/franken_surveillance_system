@@ -83,6 +83,88 @@ pub struct Retirement {
     pub time_sync: Option<conversation::TimeSyncTrace>,
 }
 
+/// Caller-owned event-reply attempt and local outcome.
+///
+/// If the dispatch future is dropped after it takes the permit, the operation
+/// and intent remain available but no local outcome is asserted. The durable
+/// journal and any resulting controller retirement require reconciliation.
+#[must_use = "retain this trace and reconcile its committed effect"]
+pub struct EventReplyTrace {
+    operation: OperationId,
+    intent: management::Intent,
+    pending: Option<CommittedEffect>,
+    dispatch_started: bool,
+    outcome: Option<Result<receive::ManagementWrite, receive::ManagementRefusal>>,
+}
+
+impl EventReplyTrace {
+    /// Bind a committed permit and prepared intent without performing I/O.
+    /// Dispatch still validates both against current authority and admission.
+    pub fn new(intent: management::Intent, permit: CommittedEffect) -> Self {
+        Self {
+            operation: permit.operation().clone(),
+            intent,
+            pending: Some(permit),
+            dispatch_started: false,
+            outcome: None,
+        }
+    }
+
+    /// Exact durable operation identity.
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    /// Inert intent tied to the original event source.
+    pub fn intent(&self) -> management::Intent {
+        self.intent
+    }
+
+    /// Whether the permit was handed to the dispatch future.
+    pub fn dispatch_started(&self) -> bool {
+        self.dispatch_started
+    }
+
+    /// Recover a permit which has not been handed to dispatch.
+    pub fn take_pending_permit(&mut self) -> Option<CommittedEffect> {
+        self.pending.take()
+    }
+
+    /// Transfer the exact local result and its permit, if dispatch completed.
+    pub fn take_outcome(
+        &mut self,
+    ) -> Option<Result<receive::ManagementWrite, receive::ManagementRefusal>> {
+        self.outcome.take()
+    }
+}
+
+/// A trace cannot be dispatched twice or after its permit was transferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventReplyTraceUnavailable;
+
+/// Event-reply preparation or effect commitment stopped before dispatch.
+/// The original event remains caller-owned. A commitment error may have
+/// changed the journal and must be reconciled before attempting again.
+#[derive(Debug)]
+pub enum EventReplyPreparationError {
+    /// No intent was returned; a local message may still need abandonment.
+    Prepare {
+        /// Caller-reserved operation identity.
+        operation: OperationId,
+        /// The local preparation refusal.
+        error: receive::Error,
+    },
+    /// Intent preparation succeeded, but journaled commitment did not return.
+    Commit {
+        /// Caller-reserved operation identity.
+        operation: OperationId,
+        /// Exact source-bound intent still prepared by the controller.
+        intent: management::Intent,
+        /// Payload-free effect or clock failure.
+        error: conversation::Error,
+    },
+}
+
 /// Owns a single admitted management connection and its corresponding pipeline.
 pub struct Supervisor<'scope, 'task, IO> {
     session: receive::Session<'scope, 'task, IO>,
@@ -90,6 +172,7 @@ pub struct Supervisor<'scope, 'task, IO> {
     management: management::Preconditions,
     controller_retirement: Option<ControllerRetirement>,
     pending_time_sync: Option<conversation::TimeSyncTrace>,
+    time_sync_reply_wait: Option<Duration>,
     media_first: bool,
     stopped: bool,
 }
@@ -115,9 +198,28 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             management,
             controller_retirement: None,
             pending_time_sync: None,
+            time_sync_reply_wait: None,
             media_first: false,
             stopped: false,
         }
+    }
+
+    /// Set a separate bounded allowance for a journaled time-sync reply.
+    /// `None` preserves the original behavior of using the poll wait. This
+    /// performs no I/O and grants no authority. A pending or stopped owner
+    /// cannot be reconfigured; invalid values leave the setting unchanged.
+    pub fn set_time_sync_reply_wait(
+        &mut self,
+        wait: Option<Duration>,
+    ) -> Result<(), conversation::Error> {
+        if self.stopped
+            || self.pending_time_sync.is_some()
+            || wait.is_some_and(|value| value.is_zero() || value > Duration::from_secs(30))
+        {
+            return Err(conversation::Error::Configuration);
+        }
+        self.time_sync_reply_wait = wait;
+        Ok(())
     }
 
     /// Check that a handoff uses the exact clock bound to this session.
@@ -202,6 +304,33 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         self.session.management_intent(self.management)
     }
 
+    /// Prepare a source-bound reply and commit its exact operation before I/O.
+    /// The caller owns the event, operation reservation and returned trace.
+    /// Failure after preparing the intent leaves it available for explicit
+    /// abandonment and requires journal inspection; no retry is implied.
+    pub fn prepare_journaled_event_reply(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        frame: &super::events::Frame,
+        timestamp: &str,
+        operation: &OperationId,
+    ) -> Result<EventReplyTrace, EventReplyPreparationError> {
+        let intent = self
+            .prepare_event_reply(owner, frame, timestamp)
+            .map_err(|error| EventReplyPreparationError::Prepare {
+                operation: operation.clone(),
+                error,
+            })?;
+        let permit = owner
+            .permit_event_reply(operation, intent)
+            .map_err(|error| EventReplyPreparationError::Commit {
+                operation: operation.clone(),
+                intent,
+                error,
+            })?;
+        Ok(EventReplyTrace::new(intent, permit))
+    }
+
     /// Abandon a locally unwritten reply while retaining its observed request.
     pub fn abandon_event_reply(
         &mut self,
@@ -275,6 +404,32 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             self.controller_retirement = Some(*controller);
         }
         result
+    }
+
+    /// Dispatch an event reply with caller-owned cancellation accounting.
+    ///
+    /// Once dispatch starts, dropping this future leaves the exact operation
+    /// and intent in `trace` and no asserted outcome. A later supervisor step
+    /// or retirement fences an interrupted socket write; no retry is implied.
+    pub async fn dispatch_event_reply_tracked(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        current: management::Preconditions,
+        wait: Duration,
+        trace: &mut EventReplyTrace,
+    ) -> Result<(), EventReplyTraceUnavailable> {
+        if trace.dispatch_started {
+            return Err(EventReplyTraceUnavailable);
+        }
+        let Some(permit) = trace.pending.take() else {
+            return Err(EventReplyTraceUnavailable);
+        };
+        trace.dispatch_started = true;
+        trace.outcome = Some(
+            self.dispatch_event_reply(owner, trace.intent, current, permit, wait)
+                .await,
+        );
+        Ok(())
     }
 
     /// Prepare an inert baseline motion setting while retaining the media pipeline.
@@ -428,9 +583,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         result
     }
 
-    /// Poll both sources fairly for at most `wait`, then allow up to another
-    /// `wait` to write a requested time-sync reply. Each request requires a
-    /// fresh operation identity; reuse is refused by the effect journal.
+    /// Poll both sources fairly for at most `wait`, then use the configured
+    /// reply allowance, or `wait` by default, for a requested time-sync reply.
+    /// Each request requires a fresh operation identity; reuse is refused by
+    /// the effect journal.
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, '_, '_>,
@@ -557,7 +713,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
                         &mut self.session,
                         operation,
                         self.management,
-                        wait,
+                        self.time_sync_reply_wait.unwrap_or(wait),
                         self.pending_time_sync
                             .as_mut()
                             .expect("time-sync trace installed"),

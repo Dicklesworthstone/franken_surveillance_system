@@ -202,9 +202,31 @@ pub enum VideoDestinationShape {
     Other,
 }
 
+/// An untrusted numeric camera setting, without guessing missing or malformed data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoMetric {
+    /// The field or its enclosing object was absent or null.
+    NotReported,
+    /// The field or its enclosing object had an unsupported representation.
+    Unsupported,
+    /// A positive integer reported by the camera; this is not validated media.
+    Reported(u32),
+}
+
+/// Camera-reported video dimensions and frame rate, not decoded stream properties.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoProfile {
+    /// Reported pixel width.
+    pub width: VideoMetric,
+    /// Reported pixel height.
+    pub height: VideoMetric,
+    /// Reported maximum or configured frames per second.
+    pub fps: VideoMetric,
+}
+
 /// One sanitized settings observation and, when representable, its local binding.
 /// The controller digest binds only the controller claim to the caller-supplied
-/// peer and generation. It does not cover the video shapes or authenticate,
+/// peer and generation. It does not cover video shapes or profiles, or authenticate,
 /// timestamp, retain, or revalidate any observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SettingsObservation {
@@ -215,6 +237,10 @@ pub struct SettingsObservation {
     /// Destination shapes for video1, video2 and video3, in that order.
     /// This omits destination values and is not a rollback record.
     pub video_destinations: [VideoDestinationShape; 3],
+    /// Unauthenticated reported video1, video2 and video3 dimensions and rates.
+    pub video_profiles: [VideoProfile; 3],
+    /// Unauthenticated reported JPEG snapshot dimensions and rate.
+    pub snapshot_profile: VideoProfile,
 }
 
 /// Caller-owned, untrusted serializer values from one settings response.
@@ -979,6 +1005,8 @@ fn settings_inner(
     }
     let mut value = json_input::parse(std::str::from_utf8(body).map_err(|_| Error::Settings)?)
         .map_err(|_| Error::Settings)?;
+    let video_profiles = ["video1", "video2", "video3"].map(|track| video_profile(&value, track));
+    let snapshot_profile = video_profile(&value, "mjpg");
     let video_destinations = ["video1", "video2", "video3"].map(|track| {
         let mut current = &value;
         for key in ["av", "video", track, "avSerializer", "destinations"] {
@@ -1069,9 +1097,49 @@ fn settings_inner(
             controller,
             binding,
             video_destinations,
+            video_profiles,
+            snapshot_profile,
         },
         serializers,
     ))
+}
+
+fn video_profile(root: &Value, track: &str) -> VideoProfile {
+    let uniform = |metric| VideoProfile {
+        width: metric,
+        height: metric,
+        fps: metric,
+    };
+    let mut current = root;
+    for key in ["av", "video", track] {
+        current = match current {
+            Value::Object(fields) => match fields.get(key) {
+                Some(Value::Null) | None => return uniform(VideoMetric::NotReported),
+                Some(value) => value,
+            },
+            Value::Null => return uniform(VideoMetric::NotReported),
+            _ => return uniform(VideoMetric::Unsupported),
+        };
+    }
+    let fields = match current {
+        Value::Object(fields) => fields,
+        Value::Null => return uniform(VideoMetric::NotReported),
+        _ => return uniform(VideoMetric::Unsupported),
+    };
+    let metric = |key: &str| match fields.get(key) {
+        None | Some(Value::Null) => VideoMetric::NotReported,
+        Some(value @ Value::Number(_)) => value
+            .integer()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n != 0)
+            .map_or(VideoMetric::Unsupported, VideoMetric::Reported),
+        _ => VideoMetric::Unsupported,
+    };
+    VideoProfile {
+        width: metric("width"),
+        height: metric("height"),
+        fps: metric("fps"),
+    }
 }
 
 fn field_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
