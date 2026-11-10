@@ -98,9 +98,20 @@ fi
 # ---- 2. images -----------------------------------------------------------------------------
 for pair in "$IMG_ROOTFS:$MD5_ROOTFS" "$IMG_KERNEL:$MD5_KERNEL"; do
   img=${pair%%:*}; want=${pair##*:}
-  got=$(md5 -q "$ROOT/deliverables/firmware/$img" 2>/dev/null || md5 -q "$HOME/fss-exploit/fw/$img" 2>/dev/null)
+  path="$ROOT/deliverables/firmware/$img"
+  [ -r "$path" ] || path="$HOME/fss-exploit/fw/$img"
+  got=$(md5 -q "$path" 2>/dev/null)
   [ "$got" = "$want" ] || die "local $img md5 $got != $want" 3
   log "  local $img md5 ok ($want)"
+  case "$img" in
+    rootfs.*)
+      # a rootfs that cannot boot is worse than stock: assert the boot-critical set exists
+      for need in init linuxrc sbin/init bin/busybox etc/init.d/rcS etc/passwd; do
+        unsquashfs -l "$path" 2>/dev/null | grep -qx "squashfs-root/$need" \
+          || die "$img lacks /$need — refusing to flash it" 3
+      done
+      log "  $img content ok (init, linuxrc, busybox, rcS, passwd)"
+      ;; esac
 done
 [ "$DRY" = 0 ] || { log "dry run: stopping before fetch/write"; exit 0; }
 
