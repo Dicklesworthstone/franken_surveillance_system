@@ -30,14 +30,22 @@ authentication, permanent file presence or copy recall.
 All five canonical record contracts passed on the pinned nightly against the
 exact production wire module. Six native lifecycle contracts, four CLI
 restart/filesystem contracts and one CLI admission contract cover the new
-behavior; their full-runtime execution is pending. Existing review publication,
-masking, grant and deletion cases remain selected. The local pinned compiler stopped in unchanged Asupersync before FSS
-diagnostics, and the local execution environment subsequently became unavailable.
-Changes were recovered from recorded edits through GitHub; full integration
-verification is pending the exact-source supplementary runner. No runtime,
-dependency, toolchain or qualification gate was replaced or weakened. This
-advances VIT-023 / FSS-068; see
-[`RETAINED_REVIEW_MEDIA.md`](docs/RETAINED_REVIEW_MEDIA.md).
+behavior; their full-runtime execution remains unverified. The 19 scoped review
+modules pass the semantic import check, and each of the three new canonical
+domains is registered once. Pinned formatting and scoped whitespace checks pass.
+
+The initial reference check and a fresh native-test build on merged source
+`48d2bc7` both stopped when unchanged Asupersync 0.5.0 rustc received SIGKILL,
+before FSS delivery diagnostics or test execution. The signal alone does not
+establish the exact kill cause. The hosted jobs were still queued or pending
+without an assigned runner at the final observation. No runtime, dependency,
+toolchain or qualification gate was replaced or weakened; no native integration
+or release-qualification pass is claimed.
+
+This advances VIT-023 / FSS-068. The exact commands, passing checks, retained
+native build log and outstanding validation obligation are recorded in
+[`SESSION_HANDOFF_2026-11-10_DELIVERY_LAYOUT.json`](docs/SESSION_HANDOFF_2026-11-10_DELIVERY_LAYOUT.json).
+See [`RETAINED_REVIEW_MEDIA.md`](docs/RETAINED_REVIEW_MEDIA.md) for operation and recovery.
 
 ## Native ONNX pixel shuffle and unshuffle
 
