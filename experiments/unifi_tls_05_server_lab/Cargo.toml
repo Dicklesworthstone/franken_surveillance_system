@@ -15,10 +15,10 @@ fss-runtime = { path = "../../crates/fss-runtime" }
 fss-reference = { path = "../../crates/fss-reference" }
 fss-object = { path = "../../crates/fss-object" }
 fss-container = { path = "../../crates/fss-container" }
+fss-geometry = { path = "../../crates/fss-geometry" }
 fss-packet = { path = "../../crates/fss-packet" }
 fss-codec-h264 = { path = "../../crates/fss-codec-h264" }
 fss-codec-mjpeg = { path = "../../crates/fss-codec-mjpeg" }
 
 [dev-dependencies]
-fss-geometry = { path = "../../crates/fss-geometry" }
 socket2 = "=0.6.5"

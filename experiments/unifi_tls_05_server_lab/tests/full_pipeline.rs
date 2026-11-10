@@ -57,8 +57,28 @@ use unifi_tls_05_server_lab::server::Server;
 
 #[path = "../src/bin/trial_checkpoint/mod.rs"]
 mod trial_checkpoint;
+#[path = "../src/bin/trial_run_id/mod.rs"]
+mod trial_run_id;
 
 type Test = Result<(), Box<dyn Error>>;
+
+#[test]
+fn trial_run_id_separates_operations_and_runs() -> Test {
+    let first = trial_run_id::TrialRunId::fresh()?;
+    let second = trial_run_id::TrialRunId::fresh()?;
+    assert_eq!(first.as_str().len(), 32);
+    assert!(first.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_ne!(first.as_str(), second.as_str());
+    assert_ne!(first.operation("handoff")?, first.operation("stream")?);
+    assert_ne!(first.operation("handoff")?, second.operation("handoff")?);
+    assert_ne!(first.owned_step(1)?, second.owned_step(1)?);
+    assert_ne!(first.owned_event(1)?, second.owned_event(1)?);
+    assert_ne!(first.owned_step(1)?, first.owned_event(1)?);
+    assert_ne!(first.owned_step(1)?, first.owned_step(2)?);
+    assert!(first.operation("invalid name").is_err());
+    Ok(())
+}
+
 fn connect_fixture_from(
     source: Ipv4Addr,
     destination: SocketAddr,
@@ -216,10 +236,15 @@ fn flv_tag(timestamp: u32, payload: &[u8]) -> Vec<u8> {
 }
 
 fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
-    let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(include_bytes!(
-        "../../../crates/fss-packet/tests/fixtures/avc/baseline.264"
-    ))
-    .collect();
+    media_fixture_from(include_bytes!("../../../crates/fss-packet/tests/fixtures/avc/baseline.264"), 3)
+}
+
+fn media_fixture_from(annex_b: &[u8], cycle: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    media_fixture_from_frames(annex_b, cycle, 7)
+}
+
+fn media_fixture_from_frames(annex_b: &[u8], cycle: usize, frames: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(annex_b).collect();
     let sps = nals
         .iter()
         .copied()
@@ -234,7 +259,7 @@ fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
         .into_iter()
         .filter(|n| matches!(n[0] & 31, 1 | 5))
         .collect();
-    if pictures.len() != 4 || pictures[0][0] & 31 != 5 {
+    if pictures.len() != 4 || pictures[0][0] & 31 != 5 || !(1..=pictures.len()).contains(&cycle) {
         return Err("unexpected fixture pictures".into());
     }
     let mut config = vec![0x17, 0, 0, 0, 0, 1, sps[1], sps[2], sps[3], 0xff, 0xe1];
@@ -245,8 +270,8 @@ fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     config.extend_from_slice(pps);
     let mut result = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
     result.extend(flv_tag(0, &config));
-    for index in 0..7 {
-        let nal = pictures[index % 3];
+    for index in 0..frames {
+        let nal = pictures[index % cycle];
         let mut payload = vec![0x17, 1, 0, 0, 0];
         payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
         payload.extend_from_slice(nal);
@@ -1020,40 +1045,161 @@ fn setup_process_fixture(
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_produces_a_private_decodable_clip() -> Test {
-    direct_trial_process_clip(false, false, false, false, 0)
+    direct_trial_process_clip(false, false, false, false, 0, 0, false, false, false, false)
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_requests_first_video_channel() -> Test {
+    direct_trial_process_clip_for_channel(false, false, false, false, 0, 0, false, false, false, false, Some(1), None, None)
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key; synthetic full-resolution AVC"]
+fn direct_trial_process_decodes_synthetic_g4_resolution() -> Test {
+    direct_trial_process_clip_for_channel(false, false, false, false, 0, 0, false, false, false, false, Some(1), Some(include_bytes!("fixtures/synthetic_g4_resolution.264")), Some((2688, 1512)))
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_defaults_to_second_video_channel() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 0, false, false, false, false)
+}
+
+#[test]
+fn direct_trial_process_refuses_invalid_video_channel_before_io() -> Test {
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+        .args(["127.0.0.1:1", "127.0.0.1", "001122aabbcc", "/absent/cert", "/absent/key",
+            "/absent/journal", "/absent/output", "12345678-1234-4abc-9abc-123456789abc",
+            "--video-channel=4", "--owner-authorized"])
+        .output()?;
+    if result.status.success() || !String::from_utf8_lossy(&result.stderr).contains("video channel must be 1, 2, or 3") {
+        return Err("invalid channel was not refused before I/O".into());
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_publishes_owned_archive() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 1, false, false, false, false)
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_publishes_two_owned_segments() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 2, false, false, false, false)
+}
+
+#[test]
+#[ignore = "requires private test interface and disposable TLS fixtures; synthetic full-resolution AVC"]
+fn direct_trial_setup_archives_and_decodes_full_resolution() -> Test {
+    if run_private_namespace_if_requested("direct_trial_setup_archives_and_decodes_full_resolution")? { return Ok(()); }
+    direct_trial_process_clip_for_channel(false, false, true, false, 0, 2, false, false, false, true,
+        Some(1), Some(include_bytes!("fixtures/synthetic_g4_resolution_gop4.264")), Some((2688, 1512)))
+}
+
+#[test]
+#[ignore = "requires private test interface and disposable TLS fixtures; synthetic all-keyframe AVC"]
+fn direct_trial_all_keyframes_archive_video_then_audio() -> Test {
+    if run_private_namespace_if_requested("direct_trial_all_keyframes_archive_video_then_audio")? { return Ok(()); }
+    direct_trial_process_clip_for_channel(false, false, true, false, 0, 2, false, false, false, true,
+        Some(1), Some(include_bytes!("fixtures/synthetic_g4_resolution.264")), Some((2688, 1512)))
+}
+
+#[test]
+#[ignore = "requires private test interface and disposable TLS fixtures; synthetic all-keyframe AVC"]
+fn direct_trial_video_only_cold_readback() -> Test {
+    if run_private_namespace_if_requested("direct_trial_video_only_cold_readback")? { return Ok(()); }
+    direct_trial_process_clip_for_channel(false, false, true, false, 0, 1, false, false, false, true,
+        Some(1), Some(include_bytes!("fixtures/synthetic_g4_resolution.264")), Some((2688, 1512)))
+}
+
+fn run_private_namespace_if_requested(test: &str) -> Result<bool, Box<dyn Error>> {
+    // Some Linux workers SNAT local connections to private bridge addresses.
+    // The optional isolated namespace supplies a private, source-preserving
+    // fixture address without changing the worker's host network.
+    if std::env::var_os("FSS_TEST_PRIVATE_NETNS").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        let status = std::process::Command::new("unshare")
+            .args(["--net", "--", "sh", "-c",
+                "ip link set lo up && ip addr add 10.253.47.1/32 dev lo && exec \"$@\"", "sh"])
+            .arg(std::env::current_exe()?)
+            .args([test, "--ignored", "--exact", "--nocapture", "--test-threads=1"])
+            .env_remove("FSS_TEST_PRIVATE_NETNS")
+            .env("FSS_TEST_CONTROLLER_BIND_IP", "10.253.47.1")
+            .status()?;
+        return if status.success() { Ok(true) } else { Err("isolated fixture failed".into()) };
+    }
+    Ok(false)
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_publishes_owned_archive_with_retained_anchors() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 2, false, false, false, true)
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_owned_event_replies() -> Test {
+    direct_trial_process_clip(false, true, false, false, 0, 1, false, true, false, false)
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_owned_event_refuses_without_permission() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 1, false, true, true, false)
+}
+
+#[test]
+#[ignore = "requires bounded private camera-derived input on stdin and disposable TLS fixtures"]
+fn direct_trial_process_replays_camera_derived_media() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 2, true, false, false, false)
+}
+
+#[test]
+#[ignore = "requires bounded private camera-derived input on stdin and disposable TLS fixtures"]
+fn direct_trial_process_replays_camera_with_control_effects() -> Test {
+    direct_trial_process_clip(false, true, false, false, 0, 2, true, true, false, false)
+}
+
+#[test]
+#[ignore = "requires bounded private camera-derived input on stdin and disposable TLS fixtures"]
+fn direct_trial_process_replays_camera_with_retained_anchors() -> Test {
+    direct_trial_process_clip(false, false, false, false, 0, 2, true, false, false, true)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_handles_time_sync_before_hello_and_produces_clip() -> Test {
-    direct_trial_process_clip(true, false, false, false, 0)
+    direct_trial_process_clip(true, false, false, false, 0, 0, false, false, false, false)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_receives_media_without_settings_reply() -> Test {
-    direct_trial_process_clip(true, true, false, false, 0)
+    direct_trial_process_clip(true, true, false, false, 0, 0, false, false, false, false)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_discovers_sets_up_and_records_fixture() -> Test {
-    direct_trial_process_clip(false, false, true, false, 0)
+    direct_trial_process_clip(false, false, true, false, 0, 0, false, false, false, false)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_discovers_chunked_setup_and_records_fixture() -> Test {
-    direct_trial_process_clip(false, false, true, true, 0)
+    direct_trial_process_clip(false, false, true, true, 0, 0, false, false, false, false)
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate, key and private fixture interface"]
 fn direct_trial_process_waits_for_delayed_camera_after_setup() -> Test {
-    direct_trial_process_clip(false, false, true, false, 12)
+    direct_trial_process_clip(false, false, true, false, 12, 0, false, false, false, false)
 }
 
 #[test]
@@ -1156,12 +1302,45 @@ fn direct_trial_process_clip(
     with_setup: bool,
     setup_chunked: bool,
     connection_delay_secs: u64,
+    owned_segments: usize,
+    camera_derived: bool,
+    request_event: bool,
+    reject_event: bool,
+    retained_anchors: bool,
+) -> Test {
+    direct_trial_process_clip_for_channel(sync_before_hello, media_before_reply, with_setup, setup_chunked,
+        connection_delay_secs, owned_segments, camera_derived, request_event, reject_event, retained_anchors, None, None, None)
+}
+
+fn direct_trial_process_clip_for_channel(
+    sync_before_hello: bool,
+    media_before_reply: bool,
+    with_setup: bool,
+    setup_chunked: bool,
+    connection_delay_secs: u64,
+    owned_segments: usize,
+    camera_derived: bool,
+    request_event: bool,
+    reject_event: bool,
+    retained_anchors: bool,
+    video_channel: Option<u8>,
+    synthetic_avc: Option<&[u8]>,
+    expected_dimensions: Option<(usize, usize)>,
 ) -> Test {
     use std::{
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         process::{Command, Stdio},
         time::Instant,
     };
+    let owned_archive=owned_segments>0;
+    let decode_owned=(owned_archive && expected_dimensions.is_some()) || std::env::var_os("FSS_TEST_DECODE_OWNED").as_deref() == Some(std::ffi::OsStr::new("1"));
+    if decode_owned && !owned_archive { return Err("owned decode requires archive fixture".into()); }
+    let supplied_wire=if camera_derived {
+        let mut wire=Vec::new();
+        std::io::stdin().lock().take((8*1024*1024+1) as u64).read_to_end(&mut wire)?;
+        if wire.len()<13 || wire.len()>8*1024*1024 || !wire.starts_with(b"FLV\x01") {return Err("bounded replay input refused".into());}
+        Some(wire)
+    } else {None};
     let cert_path = PathBuf::from(std::env::var("FSS_LAB_CERT_DER")?);
     let key_path = PathBuf::from(std::env::var("FSS_LAB_KEY_DER")?);
     let root = std::env::temp_dir().join(format!(
@@ -1185,6 +1364,7 @@ fn direct_trial_process_clip(
     drop(reserve);
     let journal = temp.0.join("journal");
     let clip = temp.0.join("clip.mp4");
+    let anchor_root=temp.0.join("archive-roots");
     let setup_fixture = if with_setup {
         Some(setup_process_fixture(
             &std::fs::read(&cert_path)?,
@@ -1196,7 +1376,11 @@ fn direct_trial_process_clip(
     } else {
         None
     };
-    let mut command = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"));
+    let trial_binary = std::env::var_os("FSS_TEST_TRIAL_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_unifi_direct_trial")));
+    if !trial_binary.is_absolute() { return Err("trial executable path must be absolute".into()); }
+    let mut command = Command::new(trial_binary);
     command
         .arg(format!("{bind}:{port}"))
         .arg(bind.to_string())
@@ -1206,8 +1390,24 @@ fn direct_trial_process_clip(
         .arg(&journal)
         .arg(&clip)
         .arg("12345678-1234-4abc-9abc-123456789abc");
+    if let Some(channel) = video_channel { command.arg(format!("--video-channel={channel}")); }
     if media_before_reply {
         command.arg("--media-before-reply");
+    }
+    if request_event && !reject_event {command.arg("--reply-events");}
+    if owned_archive {
+        if camera_derived && std::env::var_os("FSS_TEST_INBAND_AAC").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            command.arg("--lab-aac-source");
+        } else {
+            command.arg("--lab-aac-config=1408");
+        }
+        if camera_derived {command.arg("--lab-zero-stream-id");}
+        command.arg(format!("--lab-segments={owned_segments}")).arg("--lab-owned-archive");
+        if decode_owned {command.arg("--lab-decode-owned");}
+        if retained_anchors {command.arg(format!("--lab-anchor-root={}",anchor_root.display()));}
+    }
+    if request_event && !reject_event {
+        command.arg(format!("--anchored-journal={},{}",temp.0.join("effect-keeper").display(),temp.0.join("effect-root").display()));
     }
     if let Some(fixture) = &setup_fixture {
         use std::os::unix::fs::OpenOptionsExt;
@@ -1233,6 +1433,19 @@ fn direct_trial_process_clip(
         .stderr(Stdio::piped())
         .spawn()?;
     let mut child = TrialChild(Some(child));
+    let (event_ready_tx,event_ready_rx)=std::sync::mpsc::channel();
+    let stdout_reader=if request_event {
+        let stdout=child.0.as_mut().ok_or("missing child")?.stdout.take().ok_or("missing child stdout")?;
+        Some(std::thread::spawn(move || -> io::Result<String> {
+            use std::io::BufRead;
+            let mut reader=io::BufReader::new(stdout);let mut report=String::new();
+            loop {let mut line=String::new();if reader.read_line(&mut line)?==0 {break;}
+                if line.starts_with("trial_mode=owned_archive") {let _=event_ready_tx.send(());}
+                report.push_str(&line);
+            }
+            Ok(report)
+        }))
+    } else {None};
     if connection_delay_secs > 0 {
         let fixture = setup_fixture
             .as_ref()
@@ -1391,6 +1604,13 @@ fn direct_trial_process_clip(
         return Err("stream destination escaped fixture interface".into());
     }
     let setting_json = fss_core::json_input::parse(std::str::from_utf8(&setting)?)?;
+    let video = setting_json.object().and_then(|v| v.get("payload"))
+        .and_then(|v| v.object()).and_then(|v| v.get("video"))
+        .and_then(|v| v.object()).ok_or("missing video settings")?;
+    let expected_channel = format!("video{}", video_channel.unwrap_or(2));
+    if video.len() != 1 || !video.contains_key(expected_channel.as_str()) {
+        return Err("stream request selected the wrong video channel".into());
+    }
     let setting_id = setting_json
         .object()
         .and_then(|v| v.get("messageId"))
@@ -1404,8 +1624,47 @@ fn direct_trial_process_clip(
         socket.flush()?;
     }
     let mut media = connect_fixture_from(bind, destination, Duration::from_secs(5))?;
-    media.write_all(&media_fixture()?)?;
-    drop(media);
+    if request_event {
+        event_ready_rx.recv_timeout(Duration::from_secs(10)).map_err(|_|"owned session did not start")?;
+        if !reject_event {
+            let clock=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":19,"responseExpected":true}"#;
+            socket.write_all(&frame(clock))?;socket.flush()?;
+            let reply=receive_binary(&mut socket)?;
+            let parsed=fss_core::json_input::parse(std::str::from_utf8(&reply)?)?;
+            let fields=parsed.object().ok_or("clock response object")?;
+            if fields.get("functionName").and_then(|v|v.text())!=Some("ubnt_avclient_timeSync") || fields.get("inResponseTo").and_then(|v|v.integer())!=Some(19) {return Err("incorrect owned clock reply".into());}
+        }
+        let event=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventExample","messageId":20,"responseExpected":true,"payload":{"private":"fixture"}}"#;
+        socket.write_all(&frame(event))?;socket.flush()?;
+        let response=receive_binary(&mut socket);
+        if reject_event {
+            if response.is_ok() {return Err("disabled event reply was sent".into());}
+            let output=child.0.take().ok_or("missing child")?.wait_with_output()?;
+            let report=stdout_reader.ok_or("missing event stdout reader")?.join().map_err(|_|"stdout reader panicked")??;
+            if output.status.success() || !String::from_utf8(output.stderr)?.contains("event reply required") || report.contains("trial_owned_event_reply=written") {return Err("disabled event reply did not stop cleanly".into());}
+            return Ok(());
+        }
+        let response=response?;
+        let parsed=fss_core::json_input::parse(std::str::from_utf8(&response)?)?;
+        let fields=parsed.object().ok_or("event response object")?;
+        if fields.get("functionName").and_then(|v|v.text())!=Some("EventExample") || fields.get("inResponseTo").and_then(|v|v.integer())!=Some(20) {return Err("incorrect event reply".into());}
+    }
+    let mut wire=match supplied_wire {Some(wire)=>wire,None=>match synthetic_avc {Some(avc) if owned_archive=>media_fixture_from_frames(avc,4,11)?,Some(avc)=>media_fixture_from(avc,4)?,None=>media_fixture()?}};
+    if owned_archive && !camera_derived {
+        wire[4]=5;
+        let mut offset=13usize;
+        let mut index=0u32;
+        while offset<wire.len() {
+            let size=(usize::from(wire[offset+1])<<16)|(usize::from(wire[offset+2])<<8)|usize::from(wire[offset+3]);
+            if wire[offset]==9 && wire[offset+12]==1 {
+                let mut audio=flv_tag(index*64,&[0xaf,1,2]); audio[0]=8;
+                let len=audio.len(); wire.splice(offset..offset,audio); offset+=len; index+=1;
+            }
+            offset+=11+size+4;
+        }
+    }
+    media.set_write_timeout(Some(Duration::from_secs(15)))?;
+    let writer=std::thread::spawn(move || media.write_all(&wire));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if child
@@ -1423,10 +1682,19 @@ fn direct_trial_process_clip(
         std::thread::sleep(Duration::from_millis(30));
     }
     let output = child.0.take().ok_or("missing child")?.wait_with_output()?;
-    if !output.status.success() {
-        return Err(format!("trial failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    match writer.join().map_err(|_|"fixture media writer panicked")? {
+        Ok(())=>(),
+        Err(error) if output.status.success() && matches!(error.kind(),io::ErrorKind::BrokenPipe|io::ErrorKind::ConnectionReset)=>(),
+        Err(error)=>return Err(error.into()),
     }
-    let report = String::from_utf8(output.stdout)?;
+    let report = if let Some(reader)=stdout_reader {reader.join().map_err(|_|"stdout reader panicked")??} else {String::from_utf8(output.stdout)?};
+    if !output.status.success() {
+        // Report only fixed stage labels; never print input media or event payloads.
+        let stages = report.lines().filter_map(|line| line.split_whitespace().next())
+            .filter(|word| word.starts_with("trial_stage=") || word.starts_with("trial_owned_event_reply="))
+            .take(128).collect::<Vec<_>>().join(",");
+        return Err(format!("trial failed: {} stages={stages}", String::from_utf8_lossy(&output.stderr)).into());
+    }
     let expected_startup_clocks = if sync_before_hello { 2 } else { 1 };
     if !report.contains(&format!("trial_stage=startup_protocol_trace clocks={expected_startup_clocks} effects_require_reconciliation=true")) {
         return Err("startup protocol trace was not retained".into());
@@ -1440,10 +1708,96 @@ fn direct_trial_process_clip(
         || (with_setup && (!report.contains("trial_stage=setup_websocket_accepted")
             || !report.contains("trial_stage=setup_trace outcome=previous dispatch_started=true accept_started=true claims_unverified=true")))
         || !report.contains("trial_stage=websocket_accepted")
-        || !report.contains("effects=reconciliation_required")
+        || (!owned_archive && !report.contains("effects=reconciliation_required"))
         || !report.contains("continuous_recording=false")
     {
         return Err(format!("incomplete report: {report}").into());
+    }
+    if owned_archive {
+        if synthetic_avc.is_some_and(|bytes| bytes == include_bytes!("fixtures/synthetic_g4_resolution.264"))
+            && !report.contains("trial_stage=owned_segment_published count=1 kind=VideoOnly")
+        { return Err("initial video-only segment not reported".into()); }
+        if request_event && !report.contains("trial_owned_event_reply=written effects_require_reconciliation=true") {return Err("owned event reply was not journaled".into());}
+        if request_event && !reject_event {
+            let run_id=report.lines().find_map(|line|line.strip_prefix("trial_run_id=")).ok_or("missing trial run identity")?;
+            let (store,minimum)=trial_checkpoint::reopen(&journal,&temp.0.join("effect-keeper"),&temp.0.join("effect-root"),"12345678-1234-4abc-9abc-123456789abc",[0,0x11,0x22,0xaa,0xbb,0xcc])?;
+            let recovered=EffectCoordinator::recover(store,minimum)?;
+            if !recovered.is_reconciliation_only() {return Err("effect recovery admitted dispatch".into());}
+            let step_prefix=format!("operation:unifi-trial-{run_id}-owned-step-");
+            let event_prefix=format!("operation:unifi-trial-{run_id}-owned-event-");
+            let mut saw_step=false; let mut saw_event=false;
+            for receipt in recovered.journal().operations() {
+                let operation=receipt.intent.operation_id.as_str();
+                saw_step|=operation.starts_with(&step_prefix);
+                saw_event|=operation.starts_with(&event_prefix);
+                if !operation.starts_with(&format!("operation:unifi-trial-{run_id}-")) {return Err("effect belongs to a different run".into());}
+            }
+            if !saw_step || !saw_event {return Err("owned clock or event effect absent from run-scoped journal".into());}
+        }
+        if !report.contains(&format!("trial_complete archive=published segments={owned_segments}")) || !clip.join("source").is_dir() || !clip.join("av").is_dir() || !clip.join("av-intent").is_dir() || !journal.is_dir() {
+            return Err(format!("owned archive incomplete: {report}").into());
+        }
+        let readback=report.lines().find(|line|line.starts_with("trial_owned_readback ")).ok_or("missing source-checked archive readback")?;
+        let count=|name:&str| -> Result<usize,Box<dyn Error>> {Ok(readback.split_whitespace().find_map(|word|word.strip_prefix(name)).ok_or("missing readback count")?.parse()?)};
+        let only_video = owned_segments == 1 && synthetic_avc.is_some_and(|bytes| bytes == &include_bytes!("fixtures/synthetic_g4_resolution.264")[..]);
+        if only_video && !report.contains("trial_stage=owned_segment_published count=1 kind=VideoOnly") {return Err("expected video-only first segment".into());}
+        if count("segments=")?!=owned_segments || count("video_samples=")?==0 || (count("audio_frames=")?==0 && !only_video) {return Err("archive readback counts invalid".into());}
+        if decode_owned {
+            if owned_segments > 1 && !report.contains(&format!("trial_owned_sequence segments={owned_segments} capture_bounds=unknown")) {return Err("verified archive sequence missing".into());}
+            let decoded=report.lines().find(|line|line.starts_with("trial_owned_decoded ")).ok_or("owned video decode missing")?;
+            let value=|name:&str| -> Result<usize,Box<dyn Error>> {Ok(decoded.split_whitespace().find_map(|word|word.strip_prefix(name)).ok_or("missing decoded field")?.parse()?)};
+            let (width,height,frames)=(value("width=")?,value("height=")?,value("frames=")?);
+            if width==0 || height==0 || frames==0 {return Err("owned video decode empty".into());}
+            if owned_segments>1 && synthetic_avc.is_some_and(|bytes| bytes == &include_bytes!("fixtures/synthetic_g4_resolution.264")[..]) && frames<2 {return Err("mixed sequence did not decode across fragment boundary".into());}
+            if expected_dimensions.is_some_and(|expected| expected != (width, height)) {
+                return Err("archived video dimensions did not match synthetic input".into());
+            }
+            println!("owned_archive_decoded width={width} height={height} frames={frames} capture_bounds=unknown");
+        }
+        if std::fs::metadata(&clip)?.permissions().mode() & 0o077 != 0 {return Err("archive root is not private".into());}
+        if retained_anchors {
+            use fss_runtime::effect_journal::EffectPinRetainer;
+            if !report.contains("trial_owned_anchors=retained root_trust=operator_selected independence=unverified") {return Err("anchor custody report missing".into());}
+            if std::fs::metadata(&anchor_root)?.permissions().mode() & 0o077 != 0 {return Err("anchor root is not private".into());}
+            for name in ["source-journal","source-keeper","av-journal","av-keeper"] {
+                let mut encoder=fss_core::CanonicalEncoder::new();
+                encoder.text("fss.unifi-owned-trial.root.v1");encoder.text(name);encoder.digest(ContentDigest::sha256(&[0,0x11,0x22,0xaa,0xbb,0xcc]));
+                let scope=ContentDigest::sha256(&encoder.finish_checked()?);
+                let mut root=fss_object::effect_journal::FileTrustedRootPinRetainer::open_trusting_storage(anchor_root.join(name),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope)?;
+                if root.retained_pin()?.is_none() {return Err("archive anchor missing".into());}
+            }
+            let inspect=Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+                .arg("--inspect-owned-archive").arg(&clip).arg(&anchor_root).arg("001122aabbcc").arg("--owner-authorized").output()?;
+            let inspection=String::from_utf8(inspect.stdout)?;
+            if !inspect.status.success() || !inspection.contains("trial_owned_recovery=inspection_only")
+                || !inspection.contains("source_confirmed=true source_pending=false source_replay_required=true source_keeper_caught_up=true")
+                || !inspection.contains("av_confirmed=true av_pending=false av_replay_required=true av_keeper_caught_up=true") {
+                return Err(format!("archive history inspection failed: {inspection} {}",String::from_utf8_lossy(&inspect.stderr)).into());
+            }
+            let verify=Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+                .arg("--verify-owned-archive").arg(&clip).arg(&anchor_root).arg("001122aabbcc").arg("--owner-authorized").output()?;
+            let verified=String::from_utf8(verify.stdout)?;
+            let readback=verified.lines().find(|line|line.starts_with("trial_owned_readback_after_exit=verified ")).ok_or_else(||format!("cold readback missing: {verified} {}",String::from_utf8_lossy(&verify.stderr)))?;
+            let count=|name:&str| -> Result<usize,Box<dyn Error>> {Ok(readback.split_whitespace().find_map(|word|word.strip_prefix(name)).ok_or("missing cold readback count")?.parse()?)};
+            let audio_valid = if only_video { readback.contains("audio_frames=unknown") } else { count("audio_frames=")? > 0 };
+            if !verify.status.success() || count("source_bytes=")?==0 || count("source_connection=")?<=1 || count("source_generation=")?!=1 || count("video_samples=")?==0 || !audio_valid || !readback.contains("replay_still_required=true") {return Err("cold readback counts or connection claim invalid".into());}
+            let missing=clip.join("av-test-missing");
+            std::fs::rename(clip.join("av"),&missing)?;
+            let refused=Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+                .arg("--verify-owned-archive").arg(&clip).arg(&anchor_root).arg("001122aabbcc").arg("--owner-authorized").output();
+            std::fs::rename(&missing,clip.join("av"))?;
+            let refused=refused?;
+            if refused.status.success() || String::from_utf8_lossy(&refused.stdout).contains("trial_owned_readback_after_exit=verified") {return Err("missing A/V deployment accepted".into());}
+            let wrong=Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+                .arg("--inspect-owned-archive").arg(&clip).arg(&anchor_root).arg("001122aabbcd").arg("--owner-authorized").output()?;
+            if wrong.status.success() || String::from_utf8_lossy(&wrong.stdout).contains("trial_owned_recovery=inspection_only") {return Err("wrong camera scope accepted".into());}
+            let unauthorized=Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
+                .arg("--inspect-owned-archive").arg(&clip).arg(&anchor_root).arg("001122aabbcc").output()?;
+            if unauthorized.status.success() {return Err("unauthorized inspection accepted".into());}
+        }
+        if camera_derived {println!("owned_executable_camera_replay=passed segments={owned_segments} controller=simulated capture_bounds=unknown");}
+        if let Some(fixture) = setup_fixture { fixture.finish()?; }
+        return Ok(());
     }
     let bytes = std::fs::read(&clip)?;
     let movie = AvcMp4::parse(&bytes, None, DemuxLimits::default())?;
@@ -1465,6 +1819,11 @@ fn direct_trial_process_clip(
         || field("source_bytes_omitted")? == 0
     {
         return Err("clip verification report does not match artifacts".into());
+    }
+    if let Some((width,height))=expected_dimensions {
+        if field("width")? != width || field("height")? != height {
+            return Err("decoded dimensions did not match synthetic input".into());
+        }
     }
     if std::fs::metadata(&clip)?.permissions().mode() & 0o077 != 0 {
         return Err("clip permissions are not private".into());
@@ -1800,13 +2159,21 @@ fn direct_trial_reports_correlated_request_to_its_written_clock_reply() -> Test 
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
-fn direct_trial_reopens_anchored_effects_only_for_reconciliation() -> Test {
-    direct_trial_retirement_case(
+fn trial_run_id_reopens_anchored_effects_only_for_reconciliation() -> Test {
+    let first = direct_trial_retirement_case_with_id(
         "anchored-effect",
         &[],
         "SessionRetired { reason: TransportDetail(Io(UnexpectedEof)), phase: AwaitHello, rejected_message: None }",
         true,
-    )
+    )?;
+    let second = direct_trial_retirement_case_with_id(
+        "anchored-effect",
+        &[],
+        "SessionRetired { reason: TransportDetail(Io(UnexpectedEof)), phase: AwaitHello, rejected_message: None }",
+        true,
+    )?;
+    assert_ne!(first, second);
+    Ok(())
 }
 
 #[test]
@@ -1839,14 +2206,22 @@ fn direct_trial_retirement_case(
     expected: &str,
     after_effect: bool,
 ) -> Test {
+    direct_trial_retirement_case_with_id(case, bad_frame, expected, after_effect).map(|_| ())
+}
+
+fn direct_trial_retirement_case_with_id(
+    case: &str,
+    bad_frame: &[u8],
+    expected: &str,
+    after_effect: bool,
+) -> Result<String, Box<dyn Error>> {
     use std::{
         os::unix::fs::DirBuilderExt,
         process::{Command, Stdio},
         time::Instant,
     };
     let root = std::env::temp_dir().join(format!(
-        "fss-direct-retire-process-{}-{case}",
-        std::process::id()
+        "fss-direct-retire-process-{}-{case}", std::process::id()
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
     let temp = Temp(root);
@@ -2055,6 +2430,15 @@ fn direct_trial_retirement_case(
         let recovered = EffectCoordinator::recover(journal, minimum)?;
         assert!(recovered.is_reconciliation_only());
         assert!(recovered.journal().operations().count() > 0);
+        let run_id = stdout.lines().find_map(|line| line.strip_prefix("trial_run_id="))
+            .ok_or("missing trial run identity")?;
+        if run_id.len() != 32 || !run_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("malformed trial run identity".into());
+        }
+        let prefix = format!("operation:unifi-trial-{run_id}-");
+        if recovered.journal().operations().any(|receipt| !receipt.intent.operation_id.as_str().starts_with(&prefix)) {
+            return Err("journal contains an effect outside the trial run identity".into());
+        }
         drop(recovered);
         let inspection = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
             .arg("--inspect-anchored")
@@ -2099,5 +2483,7 @@ fn direct_trial_retirement_case(
             return Err("anchored recovery inspection failed".into());
         }
     }
-    Ok(())
+    let run_id = stdout.lines().find_map(|line| line.strip_prefix("trial_run_id="))
+        .ok_or("missing trial run identity")?;
+    Ok(run_id.to_owned())
 }

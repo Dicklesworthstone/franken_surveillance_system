@@ -9,7 +9,7 @@ use std::{
     error::Error,
     io::{self, Read, Write},
     net::Ipv4Addr,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::PathBuf,
     process::{Command, Stdio},
     sync::Arc,
@@ -55,6 +55,7 @@ fn serve(
     listener: std::net::TcpListener,
     config: Arc<ServerConfig>,
     wrong_pin: bool,
+    profiles: bool,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -80,14 +81,10 @@ fn serve(
             Ok(_) => Err(io::Error::other("pin mismatch received application data")),
         };
     }
-    for (index, route) in [
-        "POST /api/1.1/login ",
-        "GET /api/1.1/status ",
-        "GET /snap.jpeg ",
-    ]
-    .iter()
-    .enumerate()
-    {
+    let mut routes = vec!["POST /api/1.1/login ", "GET /api/1.1/status "];
+    if profiles { routes.push("GET /api/1.1/settings "); }
+    routes.push("GET /snap.jpeg ");
+    for (index, route) in routes.iter().enumerate() {
         let mut request = Vec::new();
         let mut byte = [0u8; 1];
         while !request.ends_with(b"\r\n\r\n") {
@@ -114,9 +111,10 @@ fn serve(
         }
         let mut body = vec![0; n];
         socket.read_exact(&mut body)?;
-        let body: &[u8] = match index {
-            1 => br#"{"controller":{"port":7442}}"#,
-            2 => include_bytes!("../../../crates/fss-codec-mjpeg/tests/fixtures/y444.jpg"),
+        let body: &[u8] = match *route {
+            "GET /api/1.1/status " => br#"{"controller":{"port":7442}}"#,
+            "GET /api/1.1/settings " => br#"{"av":{"video":{"video1":{"width":2688,"height":1512,"fps":30,"avSerializer":{"destinations":["tcp://fixture-secret"]}},"mjpg":{"width":640,"height":360,"fps":2}}}}"#,
+            "GET /snap.jpeg " => include_bytes!("../../../crates/fss-codec-mjpeg/tests/fixtures/y444.jpg"),
             _ => b"{}",
         };
         let cookie = if index == 0 {
@@ -135,7 +133,7 @@ fn serve(
     Ok(())
 }
 
-fn scenario(wrong_pin: bool) -> Test {
+fn scenario(wrong_pin: bool, save: bool, profiles: bool) -> Test {
     let cert = std::fs::read(std::env::var("FSS_LAB_CERT_DER")?)?;
     let key = std::fs::read(std::env::var("FSS_LAB_KEY_DER")?)?;
     let config = Arc::new(
@@ -148,7 +146,7 @@ fn scenario(wrong_pin: bool) -> Test {
             )?,
     );
     let root = std::env::temp_dir().join(format!(
-        "fss-camera-probe-{}-{wrong_pin}",
+        "fss-camera-probe-{}-{wrong_pin}-{save}-{profiles}",
         std::process::id()
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
@@ -171,13 +169,17 @@ fn scenario(wrong_pin: bool) -> Test {
     let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.local_addr()?.port();
     let peer = Peer(Some(std::thread::spawn(move || {
-        serve(listener, config, wrong_pin)
+        serve(listener, config, wrong_pin, profiles)
     })));
-    let process = Command::new(env!("CARGO_BIN_EXE_unifi_camera_probe"))
-        .arg("127.0.0.1")
+    let destination = temp.0.join("snapshot.jpg");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_unifi_camera_probe"));
+    command.arg("127.0.0.1")
         .arg(port.to_string())
         .arg(&cert_path)
-        .arg(&credential)
+        .arg(&credential);
+    if profiles { command.arg("--observe-profiles"); }
+    if save { command.arg(format!("--save-snapshot={}", destination.display())); }
+    let process = command
         .arg("--owner-authorized")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -205,10 +207,32 @@ fn scenario(wrong_pin: bool) -> Test {
         {
             return Err("wrong pin was not refused before credential access".into());
         }
+        if destination.exists() { return Err("wrong pin created an export".into()); }
     } else if !output.status.success()
         || !String::from_utf8_lossy(&output.stdout).contains("snapshot_decoded=")
     {
         return Err(format!("probe failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    if save && !wrong_pin {
+        if std::fs::read(&destination)? != include_bytes!("../../../crates/fss-codec-mjpeg/tests/fixtures/y444.jpg")
+            || std::fs::metadata(&destination)?.mode() & 0o777 != 0o600
+            || !String::from_utf8_lossy(&output.stdout).contains("media_persisted=true")
+        { return Err("invalid saved snapshot or permissions".into()); }
+        let refusal = Command::new(env!("CARGO_BIN_EXE_unifi_camera_probe"))
+            .args(["127.0.0.1", "1"]).arg(&cert_path).arg(&credential)
+            .arg(format!("--save-snapshot={}", destination.display()))
+            .arg("--owner-authorized").output()?;
+        if refusal.status.success() || std::fs::read(&destination)? != include_bytes!("../../../crates/fss-codec-mjpeg/tests/fixtures/y444.jpg") {
+            return Err("existing snapshot was overwritten".into());
+        }
+    }
+    if profiles && !wrong_pin {
+        let stdout=String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("width: Reported(2688), height: Reported(1512), fps: Reported(30)")
+            || !stdout.contains("snapshot_profile=VideoProfile { width: Reported(640), height: Reported(360), fps: Reported(2) }")
+            || stdout.contains("fixture-secret") {
+            return Err("profile observation was missing or leaked destination".into());
+        }
     }
     peer.finish()?;
     Ok(())
@@ -217,6 +241,7 @@ fn scenario(wrong_pin: bool) -> Test {
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn pinned_camera_probe_decodes_and_refuses_wrong_pin_before_credential_access() -> Test {
-    scenario(false)?;
-    scenario(true)
+    scenario(false, false, false)?;
+    scenario(false, true, true)?;
+    scenario(true, true, true)
 }

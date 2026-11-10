@@ -9,6 +9,10 @@ use asupersync::{runtime::RuntimeBuilder, time::timeout_at};
 mod auth;
 #[path = "trial_checkpoint/mod.rs"]
 mod trial_checkpoint;
+#[path = "trial_run_id/mod.rs"]
+mod trial_run_id;
+#[path = "trial_owned_archive/mod.rs"]
+mod trial_owned_archive;
 use fss_container::{
     Mp4Limits,
     demux::{AvcMp4, DemuxLimits},
@@ -61,11 +65,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use unifi_tls_05_server_lab::server::Server;
+use trial_run_id::TrialRunId;
 #[cfg(target_os = "linux")]
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-decode-owned] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -87,6 +92,7 @@ struct Options {
     output: PathBuf,
     uuid: String,
     wait: Duration,
+    video_channel: VideoChannel,
     time_sync_policy: TimeSyncPolicy,
     media_before_reply: bool,
     reply_events: bool,
@@ -96,6 +102,9 @@ struct Options {
     lab_g4_trailer: bool,
     lab_zero_stream_id: bool,
     lab_segments: usize,
+    lab_owned_archive: bool,
+    lab_decode_owned: bool,
+    lab_anchor_root: Option<PathBuf>,
     setup: Option<SetupOptions>,
 }
 struct SetupOptions {
@@ -155,6 +164,13 @@ fn options() -> ResultBox<Options> {
     } else {
         None
     };
+    let lab_anchor_root=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-anchor-root=")) {
+        let path=PathBuf::from(value);args.pop();Some(path)
+    } else {None};
+    let lab_decode_owned = args.last().is_some_and(|s| s == "--lab-decode-owned");
+    if lab_decode_owned { args.pop(); }
+    let lab_owned_archive = args.last().is_some_and(|s| s == "--lab-owned-archive");
+    if lab_owned_archive { args.pop(); }
     let observe_snapshot = args.last().is_some_and(|s| s == "--observe-snapshot");
     if observe_snapshot { args.pop(); }
     let observe_only = args.last().is_some_and(|s| s == "--observe-only");
@@ -224,6 +240,9 @@ fn options() -> ResultBox<Options> {
     if lab_aac_source && lab_aac_config.is_some() {
         return Err("choose one laboratory AAC configuration source".into());
     }
+    if lab_owned_archive && lab_aac_config.is_none() && !lab_aac_source {
+        return Err("owned archive requires an explicit or in-band AAC configuration".into());
+    }
     let reply_startup_requests = args.last().is_some_and(|s| s == "--reply-startup-requests");
     if reply_startup_requests {
         args.pop();
@@ -252,8 +271,22 @@ fn options() -> ResultBox<Options> {
             args.pop();
             TimeSyncPolicy::BoundedAnyPreHelloClockExchange
         }
+        Some("--bounded-continuing-clock") => {
+            args.pop();
+            TimeSyncPolicy::BoundedContinuingClockExchange
+        }
         _ => TimeSyncPolicy::UncorrelatedOnly,
     };
+    let video_channel = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--video-channel=")) {
+        let channel = match value {
+            "1" => VideoChannel::Video1,
+            "2" => VideoChannel::Video2,
+            "3" => VideoChannel::Video3,
+            _ => return Err("video channel must be 1, 2, or 3".into()),
+        };
+        args.pop();
+        channel
+    } else { VideoChannel::Video2 };
     if !(args.len() == 8 || args.len() == 9) {
         return Err(USAGE.into());
     }
@@ -276,6 +309,11 @@ fn options() -> ResultBox<Options> {
     if observe_snapshot && !observe_only {
         return Err("snapshot observation requires --observe-only".into());
     }
+    if lab_owned_archive && observe_only {
+        return Err("owned archive cannot be combined with read-only observation".into());
+    }
+    if lab_anchor_root.is_some() && !lab_owned_archive {return Err("anchor root requires owned archive mode".into());}
+    if lab_decode_owned && !lab_owned_archive {return Err("owned decode requires owned archive mode".into());}
     let raw = args[2].as_bytes();
     if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
         return Err("MAC must be twelve hexadecimal digits".into());
@@ -296,6 +334,13 @@ fn options() -> ResultBox<Options> {
     }
     if output.exists() || journal.exists() {
         return Err("output and journal paths must not exist".into());
+    }
+    if let Some(anchor)=&lab_anchor_root {
+        if !anchor.is_absolute() || std::fs::symlink_metadata(anchor).is_ok() || [&cert,&key,&journal,&output].iter().any(|other|anchor.starts_with(other) || other.starts_with(anchor)) {
+            return Err("archive anchor root must be absent, absolute and distinct".into());
+        }
+        let parent=std::fs::symlink_metadata(anchor.parent().ok_or("missing archive anchor parent")?)?;
+        if !parent.is_dir() || parent.mode() & 0o077 != 0 {return Err("archive anchor parent must be private".into());}
     }
     if let Some((keeper, root)) = &anchored_journal {
         let paths = [&journal, keeper, root, &output];
@@ -337,6 +382,7 @@ fn options() -> ResultBox<Options> {
         output,
         uuid: args[7].clone(),
         wait: Duration::from_secs(wait_seconds),
+        video_channel,
         time_sync_policy,
         media_before_reply,
         reply_events,
@@ -346,6 +392,9 @@ fn options() -> ResultBox<Options> {
         lab_g4_trailer,
         lab_zero_stream_id,
         lab_segments,
+        lab_owned_archive,
+        lab_decode_owned,
+        lab_anchor_root,
         setup,
     })
 }
@@ -595,6 +644,7 @@ fn derive_av_fragment(
     Ok(output)
 }
 fn run(args: Options) -> ResultBox<()> {
+    println!("trial_video_channel={:?} resolution=unverified", args.video_channel);
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     println!("trial_media_before_reply={}", args.media_before_reply);
     println!("trial_event_replies={}", args.reply_events);
@@ -633,7 +683,7 @@ fn run(args: Options) -> ResultBox<()> {
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 128 * 1024 * 1024;
     budget.bytes = 128 * 1024 * 1024;
-    budget.storage_operations = 5;
+    budget.storage_operations = if args.lab_owned_archive { 256 } else { 5 };
     let mut caps = vec![
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
@@ -651,6 +701,7 @@ fn run(args: Options) -> ResultBox<()> {
             RuntimeGrant::CameraSettingCommit,
         ]);
     }
+    if args.lab_owned_archive { caps.push(RuntimeGrant::ObjectPublish); }
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:unifi-direct-trial".into(),
@@ -670,7 +721,7 @@ fn run(args: Options) -> ResultBox<()> {
         budget,
         start,
     )?;
-    let runtime = RuntimeBuilder::current_thread().build()?;
+    let runtime = if args.lab_owned_archive { RuntimeBuilder::current_thread().blocking_threads(1,1).build()? } else { RuntimeBuilder::current_thread().build()? };
     runtime.block_on(async {
         let cx=asupersync::Cx::current().ok_or("missing runtime")?;
         let task_start=TimestampNs(start.0+1);
@@ -684,6 +735,10 @@ fn run(args: Options) -> ResultBox<()> {
             let setup_approval=Approval(Cell::new(false));
             let approval=Approval(Cell::new(false));
             let output:ResultBox<()> = async {
+                cx.checkpoint().map_err(|_| "runtime cancelled before trial identity")?;
+                task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:run-identity-entropy",clock.now()?,&BudgetVector::ZERO)?;
+                let run_id=TrialRunId::fresh()?;
+                println!("trial_run_id={}",run_id.as_str());
                 let config=if args.observe_only {None} else {
                     task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
                     let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
@@ -755,7 +810,7 @@ fn run(args: Options) -> ResultBox<()> {
                     let setup_policy=SetupPolicy {base:&policy,lease:&lease,check:check_auth,camera,peer_admission:admission,fence};
                     let plaintext=MeteredIo::with_clock(tls,clock,&resource,4096)?;
                     let mut http=camera_http::Owner::new(plaintext,task,cx,clock,&setup_policy,camera_address,1,&resource)?;
-                    let operation=OperationId::parse("operation:unifi-trial-handoff")?;
+                    let operation=run_id.operation("handoff")?;
                     let setup_config=setup::Config {report:&report,index,camera,peer_admission:admission,generation:1,fence,destination:*args.listen.ip(),operation:&operation,credential:&lease.secret.0,wait:Duration::from_secs(20)};
                     let mut trace=setup::AcceptTrace::default();
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
@@ -805,12 +860,12 @@ fn run(args: Options) -> ResultBox<()> {
                 let mut setup_session:Option<unifi_tls_05_server_lab::setup_upgrade::Session<'_, '_, '_>>=None;
                 let deadline=cx.now()+args.wait;
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
-                let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
-                let syncs:Vec<_>=(0..128).map(|i|OperationId::parse(format!("operation:unifi-trial-sync-{i:04}"))).collect::<Result<_,_>>()?;
-                let event_ops:Vec<_>=(0..64).map(|i|OperationId::parse(format!("operation:unifi-trial-event-{i:04}"))).collect::<Result<_,_>>()?;
+                let hello=run_id.operation("hello")?; let agreement=run_id.operation("agreement")?; let stream=run_id.operation("stream")?;
+                let syncs:Vec<_>=(0..128).map(|i|run_id.operation(&format!("sync-{i:04}"))).collect::<Result<_,_>>()?;
+                let event_ops:Vec<_>=(0..64).map(|i|run_id.operation(&format!("event-{i:04}"))).collect::<Result<_,_>>()?;
                 let event_replies=conversation::StartupEventReplies {operations:&event_ops};
                 let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(8,8*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
-                let startup_sync_limit=if matches!(args.time_sync_policy, TimeSyncPolicy::BoundedPreHelloClockExchange | TimeSyncPolicy::BoundedAnyPreHelloClockExchange) { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
+                let startup_sync_limit=if matches!(args.time_sync_policy, TimeSyncPolicy::BoundedPreHelloClockExchange | TimeSyncPolicy::BoundedAnyPreHelloClockExchange | TimeSyncPolicy::BoundedContinuingClockExchange) { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
                 let (session,started,event_trace,startup_trace)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
@@ -845,7 +900,7 @@ fn run(args: Options) -> ResultBox<()> {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let io_wait=remaining.min(MAX_IO_WAIT);
-                    let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
+                    let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:args.video_channel,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
                     let framing=if args.lab_zero_stream_id {SearchMode::ZeroStreamId} else if args.lab_g4_trailer {SearchMode::StructuredTrailer16AvFlag} else {SearchMode::Conservative};
                     let framer=Framer::with_mode(FlvLimits::default(),1024*1024,framing)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
                     let mut startup_trace=listener::StartTrace::default();
@@ -909,6 +964,16 @@ fn run(args: Options) -> ResultBox<()> {
                 let mut startup_answered:Vec<ContentDigest>=event_trace.attempts().iter().map(|attempt|attempt.source()).collect();
                 let mut event_index=event_trace.attempts().len();
                 let mut supervisor=supervisor::Supervisor::new(session,started,management);
+                if args.lab_owned_archive {
+                    println!("trial_mode=owned_archive bounded=true identity=network_claim capture_bounds=unknown");
+                    let source=SourceKey {connection:attempts as u64,generation:1};
+                    let claim=ContentDigest::sha256(&args.mac);
+                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,args.lab_anchor_root.as_deref(),args.lab_decode_owned)).await;
+                    return match result {
+                        Ok(segments)=>{println!("trial_complete archive=published segments={segments} continuous_recording=false identity=network_claim capture_bounds=unknown");Ok(())},
+                        Err(error)=>Err(error),
+                    };
+                }
                 let mut sync_index=startup_sync_limit; let mut source_omitted=0usize; let mut steps=0u32;
                 let mut sync_traces=Vec::new(); sync_traces.try_reserve_exact(syncs.len())?;
                 let mut audio_track=aac_track::Track::new(FlvLimits::default(),aac::Limits::default());
@@ -1149,10 +1214,46 @@ fn inspect_anchored_journal(args: &[String]) -> ResultBox<()> {
     })
 }
 
+fn inspect_owned_archive(args:&[String])->ResultBox<()> {
+    if args.len()!=5 || !matches!(args[0].as_str(),"--inspect-owned-archive" | "--verify-owned-archive") || args[4]!="--owner-authorized" {
+        return Err("usage: unifi_direct_trial --inspect-owned-archive|--verify-owned-archive ARCHIVE_DIR ANCHOR_DIR CAMERA_MAC_HEX --owner-authorized".into());
+    }
+    let readback=args[0]=="--verify-owned-archive";
+    let archive=PathBuf::from(&args[1]);let anchor=PathBuf::from(&args[2]);
+    let raw=args[3].as_bytes();
+    if raw.len()!=12 || !raw.iter().all(u8::is_ascii_hexdigit) {return Err("MAC must be twelve hexadecimal digits".into());}
+    let mut mac=[0u8;6];
+    for (index,byte) in mac.iter_mut().enumerate() {*byte=u8::from_str_radix(&args[3][index*2..index*2+2],16)?;}
+    let (start,_)=epoch()?;
+    let deadline=TimestampNs(start.0.checked_add(30_000_000_000).ok_or("deadline overflow")?);
+    let mut budget=BudgetVector::ZERO;budget.bytes=128*1024*1024;budget.storage_operations=32;
+    let (mut authority,mut tree)=AuthorityCx::root(RootAuthoritySpec {
+        trace_id:"trace:unifi-owned-inspection".into(),operation_id:OperationId::parse("operation:unifi-owned-inspection")?,principal:"principal:owner".into(),
+        capabilities:if readback {vec![RuntimeGrant::ObjectStage.as_str().into(),RuntimeGrant::ReadMedia.as_str().into()]} else {vec![RuntimeGrant::ObjectStage.as_str().into()]},deadline:Some(deadline),priority:1,budgets:budget,
+        privacy_scope:"privacy:owner".into(),retention_scope:"retention:trial".into(),anchor_universe:ContentDigest::sha256(b"owner-authorized owned archive inspection"),generation:1,
+    },RegionId::new("region:unifi-owned-inspection")?,RegionKind::Process,budget,start)?;
+    let runtime=RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let task_start=TimestampNs(start.0+1);
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:unifi-owned-inspection")?,started_at:task_start},&cx,async |task,cx| {
+            let clock=match MeteredClock::new(task,cx,TimestampNs(start.0+2)) {
+                Ok(clock)=>clock,Err(error)=>return TaskCompletion {output:Err(Box::new(error) as Box<dyn Error>),outcome:TaskOutcome::Failed("inspection clock unavailable".into()),completed_at:task_start},
+            };
+            let output=trial_owned_archive::inspect(task,cx,clock,&archive,&anchor,mac,readback);
+            let outcome=if output.is_ok(){TaskOutcome::Success}else{TaskOutcome::Failed("owned archive inspection refused".into())};
+            TaskCompletion {output,outcome,completed_at:clock.now().unwrap_or(deadline)}
+        }).await?;
+        result.receipt?;result.output
+    })
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let result = if args.first().is_some_and(|arg| arg == "--inspect-anchored") {
         inspect_anchored_journal(&args)
+    } else if args.first().is_some_and(|arg| matches!(arg.as_str(), "--inspect-owned-archive" | "--verify-owned-archive")) {
+        inspect_owned_archive(&args)
     } else {
         options().and_then(run)
     };

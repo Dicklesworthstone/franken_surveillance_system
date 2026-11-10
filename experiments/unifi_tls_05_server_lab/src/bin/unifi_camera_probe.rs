@@ -13,7 +13,7 @@ mod linux {
         RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
     };
     use fss_reference::unifi_direct::{
-        camera_http,
+        camera_api, camera_http,
         metered::{MeteredClock, MeteredIo},
     };
     use fss_runtime::{
@@ -23,7 +23,9 @@ mod linux {
     use std::{
         error::Error,
         fs,
+        io::{self, Write},
         net::{Ipv4Addr, SocketAddrV4},
+        os::unix::fs::{MetadataExt, OpenOptionsExt},
         path::{Path, PathBuf},
         time::Duration,
     };
@@ -42,9 +44,29 @@ mod linux {
 
     pub fn run() -> Result<(), Box<dyn Error>> {
         let args: Vec<_> = std::env::args().skip(1).collect();
-        if args.len() != 5 || args[4] != "--owner-authorized" {
-            return Err("usage: unifi_camera_probe CAMERA_IPV4 HTTPS_PORT CAMERA_CERT_DER CREDENTIAL_FILE --owner-authorized".into());
+        if args.len() < 5 || args.len() > 7 || args.last().map(String::as_str) != Some("--owner-authorized") {
+            return Err("usage: unifi_camera_probe CAMERA_IPV4 HTTPS_PORT CAMERA_CERT_DER CREDENTIAL_FILE [--observe-profiles] [--save-snapshot=ABSOLUTE_PATH] --owner-authorized".into());
         }
+        let mut observe_profiles=false;
+        let mut export_arg=None;
+        for arg in &args[4..args.len()-1] {
+            if arg == "--observe-profiles" && !observe_profiles { observe_profiles=true; }
+            else if let Some(path)=arg.strip_prefix("--save-snapshot=") {
+                if export_arg.replace(path).is_some() { return Err("duplicate export argument".into()); }
+            } else { return Err("invalid probe option".into()); }
+        }
+        let export = if let Some(value) = export_arg {
+            let path = PathBuf::from(value);
+            if !path.is_absolute() { return Err("export path must be absolute".into()); }
+            match fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Ok(_) => return Err("export path already exists".into()),
+                Err(e) => return Err(e.into()),
+            }
+            let parent = fs::symlink_metadata(path.parent().ok_or("export parent required")?)?;
+            if !parent.is_dir() || parent.mode() & 0o077 != 0 { return Err("export parent must be a private directory".into()); }
+            Some(path)
+        } else { None };
         let peer: Ipv4Addr = args[0].parse()?;
         let port: u16 = args[1].parse()?;
         let cert_path = PathBuf::from(&args[2]);
@@ -59,13 +81,15 @@ mod linux {
         let mut budget = BudgetVector::ZERO;
         budget.network_bytes = 16 * 1024 * 1024;
         budget.bytes = 16 * 1024 * 1024;
-        let capabilities = [
+        budget.storage_operations = if export.is_some() { 3 } else { 0 };
+        let mut capabilities = vec![
             RuntimeGrant::AdapterNet,
             RuntimeGrant::AdapterAuth,
             RuntimeGrant::ObserveStatus,
             RuntimeGrant::ReadMedia,
             RuntimeGrant::MediaDecode,
         ];
+        if export.is_some() { capabilities.push(RuntimeGrant::ObjectStage); }
         let (mut authority, mut tree) = AuthorityCx::root(
             RootAuthoritySpec {
                 trace_id: "trace:unifi-camera-probe".into(),
@@ -76,7 +100,7 @@ mod linux {
                 priority: 1,
                 budgets: budget,
                 privacy_scope: "privacy:owner".into(),
-                retention_scope: "retention:in-memory".into(),
+                retention_scope: if export.is_some() { "retention:owner-export" } else { "retention:in-memory" }.into(),
                 anchor_universe: ContentDigest::sha256(b"owner-authorized camera probe")
                     .with_laboratory(true),
                 generation: 1,
@@ -92,7 +116,7 @@ mod linux {
         let result = run_owned_async(&mut authority, &mut tree,
             TaskSpec { task_id: TaskId::new("task:unifi-camera-probe")?, started_at: TimestampNs(2) }, &cx,
             async |task, cx| {
-                let output: Result<(u32,u32), Box<dyn Error>> = async {
+                let output: Result<(u32,u32,Option<String>,Option<camera_api::SettingsObservation>), Box<dyn Error>> = async {
                     let clock = MeteredClock::new(task, cx, TimestampNs(3))?;
                     task.checkpoint_for(RuntimeGrant::AdapterAuth, "unifi:certificate-pin", clock.now()?, &BudgetVector::ZERO)?;
                     let metadata = fs::symlink_metadata(&cert_path)?;
@@ -111,6 +135,8 @@ mod linux {
                     let mut camera=camera_http::Owner::new(io,task,cx,clock,&policy,peer,1,&resource)?;
                     camera.login(&lease.secret.0,Duration::from_secs(10)).await?;
                     let _status=camera.status(Duration::from_secs(10)).await?;
+                    let profiles=if observe_profiles {Some(camera.settings(Duration::from_secs(10)).await?)} else {None};
+                    task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
                     let snapshot=camera.snapshot(Duration::from_secs(10)).await?;
                     task.checkpoint_for(RuntimeGrant::MediaDecode,&resource,clock.now()?,&BudgetVector::ZERO)?;
                     let limits=fss_codec_mjpeg::DecodeLimits {maximum_bytes:4*1024*1024,..Default::default()};
@@ -118,14 +144,26 @@ mod linux {
                     let image=fss_codec_mjpeg::decode_luma(snapshot.bytes(),snapshot.digest().bytes(),fss_codec_mjpeg::ComponentInterpretation::YCbCr,limits,&mut work)?;
                     let [width,height]=image.dimensions();
                     if image.pixels().len()!=width as usize*height as usize {return Err("invalid decoded image size".into());}
-                    Ok((width,height))
+                    let exported = if let Some(path) = &export {
+                        let mut cost=BudgetVector::ZERO;
+                        cost.bytes=u64::try_from(snapshot.bytes().len())?;
+                        cost.storage_operations=3;
+                        task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&cost)?;
+                        let mut file=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+                        file.write_all(snapshot.bytes())?;
+                        file.sync_all()?;
+                        Some(snapshot.digest().to_text())
+                    } else { None };
+                    Ok((width,height,exported,profiles))
                 }.await;
                 let outcome=if output.is_ok() {TaskOutcome::Success} else {TaskOutcome::Failed("read-only camera probe failed".into())};
                 TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
             }).await?;
         result.receipt?;
-        let (width,height)=result.output?;
-        println!("probe=ok tls_pin=matched controller_peer=unverified snapshot_decoded={width}x{height} media_persisted=false settings_written=false");
+        let (width,height,exported,profiles)=result.output?;
+        println!("probe=ok tls_pin=matched controller_peer=unverified snapshot_decoded={width}x{height} media_persisted={} settings_written=false", exported.is_some());
+        if let Some(digest)=exported { println!("snapshot_sha256={digest}"); }
+        if let Some(settings)=profiles { println!("video_profiles={:?} snapshot_profile={:?} source=camera_claim",settings.video_profiles,settings.snapshot_profile); }
         Ok::<(),Box<dyn Error>>(())
     })
     }

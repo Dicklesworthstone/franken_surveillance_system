@@ -4,10 +4,16 @@
 #[cfg(target_os = "linux")]
 #[path = "../../../unifi_https_snapshot_lab/src/auth.rs"]
 mod auth;
+#[cfg(target_os = "linux")]
+#[path = "trial_checkpoint/mod.rs"]
+mod trial_checkpoint;
+#[cfg(target_os = "linux")]
+#[path = "trial_run_id/mod.rs"]
+mod trial_run_id;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::auth;
+    use crate::{auth, trial_checkpoint, trial_run_id::TrialRunId};
     use asupersync::runtime::RuntimeBuilder;
     use fss_core::{
         BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
@@ -81,17 +87,35 @@ mod linux {
 
     pub fn run() -> Result<(), Box<dyn Error>> {
         let args: Vec<_> = std::env::args().skip(1).collect();
-        if !(8..=10).contains(&args.len())
+        if !(8..=11).contains(&args.len())
             || args.last().map(String::as_str) != Some("--owner-authorized")
         {
-            return Err("usage: unifi_controller_restore CAMERA_IPV4 HTTPS_PORT CERT_DER CREDENTIAL_FILE EXPECTED_TEMP_IPV4 RESTORE_IPV4 NEW_JOURNAL_DIR [--chunked] [--observe-only] --owner-authorized".into());
+            return Err("usage: unifi_controller_restore CAMERA_IPV4 HTTPS_PORT CERT_DER CREDENTIAL_FILE EXPECTED_TEMP_IPV4 RESTORE_IPV4 NEW_JOURNAL_DIR [--chunked] [--observe-only] [--anchored-journal=KEEPER,ROOT,SCOPE,MAC_HEX] --owner-authorized".into());
         }
         let mut chunked = false;
         let mut observe_only = false;
+        let mut anchored = None;
         for flag in &args[7..args.len() - 1] {
             match flag.as_str() {
                 "--chunked" if !chunked => chunked = true,
                 "--observe-only" if !observe_only => observe_only = true,
+                value if value.starts_with("--anchored-journal=") && anchored.is_none() => {
+                    let fields: Vec<_> = value["--anchored-journal=".len()..].split(',').collect();
+                    if fields.len()!=4 || fields[0].is_empty() || fields[1].is_empty() {
+                        return Err("invalid anchored journal option".into());
+                    }
+                    OperationId::parse(fields[2])?;
+                    let raw=fields[3].as_bytes();
+                    if raw.len()!=12 || !raw.iter().all(u8::is_ascii_hexdigit) {
+                        return Err("anchored camera MAC must be twelve hexadecimal digits".into());
+                    }
+                    let mut mac=[0u8;6];
+                    for (index,byte) in mac.iter_mut().enumerate() {
+                        *byte=u8::from_str_radix(&fields[3][index*2..index*2+2],16)?;
+                    }
+                    if mac==[0;6] || mac[0]&1!=0 { return Err("anchored camera MAC must be unicast".into()); }
+                    anchored=Some((PathBuf::from(fields[0]),PathBuf::from(fields[1]),fields[2].to_owned(),mac));
+                }
                 _ => return Err("invalid or repeated restore option".into()),
             }
         }
@@ -118,6 +142,25 @@ mod linux {
         if !parent.is_dir() || parent.mode() & 0o077 != 0 {
             return Err("journal parent must be private".into());
         }
+        if let Some((keeper, root, _, _))=&anchored {
+            let paths=[&journal_path,keeper,root];
+            let mut resolved=Vec::with_capacity(paths.len());
+            for path in paths {
+                if !path.is_absolute() { return Err("anchored paths must be absolute".into()); }
+                match fs::symlink_metadata(path) {
+                    Err(e) if e.kind()==std::io::ErrorKind::NotFound => (),
+                    Ok(_) => return Err("anchored paths must not exist".into()),
+                    Err(e) => return Err(e.into()),
+                }
+                let parent=fs::symlink_metadata(path.parent().ok_or("missing anchored parent")?)?;
+                if !parent.is_dir() || parent.mode() & 0o077 != 0 { return Err("anchored parent must be private".into()); }
+                let name=path.file_name().ok_or("missing anchored path name")?;
+                resolved.push(fs::canonicalize(path.parent().ok_or("missing anchored parent")?)?.join(name));
+            }
+            if resolved.iter().enumerate().any(|(i,p)| resolved.iter().skip(i+1).any(|q|p.starts_with(q)||q.starts_with(p))) {
+                return Err("anchored paths must be distinct".into());
+            }
+        }
         let mut budget = BudgetVector::ZERO;
         budget.network_bytes = 8 * 1024 * 1024;
         budget.bytes = 8 * 1024 * 1024;
@@ -126,6 +169,7 @@ mod linux {
             RuntimeGrant::AdapterNet,
             RuntimeGrant::AdapterAuth,
             RuntimeGrant::ObserveStatus,
+            RuntimeGrant::ObjectStage,
             RuntimeGrant::CameraManagementPrepare,
             RuntimeGrant::CameraManagementCommit,
         ];
@@ -187,9 +231,21 @@ mod linux {
                     let current=handoff::Preconditions {camera,peer_admission:admission,session_generation:1,lease_fence:fence,settings:before};
                     let framing=if chunked {handoff::Framing::Chunked} else {handoff::Framing::ContentLength};
                     let plan=handoff::Plan::new_with_framing(peer,destination,current,framing)?;
-                    let journal=FileEffectJournal::create(&journal_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
-                    let mut effects=EffectCoordinator::with_journal(Box::new(journal))?;
-                    let operation=OperationId::parse("operation:unifi-controller-restore-write")?;
+                    cx.checkpoint().map_err(|_|"cancelled before restore identity")?;
+                    task.checkpoint_for(RuntimeGrant::AdapterAuth,"restore:run-identity-entropy",clock.now()?,&BudgetVector::ZERO)?;
+                    let run_id=TrialRunId::fresh()?;
+                    let operation=run_id.operation("restore")?;
+                    let journal:Box<dyn fss_runtime::effect_journal::EffectJournalStore>=if let Some((keeper,root,scope,mac))=&anchored {
+                        for path in [&journal_path,keeper,root] { task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&BudgetVector::ZERO)?; }
+                        let journal=trial_checkpoint::create(&journal_path,keeper,root,scope,*mac)?;
+                        println!("restore_journal=anchored root_trust=operator_selected independence=unverified");
+                        journal
+                    } else {
+                        task.checkpoint_for(RuntimeGrant::ObjectStage,&journal_path.to_string_lossy(),clock.now()?,&BudgetVector::ZERO)?;
+                        Box::new(FileEffectJournal::create(&journal_path,EffectJournalLimits::default(),Arc::new(HostSpoolIo))?)
+                    };
+                    println!("restore_run_id={}",run_id.as_str());
+                    let mut effects=EffectCoordinator::with_journal(journal)?;
                     let prepared=task.prepare_effect(cx,&mut effects,&mut leases.borrow_mut(),PrepareSpec {
                         operation:&operation,idempotency_key:IdempotencyKey::parse(operation.as_str())?,
                         request_digest:plan.request_digest(),precondition_digest:plan.precondition_digest(),resource:&resource,fence,

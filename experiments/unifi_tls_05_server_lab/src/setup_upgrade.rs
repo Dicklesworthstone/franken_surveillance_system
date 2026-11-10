@@ -38,6 +38,16 @@ pub type Plaintext<'scope, 'task, 'policy> =
 pub type Session<'scope, 'task, 'policy> =
     receive::Session<'scope, 'task, Plaintext<'scope, 'task, 'policy>>;
 
+/// Decrypted TLS over the fleet-owned camera route.
+pub type FleetPlaintext<'scope, 'task, 'policy> = controller_listener::GuardedIo<
+    'policy,
+    Server<controller_listener::Routed<'scope, 'task, 'policy>>,
+>;
+
+/// A fleet-routed, upgraded laboratory session, which owns its active slot.
+pub type FleetSession<'scope, 'task, 'policy> =
+    receive::Session<'scope, 'task, FleetPlaintext<'scope, 'task, 'policy>>;
+
 /// Payload-free failure. A setup outcome or committed effect may remain in the trace.
 #[derive(Debug)]
 pub enum Error {
@@ -67,6 +77,78 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+struct RouteAdmission<'a, A> {
+    mac: [u8; 6],
+    independent: &'a A,
+}
+
+impl<A: PeerAdmission> PeerAdmission for RouteAdmission<'_, A> {
+    fn permits(&self, claimed_mac: [u8; 6]) -> bool {
+        claimed_mac == self.mac && self.independent.permits(claimed_mac)
+    }
+}
+
+/// Upgrade one previously routed fleet connection through laboratory TLS.
+///
+/// The connection owns its active slot through TLS and the returned session;
+/// interruption or any failure drops it. One deadline covers handshake and
+/// upgrade. The claimed MAC must match the selected inventory entry as well as
+/// the caller's independent admission decision. Source and MAC claims do not
+/// authenticate a physical camera; this TLS configuration is not a qualified
+/// production provider or proof of the peer's identity.
+#[allow(clippy::too_many_arguments)]
+pub async fn upgrade_routed<'scope, 'task, 'policy, A: PeerAdmission>(
+    cx: &'scope Cx,
+    route: controller_listener::Routed<'scope, 'task, 'policy>,
+    tls_config: Arc<ServerConfig>,
+    protocol_policy: ProtocolPolicy,
+    admission: &A,
+    controller: Controller,
+    max_poll: usize,
+    wait: Duration,
+) -> Result<FleetSession<'scope, 'task, 'policy>, Error>
+where
+    'policy: 'scope,
+{
+    if !route.matches_context(cx)
+        || wait.is_zero()
+        || wait > MAX_PROTOCOL_WAIT
+        || !(1..=fss_reference::unifi_direct::metered::MAX_POLL_BYTES).contains(&max_poll)
+    {
+        return Err(Error::Configuration);
+    }
+    let connection = ServerConnection::new(tls_config).map_err(|_| Error::TlsConfiguration)?;
+    let gate = route.gate();
+    let clock = route.clock();
+    let resource = route.resource().to_owned();
+    let claimed = route.claimed_mac();
+    let deadline = cx.now() + wait;
+    let tls = timeout_at(deadline, Server::new(connection, route).handshake(cx))
+        .await
+        .map_err(|_| Error::Deadline)?
+        .map_err(|error| Error::Tls(error.kind()))?;
+    let plaintext = MeteredIo::with_clock(gate.wrap(tls), clock, &resource, max_poll)
+        .map_err(|error| Error::Meter(error.kind()))?;
+    let remaining = Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
+    if remaining.is_zero() {
+        return Err(Error::Deadline);
+    }
+    let restricted = RouteAdmission {
+        mac: claimed,
+        independent: admission,
+    };
+    owner::accept_guarded(
+        plaintext,
+        protocol_policy,
+        &restricted,
+        gate,
+        controller,
+        remaining,
+    )
+    .await
+    .map_err(Error::Upgrade)
+}
 
 /// Perform one admitted setup and use its accepted socket for TLS and upgrade.
 ///

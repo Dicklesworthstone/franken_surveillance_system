@@ -15,6 +15,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+#[path = "../src/bin/trial_checkpoint/mod.rs"]
+mod trial_checkpoint;
 type Test = Result<(), Box<dyn Error>>;
 const EXPECTED: &str = "192.168.1.10";
 const ORIGINAL: &str = "192.168.1.11";
@@ -148,7 +150,14 @@ fn serve(listener: std::net::TcpListener, config: Arc<ServerConfig>, case: &str)
     }
     let writes = matches!(
         case,
-        "restore" | "chunked" | "unconfirmed" | "drop-response" | "scheduled"
+        "restore"
+            | "chunked"
+            | "unconfirmed"
+            | "drop-response"
+            | "scheduled"
+            | "scheduled-anchored"
+            | "anchored"
+            | "anchored-drop"
     );
     let steps = if writes { 6 } else { 4 };
     for index in 0..steps {
@@ -172,14 +181,18 @@ fn serve(listener: std::net::TcpListener, config: Arc<ServerConfig>, case: &str)
         {
             return Err(io::Error::other("incorrect restore write"));
         }
-        if index == 4 && case == "drop-response" {
+        if index == 4 && (case == "drop-response" || case == "anchored-drop") {
             return Ok(());
         }
         let reported = match case {
-            "already" | "observe-original" => ORIGINAL,
+            "already" | "observe-original" | "anchored-already" => ORIGINAL,
             "different" | "observe-other" => OTHER,
             "changing" if index == 3 => OTHER,
-            "restore" | "chunked" | "scheduled" if index == 5 => ORIGINAL,
+            "restore" | "chunked" | "scheduled" | "scheduled-anchored" | "anchored"
+                if index == 5 =>
+            {
+                ORIGINAL
+            }
             _ => EXPECTED,
         };
         let reply = match index {
@@ -246,8 +259,10 @@ fn scenario(case: &'static str) -> Test {
         serve(listener, config, case)
     })));
     let journal = temp.0.join("journal");
-    let scheduled = case == "scheduled";
-    let unit = format!("fss-unifi-restore-fixture-{}", std::process::id());
+    let keeper = temp.0.join("keeper");
+    let root_pin = temp.0.join("root");
+    let scheduled = case == "scheduled" || case == "scheduled-anchored";
+    let unit = format!("fss-unifi-restore-fixture-{}-{case}", std::process::id());
     let _timer = TimerUnit(scheduled.then_some(unit.clone()));
     let mut cmd = if scheduled {
         let user = Command::new("id").arg("-un").output()?;
@@ -298,6 +313,13 @@ fn scenario(case: &'static str) -> Test {
     }
     if case.starts_with("observe-") {
         cmd.arg("--observe-only");
+    }
+    if case.starts_with("anchored") || case == "scheduled-anchored" {
+        cmd.arg(format!(
+            "--anchored-journal={},{},fixture-scope,001122aabbcc",
+            keeper.display(),
+            root_pin.display()
+        ));
     }
     let process = cmd
         .arg("--owner-authorized")
@@ -357,20 +379,34 @@ fn scenario(case: &'static str) -> Test {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        if case == "scheduled-anchored" {
+            let (journal, minimum) = trial_checkpoint::reopen(
+                &journal,
+                &keeper,
+                &root_pin,
+                "fixture-scope",
+                [0, 0x11, 0x22, 0xaa, 0xbb, 0xcc],
+            )?;
+            let recovered = fss_runtime::effect::EffectCoordinator::recover(journal, minimum)?;
+            if !recovered.is_reconciliation_only() || recovered.journal().operations().count() != 1
+            {
+                return Err("scheduled anchored journal did not reopen for reconciliation".into());
+            }
+        }
         peer.finish()?;
         return Ok(());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     match case {
-        "restore" | "chunked"
+        "restore" | "chunked" | "anchored"
             if output.status.success()
                 && stdout.contains("restore_claim_observed_effect_unsettled")
                 && journal.is_dir() =>
         {
             ()
         }
-        "already"
+        "already" | "anchored-already"
             if output.status.success()
                 && stdout.contains("already_restored_no_effect")
                 && !journal.exists() =>
@@ -402,7 +438,7 @@ fn scenario(case: &'static str) -> Test {
         {
             ()
         }
-        "drop-response" if !output.status.success() && journal.is_dir() => (),
+        "drop-response" | "anchored-drop" if !output.status.success() && journal.is_dir() => (),
         "bad-pin"
             if !output.status.success() && !journal.exists() && stderr.contains("Handshake") =>
         {
@@ -410,13 +446,105 @@ fn scenario(case: &'static str) -> Test {
         }
         _ => return Err(format!("unexpected restore result for {case}: {stderr}").into()),
     }
+    if case == "anchored-already" && (keeper.exists() || root_pin.exists()) {
+        return Err("no-op restore created anchored custody".into());
+    }
+    if case == "anchored" || case == "anchored-drop" {
+        if !stdout.contains(
+            "restore_journal=anchored root_trust=operator_selected independence=unverified",
+        ) {
+            return Err("missing anchored custody confirmation".into());
+        }
+        let run_id = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("restore_run_id="))
+            .ok_or("missing restore run identity")?;
+        let (journal, minimum) = trial_checkpoint::reopen(
+            &journal,
+            &keeper,
+            &root_pin,
+            "fixture-scope",
+            [0, 0x11, 0x22, 0xaa, 0xbb, 0xcc],
+        )?;
+        let recovered = fss_runtime::effect::EffectCoordinator::recover(journal, minimum)?;
+        if !recovered.is_reconciliation_only()
+            || recovered.journal().operations().count() != 1
+            || recovered.journal().operations().any(|receipt| {
+                receipt.intent.operation_id.as_str()
+                    != format!("operation:unifi-trial-{run_id}-restore")
+            })
+        {
+            return Err("anchored restore journal did not preserve its unique effect".into());
+        }
+    }
     peer.finish()?;
+    Ok(())
+}
+
+fn anchored_alias_refused_before_network() -> Test {
+    let root = std::env::temp_dir().join(format!("fss-restore-alias-{}", std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let temp = Temp(root);
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_nonblocking(true)?;
+    let keeper = temp.0.join("keeper");
+    let output = Command::new(env!("CARGO_BIN_EXE_unifi_controller_restore"))
+        .arg("127.0.0.1")
+        .arg(listener.local_addr()?.port().to_string())
+        .arg(temp.0.join("missing-cert"))
+        .arg(temp.0.join("missing-credential"))
+        .args([EXPECTED, ORIGINAL])
+        .arg(temp.0.join("journal"))
+        .arg(format!(
+            "--anchored-journal={},{},fixture-scope,001122aabbcc",
+            keeper.display(),
+            keeper.display()
+        ))
+        .arg("--owner-authorized")
+        .output()?;
+    if output.status.success()
+        || !String::from_utf8_lossy(&output.stderr).contains("anchored paths must be distinct")
+        || !matches!(listener.accept(),Err(e) if e.kind()==io::ErrorKind::WouldBlock)
+        || temp.0.join("journal").exists()
+    {
+        return Err("aliased anchor was not refused before network access".into());
+    }
+    let real = temp.0.join("real");
+    std::fs::DirBuilder::new().mode(0o700).create(&real)?;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(real.join("child"))?;
+    std::os::unix::fs::symlink(&real, temp.0.join("alias"))?;
+    let real_store = real.join("child/store");
+    let alias_store = temp.0.join("alias/child/store");
+    let output = Command::new(env!("CARGO_BIN_EXE_unifi_controller_restore"))
+        .arg("127.0.0.1")
+        .arg(listener.local_addr()?.port().to_string())
+        .arg(temp.0.join("missing-cert"))
+        .arg(temp.0.join("missing-credential"))
+        .args([EXPECTED, ORIGINAL])
+        .arg(temp.0.join("journal"))
+        .arg(format!(
+            "--anchored-journal={},{},fixture-scope,001122aabbcc",
+            real_store.display(),
+            alias_store.display()
+        ))
+        .arg("--owner-authorized")
+        .output()?;
+    if output.status.success()
+        || !String::from_utf8_lossy(&output.stderr).contains("anchored paths must be distinct")
+        || !matches!(listener.accept(),Err(e) if e.kind()==io::ErrorKind::WouldBlock)
+        || temp.0.join("journal").exists()
+    {
+        return Err("symlink-aliased anchors were not refused before network access".into());
+    }
     Ok(())
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn guarded_restore_refuses_stale_state_and_never_replays_uncertain_effect() -> Test {
+    anchored_alias_refused_before_network()?;
     for case in [
         "already",
         "observe-original",
@@ -428,6 +556,9 @@ fn guarded_restore_refuses_stale_state_and_never_replays_uncertain_effect() -> T
         "chunked",
         "unconfirmed",
         "drop-response",
+        "anchored-already",
+        "anchored",
+        "anchored-drop",
         "bad-pin",
     ] {
         scenario(case)?;
@@ -438,5 +569,6 @@ fn guarded_restore_refuses_stale_state_and_never_replays_uncertain_effect() -> T
 #[test]
 #[ignore = "requires disposable TLS certificate, key and passwordless systemd timer access"]
 fn guarded_restore_runs_in_independent_systemd_timer() -> Test {
-    scenario("scheduled")
+    scenario("scheduled")?;
+    scenario("scheduled-anchored")
 }
