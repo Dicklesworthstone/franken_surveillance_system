@@ -372,3 +372,6 @@ fn command_creates_verified_package_then_refuses_overwrite() -> RunResult<()> {
 
 #[path = "onnx_cli_tests/split_head.rs"]
 mod split_head;
+
+#[path = "onnx_cli_tests/dfl_pyramid.rs"]
+mod dfl_pyramid;

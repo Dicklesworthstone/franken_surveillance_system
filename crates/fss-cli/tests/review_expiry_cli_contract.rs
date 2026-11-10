@@ -392,7 +392,7 @@ fn hold_added_after_preview_invalidates_expiry_and_preserves_every_source_deriva
     let preview = success(&f.cleanup("review-expiry-plan", "100:100", None)?)?;
     let plan = field(&preview, "deletion_plan")?;
     let hold = f.hold("place", None)?;
-    f.hold("place", Some(text(&hold, "approval_digest")?))?;
+    f.hold("place", Some(text(field(&hold, "result")?, "approval_digest")?))?;
     let before = snapshot(&f.root)?;
     refused(
         &f.cleanup(
@@ -412,7 +412,7 @@ fn hold_added_after_preview_invalidates_expiry_and_preserves_every_source_deriva
     }));
     assert_eq!(snapshot(&f.root)?, before, "hold refusal mutated custody");
     let release = f.hold("release", None)?;
-    f.hold("release", Some(text(&release, "approval_digest")?))?;
+    f.hold("release", Some(text(field(&release, "result")?, "approval_digest")?))?;
     let renewed = success(&f.cleanup("review-expiry-plan", "100:100", None)?)?;
     let plan = field(&renewed, "deletion_plan")?;
     success(&f.cleanup(

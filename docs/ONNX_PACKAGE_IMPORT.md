@@ -388,7 +388,7 @@ The complete authored recipe is
 [`recipe_v4.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v4.json);
 its strict schema is [`onnx_rgb_package_recipe.v4.json`](../schemas/onnx_rgb_package_recipe.v4.json).
 V1–v3 continue to reject `head_assembly`; v4 requires it and rejects `head_decode`.
-The public package API also refuses simultaneous DFL decoding and split-head assembly,
+The public package API also refuses combining packed DFL, pyramid DFL and split-head assembly,
 objectness, a channels-layout assembled head, or a class map that does not match the
 ordered labels.
 
@@ -417,6 +417,70 @@ model execution does not substitute for that integration gate. The fixture is wi
 evidence, not a trained detector, and split-head support does not qualify RF-DETR or
 another model family: the complete graph must still satisfy importer,
 source/weight/package size, preprocessing, licensing and deployment requirements.
+
+## Separate feature-pyramid outputs: recipe v5
+
+Recipe `fss.onnx_rgb_package_recipe.v5` connects separately exported detector
+levels to the same native DFL decoder. This closes the gap between a model whose
+outputs are feature maps and recipe v3, which requires one already-packed rank-three
+tensor. Supply all v2 preprocessing choices and this explicit `head_decode` object:
+
+```json
+"head_decode": {
+  "kind": "anchor-free-dfl-pyramid",
+  "bins": 16,
+  "levels": [
+    {"output": "p3", "stride": 8, "layout": "nchw"},
+    {"output": "p4", "stride": 16, "layout": "nhwc"},
+    {"output": "p5", "stride": 32, "layout": "nchw"}
+  ]
+}
+```
+
+The names and layouts above are examples. Bind the actual declared graph outputs;
+the importer never guesses a level from an output name or sorts the strides.
+`head.output_port` names a new output, `head.layout` is `rows`, and
+`head.boxes` is `pixel-corners`. Class labels, probability/logit interpretation,
+objectness, thresholds and NMS remain explicit as in recipe v3.
+
+Let `H,W` be the model-input dimensions, `s` the level's stride, and
+`F = 4*bins + labels.len() + objectness_fields`, where objectness contributes
+zero or one field.
+
+| Declared level layout | Required source shape | Packed row order |
+|---|---|---|
+| `nchw` | `[1,F,H/s,W/s]` | `y` then `x`, with fields contiguous |
+| `nhwc` | `[1,H/s,W/s,F]` | `y` then `x`, with fields contiguous |
+
+The complete head concatenates those rows in the **exact level-list order**.
+All levels must be actual static F32 graph outputs, with distinct names and unique
+positive strides. Every stride must divide both image dimensions. The existing
+bounds remain: 1–8 levels, 2–32 bins, at most 32,768 total rows, and the declared
+`head.maximum_rows` allowance. Swapped names or incorrect layouts that disagree
+with the actual source shapes fail conversion.
+
+Native Transpose, Reshape and Concat produce an internal packed tensor. The existing
+DFL decoder then computes pixel corners and preserves every score bit. That temporary
+packed tensor stays private: the final graph exposes the original outputs in their
+original order plus the new decoded output. The original ONNX and parameter bits
+remain retained. Packing, DFL constants, graph validation and any preceding image
+normalization share the original import quotas and cancellation boundary.
+
+V5 rejects the packed v3 and split v4 profiles. The public package API also rejects
+combining `head_pyramid` with `head_decode` or `head_assembly`. Existing recipes
+and FMPK/report formats retain their meanings.
+
+The complete authored example is
+[`recipe_v5.json`](../crates/fss-reference/tests/fixtures/onnx_package/recipe_v5.json),
+with strict schema
+[`onnx_rgb_package_recipe.v5.json`](../schemas/onnx_rgb_package_recipe.v5.json).
+Its shared Rust fixture constructs a nonzero RGB-dependent Conv/pooling graph with
+three outputs in mixed NCHW/NHWC layouts, 8×8 input, four bins and 21 cells. Graph
+output order deliberately differs from recipe order. Tests compare both native
+executors and archive reload with an independent coordinate/softmax oracle; package
+tests check original source retention, exact score tails, privacy replacement and
+the existing detection projection. These fixtures establish numerical wiring, not
+trained-detector accuracy or arbitrary pretrained-model compatibility.
 
 ## Admitted model profile and bounds
 

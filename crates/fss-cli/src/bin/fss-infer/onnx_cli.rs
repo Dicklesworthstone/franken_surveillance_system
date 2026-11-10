@@ -26,6 +26,9 @@ use fss_reference::{ReplayCx, ScalarExecCx};
 
 use super::{RunResult, Values, digest, number, text, value};
 
+#[path = "onnx_cli/pyramid.rs"]
+mod pyramid;
+
 const HELP: &str = "fss-infer import-onnx [options]\n\
   --source FILE --source-digest sha256:HEX\n\
   --recipe FILE --recipe-digest sha256:HEX\n\
@@ -42,6 +45,8 @@ const HELP: &str = "fss-infer import-onnx [options]\n\
   a declared static anchor-free DFL distance head into native pixel-corner boxes.\n\
   Recipe v4 assembles named box/score outputs with explicit layouts and ordered class\n\
   indices. Box coordinates and probability/logit score semantics remain explicit.\n\
+  Recipe v5 assembles named NCHW/NHWC feature-pyramid levels in the exact declared\n\
+  stride order before native DFL decoding. No scale or channel semantics are inferred.\n\
   See docs/ONNX_PACKAGE_IMPORT.md for the complete strict recipe and supported profile.\n\
   The original ONNX, exact LICENSE and NOTICE remain inside the package. The package\n\
   must pass the same license, graph, parameter and CPU-backend verifier used by\n\
@@ -232,6 +237,7 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         "fss.onnx_rgb_package_recipe.v2" => 2,
         "fss.onnx_rgb_package_recipe.v3" => 3,
         "fss.onnx_rgb_package_recipe.v4" => 4,
+        "fss.onnx_rgb_package_recipe.v5" => 5,
         _ => return Err("unsupported recipe format".into()),
     };
     let root_fields = [
@@ -471,6 +477,11 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
     } else {
         None
     };
+    let head_pyramid = if version == 5 {
+        Some(pyramid::decode(root, h, target)?)
+    } else {
+        None
+    };
     Ok(OnnxPackageRecipe {
         model_id: ModelId::parse(string(root, "model_id")?).map_err(|e| e.to_string())?,
         model_generation: ModelGeneration::parse(string(root, "model_generation")?)
@@ -488,6 +499,7 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         scale_to_unit,
         image_transform,
         head_decode,
+        head_pyramid,
         head_assembly,
         head: PackageHeadSpec {
             output_port: string(h, "output_port")?,

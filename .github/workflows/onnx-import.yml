@@ -47,11 +47,12 @@ jobs:
           persist-credentials: false
       - name: Provision pinned native toolchain
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Execute repository-owned Rust lane
-        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Verify ONNX lowering, packages and operator import
         if: success() || failure()
         run: bash scripts/check_onnx_package.sh all
+      - name: Execute repository-owned Rust lane
+        if: success() || failure()
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Run complete Model IR contracts including ONNX parser refusals
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
       - name: Execute converted graphs through the unchanged native kernels

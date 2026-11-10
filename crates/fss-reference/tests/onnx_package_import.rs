@@ -93,6 +93,7 @@ fn recipe() -> Test<OnnxPackageRecipe> {
         scale_to_unit: false,
         image_transform: None,
         head_decode: None,
+        head_pyramid: None,
         head_assembly: None,
         head: PackageHeadSpec {
             output_port: "head".into(),
@@ -709,3 +710,6 @@ fn dfl_packaging_refuses_conflicting_head_semantics_and_grid_or_vocabulary_misma
 
 #[path = "onnx_package_import/split_head.rs"]
 mod split_head;
+
+#[path = "onnx_package_import/dfl_pyramid.rs"]
+mod dfl_pyramid;

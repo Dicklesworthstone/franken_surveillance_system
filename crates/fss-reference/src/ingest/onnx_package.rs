@@ -10,11 +10,12 @@ use fss_core::{
     Generation, ModelGeneration, SchemaId,
 };
 pub use fss_model_ir::{
-    OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform, OnnxSplitHeadAssembly,
+    OnnxChannelOrder, OnnxDflHeadDecode, OnnxDflPyramidDecode, OnnxDflPyramidLayout,
+    OnnxDflPyramidLevel, OnnxHeadLayout, OnnxImageTransform, OnnxSplitHeadAssembly,
 };
 use fss_model_ir::{
     OnnxError, OnnxExportLimits, OnnxLimits, assemble_onnx_split_head, decode_onnx_dfl_head,
-    export_onnx_artifacts, import_onnx, transform_onnx_image,
+    decode_onnx_dfl_pyramid, export_onnx_artifacts, import_onnx, transform_onnx_image,
 };
 use fss_object::{
     MAX_RESTRICTION_LEN, MAX_RESTRICTIONS_COUNT, MAX_SOURCE_IDENTITY_LEN, MAX_SPDX_LEN,
@@ -63,6 +64,10 @@ pub struct OnnxPackageRecipe {
     /// Optional recipe-v3 static anchor-free DFL decoder. The existing head selects
     /// its new rows/pixel-corner output; the original raw output remains available.
     pub head_decode: Option<OnnxDflHeadDecode>,
+    /// Optional recipe-v5 DFL decoder for explicitly named rank-four feature levels.
+    /// Caller order binds each level to its stride; layouts are never inferred.
+    /// Mutually exclusive with packed-head decoding and split-head assembly.
+    pub head_pyramid: Option<OnnxDflPyramidDecode>,
     /// Optional recipe-v4 assembly of named box and score outputs. The explicit class
     /// indices are in label order; source outputs remain intact. Mutually exclusive
     /// with DFL decoding, and requires a rows head without an objectness field.
@@ -230,10 +235,30 @@ fn spec(
             .validate_rgb_range(recipe.scale_to_unit)
             .map_err(|_| OnnxPackageError::Recipe("invalid or overflowing image normalization"))?;
     }
-    if recipe.head_decode.is_some() && recipe.head_assembly.is_some() {
+    if usize::from(recipe.head_decode.is_some())
+        + usize::from(recipe.head_pyramid.is_some())
+        + usize::from(recipe.head_assembly.is_some())
+        > 1
+    {
         return Err(OnnxPackageError::Recipe(
-            "DFL decoding and split-head assembly are mutually exclusive",
+            "packed DFL, pyramid DFL, and split-head assembly are mutually exclusive",
         ));
+    }
+    if let Some(decode) = &recipe.head_pyramid {
+        decode
+            .validate()
+            .map_err(|_| OnnxPackageError::Recipe("invalid DFL pyramid profile"))?;
+        if recipe.head.layout != HeadLayout::Rows
+            || recipe.head.boxes != HeadBoxes::PixelCorners
+            || decode
+                .levels
+                .iter()
+                .any(|level| level.output == recipe.head.output_port)
+        {
+            return Err(OnnxPackageError::Recipe(
+                "DFL pyramid requires a distinct rows/pixel-corner output",
+            ));
+        }
     }
     if let Some(assembly) = &recipe.head_assembly {
         assembly
@@ -384,6 +409,19 @@ pub fn import_onnx_package(
     };
     let imported = if let Some(decode) = &request.recipe.head_decode {
         decode_onnx_dfl_head(
+            imported,
+            decode,
+            &spec.head.output_port,
+            spec.target,
+            spec.labels.len() + usize::from(spec.head.objectness.is_some()),
+            limits.import,
+            &cancelled,
+        )?
+    } else {
+        imported
+    };
+    let imported = if let Some(decode) = &request.recipe.head_pyramid {
+        decode_onnx_dfl_pyramid(
             imported,
             decode,
             &spec.head.output_port,

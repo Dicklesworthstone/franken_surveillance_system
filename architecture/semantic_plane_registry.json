@@ -1000,7 +1000,8 @@
     "crates/fss-reference/src/review_media/render/tests.rs": "support",
     "crates/fss-reference/src/review_media/render/timing.rs": "support",
     "crates/fss-reference/src/review_media/storage.rs": "effect",
-    "crates/fss-cli/src/bin/fss-export/review/runtime_tests.rs": "support"
+    "crates/fss-cli/src/bin/fss-export/review/runtime_tests.rs": "support",
+    "crates/fss-cli/src/bin/fss-infer/onnx_cli/pyramid.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

@@ -2087,6 +2087,36 @@
       "id": "ERR-ONVIF-PULLPOINT-LIMIT-001"
     },
     {
+      "description": "Advertised extrema are reversed, invalid or contradict recording-wide bounds",
+      "guidance": "Reobserve or investigate the recorder. Do not normalize contradictions into a successful coverage claim.",
+      "id": "ERR-ONVIF-RECORDING-BOUNDS-001"
+    },
+    {
+      "description": "An exact requested endpoint lies outside a supplied recording or selected-video bound",
+      "guidance": "Choose and separately approve a different interval if appropriate. The client never clips, widens or silently switches to live capture; this refusal does not prove retention expiry.",
+      "id": "ERR-ONVIF-RECORDING-RANGE-001"
+    },
+    {
+      "description": "Caller UTC coordinates are invalid for bounded forward replay",
+      "guidance": "Supply a validated ReplayWindow with a nonempty forward interval of at most seven days; no network request is authorized by a malformed interval.",
+      "id": "ERR-ONVIF-RECORDING-REQUEST-001"
+    },
+    {
+      "description": "The recorder explicitly advertises Removing or Removed for the selected recording",
+      "guidance": "Reinspect availability; this remote assertion neither deletes local originals nor proves historical absence.",
+      "id": "ERR-ONVIF-RECORDING-STATE-001"
+    },
+    {
+      "description": "The selected information response describes a different exact recording token",
+      "guidance": "Reinspect the private inventory and explicitly select the intended recording; no URI acquisition or implicit alternate token follows.",
+      "id": "ERR-ONVIF-RECORDING-TOKEN-001"
+    },
+    {
+      "description": "No video track or multiple video tracks prevent an unambiguous supported selection",
+      "guidance": "Select a supported recording with one video track; descriptions and token spelling cannot infer codec or track mapping.",
+      "id": "ERR-ONVIF-RECORDING-VIDEO-001"
+    },
+    {
       "description": "A replay admission callback unwound and its context is permanently closed",
       "guidance": "Preserve partial receipts and investigate the owning callback; do not reopen the same authority.",
       "id": "ERR-ONVIF-STORAGE-PANIC-001"
@@ -2550,6 +2580,41 @@
       "description": "`fss-hold expire` names an earliest owner-attested time before the hold's minimum-retention deadline (or an uncertain time); the hold stays active",
       "guidance": "retry after the deadline with a new attested time",
       "id": "ERR-RETENTION-NOT-ELAPSED-001"
+    },
+    {
+      "description": "approval does not bind the complete current policy adoption preview, including its authority basis and affected inventory; nothing was committed",
+      "guidance": "preview again and approve the exact new digest; never substitute a changed plan automatically",
+      "id": "ERR-RETENTION-POLICY-APPROVAL-001"
+    },
+    {
+      "description": "policy sensor/history count, canonical record size, complete history payload allowance or ledger-work limit is exhausted",
+      "guidance": "inspect the bounded history and correct the request or review capacity explicitly; never evict policy history or return a partial successful list",
+      "id": "ERR-RETENTION-POLICY-BOUND-001"
+    },
+    {
+      "description": "cooperative cancellation was observed before policy adoption committed; staged impact or policy audit metadata may remain but grants no authority",
+      "guidance": "retry the exact request and approval after restoring authority; inspect current policy because an already committed exact retry is idempotent",
+      "id": "ERR-RETENTION-POLICY-CANCELLED-001"
+    },
+    {
+      "description": "a deletion record is durable but not complete, so a new policy revision cannot be adopted",
+      "guidance": "finish or reconcile that exact deletion before changing policy; no implicit cancellation or hold release",
+      "id": "ERR-RETENTION-POLICY-DELETION-IN-PROGRESS-001"
+    },
+    {
+      "description": "malformed retention policy request or requested policy digest absent from verified retained history; no adoption or cleanup is authorized",
+      "guidance": "correct the explicit settings or inspect current policy identities; do not guess a replacement pin",
+      "id": "ERR-RETENTION-POLICY-REQUEST-001"
+    },
+    {
+      "description": "the expected predecessor or pinned current generation changed, or the current policy explicitly disables fresh cleanup",
+      "guidance": "inspect the current policy and prepare a new exact request; an old pin never selects new settings",
+      "id": "ERR-RETENTION-POLICY-STALE-001"
+    },
+    {
+      "description": "policy authority, predecessor chain, retained impact plan, canonical bytes, ledger or spool custody is missing, corrupt, shadowed or inconsistent; never interpreted as no policy",
+      "guidance": "repair custody before adoption or fresh policy cleanup; do not bypass current-generation verification",
+      "id": "ERR-RETENTION-POLICY-STORAGE-001"
     },
     {
       "description": "malformed JSON syntax, duplicate keys, or encoding corruption in robot docs or registry",
@@ -4031,7 +4096,7 @@
   "schemas": [
     {
       "authority": "authority",
-      "compatibilityRule": "bounded externally anchored checkpoints; restoration requires trusted checkpoint + request digests; unknown/damaged input never falls back to a fresh session; failed/cancelled states terminal",
+      "compatibilityRule": "bounded externally anchored checkpoints; restoration requires trusted checkpoint + request digests; unknown/damaged input never falls back to a fresh session; failed/cancelled states terminal Canonical digest registration (alias `SCHEMA-DOMAIN-ACQUISITION-SESSION-CHECKPOINT-001`): Leading canonical encoding domain of a bounded, externally anchored `AcquisitionSession` lifecycle checkpoint, binding the exact acquisition request, sticky windowed-gap flag, state tree and bounded audit history tail without device handles or media payloads.",
       "file": "schemas/acquisition_session_checkpoint.v1.json",
       "id": "SCHEMA-ACQ-SESSION-CHECKPOINT-001",
       "schema": "fss.acquisition.session_checkpoint.v1"
@@ -4080,7 +4145,7 @@
     },
     {
       "authority": "semantic response",
-      "compatibilityRule": "Owner: fss-core::AgentCognitiveEnvelopeV2. Explicit version carrying unchanged v1 cognition plus the complete registered contextPack and compressionReceipt. Exact contract basis, anchor, view, receipt/output digest and cognitive item/provenance membership must agree; complete response bytes and token quote include both actual proof objects. Existing v1 bytes and closed schema remain unchanged. The packaging receipt does not certify upstream/native/source projections as lossless or grant source/effect authority.",
+      "compatibilityRule": "Owner: fss-core::AgentCognitiveEnvelopeV2. Explicit version carrying unchanged v1 cognition plus the complete registered contextPack and compressionReceipt. Exact contract basis, anchor, view, receipt/output digest and cognitive item/provenance membership must agree; complete response bytes and token quote include both actual proof objects. Existing v1 bytes and closed schema remain unchanged. The packaging receipt does not certify upstream/native/source projections as lossless or grant source/effect authority. Canonical digest registration (alias `SCHEMA-DOMAIN-AGENT-COGNITIVE-ENVELOPE-002`): Additive explicit version containing unchanged v1 cognition and required actual SemanticContextPack plus SemanticCompressionReceipt, verified together against the exact contract, anchor, view and delivered propositions. V1 bytes and closed schema remain unchanged; full serialized response overhead is bounded and priced.",
       "file": "schemas/agent_cognitive_envelope.v2.json",
       "id": "SCHEMA-AGENT-COGNITIVE-ENVELOPE-002",
       "schema": "fss.agent_cognitive_envelope.v2"
@@ -4304,6 +4369,20 @@
     },
     {
       "authority": "caller input / derived geometry",
+      "compatibilityRule": "Owner: fss-cli::clock_alignment. Finite exact offset inventory and pinned camera/clock/calibration/image scope, complete training and validation observations and native fit limits. JSON specifies shape; native admission checks geometry, temporal/source membership and bounded unique hypotheses. Pins are caller assertions; no source authentication, physical synchronization or clock activation.",
+      "file": "schemas/clock_alignment_query.v1.json",
+      "id": "SCHEMA-CLOCK-ALIGNMENT-QUERY-001",
+      "schema": "fss.clock_alignment_query.v1"
+    },
+    {
+      "authority": "caller input / derived geometry",
+      "compatibilityRule": "Owner: fss-cli::clock_alignment. Finite exact offset/rate inventory at one declared target anchor with pinned camera/clock/calibration/image scope, complete observations and native fit limits. Native admission checks signed arithmetic, bounded rates, distinct source membership and every supplied hypothesis. Unsupported hypotheses remain explicit; no clock activation or physical synchronization claim.",
+      "file": "schemas/clock_drift_query.v1.json",
+      "id": "SCHEMA-CLOCK-DRIFT-QUERY-001",
+      "schema": "fss.clock_drift_query.v1"
+    },
+    {
+      "authority": "caller input / derived geometry",
       "compatibilityRule": "Owner: fss-cli::fss-clock-align with fss-geometry::temporal_alignment::drift::validation. Strict frozen camera, clock, world, fit and complete hypothesis inventory; one through eight disjoint held-out sessions and at most 128 interval requests. Source/exposure/evidence reuse refuses the entire request. Input assertions do not authenticate associations, camera custody or calibration.",
       "file": "schemas/clock_validation_query.v1.json",
       "id": "SCHEMA-CLOCK-VALIDATION-QUERY-001",
@@ -4424,7 +4503,7 @@
     {
       "authority": "derived/configuration",
       "compatibilityRule": "Owner: fss-cli::event_fusion::input. Exact-digest-verified JSON, at most 256 KiB. The required long_dwell_analysis_root binds one complete native whole-recording dwell analysis; plan_digest is its analysis digest and cascade_digest is its retained detector-recipe digest. Coverage must be empty and watch/corroboration scope fields must be absent. The profile retains the existing class, prior, decision policy, severity, look count, evidence-clock time and independently checked labelled-count calibration tables. Its identity includes the distinct whole-recording-dwell:sampled-episode-source-context-only:v1 discriminator, analysis root, 32-episode ceiling and shared 256-observation ceiling. Earlier profile versions retain their original identities; an analysis root cannot authorize coverage, continuous occupancy, calibration activation or effects.",
-      "file": "CLI input/output",
+      "file": "CLI output",
       "id": "SCHEMA-EVENT-CLASS-FUSION-PROFILE-004",
       "schema": "fss.event_class_fusion_profile.v4"
     },
@@ -4674,6 +4753,55 @@
       "schema": "fss.onnx_rgb_package_recipe.v4"
     },
     {
+      "authority": "operator input/provisioning",
+      "compatibilityRule": "Explicit v2 preprocessing plus ordered named DFL feature levels with unique strides and per-level NCHW/NHWC layouts. Native Transpose/Reshape/Concat packs exact target/stride grids before the existing expected-bin decoder. Original outputs, source bytes and parameters remain intact; a distinct rows/pixel-corners output is added under cumulative import/decode quotas. Packed DFL and split-head assembly are mutually exclusive. Existing recipe v1-v4 and package/report formats retain their meanings; no family, score rule, objectness or quality is inferred.",
+      "file": "schemas/onnx_rgb_package_recipe.v5.json",
+      "id": "SCHEMA-ONNX-RGB-PACKAGE-RECIPE-005",
+      "schema": "fss.onnx_rgb_package_recipe.v5"
+    },
+    {
+      "authority": "existing AOP-005 bounded read intent; operator binds deployment scope",
+      "compatibilityRule": "Closed selector for target onvif, analysis tracks/lifecycle/zones and 1..32 ordered exact XML/RTP identity/root pairs. Inline zone policy is required only for zones; complete semantic data rows must fit max_entries 1..32 or the operation refuses. Native admission additionally enforces canonical number/digest spellings, unique source identities, bounded inline bytes, exact current anchor and real custody/work/deletion checks. No root/principal/archive override, path indirection, disclosure expansion, historical selector or continuation through MCP. Responses retain the existing AgentResponseEnvelope and AgentCognitiveEnvelope v1 query/case contracts; the selector has no required schema discriminator field.",
+      "file": "schemas/onvif_analysis_query.v1.json",
+      "id": "SCHEMA-ONVIF-ANALYSIS-QUERY-001",
+      "schema": "fss.onvif_analysis_query.v1"
+    },
+    {
+      "authority": "private bounded device observation",
+      "compatibilityRule": "Complete exact selected recording/source/status/track projection and digest of the entire original SOAP body. Optional UTC extrema are explicit, the response token must match the caller's exact selection, and one video track is required for replay. Supplied bounds must contain the unchanged request; unknown extrema never prove coverage. Canonical bytes and original response identity are distinct from raw SOAP retention and original video custody.",
+      "file": "native canonical encoder/decoder in crates/fss-reference/src/onvif/wire/recording/canonical.rs",
+      "id": "SCHEMA-ONVIF-RECORDING-INFORMATION-001",
+      "schema": "fss.onvif_recording_information.v1"
+    },
+    {
+      "authority": "source-verified derived cognition over vendor claims",
+      "compatibilityRule": "Complete unchanged tracks-v1 grouping and every retained source/document disposition plus additive ObjectTree/Behaviour relationships, explicit endpoint states/issues and deletion/reuse references. Both complete source/analysis passes share one indexed-read/work allowance and final authority checks. At most 1024 frames, 4096 original occurrences, 1024 operations, 4096 endpoints, 2048 document receipts and 32 MiB complete JSON. Raw module/integer/time values are null unless explicitly disclosed; UUIDs are never matched or emitted. Frozen-v1, empty, rejected and zero-document sources remain explicit. No physical identity, departure, authenticated origin, coverage, absence, calibration, event authority or effect permission.",
+      "file": "schemas/onvif_vendor_lifecycle_report.v1.json",
+      "id": "SCHEMA-ONVIF-VENDOR-LIFECYCLE-REPORT-001",
+      "schema": "fss.onvif_vendor_lifecycle_report.v1"
+    },
+    {
+      "authority": "source-verified derived cognition over vendor claims",
+      "compatibilityRule": "Complete ordered XML/RTP source pins, current authority anchor, original source/document/frame/object handles, conservative vendor-local ObjectId runs and explicit processing limitations. Both source-reconstruction passes share finite read/work allowances; independent sources, missing observations, unknown lifecycle, clock and transform boundaries prevent continuity. At most 32 source pins, 1024 frames, 4096 object occurrences, 4096 tracklets and 16 MiB complete JSON. Raw module, ObjectId and vendor UTC values are null unless explicitly disclosed; nanosecond timestamps are exact decimal strings. Canonical identities bind frozen generation, source pins, policy, complete rows and accounting; emitted JSON is not an authority credential. No physical identity, authenticated origin, coverage, absence, calibrated geometry, event authority or effect permission.",
+      "file": "schemas/onvif_vendor_tracklets_report.v1.json",
+      "id": "SCHEMA-ONVIF-VENDOR-TRACKLETS-REPORT-001",
+      "schema": "fss.onvif_vendor_tracklets_report.v1"
+    },
+    {
+      "authority": "explicit operator raw-coordinate declaration; no calibration",
+      "compatibilityRule": "Closed 64 KiB policy for 1..16 uniquely named rectangles in raw_vendor_object_millionths, with exact nonzero source/module/frame/object transform pins, strict numeric min/max pairs within \u00b110^15 subunits and nonnegative margin up to 10^15. Native parsing additionally enforces integer token spelling, unique IDs and min<max. No absent transform, image basis or world calibration is invented.",
+      "file": "schemas/onvif_vendor_zone_policy.v1.json",
+      "id": "SCHEMA-ONVIF-VENDOR-ZONE-POLICY-001",
+      "schema": "fss.onvif_vendor_zone_policy.v1"
+    },
+    {
+      "authority": "source-verified derived cognition over vendor claims",
+      "compatibilityRule": "Complete unchanged original tracks report and operator policy, every occurrence\u00d7zone cell and frame\u00d7zone sample, explicit boundary/unavailable reasons and original-tracklet side-change references. At most 65536 cells, 16384 frame samples, 65536 transitions and 32 MiB JSON. Both source/analysis passes share finite allowances and final custody checks. Exact policy-file digest/length remains separate from semantic policy identity. Vendor values are hidden unless requested; operator policy remains visible. No physical identity, calibrated geometry, capture-clock/dwell, coverage, absence, event authority or effect permission.",
+      "file": "schemas/onvif_vendor_zones_report.v1.json",
+      "id": "SCHEMA-ONVIF-VENDOR-ZONES-REPORT-001",
+      "schema": "fss.onvif_vendor_zones_report.v1"
+    },
+    {
       "authority": "effect truth",
       "compatibilityRule": "state monotonicity; idempotency identity preserved",
       "file": "schemas/operation_receipt.v1.json",
@@ -4682,21 +4810,21 @@
     },
     {
       "authority": "derived read-only sampled class observations",
-      "compatibilityRule": "Observation kind `sampled_class_occupancy`, generation 1. Reopens an exact retained package-zone report and preserves its model/class/tracking/privacy/clock/health policy. Complete frame-major, zone-minor grid contains confirmed actual inside counts, canonical anonymous support and disjoint exclusions. Masked or health-excluded counts are null even with no tracks; zero never certifies absence. Rendered output is bounded to 4 MiB before final custody/privacy/deletion/principal/head/proof revalidation. No new retention, canonical event, calibrated population, continuous coverage or effect authority.",
+      "compatibilityRule": "Observation kind `sampled_class_occupancy`, generation 1. Reopens an exact retained package-zone report and preserves its model/class/tracking/privacy/clock/health policy. Complete frame-major, zone-minor grid contains confirmed actual inside counts, canonical anonymous support and disjoint exclusions. Masked or health-excluded counts are null even with no tracks; zero never certifies absence. Rendered output is bounded to 4 MiB before final custody/privacy/deletion/principal/head/proof revalidation. No new retention, canonical event, calibrated population, continuous coverage or effect authority. Canonical digest registration (alias `SCHEMA-DOMAIN-PACKAGE-ZONE-OCCUPANCY-001`): Checked canonical encoding binds the immutable interpretation policy, complete retained zone-report digest and provenance root, complete frame/zone row count, each row coordinate/state/tagged count/health, confirmed outside and all exclusion counts, then every canonically ordered supporting track digest. The source report binds original model/class/configuration/privacy/capture evidence. No ranked subset, JSON-derived identity, interpolation, unique-person count or coverage inference.",
       "file": "schemas/package_zone_occupancy.v1.json",
       "id": "SCHEMA-PACKAGE-ZONE-OCCUPANCY-001",
       "schema": "fss.package_zone_occupancy.v1"
     },
     {
       "authority": "derived/cognition",
-      "compatibilityRule": "Owner: fss-reference::ingest::package_zones. Complete source-verified image-zone observations over exact retained class-selected tracks; all frames/cells/transitions, confirmation and uncertainty preserved. The native owner additionally verifies source/privacy/deletion custody, exact references, aggregate work and canonical replay. No calibrated class, continuous occupancy, absence, source health or effect authority.",
+      "compatibilityRule": "Owner: fss-reference::ingest::package_zones. Complete source-verified image-zone observations over exact retained class-selected tracks; all frames/cells/transitions, confirmation and uncertainty preserved. The native owner additionally verifies source/privacy/deletion custody, exact references, aggregate work and canonical replay. No calibrated class, continuous occupancy, absence, source health or effect authority. Canonical digest registration (alias `SCHEMA-DOMAIN-PACKAGE-ZONE-REPORT-001`): Complete FSSPZNR1 version-one report binding exact retained class-selected v2 package analysis, source capsules, original capture assumptions, privacy, all track/zone/frame observations, assigned detector rows, per-sample confirmation, observed transitions and sampled dwell. At most 8192 cells, 16384 events and 8 MiB canonical bytes; the complete JSON projection is at most 16 MiB. Cold read reconstructs and compares every byte without inference. No continuous occupancy, absence, calibration or effect authority.",
       "file": "schemas/package_zone_report.v1.json",
       "id": "SCHEMA-PACKAGE-ZONE-REPORT-001",
       "schema": "fss.package_zone_report.v1"
     },
     {
       "authority": "derived/cognition",
-      "compatibilityRule": "Owner: fss-reference::ingest::package_zones. Additive explicit historical-health-screened counterpart of v1. Each distinct source frame is matched once to bounded exact-source/privacy diagnostic evidence; complete raw assigned geometry remains visible while unknown, incomplete or suspect screening interrupts positive zone/crossing/dwell support. All matching pins/findings and selected trace custody are preserved. Current-operation read/work accounting is outside the immutable report identity. Cold reconstruction verifies current relevant diagnostic custody and byte equality; a clear finite screen is not a healthy-camera or absence certificate. V1 bytes and default behavior are unchanged.",
+      "compatibilityRule": "Owner: fss-reference::ingest::package_zones. Additive explicit historical-health-screened counterpart of v1. Each distinct source frame is matched once to bounded exact-source/privacy diagnostic evidence; complete raw assigned geometry remains visible while unknown, incomplete or suspect screening interrupts positive zone/crossing/dwell support. All matching pins/findings and selected trace custody are preserved. Current-operation read/work accounting is outside the immutable report identity. Cold reconstruction verifies current relevant diagnostic custody and byte equality; a clear finite screen is not a healthy-camera or absence certificate. V1 bytes and default behavior are unchanged. Canonical digest registration (alias `SCHEMA-DOMAIN-PACKAGE-ZONE-REPORT-002`): Exact native detector/tracker geometry and temporal interpretation plus complete per-source-frame historical-health diagnostic pins/findings. Unknown, incomplete or suspect screens withhold positive support without removing observations. Current source/privacy/deletion and relevant diagnostic custody are rechecked; actual current-read costs are separate from immutable identity.",
       "file": "schemas/package_zone_report.v2.json",
       "id": "SCHEMA-PACKAGE-ZONE-REPORT-002",
       "schema": "fss.package_zone_report.v2"
@@ -4731,7 +4859,7 @@
     },
     {
       "authority": "source-verified derived read; no EventKind, retention or effect grant",
-      "compatibilityRule": "Cold-reopens one exact retained screened package-zone report through its existing model/tracker, custody, current privacy, health and deletion owners. Returns complete finite sampled track counts/presence, source-sampled dwell and conservative adjacent lane-stage endpoint observations, with exact package/model/class/policy/provenance and frame references. Unknown/masked counts are null, zero observations never certify absence, and gaps/ambiguous or skipped stages remain explicit. At most 16 zones, 64 frames and 8 MiB complete JSON; no synthetic detector, unique physical identity, service/wait-time, continuous coverage or current-camera-health claim. Vocabulary: registries/QSR_OBSERVATIONS.md.",
+      "compatibilityRule": "Cold-reopens one exact retained screened package-zone report through its existing model/tracker, custody, current privacy, health and deletion owners. Returns complete finite sampled track counts/presence, source-sampled dwell and conservative adjacent lane-stage endpoint observations, with exact package/model/class/policy/provenance and frame references. Unknown/masked counts are null, zero observations never certify absence, and gaps/ambiguous or skipped stages remain explicit. At most 16 zones, 64 frames and 8 MiB complete JSON; no synthetic detector, unique physical identity, service/wait-time, continuous coverage or current-camera-health claim. Vocabulary: registries/QSR_OBSERVATIONS.md. Canonical digest registration (alias `SCHEMA-DOMAIN-QSR-OBSERVATION-REPORT-001`): Checked canonical FSSQSR01/u32 version 1 envelope, schema and exact reducer-policy digest, original retained report and provenance root, complete normalized configuration, every zone summary/sample, exact source dwell, adjacent-stage endpoint interval and typed interruption. Model/tracker/privacy/health roots remain bound by the cold-verified source. A complete bounded result or typed refusal; no JSON-derived identity, predicted sample, physical identity or coverage/absence certificate.",
       "file": "schemas/qsr_observation_report.v1.json",
       "id": "SCHEMA-QSR-OBSERVATION-REPORT-001",
       "schema": "fss.qsr_observation_report.v1"
@@ -4812,6 +4940,13 @@
       "file": "schemas/release_stage_verification.v1.json",
       "id": "SCHEMA-RELEASE-STAGE-001",
       "schema": "fss.release_stage_verification.v1"
+    },
+    {
+      "authority": "owner-approved retention settings; no automatic deletion",
+      "compatibilityRule": "Owner: fss-cli::fss-event::delete::policy. Complete bounded JSON for policy-plan, policy-commit and policy-show: immutable sensor settings, enabled state, generation/predecessor, principal/site/basis, attested preview time, rationale and exact policy/impact identities. A proposal includes the full affected selection and a shell-quoted exact adoption command; committed and already_current outcomes return the bounded record and retained impact identities. Inspection includes disabled generations in sensor order. Policy adoption reports media_deleted=false and automatic_deletion_authorized=false; source deletion requires a separately planned and approved policy-pinned cleanup. Complete output is bounded by the existing 64 MiB retention report ceiling; changed meaning requires a new schema.",
+      "file": "CLI output",
+      "id": "SCHEMA-RETENTION-POLICY-CLI-001",
+      "schema": "fss.retention_policy_cli.v1"
     },
     {
       "authority": "documentation/metadata",
@@ -5108,6 +5243,13 @@
       "schema": "fss.site_capture_plan.v2"
     },
     {
+      "authority": "supplied node-clock evidence",
+      "compatibilityRule": "Exact basic NTPv4 request/reply, explicit loopback peer, bracketed host samples, fixed drift/age policy, first-picture processing bracket and terminal check. Native reconstruction must match the enclosing receipt witness; proof bytes are digest-bound. Unauthenticated local-daemon assertion, not clock discipline, kernel arrival, camera exposure, continuous clock integrity or retained-window custody.",
+      "file": "schemas/site_clock_observation.v1.json",
+      "id": "SCHEMA-SITE-CLOCK-OBSERVATION-001",
+      "schema": "fss.site_clock_observation.v1"
+    },
+    {
       "authority": "operator refusal projection",
       "compatibilityRule": "Payload-free stable error, static reason and optional source ordinal. Input values, secrets and private routes are never echoed; refused inputs produce no accepted prefix or effect authority.",
       "file": "schemas/site_diagnostic.v1.json",
@@ -5144,7 +5286,7 @@
     },
     {
       "authority": "requested native observation; no capture grant",
-      "compatibilityRule": "Pure preview binds the complete manifest, exact source, AVC/HEVC/JPEG selection, principal, codec-specific native prefix/tail policy, output mode, source-specific ingress, actual native limit profile and complete logical runtime reservation. Only the exact separately supplied digest admits one native RTSP/NVR or protected UniFi/ONVIF AVC/HEVC probe. Optional ONVIF metadata binds the historical onboarding/profile and handoff file identity to an independent RTSP endpoint without authenticating the HTTP origin. Optional UniFi metadata binds the protected export fingerprint, rendition, exact route and destination-parent identity; its route fields are SHA-256 digests and preview reads only the selected export. Direct preview and approval bytes are unchanged. No preview socket or credential access; no automatic retry, source retention or scene-liveness claim.",
+      "compatibilityRule": "Pure preview binds the complete manifest, exact source, AVC/HEVC/JPEG selection, principal, codec-specific native prefix/tail policy, output mode, source-specific ingress, actual native limit profile and complete logical runtime reservation. Only the exact separately supplied digest admits one native RTSP/NVR or protected UniFi/ONVIF AVC/HEVC probe. Optional ONVIF metadata binds the historical onboarding/profile and handoff file identity to an independent RTSP endpoint without authenticating the HTTP origin. Optional UniFi metadata binds the protected export fingerprint, rendition, exact route and destination-parent identity; its route fields are SHA-256 digests and preview reads only the selected export. Direct preview and approval bytes are unchanged. No preview socket or credential access; no automatic retry, source retention or scene-liveness claim. Canonical digest registration (alias `SCHEMA-DOMAIN-SITE-PROBE-PLAN-001`): Canonical domain and versioned native prefix/tail policy; complete manifest, source ordinal, stable stream/source generation and plaintext/SSRC policies; codec/media/tagged payload/channel, minimum picture count, deadline, principal and output mode; exact transport, credential, wait and output bounds, native observer-limit digest and complete BudgetVector. Any change invalidates approval before effects. The logical memory reservation is not measured RSS; no camera authentication or later capture grant.",
       "file": "schemas/site_probe_plan.v1.json",
       "id": "SCHEMA-SITE-PROBE-PLAN-001",
       "schema": "fss.site_probe_plan.v1"
@@ -5158,7 +5300,7 @@
     },
     {
       "authority": "optional native session evidence; no custody or effect grant",
-      "compatibilityRule": "Approval-selected output preserves the planner receipt array, actual transport/cutoff counters and canonical completion witness. JPEG names whole-frame reconstruction as its measurement basis and does not claim entropy or pixel decoding. Only acknowledged TEARDOWN plus owned-runtime completion releases success. Refusal and remote-close indeterminacy contain no receipt or completion digest; unobserved counters are null. Reconstructed tail bytes overlap original wire, assert no omitted-frame count and grant no freshness, rights or capture authority.",
+      "compatibilityRule": "Approval-selected output preserves the planner receipt array, actual transport/cutoff counters and canonical completion witness. JPEG names whole-frame reconstruction as its measurement basis and does not claim entropy or pixel decoding. Only acknowledged TEARDOWN plus owned-runtime completion releases success. Refusal and remote-close indeterminacy contain no receipt or completion digest; unobserved counters are null. Reconstructed tail bytes overlap original wire, assert no omitted-frame count and grant no freshness, rights or capture authority. Canonical digest registration (alias `SCHEMA-DOMAIN-SITE-PROBE-SESSION-001`): Canonical schema/measurement/cutoff policies, exact approval and receipt digest, attempt/credential/close facts, tagged pending CSeq, sent/unsent request bytes, last admitted owner time, all native transport counters and tagged last CSeq/EOF, then every original/derivative exclusion counter in declared order. Only successful acknowledged close and runtime finalization releases the witness. No JSON hash, signature, source authentication, freshness or omitted-frame inference.",
       "file": "schemas/site_probe_session.v1.json",
       "id": "SCHEMA-SITE-PROBE-SESSION-001",
       "schema": "fss.site_probe_session.v1"

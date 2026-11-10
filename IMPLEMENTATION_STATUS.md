@@ -35,6 +35,35 @@ production and receipt-bound capture integration follow separately. VIT-022 rema
 open; local DSR and hardware recorder interoperability are unqualified. See
 [historical recording discovery](docs/ONVIF_RECORDING_DISCOVERY.md).
 
+## Multi-scale ONNX detector provisioning
+
+Recipe `fss.onnx_rgb_package_recipe.v5` now provisions native detector packages
+from separately named NCHW/NHWC feature-pyramid outputs. Each level explicitly
+binds its output, unique stride and layout. The importer validates exact
+target/stride shapes, packs levels in caller order, and runs the existing DFL
+decoder into a distinct rows/pixel-corners head. Temporary packing stays private;
+original outputs, source bytes and parameter bits remain retained.
+
+The package and CLI preserve explicit labels, probability/logit interpretation,
+objectness, privacy preprocessing and existing NMS behavior. Packed DFL, pyramid
+DFL and split-head assembly are mutually exclusive. All generated work shares
+the original import and decoding bounds. Recipe v1-v4, FMPK and report formats
+retain their meanings; no model family, trained accuracy or activation is inferred.
+
+All 74 unfiltered native attention/import contracts passed on the pinned nightly,
+including eight new pyramid cases, both production executors, actual
+canonical/Safetensors reload, independent RGB/grid oracles, bit-exact score tails,
+all mixed layouts, cumulative limits and cancellation. Three additional package
+contracts and three CLI contracts cover source-preserving archive reload,
+privacy screening, strict recipe admission and exclusive output creation; their
+full-runtime execution remains pending on the hosted native runner. The strict
+v5 schema and complete fixture validate, scoped formatting passes, and generated
+robot documentation now matches the machine registries.
+
+See `docs/ONNX_PACKAGE_IMPORT.md` and `scripts/check_onnx_package.sh`.
+This advances the bounded detector provisioning/execution path in WP-080/FSS-139;
+it does not establish arbitrary pretrained-model compatibility or release qualification.
+
 ## HEVC recorder replay session admission
 
 The shared native RTSP session now admits explicit replay SETUP for both AVC and

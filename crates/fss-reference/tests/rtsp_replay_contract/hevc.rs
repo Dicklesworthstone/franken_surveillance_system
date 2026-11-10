@@ -20,7 +20,10 @@ fn described_codec(
     let mut client = RtspClientSession::with_codec_and_payload_type(config(), codec, payload)?;
     assert_eq!(client.request(C::Describe, 0)?.cseq(), 1);
     assert_eq!(
-        client.accept(&response(1, 200, "Content-Type: application/sdp\r\n", sdp)?, 1)?,
+        client.accept(
+            &response(1, 200, "Content-Type: application/sdp\r\n", sdp)?,
+            1
+        )?,
         P::Accepted(S::Described)
     );
     Ok(client)
@@ -30,14 +33,22 @@ fn hevc_described() -> Result<RtspClientSession, Box<dyn std::error::Error>> {
     let client = described_codec(ClientCodec::H265, 96, HEVC_SDP)?;
     assert_eq!(client.codec(), ClientCodec::H265);
     assert!(client.media().is_none());
-    assert_eq!(client.hevc_media().ok_or("HEVC selection missing")?.payload_type(), 96);
+    assert_eq!(
+        client
+            .hevc_media()
+            .ok_or("HEVC selection missing")?
+            .payload_type(),
+        96
+    );
     Ok(client)
 }
 
 fn hevc_ready(replay: bool) -> Result<RtspClientSession, Box<dyn std::error::Error>> {
     let mut client = hevc_described()?;
     assert_eq!(
-        client.request(if replay { C::SetupReplay } else { C::Setup }, 2)?.cseq(),
+        client
+            .request(if replay { C::SetupReplay } else { C::Setup }, 2)?
+            .cseq(),
         2
     );
     assert_eq!(
@@ -88,7 +99,10 @@ fn hevc_replay_keeps_exact_scoped_wire_and_requires_a_contained_acknowledgement(
 #[test]
 fn hevc_live_setup_cannot_be_reinterpreted_as_replay() -> TestResult {
     let mut client = hevc_ready(false)?;
-    assert_eq!(client.request(C::PlayReplay(window()?), 4).err(), Some(E::State));
+    assert_eq!(
+        client.request(C::PlayReplay(window()?), 4).err(),
+        Some(E::State)
+    );
     assert_eq!(
         client.request(C::Play, 4)?.bytes(),
         b"PLAY rtsp://recorder.local/recordings/channel-1 RTSP/1.0\r\nCSeq: 3\r\nSession: recorder-session\r\n\r\n"
@@ -103,7 +117,10 @@ fn hevc_live_setup_cannot_be_reinterpreted_as_replay() -> TestResult {
 #[test]
 fn hevc_bad_replay_acknowledgements_close_admission_without_live_fallback() -> TestResult {
     for (headers, expected) in [
-        ("Session: recorder-session\r\n".to_owned(), ReplayError::MissingRange),
+        (
+            "Session: recorder-session\r\n".to_owned(),
+            ReplayError::MissingRange,
+        ),
         (
             format!("Session: recorder-session\r\nRange: {RANGE}\r\nrange: {RANGE}\r\n"),
             ReplayError::DuplicateRange,
@@ -146,8 +163,16 @@ fn hevc_recorder_status_refusals_keep_their_typed_replay_meaning() -> TestResult
         ReplayRejection::OptionNotSupported,
     ] {
         for setup in [true, false] {
-            let mut client = if setup { hevc_described()? } else { hevc_ready(true)? };
-            let command = if setup { C::SetupReplay } else { C::PlayReplay(window()?) };
+            let mut client = if setup {
+                hevc_described()?
+            } else {
+                hevc_ready(true)?
+            };
+            let command = if setup {
+                C::SetupReplay
+            } else {
+                C::PlayReplay(window()?)
+            };
             let cseq = client.request(command, 4)?.cseq();
             assert_eq!(
                 client.accept(&response(cseq, rejection.status_code(), "", "")?, 5),
@@ -169,7 +194,10 @@ fn hevc_digest_replay_preserves_intent_correlation_and_the_original_deadline() -
         client.enable_digest("recorder", DigestPolicy::default())?;
         let credentials = DigestCredentials::new("operator", "private-fixture-password")?;
         client.request_digest(C::Describe, &credentials, [1; 16], 0)?;
-        client.accept(&response(1, 200, "Content-Type: application/sdp\r\n", HEVC_SDP)?, 1)?;
+        client.accept(
+            &response(1, 200, "Content-Type: application/sdp\r\n", HEVC_SDP)?,
+            1,
+        )?;
         client.request_digest(C::SetupReplay, &credentials, [2; 16], 2)?;
         let setup = client.retry_digest_response(
             &challenge(2, "setup-nonce", false),
@@ -209,7 +237,10 @@ fn hevc_digest_replay_preserves_intent_correlation_and_the_original_deadline() -
             assert_eq!(client.state(), S::Failed);
             assert!(client.admit_channel(0, 1_005).is_err());
         } else {
-            assert_eq!(client.accept(&play_response(4, RANGE)?, 7), Err(E::CseqMismatch));
+            assert_eq!(
+                client.accept(&play_response(4, RANGE)?, 7),
+                Err(E::CseqMismatch)
+            );
             assert_eq!(
                 client.accept(&play_response(5, RANGE)?, 8)?,
                 P::ReplayAccepted(ReplayAcceptance::new(5, window()?, window()?)?)
@@ -222,7 +253,10 @@ fn hevc_digest_replay_preserves_intent_correlation_and_the_original_deadline() -
 #[test]
 fn hevc_replay_support_does_not_admit_jpeg_or_metadata_replay() -> TestResult {
     for (codec, media) in [
-        (ClientCodec::Jpeg, "m=video 0 RTP/AVP 96\r\na=rtpmap:96 JPEG/90000\r\n"),
+        (
+            ClientCodec::Jpeg,
+            "m=video 0 RTP/AVP 96\r\na=rtpmap:96 JPEG/90000\r\n",
+        ),
         (
             ClientCodec::OnvifMetadata,
             "m=application 0 RTP/AVP 96\r\na=rtpmap:96 vnd.onvif.metadata/90000\r\n",
@@ -236,7 +270,10 @@ fn hevc_replay_support_does_not_admit_jpeg_or_metadata_replay() -> TestResult {
         assert_eq!(client.state(), S::Described);
         assert_eq!(client.request(C::Setup, 2)?.cseq(), 2);
         client.accept(&response(2, 200, SETUP_HEADERS, "")?, 3)?;
-        assert_eq!(client.request(C::PlayReplay(window()?), 4).err(), Some(E::State));
+        assert_eq!(
+            client.request(C::PlayReplay(window()?), 4).err(),
+            Some(E::State)
+        );
         assert_eq!(client.request(C::Play, 4)?.cseq(), 3);
     }
     Ok(())
