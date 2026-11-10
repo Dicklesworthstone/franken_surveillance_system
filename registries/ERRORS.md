@@ -796,3 +796,14 @@ Native metadata storage retains the original cancellation/deadline/budget/author
 Native HTTP source/import, model, decoder, privacy and retained-sentinel refusals keep their
 existing owner identities. Known completed imports and analyses remain durable after a later
 refusal; an exact retry revalidates custody rather than reconstructing missing evidence.
+
+## Bounded ONVIF recorder selection
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-ONVIF-RECORDING-TOKEN-001` | The selected information response describes a different exact recording token | Reinspect the private inventory and explicitly select the intended recording; no URI acquisition or implicit alternate token follows. |
+| `ERR-ONVIF-RECORDING-VIDEO-001` | No video track or multiple video tracks prevent an unambiguous supported selection | Select a supported recording with one video track; descriptions and token spelling cannot infer codec or track mapping. |
+| `ERR-ONVIF-RECORDING-RANGE-001` | An exact requested endpoint lies outside a supplied recording or selected-video bound | Choose and separately approve a different interval if appropriate. The client never clips, widens or silently switches to live capture; this refusal does not prove retention expiry. |
+| `ERR-ONVIF-RECORDING-BOUNDS-001` | Advertised extrema are reversed, invalid or contradict recording-wide bounds | Reobserve or investigate the recorder. Do not normalize contradictions into a successful coverage claim. |
+| `ERR-ONVIF-RECORDING-STATE-001` | The recorder explicitly advertises Removing or Removed for the selected recording | Reinspect availability; this remote assertion neither deletes local originals nor proves historical absence. |
+| `ERR-ONVIF-RECORDING-REQUEST-001` | Caller UTC coordinates are invalid for bounded forward replay | Supply a validated ReplayWindow with a nonempty forward interval of at most seven days; no network request is authorized by a malformed interval. |

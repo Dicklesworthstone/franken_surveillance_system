@@ -1,0 +1,236 @@
+{
+  "schema": "fss.recorder_native_validation.v1",
+  "recorded_at_utc": "2026-11-10T05:47:18Z",
+  "repository": "Dicklesworthstone/franken_surveillance_system",
+  "tested_commit": "c83974f1f1ee1a23c1e712b01616175215f0a619",
+  "workflow": {
+    "name": "supplementary recording lifecycle checks",
+    "run_id": 42758095012,
+    "job_id": 129637080496,
+    "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42758095012",
+    "job_url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42758095012/job/129637080496",
+    "status": "completed",
+    "conclusion": "failure",
+    "created_at_utc": "2026-11-10T04:47:44Z",
+    "updated_at_utc": "2026-11-10T05:34:23Z",
+    "first_test_result_at_utc": "2026-11-10T05:31:26Z",
+    "last_test_result_at_utc": "2026-11-10T05:34:20Z"
+  },
+  "execution": {
+    "command": "bash scripts/check_recording_lifecycle.sh all",
+    "toolchain": "nightly-2026-08-31",
+    "cargo_flags": [
+      "test",
+      "--no-fail-fast",
+      "--locked",
+      "--offline"
+    ],
+    "runner": "ubuntu-24.04",
+    "compile_result": "All selected reference and CLI targets compiled; no Rust compiler error was reported.",
+    "evidence": "Decoded completed GitHub Actions job log; counts below are actual executed native tests.",
+    "scope": "Supplementary native evidence for the exact tested commit; not local DSR qualification, hardware coverage, or evidence for later changes."
+  },
+  "targets": [
+    {
+      "package": "fss-reference",
+      "target": "live_hevc_archive_contract",
+      "kind": "integration",
+      "passed": 7,
+      "failed": 2,
+      "ignored": 0,
+      "filtered_out": 0,
+      "failures": [
+        {
+          "test": "selected_hevc_replay_keeps_exact_setup_play_and_acknowledgement_without_live_fallback",
+          "diagnostic": "LiveHevcArchiveFailure { reason: Network(Protocol(Client(Authentication(Session(State))))), retirement: None }"
+        },
+        {
+          "test": "missing_ambiguous_wrong_payload_or_over_limit_sdp_refuses_before_setup",
+          "diagnostic": "refused description advanced archive state"
+        }
+      ]
+    },
+    {
+      "package": "fss-reference",
+      "target": "recording_replay_contract",
+      "kind": "integration",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0
+    },
+    {
+      "package": "fss-reference",
+      "target": "rtsp_replay_contract",
+      "kind": "integration",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0
+    },
+    {
+      "package": "fss-cli",
+      "target": "capture_rtsp_cli",
+      "kind": "integration",
+      "filter": "replay::",
+      "passed": 6,
+      "failed": 4,
+      "ignored": 0,
+      "filtered_out": 100,
+      "failures": [
+        {
+          "test": "replay::hevc_recorder_replay_status_refusals_are_typed_and_never_fall_back_to_live",
+          "diagnostic": "No replay SETUP after DESCRIBE; terminal ERR-CAPTURE-RTSP-AUTH-REFUSED-001."
+        },
+        {
+          "test": "replay::hevc_recorder_replay_target_keeps_native_boundaries_receipt_and_cold_decode",
+          "diagnostic": "No replay SETUP after DESCRIBE; terminal ERR-CAPTURE-RTSP-AUTH-REFUSED-001."
+        },
+        {
+          "test": "replay::hevc_recorder_replay_bad_acknowledgements_fence_already_offered_video",
+          "diagnostic": "No replay SETUP after DESCRIBE; terminal ERR-CAPTURE-RTSP-AUTH-REFUSED-001."
+        },
+        {
+          "test": "replay::hevc_recorder_replay_eof_keeps_only_the_source_closed_prefix_and_failed_receipt",
+          "diagnostic": "No replay SETUP after DESCRIBE; terminal ERR-CAPTURE-RTSP-AUTH-REFUSED-001."
+        }
+      ]
+    },
+    {
+      "package": "fss-cli",
+      "target": "archive_replay_process",
+      "kind": "integration",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0
+    },
+    {
+      "package": "fss-cli",
+      "target": "fss-capture-rtsp",
+      "kind": "binary-unit",
+      "filter": "replay",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 294
+    },
+    {
+      "package": "fss-reference",
+      "target": "deletion_effect_lifecycle_contract",
+      "kind": "integration",
+      "passed": 5,
+      "failed": 1,
+      "ignored": 0,
+      "filtered_out": 0,
+      "failures": [
+        {
+          "test": "an_unrelated_import_can_be_deleted_while_the_bound_alert_remains_observed",
+          "diagnostic": "Reference(InvalidSpec(\"event_authority_stale\"))"
+        }
+      ]
+    },
+    {
+      "package": "fss-reference",
+      "target": "retention_cohort_contract",
+      "kind": "integration",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0
+    },
+    {
+      "package": "fss-reference",
+      "target": "review_media_contract",
+      "kind": "integration",
+      "passed": 18,
+      "failed": 2,
+      "ignored": 0,
+      "filtered_out": 0,
+      "failures": [
+        {
+          "test": "expiry::held_review_does_not_prevent_an_independent_expired_review_cleanup",
+          "diagnostic": "InvalidRequest(\"hold id must be 1..64 of [A-Za-z0-9_-]\")"
+        },
+        {
+          "test": "expiry::source_hold_blocks_expiry_and_invalidates_an_earlier_approval",
+          "diagnostic": "InvalidRequest(\"hold id must be 1..64 of [A-Za-z0-9_-]\")"
+        }
+      ]
+    },
+    {
+      "package": "fss-reference",
+      "target": "fss_reference",
+      "kind": "library-unit",
+      "filter": "deletion::",
+      "passed": 37,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 2339
+    },
+    {
+      "package": "fss-cli",
+      "target": "deletion_scope_cli_contract",
+      "kind": "integration",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0
+    },
+    {
+      "package": "fss-cli",
+      "target": "review_expiry_cli_contract",
+      "kind": "integration",
+      "passed": 3,
+      "failed": 1,
+      "ignored": 0,
+      "filtered_out": 0,
+      "failures": [
+        {
+          "test": "hold_added_after_preview_invalidates_expiry_and_preserves_every_source_derivative",
+          "diagnostic": "missing JSON field approval_digest"
+        }
+      ]
+    },
+    {
+      "package": "fss-cli",
+      "target": "fss-event",
+      "kind": "binary-unit",
+      "filter": "delete::review_expiry::tests",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 93
+    }
+  ],
+  "follow_up": {
+    "hevc_replay": {
+      "diagnosis": "The shared RTSP SetupReplay state gate allowed H.264 only; explicitly selected H.265 replay was rejected before SETUP.",
+      "correction_commit": "2f402c29f76874d14a255cb6b85e761902b3af40",
+      "changes": "Admit H.264 or H.265 explicitly; retain JPEG/metadata refusal, live/replay separation, scoped requests, acknowledgement checks, Digest and response deadlines. Add six direct HEVC protocol regressions.",
+      "verification": "Correction and new regressions were not executed by this predecessor job."
+    },
+    "hevc_description_fixture": {
+      "diagnosis": "Absent explicitly selected payloads produce an earlier source-bearing terminal Description refusal; the fixture incorrectly expected every case to reach archive configuration selection.",
+      "correction_commit": "2f402c29f76874d14a255cb6b85e761902b3af40",
+      "changes": "Assert typed early fault, original SDP, retired transport, empty archive and unchanged journal in both live and replay modes; preserve Selection checks for configuration refusals.",
+      "verification": "Revised fixture was not executed by this predecessor job."
+    },
+    "stale_event_fixture": {
+      "diagnosis": "The fixture ingested an unrelated import after event publication but before alert preparation, invalidating the event authority receipt.",
+      "changes": "Prepare and advance the alert while the event receipt is current, then ingest and delete the unrelated import. Production stale-authority checks remain unchanged.",
+      "verification": "Ordering correction requires execution on its containing commit."
+    },
+    "expiry_hold_fixtures": {
+      "correction_commit": "48d2bc7ba7b7cb3de7c3385e6c90a2757451ae3f",
+      "changes": "Replace invalid colon-bearing hold IDs with IDs allowed by the existing hold contract.",
+      "verification": "This c839 predecessor job did not execute the later corrected fixtures; no pass is inferred."
+    }
+  },
+  "limitations": [
+    "The overall workflow failed; passing targets do not make the failing HEVC capture path successful.",
+    "New ONVIF recording discovery and protected replay handoff code is outside this tested commit.",
+    "Native verification of corrections and later changes remains required on their exact commits.",
+    "The local executor was unavailable when this record was prepared; no additional local run is claimed."
+  ]
+}

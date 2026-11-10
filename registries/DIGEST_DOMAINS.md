@@ -887,3 +887,10 @@ from the whole-file JSON pin.
 | Retired ID | Status | Canonical registration |
 |---|---|---|
 | `SCHEMA-DOMAIN-ACTIVITY-KNOWLEDGE-PROJECTION-001` | Tombstoned duplicate registration; ID remains reserved and must not be reused. | `SCHEMA-ACTIVITY-KNOWLEDGE-PROJECTION-001` in `SCHEMAS.md` owns the same wire and canonical tag, `fss.activity_knowledge_projection.v1`. Canonical bytes and identities are unchanged. |
+
+## Bounded ONVIF recording discovery
+
+| Stable ID | Domain | Owner | Plane / authority | Canonical contract |
+|---|---|---|---|---|
+| `SCHEMA-DOMAIN-ONVIF-RECORDING-INFORMATION-001` | `fss.onvif_recording_information.v1` | onvif::wire::RecordingInformation | private device observation; no source or clock authority | Domain and u32 version 1, complete original SOAP-body SHA-256, exact untrimmed recording token, bounded source fields and optional video-source token, content, independently optional recording UTC extrema, actual status and complete ordered track token/type/description/extrema. At most 32 tracks and 64 KiB canonical bytes. Cold decoding consumes the whole input, checks bounds/duplicates/enums and requires byte-identical reencoding. Missing times remain unknown; contradictory extrema remain representable and exact replay admission refuses them. No continuous retention, calibration, authenticated origin or source-custody claim. |
+| `SCHEMA-DOMAIN-ONVIF-RECORDING-SERVICES-001` | `fss.onvif_recording_services.v1` | onvif::wire::RecordingServices | bounded service advertisement; no route grant | Exact original GetServices SOAP-body SHA-256 followed by fixed Recording, Search and Replay optional presence tags and exact URI plus u32 major/minor version for each present service. Selection checks every advertised service entry and duplicate namespace before projection; follow-up routes independently require the approved HTTP origin and service subtree. Source descriptions and advertised endpoints cannot grant peer, credential or capture authority. |

@@ -420,11 +420,14 @@ fn approval_from_before_alert_preparation_cannot_bypass_the_guard() -> TestResul
 #[test]
 fn an_unrelated_import_can_be_deleted_while_the_bound_alert_remains_observed() -> TestResult {
     let mut harness = Harness::new("unrelated")?;
+    // Admit the alert while its event receipt is current. A later independent import
+    // advances authority, but must not turn this existing nonterminal alert into a
+    // guard for unrelated evidence.
+    let alert = harness.prepare("bound-only")?;
+    harness.advance(&alert, EffectState::Observed)?;
     let mut input = harness.input.clone();
     input.sensor_id = SensorId::parse("sensor:unrelated-cleanup")?;
     let outside = FileIngestAdapter::ingest(input, &harness.context, &mut harness.deployment)?;
-    let alert = harness.prepare("bound-only")?;
-    harness.advance(&alert, EffectState::Observed)?;
     let plan = plan_deletion(
         &harness.deployment,
         outside.import_identity,

@@ -4,6 +4,37 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native historical recording discovery
+
+The bounded ONVIF recording client now enumerates existing recording configurations
+and resolves one explicitly selected recording/time interval to a replay URI.
+GetServices selects exact Recording/Search/Replay namespaces; GetRecordingInformation
+must match the selected token, contain one video track and satisfy every supplied
+recording/video bound before GetReplayUri can run. Unknown extrema remain unknown;
+no clipping, live fallback, retention-coverage or calibrated historical-time claim occurs.
+
+The native owner reuses the existing scoped HTTP transport, Digest/UsernameToken
+authentication, finite deadline/work budgets and cancellation. New read-only SOAP
+actions are explicitly admitted by the transport's closed allowlist. Service endpoints
+stay inside the approved HTTP origin/subtree; playback uses an independent RTSP pin.
+Complete private information and service observations have distinct canonical domains
+including original SOAP-body identities.
+
+Added contracts comprise 14 shared production-wire cases and 10 native HTTP loopbacks;
+the core target imports the actual wire module. They cover exact namespaces/tokens,
+complete bounds, canonical reopen, auth retries, private diagnostics, foreign destinations,
+cancellation, deadlines and refusal before URI acquisition. Final GitHub snapshots have
+independent source review but have not compiled or executed during the executor outage.
+The exact prior recorder/review run is retained separately; its HEVC guard failure is
+repaired by the existing main-branch correction below. The stale-event deletion fixture
+now prepares its alert before advancing unrelated ingest authority, preserving the
+production guard.
+
+The native API is the first checkpoint. Operator recording inventory, protected handoff
+production and receipt-bound capture integration follow separately. VIT-022 remains
+open; local DSR and hardware recorder interoperability are unqualified. See
+[historical recording discovery](docs/ONVIF_RECORDING_DISCOVERY.md).
+
 ## HEVC recorder replay session admission
 
 The shared native RTSP session now admits explicit replay SETUP for both AVC and
