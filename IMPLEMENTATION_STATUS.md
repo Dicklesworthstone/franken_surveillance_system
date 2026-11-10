@@ -55,9 +55,17 @@ ten lifecycle integration and seven CLI contracts are authored, with full
 runtime verification still pending at this checkpoint. Earlier full-reference
 attempts were killed while compiling unchanged Asupersync 0.5.0, and a Cargo
 component attempt was killed in unchanged `fss-core`; the successful direct
-component lane used the pinned compiler's default MIR settings. A new full
-check and the automatic supplementary GitHub checks are being inspected. No
-production dependency, pinned toolchain, runtime, quota or qualification gate
+component lane used the pinned compiler's default MIR settings. The automatic
+supplementary runner subsequently compiled the complete reference backend and
+unit-test executable, including the new review modules. Existing original export
+(23), deployment (15) and deployment recovery (36) contracts passed. The overall
+job exposed existing deletion-command module routing and catalog-test API
+blockers; those are corrected alongside explicit review CLI module paths and
+the new fixtures' privacy-owner calls. The
+[retained build evidence](docs/validation/2026-11-10-review-reference-build.md)
+keeps these results separate from execution of the new review tests, which is
+still pending on the corrected checkpoint. A full local check remains in progress.
+No production dependency, pinned toolchain, runtime, quota or qualification gate
 was weakened.
 
 ## Pinned native acquisition, UTC selection and static detector controls

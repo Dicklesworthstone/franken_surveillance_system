@@ -4,7 +4,7 @@
 use super::record::{hex, slot, valid_digest};
 use super::*;
 use crate::deletion::DeletionIndex;
-use fss_core::{BatchId, CanonicalEncode, EvidenceDelta, ObjectId, Plane};
+use fss_core::{BatchId, EvidenceDelta, ObjectId, Plane};
 use fss_object::ObjectManifest;
 use fss_publication::{
     LocalPublicationState, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY,

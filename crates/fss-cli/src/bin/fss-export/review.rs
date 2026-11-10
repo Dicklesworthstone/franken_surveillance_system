@@ -7,13 +7,17 @@ use std::process::ExitCode;
 
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 
+#[path = "review/execute.rs"]
 mod execute;
+#[path = "review/options.rs"]
 mod options;
 #[path = "../fss-file/private_output.rs"]
 mod private_output;
 #[cfg(all(test, target_os = "linux"))]
+#[path = "review/runtime_tests.rs"]
 mod runtime_tests;
 #[cfg(test)]
+#[path = "review/tests.rs"]
 mod tests;
 
 pub(super) const HELP: &str = "fss-export review --root DIR --site SITE\n\

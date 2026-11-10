@@ -2,7 +2,7 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-10",
   "timezone": "UTC",
-  "state": "local_review_functionality_committed_focused_components_passed_full_runtime_verification_pending",
+  "state": "functional_checkpoints_published_backend_compilation_verified_focused_review_execution_pending",
   "mission": {
     "goal": "Implement consequential remaining functionality after reading the comprehensive plan and beads; checkpoint meaningful changes directly to main through GitHub without PRs.",
     "initial_source_head": "904f350abab486225175ce9274da5aef9124b2cc",
@@ -26,8 +26,12 @@
       "change": "Native retained screened movie rendering, canonical local recipient grants, guarded root-last lifecycle, exact recovery, revocation and deletion integration."
     },
     {
-      "commit": "this_commit",
+      "commit": "cf76bda5835894ba3940f5621a7ebcd1cfe7e873",
       "change": "Four fss-export review commands, private destination-bound delivery, immediate durable-root custody checks, focused contracts, operator documentation and validation evidence."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Correct review/deletion command module routing and actual test API calls; retain backend compilation/regression evidence from supplementary runner."
     }
   ],
   "delivered": [
@@ -63,13 +67,14 @@
       "cargo_attempt_log": "docs/validation/2026-11-10-retained-review-movie-components.log"
     },
     "full_runtime": {
-      "status": "pending_at_checkpoint",
+      "status": "backend_library_and_unit_test_executable_compiled_new_review_execution_pending",
       "authored_renderer_unit_cases": 7,
       "authored_lifecycle_integration_cases": 10,
       "authored_cli_cases": 7,
       "local_observation": "Multiple exact pinned checks were killed in unchanged dependencies before project diagnostics. Default-MIR serial retry is in progress after direct component success.",
       "automatic_github_run": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42745633540",
-      "github_observation": "Automatic first-checkpoint supplementary job passed its runtime stage; later reference stage failed, with full logs unavailable while the job continues. Cause not yet attributed."
+      "github_observation": "Backend library and complete unit-test executable compiled on d3d11ee. Existing original export23, deployment15 and recovery36 tests passed. Overall job failed on existing fss-event module routing, catalog staging API usage and formatting findings; these compiler blockers are corrected in this checkpoint.",
+      "backend_compilation_log": "docs/validation/2026-11-10-review-reference-build.md"
     },
     "scoped_semantic_import_check": {
       "review_modules": 14,
@@ -78,10 +83,11 @@
     "repository_semantic_checker": "Full checker fails with hundreds of existing registry omissions and unrelated cross-plane findings; scoped review-module import check passes. No global pass claimed.",
     "production_dependencies_added": [],
     "pins_changed": false,
-    "release_qualification": "not claimed"
+    "release_qualification": "not claimed",
+    "repository_manifest": "All18 paths in second checkpoint passed staged layered-manifest coverage. Whole-tree audit still fails on pre-existing mismatched/missing manifest entries; no global pass claimed."
   },
   "remaining_material_work": [
-    "Complete pinned full fss-reference and fss-export typecheck and run the new renderer, lifecycle and CLI contracts; inspect supplementary CI logs and repair actual diagnostics.",
+    "Run the new renderer, lifecycle and CLI contracts on the corrected integration checkpoint; inspect new local/automatic compiler or runtime diagnostics and resolve them. Backend production and unit-test compilation is verified on d3d11ee.",
     "External reviewer authentication/FLDT rights integration and payment-zone mask attestation remain absent; local principal labels are trusted-caller inputs.",
     "External delivery or transfer receipts, remote access serving, automatic expiry deletion and recall of previously delivered copies are outside this local profile.",
     "Raw grayscale 64 MiB output targets short review intervals; color, audio, native compressed output and wider codec support remain separate features.",

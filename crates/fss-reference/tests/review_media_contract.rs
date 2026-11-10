@@ -159,12 +159,8 @@ impl Fixture {
                 sensor: SensorId::parse(SENSOR)?,
                 movie_start_tick: movie.movie_start_tick,
                 movie_end_tick: movie.movie_end_tick,
-                expected_privacy: current_mask(
-                    &self.deployment,
-                    &SensorId::parse(SENSOR)?,
-                    &self.cx,
-                )?
-                .digest(),
+                expected_privacy: current_mask(&self.deployment, &SensorId::parse(SENSOR)?)?
+                    .digest(),
                 recipient: PrincipalId::parse(READER)?,
                 purpose: "Owner-authorized review of the selected interval".into(),
                 issued_at: TimestampNs(10),

@@ -59,8 +59,8 @@ fn forged_catalog(f: &mut Fixture, changed_field: usize) -> Test {
     // Its selected original window remains unmodified and independently verifiable.
     let publisher = f.source.as_mut().ok_or("archive")?;
     publisher.stage_object(&bytes)?;
-    publisher.stage_manifest(&forged)?;
     let slot = SlotName::parse("misdescribed-catalog")?;
+    publisher.stage_manifest(&slot, &forged)?;
     publisher.publish(&slot, &forged)?;
     f.request.root = forged.root();
     f.request.slot = slot;

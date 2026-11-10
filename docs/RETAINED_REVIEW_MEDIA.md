@@ -46,9 +46,17 @@ appending a lookalike delta under another family.
 
 Use an existing deployment. Obtain the exact import identity, retained root,
 sensor, movie tick interval and current mask-binding digest from the retained source
-inspection. Use `current_mask(...).digest()` for the mask binding, including
-its generation or explicit no-policy marker; a raw policy digest is not
-interchangeable with this binding. Tick coordinates belong to that source's movie timeline; they are
+inspection. Inspect the current mask binding with the existing operator command:
+
+```bash
+fss-event privacy-mask show \
+  --root "$FSS_ROOT" --site "$FSS_SITE" --sensor "$SENSOR_ID"
+```
+
+Use the response's `privacy_mask.binding_digest` as `PRIVACY_DIGEST`. It includes
+the exact binding, including the explicit no-policy marker; its generation is
+also checked separately. A raw policy digest is not interchangeable with this
+binding. Tick coordinates belong to that source's movie timeline; they are
 not UTC timestamps. Keep a preceding UTC acquisition's uncertainty intact.
 
 The following shell variables stand for inspected values and local policy

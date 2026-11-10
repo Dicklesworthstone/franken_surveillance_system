@@ -126,7 +126,7 @@ fn imported(directory: &Directory) -> Test<(PathBuf, Vec<OsString>)> {
     )?;
     let approval = preview_mask(&deployment, &policy)?.approval;
     declare_mask(&mut deployment, &policy, approval, &cx)?;
-    let privacy = current_mask(&deployment, &SensorId::parse(SENSOR)?, &cx)?.digest();
+    let privacy = current_mask(&deployment, &SensorId::parse(SENSOR)?)?.digest();
     let request = args(
         &root,
         "review",

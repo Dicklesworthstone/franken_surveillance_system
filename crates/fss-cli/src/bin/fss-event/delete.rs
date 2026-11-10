@@ -32,6 +32,7 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 
 use super::RunResult;
 
+#[path = "delete/policy.rs"]
 mod policy;
 
 /// Capability of `delete plan` and `delete retention-plan`.
