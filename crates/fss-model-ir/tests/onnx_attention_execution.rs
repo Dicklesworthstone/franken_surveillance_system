@@ -8,6 +8,8 @@
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]
 mod shape_selection;
+#[path = "onnx_attention_execution/spatial_layout.rs"]
+mod spatial_layout;
 #[path = "onnx_attention_execution/split_heads.rs"]
 mod split_heads;
 

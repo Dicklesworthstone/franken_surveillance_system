@@ -39,6 +39,7 @@ mod resize_coordinates;
 mod resize_linear;
 mod resize_linear_coordinates;
 mod shape_program;
+mod spatial_layout;
 mod split;
 mod structure;
 
@@ -1031,6 +1032,8 @@ pub fn import_onnx<'a>(
             pad::lower(source, &mut lowering)?;
         } else if source.op == "Split" {
             split::lower(source, &mut lowering)?;
+        } else if matches!(source.op.as_str(), "DepthToSpace" | "SpaceToDepth") {
+            spatial_layout::lower(source, &mut lowering)?;
         } else if matches!(
             source.op.as_str(),
             "Reshape" | "Squeeze" | "Unsqueeze" | "Slice"

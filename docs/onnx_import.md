@@ -46,6 +46,7 @@ including hand-computed dense and convolution/pooling results.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
+  DepthToSpace, SpaceToDepth,
   Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
   Shape, INT64 ConstantOfShape, Equal and Where also support the bounded shape programs below; F32 data
   selection uses the separate static Gather profile described below.
@@ -72,6 +73,42 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Spatial and channel rearrangement
+
+[DepthToSpace-13](https://onnx.ai/onnx/operators/onnx__DepthToSpace.html#depthtospace-13)
+and [SpaceToDepth-13](https://onnx.ai/onnx/operators/onnx__SpaceToDepth.html#spacetodepth-13)
+accept static positive rank-four F32 tensors in NCHW layout. They enable imported
+pixel-shuffle upsampling and spatial feature packing without interpolation or a
+new runtime operator. Both require a positive integer `blocksize`. DepthToSpace
+requires channels divisible by its square and accepts the source's default
+`DCR` ordering or explicit `CRD`. SpaceToDepth requires both spatial dimensions
+divisible by the block size and uses the opset-13 DCR inverse ordering. It does
+not accept the `mode` attribute introduced by a later operator schema.
+
+Each source node lowers to exactly one native Reshape, one Transpose and one
+final Reshape, with no generated parameter tensors and no floating-point
+arithmetic. Input bits, including signed zeros and subnormals, survive the
+rearrangement exactly. Each intermediate has the same element count as its
+input. The importer reserves all three nodes and two private tensor names,
+checks shape arithmetic and the tensor ceiling before expansion, and charges
+the existing cumulative import budget. The normal executor memory/work budget
+and cancellation checks still govern inference. Original ONNX bytes, parameters,
+generation bindings and frozen Model IR v1 identities retain their existing
+meaning; the source-bound importer identity includes the new lowering.
+
+The spatial contracts in `onnx_attention_execution` exercise DCR/CRD ordering,
+multiple batches and rectangular inputs, exact finite bits, the inverse
+composition, and a convolution-to-pixel-shuffle head. They run both production
+CPU executors and reload the actual canonical graph and Safetensors artifacts.
+Invalid blocks, nondivisible shapes, ranks, dtypes, attributes, exceeded
+arithmetic/resource limits and cancellation refuse. Helper names cannot capture
+source tensors. These contracts establish operator compatibility, not a trained
+model's quality or activation.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution spatial_
+```
 
 ## Decomposed normalization and GELU
 
