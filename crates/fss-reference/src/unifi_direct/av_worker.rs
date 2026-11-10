@@ -110,6 +110,9 @@ pub enum FailureReason {
     Tombstoned,
     /// Source, scope, content, or media binding failed.
     Mismatch,
+    /// A journal's configured capacity refused the operation. The stage and
+    /// returned owners still determine whether reconciliation is required.
+    JournalCapacity,
     /// Storage failed or its outcome may be indeterminate.
     Storage,
 }
@@ -226,6 +229,9 @@ fn failure(
 pub(super) fn journal_reason(error: archive::journal::Error) -> FailureReason {
     use archive::journal::Error;
     match error {
+        Error::Storage(fss_runtime::effect_journal::EffectPersistenceError::Capacity) => {
+            FailureReason::JournalCapacity
+        }
         Error::Storage(_) => FailureReason::Storage,
         Error::Cancelled => FailureReason::CancelledOrDenied,
         Error::Invalid | Error::Fenced => FailureReason::Recovery,

@@ -15,6 +15,9 @@ use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPe
 use super::{Pin, UnknownTimePin};
 use crate::ReplayCx;
 
+/// Experimental, explicitly fenced transition between bounded histories.
+pub mod rollover;
+
 const DOMAIN: &str = "fss.unifi-direct.av-publication-intent.v1";
 const UNKNOWN_TIME_DOMAIN: &str = "fss.unifi-direct.av-unknown-time-intent.v1";
 const MAX_RECORD_BYTES: usize = 256;
@@ -283,7 +286,7 @@ impl Journal {
         }
         checkpoint(cx)?;
         if self.store.records().len() >= MAX_RECORDS {
-            return Err(Error::Invalid);
+            return Err(Error::Storage(EffectPersistenceError::Capacity));
         }
         let bytes = encode(self.domain, self.scope, kind, Some(pin))?;
         let expected = self.acknowledged;
@@ -329,7 +332,7 @@ impl Journal {
             .checked_add(2)
             .is_none_or(|count| count > MAX_RECORDS)
         {
-            return Err(Error::Invalid);
+            return Err(Error::Storage(EffectPersistenceError::Capacity));
         }
         checkpoint(cx)?;
         // Reserve both candidate and confirmation before any archive effect.
@@ -559,7 +562,7 @@ impl AnchorKeeper {
             .checked_add(count)
             .is_none_or(|n| n > MAX_RECORDS)
         {
-            return Err(Error::Invalid);
+            return Err(Error::Storage(EffectPersistenceError::Capacity));
         }
         if count != 0 {
             self.store
@@ -664,8 +667,11 @@ impl AnchorKeeper {
         if next == self.target {
             return Ok(());
         }
-        if next.sequence <= self.target.sequence || self.store.records().len() >= MAX_RECORDS {
+        if next.sequence <= self.target.sequence {
             return Err(Error::Invalid);
+        }
+        if self.store.records().len() >= MAX_RECORDS {
+            return Err(Error::Storage(EffectPersistenceError::Capacity));
         }
         let bytes = encode_anchor(self.scope, next)?;
         self.store
@@ -686,6 +692,708 @@ impl AnchorKeeper {
         }
         self.acknowledged = appended;
         self.target = next;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use fss_core::{BudgetVector, OperationId, RootAuthoritySpec, region::ContextAuthority};
+    use fss_runtime::effect_journal::{EffectPinRetainer, PinRetainedEffectJournal};
+
+    // This in-memory store exercises semantic replay and the journal ceiling;
+    // it is not a filesystem, durability, or independent-custody test.
+    #[derive(Debug, Default)]
+    struct Store {
+        records: Vec<Vec<u8>>,
+        pins: Vec<EffectJournalPin>,
+    }
+    impl EffectJournalStore for Store {
+        fn head(&self) -> Option<EffectJournalPin> {
+            self.pins.last().copied()
+        }
+        fn records(&self) -> &[Vec<u8>] {
+            &self.records
+        }
+        fn contains(&self, pin: EffectJournalPin) -> bool {
+            pin.sequence
+                .checked_sub(1)
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(|i| self.pins.get(i))
+                .copied()
+                == Some(pin)
+        }
+        fn reserve_capacity(&mut self, _: usize, _: usize) -> Result<(), EffectPersistenceError> {
+            Ok(())
+        }
+        fn append(
+            &mut self,
+            expected: Option<EffectJournalPin>,
+            record: &[u8],
+        ) -> Result<EffectJournalPin, EffectPersistenceError> {
+            if self.head() != expected {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            let sequence = self.records.len() as u64 + 1;
+            let mut binding = sequence.to_be_bytes().to_vec();
+            if let Some(previous) = expected {
+                binding.extend_from_slice(&previous.root.bytes());
+            }
+            binding.extend_from_slice(record);
+            let pin = EffectJournalPin {
+                sequence,
+                root: ContentDigest::sha256(&binding),
+            };
+            self.records.push(record.to_vec());
+            self.pins.push(pin);
+            Ok(pin)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Retainer {
+        current: Option<EffectJournalPin>,
+        fail_retain: bool,
+    }
+    impl EffectPinRetainer for Retainer {
+        fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> {
+            Ok(self.current)
+        }
+        fn reserve_capacity(&mut self, _: usize) -> Result<(), EffectPersistenceError> {
+            Ok(())
+        }
+        fn verify_effect_history(
+            &mut self,
+            journal: &dyn EffectJournalStore,
+        ) -> Result<(), EffectPersistenceError> {
+            if self.current.is_some_and(|pin| !journal.contains(pin)) {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            Ok(())
+        }
+        fn retain(
+            &mut self,
+            expected: Option<EffectJournalPin>,
+            next: EffectJournalPin,
+        ) -> Result<(), EffectPersistenceError> {
+            if self.current != expected {
+                return Err(EffectPersistenceError::PinMismatch);
+            }
+            if self.fail_retain {
+                return Err(EffectPersistenceError::Storage(
+                    "injected retainer failure".into(),
+                ));
+            }
+            self.current = Some(next);
+            Ok(())
+        }
+    }
+
+    fn rollover_replay() -> Result<ReplayCx, Box<dyn std::error::Error>> {
+        let context = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:rollover-fixture".into(),
+            operation_id: OperationId::parse("operation:rollover-fixture")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec!["ADP-REPLAY-001".into()],
+            deadline: None,
+            priority: 1,
+            budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"rollover fixture"),
+            generation: 1,
+        })?;
+        Ok(ReplayCx::from_context_authority(
+            &context,
+            std::fs::canonicalize(std::env::temp_dir())?,
+        )?)
+    }
+
+    fn settled_previous(
+        replay: &ReplayCx,
+    ) -> Result<rollover::Previous, Box<dyn std::error::Error>> {
+        let mut journal = UnknownTimeJournal::create(
+            Box::<Store>::default(),
+            ContentDigest::sha256(b"rollover scope"),
+            replay,
+        )?;
+        let mut keeper =
+            UnknownTimeAnchorKeeper::create(Box::<Store>::default(), &journal, replay)?;
+        for index in 0u8..2 {
+            let pin = UnknownTimePin {
+                root: ContentDigest::sha256(&[index]),
+                retention: ContentDigest::sha256(b"retention"),
+            };
+            journal.prepare(pin, replay)?;
+            keeper.retain(&journal, replay)?;
+            journal.confirm(pin, replay)?;
+            keeper.retain(&journal, replay)?;
+        }
+        Ok(rollover::Previous { journal, keeper })
+    }
+
+    #[test]
+    fn rollover_keeps_last_root_fenced_until_replay_and_retains_exact_switch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let replay = rollover_replay()?;
+        let previous = settled_previous(&replay)?;
+        let old_head = previous.journal.anchor();
+        let confirmed = previous.journal.confirmed().ok_or("missing confirmed")?;
+        let staged = rollover::Staged::begin(
+            previous,
+            Box::<Store>::default(),
+            Box::<Store>::default(),
+            &replay,
+        )
+        .map_err(|_| "unexpected staging refusal")?;
+        let binding = staged.binding();
+        assert_eq!(binding.old_journal, old_head);
+        assert_eq!(binding.confirmed, confirmed);
+        assert_ne!(binding.old_journal, binding.new_journal);
+        let switch =
+            PinRetainedEffectJournal::new(Box::<Store>::default(), Box::<Retainer>::default())?;
+        let mut active = staged
+            .commit(switch, &replay)
+            .map_err(|_| "unexpected switch refusal")?;
+        assert_eq!(active.binding(), binding);
+        assert_eq!(
+            active.switch_head(),
+            active.observed_switch_head().ok_or("missing switch")?
+        );
+        assert_eq!(
+            active.predecessor_heads(),
+            (binding.old_journal, binding.old_keeper)
+        );
+        let (journal, keeper) = active.successor();
+        assert_eq!(journal.confirmed(), Some(confirmed));
+        assert_eq!(journal.replay_pin(), Some(confirmed));
+        assert_eq!(keeper.target(), journal.anchor());
+        let other = UnknownTimePin {
+            root: ContentDigest::sha256(b"other candidate"),
+            retention: confirmed.retention,
+        };
+        assert!(matches!(
+            journal.prepare(other, &replay),
+            Err(Error::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rollover_refuses_unsettled_predecessor_and_fences_ambiguous_switch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let replay = rollover_replay()?;
+        let mut previous = settled_previous(&replay)?;
+        let pending = UnknownTimePin {
+            root: ContentDigest::sha256(b"pending"),
+            retention: ContentDigest::sha256(b"retention"),
+        };
+        previous.journal.prepare(pending, &replay)?;
+        let old_head = previous.journal.anchor();
+        let refusal = match rollover::Staged::begin(
+            previous,
+            Box::<Store>::default(),
+            Box::<Store>::default(),
+            &replay,
+        ) {
+            Err(refusal) => refusal,
+            Ok(_) => return Err("pending predecessor admitted".into()),
+        };
+        assert_eq!(refusal.previous.journal.anchor(), old_head);
+        assert_eq!(refusal.previous.journal.pending(), Some(pending));
+        let mut stale_keeper = settled_previous(&replay)?;
+        stale_keeper.journal.prepare(pending, &replay)?;
+        stale_keeper.journal.confirm(pending, &replay)?;
+        assert_ne!(stale_keeper.keeper.target(), stale_keeper.journal.anchor());
+        let refusal = match rollover::Staged::begin(
+            stale_keeper,
+            Box::<Store>::default(),
+            Box::<Store>::default(),
+            &replay,
+        ) {
+            Err(refusal) => refusal,
+            Ok(_) => return Err("stale keeper admitted".into()),
+        };
+        assert_eq!(refusal.previous.journal.confirmed(), Some(pending));
+        let previous = settled_previous(&replay)?;
+        let staged = rollover::Staged::begin(
+            previous,
+            Box::<Store>::default(),
+            Box::<Store>::default(),
+            &replay,
+        )
+        .map_err(|_| "unexpected staging refusal")?;
+        let binding = staged.binding();
+        let switch = PinRetainedEffectJournal::new(
+            Box::<Store>::default(),
+            Box::new(Retainer {
+                current: None,
+                fail_retain: true,
+            }),
+        )?;
+        let uncertain = match staged.commit(switch, &replay) {
+            Err(rollover::CommitError::Indeterminate(uncertain)) => uncertain,
+            _ => return Err("failed custody was not indeterminate".into()),
+        };
+        assert_eq!(uncertain.binding(), binding);
+        assert!(uncertain.observed_switch_head().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn rollover_cancellation_after_retained_switch_is_indeterminate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let replay = rollover_replay()?;
+        let previous = settled_previous(&replay)?;
+        let staged = rollover::Staged::begin(
+            previous,
+            Box::<Store>::default(),
+            Box::<Store>::default(),
+            &replay,
+        )
+        .map_err(|_| "unexpected staging refusal")?;
+        let switch =
+            PinRetainedEffectJournal::new(Box::<Store>::default(), Box::<Retainer>::default())?;
+        // Commit checkpoints before the preflight, after the preflight, and
+        // after the switch and its retainer have both acknowledged the write.
+        replay.set_cancel_at_checkpoint_occurrence("unifi-av-publication-journal", 3);
+        let uncertain = match staged.commit(switch, &replay) {
+            Err(rollover::CommitError::Indeterminate(uncertain)) => uncertain,
+            _ => return Err("post-switch cancellation exposed the successor".into()),
+        };
+        assert!(uncertain.observed_switch_head().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn rollover_cold_recovers_file_histories_and_refuses_swapped_pairs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_object::{
+            HostSpoolIo,
+            effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
+        };
+        use std::{path::PathBuf, sync::Arc};
+
+        struct Temp(PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let process_root = std::env::var_os("FSS_TEST_ROLLOVER_PROCESS_ROOT");
+        let root = process_root.as_ref().map(PathBuf::from).unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("fss-rollover-cold-{}", std::process::id()))
+        });
+        std::fs::create_dir(&root)?;
+        let root = Temp(std::fs::canonicalize(root)?);
+        let replay = rollover_replay()?;
+        let limits = EffectJournalLimits::default();
+        let scope = ContentDigest::sha256(b"cold rollover scope");
+        let custody_scope = ContentDigest::sha256(b"cold rollover trusted root");
+        let journal_store =
+            |name: &str| -> Result<Box<dyn EffectJournalStore>, Box<dyn std::error::Error>> {
+                Ok(Box::new(FileEffectJournal::create(
+                    root.0.join(name),
+                    limits,
+                    Arc::new(HostSpoolIo),
+                )?))
+            };
+        let mut old = UnknownTimeJournal::create(journal_store("old-journal")?, scope, &replay)?;
+        let mut old_keeper =
+            UnknownTimeAnchorKeeper::create(journal_store("old-keeper")?, &old, &replay)?;
+        let retention = ContentDigest::sha256(b"cold rollover retention");
+        for index in 0u8..2 {
+            let pin = UnknownTimePin {
+                root: ContentDigest::sha256(&[index]),
+                retention,
+            };
+            old.prepare(pin, &replay)?;
+            old_keeper.retain(&old, &replay)?;
+            old.confirm(pin, &replay)?;
+            old_keeper.retain(&old, &replay)?;
+        }
+        let staged = rollover::Staged::begin(
+            rollover::Previous {
+                journal: old,
+                keeper: old_keeper,
+            },
+            journal_store("new-journal")?,
+            journal_store("new-keeper")?,
+            &replay,
+        )
+        .map_err(|_| "stage failed")?;
+        let root_custody = FileTrustedRootPinRetainer::create(
+            root.0.join("switch-custody"),
+            limits,
+            Arc::new(HostSpoolIo),
+            custody_scope,
+        )?;
+        let switch =
+            PinRetainedEffectJournal::new(journal_store("switch")?, Box::new(root_custody))?;
+        let mut active = staged
+            .commit(switch, &replay)
+            .map_err(|_| "commit failed")?;
+        let binding = active.binding();
+        let switch_pin = active.switch_head();
+        let (new, keeper) = active.successor();
+        // This synthetic test acknowledges replay locally; it does not claim
+        // the corresponding archive exists or was independently verified.
+        new.confirm(binding.confirmed, &replay)?;
+        let later = UnknownTimePin {
+            root: ContentDigest::sha256(b"later root"),
+            retention,
+        };
+        new.prepare(later, &replay)?;
+        keeper.retain(new, &replay)?;
+        new.confirm(later, &replay)?;
+        keeper.retain(new, &replay)?;
+        let latest_journal = new.anchor();
+        let latest_keeper = keeper.anchor();
+        if process_root.is_some() {
+            use std::io::Write;
+            let pins = [
+                binding.old_journal,
+                binding.old_keeper,
+                latest_journal,
+                latest_keeper,
+                switch_pin,
+            ]
+            .map(|pin| format!("{}@{}", pin.sequence, pin.root.to_text()))
+            .join(",");
+            println!("rollover_writer_pins={pins}");
+            std::io::stdout().flush()?;
+            // Test child only: simulate abrupt process loss after every write
+            // was acknowledged, without running destructors or releasing locks
+            // explicitly. This is not a power-loss or partial-write test.
+            std::process::exit(73);
+        }
+        drop(active);
+
+        let reopen = |case: u8| -> Result<(), Box<dyn std::error::Error>> {
+            let open = |name: &str, pin: EffectJournalPin| -> Result<Box<dyn EffectJournalStore>, Box<dyn std::error::Error>> {
+                Ok(Box::new(FileEffectJournal::open(root.0.join(name), limits, Arc::new(HostSpoolIo), pin)?))
+            };
+            let old = UnknownTimeJournal::reopen(
+                open("old-journal", binding.old_journal)?,
+                scope,
+                binding.old_journal,
+                &replay,
+            )?;
+            let old_keeper = UnknownTimeAnchorKeeper::reopen(
+                open("old-keeper", binding.old_keeper)?,
+                &old,
+                binding.old_keeper,
+                &replay,
+            )?;
+            let new = UnknownTimeJournal::reopen(
+                open("new-journal", latest_journal)?,
+                scope,
+                latest_journal,
+                &replay,
+            )?;
+            let new_keeper = UnknownTimeAnchorKeeper::reopen(
+                open("new-keeper", latest_keeper)?,
+                &new,
+                latest_keeper,
+                &replay,
+            )?;
+            let custody = FileTrustedRootPinRetainer::open_trusting_storage(
+                root.0.join("switch-custody"),
+                limits,
+                Arc::new(HostSpoolIo),
+                custody_scope,
+            )?;
+            let switch = PinRetainedEffectJournal::for_reconciliation(
+                open("switch", switch_pin)?,
+                Box::new(custody),
+            )?;
+            let old = rollover::Previous {
+                journal: old,
+                keeper: old_keeper,
+            };
+            let new = rollover::Previous {
+                journal: new,
+                keeper: new_keeper,
+            };
+            let current = rollover::SuccessorHeads {
+                journal: latest_journal,
+                keeper: latest_keeper,
+            };
+            if case == 1 {
+                let refusal = match rollover::recover(new, old, switch, current, &replay) {
+                    Err(refusal) => refusal,
+                    Ok(_) => return Err("swapped histories admitted".into()),
+                };
+                assert!(matches!(refusal.reason, Error::Invalid));
+                assert_eq!(refusal.observed_heads().2, Some(switch_pin));
+            } else if case == 2 || case == 3 {
+                let stale = rollover::SuccessorHeads {
+                    journal: if case == 2 {
+                        binding.new_journal
+                    } else {
+                        latest_journal
+                    },
+                    keeper: if case == 3 {
+                        binding.new_keeper
+                    } else {
+                        latest_keeper
+                    },
+                };
+                let refusal = match rollover::recover(old, new, switch, stale, &replay) {
+                    Err(refusal) => refusal,
+                    Ok(_) => return Err("stale successor pins admitted".into()),
+                };
+                assert!(matches!(refusal.reason, Error::Invalid));
+            } else {
+                let mut active = rollover::recover(old, new, switch, current, &replay)
+                    .map_err(|_| "cold recovery refused")?;
+                assert_eq!(active.binding(), binding);
+                assert_eq!(active.switch_head(), switch_pin);
+                let (journal, keeper) = active.successor();
+                assert_eq!(journal.confirmed(), Some(later));
+                assert_eq!(journal.replay_pin(), Some(later));
+                assert_eq!(keeper.target(), latest_journal);
+                let other = UnknownTimePin {
+                    root: ContentDigest::sha256(b"unreconciled next"),
+                    retention,
+                };
+                assert!(matches!(
+                    journal.prepare(other, &replay),
+                    Err(Error::Invalid)
+                ));
+            }
+            Ok(())
+        };
+        reopen(1)?;
+        reopen(2)?;
+        reopen(3)?;
+        reopen(0)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "invoked by the bounded rollover process fixture"]
+    fn rollover_separate_process_reader() -> Result<(), Box<dyn std::error::Error>> {
+        use fss_object::{
+            HostSpoolIo,
+            effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
+        };
+        use std::{path::PathBuf, sync::Arc};
+        let root =
+            PathBuf::from(std::env::var_os("FSS_TEST_ROLLOVER_READER_ROOT").ok_or("missing root")?);
+        let text = std::env::var("FSS_TEST_ROLLOVER_READER_PINS")?;
+        if text.len() > 512 {
+            return Err("pin receipt too large".into());
+        }
+        let pins: Vec<EffectJournalPin> = text
+            .split(',')
+            .map(|item| {
+                let (sequence, root) = item.split_once('@').ok_or("pin shape")?;
+                Ok(EffectJournalPin {
+                    sequence: sequence.parse()?,
+                    root: ContentDigest::parse(root)?,
+                })
+            })
+            .collect::<Result<_, Box<dyn std::error::Error>>>()?;
+        if pins.len() != 5 {
+            return Err("pin count".into());
+        }
+        let replay = rollover_replay()?;
+        let limits = EffectJournalLimits::default();
+        let scope = ContentDigest::sha256(b"cold rollover scope");
+        let open =
+            |name: &str, pin| -> Result<Box<dyn EffectJournalStore>, Box<dyn std::error::Error>> {
+                Ok(Box::new(FileEffectJournal::open(
+                    root.join(name),
+                    limits,
+                    Arc::new(HostSpoolIo),
+                    pin,
+                )?))
+            };
+        let old =
+            UnknownTimeJournal::reopen(open("old-journal", pins[0])?, scope, pins[0], &replay)?;
+        let old_keeper =
+            UnknownTimeAnchorKeeper::reopen(open("old-keeper", pins[1])?, &old, pins[1], &replay)?;
+        let new =
+            UnknownTimeJournal::reopen(open("new-journal", pins[2])?, scope, pins[2], &replay)?;
+        let new_keeper =
+            UnknownTimeAnchorKeeper::reopen(open("new-keeper", pins[3])?, &new, pins[3], &replay)?;
+        let custody = FileTrustedRootPinRetainer::open_trusting_storage(
+            root.join("switch-custody"),
+            limits,
+            Arc::new(HostSpoolIo),
+            ContentDigest::sha256(b"cold rollover trusted root"),
+        )?;
+        let switch = PinRetainedEffectJournal::for_reconciliation(
+            open("switch", pins[4])?,
+            Box::new(custody),
+        )?;
+        let mut active = rollover::recover(
+            rollover::Previous {
+                journal: old,
+                keeper: old_keeper,
+            },
+            rollover::Previous {
+                journal: new,
+                keeper: new_keeper,
+            },
+            switch,
+            rollover::SuccessorHeads {
+                journal: pins[2],
+                keeper: pins[3],
+            },
+            &replay,
+        )
+        .map_err(|_| "reader recovery refused")?;
+        let (journal, keeper) = active.successor();
+        let expected = UnknownTimePin {
+            root: ContentDigest::sha256(b"later root"),
+            retention: ContentDigest::sha256(b"cold rollover retention"),
+        };
+        if journal.confirmed() != Some(expected)
+            || journal.replay_pin() != Some(expected)
+            || keeper.target() != pins[2]
+        {
+            return Err("reader fence or latest root mismatch".into());
+        }
+        println!("rollover_process_reader=verified replay_required=true");
+        Ok(())
+    }
+
+    #[test]
+    fn rollover_survives_abrupt_writer_exit() -> Result<(), Box<dyn std::error::Error>> {
+        use std::{
+            path::PathBuf,
+            process::{Command, Output, Stdio},
+            time::{Duration, Instant},
+        };
+        struct Temp(PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("fss-rollover-process-{}", std::process::id()));
+        std::fs::create_dir(&root)?;
+        let temp = Temp(std::fs::canonicalize(root)?);
+        let state = temp.0.join("state");
+        let exe = std::env::current_exe()?;
+        let run = |mut command: Command| -> Result<Output, Box<dyn std::error::Error>> {
+            let mut child = command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                if child.try_wait()?.is_some() {
+                    return Ok(child.wait_with_output()?);
+                }
+                if Instant::now() >= deadline {
+                    child.kill()?;
+                    let _ = child.wait();
+                    return Err("rollover subprocess timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let mut writer = Command::new(&exe);
+        writer.args(["unifi_direct::archive::journal::capacity_tests::rollover_cold_recovers_file_histories_and_refuses_swapped_pairs", "--exact", "--nocapture", "--test-threads=1"])
+            .env("FSS_TEST_ROLLOVER_PROCESS_ROOT", &state);
+        let output = run(writer)?;
+        if output.status.code() != Some(73) {
+            return Err("writer did not exit at the acknowledged cut point".into());
+        }
+        let report = String::from_utf8(output.stdout)?;
+        let pins = report
+            .lines()
+            .find_map(|line| {
+                line.split_once("rollover_writer_pins=")
+                    .map(|(_, pins)| pins)
+            })
+            .ok_or("writer did not provide its pin receipt")?;
+        let mut reader = Command::new(&exe);
+        reader
+            .args([
+                "unifi_direct::archive::journal::capacity_tests::rollover_separate_process_reader",
+                "--ignored",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("FSS_TEST_ROLLOVER_READER_ROOT", &state)
+            .env("FSS_TEST_ROLLOVER_READER_PINS", pins);
+        let output = run(reader)?;
+        if !output.status.success()
+            || !String::from_utf8_lossy(&output.stdout)
+                .contains("rollover_process_reader=verified replay_required=true")
+        {
+            return Err(
+                format!("reader failed: {}", String::from_utf8_lossy(&output.stderr)).into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_limit_reports_capacity_after_verified_replay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:unifi-journal-ceiling".into(),
+            operation_id: OperationId::parse("operation:unifi-journal-ceiling")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec!["ADP-REPLAY-001".into()],
+            deadline: None,
+            priority: 1,
+            budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"journal ceiling fixture"),
+            generation: 1,
+        })?;
+        let root = std::fs::canonicalize(std::env::temp_dir())?;
+        let replay = ReplayCx::from_context_authority(&context, root)?;
+        let scope = ContentDigest::sha256(b"journal ceiling scope");
+        let retention = ContentDigest::sha256(b"journal ceiling retention");
+        let mut store = Store::default();
+        store.append(None, &encode(UNKNOWN_TIME_DOMAIN, scope, 0, None)?)?;
+        let mut latest = None;
+        for index in 0..((MAX_RECORDS - 1) / 2) {
+            let pin = UnknownTimePin {
+                root: ContentDigest::sha256(&index.to_be_bytes()),
+                retention,
+            };
+            for kind in [1, 2] {
+                let record = encode(UNKNOWN_TIME_DOMAIN, scope, kind, Some(pin.access_pin()))?;
+                store.append(store.head(), &record)?;
+            }
+            latest = Some(pin);
+        }
+        assert_eq!(store.records().len(), MAX_RECORDS - 1);
+        let minimum = store.head().ok_or("missing head")?;
+        let last = latest.ok_or("missing confirmed root")?;
+        let next = UnknownTimePin {
+            root: ContentDigest::sha256(b"another root"),
+            retention,
+        };
+        let mut journal = UnknownTimeJournal::reopen(Box::new(store), scope, minimum, &replay)?;
+        assert!(matches!(
+            journal.prepare(next, &replay),
+            Err(Error::Invalid)
+        ));
+        assert_eq!(journal.replay_pin(), Some(last));
+        journal.confirm(last, &replay)?;
+        assert_eq!(journal.replay_pin(), None);
+        assert!(matches!(
+            journal.prepare(next, &replay),
+            Err(Error::Storage(EffectPersistenceError::Capacity))
+        ));
+        assert_eq!(journal.anchor(), minimum);
+        assert_eq!(journal.confirmed(), Some(last));
+        assert!(journal.pending().is_none());
+        journal.prepare(last, &replay)?;
+        assert_eq!(journal.anchor(), minimum);
         Ok(())
     }
 }

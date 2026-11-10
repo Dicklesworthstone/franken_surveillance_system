@@ -7000,6 +7000,7 @@ contract at the same base, overlay fingerprint
 `b4f078abf296a2126e9d5a4c2556c77803eb99f4a25c3865c2a266d2b9ff4b6f`:
 one passed, none failed or ignored, and 2,352 other unit tests were filtered.
 It exited zero, was acknowledged, and released its source and execution pair.
+
 Job `30100509981410715` completed the Linux trial build, but the wrapper
 returned 102 when it refused to transfer the Linux executable to the Mac. The
 remote execution exited zero and was acknowledged with its resources released.
@@ -9652,3 +9653,225 @@ The RCH daemon process remained alive with its socket path missing, while other
 jobs had been active. Same-ID recovery could not contact the missing socket.
 Do not infer that either attempt passed or replay the uncertain job without
 first reconciling its original identity and shared-daemon state.
+
+### Installed reference-plugin stream selection (read-only inspection)
+
+On 2026-11-10, the installed `scrypted-unifi-direct` plugin's source map on
+`trj` exposed the reference `camera.ts` and `direct-stream.ts` behavior. Its
+camera source maps `high`, `medium`, and `low` to `video1`, `video2`, and
+`video3`; it advertises the configured channel and at most one distinct
+configured substream. A request for an unadvertised ID is coerced to the
+configured channel, so asking for `high` alone would not prove delivery of the
+high track. Creating a stream sends a camera management command and retains a
+per-track stream; under an audio-profile mismatch the source can reset streams.
+The code comments claim concurrent per-track operation on tested hardware, but
+they do not establish that this G4 can start a second stream without affecting
+its existing recording. No stream was requested, setting changed, or camera
+management command sent by this source inspection. The plugin main bundle and
+source-map SHA-256 values observed in the running container were respectively
+`82e44a0a2f5c65694211718e9649327247e29fb58505bc634a090b1f64b16090` and
+`84befe9b4f3939f6ad86ae74078608683843e57cb2d95d459cd99b4ff69c8d82`.
+This is source behavior, not a physical G4 full-resolution capture.
+
+A subsequent read-only socket count in that container's network namespace found
+one established connection to the medium-track port and none to the high or
+low ports. These counts do not identify the peer or prove that a track is
+unconfigured. The recorder and fallback timer were active, and 12 MP4 files
+under the bulk recordings directory had changed in the preceding 15 minutes.
+This is a point-in-time activity check, not proof of uninterrupted coverage.
+
+The original job `30103409168220334` was subsequently recovered by its same
+wrapper ID after the RCH socket returned. Recovery reported exit 120 with
+terminal acknowledgment, source released and pair released; it produced no
+Cargo test result. A new request was issued separately against the later
+committed checkout; its outcome must be assessed from its own terminal record.
+
+The archive workers currently project every journal `Storage` error to the
+same payload-free `FailureReason::Storage`, including an explicit journal
+`Capacity` refusal. Consequently a future supervisor cannot yet reliably
+choose rollover based on that projection alone; the stage also matters
+because a storage failure after publication requires reconciliation. A typed
+capacity outcome and a verified rollover transition remain necessary.
+
+A subsequent working-tree change introduces `FailureReason::JournalCapacity`
+for explicit journal capacity refusals and maps the keeper's semantic record
+ceiling to that same cause. The stage, source custody, and any receipt remain
+separate; the classification alone never authorizes retry or rotation. A new
+worker-level fixture checks a real small keeper, no publication, and exact
+source retention. This later change and fixture are not yet test-qualified.
+
+Strict-remote job `30103800983322627` subsequently tested the committed
+preflight at base `4f8f152042e6460e882c8f7a74320e7e7d6615ea` with clean
+no-overlay fingerprint `fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195`.
+The capacity suite passed 2/2, including refusal before any journal or root
+change, successful publication after increasing the keeper bound, idempotent
+confirmed replay, and a pending retry with one keeper slot. The recording suite
+passed 22 with one ignored, and the sender-segment suite passed 4 with one
+ignored. The job exited zero, was acknowledged, and released its source and pair.
+This does not qualify the later working-tree `JournalCapacity` classification,
+automatic rotation, a real G4 takeover, or continuous retention.
+
+Strict-remote job `30103800983322644` tested the capacity classification and
+worker fixture at base `4f8f152042e6460e882c8f7a74320e7e7d6615ea` with overlay
+fingerprint `e6c130ecc299c38e85d3e0a909ed35b130a966b80cc219f6683c25e0f381c352`.
+The capacity suite passed 3/3, including a bounded blocking source worker that
+reported `JournalCapacity`, kept the exact original source record, retained
+unchanged journal/keeper heads, and made no visible root. The recording suite
+passed 22 with one ignored. The job exited zero, was acknowledged, and released
+its source and pair. This is a synthetic local-storage test, not journal rollover,
+automatic recording, or a physical-camera result.
+
+The first new-fixture compile, job `30103800983322641`, failed because the test
+omitted an import; that import was added. Jobs `30103800983322642` and
+`30103800983322643` then compiled but failed the worker fixture because the
+test runtime had no blocking pool; 22643 identified `Runtime(NoPool)`. The
+fixture was corrected to use one bounded blocking thread. All three unsuccessful
+jobs were acknowledged and released their source and pair; none is a test pass.
+
+The typed capacity classification is not yet exhaustive: the publication
+journal's own 16,384-record semantic ceiling still reports `Invalid`, which the
+worker projects as recovery. A supervisor must not assume every exhausted
+journal will report `JournalCapacity` until that path is updated and tested.
+
+The publication journal's own semantic record ceiling now also returns the
+explicit journal capacity cause before an append, while malformed pins and
+replay mismatches remain invalid history. The keeper's corresponding ceiling
+is distinguished from an invalid target sequence. Strict-remote job
+`30103800983322648` passed the selected in-memory replay test (1 passed, 2,380
+filtered): it replayed 16,383 canonical synthetic records, refused a different
+candidate until the retained confirmed root was reconciled, then reported
+capacity without advancing the journal. This is not filesystem or durability
+qualification. Job `30103800983322653` passed 3/3 storage-capacity contracts
+and 22 recording contracts with one ignored. Both used base
+`4f8f152042e6460e882c8f7a74320e7e7d6615ea` and overlay fingerprint
+`53f9c56526b1fb57eaf3d655b5efa5980446619ac2a42b4da6102690551a4570`;
+both exited zero, were acknowledged, and released source and pair. This
+supersedes the earlier note that the journal ceiling still returned `Invalid`.
+No journal rollover, camera handoff, 30-day retention, or physical-camera
+full-resolution capture was performed by these tests.
+
+### Physical G4 high-profile verification (2026-11-10)
+
+A read-only SDK options query against the existing local controller reported
+`high` at 2688 x 1512 and `medium` at 1280 x 720. The existing plugin's camera
+settings reported high as its primary option and medium as its substream. An
+owner-authorized `high` stream request then produced a five-second video-only
+MP4. Independent FFprobe reported H.264, 2688 x 1512, 30/1 fps and 151 frames;
+FFmpeg decoded one frame to PNG. The retained clip and PNG are under the
+owner-selected `/bulk/unifi_camera_recordings/verification` directory and were
+also copied into a private local output directory. Their SHA-256 values were
+`2ce702b355fa7d8a56780a5dc881d3c0e68b5a21d2e9db7d0bd8b0cef6b55361`
+(video) and `a742533ad71a9f8c88c16e10c52ec5d74dd71268860db9070ab94221c7213597`
+(image); source media and credentials were not added to this repository.
+The verification helper was `work/g4-high-resolution-verify.cjs` in the local
+Codex workspace, SHA-256
+`1f5e433be882ccc52a05825b36ddace1071e076090d80b3158b665a8cfc8d19e`.
+
+The plugin request caused the high stream to start. Subsequent socket counts
+inside its network namespace showed one high-track and one medium-track
+connection; the existing recorder and bulk fallback timer were active and the
+staged recorder's restart count remained zero. Thirteen bulk MP4 files had
+changed within the prior 15 minutes. This is a point-in-time activity check,
+not proof of uninterrupted coverage. The high push remained active after the
+sample; stopping it by changing the main channel would also reset streams, so
+it was left in place. This verifies real high-resolution media through the
+existing Scrypted/Docker controller and FFmpeg, not a Rust-owned camera session,
+continuous high-resolution recording, or 30-day retention.
+
+The separate owner-authorized `unifi_private_mp4_decode` laboratory binary
+then read this saved MP4 on `trj`, without transmitting the media to the build
+worker. FSS's MP4 demuxer and H.264 decoder returned 151 samples and decoded
+three frames at 2688 x 1512. This is offline decoding of a Scrypted-captured
+file; it does not establish a Rust-owned camera session or recording service.
+The final Linux binary compiled in remote job `30103800983322671`; its wrapper
+returned 102 because RCH correctly refused to install a Linux executable on
+macOS (RCH-E327). The binary was transferred to the Linux host separately and
+its SHA-256 was verified as
+`5b043606ed85a6e72d506f6d91a0d3a06549a483ec4496eaeb00c3853e19d1e4`.
+
+The laboratory diagnostic was subsequently extended to decode a bounded whole
+file incrementally, with at most 300 indexed samples and 16 MiB of input. On
+`trj` it processed all 151 samples of the same private clip and produced 151
+2688 x 1512 frames. A local, video-only differential against FFmpeg's
+`yuvj420p` raw-frame SHA-256 oracle matched **151 of 151** frame positions.
+Neither the media nor the per-frame hashes went to the compiler host. The
+diagnostic also refused invocation without owner authorization and refused an
+empty input. The debug executable consumed one CPU core and took substantially
+longer than the five-second clip: this is not real-time qualification. It is
+offline demux/decode of a Scrypted-captured file, not a native camera session,
+continuity claim, recording-service test, or claim about other streams.
+
+Job `30103800983322679` compiled the updated diagnostic on Linux; its wrapper
+returned 102 after RCH-E327 correctly rejected the Linux-to-macOS artifact
+transfer. The separately transferred executable matched SHA-256
+`a1bfc074291ecd38b1b696cf6f0794b5bc0df2f0390ff33692f240ed7d3341da` on
+the worker, intermediate host, and `trj`. The reviewed local-only oracle
+helper was `work/g4-full-clip-differential.py` in the Codex workspace, SHA-256
+`2fb84c6addc3b91a941f4c5b72fea933454daaa28f56ad8e1bbcff79dd65ebb2`.
+The existing recorder and fallback timer were active afterward; the recorder
+container's restart count was zero. These checks do not prove gap-free coverage.
+
+### Staged publication-journal successor (working tree)
+
+An experimental transition now stages a fresh unknown-time publication journal
+from the predecessor's last confirmed root and writes a switch binding the old
+and new journal and keeper heads. It accepts only an unfenced predecessor with
+no pending or replay obligation and a caught-up keeper. The switch must be
+acknowledged by a separately retained journal before the successor is exposed;
+an uncertain append, failed custody readback, or cancellation after that write
+does not expose it. The successor starts with the old confirmed root marked for
+exact replay. The old journal, old keeper, and switch remain owned by the active
+transition; storage failure-domain independence remains a caller obligation.
+
+This is not yet wired to the recorder. In particular, durable location and
+automatic selection of the switch, interrupted switch reconciliation, writer
+fencing across processes, filesystem crash testing,
+source/A/V coordination, retention deletion and live-camera qualification are
+still required. Do not use the in-process transition as a restart policy or as
+evidence of 30-day continuous recording.
+
+Strict-remote job `30103800983322708` passed 3/3 selected in-memory rollover
+tests (2,381 other tests filtered). They checked the confirmed-root replay
+fence and retained switch, refusal of a pending predecessor and a stale keeper,
+an indeterminate switch when separate pin retention failed, and cancellation
+immediately after switch custody was acknowledged. The job used base
+`4f8f152042e6460e882c8f7a74320e7e7d6615ea` and overlay fingerprint
+`b7853454a99e82ea8fb9a090ef70d4c41b9c70c4419800c063bc526d240d3121`.
+It exited zero, was acknowledged, and released its source and execution pair.
+These fixtures use in-memory stores and do not test durable switch publication,
+actual crash recovery, independent failure domains, or camera operation.
+
+The experimental recovery path now decodes the one-record retained switch,
+checks its canonical encoding and binding against both reopened histories, and
+requires the successor's exact current journal and keeper heads as independently
+retained inputs. It checks that the successor includes the bound seed records
+and keeper prefix, refuses a pending publication or a stale keeper, and leaves
+the latest confirmed successor root fenced for exact archive replay. The caller
+must locate and reopen the switch and provide genuine separate custody; the API
+cannot detect a rollback of the trusted root itself or prove storage independence.
+
+Strict-remote job `30103800983322721` passed 4/4 selected rollover tests (2,381
+other tests filtered), including a file-backed test that cleanly drops and
+reopens all owners within one process after a simulated successor advance. It
+rejects swapped histories and separately rejects stale journal and keeper pins.
+All test stores share a filesystem, the advance uses synthetic pins, and exact
+heads are retained in the fixture's memory. This is not a process-crash,
+power-loss, independent-custody, archive-replay, or camera test. The job used
+base `4f8f152042e6460e882c8f7a74320e7e7d6615ea` and overlay fingerprint
+`ad3f3edf7db5f9d3783d61f3349e5508ec995571e7fdb6554119e4b28bc4f34c`.
+It exited zero, was acknowledged, and released its source and execution pair.
+
+Strict-remote job `30103800983322729` passed 5 selected rollover tests with
+one helper ignored at the top level and 2,381 others filtered. The process
+fixture explicitly invoked that helper in a new reader process after a writer
+process called `exit(73)` without running Rust destructors, at a cut point
+after the switch and a subsequent synthetic journal advance were acknowledged.
+The reader reopened both pairs and the retained switch and verified that the
+latest root still required replay. The child received its synthetic pin receipt
+from the controlling test process; all stores and the trusted root shared one
+filesystem. This is a forced process exit after acknowledged writes, not a
+power-loss, torn-write, interruption-during-switch, independent-custody,
+archive-replay, continuous-recording or live-camera qualification. The job
+used base `4f8f152042e6460e882c8f7a74320e7e7d6615ea` and overlay fingerprint
+`a0fd161543109fb9f2ccf6193087d48329a386a8727ef099829fad34f3c9076a`;
+it exited zero, was acknowledged, and released its source and execution pair.
