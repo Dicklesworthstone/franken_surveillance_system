@@ -187,6 +187,9 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         FAMILY_CALIBRATION_INVALIDATION => Some("ingest::calibration_invalidation::invalidate"),
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         crate::evidence_export::FAMILY_EVIDENCE_EXPORT => Some("evidence_export::commit_export"),
+        crate::review_media::FAMILY_REVIEW_MEDIA | crate::review_media::FAMILY_REVIEW_REVOCATION => {
+            Some("review_media::commit_review_media/revoke_review_media")
+        }
         crate::deployment_backup::FAMILY_RESTORE_FENCE => Some("deployment_backup::restore_backup"),
         crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH => {
             Some("ingest::historical_health::HistoricalHealthDiagnostic::retain")
@@ -1672,7 +1675,18 @@ impl ReferenceDeployment {
             });
         }
 
-        // A generic append cannot replace the durable restore fence with another family.
+        // Reserved object identities stay guarded even when a caller changes the family.
+        if deltas.iter().any(|delta| {
+            delta
+                .object_id
+                .as_str()
+                .starts_with(crate::review_media::REVIEW_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: crate::review_media::FAMILY_REVIEW_MEDIA.to_owned(),
+                entry_point: "review_media::commit_review_media/revoke_review_media",
+            });
+        }
         if deltas.iter().any(|delta| {
             delta.object_id.as_str() == crate::deployment_backup::RESTORE_FENCE_OBJECT_ID
         }) {
@@ -1882,6 +1896,49 @@ impl ReferenceDeployment {
             })
         {
             return Err(ReferenceError::InvalidSpec("invalid evidence export batch"));
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Guarded issuance/terminal withdrawal of a locally scoped retained review derivative.
+    /// The lifecycle owner verifies actual source rendering, exact approval and custody first.
+    pub(crate) fn append_review_media_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                let transition = match delta.family.as_str() {
+                    crate::review_media::FAMILY_REVIEW_MEDIA => {
+                        delta.prior_generation.is_none() && delta.new_generation == 1
+                    }
+                    crate::review_media::FAMILY_REVIEW_REVOCATION => {
+                        delta.prior_generation == Some(1) && delta.new_generation == 2
+                    }
+                    _ => false,
+                };
+                !transition
+                    || !delta
+                        .object_id
+                        .as_str()
+                        .starts_with(crate::review_media::REVIEW_OBJECT_PREFIX)
+                    || delta.plane != Plane::Authority
+                    || delta.witness_digest.is_none()
+                    || delta.operation_id.is_some()
+            })
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "invalid review-media authority transition",
+            ));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }

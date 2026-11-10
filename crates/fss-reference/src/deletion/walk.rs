@@ -134,6 +134,8 @@ fn unit_kind(id: &str) -> &'static str {
         ("batch:event:", "event_revision"),
         ("batch:alert-outcome:", "alert_outcome"),
         ("slot:rgbe1-", "rgb_evidence"),
+        ("batch:review-media:", "review_media"),
+        ("slot:review-", "review_media"),
     ];
     KINDS
         .iter()

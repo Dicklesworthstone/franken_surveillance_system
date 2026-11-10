@@ -4,7 +4,7 @@
 //! filesystem durability or CLI process tests. Source/receipt pins below are test metadata;
 //! native pictures and the exercised production implementations are real, not codec stubs.
 
-#[path = "../../fss-cli/src/bin/fss-file/movie_output.rs"]
+#[path = "../../fss-reference/src/review_media/render/output.rs"]
 mod movie_output;
 #[path = "../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs"]
 mod stream;

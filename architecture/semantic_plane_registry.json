@@ -82,7 +82,11 @@
     "crates/fss-reference/src/onvif/metadata/read_view.rs",
     "crates/fss-cli/src/onvif_query_cmd.rs",
     "crates/fss-cli/src/footage_query_cmd.rs",
-    "crates/fss-cli/src/orient_cmd.rs"
+    "crates/fss-cli/src/orient_cmd.rs",
+    "crates/fss-reference/src/review_media.rs",
+    "crates/fss-reference/src/review_media/record.rs",
+    "crates/fss-reference/src/review_media/storage.rs",
+    "crates/fss-reference/src/review_media/render.rs"
   ],
   "module_declarations": {
     "crates/fss-object/src/contracts.rs": "support",
@@ -974,7 +978,16 @@
     "crates/fss-cli/src/bin/fss-mcp.rs": "support",
     "crates/fss-cli/src/footage_query_cmd.rs": "ambiguous",
     "crates/fss-cli/src/lib.rs": "support",
-    "crates/fss-cli/src/orient_cmd.rs": "ambiguous"
+    "crates/fss-cli/src/orient_cmd.rs": "ambiguous",
+    "crates/fss-reference/src/review_media.rs": "effect",
+    "crates/fss-reference/src/review_media/grant.rs": "authority",
+    "crates/fss-reference/src/review_media/grant_tests.rs": "support",
+    "crates/fss-reference/src/review_media/record.rs": "authority",
+    "crates/fss-reference/src/review_media/render.rs": "authority",
+    "crates/fss-reference/src/review_media/render/output.rs": "support",
+    "crates/fss-reference/src/review_media/render/tests.rs": "support",
+    "crates/fss-reference/src/review_media/render/timing.rs": "support",
+    "crates/fss-reference/src/review_media/storage.rs": "effect"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1879,6 +1892,51 @@
       "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
       "plane": "support",
       "description": "Historical lookup refusal retaining any definite inspected result and admission progress."
+    },
+    "ReviewMediaRequest": {
+      "file": "crates/fss-reference/src/review_media.rs",
+      "plane": "effect",
+      "description": "Explicit proposed source selection and local disclosure scope; no publication or delivery authority."
+    },
+    "ReviewMediaPreview": {
+      "file": "crates/fss-reference/src/review_media.rs",
+      "plane": "authority",
+      "description": "Sealed native preparation binding exact rendered media, request, candidate grant and publication basis; media remains private."
+    },
+    "ReviewMediaReceipt": {
+      "file": "crates/fss-reference/src/review_media.rs",
+      "plane": "authority",
+      "description": "Verified retained review root and durable grant transition, distinct from delivery or qualification."
+    },
+    "ReviewRevocationReceipt": {
+      "file": "crates/fss-reference/src/review_media.rs",
+      "plane": "authority",
+      "description": "Durable withdrawal of the exact local grant, without erasure or remote copy recall claims."
+    },
+    "ReviewedMedia": {
+      "file": "crates/fss-reference/src/review_media.rs",
+      "plane": "authority",
+      "description": "Sealed current-reader release candidate with exact bytes, source, grant and authority basis; final revalidation remains required."
+    },
+    "ReviewAccessRequest": {
+      "file": "crates/fss-reference/src/review_media/grant.rs",
+      "plane": "authority",
+      "description": "Canonical proposed local recipient scope, exact source/privacy pins, purpose, validity and byte limit; not a live grant."
+    },
+    "ReviewGrant": {
+      "file": "crates/fss-reference/src/review_media/grant.rs",
+      "plane": "authority",
+      "description": "Immutable owner-prepared candidate grant bound to one native render receipt; only the guarded ledger transition makes it live."
+    },
+    "ReviewMediaRecord": {
+      "file": "crates/fss-reference/src/review_media/record.rs",
+      "plane": "authority",
+      "description": "Canonical screened-media custody, source provenance, privacy generation and local grant under one root."
+    },
+    "RenderedReviewMovie": {
+      "file": "crates/fss-reference/src/review_media/render.rs",
+      "plane": "authority",
+      "description": "Sealed deterministic native decoded and privacy-screened pixels, timeline, complete source pins and bounded render receipt; grants no effect authority."
     }
   }
 }

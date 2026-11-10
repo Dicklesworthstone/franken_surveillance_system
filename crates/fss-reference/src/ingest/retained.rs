@@ -829,7 +829,7 @@ impl SourceReadBudget {
         self.used.load(Ordering::Relaxed)
     }
 
-    fn reserve(&self, bytes: u64) -> Result<(), FileIngestError> {
+    pub(crate) fn reserve(&self, bytes: u64) -> Result<(), FileIngestError> {
         self.checkpoint()?;
         self.used
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {

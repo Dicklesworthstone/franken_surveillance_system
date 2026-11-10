@@ -2,7 +2,7 @@
 //! Production movie-interval conversion and Matroska framing, without a runtime or I/O.
 //! Synthetic selections below test arithmetic/admission only, not authenticated custody.
 
-#[path = "../../fss-cli/src/bin/fss-file/movie_timing.rs"]
+#[path = "../../fss-reference/src/review_media/render/timing.rs"]
 mod movie_timing;
 
 use fss_container::demux::{

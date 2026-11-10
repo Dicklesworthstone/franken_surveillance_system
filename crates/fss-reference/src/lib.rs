@@ -107,6 +107,8 @@ pub mod planned_scalar;
 mod policy;
 pub mod preprocess;
 pub mod reference_deployment;
+/// Retained screened movie derivatives and exact local reviewer access/revocation.
+pub mod review_media;
 pub mod rtsp;
 pub mod scalar_executor;
 /// Bounded sans-I/O site manifest and probe-receipt onboarding contracts.
