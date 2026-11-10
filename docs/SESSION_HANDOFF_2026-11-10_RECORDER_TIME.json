@@ -1,0 +1,154 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-10",
+  "timezone": "UTC",
+  "state": "implemented_native_validation_partial",
+  "mission": {
+    "goal": "Implement critical incomplete recorder functionality from the comprehensive plan and beads, using meaningful GitHub commits directly to main and no PRs.",
+    "source_base": "f4c6b302d9eb874e191f546c875ec247a70cd581",
+    "bead_scope": [
+      "VIT-022 / fss-vit022-recorder-retrieval-5js5o"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-10_RECORDING_DISCOVERY.json",
+    "operator_contract": "docs/RECORDER_TIMESTAMP_QUERY.md",
+    "validation": "docs/validation/2026-11-10-recorder-time-native-results.json",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "305c281444ff02a84c8b83042f671f40f56e450e",
+      "change": "Fixed-layout ONVIF replay RTP parser, explicit NTP era, outward time rounding, low-byte CSeq correlation and 18 protocol contracts."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Cold native AVC/HEVC historical-time query, exact packet/sample citations, unknown and source-only partitions, deterministic identities, bounded CLI, preallocation read limits and 26 native reference/process contracts; corrected ONVIF child-module paths."
+    }
+  ],
+  "authority": {
+    "repository": "Dicklesworthstone/franken_surveillance_system",
+    "branch": "main",
+    "publication": "GitHub connector with expected-SHA non-force ref update; user explicitly authorized direct-main commits",
+    "production_devices_contacted": false,
+    "new_source_access_or_effect_authority": false,
+    "original_recording_and_receipt_formats_changed": false,
+    "dependencies_features_or_qualification_gates_changed": false
+  },
+  "findings": [
+    "Historical replay and original RTP custody existed, but recorder per-frame timestamp assertions were not queryable.",
+    "First-access-unit packet ownership includes AVC initialization-relocated parameters and HEVC prefixes; later headers cannot repair an absent first assertion.",
+    "Low-byte PLAY correlation cannot prove the full PLAY identity; NTP era must be explicit, and numeric rounding does not bound physical clock error.",
+    "Source-only HEVC boundary witnesses must stay outside media matches. Unknown-time samples remain visible even when known matches are empty.",
+    "A source-preserving cold projection can reuse each native verification through an internal visitor while retaining final slot, tombstone and receipt checks.",
+    "Existing original loading checked combined bytes after child reads; read_bounded now enforces the remaining native window allowance before allocation.",
+    "Pinned execution exposed an earlier ONVIF nested-module path defect; explicit paths fixed it and the actual shared production wire contracts passed."
+  ],
+  "cases_and_falsifiers": [
+    {
+      "case": "Source-backed historical lookup",
+      "falsifiers": [
+        "timestamp inferred from request or host clock",
+        "wrong packet/access-unit association",
+        "source-only data returned as a sample",
+        "unknowns silently excluded",
+        "false empty-result absence claim"
+      ]
+    },
+    {
+      "case": "Exact cold custody",
+      "falsifiers": [
+        "changed receipt/request/scope accepted",
+        "coherently rehashed false original descriptor accepted",
+        "required tombstones ignored",
+        "cancelled or over-budget operation emits partial success"
+      ]
+    },
+    {
+      "case": "Finite source reads",
+      "falsifiers": [
+        "late child read exceeds remaining native payload allowance",
+        "fallback retries an unbounded read",
+        "lower sample/packet caps are claimed to preempt intrinsic native verification"
+      ]
+    }
+  ],
+  "validation": {
+    "new_contracts": {
+      "packet": 18,
+      "reference": 18,
+      "cli_process": 8,
+      "total": 44
+    },
+    "executed_passes": {
+      "packet_time_contracts": 18,
+      "onvif_shared_wire_contracts": 18
+    },
+    "native_reference_and_cli_runtime_results": "pending: four distinct full-build and metadata-only attempts were SIGKILLed in Asupersync before compiling the reference/CLI feature targets; no feature tests executed",
+    "pinned_formatting": "passed: exact nightly rustfmt checked all 21 Rust files in the retained source snapshot",
+    "release_qualification": false,
+    "static_checks": [
+      "bash -n scripts/check_recording_lifecycle.sh passed",
+      "git diff --check passed",
+      "all 21 Rust source Git blob and SHA-256 hashes match the retained validation snapshot"
+    ],
+    "repository_manifest": {
+      "changed_source_paths": 30,
+      "changed_paths_verified": true,
+      "full_repository_audit": "failed_on_unchanged_inherited_paths",
+      "inherited_digest_mismatches": 162,
+      "inherited_missing_paths": 219,
+      "inherited_stale_paths": 2478,
+      "inherited_redundant_rows": 0,
+      "examples": {
+        "mismatch": [
+          "architecture/model_runtime_registry.json",
+          "crates/fss-cli/src/alert_effect.rs",
+          "crates/fss-cli/src/alert_effect/report.rs"
+        ],
+        "missing": [
+          "DUELING_WIZARDS_REPORT.md",
+          "OMP_REVIEW.md",
+          "WIZARD_IDEAS_COD.md"
+        ],
+        "stale": [
+          "evidence/excerpts/H-002d-ota23/server-http.log",
+          "evidence/excerpts/H-002d-ota23/server-https.log",
+          "proofs/tla/states/26-10-18-15-20-36.837/2300"
+        ]
+      }
+    }
+  },
+  "obligations": [
+    {
+      "item": "Publish coherent cold-query source and operator integration directly to main",
+      "state": "satisfied_by_this_commit"
+    },
+    {
+      "item": "Run full native receipt and archive executable targets on adequate resources",
+      "state": "pending; preserve exact source and compiler evidence"
+    },
+    {
+      "item": "Hardware recorder interoperability and independent clock/era calibration",
+      "state": "open"
+    },
+    {
+      "item": "Replay-provenance-preserving ordinary import and complete historical retrieval",
+      "state": "open"
+    }
+  ],
+  "valid_next_actions": [
+    "Run scripts/check_recording_lifecycle.sh replay with the pinned nightly and unchanged dependencies on a sufficient native host; treat hosted feedback as supplementary.",
+    "Use exact authorized recorder fixtures to qualify ONVIF historical extensions, era evidence, fragmented access units and source-only boundaries.",
+    "Carry exact replay receipt/request/discovery provenance into ordinary retained import without weakening existing custody, privacy, holds or review owners."
+  ],
+  "claim_boundaries": [
+    "recorder assertion is not calibrated capture time",
+    "no continuous coverage or absence claim",
+    "no upstream retention or complete-retrieval proof",
+    "no broad bead closure or production/release qualification"
+  ]
+}

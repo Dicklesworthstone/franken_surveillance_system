@@ -826,3 +826,18 @@ refusal; an exact retry revalidates custody rather than reconstructing missing e
 | `ERR-RTP-REPLAY-UTC-RANGE-001` | The explicit NTP era and outward-rounded fraction fall outside the admitted 1970-9999 UTC profile | Review the external era basis; do not clamp the value or erase numeric uncertainty. |
 | `ERR-RTP-REPLAY-CSEQ-INVALID-001` | The caller supplied a zero full PLAY CSeq | Supply the actual successful PLAY coordinate from an independently verified receipt. |
 | `ERR-RTP-REPLAY-CSEQ-MISMATCH-001` | The recorder extension differs from the successful PLAY CSeq's low byte | Preserve an uncorrelated assertion; never substitute another receipt. A matching low byte still does not authenticate a full PLAY identity. |
+
+## Cold recorder UTC query
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-REPLAY-TIME-SCOPE-001` | Independent catalog/source scope or receipt/request identity is invalid | Supply the complete intended scope and nonzero production SHA-256 pins retained from the approved capture. Stored metadata cannot grant replacement pins or select a codec. |
+| `ERR-REPLAY-TIME-INTERVAL-001` | The half-open UTC interval is empty, reversed or outside 1970–9999 | Supply explicit ordered Unix-nanosecond bounds and the intended external NTP era. Do not clip the request or use receive/PLAY time to fill missing source assertions. |
+| `ERR-REPLAY-TIME-LIMIT-001` | Admission, original-payload reservation/read, allocation or aggregate result ceiling refused the complete query | Review exact limits or select a smaller independently pinned receipt. Each original reserves 32 MiB before reading; sample/packet limits do not lower intrinsic native verifier work. No truncated result or source fallback is returned. |
+| `ERR-REPLAY-TIME-CUSTODY-001` | Exact receipt, current root/slot, source closure, native verification or tombstone checks failed | Preserve current custody and inspect the intended independent pins and underlying typed refusal. Do not recreate missing originals, substitute another codec/request or treat refusal as absence. |
+| `ERR-REPLAY-TIME-CANCELLED-001` | The existing I/O owner observed cancellation during cold load, native projection or final checks | Retain existing originals and retry only with a fresh valid owner/deadline scope if desired. No partial successful report is released and no prior publication is retracted. |
+
+Invalid CLI arguments, archive-open failures and output failures retain the existing CLI
+error identities. Unusable per-sample replay extensions are explicit unknown rows with
+the packet error code where applicable; they do not erase the sample or fail a sound
+original's custody verification.

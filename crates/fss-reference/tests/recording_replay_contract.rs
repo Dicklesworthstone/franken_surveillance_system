@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 //! Recorder replay receipts retain native AVC/HEVC custody without inventing UTC coverage.
 
-mod recording_support;
 mod hevc_recording_support;
+mod recording_support;
 
 #[path = "recording_replay_contract/onvif.rs"]
 mod onvif;
+
+#[path = "recording_replay_contract/utc.rs"]
+mod utc;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -29,9 +32,9 @@ use fss_reference::rtsp::recording_archive::ArchiveNamespace;
 use fss_reference::rtsp::recording_archive::hevc::HevcArchiveNamespace;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
 use fss_reference::rtsp::recording_replay::{
-    MAX_REPLAY_WINDOWS, REPLAY_RECEIPT_KIND, HEVC_REPLAY_RECEIPT_KIND, ReplayCodec, ReplayReceipt, ReplayReceiptError as E,
-    ReplayRequest, ReplayTermination, ReplayWindowProof, load_replay_receipt,
-    publish_replay_receipt, replay_slot, hevc_replay_slot, load_hevc_replay_receipt,
+    HEVC_REPLAY_RECEIPT_KIND, MAX_REPLAY_WINDOWS, REPLAY_RECEIPT_KIND, ReplayCodec, ReplayReceipt,
+    ReplayReceiptError as E, ReplayRequest, ReplayTermination, ReplayWindowProof, hevc_replay_slot,
+    load_hevc_replay_receipt, load_replay_receipt, publish_replay_receipt, replay_slot,
 };
 use recording_support::{Error, fixture, scope};
 
@@ -127,10 +130,7 @@ fn publish_window(
     Ok(())
 }
 
-fn setup(
-    name: &str,
-    count: usize,
-) -> Result<(PathBuf, LocalRootPublisher, ReplayReceipt), Error> {
+fn setup(name: &str, count: usize) -> Result<(PathBuf, LocalRootPublisher, ReplayReceipt), Error> {
     let root = path(name);
     let mut publisher = LocalRootPublisher::open(&root, limits())?;
     let request = request()?;
@@ -183,7 +183,12 @@ fn publish_metadata(
 ) -> Result<ObjectManifest, Error> {
     let old = receipt.manifest().metadata_digest().ok_or("metadata")?;
     let current = publisher.stage_object(metadata)?;
-    let children = receipt.manifest().children().iter().copied().filter(|value| *value != old);
+    let children = receipt
+        .manifest()
+        .children()
+        .iter()
+        .copied()
+        .filter(|value| *value != old);
     let manifest = ObjectManifest::new(receipt.manifest().kind(), children, Some(current))?;
     let slot = match receipt.request().codec() {
         ReplayCodec::Avc => replay_slot(scope, receipt.request().digest())?,
@@ -194,15 +199,13 @@ fn publish_metadata(
 }
 
 #[test]
-fn request_identity_binds_route_range_authority_receive_clock_and_base_decode_clock() -> TestResult {
+fn request_identity_binds_route_range_authority_receive_clock_and_base_decode_clock() -> TestResult
+{
     let original = request()?;
     let normalized = ReplayRequest::new(
         original.scope().clone(),
         original.route(),
-        ReplayWindow::from_timestamps(
-            "20261105T010000.000000000Z",
-            "20261105T010500.000Z",
-        )?,
+        ReplayWindow::from_timestamps("20261105T010000.000000000Z", "20261105T010500.000Z")?,
         original.base_decode_clock(),
     )?;
     assert_eq!(normalized, original);
@@ -222,10 +225,7 @@ fn request_identity_binds_route_range_authority_receive_clock_and_base_decode_cl
             4 => recording.receive_clock = ContentDigest::sha256(b"different receive clock"),
             5 => route = ContentDigest::sha256(b"different approved route"),
             6 => {
-                window = ReplayWindow::from_timestamps(
-                    "20261105T010001Z",
-                    "20261105T010500Z",
-                )?;
+                window = ReplayWindow::from_timestamps("20261105T010001Z", "20261105T010500Z")?;
             }
             _ => base = ContentDigest::sha256(b"different base decode clock"),
         }
@@ -307,7 +307,10 @@ fn a_live_archive_slot_cannot_be_relabelled_as_a_replay_original() -> TestResult
             catalog_scope(&request),
             ContentDigest::sha256(b"approval"),
             accepted(&request)?,
-            vec![ReplayWindowProof::from_avc(live.window_slot(0)?, &recording)?],
+            vec![ReplayWindowProof::from_avc(
+                live.window_slot(0)?,
+                &recording
+            )?],
             ReplayTermination::RequestedStop,
             true
         ),
@@ -320,14 +323,17 @@ fn a_live_archive_slot_cannot_be_relabelled_as_a_replay_original() -> TestResult
             recording.manifest().root(),
             request.scope(),
             &NeverCancel
-        )?.manifest().root(),
+        )?
+        .manifest()
+        .root(),
         recording.manifest().root()
     );
     Ok(())
 }
 
 #[test]
-fn bounded_contiguous_original_prefix_rejects_duplicates_overlap_and_missing_ordinals() -> TestResult {
+fn bounded_contiguous_original_prefix_rejects_duplicates_overlap_and_missing_ordinals() -> TestResult
+{
     let request = request()?;
     let namespace = ArchiveNamespace::new(catalog_scope(&request))?;
     let source = fixture(73, true)?;
@@ -341,12 +347,15 @@ fn bounded_contiguous_original_prefix_rejects_duplicates_overlap_and_missing_ord
         ReplayWindowProof::from_avc(namespace.window_slot(0)?, &next)?,
         ReplayWindowProof::from_avc(namespace.window_slot(2)?, &next)?,
     ] {
-        assert!(prepare(
-            request.clone(),
-            vec![first_proof.clone(), second],
-            ReplayTermination::RequestedStop,
-            true
-        ).is_err());
+        assert!(
+            prepare(
+                request.clone(),
+                vec![first_proof.clone(), second],
+                ReplayTermination::RequestedStop,
+                true
+            )
+            .is_err()
+        );
     }
     let mut maximum = Vec::new();
     for ordinal in 0..MAX_REPLAY_WINDOWS {
@@ -361,7 +370,9 @@ fn bounded_contiguous_original_prefix_rejects_duplicates_overlap_and_missing_ord
             maximum.clone(),
             ReplayTermination::Budget,
             true
-        )?.windows().len(),
+        )?
+        .windows()
+        .len(),
         MAX_REPLAY_WINDOWS
     );
     maximum.push(first_proof);
@@ -383,14 +394,15 @@ fn bounded_contiguous_original_prefix_rejects_duplicates_overlap_and_missing_ord
 #[test]
 fn durable_replay_closure_survives_reopen_with_exact_original_native_verification() -> TestResult {
     let (root, mut publisher, receipt) = setup("reopen", 2)?;
-    let mut closure = BTreeSet::from([
-        receipt.manifest().metadata_digest().ok_or("metadata")?,
-    ]);
+    let mut closure = BTreeSet::from([receipt.manifest().metadata_digest().ok_or("metadata")?]);
     for original in receipt.windows() {
         closure.insert(original.root());
         closure.extend(original.original_leaf_digests());
     }
-    assert_eq!(receipt.manifest().children(), closure.into_iter().collect::<Vec<_>>());
+    assert_eq!(
+        receipt.manifest().children(),
+        closure.into_iter().collect::<Vec<_>>()
+    );
     assert_eq!(
         publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?.outcome,
         PublishOutcome::Published
@@ -410,7 +422,10 @@ fn durable_replay_closure_survives_reopen_with_exact_original_native_verificatio
     assert_eq!(loaded.acceptance(), receipt.acceptance());
     assert_eq!(loaded.approval(), receipt.approval());
     assert_eq!(loaded.rate_control(), "no");
-    assert_ne!(loaded.acceptance().requested(), loaded.acceptance().acknowledged());
+    assert_ne!(
+        loaded.acceptance().requested(),
+        loaded.acceptance().acknowledged()
+    );
     for original in loaded.windows() {
         let recording = load_recording(
             &reopened,
@@ -419,7 +434,10 @@ fn durable_replay_closure_survives_reopen_with_exact_original_native_verificatio
             loaded.request().scope(),
             &NeverCancel,
         )?;
-        assert_eq!(recording.summary().decode_interval, original.decode_interval());
+        assert_eq!(
+            recording.summary().decode_interval,
+            original.decode_interval()
+        );
         assert_eq!(recording.byte_len(), original.byte_len());
         assert_eq!(
             recording.children().map(|(_, digest, _)| digest),
@@ -454,9 +472,15 @@ fn absent_or_substituted_original_prevents_companion_publication() -> TestResult
         }
         assert!(matches!(
             publish_replay_receipt(&receipt, &mut publisher, &NeverCancel),
-            Err(E::Storage(RecordingIoError::NotDurable | RecordingIoError::RootConflict))
+            Err(E::Storage(
+                RecordingIoError::NotDurable | RecordingIoError::RootConflict
+            ))
         ));
-        assert!(publisher.root(&replay_slot(receipt.scope(), receipt.request().digest())?).is_none());
+        assert!(
+            publisher
+                .root(&replay_slot(receipt.scope(), receipt.request().digest())?)
+                .is_none()
+        );
     }
     Ok(())
 }
@@ -470,9 +494,16 @@ fn cancellation_before_each_commit_cut_preserves_originals_and_allows_exact_retr
     ] {
         let (_, mut publisher, receipt) = setup("cancel", 2)?;
         assert!(publish_replay_receipt(&receipt, &mut publisher, &StopAt(cut)).is_err());
-        assert!(publisher.root(&replay_slot(receipt.scope(), receipt.request().digest())?).is_none());
+        assert!(
+            publisher
+                .root(&replay_slot(receipt.scope(), receipt.request().digest())?)
+                .is_none()
+        );
         for original in receipt.windows() {
-            assert_eq!(publisher.root(original.slot()).ok_or("original")?.root, original.root());
+            assert_eq!(
+                publisher.root(original.slot()).ok_or("original")?.root,
+                original.root()
+            );
         }
         assert_eq!(
             publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?.outcome,
@@ -503,7 +534,9 @@ fn every_root_last_crash_cut_keeps_originals_and_recovers_only_visible_receipts(
                     original.root(),
                     receipt.request().scope(),
                     &NeverCancel
-                )?.manifest().root(),
+                )?
+                .manifest()
+                .root(),
                 original.root()
             );
         }
@@ -515,7 +548,8 @@ fn every_root_last_crash_cut_keeps_originals_and_recovers_only_visible_receipts(
                     receipt.scope(),
                     receipt.request().digest(),
                     &NeverCancel
-                )?.root(),
+                )?
+                .root(),
                 receipt.root()
             );
             assert_eq!(
@@ -523,16 +557,21 @@ fn every_root_last_crash_cut_keeps_originals_and_recovers_only_visible_receipts(
                 PublishOutcome::AlreadyPublished
             );
         } else {
-            assert!(reopened.root(
-                &replay_slot(receipt.scope(), receipt.request().digest())?
-            ).is_none());
-            assert!(load_replay_receipt(
-                &reopened,
-                receipt.root(),
-                receipt.scope(),
-                receipt.request().digest(),
-                &NeverCancel
-            ).is_err());
+            assert!(
+                reopened
+                    .root(&replay_slot(receipt.scope(), receipt.request().digest())?)
+                    .is_none()
+            );
+            assert!(
+                load_replay_receipt(
+                    &reopened,
+                    receipt.root(),
+                    receipt.scope(),
+                    receipt.request().digest(),
+                    &NeverCancel
+                )
+                .is_err()
+            );
         }
     }
     Ok(())
@@ -552,13 +591,16 @@ fn cold_loading_requires_exact_root_request_scope_and_uncancelled_owner() -> Tes
         ),
         Err(E::Storage(RecordingIoError::RootConflict))
     ));
-    assert!(load_replay_receipt(
-        &publisher,
-        receipt.root(),
-        receipt.scope(),
-        ContentDigest::sha256(b"unrelated request"),
-        &NeverCancel
-    ).is_err());
+    assert!(
+        load_replay_receipt(
+            &publisher,
+            receipt.root(),
+            receipt.scope(),
+            ContentDigest::sha256(b"unrelated request"),
+            &NeverCancel
+        )
+        .is_err()
+    );
     for field in 0..7 {
         let mut scope = receipt.scope().clone();
         match field {
@@ -570,13 +612,16 @@ fn cold_loading_requires_exact_root_request_scope_and_uncancelled_owner() -> Tes
             5 => scope.decode_clock = ContentDigest::sha256(b"other decode clock"),
             _ => scope.time_scale += 1,
         }
-        assert!(load_replay_receipt(
-            &publisher,
-            receipt.root(),
-            &scope,
-            receipt.request().digest(),
-            &NeverCancel
-        ).is_err());
+        assert!(
+            load_replay_receipt(
+                &publisher,
+                receipt.root(),
+                &scope,
+                receipt.request().digest(),
+                &NeverCancel
+            )
+            .is_err()
+        );
     }
     assert!(matches!(
         load_replay_receipt(
@@ -592,7 +637,8 @@ fn cold_loading_requires_exact_root_request_scope_and_uncancelled_owner() -> Tes
 }
 
 #[test]
-fn coherent_rehash_of_false_original_accounting_still_requires_native_source_verification() -> TestResult {
+fn coherent_rehash_of_false_original_accounting_still_requires_native_source_verification()
+-> TestResult {
     let (_, mut publisher, receipt) = setup("forged-accounting", 1)?;
     let mut metadata = receipt.metadata_bytes().to_vec();
     let body_end = metadata.len().checked_sub(33).ok_or("checksum")?;
@@ -622,7 +668,11 @@ fn coherent_rehash_cannot_replace_the_replay_clock_with_a_live_decode_clock() ->
     live.decode_clock = receipt.request().base_decode_clock();
     let mut metadata = receipt.metadata_bytes().to_vec();
     let body_end = metadata.len().checked_sub(33).ok_or("checksum")?;
-    replace_digest(&mut metadata[..body_end], receipt.scope().decode_clock, live.decode_clock)?;
+    replace_digest(
+        &mut metadata[..body_end],
+        receipt.scope().decode_clock,
+        live.decode_clock,
+    )?;
     rechecksum(&mut metadata)?;
     let forged = publish_metadata(&mut publisher, &receipt, &live, &metadata)?;
     assert!(matches!(
@@ -639,7 +689,8 @@ fn coherent_rehash_cannot_replace_the_replay_clock_with_a_live_decode_clock() ->
 }
 
 #[test]
-fn hostile_counts_unknown_tags_noncanonical_trailing_bytes_and_bad_checksums_are_refused() -> TestResult {
+fn hostile_counts_unknown_tags_noncanonical_trailing_bytes_and_bad_checksums_are_refused()
+-> TestResult {
     for mutation in 0..6 {
         let (_, mut publisher, receipt) = setup("malformed", 1)?;
         let mut metadata = receipt.metadata_bytes().to_vec();
@@ -682,10 +733,17 @@ fn dropping_an_original_leaf_from_the_rehashed_companion_closure_is_refused() ->
     let (_, mut publisher, receipt) = setup("missing-closure", 1)?;
     let metadata = publisher.stage_object(receipt.metadata_bytes())?;
     let removed = receipt.windows()[0].original_leaf_digests()[0];
-    let children = receipt.manifest().children().iter().copied()
+    let children = receipt
+        .manifest()
+        .children()
+        .iter()
+        .copied()
         .filter(|value| *value != removed && *value != metadata);
     let forged = ObjectManifest::new(REPLAY_RECEIPT_KIND, children, Some(metadata))?;
-    publisher.publish(&replay_slot(receipt.scope(), receipt.request().digest())?, &forged)?;
+    publisher.publish(
+        &replay_slot(receipt.scope(), receipt.request().digest())?,
+        &forged,
+    )?;
     assert!(matches!(
         load_replay_receipt(
             &publisher,
@@ -734,22 +792,36 @@ fn durable_tombstones_of_originals_or_companion_evidence_block_cold_loading() ->
         }
         let reopened = LocalRootPublisher::open(root, limits())?;
         assert!(reopened.tombstones().any(|digest| *digest == deleted));
-        assert!(load_replay_receipt(
-            &reopened,
-            receipt.root(),
-            receipt.scope(),
-            receipt.request().digest(),
-            &NeverCancel
-        ).is_err());
+        assert!(
+            load_replay_receipt(
+                &reopened,
+                receipt.root(),
+                receipt.scope(),
+                receipt.request().digest(),
+                &NeverCancel
+            )
+            .is_err()
+        );
     }
     Ok(())
 }
 
 #[test]
-fn accepted_empty_attempts_keep_termination_separate_from_publication_and_cannot_be_overwritten() -> TestResult {
+fn accepted_empty_attempts_keep_termination_separate_from_publication_and_cannot_be_overwritten()
+-> TestResult {
     let request = request()?;
-    let failed = prepare(request.clone(), Vec::new(), ReplayTermination::ProtocolFailure, false)?;
-    let settled = prepare(request.clone(), Vec::new(), ReplayTermination::ProtocolFailure, true)?;
+    let failed = prepare(
+        request.clone(),
+        Vec::new(),
+        ReplayTermination::ProtocolFailure,
+        false,
+    )?;
+    let settled = prepare(
+        request.clone(),
+        Vec::new(),
+        ReplayTermination::ProtocolFailure,
+        true,
+    )?;
     let stopped = prepare(request, Vec::new(), ReplayTermination::RequestedStop, true)?;
     assert_ne!(failed.root(), settled.root());
     assert_ne!(settled.root(), stopped.root());
@@ -779,8 +851,12 @@ fn accepted_empty_attempts_keep_termination_separate_from_publication_and_cannot
 
 fn hevc_request() -> Result<ReplayRequest, Error> {
     let avc = request()?;
-    Ok(ReplayRequest::new_hevc(hevc_recording_support::scope()?, avc.route(),
-        avc.window(), avc.base_decode_clock())?)
+    Ok(ReplayRequest::new_hevc(
+        hevc_recording_support::scope()?,
+        avc.route(),
+        avc.window(),
+        avc.base_decode_clock(),
+    )?)
 }
 
 fn hevc_setup(name: &str) -> Result<(PathBuf, LocalRootPublisher, ReplayReceipt), Error> {
@@ -790,7 +866,8 @@ fn hevc_setup(name: &str) -> Result<(PathBuf, LocalRootPublisher, ReplayReceipt)
     let namespace = HevcArchiveNamespace::new(catalog_scope(&request))?;
     // Three real parameter NALs close the second picture and remain source-only.
     let packets = hevc_recording_support::packets()?;
-    let original = hevc_recording_support::prepare(&packets[..8], &hevc_recording_support::timings(2))?;
+    let original =
+        hevc_recording_support::prepare(&packets[..8], &hevc_recording_support::timings(2))?;
     assert_eq!(original.source_only_nals(), 3);
     let slot = namespace.window_slot(0)?;
     publish_window(&mut publisher, &slot, original.publication_plan())?;
@@ -804,21 +881,34 @@ fn hevc_replay_reopens_native_originals_with_exact_source_only_boundary_witnesse
     let (root, mut publisher, receipt) = hevc_setup("hevc-reopen")?;
     assert_eq!(receipt.request().codec(), ReplayCodec::Hevc);
     assert_eq!(receipt.manifest().kind(), HEVC_REPLAY_RECEIPT_KIND);
-    assert_eq!(receipt.slot()?, hevc_replay_slot(receipt.scope(), receipt.request().digest())?);
+    assert_eq!(
+        receipt.slot()?,
+        hevc_replay_slot(receipt.scope(), receipt.request().digest())?
+    );
     assert!(receipt.slot()?.as_str().starts_with("fssrr1-hevc-"));
     publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?;
     drop(publisher);
     let mut reopened = LocalRootPublisher::open(root, limits())?;
-    let loaded = load_hevc_replay_receipt(&reopened, receipt.root(), receipt.scope(),
-        receipt.request().digest(), &NeverCancel)?;
+    let loaded = load_hevc_replay_receipt(
+        &reopened,
+        receipt.root(),
+        receipt.scope(),
+        receipt.request().digest(),
+        &NeverCancel,
+    )?;
     assert_eq!(loaded.metadata_bytes(), receipt.metadata_bytes());
     assert_eq!(loaded.windows(), receipt.windows());
     assert_eq!(loaded.request(), receipt.request());
     assert_eq!(loaded.acceptance(), receipt.acceptance());
     let proof = &loaded.windows()[0];
     assert_eq!(proof.codec(), ReplayCodec::Hevc);
-    let original = load_hevc_recording(&reopened, proof.slot(), proof.root(),
-        loaded.request().scope(), &NeverCancel)?;
+    let original = load_hevc_recording(
+        &reopened,
+        proof.slot(),
+        proof.root(),
+        loaded.request().scope(),
+        &NeverCancel,
+    )?;
     assert_eq!(original.source_only_nals(), 3);
     assert_eq!(original.summary().samples, 2);
     assert_eq!(original.summary().nals, 5);
@@ -830,27 +920,61 @@ fn hevc_replay_reopens_native_originals_with_exact_source_only_boundary_witnesse
         assert_eq!(actual.received_ns, expected.received_ns);
         assert_eq!(actual.sequence, expected.sequence);
     }
-    assert_eq!(publish_replay_receipt(&receipt, &mut reopened, &NeverCancel)?.outcome,
-        PublishOutcome::AlreadyPublished);
-    assert!(load_replay_receipt(&reopened, receipt.root(), receipt.scope(),
-        receipt.request().digest(), &NeverCancel).is_err());
-    assert!(matches!(load_hevc_replay_receipt(&reopened, receipt.root(), receipt.scope(),
-        receipt.request().digest(), &StopAt(PublishCutPoint::AfterChildrenVerified)),
-        Err(E::Storage(RecordingIoError::Cancelled))));
+    assert_eq!(
+        publish_replay_receipt(&receipt, &mut reopened, &NeverCancel)?.outcome,
+        PublishOutcome::AlreadyPublished
+    );
+    assert!(
+        load_replay_receipt(
+            &reopened,
+            receipt.root(),
+            receipt.scope(),
+            receipt.request().digest(),
+            &NeverCancel
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        load_hevc_replay_receipt(
+            &reopened,
+            receipt.root(),
+            receipt.scope(),
+            receipt.request().digest(),
+            &StopAt(PublishCutPoint::AfterChildrenVerified)
+        ),
+        Err(E::Storage(RecordingIoError::Cancelled))
+    ));
     Ok(())
 }
 
 #[test]
-fn codec_choice_changes_replay_identity_and_cannot_cross_original_or_receipt_families() -> TestResult {
+fn codec_choice_changes_replay_identity_and_cannot_cross_original_or_receipt_families() -> TestResult
+{
     let hevc = hevc_request()?;
-    let avc = ReplayRequest::new(hevc.scope().clone(), hevc.route(), hevc.window(), hevc.base_decode_clock())?;
+    let avc = ReplayRequest::new(
+        hevc.scope().clone(),
+        hevc.route(),
+        hevc.window(),
+        hevc.base_decode_clock(),
+    )?;
     assert_ne!(avc.digest(), hevc.digest());
     assert_ne!(avc.decode_clock(), hevc.decode_clock());
     let original = hevc_recording_support::fixture()?;
     let namespace = HevcArchiveNamespace::new(catalog_scope(&hevc))?;
-    assert!(ReplayWindowProof::from_avc(namespace.window_slot(0)?, original.publication_plan()).is_err());
+    assert!(
+        ReplayWindowProof::from_avc(namespace.window_slot(0)?, original.publication_plan())
+            .is_err()
+    );
     let proof = ReplayWindowProof::from_hevc(namespace.window_slot(0)?, &original)?;
-    assert!(prepare(avc.clone(), vec![proof], ReplayTermination::RequestedStop, true).is_err());
+    assert!(
+        prepare(
+            avc.clone(),
+            vec![proof],
+            ReplayTermination::RequestedStop,
+            true
+        )
+        .is_err()
+    );
     let avc_receipt = prepare(avc, Vec::new(), ReplayTermination::ProtocolFailure, false)?;
     let hevc_receipt = prepare(hevc, Vec::new(), ReplayTermination::ProtocolFailure, false)?;
     assert_ne!(avc_receipt.root(), hevc_receipt.root());
@@ -862,8 +986,16 @@ fn codec_choice_changes_replay_identity_and_cannot_cross_original_or_receipt_fam
     // the explicitly chosen HEVC loader select AVC from the stored manifest.
     let slot = hevc_replay_slot(avc_receipt.scope(), avc_receipt.request().digest())?;
     publisher.publish(&slot, avc_receipt.manifest())?;
-    assert!(matches!(load_hevc_replay_receipt(&publisher, avc_receipt.root(), avc_receipt.scope(),
-        avc_receipt.request().digest(), &NeverCancel), Err(E::Digest)));
+    assert!(matches!(
+        load_hevc_replay_receipt(
+            &publisher,
+            avc_receipt.root(),
+            avc_receipt.scope(),
+            avc_receipt.request().digest(),
+            &NeverCancel
+        ),
+        Err(E::Digest)
+    ));
     Ok(())
 }
 
@@ -880,8 +1012,16 @@ fn hevc_replay_cannot_publish_absent_originals_or_trust_rehashed_accounting() ->
     metadata[offset..offset + 8].copy_from_slice(&invented.to_be_bytes());
     rechecksum(&mut metadata)?;
     let forged = publish_metadata(&mut publisher, &receipt, receipt.scope(), &metadata)?;
-    assert!(matches!(load_hevc_replay_receipt(&publisher, forged.root(), receipt.scope(),
-        receipt.request().digest(), &NeverCancel), Err(E::WindowMismatch)));
+    assert!(matches!(
+        load_hevc_replay_receipt(
+            &publisher,
+            forged.root(),
+            receipt.scope(),
+            receipt.request().digest(),
+            &NeverCancel
+        ),
+        Err(E::WindowMismatch)
+    ));
     Ok(())
 }
 
@@ -896,15 +1036,32 @@ fn hevc_replay_source_tombstone_prevents_a_cold_verified_receipt() -> TestResult
     let donor_root = path("hevc-tombstone-donor");
     let mut donor = LocalRootPublisher::open(&donor_root, limits())?;
     let witness = donor.stage_object(witness_bytes)?;
-    donor.record_tombstone(TombstoneRecord::new(ObjectId::parse("object:hevc-replay-fixture")?,
-        Generation(2), Generation(1), TombstoneReason::Deleted, Some(witness), deleted)?)?;
+    donor.record_tombstone(TombstoneRecord::new(
+        ObjectId::parse("object:hevc-replay-fixture")?,
+        Generation(2),
+        Generation(1),
+        TombstoneReason::Deleted,
+        Some(witness),
+        deleted,
+    )?)?;
     drop(donor);
     for entry in std::fs::read_dir(donor_root.join(LOCAL_TOMBSTONES_DIR))? {
         let entry = entry?;
-        std::fs::copy(entry.path(), root.join(LOCAL_TOMBSTONES_DIR).join(entry.file_name()))?;
+        std::fs::copy(
+            entry.path(),
+            root.join(LOCAL_TOMBSTONES_DIR).join(entry.file_name()),
+        )?;
     }
     let reopened = LocalRootPublisher::open(root, limits())?;
-    assert!(load_hevc_replay_receipt(&reopened, receipt.root(), receipt.scope(),
-        receipt.request().digest(), &NeverCancel).is_err());
+    assert!(
+        load_hevc_replay_receipt(
+            &reopened,
+            receipt.root(),
+            receipt.scope(),
+            receipt.request().digest(),
+            &NeverCancel
+        )
+        .is_err()
+    );
     Ok(())
 }

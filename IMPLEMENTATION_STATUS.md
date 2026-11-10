@@ -4,27 +4,49 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Historical recorder RTP timestamp interpretation
+## Cold recorder-reported UTC queries over retained AVC/HEVC
 
-The packet layer now interprets the fixed ONVIF 0xABAC AVC/HEVC replay extension
-without allocation or I/O. It preserves raw NTP seconds/fraction, C/E/D/T device
-assertions and the low byte of PLAY CSeq. Foreign profiles remain distinct from
-malformed known extensions; reserved bits and unsupported extension tails refuse.
-An explicit caller-supplied NTP era produces outward-rounded integer nanosecond
-bounds in the existing 1970-9999 UTC profile. Raw-zero time remains unknown.
-These bounds describe numeric rounding only; physical clock error is unknown.
+`fss-archive query-replay-utc` now connects the native ONVIF 0xABAC timestamp
+parser to independently pinned replay receipts and cold original-source
+verification. Exact native packet mappings produce sample citations, explicit
+unknowns and separate HEVC source-only lookahead. Whole access-unit ownership
+includes AVC parameter sets relocated into initialization and HEVC in-band
+prefixes. Missing first assertions cannot be repaired by later packets;
+conflicting or malformed assertions remain unknown.
 
-The first-packet requirement and repeated-header consistency belong to the
-source-to-sample owner. The packet API does not infer an era from the requested
-range, receive clock or RTCP, authenticate the recorder, establish full CSeq
-identity, claim coverage, or alter original recording formats. The cold archive
-query is the next integration step of VIT-022 and is not claimed in this checkpoint.
+An explicit external NTP era yields outward-rounded nanosecond enclosures of
+recorder assertions. Decode/presentation order, B-frame reordering, raw NTP and
+C/E/D/T flags remain visible. Requested/acknowledged ranges, receive clocks and
+RTCP never substitute for historical UTC. Low-byte CSeq agreement does not prove
+full PLAY identity. Physical clock error, coverage and absence remain unknown.
+Deterministic index/report identities bind every association and exact query,
+while existing source, live capture and replay receipt encodings remain unchanged.
 
-Validation: **18 protocol contracts authored and independently source-reviewed**,
-including real RTP CSRC/extension/padding parsing, fraction boundaries, era rollover,
-unknown time, year-9999 bounds and low-byte ambiguity. Native compilation, tests
-and pinned formatting have not run for this slice because the workspace is
-unavailable. No dependency or qualification gate has been changed.
+Metadata admission precedes original I/O. Every original child read is capped by
+the remaining native 32 MiB window allowance before allocation, including hostile
+later-child replacements. Sample/packet limits bound admitted and projected
+counts; malformed descriptors can still consume the verifier's intrinsic bounded
+per-window work before refusal. Result ceilings count matches, unknowns and
+source-only rows together; no partial report is returned on budget, custody or
+cancellation failure. Final source/receipt/tombstone checks remain mandatory.
+
+Validation: **36 native parser contracts passed** on pinned nightly `2026-08-31`:
+18 replay-extension/era contracts and 18 shared production ONVIF wire contracts,
+with zero executed-test failures or ignored cases. The latter target exercises
+14 recorder-wire and four existing snapshot-wire contracts. The 18 new native
+source/custody and eight new CLI process contracts remain **unexecuted**. Four
+full-build or metadata-check attempts were terminated by SIGKILL while compiling
+unchanged Asupersync 0.5.0, before the new reference or CLI feature source compiled.
+
+Independent source/API review, scoped pinned formatting and `git diff --check`
+are complete. The parser passes do not establish cold-query source association,
+custody or operator execution, hardware interoperability or release qualification.
+No dependency or qualification gate has changed. The [retained native results](docs/validation/2026-11-10-recorder-time-native-results.json)
+record exact source identities, commands, passing targets and blocked attempts.
+
+See [operator commands and precise time/budget semantics](docs/RECORDER_TIMESTAMP_QUERY.md).
+Replay-provenance-preserving ordinary import, calibrated device time and complete
+historical retrieval remain open. This advances VIT-022 without closing it.
 
 ## Full-class detector probabilities before foreground selection
 

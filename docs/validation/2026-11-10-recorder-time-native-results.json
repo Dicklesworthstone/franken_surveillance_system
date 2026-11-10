@@ -1,0 +1,332 @@
+{
+  "scope": "Targeted native developer validation; no release qualification claim.",
+  "recorded_at_utc": "2026-11-10T07:22:39.062332+00:00",
+  "working_tree_base_commit": "305c281444ff02a84c8b83042f671f40f56e450e",
+  "source_scope": "The base commit plus the exact Rust source snapshot below was present in the isolated checkout. Only the two successful targets executed; blocked reference and CLI attempts did not reach their feature compilation.",
+  "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+  "compiler_commit": "90850177249efe0321573c569aec5d12b257f8d6",
+  "toolchain": "nightly-2026-08-31",
+  "cargo_lock_sha256": "588387df14c8aaab77c76c5a3778c3675ae1c9e82d97b95b8162b107611106a1",
+  "environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_NET_OFFLINE": "true"
+  },
+  "configurations": {
+    "baseline": {
+      "RUSTFLAGS": "-Zthreads=1"
+    },
+    "bounded_codegen": {
+      "RUSTFLAGS": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes",
+      "profile.dev.package.asupersync.codegen-units": 256,
+      "profile.test.package.asupersync.codegen-units": 256
+    }
+  },
+  "passed_tests": 36,
+  "executed_test_failures": 0,
+  "successful_runs": [
+    {
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-packet",
+        "--test",
+        "onvif_replay_contract"
+      ],
+      "started_at": "2026-11-10T07:08:38.134674+00:00",
+      "elapsed_seconds": 8.608,
+      "exit_code": 0,
+      "max_child_rss_kib": 643444,
+      "log_name": "packet.log",
+      "log_sha256": "2f04c0c01b95254061b104e2bf927f96a294bf2dc74d04d9b34a30a01754a8f8",
+      "log_bytes": 1985,
+      "target": "fss-packet/onvif_replay_contract",
+      "configuration": "baseline",
+      "passed": 18,
+      "failed": 0,
+      "ignored": 0,
+      "notes": "18 packet-extension and explicit-era conversion contracts."
+    },
+    {
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-core",
+        "--test",
+        "onvif_recording_wire_contract"
+      ],
+      "started_at": "2026-11-10T07:14:07.344106+00:00",
+      "elapsed_seconds": 0.949,
+      "exit_code": 0,
+      "max_child_rss_kib": 209164,
+      "log_name": "onvif-wire-fixed.log",
+      "log_sha256": "014aa493eebffc34b2ebf2d2603d0c85c7fe8f6cf890345c133cbb1f8099cff9",
+      "log_bytes": 2658,
+      "target": "fss-core/onvif_recording_wire_contract",
+      "configuration": "baseline",
+      "passed": 18,
+      "failed": 0,
+      "ignored": 0,
+      "notes": "14 recorder wire contracts and 4 existing snapshot wire unit contracts, importing the actual production parser."
+    }
+  ],
+  "blocked_native_attempts": [
+    {
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-reference",
+        "--test",
+        "recording_replay_contract",
+        "--test",
+        "rtsp_replay_contract"
+      ],
+      "started_at": "2026-11-10T07:11:56.261653+00:00",
+      "elapsed_seconds": 116.888,
+      "exit_code": 101,
+      "max_child_rss_kib": 5480824,
+      "log_name": "reference-replay.log",
+      "log_sha256": "287e48febdbdf980bf9ad13b1a4d5e776e60b3af7d5fcb25352da2bfaa2053e5",
+      "log_bytes": 23306,
+      "configuration": "baseline",
+      "blocking_dependency": "asupersync 0.5.0",
+      "termination": "SIGKILL",
+      "reference_or_cli_feature_targets_compiled": false,
+      "feature_tests_executed": false
+    },
+    {
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-reference",
+        "--test",
+        "recording_replay_contract",
+        "--test",
+        "rtsp_replay_contract",
+        "-p",
+        "fss-cli",
+        "--test",
+        "archive_replay_process"
+      ],
+      "started_at": "2026-11-10T07:14:39.214835+00:00",
+      "elapsed_seconds": 81.089,
+      "exit_code": 101,
+      "max_child_rss_kib": 4616308,
+      "log_name": "native-check.log",
+      "log_sha256": "7e561fd957510f43da78544e524f9ffe578cb906fa8be696f10c91085cf9320b",
+      "log_bytes": 22560,
+      "configuration": "baseline",
+      "blocking_dependency": "asupersync 0.5.0",
+      "termination": "SIGKILL",
+      "reference_or_cli_feature_targets_compiled": false,
+      "feature_tests_executed": false
+    },
+    {
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "--config",
+        "profile.dev.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.test.package.asupersync.codegen-units=256",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-fail-fast",
+        "-p",
+        "fss-reference",
+        "--test",
+        "recording_replay_contract",
+        "--test",
+        "rtsp_replay_contract"
+      ],
+      "started_at": "2026-11-10T07:16:58.726717+00:00",
+      "elapsed_seconds": 131.079,
+      "exit_code": 101,
+      "max_child_rss_kib": 6169108,
+      "log_name": "reference-known-settings.log",
+      "log_sha256": "97ae614892c6847d6eb85a31daf785994c62c96c4a88bee960bdcdb903216ac4",
+      "log_bytes": 23421,
+      "configuration": "bounded_codegen",
+      "blocking_dependency": "asupersync 0.5.0",
+      "termination": "SIGKILL",
+      "reference_or_cli_feature_targets_compiled": false,
+      "feature_tests_executed": false
+    },
+    {
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "--config",
+        "profile.dev.package.asupersync.codegen-units=256",
+        "--config",
+        "profile.test.package.asupersync.codegen-units=256",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-reference",
+        "--test",
+        "recording_replay_contract",
+        "--test",
+        "rtsp_replay_contract",
+        "-p",
+        "fss-cli",
+        "--test",
+        "archive_replay_process"
+      ],
+      "started_at": "2026-11-10T07:20:41.105532+00:00",
+      "elapsed_seconds": 66.979,
+      "exit_code": 101,
+      "max_child_rss_kib": 3822048,
+      "log_name": "native-check-known-settings.log",
+      "log_sha256": "bef9224512ebaec8a5dbc92b713d80e703432a7cf953535ab562c5e645056485",
+      "log_bytes": 22675,
+      "configuration": "bounded_codegen",
+      "blocking_dependency": "asupersync 0.5.0",
+      "termination": "SIGKILL",
+      "reference_or_cli_feature_targets_compiled": false,
+      "feature_tests_executed": false
+    }
+  ],
+  "corrected_compile_diagnostic": {
+    "target": "fss-core/onvif_recording_wire_contract",
+    "initial_exit_code": 101,
+    "error": "E0583: nested canonical/range module paths resolved relative to the #[path]-included production wrapper.",
+    "fix": "Explicit recording/canonical.rs and recording/range.rs child paths in crates/fss-reference/src/onvif/wire/recording.rs.",
+    "verified_by": "onvif-wire-fixed.log"
+  },
+  "source_snapshot": [
+    {
+      "path": "crates/fss-cli/src/bin/fss-archive.rs",
+      "git_blob": "083b6d2d362fdfd59a11851139069f954488e6fc",
+      "sha256": "f5694a4b7c001b95b48968f84561dad50b3963cae330949261acdc6a7061be59"
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-archive/replay.rs",
+      "git_blob": "98d8691d07a54e04d08cfcd8d121debc9f3f8f87",
+      "sha256": "f64a168b3e43a0fba6faa8543ac47266b4516953369017e42e19b2f01b575a40"
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-archive/replay_time.rs",
+      "git_blob": "91879e3cc5c47da6e4240f4eff2ce3ca9f56086a",
+      "sha256": "7eb5af514854978c9c95cfb5bdd4b9bc61198b994870cbb8bc3a5c8a39e4a733"
+    },
+    {
+      "path": "crates/fss-cli/tests/archive_replay_process.rs",
+      "git_blob": "3184b85e6679989eff66f065d8d6cfc471b3d47a",
+      "sha256": "c6fe550a3f6e7728458099b2aec021d5e1261dde64ad607f3b45112ebff8baad"
+    },
+    {
+      "path": "crates/fss-cli/tests/archive_replay_process/time.rs",
+      "git_blob": "8cd425a77dc35f05ce02f731db757d948a2c7941",
+      "sha256": "059cc8766120bebe755db6225920ad23084696b4447db1b65e41f1b89da0bd0b"
+    },
+    {
+      "path": "crates/fss-packet/src/lib.rs",
+      "git_blob": "9d48ab2c5b53138edfbea864ebac19a0abefc57d",
+      "sha256": "6ebdada3f942e0e5e6c07915e9d7bad5a6338dc229e7263d9c93ef063bf73cf9"
+    },
+    {
+      "path": "crates/fss-packet/src/onvif_replay.rs",
+      "git_blob": "eabb2f860ecda88944ec0f58b62551e3a9cbd7d1",
+      "sha256": "554e47e77d19a74bbfb6110e1b69c270aeda815f236ec80a37674cae193b79b0"
+    },
+    {
+      "path": "crates/fss-packet/tests/onvif_replay_contract.rs",
+      "git_blob": "c2b0ab09cf54f59756e4a75eb0e3c06a5e154892",
+      "sha256": "e448bf2b90bd971232a25f123fb204af0eea042f441e3160999234c153234058"
+    },
+    {
+      "path": "crates/fss-reference/src/onvif/wire/recording.rs",
+      "git_blob": "8ef41d3e7e32d5b7b1c899bc0c12e09c99b824c3",
+      "sha256": "98863ce77abb0be09dadf8318b30be80a1f4651826ead5845ff92cda0aa7e616"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording.rs",
+      "git_blob": "425548fe9160f2e5bc62e995f0ed105e5bf5c99c",
+      "sha256": "954e34967825ae2b1a1fcc4cdd9d4e870d3300ecee8b5df0585040b22957764a"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording/local.rs",
+      "git_blob": "829425bd0cbbaf93f6d9a04ee5ec4234662122e7",
+      "sha256": "af57944545d1f8c65c8a1bfab327bb8cc6002db7173a59261a1a873d42afa99c"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording_replay.rs",
+      "git_blob": "292f796a28a4cdfdd23eb30161a61ef42920d104",
+      "sha256": "5569832400be9d94e6d2d90b0155257a5502352a9bf55696d1ac4a71e83fb310"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording_replay/storage.rs",
+      "git_blob": "e9e047db507c86517afbfd02eff98723b6ee4b1c",
+      "sha256": "7713a4afbbdc92b945348d41700f19cf989056061f3c3404f4abc4de7d605ca3"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording_replay/time.rs",
+      "git_blob": "0394c893042cb97fd59c1a0916c9e3369bfdaac3",
+      "sha256": "ac2b3cbe35e7bd27095c0528399933053a267e53bb909b5d579746db7c637c98"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording_replay/time/proof.rs",
+      "git_blob": "bafd5a419847f2b00251cdd39d4d3a2cd1f504d3",
+      "sha256": "fd3e30823949c7c92c7987df09d1963a87c8cb31f3b0856b16796bac28a28302"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording_replay/time/scan.rs",
+      "git_blob": "3508e0b56001d51b16c867d6ecc8aa2697d87b00",
+      "sha256": "62e638f42c7ac630475c20ba2feced3893e494e91f6ec48f0f0b96c608caed55"
+    },
+    {
+      "path": "crates/fss-reference/src/rtsp/recording_replay/time/source.rs",
+      "git_blob": "bc27b80c77acd8ecfb9717a795026e74af62892c",
+      "sha256": "7189d1c7d7d53b4c2d3374bf85e495789153c3141b7272497442386851c4e67f"
+    },
+    {
+      "path": "crates/fss-reference/tests/recording_replay_contract.rs",
+      "git_blob": "8b8521330360d976688e3ec9148f604eaa167121",
+      "sha256": "2c77f349bb2be4c99d7c2b7f24e82c40d85be58ffcab9bd8f5a27efec67dadb2"
+    },
+    {
+      "path": "crates/fss-reference/tests/recording_replay_contract/utc.rs",
+      "git_blob": "73cc44f3bbdf0f1c3f3ceb47327fb9817a9d8dee",
+      "sha256": "2b5b66176bdc004cf4868f6d37f5ef2c47b722d264860a05561cffad248f509b"
+    },
+    {
+      "path": "crates/fss-reference/tests/recording_replay_contract/utc/bounded_io.rs",
+      "git_blob": "bcf4ce16310d525a5ffa108222068860c2fe7c01",
+      "sha256": "88e9ad47834243fd61e933db91d23fe775720fcce40e876bf6de27f20cea5cc0"
+    },
+    {
+      "path": "crates/fss-reference/tests/recording_replay_contract/utc/fixtures.rs",
+      "git_blob": "bd8ae14335f7254cf97d7038b1bbb452f69fbee7",
+      "sha256": "509cdde3782f67ea46881da42073327d81adce7a9126967e41c222eea966d595"
+    }
+  ],
+  "claim_boundaries": [
+    "All commands used the exact pinned toolchain, locked dependency graph and offline cached dependencies. No source replacement, dependency change, feature removal, assertion change, panic strategy change or gate weakening was used.",
+    "The 36 passed tests establish packet and actual production wire-parser behavior. They do not establish the native recorder client, cold source query, native source custody association, operator process behavior or end-to-end capture.",
+    "Reference recording_replay_contract, rtsp_replay_contract and CLI archive_replay_process remain pending native compilation and execution for this source snapshot.",
+    "The compiler process was killed by the execution environment inside Asupersync in both full compilation and metadata-only modes. No new feature assertion failed because those targets did not execute.",
+    "Existing hosted results at other commits and previous session results are not promoted to verification of this source snapshot."
+  ],
+  "log_retention": "Raw logs remain in the task scratch validation directory; names, byte lengths and SHA-256 values above identify the observed outputs without committing large logs."
+}

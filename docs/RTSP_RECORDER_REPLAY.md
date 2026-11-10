@@ -8,8 +8,11 @@ the exact original recording windows.
 This advances VIT-022 (`fss-vit022-recorder-retrieval-5js5o`). The separate
 [ONVIF recording discovery workflow](ONVIF_RECORDING_DISCOVERY.md) now obtains a
 scoped GetReplayUri from an exact recording selection and supplies a protected
-`from-onvif-replay` handoff. Remote search sessions, vendor-specific URI discovery,
-proof of upstream media retention and historical per-frame timestamp indexing remain open.
+`from-onvif-replay` handoff. The [cold recorder UTC query](RECORDER_TIMESTAMP_QUERY.md)
+now associates supported historical RTP assertions with verified native samples.
+Remote search sessions, vendor-specific URI discovery, proof of upstream media
+retention, calibrated device time and preservation of replay provenance through
+ordinary evidence import remain open.
 
 ## Capture an explicitly selected interval
 
@@ -202,10 +205,22 @@ relative decode timing retain their meanings. Optional node-clock indexes still
 describe present-time read/admission observations; `fss-archive query-utc` does
 not silently become a historical-recorder-time query.
 
-ONVIF historical RTP extensions remain in the original datagrams when present,
-but this slice does not interpret them. RTCP sender-report time is not substituted
-for historical frame time. Fixed cadence and closed presentation-prefix rules
-continue to reject unsupported gaps, timing changes and unresolved reordering.
+`fss-archive query-replay-utc` interprets the fixed ONVIF `0xABAC` AVC/HEVC replay
+extension from those retained originals after native source verification. It
+requires independently pinned receipt/request/scope/codec and an explicit NTP era.
+The first contributing access-unit packet must carry the assertion; later
+absence is permitted, while missing first assertions, conflicting repetitions,
+malformed fields and ambiguous ownership remain explicit unknowns. Source-only
+HEVC lookahead remains separate from media matches. Decode and presentation
+coordinates retain their native order, including nonmonotonic B-frame UTC.
+
+The query returns conservative nanosecond rounding enclosures of recorder
+assertions, with unknown physical clock error. Requested/acknowledged ranges,
+fixed cadence, receive time and RTCP sender reports never fill missing sample UTC.
+Observed assertions outside the PLAY range, including possible clean-point
+preroll, are filtered only by the explicit query interval. C/E/D/T flags and a
+matching low CSeq byte do not prove continuous coverage, full PLAY identity or
+retrieval completion. See [commands, citations and bounds](RECORDER_TIMESTAMP_QUERY.md).
 
 Raw RTSP/control wire remains omitted. The replay companion retains the validated
 request/acknowledgement facts, not credentials, session tokens or URI text.
@@ -213,6 +228,21 @@ Transport and local original-media custody retain their existing plaintext
 policies; no new encryption or recorder-identity claim is made.
 
 ## Regression coverage and validation status
+
+The historical UTC query adds 44 contracts: 18 packet, 18 native source/custody
+and eight real archive CLI process cases. **36 parser contracts passed** on pinned
+nightly `2026-08-31`: all 18 packet contracts and 18 shared production ONVIF wire
+contracts (14 recorder-wire and four existing snapshot-wire cases), with zero
+executed-test failures or ignored cases. The 18 new reference and eight new CLI
+query contracts remain **unexecuted**. Four full-build or metadata-check attempts
+were terminated by SIGKILL in unchanged Asupersync 0.5.0 before the new reference
+or CLI feature source compiled.
+
+Independent source/API review and scoped pinned formatting are complete. The
+[retained timestamp-query validation record](validation/2026-11-10-recorder-time-native-results.json)
+contains exact sources, commands, passes and blocked attempts. Parser passes do
+not prove cold-query source association, custody or operator execution, upgrade
+the earlier replay results, qualify a release or close VIT-022.
 
 The HEVC extension adds native contracts for codec-separated identities, cold
 reopen of real source-only boundary witnesses, mixed-family refusal, absent
@@ -231,13 +261,12 @@ HEVC bytes. Statuses 456/457/551 must retain their exact refusal and send no sec
 PLAY or live fallback. `archive_replay_process` covers explicit HEVC inspection
 and a deliberately substituted AVC selector.
 
-These additions require execution of the focused native targets in
-`scripts/check_recording_lifecycle.sh replay`. Local execution of this extension
-is currently blocked by the unchanged Asupersync 0.5.0 dependency being killed
-during metadata compilation at approximately 1.98 GiB peak resident memory, before
-FSS type checking. The earlier 350-test AVC result below does not establish that
-the new HEVC tests passed. No dependency, feature or qualification gate is changed
-to avoid that limitation.
+The HEVC capture additions require execution of the focused native targets in
+`scripts/check_recording_lifecycle.sh replay`. At the earlier HEVC checkpoint,
+local compilation was blocked by unchanged Asupersync 0.5.0 being killed at
+approximately 1.98 GiB peak resident memory, before FSS type checking. The earlier
+350-test AVC result below does not qualify the later HEVC additions. No dependency,
+feature or qualification gate is changed to avoid a build limitation.
 
 The later focused predecessor run executed the native receipt and CLI targets,
 passing 163 tests and exposing 10 failures across HEVC admission and fixtures.

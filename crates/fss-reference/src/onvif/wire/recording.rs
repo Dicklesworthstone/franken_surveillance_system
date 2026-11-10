@@ -6,15 +6,17 @@
 //! never prove continuous retention or delivery. No search session, recording job,
 //! configuration mutation or URI-lifetime assertion is introduced here.
 
-use std::fmt;
-use fss_core::ContentDigest;
 use super::{
     OnvifOperation, SCHEMA_NS, SOAP_NS, ServiceVersion, SoapRequest, WireError, duration,
     escaped_reference, parse_metadata_utc_nanoseconds, reference, required, response, scalar,
     unique, uri_text, xml,
 };
+use fss_core::ContentDigest;
+use std::fmt;
 
+#[path = "recording/canonical.rs"]
 mod canonical;
+#[path = "recording/range.rs"]
 mod range;
 pub use range::{AdvertisedRecordingRange, RecordingCheckError, RecordingRangeAssessment};
 
@@ -47,7 +49,9 @@ pub struct RecordingService {
 }
 impl fmt::Debug for RecordingService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingService").field("version", &self.version).finish_non_exhaustive()
+        f.debug_struct("RecordingService")
+            .field("version", &self.version)
+            .finish_non_exhaustive()
     }
 }
 
@@ -103,8 +107,10 @@ impl RecordingTrackType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Video => "Video", Self::Audio => "Audio",
-            Self::Metadata => "Metadata", Self::Extended => "Extended",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Metadata => "Metadata",
+            Self::Extended => "Extended",
         }
     }
 }
@@ -121,7 +127,9 @@ pub struct RecordingTrack {
 }
 impl fmt::Debug for RecordingTrack {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingTrack").field("kind", &self.kind).finish_non_exhaustive()
+        f.debug_struct("RecordingTrack")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
     }
 }
 
@@ -141,7 +149,9 @@ pub struct RecordingItem {
 }
 impl fmt::Debug for RecordingItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingItem").field("tracks", &self.tracks.len()).finish_non_exhaustive()
+        f.debug_struct("RecordingItem")
+            .field("tracks", &self.tracks.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -155,7 +165,9 @@ pub struct RecordingList {
 }
 impl fmt::Debug for RecordingList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingList").field("recordings", &self.recordings.len()).finish()
+        f.debug_struct("RecordingList")
+            .field("recordings", &self.recordings.len())
+            .finish()
     }
 }
 
@@ -173,8 +185,10 @@ pub struct RecordingTrackInformation {
 }
 impl fmt::Debug for RecordingTrackInformation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingTrackInformation").field("kind", &self.kind)
-            .field("range", &self.range).finish_non_exhaustive()
+        f.debug_struct("RecordingTrackInformation")
+            .field("kind", &self.kind)
+            .field("range", &self.range)
+            .finish_non_exhaustive()
     }
 }
 
@@ -199,9 +213,12 @@ impl RecordingStatus {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Initiated => "Initiated", Self::Recording => "Recording",
-            Self::Stopped => "Stopped", Self::Removing => "Removing",
-            Self::Removed => "Removed", Self::Unknown => "Unknown",
+            Self::Initiated => "Initiated",
+            Self::Recording => "Recording",
+            Self::Stopped => "Stopped",
+            Self::Removing => "Removing",
+            Self::Removed => "Removed",
+            Self::Unknown => "Unknown",
         }
     }
 }
@@ -226,8 +243,10 @@ pub struct RecordingInformation {
 }
 impl fmt::Debug for RecordingInformation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingInformation").field("tracks", &self.tracks.len())
-            .field("status", &self.status).finish_non_exhaustive()
+        f.debug_struct("RecordingInformation")
+            .field("tracks", &self.tracks.len())
+            .field("status", &self.status)
+            .finish_non_exhaustive()
     }
 }
 
@@ -264,24 +283,32 @@ pub fn get_recordings_request() -> SoapRequest {
 /// Read one explicitly selected recording token; escaped before network I/O.
 pub fn get_recording_information_request(token: &str) -> Result<SoapRequest, WireError> {
     let token = escaped_reference(token)?;
-    Ok(recording_request(OnvifOperation::GetRecordingInformation, &format!(
-        "<tse:GetRecordingInformation><tse:RecordingToken>{token}</tse:RecordingToken></tse:GetRecordingInformation>"
-    )))
+    Ok(recording_request(
+        OnvifOperation::GetRecordingInformation,
+        &format!(
+            "<tse:GetRecordingInformation><tse:RecordingToken>{token}</tse:RecordingToken></tse:GetRecordingInformation>"
+        ),
+    ))
 }
 
 /// Request unicast RTSP/TCP replay for an exact token; playback is not started.
 pub fn get_replay_uri_request(token: &str) -> Result<SoapRequest, WireError> {
     let token = escaped_reference(token)?;
-    Ok(recording_request(OnvifOperation::GetReplayUri, &format!(
-        "<trp:GetReplayUri><trp:StreamSetup><tt:Stream>RTP_unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trp:StreamSetup><trp:RecordingToken>{token}</trp:RecordingToken></trp:GetReplayUri>"
-    )))
+    Ok(recording_request(
+        OnvifOperation::GetReplayUri,
+        &format!(
+            "<trp:GetReplayUri><trp:StreamSetup><tt:Stream>RTP_unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trp:StreamSetup><trp:RecordingToken>{token}</trp:RecordingToken></trp:GetReplayUri>"
+        ),
+    ))
 }
 
 /// Select Recording/Search/Replay only after validating the entire bounded service inventory.
 pub fn parse_recording_services(bytes: &[u8]) -> Result<RecordingServices, WireError> {
     let services = super::media2::parse_services(bytes)?;
     let mut result = RecordingServices {
-        recording: None, search: None, replay: None,
+        recording: None,
+        search: None,
+        replay: None,
         response_body_digest: ContentDigest::sha256(bytes),
     };
     for service in services {
@@ -291,7 +318,10 @@ pub fn parse_recording_services(bytes: &[u8]) -> Result<RecordingServices, WireE
             REPLAY_NS => &mut result.replay,
             _ => continue,
         };
-        *selected = Some(RecordingService { xaddr: service.xaddr, version: service.version });
+        *selected = Some(RecordingService {
+            xaddr: service.xaddr,
+            version: service.version,
+        });
     }
     Ok(result)
 }
@@ -303,7 +333,8 @@ fn text(doc: &xml::Document, parent: usize, local: &str) -> Result<String, WireE
 }
 fn validate_text(value: &str) -> Result<(), WireError> {
     if value.len() > MAX_RECORDING_DESCRIPTION_BYTES
-        || value.chars().any(|c| c.is_control() || !xml::valid_char(c)) {
+        || value.chars().any(|c| c.is_control() || !xml::valid_char(c))
+    {
         return Err(WireError::InvalidField);
     }
     Ok(())
@@ -321,11 +352,13 @@ fn source(doc: &xml::Document, parent: usize) -> Result<RecordingSource, WireErr
         location: text(doc, source, "Location")?,
         description: text(doc, source, "Description")?,
         address: uri_text(doc, required(doc, source, SCHEMA_NS, "Address")?)?.to_owned(),
-        video_source_token: unique(doc, source, SCHEMA_NS, "VideoSourceToken")?.map(|id| {
-            let value = doc.leaf_text(id)?;
-            reference(value)?;
-            Ok(value.to_owned())
-        }).transpose()?,
+        video_source_token: unique(doc, source, SCHEMA_NS, "VideoSourceToken")?
+            .map(|id| {
+                let value = doc.leaf_text(id)?;
+                reference(value)?;
+                Ok(value.to_owned())
+            })
+            .transpose()?,
     })
 }
 fn track_type(value: &str) -> Result<RecordingTrackType, WireError> {
@@ -348,10 +381,21 @@ fn status(value: &str) -> Result<RecordingStatus, WireError> {
         _ => Err(WireError::InvalidField),
     }
 }
-fn advertised_range(doc: &xml::Document, parent: usize, first: &str, last: &str) -> Result<AdvertisedRecordingRange, WireError> {
-    let read = |name| unique(doc, parent, SCHEMA_NS, name)?
-        .map(|id| parse_metadata_utc_nanoseconds(scalar(doc, id)?)).transpose();
-    Ok(AdvertisedRecordingRange { earliest_ns: read(first)?, latest_ns: read(last)? })
+fn advertised_range(
+    doc: &xml::Document,
+    parent: usize,
+    first: &str,
+    last: &str,
+) -> Result<AdvertisedRecordingRange, WireError> {
+    let read = |name| {
+        unique(doc, parent, SCHEMA_NS, name)?
+            .map(|id| parse_metadata_utc_nanoseconds(scalar(doc, id)?))
+            .transpose()
+    };
+    Ok(AdvertisedRecordingRange {
+        earliest_ns: read(first)?,
+        latest_ns: read(last)?,
+    })
 }
 
 /// Complete recording/track inventory. Empty is a valid observed inventory.
@@ -359,34 +403,57 @@ pub fn parse_recordings(bytes: &[u8]) -> Result<RecordingList, WireError> {
     let (doc, root) = response(bytes, RECORDING_NS, "GetRecordingsResponse")?;
     let mut recordings: Vec<RecordingItem> = Vec::new();
     for id in doc.child_ids(root) {
-        if !doc.named(id, RECORDING_NS, "RecordingItem") { return Err(WireError::UnexpectedResponse); }
-        if recordings.len() == MAX_RECORDINGS { return Err(WireError::RecordingLimitExceeded); }
+        if !doc.named(id, RECORDING_NS, "RecordingItem") {
+            return Err(WireError::UnexpectedResponse);
+        }
+        if recordings.len() == MAX_RECORDINGS {
+            return Err(WireError::RecordingLimitExceeded);
+        }
         let recording_token = token(&doc, id, "RecordingToken")?;
-        if recordings.iter().any(|item| item.token == recording_token) { return Err(WireError::DuplicateField); }
+        if recordings.iter().any(|item| item.token == recording_token) {
+            return Err(WireError::DuplicateField);
+        }
         let config = required(&doc, id, SCHEMA_NS, "Configuration")?;
-        let retention = scalar(&doc, required(&doc, config, SCHEMA_NS, "MaximumRetentionTime")?)?;
+        let retention = scalar(
+            &doc,
+            required(&doc, config, SCHEMA_NS, "MaximumRetentionTime")?,
+        )?;
         duration(retention)?;
         let mut tracks: Vec<RecordingTrack> = Vec::new();
         let list = required(&doc, id, SCHEMA_NS, "Tracks")?;
         for track in doc.child_ids(list) {
-            if !doc.named(track, SCHEMA_NS, "Track") { return Err(WireError::UnexpectedResponse); }
-            if tracks.len() == MAX_RECORDING_TRACKS { return Err(WireError::RecordingLimitExceeded); }
+            if !doc.named(track, SCHEMA_NS, "Track") {
+                return Err(WireError::UnexpectedResponse);
+            }
+            if tracks.len() == MAX_RECORDING_TRACKS {
+                return Err(WireError::RecordingLimitExceeded);
+            }
             let track_token = token(&doc, track, "TrackToken")?;
-            if tracks.iter().any(|item| item.token == track_token) { return Err(WireError::DuplicateField); }
+            if tracks.iter().any(|item| item.token == track_token) {
+                return Err(WireError::DuplicateField);
+            }
             let config = required(&doc, track, SCHEMA_NS, "Configuration")?;
             tracks.push(RecordingTrack {
                 token: track_token,
-                kind: track_type(scalar(&doc, required(&doc, config, SCHEMA_NS, "TrackType")?)?)?,
+                kind: track_type(scalar(
+                    &doc,
+                    required(&doc, config, SCHEMA_NS, "TrackType")?,
+                )?)?,
                 description: text(&doc, config, "Description")?,
             });
         }
         recordings.push(RecordingItem {
-            token: recording_token, source: source(&doc, config)?,
+            token: recording_token,
+            source: source(&doc, config)?,
             content: text(&doc, config, "Content")?,
-            maximum_retention_time: retention.to_owned(), tracks,
+            maximum_retention_time: retention.to_owned(),
+            tracks,
         });
     }
-    Ok(RecordingList { recordings, response_body_digest: ContentDigest::sha256(bytes) })
+    Ok(RecordingList {
+        recordings,
+        response_body_digest: ContentDigest::sha256(bytes),
+    })
 }
 
 /// Read selected information. Missing dates stay unknown; contradictions remain represented
@@ -394,15 +461,24 @@ pub fn parse_recordings(bytes: &[u8]) -> Result<RecordingList, WireError> {
 pub fn parse_recording_information(bytes: &[u8]) -> Result<RecordingInformation, WireError> {
     let (doc, root) = response(bytes, SEARCH_NS, "GetRecordingInformationResponse")?;
     let info = required(&doc, root, SEARCH_NS, "RecordingInformation")?;
-    if doc.child_ids(root).any(|id| id != info) { return Err(WireError::UnexpectedResponse); }
+    if doc.child_ids(root).any(|id| id != info) {
+        return Err(WireError::UnexpectedResponse);
+    }
     let mut tracks: Vec<RecordingTrackInformation> = Vec::new();
     for track in doc.children(info, SCHEMA_NS, "Track") {
-        if tracks.len() == MAX_RECORDING_TRACKS { return Err(WireError::RecordingLimitExceeded); }
+        if tracks.len() == MAX_RECORDING_TRACKS {
+            return Err(WireError::RecordingLimitExceeded);
+        }
         let token = token(&doc, track, "TrackToken")?;
-        if tracks.iter().any(|item| item.token == token) { return Err(WireError::DuplicateField); }
+        if tracks.iter().any(|item| item.token == token) {
+            return Err(WireError::DuplicateField);
+        }
         tracks.push(RecordingTrackInformation {
             token,
-            kind: track_type(scalar(&doc, required(&doc, track, SCHEMA_NS, "TrackType")?)?)?,
+            kind: track_type(scalar(
+                &doc,
+                required(&doc, track, SCHEMA_NS, "TrackType")?,
+            )?)?,
             description: text(&doc, track, "Description")?,
             range: advertised_range(&doc, track, "DataFrom", "DataTo")?,
         });
@@ -413,7 +489,10 @@ pub fn parse_recording_information(bytes: &[u8]) -> Result<RecordingInformation,
         content: text(&doc, info, "Content")?,
         range: advertised_range(&doc, info, "EarliestRecording", "LatestRecording")?,
         tracks,
-        status: status(scalar(&doc, required(&doc, info, SCHEMA_NS, "RecordingStatus")?)?)?,
+        status: status(scalar(
+            &doc,
+            required(&doc, info, SCHEMA_NS, "RecordingStatus")?,
+        )?)?,
         response_body_digest: ContentDigest::sha256(bytes),
     };
     result.canonical_bytes()?;
@@ -424,7 +503,9 @@ pub fn parse_recording_information(bytes: &[u8]) -> Result<RecordingInformation,
 pub fn parse_replay_uri(bytes: &[u8]) -> Result<ReplayUri, WireError> {
     let (doc, root) = response(bytes, REPLAY_NS, "GetReplayUriResponse")?;
     let uri = required(&doc, root, REPLAY_NS, "Uri")?;
-    if doc.child_ids(root).any(|id| id != uri) { return Err(WireError::UnexpectedResponse); }
+    if doc.child_ids(root).any(|id| id != uri) {
+        return Err(WireError::UnexpectedResponse);
+    }
     Ok(ReplayUri {
         uri: uri_text(&doc, uri)?.to_owned(),
         response_body_digest: ContentDigest::sha256(bytes),

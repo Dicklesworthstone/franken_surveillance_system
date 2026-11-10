@@ -8,6 +8,10 @@
 //! This companion is published last, after native verification of every named
 //! original, and cold loading repeats that verification through the same owner.
 
+/// Cold source-linked recorder UTC assertions with independently pinned original custody.
+#[path = "recording_replay/time.rs"]
+pub mod time;
+
 mod storage;
 mod wire;
 
@@ -19,12 +23,11 @@ use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 
 use super::client::replay::{ReplayAcceptance, ReplayError, ReplayWindow};
-use super::recording::local::RecordingIoError;
 use super::recording::hevc::{HEVC_RECORDING_KIND, PreparedHevcRecording};
+use super::recording::local::RecordingIoError;
 use super::recording::{
-    MAX_RECORDING_BYTES, MAX_RECORDING_MAPPINGS, MAX_RECORDING_PACKETS,
-    MAX_RECORDING_SAMPLES, PreparedRecording, RECORDING_KIND, RecordingError, RecordingScope,
-    RecordingSummary,
+    MAX_RECORDING_BYTES, MAX_RECORDING_MAPPINGS, MAX_RECORDING_PACKETS, MAX_RECORDING_SAMPLES,
+    PreparedRecording, RECORDING_KIND, RecordingError, RecordingScope, RecordingSummary,
 };
 use super::recording_archive::ArchiveNamespace;
 use super::recording_archive::hevc::HevcArchiveNamespace;
@@ -95,44 +98,103 @@ impl OnvifReplaySource {
         uri_digest: ContentDigest,
         uri_observation_digest: ContentDigest,
     ) -> Result<Self> {
-        if [onboarding_plan, handoff_digest, file_identity, services_digest,
-            services_observation_digest, recording_token_digest, information_digest,
-            uri_digest, uri_observation_digest].into_iter().any(|pin| !valid_digest(pin))
-        { return Err(ReplayReceiptError::Scope); }
-        Ok(Self { onboarding_plan, handoff_digest, file_identity, services_digest,
-            services_observation_digest, recording_token_digest, information_digest,
-            uri_digest, uri_observation_digest })
+        if [
+            onboarding_plan,
+            handoff_digest,
+            file_identity,
+            services_digest,
+            services_observation_digest,
+            recording_token_digest,
+            information_digest,
+            uri_digest,
+            uri_observation_digest,
+        ]
+        .into_iter()
+        .any(|pin| !valid_digest(pin))
+        {
+            return Err(ReplayReceiptError::Scope);
+        }
+        Ok(Self {
+            onboarding_plan,
+            handoff_digest,
+            file_identity,
+            services_digest,
+            services_observation_digest,
+            recording_token_digest,
+            information_digest,
+            uri_digest,
+            uri_observation_digest,
+        })
     }
     /// Exact independently approved ONVIF selection operation.
-    #[must_use] pub const fn onboarding_plan(&self) -> ContentDigest { self.onboarding_plan }
+    #[must_use]
+    pub const fn onboarding_plan(&self) -> ContentDigest {
+        self.onboarding_plan
+    }
     /// Complete protected handoff bytes, including original information and URI spelling.
-    #[must_use] pub const fn handoff_digest(&self) -> ContentDigest { self.handoff_digest }
+    #[must_use]
+    pub const fn handoff_digest(&self) -> ContentDigest {
+        self.handoff_digest
+    }
     /// Actual private inode/permission/owner/length/time fingerprint.
-    #[must_use] pub const fn file_identity(&self) -> ContentDigest { self.file_identity }
+    #[must_use]
+    pub const fn file_identity(&self) -> ContentDigest {
+        self.file_identity
+    }
     /// Canonical exact selected service advertisements.
-    #[must_use] pub const fn services_digest(&self) -> ContentDigest { self.services_digest }
+    #[must_use]
+    pub const fn services_digest(&self) -> ContentDigest {
+        self.services_digest
+    }
     /// Complete GetServices SOAP body, including unprojected extensions.
-    #[must_use] pub const fn services_observation_digest(&self) -> ContentDigest { self.services_observation_digest }
+    #[must_use]
+    pub const fn services_observation_digest(&self) -> ContentDigest {
+        self.services_observation_digest
+    }
     /// SHA-256 of the exact explicitly selected recording token.
-    #[must_use] pub const fn recording_token_digest(&self) -> ContentDigest { self.recording_token_digest }
+    #[must_use]
+    pub const fn recording_token_digest(&self) -> ContentDigest {
+        self.recording_token_digest
+    }
     /// Canonical complete recording-information observation, including unknown bounds.
-    #[must_use] pub const fn information_digest(&self) -> ContentDigest { self.information_digest }
+    #[must_use]
+    pub const fn information_digest(&self) -> ContentDigest {
+        self.information_digest
+    }
     /// SHA-256 of the exact credential-free replay URI, without query normalization.
-    #[must_use] pub const fn uri_digest(&self) -> ContentDigest { self.uri_digest }
+    #[must_use]
+    pub const fn uri_digest(&self) -> ContentDigest {
+        self.uri_digest
+    }
     /// Complete GetReplayUri SOAP body digest.
-    #[must_use] pub const fn uri_observation_digest(&self) -> ContentDigest { self.uri_observation_digest }
+    #[must_use]
+    pub const fn uri_observation_digest(&self) -> ContentDigest {
+        self.uri_observation_digest
+    }
     /// Canonical provenance binding; it is not an approval.
     pub fn digest(&self) -> Result<ContentDigest> {
         let mut out = CanonicalEncoder::new();
         self.encode(&mut out);
-        digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)
+        digest(
+            &out.finish_checked()
+                .map_err(|_| ReplayReceiptError::Limit)?,
+        )
     }
     fn encode(&self, out: &mut CanonicalEncoder) {
         out.text(ONVIF_REPLAY_SOURCE_DOMAIN);
-        for pin in [self.onboarding_plan, self.handoff_digest, self.file_identity,
-            self.services_digest, self.services_observation_digest, self.recording_token_digest,
-            self.information_digest, self.uri_digest, self.uri_observation_digest]
-        { out.digest(pin); }
+        for pin in [
+            self.onboarding_plan,
+            self.handoff_digest,
+            self.file_identity,
+            self.services_digest,
+            self.services_observation_digest,
+            self.recording_token_digest,
+            self.information_digest,
+            self.uri_digest,
+            self.uri_observation_digest,
+        ] {
+            out.digest(pin);
+        }
     }
 }
 
@@ -149,34 +211,55 @@ impl ReplayCodec {
     /// Stable codec spelling in bounded operator reports.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Avc => "avc", Self::Hevc => "hevc" }
+        match self {
+            Self::Avc => "avc",
+            Self::Hevc => "hevc",
+        }
     }
 
     const fn request_domain(self) -> &'static str {
-        match self { Self::Avc => REPLAY_REQUEST_DOMAIN, Self::Hevc => HEVC_REPLAY_REQUEST_DOMAIN }
+        match self {
+            Self::Avc => REPLAY_REQUEST_DOMAIN,
+            Self::Hevc => HEVC_REPLAY_REQUEST_DOMAIN,
+        }
     }
 
     const fn clock_domain(self) -> &'static str {
-        match self { Self::Avc => REPLAY_DECODE_CLOCK_DOMAIN, Self::Hevc => HEVC_REPLAY_DECODE_CLOCK_DOMAIN }
+        match self {
+            Self::Avc => REPLAY_DECODE_CLOCK_DOMAIN,
+            Self::Hevc => HEVC_REPLAY_DECODE_CLOCK_DOMAIN,
+        }
     }
 
     const fn receipt_domain(self) -> &'static str {
-        match self { Self::Avc => REPLAY_RECEIPT_DOMAIN, Self::Hevc => HEVC_REPLAY_RECEIPT_DOMAIN }
+        match self {
+            Self::Avc => REPLAY_RECEIPT_DOMAIN,
+            Self::Hevc => HEVC_REPLAY_RECEIPT_DOMAIN,
+        }
     }
 
     const fn receipt_kind(self) -> &'static str {
-        match self { Self::Avc => REPLAY_RECEIPT_KIND, Self::Hevc => HEVC_REPLAY_RECEIPT_KIND }
+        match self {
+            Self::Avc => REPLAY_RECEIPT_KIND,
+            Self::Hevc => HEVC_REPLAY_RECEIPT_KIND,
+        }
     }
 
     const fn recording_kind(self) -> &'static str {
-        match self { Self::Avc => RECORDING_KIND, Self::Hevc => HEVC_RECORDING_KIND }
+        match self {
+            Self::Avc => RECORDING_KIND,
+            Self::Hevc => HEVC_RECORDING_KIND,
+        }
     }
 
     fn window_slot(self, scope: &CatalogScope, ordinal: usize) -> Result<SlotName> {
         match self {
-            Self::Avc => ArchiveNamespace::new(scope.clone()).and_then(|namespace| namespace.window_slot(ordinal)),
-            Self::Hevc => HevcArchiveNamespace::new(scope.clone()).and_then(|namespace| namespace.window_slot(ordinal)),
-        }.map_err(|_| ReplayReceiptError::Scope)
+            Self::Avc => ArchiveNamespace::new(scope.clone())
+                .and_then(|namespace| namespace.window_slot(ordinal)),
+            Self::Hevc => HevcArchiveNamespace::new(scope.clone())
+                .and_then(|namespace| namespace.window_slot(ordinal)),
+        }
+        .map_err(|_| ReplayReceiptError::Scope)
     }
 }
 
@@ -280,9 +363,17 @@ impl ReplayRequest {
     /// Bind one protected recording selection before constructing any recording namespace.
     /// A source-bearing request cannot be rebound to another discovery observation.
     pub fn with_onvif_source(self, source: OnvifReplaySource) -> Result<Self> {
-        if self.onvif_source.is_some() { return Err(ReplayReceiptError::Scope); }
-        Self::for_source(self.codec, self.scope, self.route, self.window,
-            self.base_decode_clock, Some(source))
+        if self.onvif_source.is_some() {
+            return Err(ReplayReceiptError::Scope);
+        }
+        Self::for_source(
+            self.codec,
+            self.scope,
+            self.route,
+            self.window,
+            self.base_decode_clock,
+            Some(source),
+        )
     }
 
     fn for_source(
@@ -309,50 +400,83 @@ impl ReplayRequest {
         out.digest(route);
         out.text(&window.to_string());
         out.digest(base_decode_clock);
-        if let Some(source) = &onvif_source { source.encode(&mut out); }
-        let digest = digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)?;
+        if let Some(source) = &onvif_source {
+            source.encode(&mut out);
+        }
+        let digest = digest(
+            &out.finish_checked()
+                .map_err(|_| ReplayReceiptError::Limit)?,
+        )?;
         let mut out = CanonicalEncoder::new();
         out.text(codec.clock_domain());
         out.digest(base_decode_clock);
         out.digest(digest);
         let decode_clock = self::digest(
-            &out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?,
+            &out.finish_checked()
+                .map_err(|_| ReplayReceiptError::Limit)?,
         )?;
-        Ok(Self { codec, scope, route, window, base_decode_clock, onvif_source, digest, decode_clock })
+        Ok(Self {
+            codec,
+            scope,
+            route,
+            window,
+            base_decode_clock,
+            onvif_source,
+            digest,
+            decode_clock,
+        })
     }
 
     /// Explicit caller-selected native recording family.
     #[must_use]
-    pub const fn codec(&self) -> ReplayCodec { self.codec }
+    pub const fn codec(&self) -> ReplayCodec {
+        self.codec
+    }
     /// Protected recording-discovery observation, absent for the unchanged direct replay path.
     #[must_use]
-    pub const fn onvif_source(&self) -> Option<&OnvifReplaySource> { self.onvif_source.as_ref() }
+    pub const fn onvif_source(&self) -> Option<&OnvifReplaySource> {
+        self.onvif_source.as_ref()
+    }
     fn receipt_domain(&self) -> &'static str {
         if self.onvif_source.is_some() {
             match self.codec {
                 ReplayCodec::Avc => ONVIF_AVC_REPLAY_RECEIPT_DOMAIN,
                 ReplayCodec::Hevc => ONVIF_HEVC_REPLAY_RECEIPT_DOMAIN,
             }
-        } else { self.codec.receipt_domain() }
+        } else {
+            self.codec.receipt_domain()
+        }
     }
     /// Stable exact request identity, independent of approval and publication outcomes.
     #[must_use]
-    pub const fn digest(&self) -> ContentDigest { self.digest }
+    pub const fn digest(&self) -> ContentDigest {
+        self.digest
+    }
     /// Original sensor/stream generation, authority anchor and receive-clock identity.
     #[must_use]
-    pub const fn scope(&self) -> &RecordingScope { &self.scope }
+    pub const fn scope(&self) -> &RecordingScope {
+        &self.scope
+    }
     /// Caller-approved, credential-free route-plan identity.
     #[must_use]
-    pub const fn route(&self) -> ContentDigest { self.route }
+    pub const fn route(&self) -> ContentDigest {
+        self.route
+    }
     /// Requested UTC protocol interval, not a measured frame-capture interval.
     #[must_use]
-    pub const fn window(&self) -> ReplayWindow { self.window }
+    pub const fn window(&self) -> ReplayWindow {
+        self.window
+    }
     /// Original owner-supplied decode-clock identity before binding this replay.
     #[must_use]
-    pub const fn base_decode_clock(&self) -> ContentDigest { self.base_decode_clock }
+    pub const fn base_decode_clock(&self) -> ContentDigest {
+        self.base_decode_clock
+    }
     /// Replay-specific clock required in the recording's catalog namespace.
     #[must_use]
-    pub const fn decode_clock(&self) -> ContentDigest { self.decode_clock }
+    pub const fn decode_clock(&self) -> ContentDigest {
+        self.decode_clock
+    }
 }
 
 /// Why the bounded capture owner stopped; separate from publication completeness.
@@ -403,9 +527,16 @@ impl ReplayTermination {
 
     const fn tag(self) -> u8 {
         match self {
-            Self::RequestedStop => 0, Self::InputEnded => 1, Self::SourceFailure => 2,
-            Self::Deadline => 3, Self::Budget => 4, Self::Authority => 5, Self::Storage => 6,
-            Self::Output => 7, Self::ProgressStalled => 8, Self::Cancelled => 9,
+            Self::RequestedStop => 0,
+            Self::InputEnded => 1,
+            Self::SourceFailure => 2,
+            Self::Deadline => 3,
+            Self::Budget => 4,
+            Self::Authority => 5,
+            Self::Storage => 6,
+            Self::Output => 7,
+            Self::ProgressStalled => 8,
+            Self::Cancelled => 9,
             Self::ProtocolFailure => 10,
         }
     }
@@ -434,7 +565,11 @@ impl ReplayWindowProof {
         Self::from_recording(ReplayCodec::Hevc, slot, recording.publication_plan())
     }
 
-    fn from_recording(codec: ReplayCodec, slot: SlotName, recording: &PreparedRecording) -> Result<Self> {
+    fn from_recording(
+        codec: ReplayCodec,
+        slot: SlotName,
+        recording: &PreparedRecording,
+    ) -> Result<Self> {
         if recording.manifest().kind() != codec.recording_kind() {
             return Err(ReplayReceiptError::Scope);
         }
@@ -451,37 +586,59 @@ impl ReplayWindowProof {
 
     /// Native codec verifier required for this original descriptor.
     #[must_use]
-    pub const fn codec(&self) -> ReplayCodec { self.codec }
+    pub const fn codec(&self) -> ReplayCodec {
+        self.codec
+    }
     /// Exact current local slot required at publication and cold retrieval.
     #[must_use]
-    pub const fn slot(&self) -> &SlotName { &self.slot }
+    pub const fn slot(&self) -> &SlotName {
+        &self.slot
+    }
     /// Immutable original recording root.
     #[must_use]
-    pub const fn root(&self) -> ContentDigest { self.summary.root }
+    pub const fn root(&self) -> ContentDigest {
+        self.summary.root
+    }
     /// Unchanged original authority and receive-clock scope.
     #[must_use]
-    pub const fn scope(&self) -> &RecordingScope { &self.summary.scope }
+    pub const fn scope(&self) -> &RecordingScope {
+        &self.summary.scope
+    }
     /// Half-open original decode interval, never interpreted as UTC.
     #[must_use]
-    pub fn decode_interval(&self) -> Range<u64> { self.summary.decode_interval.clone() }
+    pub fn decode_interval(&self) -> Range<u64> {
+        self.summary.decode_interval.clone()
+    }
     /// Original decode tick rate.
     #[must_use]
-    pub const fn time_scale(&self) -> u32 { self.summary.time_scale }
+    pub const fn time_scale(&self) -> u32 {
+        self.summary.time_scale
+    }
     /// Number of retained original datagrams.
     #[must_use]
-    pub const fn packets(&self) -> usize { self.summary.packets }
+    pub const fn packets(&self) -> usize {
+        self.summary.packets
+    }
     /// Number of source-linked picture groups, not a decoded-frame certificate.
     #[must_use]
-    pub const fn samples(&self) -> usize { self.summary.samples }
+    pub const fn samples(&self) -> usize {
+        self.summary.samples
+    }
     /// Number of original source-linked NALs.
     #[must_use]
-    pub const fn nals(&self) -> usize { self.summary.nals }
+    pub const fn nals(&self) -> usize {
+        self.summary.nals
+    }
     /// Complete original payload cost including its root.
     #[must_use]
-    pub const fn byte_len(&self) -> usize { self.bytes }
+    pub const fn byte_len(&self) -> usize {
+        self.bytes
+    }
     /// Source, initialization, media and recording-index digests in role order.
     #[must_use]
-    pub const fn original_leaf_digests(&self) -> [ContentDigest; 4] { self.leaves }
+    pub const fn original_leaf_digests(&self) -> [ContentDigest; 4] {
+        self.leaves
+    }
 }
 
 /// Canonical replay intent, acknowledgement and observed durable recording set.
@@ -527,87 +684,145 @@ impl ReplayReceipt {
         publication_complete: bool,
     ) -> Result<Self> {
         validate_scope(&scope)?;
-        if scope.recording != request.scope || scope.decode_clock != request.decode_clock()
-            || !valid_digest(approval) || acceptance.requested() != request.window()
+        if scope.recording != request.scope
+            || scope.decode_clock != request.decode_clock()
+            || !valid_digest(approval)
+            || acceptance.requested() != request.window()
         {
             return Err(ReplayReceiptError::Scope);
         }
-        ReplayAcceptance::new(acceptance.cseq(), acceptance.requested(), acceptance.acknowledged())?;
-        if windows.len() > MAX_REPLAY_WINDOWS { return Err(ReplayReceiptError::Limit); }
+        ReplayAcceptance::new(
+            acceptance.cseq(),
+            acceptance.requested(),
+            acceptance.acknowledged(),
+        )?;
+        if windows.len() > MAX_REPLAY_WINDOWS {
+            return Err(ReplayReceiptError::Limit);
+        }
         let mut roots = BTreeSet::new();
         let mut slots = BTreeSet::new();
         let mut previous_end = None;
         for (ordinal, window) in windows.iter().enumerate() {
             validate_window(window)?;
-            if window.codec() != request.codec() || window.scope() != &scope.recording
+            if window.codec() != request.codec()
+                || window.scope() != &scope.recording
                 || window.time_scale() != scope.time_scale
                 || window.slot() != &request.codec().window_slot(&scope, ordinal)?
             {
                 return Err(ReplayReceiptError::Scope);
             }
             if previous_end.is_some_and(|end| end > window.summary.decode_interval.start)
-                || !roots.insert(window.root()) || !slots.insert(window.slot.as_str())
+                || !roots.insert(window.root())
+                || !slots.insert(window.slot.as_str())
             {
                 return Err(ReplayReceiptError::Order);
             }
             previous_end = Some(window.summary.decode_interval.end);
         }
-        let metadata = wire::encode(&request, &scope, approval, acceptance, &windows,
-            termination, publication_complete)?;
+        let metadata = wire::encode(
+            &request,
+            &scope,
+            approval,
+            acceptance,
+            &windows,
+            termination,
+            publication_complete,
+        )?;
         let mut children = BTreeSet::new();
         for window in &windows {
             children.insert(window.root());
             children.extend(window.leaves);
         }
-        let manifest = ObjectManifest::new(request.codec().receipt_kind(), children, Some(digest(&metadata)?))
-            .map_err(|_| ReplayReceiptError::Digest)?;
-        if metadata.len().checked_add(manifest.canonical_bytes().len())
+        let manifest = ObjectManifest::new(
+            request.codec().receipt_kind(),
+            children,
+            Some(digest(&metadata)?),
+        )
+        .map_err(|_| ReplayReceiptError::Digest)?;
+        if metadata
+            .len()
+            .checked_add(manifest.canonical_bytes().len())
             .is_none_or(|bytes| bytes > MAX_REPLAY_RECEIPT_BYTES)
-        { return Err(ReplayReceiptError::Limit); }
-        Ok(Self { request, scope, approval, acceptance, windows, termination,
-            publication_complete, metadata, manifest })
+        {
+            return Err(ReplayReceiptError::Limit);
+        }
+        Ok(Self {
+            request,
+            scope,
+            approval,
+            acceptance,
+            windows,
+            termination,
+            publication_complete,
+            metadata,
+            manifest,
+        })
     }
 
     /// Exact root-last companion identity.
     #[must_use]
-    pub fn root(&self) -> ContentDigest { self.manifest.root() }
+    pub fn root(&self) -> ContentDigest {
+        self.manifest.root()
+    }
     /// Original request and its independently reconstructible replay clock.
     #[must_use]
-    pub const fn request(&self) -> &ReplayRequest { &self.request }
+    pub const fn request(&self) -> &ReplayRequest {
+        &self.request
+    }
     /// Immutable codec-specific routing slot for this exact request and scope.
     pub fn slot(&self) -> Result<SlotName> {
         codec_replay_slot(self.request.codec(), &self.scope, self.request.digest())
     }
     /// Exact replay-bound catalog namespace and unchanged authority anchor.
     #[must_use]
-    pub const fn scope(&self) -> &CatalogScope { &self.scope }
+    pub const fn scope(&self) -> &CatalogScope {
+        &self.scope
+    }
     /// Complete caller-approved capture-plan identity, separate from request identity.
     #[must_use]
-    pub const fn approval(&self) -> ContentDigest { self.approval }
+    pub const fn approval(&self) -> ContentDigest {
+        self.approval
+    }
     /// Recorder's contained accepted range and exact nonzero PLAY correlation.
     #[must_use]
-    pub const fn acceptance(&self) -> ReplayAcceptance { self.acceptance }
+    pub const fn acceptance(&self) -> ReplayAcceptance {
+        self.acceptance
+    }
     /// Canonically ordered original descriptors; never a UTC coverage witness.
     #[must_use]
-    pub fn windows(&self) -> &[ReplayWindowProof] { &self.windows }
+    pub fn windows(&self) -> &[ReplayWindowProof] {
+        &self.windows
+    }
     /// Why capture stopped, independently of original publication state.
     #[must_use]
-    pub const fn termination(&self) -> ReplayTermination { self.termination }
+    pub const fn termination(&self) -> ReplayTermination {
+        self.termination
+    }
     /// Whether the caller settled all of its observed original-publication work.
     #[must_use]
-    pub const fn publication_complete(&self) -> bool { self.publication_complete }
+    pub const fn publication_complete(&self) -> bool {
+        self.publication_complete
+    }
     /// Explicit requested replay transport policy; not a frame-time assertion.
     #[must_use]
-    pub const fn rate_control(&self) -> &'static str { "no" }
+    pub const fn rate_control(&self) -> &'static str {
+        "no"
+    }
     /// Exact canonical metadata without source/media payloads or credential-bearing URIs.
     #[must_use]
-    pub fn metadata_bytes(&self) -> &[u8] { &self.metadata }
+    pub fn metadata_bytes(&self) -> &[u8] {
+        &self.metadata
+    }
     /// Root-last manifest with the flattened original source closure.
     #[must_use]
-    pub const fn manifest(&self) -> &ObjectManifest { &self.manifest }
+    pub const fn manifest(&self) -> &ObjectManifest {
+        &self.manifest
+    }
     /// New companion bytes only; already retained original media is not copied.
     #[must_use]
-    pub fn byte_len(&self) -> usize { self.metadata.len() + self.manifest.canonical_bytes().len() }
+    pub fn byte_len(&self) -> usize {
+        self.metadata.len() + self.manifest.canonical_bytes().len()
+    }
 }
 
 /// One immutable slot per exact replay scope and request, with no mutable latest pointer.
@@ -620,16 +835,32 @@ pub fn hevc_replay_slot(scope: &CatalogScope, request_digest: ContentDigest) -> 
     codec_replay_slot(ReplayCodec::Hevc, scope, request_digest)
 }
 
-fn codec_replay_slot(codec: ReplayCodec, scope: &CatalogScope, request_digest: ContentDigest) -> Result<SlotName> {
+fn codec_replay_slot(
+    codec: ReplayCodec,
+    scope: &CatalogScope,
+    request_digest: ContentDigest,
+) -> Result<SlotName> {
     validate_scope(scope)?;
-    if !valid_digest(request_digest) { return Err(ReplayReceiptError::Scope); }
+    if !valid_digest(request_digest) {
+        return Err(ReplayReceiptError::Scope);
+    }
     let mut out = CanonicalEncoder::new();
-    out.text(match codec { ReplayCodec::Avc => REPLAY_SLOT_DOMAIN, ReplayCodec::Hevc => HEVC_REPLAY_SLOT_DOMAIN });
+    out.text(match codec {
+        ReplayCodec::Avc => REPLAY_SLOT_DOMAIN,
+        ReplayCodec::Hevc => HEVC_REPLAY_SLOT_DOMAIN,
+    });
     wire::encode_scope(&mut out, scope);
     out.digest(request_digest);
-    let identity = digest(&out.finish_checked().map_err(|_| ReplayReceiptError::Limit)?)?.to_text();
-    let hex = identity.strip_prefix("sha256:").ok_or(ReplayReceiptError::Digest)?;
-    SlotName::parse(&format!("fssrr1-{}-{hex}", codec.as_str())).map_err(|_| ReplayReceiptError::Malformed)
+    let identity = digest(
+        &out.finish_checked()
+            .map_err(|_| ReplayReceiptError::Limit)?,
+    )?
+    .to_text();
+    let hex = identity
+        .strip_prefix("sha256:")
+        .ok_or(ReplayReceiptError::Digest)?;
+    SlotName::parse(&format!("fssrr1-{}-{hex}", codec.as_str()))
+        .map_err(|_| ReplayReceiptError::Malformed)
 }
 
 fn validate_recording_scope(scope: &RecordingScope) -> Result<()> {
@@ -654,21 +885,31 @@ fn validate_window(window: &ReplayWindowProof) -> Result<()> {
         || !(1..=MAX_RECORDING_MAPPINGS).contains(&window.summary.nals)
         || !(1..=MAX_RECORDING_BYTES).contains(&window.bytes)
         || window.summary.time_scale == 0
-    { return Err(ReplayReceiptError::Limit); }
+    {
+        return Err(ReplayReceiptError::Limit);
+    }
     if window.summary.decode_interval.start >= window.summary.decode_interval.end {
         return Err(ReplayReceiptError::Interval);
     }
     if !valid_digest(window.root()) || window.leaves.iter().any(|value| !valid_digest(*value)) {
         return Err(ReplayReceiptError::Digest);
     }
-    let original = ObjectManifest::new(window.codec.recording_kind(), window.leaves[..3].iter().copied(),
-        Some(window.leaves[3])).map_err(|_| ReplayReceiptError::Digest)?;
-    if original.root() != window.root() { return Err(ReplayReceiptError::Digest); }
+    let original = ObjectManifest::new(
+        window.codec.recording_kind(),
+        window.leaves[..3].iter().copied(),
+        Some(window.leaves[3]),
+    )
+    .map_err(|_| ReplayReceiptError::Digest)?;
+    if original.root() != window.root() {
+        return Err(ReplayReceiptError::Digest);
+    }
     Ok(())
 }
 
 fn valid_digest(value: ContentDigest) -> bool {
-    value.algorithm() == DigestAlgorithm::Sha256 && !value.is_laboratory() && value.bytes() != [0; 32]
+    value.algorithm() == DigestAlgorithm::Sha256
+        && !value.is_laboratory()
+        && value.bytes() != [0; 32]
 }
 
 fn digest(bytes: &[u8]) -> Result<ContentDigest> {
@@ -677,6 +918,8 @@ fn digest(bytes: &[u8]) -> Result<ContentDigest> {
 
 fn bounded_vec<T>(capacity: usize) -> Result<Vec<T>> {
     let mut values = Vec::new();
-    values.try_reserve_exact(capacity).map_err(|_| ReplayReceiptError::Limit)?;
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| ReplayReceiptError::Limit)?;
     Ok(values)
 }

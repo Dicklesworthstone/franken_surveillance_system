@@ -45,14 +45,15 @@ fn main() -> ExitCode {
     } else {
         match parse_archive_args(&args) {
             Ok(None) => Ok(format!(
-                "{HELP}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "{HELP}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 work::HELP,
                 pins::HELP,
                 recipes::HELP,
                 http::HELP,
                 hevc_author::HELP,
                 upload::HELP,
-                replay::HELP
+                replay::HELP,
+                replay::TIME_HELP
             )),
             Ok(Some(options)) => execute_archive(&options),
             Err(error) => Err(error),

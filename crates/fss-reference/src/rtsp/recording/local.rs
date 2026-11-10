@@ -313,10 +313,26 @@ pub(super) fn load_window(
         if publisher.tombstones().any(|d| *d == digest) {
             return Err(RecordingIoError::Tombstoned);
         }
+        // Enforce the remaining whole-window payload allowance before allocation
+        // and reading, including a forged later child. Checking only after read()
+        // could overshoot the window's fixed source-verification reservation.
+        let remaining = MAX_RECORDING_BYTES
+            .checked_sub(total)
+            .ok_or(RecordingIoError::Budget)?;
         let bytes = publisher
             .spool()
-            .read(digest)
-            .map_err(RecordingIoError::Spool)?;
+            .read_bounded(digest, remaining)
+            .map_err(|error| match error {
+                SpoolError::Corrupt {
+                    kind: fss_object::CorruptionKind::DeclaredLengthExceedsLimit {
+                        declared, maximum,
+                    },
+                    ..
+                } if maximum == remaining as u64
+                    && declared <= publisher.limits().spool.max_object_bytes as u64 =>
+                    RecordingIoError::Budget,
+                error => RecordingIoError::Spool(error),
+            })?;
         total = total
             .checked_add(bytes.len())
             .ok_or(RecordingIoError::Budget)?;

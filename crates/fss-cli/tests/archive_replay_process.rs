@@ -5,6 +5,8 @@
 mod hevc_recording_support;
 #[path = "../../fss-reference/tests/recording_support/mod.rs"]
 mod recording_support;
+#[path = "archive_replay_process/time.rs"]
+mod time;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

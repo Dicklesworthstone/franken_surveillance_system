@@ -26,7 +26,11 @@ use fss_reference::rtsp::recording_replay::{
     ReplayCodec, hevc_replay_slot, load_hevc_replay_receipt, load_replay_receipt, replay_slot,
 };
 
+#[path = "replay_time.rs"]
+mod time;
+
 const MAX_REPORT_BYTES: usize = 64 * 1024;
+pub(super) const TIME_HELP: &str = time::HELP;
 pub(super) const HELP: &str = "fss-archive inspect-replay [options]\n\
   Required: --root EXISTING_DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
@@ -43,7 +47,8 @@ pub(super) const HELP: &str = "fss-archive inspect-replay [options]\n\
   it is not a forensic read-only open. No network, guessed pins, publication or deletion.\n";
 
 pub(super) fn handles(args: &[OsString]) -> bool {
-    args.first().is_some_and(|arg| arg == "inspect-replay")
+    args.first()
+        .is_some_and(|arg| arg == "inspect-replay" || arg == "query-replay-utc")
 }
 
 struct Error {
@@ -79,6 +84,7 @@ struct Options {
     request: ContentDigest,
     storage: LocalPublicationLimits,
     timeout: Duration,
+    time: Option<time::QueryOptions>,
 }
 
 fn parse(args: &[OsString]) -> Result<Options> {
@@ -88,6 +94,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     {
         return Err(malformed("command or argument count/length bound exceeded"));
     }
+    let query_time = args[0] == "query-replay-utc";
     let allowed = [
         "--root",
         "--codec",
@@ -111,7 +118,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         let key = pair[0]
             .to_str()
             .ok_or_else(|| argument(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
-        if !allowed.contains(&key) {
+        if !allowed.contains(&key) && !(query_time && time::OPTIONS.contains(&key)) {
             return Err(argument(
                 ERR_CLI_UNKNOWN_OPTION,
                 "unknown or inapplicable option",
@@ -222,7 +229,13 @@ fn parse(args: &[OsString]) -> Result<Options> {
     storage
         .validate()
         .map_err(|_| malformed("inconsistent storage ceilings"))?;
+    let time = if query_time {
+        Some(time::QueryOptions::parse(&values)?)
+    } else {
+        None
+    };
     Ok(Options {
+        time,
         root: PathBuf::from(required("--root")?),
         codec,
         scope,
@@ -304,6 +317,9 @@ fn run(options: Options) -> Result<String> {
         .map_err(|_| runtime("archive open or exclusive ownership refused"))?;
     // Existing owner open is count/byte bounded but has no cancellation argument.
     clock.check()?;
+    if let Some(query) = &options.time {
+        return time::run(&publisher, &options, query, &clock);
+    }
     let load = match options.codec {
         ReplayCodec::Avc => load_replay_receipt,
         ReplayCodec::Hevc => load_hevc_replay_receipt,
@@ -354,7 +370,13 @@ fn run(options: Options) -> Result<String> {
         ),
     )?;
     if let Some(source) = request.onvif_source() {
-        append(&mut report, &format!("\"onvif_source\":{},", fss_cli::onvif_replay_plan::source_json(source)))?;
+        append(
+            &mut report,
+            &format!(
+                "\"onvif_source\":{},",
+                fss_cli::onvif_replay_plan::source_json(source)
+            ),
+        )?;
     }
     append(
         &mut report,
@@ -399,7 +421,11 @@ fn run(options: Options) -> Result<String> {
 
 pub(super) fn dispatch(args: &[OsString]) -> ExitCode {
     let result = if args.len() == 2 && args[1] == "--help" {
-        Ok(HELP.to_owned())
+        Ok(if args[0] == "query-replay-utc" {
+            TIME_HELP.to_owned()
+        } else {
+            HELP.to_owned()
+        })
     } else {
         parse(args).and_then(run)
     };
@@ -411,7 +437,7 @@ pub(super) fn dispatch(args: &[OsString]) -> ExitCode {
         Err(error) => {
             eprintln!("{}: {}", error.code, error.message);
             eprintln!(
-                "No complete report was emitted. Retain the exact replay pins and existing archive. Use fss-archive inspect-replay --help."
+                "No complete report was emitted. Retain the exact replay pins and existing archive. Use fss-archive help."
             );
             ExitCode::from(if error.usage {
                 ExitIdentity::MALFORMED_VALUE.code

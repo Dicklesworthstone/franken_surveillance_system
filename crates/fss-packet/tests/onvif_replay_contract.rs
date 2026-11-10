@@ -257,8 +257,14 @@ fn explicit_era_changes_numeric_time_without_using_a_replay_or_host_clock_hint()
     let era_one = value.utc_for_era(1)?;
     assert_eq!(era_zero.earliest_ns, 0);
     assert_eq!(era_zero.latest_ns, 1);
-    assert_eq!(era_one.earliest_ns - era_zero.earliest_ns, 4_294_967_296_000_000_000);
-    assert_eq!(era_one.latest_ns - era_zero.latest_ns, 4_294_967_296_000_000_000);
+    assert_eq!(
+        era_one.earliest_ns - era_zero.earliest_ns,
+        4_294_967_296_000_000_000
+    );
+    assert_eq!(
+        era_one.latest_ns - era_zero.latest_ns,
+        4_294_967_296_000_000_000
+    );
     assert_eq!(value.ntp.seconds, UNIX_EPOCH_NTP_SECONDS);
     assert_eq!(value.ntp.fraction, 1);
     Ok(())
@@ -296,7 +302,10 @@ fn unsupported_utc_and_maximum_era_values_refuse_without_overflow_or_clamping() 
         observed(UNIX_EPOCH_NTP_SECONDS - 1, u32::MAX).utc_for_era(0),
         Err(Error::UtcRange)
     );
-    assert_eq!(observed(u32::MAX, u32::MAX).utc_for_era(u32::MAX), Err(Error::UtcRange));
+    assert_eq!(
+        observed(u32::MAX, u32::MAX).utc_for_era(u32::MAX),
+        Err(Error::UtcRange)
+    );
 
     let last_ntp_second = 255_611_289_599_u64;
     let era = (last_ntp_second >> 32) as u32;
@@ -311,8 +320,14 @@ fn unsupported_utc_and_maximum_era_values_refuse_without_overflow_or_clamping() 
     );
     // The final fraction rounds its upper endpoint into year 10000. This
     // bounded profile refuses instead of clipping away that uncertainty.
-    assert_eq!(observed(seconds, u32::MAX).utc_for_era(era), Err(Error::UtcRange));
-    assert_eq!(observed(seconds + 1, 0).utc_for_era(era), Err(Error::UtcRange));
+    assert_eq!(
+        observed(seconds, u32::MAX).utc_for_era(era),
+        Err(Error::UtcRange)
+    );
+    assert_eq!(
+        observed(seconds + 1, 0).utc_for_era(era),
+        Err(Error::UtcRange)
+    );
     assert_eq!(MAX_RECORDED_UTC_NS, 253_402_300_799_999_999_999);
     Ok(())
 }
@@ -320,17 +335,28 @@ fn unsupported_utc_and_maximum_era_values_refuse_without_overflow_or_clamping() 
 #[test]
 fn integer_interval_encloses_the_exact_rational_value_without_float_or_wrap() -> Test {
     let fractions = [
-        0, 1, 2, 3, 4, 5, 0x007F_FFFF, 0x0080_0000, 0x1234_5678,
-        0x4000_0000, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFE, u32::MAX,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        0x007F_FFFF,
+        0x0080_0000,
+        0x1234_5678,
+        0x4000_0000,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0xFFFF_FFFE,
+        u32::MAX,
     ];
     let scale = 1_i128 << 32;
     for era in [0_u32, 1, 2, 58] {
         for fraction in fractions {
             let value = observed(UNIX_EPOCH_NTP_SECONDS, fraction);
             let result = value.utc_for_era(era)?;
-            let exact_numerator =
-                i128::from(era) * scale * 1_000_000_000 * scale
-                    + i128::from(fraction) * 1_000_000_000;
+            let exact_numerator = i128::from(era) * scale * 1_000_000_000 * scale
+                + i128::from(fraction) * 1_000_000_000;
             assert!(result.earliest_ns * scale <= exact_numerator);
             assert!(result.latest_ns * scale >= exact_numerator);
             assert!((0..=1).contains(&(result.latest_ns - result.earliest_ns)));

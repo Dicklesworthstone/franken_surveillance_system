@@ -50,12 +50,14 @@ if [[ "$selection" == all || "$selection" == onvif-recording ]]; then
 fi
 
 if [[ "$selection" == all || "$selection" == replay ]]; then
+  run_tests 'recorded RTP time assertions and explicit-era boundaries' \
+    -p fss-packet --test onvif_replay_contract
   run_tests 'native AVC/HEVC recorder replay and durable receipts' \
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
     --test live_hevc_archive_contract
   run_tests 'approved recorder replay through the capture CLI' \
     -p fss-cli --test capture_rtsp_cli replay::
-  run_tests 'cold recorder replay inspection through the archive CLI' \
+  run_tests 'cold recorder replay inspection and historical time queries through the archive CLI' \
     -p fss-cli --test archive_replay_process
   run_tests 'codec-bound recorder replay planning' \
     -p fss-cli --bin fss-capture-rtsp replay
