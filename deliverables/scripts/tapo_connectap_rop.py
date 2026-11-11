@@ -127,9 +127,10 @@ def main() -> int:
     b64, n = payload(a.cmd, {"offset": a.offset, "pop": a.pop, "pivot": a.pivot,
                              "system": a.system}, a.prefix.encode())
     print("payload %d decoded bytes; cmd: %s" % (n, a.cmd))
-    body = {"method": "connectAp", "params": {"onboarding": {"connect": {
+    # the connect object IS params; the onboarding wrapper is refused (-40209/-40214)
+    body = {"method": "connectAp", "params": {
         "ssid": a.ssid, "bssid": a.bssid, "auth": 1, "encryption": 3, "rssi": -50,
-        "password": b64, "unique_key": 0, "band": 0}}}}
+        "password": b64, "unique_key": 0, "band": 0}}
     t0 = time.time()
     try:
         out = post(a.host, "/stok=%s/ds" % sess["stok"], body, timeout=10)
