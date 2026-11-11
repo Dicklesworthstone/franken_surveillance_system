@@ -125,6 +125,9 @@ def main():
                 {"method": "battery_set_power_supply_mode", "params": {"mode": "wired_always_on"}},
                 {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": {"mode": 0}}},
                 {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 1}},
+                {"method": "battery_set_power_save", "params": {}},
+                {"method": "battery_set_power_save", "params": {"cur_status": 0}},
+                {"method": "battery_set_power_save"},
             )
             SO_REST = ()
             if try_sleep_off(sess, SO_FAST):
