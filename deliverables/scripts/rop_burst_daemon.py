@@ -94,8 +94,9 @@ def main():
                         "params": {"power_supply_mode": "wired_always_on"}}):
                 try:
                     r = T.req(HOST, sess, sm, timeout=6)
-                    log(f"sleep-off {sm['method']} -> {r[:100]}")
-                    emit("sleep_off", {"method": sm["method"], "resp": r[:100]})
+                    ts = str(r)[:100]
+                    log(f"sleep-off {sm['method']} -> {ts}")
+                    emit("sleep_off", {"method": sm["method"], "resp": ts})
                 except Exception as e:
                     log(f"sleep-off {sm['method']} exc {e}")
             fired = 0
