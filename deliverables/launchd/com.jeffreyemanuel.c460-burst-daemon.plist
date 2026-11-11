@@ -5,7 +5,7 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>BASE</key>
-		<string>0xbee80000</string>
+		<string>0xbee00000</string>
 		<key>OFFSET</key>
 		<string>1024</string>
 		<key>OFFSET_N</key>
