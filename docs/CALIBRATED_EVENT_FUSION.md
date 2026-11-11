@@ -5,6 +5,33 @@
 This is the public-command integration for Bead `fss-808pm`, not a replacement
 for the detector, tracker, event policy, coverage records, or approval mechanism.
 
+## Retired corroboration score-calibration options
+
+`fss-event corroborate` refuses the legacy `--score-calibration` and
+`--fusion-policy` options for both short-window and `--stream-corroborate` scans.
+Refusal happens during argument parsing, before opening the deployment,
+calibration, recordings, or report output. A valid Wilson-bin digest alone does
+not bind scores to a detector class and model, supply an explicit deployment
+prior, establish independent observations, or prove observable absence.
+Geometric association scores and owner-supplied camera scores cannot fill those
+gaps.
+
+Use the pinned `--fusion-profile` and `--fusion-digest` options below. A
+short-window request needs the version-one profile described on this page.
+Whole-recording corroboration needs a version-three profile bound to the complete
+native analysis and both camera roots; author it with
+`fss-fusion-profile --scope corroborate` using the
+[profile authoring workflow](fusion_profile_cli.md) and
+[whole-recording scope instructions](whole_recording_fusion_cli.md).
+The authoring command currently handles whole-recording profiles; the profile
+versions and scope pins are not interchangeable. Renaming an old calibration
+table does not supply the missing bindings.
+
+Consumers should read the complete `calibrated_class_advice` object instead of
+the retired `fusion_assessment` field. Missing class support remains unknown
+rather than a `NoActivity` claim. Publication and coverage or health retention
+use their separate native approval invocations, as described below.
+
 ## Run the same analysis with a pinned profile
 
 Start with a working, read-only short-window `watch` or `corroborate` command that
@@ -138,20 +165,25 @@ Library callers use `EventFusionReport::corroborate_guarded` with the native
 retained-read limits. The nominal-only `corroborate` API rejects site-calibrated
 coverage, preventing callers from bypassing the full-camera context selection.
 
-## Explicit limits of this increment
+## Scope-specific profiles
 
-Fusion is currently admitted only for short-window entry analysis. Dwell,
-`--stream-watch`, `--stream-dwell`, and `--stream-corroborate` refuse a requested
-fusion profile instead of silently ignoring it. The Bead remains open for those
-integrations and native qualification; guarded-context wiring is not a claim of
-physical calibration qualification.
+This page describes short-window version-one profiles. Whole-recording analysis
+has separate, source-bound profiles: [watch](long_watch_class_fusion.md) uses
+version two, [two-camera corroboration](whole_recording_fusion_cli.md) version
+three, and [sampled dwell](long_dwell_class_fusion.md) version four. Use the native
+analysis identities and profile contract for the requested scope; short-window
+coverage pins cannot substitute for complete-recording analysis roots.
+
+These integrations preserve their native uncertainty and publication boundaries.
+Profile authoring and guarded-context wiring are not physical calibration
+qualification or a class-absence witness.
 
 ## Regression checks
 
 The command modules contain parser, mode/authority, output-composition, and exact
 report-size tests. `crates/fss-cli/tests/event_fusion_cli.rs` additionally launches
 the real binary for rejected requests: missing or malformed pins, duplicate flags,
-authority writes, unsupported streaming/dwell, and invalid or incomplete site-
+authority writes, invalid source-scope combinations, and invalid or incomplete site-
 calibration pins. Full-camera fusion admission still refuses every authority-write
 combination. These cases require the specific admission error, no stdout report, no deployment-root
 creation, and no report export. They do not execute model inference.
@@ -169,3 +201,16 @@ cargo fmt --all --check
 These commands were **not executed in the implementation session**: the editing
 container lacked Rust and could not download a toolchain. Source/API and static
 diff review are not substitutes for native compilation or passing tests.
+
+The legacy corroboration refusal tests in
+`crates/fss-cli/tests/corroborate_fusion_cli_contract.rs` cover valid calibration
+tables and camera-score overrides, an exact native event approval, both recording
+scopes, protected report output, and unchanged deployment bytes. Run them with:
+
+```sh
+cargo test -p fss-cli --test corroborate_fusion_cli_contract
+```
+
+These new tests were authored, but their execution and pinned formatting were
+blocked when the implementation executor disconnected. No passing native test
+result is claimed for the legacy-refusal change.

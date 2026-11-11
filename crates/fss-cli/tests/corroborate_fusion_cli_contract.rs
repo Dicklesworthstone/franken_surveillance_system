@@ -1,19 +1,19 @@
 #![forbid(unsafe_code)]
-//! Integration tests for `fss-event corroborate --score-calibration` (`fss-808pm` / `fss-13suu`).
+//! The legacy corroboration calibration path must refuse before any read, write, or advice.
 //!
-//! Verifies:
-//! 1. Independent multi-camera corroboration (`AlertWarranted` + 2-domain counterfactual minimal-flip set);
-//! 2. Common-cause failure-domain collapse (`SingleSourceOnly` under Fréchet-Hoeffding hull, NEG-003);
-//! 3. Cross-camera conflict detection (`Conflicted` disposition with opposing cluster directions);
-//! 4. Byte-for-byte backward compatibility when `--score-calibration` is omitted, plus failure-first
-//!    refusals (corrupted calibration digest, invalid fusion policy, work-budget exhaustion).
+//! Valid Wilson bins do not establish applicability to a detector class or model, and geometric
+//! association scores cannot supply class evidence. Exercise the real binaries with a native
+//! event proposal, exact publication approval, owner score overrides, both recording scopes,
+//! and protected output paths. Supported pinned class fusion has its own profile/CLI contracts.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fss_cli::json_input::{Value, parse};
+use fss_core::ContentDigest;
 use fss_fusion::ScoreCalibration;
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 
@@ -27,12 +27,6 @@ const RECEIVE_NS: &str = "10000000000000";
 const IDENTITY: &str = "1,0,0,0,1,0,0,0,1";
 const MIRROR: &str = "-1,0,96,0,1,0,0,0,1";
 const DOOR: &str = "door:56,0,40,48";
-
-fn emit_log(step: &str, case: &str, outcome: &str) {
-    println!(
-        "{{\"bead\":\"fss-13suu\",\"step\":\"{step}\",\"case\":\"{case}\",\"outcome\":\"{outcome}\",\"verdict\":\"valid\"}}"
-    );
-}
 
 struct OwnedDirectory(PathBuf);
 impl OwnedDirectory {
@@ -103,9 +97,7 @@ fn success(output: &Output) {
 }
 
 fn import(directory: &OwnedDirectory, motion: Motion, sensor: &str) -> TestResult<String> {
-    let input = directory
-        .0
-        .join(format!("{sensor}.mjpeg").replace(':', "-"));
+    let input = directory.0.join(format!("{sensor}.mjpeg").replace(':', "-"));
     fs::write(&input, scene(motion)?)?;
     let output = Command::new(env!("CARGO_BIN_EXE_fss-file"))
         .arg("import")
@@ -178,257 +170,164 @@ fn write_calibration_file(
     dir: &Path,
     filename: &str,
     camera_scores_json: Option<&str>,
-    tamper_digest: bool,
-) -> TestResult<(PathBuf, ScoreCalibration)> {
-    let edges = [0_u32, 500_000];
-    // Bin 0 (0..499_999): 2 TP, 98 FP -> strongly negative LLR
-    // Bin 1 (500_000..1_000_000): 98 TP, 2 FP -> strongly positive LLR
-    let counts = [(2_u64, 98_u64), (98_u64, 2_u64)];
-    let cal = ScoreCalibration::from_counts("cal:corroboration-test:v1", &edges, &counts)?;
-    let digest = if tamper_digest {
-        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_owned()
-    } else {
-        cal.digest.to_text()
-    };
-    let extra = camera_scores_json.map_or_else(String::new, |s| format!(",\"camera_scores_ppm\":{s}"));
+) -> TestResult<PathBuf> {
+    let calibration = ScoreCalibration::from_counts(
+        "cal:corroboration-test:v1",
+        &[0, 500_000],
+        &[(2, 98), (98, 2)],
+    )?;
+    let extra = camera_scores_json.map_or_else(String::new, |scores| {
+        format!(",\"camera_scores_ppm\":{scores}")
+    });
     let json = format!(
         "{{\"schema\":\"fss.score_calibration.v1\",\"generation\":\"{}\",\"digest\":\"{}\",\"bins\":[{{\"lo_ppm\":0,\"true_positives\":2,\"false_positives\":98}},{{\"lo_ppm\":500000,\"true_positives\":98,\"false_positives\":2}}]{extra}}}",
-        cal.generation, digest
+        calibration.generation, calibration.digest
     );
     let path = dir.join(filename);
     fs::write(&path, json)?;
-    Ok((path, cal))
+    Ok(path)
 }
 
-#[test]
-fn independent_multi_camera_corroboration_produces_alert_warranted_and_counterfactuals() -> TestResult {
-    let (directory, pair) = setup_pair("independent")?;
-    let (cal_path, cal) = write_calibration_file(&directory.0, "cal.json", None, false)?;
-    let cal_str = cal_path.to_str().ok_or("utf8 path")?;
+fn migration_refusal(output: &Output) {
+    assert!(!output.status.success(), "legacy calibration was accepted");
+    assert!(output.stdout.is_empty(), "refusal must not deliver a report");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unsupported for corroborate"), "{stderr}");
+    assert!(stderr.contains("--fusion-profile PATH"), "{stderr}");
+    assert!(stderr.contains("--fusion-digest sha256:HEX"), "{stderr}");
+    assert!(stderr.contains("read-only calibrated class advice"), "{stderr}");
+}
 
-    let output = corroborate(
-        &directory.root(),
-        &pair,
-        &["--score-calibration", cal_str, "--fusion-policy", "1000,0,-1000"],
-    )?;
-    success(&output);
-    let doc = parse(std::str::from_utf8(&output.stdout)?)?;
-    let root_obj = doc.object().ok_or("root object")?;
-    let fusion = root_obj
-        .get("fusion_assessment")
-        .ok_or("missing fusion_assessment")?
-        .object()
-        .ok_or("fusion_assessment object")?;
-    assert_eq!(
-        fusion.get("format").and_then(Value::text),
-        Some("fss.corroboration_fusion_assessment.v1")
-    );
-    assert_eq!(
-        fusion.get("score_calibration_digest").and_then(Value::text),
-        Some(cal.digest.to_text().as_str())
-    );
-    let candidates = fusion
-        .get("candidates")
-        .and_then(Value::array)
-        .ok_or("candidates array")?;
-    assert_eq!(candidates.len(), 1);
-    let cand = candidates[0].object().ok_or("candidate object")?;
-    assert_eq!(cand.get("decision").and_then(Value::text), Some("alert"));
-    assert_eq!(
-        cand.get("disposition").and_then(Value::text),
-        Some("AlertWarranted")
-    );
-    assert_eq!(cand.get("supporting_clusters").and_then(Value::integer), Some(2));
-    assert_eq!(
-        cand.get("contradicting_clusters").and_then(Value::integer),
-        Some(0)
-    );
-    let posterior = cand
-        .get("posterior_llr_mban")
-        .and_then(Value::array)
-        .ok_or("posterior_llr_mban")?;
-    let lo = posterior[0].integer().ok_or("lo")?;
-    let hi = posterior[1].integer().ok_or("hi")?;
-    assert!(lo >= 1000 && hi >= lo, "expected lo >= 1000, got [{lo}, {hi}]");
-
-    let counterfactuals = cand
-        .get("counterfactuals")
-        .and_then(Value::array)
-        .ok_or("counterfactuals array")?;
-    assert_eq!(counterfactuals.len(), 2);
-    for cf in counterfactuals {
-        let cf_obj = cf.object().ok_or("cf object")?;
-        assert_eq!(cf_obj.get("flips_decision").and_then(Value::boolean), Some(true));
-        assert_ne!(cf_obj.get("decision").and_then(Value::text), Some("alert"));
+fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
+    fn collect(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, Vec<u8>>) -> TestResult {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                collect(root, &path, entries)?;
+            } else {
+                entries.insert(path.strip_prefix(root)?.to_owned(), fs::read(path)?);
+            }
+        }
+        Ok(())
     }
-    emit_log("corroborate_fusion", "independent_multi_camera_alert_warranted", "ok");
-    Ok(())
+    let mut entries = BTreeMap::new();
+    collect(root, root, &mut entries)?;
+    Ok(entries)
 }
 
 #[test]
-fn common_cause_failure_domain_collapse_prevents_self_corroboration() -> TestResult {
-    let (directory, pair) = setup_pair("common-cause")?;
-    let (cal_path, _) = write_calibration_file(&directory.0, "cal.json", None, false)?;
-    let cal_str = cal_path.to_str().ok_or("utf8 path")?;
-
-    let output = corroborate(
-        &directory.root(),
-        &pair,
-        &[
-            "--failure-domain",
-            "clock:shared-ntp=east,west",
-            "--score-calibration",
-            cal_str,
-            "--fusion-policy",
-            "1000,0,-1000",
-        ],
-    )?;
-    success(&output);
-    let doc = parse(std::str::from_utf8(&output.stdout)?)?;
-    let fusion = doc
-        .object()
-        .and_then(|o| o.get("fusion_assessment"))
-        .and_then(Value::object)
-        .ok_or("fusion_assessment")?;
-    let candidates = fusion
-        .get("candidates")
-        .and_then(Value::array)
-        .ok_or("candidates")?;
-    assert_eq!(candidates.len(), 1);
-    let cand = candidates[0].object().ok_or("candidate")?;
-    // Both cameras collapse into 1 cluster via Frechet-Hoeffding hull and cannot meet 2-domain support.
-    assert_eq!(cand.get("supporting_clusters").and_then(Value::integer), Some(1));
-    assert_eq!(
-        cand.get("disposition").and_then(Value::text),
-        Some("SingleSourceOnly")
-    );
-    let clusters = cand.get("clusters").and_then(Value::array).ok_or("clusters")?;
-    assert_eq!(clusters.len(), 1);
-    let reasons = cand.get("reasons").and_then(Value::array).ok_or("reasons")?;
-    assert!(
-        reasons
-            .iter()
-            .any(|r| r.text() == Some("insufficient_independent_support"))
-    );
-    emit_log("corroborate_fusion", "common_cause_failure_domain_collapse", "ok");
-    Ok(())
-}
-
-#[test]
-fn cross_camera_conflict_detection_surfaces_conflicted_disposition() -> TestResult {
-    let (directory, pair) = setup_pair("conflict")?;
-    // east has high score (900_000 -> bin 1 positive LLR), west has low score (100_000 -> bin 0 negative LLR)
-    let (cal_path, _) = write_calibration_file(
-        &directory.0,
-        "cal-conflict.json",
-        Some("{\"east\":900000,\"west\":100000}"),
-        false,
-    )?;
-    let cal_str = cal_path.to_str().ok_or("utf8 path")?;
-
-    let output = corroborate(
-        &directory.root(),
-        &pair,
-        &["--score-calibration", cal_str, "--fusion-policy", "1000,0,-1000"],
-    )?;
-    success(&output);
-    let doc = parse(std::str::from_utf8(&output.stdout)?)?;
-    let fusion = doc
-        .object()
-        .and_then(|o| o.get("fusion_assessment"))
-        .and_then(Value::object)
-        .ok_or("fusion_assessment")?;
-    let candidates = fusion
-        .get("candidates")
-        .and_then(Value::array)
-        .ok_or("candidates")?;
-    let cand = candidates[0].object().ok_or("candidate")?;
-    assert_eq!(
-        cand.get("disposition").and_then(Value::text),
-        Some("Conflicted")
-    );
-    assert_eq!(
-        cand.get("knowledge_state").and_then(Value::text),
-        Some("conflicted")
-    );
-    assert_eq!(cand.get("supporting_clusters").and_then(Value::integer), Some(1));
-    assert_eq!(
-        cand.get("contradicting_clusters").and_then(Value::integer),
-        Some(1)
-    );
-    let reasons = cand.get("reasons").and_then(Value::array).ok_or("reasons")?;
-    assert!(reasons.iter().any(|r| r.text() == Some("conflicting_evidence")));
-    emit_log("corroborate_fusion", "cross_camera_conflict_detection", "ok");
-    Ok(())
-}
-
-#[test]
-fn backward_compatibility_and_failure_first_refusals() -> TestResult {
-    let (directory, pair) = setup_pair("compat-and-failures")?;
+fn legacy_calibration_cannot_turn_geometry_or_camera_overrides_into_class_advice() -> TestResult {
+    let (directory, pair) = setup_pair("legacy-refusal")?;
     let baseline = corroborate(&directory.root(), &pair, &[])?;
     success(&baseline);
-    let baseline_text = String::from_utf8(baseline.stdout.clone())?;
-    assert!(!baseline_text.contains("fusion_assessment"));
-
-    let (cal_path, _) = write_calibration_file(&directory.0, "cal.json", None, false)?;
-    let cal_str = cal_path.to_str().ok_or("utf8 path")?;
-    let with_fusion = corroborate(&directory.root(), &pair, &["--score-calibration", cal_str])?;
-    success(&with_fusion);
-    let with_fusion_text = String::from_utf8(with_fusion.stdout)?;
-    let prefix = with_fusion_text
-        .split(",\"fusion_assessment\":")
-        .next()
-        .ok_or("missing fusion_assessment suffix")?;
+    let document = parse(std::str::from_utf8(&baseline.stdout)?)?;
+    let report = document.object().ok_or("report object")?;
+    assert!(!report.contains_key("fusion_assessment"));
+    let candidates = report
+        .get("candidates")
+        .and_then(Value::array)
+        .ok_or("native candidates")?;
     assert_eq!(
-        format!("{prefix}}}\n"),
-        baseline_text,
-        "report prefix before fusion_assessment must be 100% byte-identical to baseline"
+        candidates.len(),
+        1,
+        "fixture must exercise an actual event proposal"
     );
-    emit_log("corroborate_fusion", "backward_compatibility_byte_identical", "ok");
+    let approval = candidates[0]
+        .object()
+        .and_then(|candidate| candidate.get("proposal_digest"))
+        .and_then(Value::text)
+        .ok_or("native approval digest")?;
+    let before = snapshot(&directory.root())?;
 
-    // Failure-first 1: tampered score calibration digest must fail closed with ERR-CORROBORATE-PLAN-INVALID-001
-    let (tampered_path, _) = write_calibration_file(&directory.0, "tampered.json", None, true)?;
-    let tampered_str = tampered_path.to_str().ok_or("utf8 path")?;
-    let tampered_out = corroborate(
-        &directory.root(),
-        &pair,
-        &["--score-calibration", tampered_str],
-    )?;
-    assert!(!tampered_out.status.success());
-    let stderr = String::from_utf8_lossy(&tampered_out.stderr);
-    assert!(
-        stderr.contains("refusal_id=ERR-CORROBORATE-PLAN-INVALID-001"),
-        "unexpected stderr: {stderr}"
+    // Every artifact has valid Wilson counts and a matching digest. None binds a detector class
+    // or its producer. Geometry used to yield AlertWarranted, and owner overrides could produce
+    // either that label or NoActivity without any class inference or negative-evidence witness.
+    for (filename, scores) in [
+        ("geometry.json", None),
+        ("high.json", Some("{\"east\":900000,\"west\":900000}")),
+        ("low.json", Some("{\"east\":100000,\"west\":100000}")),
+    ] {
+        let calibration = write_calibration_file(&directory.0, filename, scores)?;
+        let calibration = calibration.to_str().ok_or("UTF-8 fixture path")?;
+        for publish in [false, true] {
+            let mut extra = vec![
+                "--score-calibration",
+                calibration,
+                "--fusion-policy",
+                "1000,0,-1000",
+            ];
+            if publish {
+                extra.extend(["--approve", approval]);
+            }
+            migration_refusal(&corroborate(&directory.root(), &pair, &extra)?);
+            assert_eq!(
+                snapshot(&directory.root())?,
+                before,
+                "refusal must precede publication"
+            );
+        }
+    }
+    let repeated = corroborate(&directory.root(), &pair, &[])?;
+    success(&repeated);
+    assert_eq!(
+        repeated.stdout, baseline.stdout,
+        "native advice remains byte-identical"
     );
-    emit_log("corroborate_fusion", "tampered_calibration_digest_refusal", "error");
+    Ok(())
+}
 
-    // Failure-first 2: --fusion-policy without --score-calibration or inverted thresholds refuses
-    let orphan_policy = corroborate(
-        &directory.root(),
-        &pair,
-        &["--fusion-policy", "1000,0,-1000"],
-    )?;
-    assert!(!orphan_policy.status.success());
-    let inverted_policy = corroborate(
-        &directory.root(),
-        &pair,
-        &[
-            "--score-calibration",
-            cal_str,
-            "--fusion-policy",
-            "100,500,-1000",
-        ],
-    )?;
-    assert!(!inverted_policy.status.success());
-    emit_log("corroborate_fusion", "invalid_fusion_policy_refusal", "error");
+#[test]
+fn legacy_options_refuse_before_source_or_output_io_including_whole_recordings() -> TestResult {
+    let directory = OwnedDirectory::new("before-io")?;
+    let pair = Pair {
+        east: ContentDigest::sha256(b"unopened east recording").to_text(),
+        west: ContentDigest::sha256(b"unopened west recording").to_text(),
+    };
+    let missing_calibration = directory.0.join("must-not-open.json");
+    let report_path = directory.0.join("report.json");
+    let sentinel = b"existing operator report\n";
+    fs::write(&report_path, sentinel)?;
+    let approval = ContentDigest::sha256(b"unopened approval").to_text();
 
-    // Failure-first 3: work budget exhaustion fails closed
-    let budget_exhausted = corroborate(
-        &directory.root(),
-        &pair,
-        &["--score-calibration", cal_str, "--work-units", "1"],
-    )?;
-    assert!(!budget_exhausted.status.success());
-    emit_log("corroborate_fusion", "work_budget_exhausted_refusal", "budget_exhausted");
+    for streaming in [false, true] {
+        for legacy in ["--score-calibration", "--fusion-policy"] {
+            for authority in [
+                None,
+                Some("--approve"),
+                Some("--retain-coverage"),
+                Some("--retain-health"),
+            ] {
+                if authority == Some("--retain-health") && !streaming {
+                    continue;
+                }
+                let mut extra = vec![
+                    "--report-out",
+                    report_path.to_str().ok_or("UTF-8 report path")?,
+                ];
+                if streaming {
+                    extra.extend(["--stream-corroborate", "--sensor-health", "conservative-v1"]);
+                }
+                if let Some(authority) = authority {
+                    extra.extend([authority, &approval]);
+                }
+                extra.extend([
+                    legacy,
+                    if legacy == "--score-calibration" {
+                        missing_calibration.to_str().ok_or("UTF-8 calibration path")?
+                    } else {
+                        "1000,0,-1000"
+                    },
+                ]);
+                migration_refusal(&corroborate(&directory.root(), &pair, &extra)?);
+                assert!(
+                    !directory.root().exists(),
+                    "refusal must precede opening the deployment"
+                );
+                assert!(!missing_calibration.exists());
+                assert_eq!(fs::read(&report_path)?, sentinel);
+            }
+        }
+    }
     Ok(())
 }
