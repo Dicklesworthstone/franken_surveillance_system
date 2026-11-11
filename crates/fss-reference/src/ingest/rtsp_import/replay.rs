@@ -25,6 +25,7 @@ use crate::rtsp::recording_replay::{
     storage::{ReceiptVisitor, VerifiedOriginal, load_codec_receipt_visit, revalidate_receipt},
 };
 use fss_container::demux::{AvcMp4, DemuxError};
+use fss_core::CanonicalEncode;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
