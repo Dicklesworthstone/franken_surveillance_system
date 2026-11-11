@@ -1,0 +1,132 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-11",
+  "timezone": "UTC",
+  "state": "implemented_on_main_native_verification_pending",
+  "mission": {
+    "goal": "Complete high-value recorder evidence functionality from the comprehensive plan and beads through meaningful direct-main GitHub commits.",
+    "initial_source_head": "a978d5dd1bbfdfbba254ced7df493c4f9a73bbcc",
+    "bead_scope": [
+      "VIT-022 / fss-vit022-recorder-retrieval-5js5o"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "normative_plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "operator_guide": "docs/RETAINED_RECORDER_TIMESTAMP_QUERY.md",
+    "import_guide": "docs/RTSP_REPLAY_IMPORT.md",
+    "reference_owner": "crates/fss-reference/src/ingest/rtsp_import/replay/time.rs",
+    "operator": "crates/fss-cli/src/bin/fss-file/replay_time.rs",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "84a794eb0dd199d5e46fcd5e44988e1c872cffdd",
+      "change": "Fix CanonicalEncode import confirmed by hosted compiler; exercise actual HEVC event-linked original export and committed whole-receipt deletion."
+    },
+    {
+      "commit": "9a6b9aa55004f79fba3a59e3a59a8bc0b0ab5459",
+      "change": "Query original recorder timestamp assertions from current retained custody, preserving archive query identities and all unknown/source-only observations; add six native contracts."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Expose bounded fss-file query-replay-utc with the shared unchanged archive projection, independent pins and explicit NTP era; add pure parser and real binary parity/deletion contracts, operator documentation and qualification status."
+    }
+  ],
+  "concurrent_main_changes_preserved": [
+    "2ce91f341eec91c95d5d5c61a3f28354b23c0db8: complete recorder replay retained import and cold provenance inspection.",
+    "f2aba9c681839d229230755bc0eadfbf12b9519c: complete recorder replay operator command, schema, documentation and native contracts."
+  ],
+  "findings": [
+    "The ordinary retained import includes every native original but does not publish source archive slots. Archive-only UTC queries therefore could not operate after the capture archive was unavailable.",
+    "The new retained owner feeds the existing timestamp scanner only after codec-owned full AVC/HEVC original verification. It preserves existing query, packet, sample, index and report domains and identities.",
+    "Native report equality includes missing/malformed assertions, explicit era interpretation, outside samples, protected ONVIF provenance, partial termination and HEVC source-only tails.",
+    "Independent caller pins and query limits are checked before original reads; current companion bytes and completion/deletion authority are rechecked before return.",
+    "The CLI returns a retained-custody wrapper around the unchanged bounded archive projection, with no original bytes, archive reconstruction or network activity."
+  ],
+  "cases_and_falsifiers": [
+    {
+      "case": "Cold archive/retained equivalence",
+      "falsifiers": [
+        "query/index/report/row identity changes for identical original custody",
+        "an unknown or source-only observation is discarded",
+        "an original archive slot is required at the destination"
+      ]
+    },
+    {
+      "case": "Whole-query admission and custody",
+      "falsifiers": [
+        "a lower limit admits a truncated successful report",
+        "wrong independent pins select stored alternatives",
+        "damaged or deleted custody returns cached rows",
+        "cancellation returns partial success"
+      ]
+    },
+    {
+      "case": "Operator use after capture archive removal",
+      "falsifiers": [
+        "the command creates a missing deployment",
+        "a source archive or recorder is reopened",
+        "requested PLAY UTC becomes calibrated frame time",
+        "query publication or effect journals change"
+      ]
+    }
+  ],
+  "authority": {
+    "user_grant": "Implement and commit meaningful changes directly to main using GitHub; no PRs.",
+    "runtime_scope": "Native deterministic fixtures and source review only; no live camera, recorder, network acquisition or production deployment changed.",
+    "release_authority": "Repository-owned local qualification with retained DSR receipts remains required; hosted CI is supplementary.",
+    "new_operation": "Bounded read of explicitly selected existing retained source evidence; no export, publication, retention mutation or deletion grant."
+  },
+  "budgets": {
+    "originals": "Existing32MiB/window reservation; query defaults64windows/16384samples/262144packets/256MiBsource allowance/4096result rows; max2GiBsource and32768rows.",
+    "metadata": "Existing4MiBproof,64KiBcompanion and16MiBretained-manifest ceilings; CLI authority includes128MiB for repeated metadata/proof checks.",
+    "operator": "64 argv values,4096bytes/value,explicit600000ms maximum cooperative deadline,8MiB complete output; no result truncation.",
+    "retained_media": "CLI64MiB maximum reconstructed-source length,16MiB default chunks/segments with64MiB maximum; segment ceiling does not cause packet timestamp projection to read derived media."
+  },
+  "validation": {
+    "new_cases": {
+      "native_lifecycle": 2,
+      "native_retained_time": 6,
+      "pure_operator_parser": 2,
+      "actual_operator_process": 3
+    },
+    "completed": [
+      "Pinned scoped rustfmt",
+      "git diff --check",
+      "Shell syntax for focused recorder checks",
+      "Independent reference and operator source/API/fixture review",
+      "193 native dependency-free fss-core tests; baseline sanity only, not recorder feature qualification"
+    ],
+    "native_feature_execution": "Pending at this implementation checkpoint. Genuine pinned Asupersync0.5.0 compilation was killed by SIGKILL locally before changed reference code compiled. No local dependency substitution, fake runtime or weakened gate was used.",
+    "hosted_evidence": "Predecessor2ce RTSP-control job130293410043 independently reported the CanonicalEncode error fixed in84a. Post-fix native runs were queued behind existing jobs when this handoff was written.",
+    "commands": [
+      "cargo +nightly-2026-08-31 test --locked -p fss-reference --test rtsp_replay_import_contract --test rtsp_replay_import_lifecycle_contract --test rtsp_retained_replay_time_contract --test recording_replay_contract",
+      "cargo +nightly-2026-08-31 test --locked -p fss-cli --test rtsp_replay_import_cli",
+      "cargo +nightly-2026-08-31 test --locked -p fss-cli --bin fss-file replay_time::",
+      "bash scripts/check_recording_lifecycle.sh replay"
+    ]
+  },
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Inspect native results for the final committed head and fix concrete compiler/runtime failures; do not treat the predecessor missing-trait run as evidence for the current source."
+    },
+    {
+      "state": "open",
+      "action": "Run repository-owned full local qualification and owned-recorder interoperability before production claims."
+    }
+  ],
+  "unknowns_and_invalidations": [
+    "Recorder timestamp assertions remain uncalibrated; coverage, absence, actual retention and complete interval retrieval are not established.",
+    "Remote recording search sessions, vendor-specific adapters and broader always-on recorder behavior remain outside this slice.",
+    "Wrong query pins/codec/scope/era, tighter limits, damaged originals/proofs/companion, current cancellation or committed deletion invalidate the query.",
+    "Earlier scratch worktrees preserve superseded selected-window/from-replay experiments. The current main whole-receipt implementation and fss-file query-replay-utc are authoritative."
+  ],
+  "valid_next_affordances": [
+    "Run and record final-head native contracts when a runner is available.",
+    "Use the documented query with independent capture receipt/request/scope pins and an explicit NTP era.",
+    "Qualify owned hardware timestamp behavior without promoting recorder assertions into calibrated capture-time evidence."
+  ]
+}

@@ -4,6 +4,28 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Recorder UTC queries from imported custody
+
+`fss-file query-replay-utc` queries a completed whole-receipt AVC/HEVC import after
+the source archive is offline. Independent receipt/request/scope pins and an
+explicit NTP era drive the existing native packet-time projector. The result
+retains the archive query's canonical identities and inner JSON projection inside
+a wrapper naming the current import. Missing/malformed assertions, HEVC
+source-only observations and partial retrieval remain explicit; capture-time and
+coverage claims are unchanged.
+
+Whole-query limits precede original payload reads. Codec-owned reconstruction,
+final companion readbacks and current completion/deletion checks avoid temporary
+archives or fabricated source slots. The command performs no network acquisition,
+pixel decoding or evidence publication.
+
+Six reference contracts, two parser cases and three actual-process cases cover
+parity, offline operation, independent pins, limits, cancellation, corruption and
+committed deletion. At this implementation checkpoint, source/API review, scoped
+formatting and whitespace checks are complete; the added native cases remain
+unexecuted. No native pass or hardware qualification is claimed. See the
+[operator guide and exact bounds](docs/RETAINED_RECORDER_TIMESTAMP_QUERY.md).
+
 ## Whole recorder replay custody through ordinary retained analysis
 
 `fss-import-rtsp replay` now imports a complete, independently pinned AVC/HEVC

@@ -62,6 +62,8 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
     -p fss-cli --bin fss-import-rtsp replay::
   run_tests 'approved whole replay custody through real import and retained-media commands' \
     -p fss-cli --test rtsp_replay_import_cli
+  run_tests 'retained recorder-time query admission without ambient input' \
+    -p fss-cli --bin fss-file replay_time::
   run_tests 'approved recorder replay through the capture CLI' \
     -p fss-cli --test capture_rtsp_cli replay::
   run_tests 'cold recorder replay inspection and historical time queries through the archive CLI' \

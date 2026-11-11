@@ -107,6 +107,10 @@ recorder's narrower acknowledgement, RTP timestamps nor host receive clocks are
 implicitly promoted into calibrated frame time. The separate
 [recorder timestamp query](RECORDER_TIMESTAMP_QUERY.md) retains its assertion-only
 interpretation and does not establish physical clock accuracy.
+After import, [`fss-file query-replay-utc`](RETAINED_RECORDER_TIMESTAMP_QUERY.md)
+uses the same packet-time projector and independent pins from destination custody;
+the original archive can be offline. Missing or malformed timestamps remain
+unknown, and source-only HEVC lookahead stays separate from sample matches.
 
 ## Cold inspection, analysis and retries
 
@@ -130,6 +134,11 @@ custody. Decode and movie review perform their existing native source verificati
 cached reads continue to reject deleted or substituted evidence. Current
 destination privacy masks apply to analysis. Original source retention remains
 local and unencrypted, as in the existing native archive import profile.
+
+For historical recorder-time lookup, follow the
+[retained UTC query guide](RETAINED_RECORDER_TIMESTAMP_QUERY.md). It supplies the
+completed import identity together with the original receipt/request/scope pins
+and an explicit NTP era, and emits a complete bounded report without source media.
 
 Exact retries reconcile the same complete import without duplicate ledger or
 effect records, but still require the original source archive and current

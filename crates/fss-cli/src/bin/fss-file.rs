@@ -38,9 +38,12 @@ mod media;
 mod movie;
 #[path = "fss-file/replay_origin.rs"]
 mod replay_origin;
+#[path = "fss-file/replay_time.rs"]
+mod replay_time;
 
 const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
+  Query retained recorder timestamps without the archive: fss-file query-replay-utc --help.\n\
   Source commands also accept --manifest-out FILE.\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
           [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|rtpplay]\n\
@@ -742,7 +745,13 @@ fn report_rtp_import(
 }
 
 fn main() -> ExitCode {
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut input = std::env::args_os().skip(1);
+    let first = input.next();
+    if first.as_deref() == Some(OsStr::new("query-replay-utc")) {
+        let args: Vec<_> = input.take(replay_time::MAX_ARGUMENTS + 1).collect();
+        return replay_time::dispatch(&args);
+    }
+    let args: Vec<OsString> = first.into_iter().chain(input).collect();
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),

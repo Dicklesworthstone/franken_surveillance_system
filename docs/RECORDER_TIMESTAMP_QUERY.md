@@ -5,6 +5,12 @@ ONVIF replay RTP timestamps overlap an explicit UTC interval. It cold-loads an
 independently pinned replay receipt, replays every original through its native
 codec verifier and returns source citations. The recorder is not contacted.
 
+For a complete replay already imported with `fss-import-rtsp replay`,
+[`fss-file query-replay-utc`](RETAINED_RECORDER_TIMESTAMP_QUERY.md) runs the same
+native timestamp query from destination custody after the source archive goes
+offline. Its wrapper identifies the retained import; the inner report and native
+proof identities keep the semantics described here.
+
 This advances VIT-022 (`fss-vit022-recorder-retrieval-5js5o`). It adds historical
 timestamp lookup to the [retained replay path](RTSP_RECORDER_REPLAY.md), including
 [protected ONVIF recording selection](ONVIF_RECORDING_DISCOVERY.md). It does not

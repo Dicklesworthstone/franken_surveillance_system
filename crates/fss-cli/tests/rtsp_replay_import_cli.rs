@@ -6,6 +6,8 @@
 mod hevc_recording_support;
 #[path = "../../fss-reference/tests/recording_support/mod.rs"]
 mod recording_support;
+#[path = "rtsp_replay_import_cli/retained_time.rs"]
+mod retained_time;
 #[path = "rtsp_replay_import_cli/support.rs"]
 mod support;
 

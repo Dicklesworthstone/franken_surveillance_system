@@ -86,7 +86,7 @@ impl Access<'_> {
 /// Query source limits reserve 32 MiB per window before any original reads. Proof reads have
 /// their separate fixed 4 MiB ceiling; companion readbacks are each bounded by 64 KiB. All
 /// reads check cancellation, and current completion/root/deletion state is rechecked before
-/// return. No archive lock, fabricated native slot, network request, publication or decode is
+/// return. No archive lock, fabricated native slot, network request, publication or pixel decode is
 /// needed. Recorder assertions remain distinct from calibrated capture time and coverage.
 ///
 /// [`query_replay_time`]: crate::rtsp::recording_replay::time::query_replay_time

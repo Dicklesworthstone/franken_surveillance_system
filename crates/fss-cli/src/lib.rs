@@ -66,10 +66,10 @@ pub mod native_clock;
 pub mod negative_evidence_cmd;
 /// Pure native ONVIF handoff selection and unchanged outer capture approval.
 pub mod onvif_plan;
-/// Protected historical ONVIF selection and separately approved native replay handoff.
-pub mod onvif_replay_plan;
 /// Exact retained ONVIF analysis through the canonical read-only query operation.
 pub mod onvif_query_cmd;
+/// Protected historical ONVIF selection and separately approved native replay handoff.
+pub mod onvif_replay_plan;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
@@ -78,6 +78,8 @@ pub mod probe_cmd;
 pub mod query_cmd;
 pub mod recording_query_cmd;
 pub mod redact;
+/// Shared bounded recorder timestamp projection for archive and retained-media queries.
+pub mod replay_time_json;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
 /// Exact owner-approved session authority revocation through AOP-010.
