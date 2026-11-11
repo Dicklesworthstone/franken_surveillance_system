@@ -193,6 +193,35 @@ impl std::fmt::Debug for PreparedRecording {
     }
 }
 impl PreparedRecording {
+    /// Reconstruct the sealed type from owned retained objects only after the same complete
+    /// native verifier used by archive loading succeeds. This pure internal entry point does
+    /// not invent archive slots, publication receipts or disclosure authority.
+    pub(crate) fn verify_owned(
+        manifest: ObjectManifest,
+        objects: [Vec<u8>; 4],
+        scope: &RecordingScope,
+    ) -> Result<Self> {
+        let [source, initialization, media, index] = objects;
+        let summary = verify_recording(
+            &manifest,
+            RecordingObjects {
+                source: &source,
+                initialization: &initialization,
+                media: &media,
+                index: &index,
+            },
+            scope,
+        )?;
+        Ok(Self {
+            manifest,
+            source,
+            initialization,
+            media,
+            index,
+            summary,
+        })
+    }
+
     /// Exact root-last manifest; this does not publish it.
     pub fn manifest(&self) -> &ObjectManifest {
         &self.manifest

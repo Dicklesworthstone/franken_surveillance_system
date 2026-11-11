@@ -14,6 +14,33 @@ pub(super) fn query(
     query: &ReplayTimeQuery,
     cancel: &dyn PublishCancellation,
 ) -> std::result::Result<ReplayTimeReport, ReplayTimeError> {
+    query_with_originals(query, cancel, |visitor| {
+        // Metadata admission precedes original reads. The archive loader keeps all its
+        // existing root, source, tombstone and final metadata readback checks.
+        storage::load_codec_receipt_visit(
+            publisher,
+            query.codec,
+            query.receipt_root,
+            &query.scope,
+            query.request,
+            cancel,
+            visitor,
+        )
+        .map_err(ReplayTimeError::from)
+    })
+}
+
+/// Run the identical packet projection with another verified original-custody owner. The
+/// owner must admit metadata before native reads and revalidate custody after all callbacks.
+pub(crate) fn query_with_originals<E>(
+    query: &ReplayTimeQuery,
+    cancel: &dyn PublishCancellation,
+    load: impl FnOnce(&mut dyn ReceiptVisitor) -> std::result::Result<ReplayReceipt, E>,
+) -> std::result::Result<ReplayTimeReport, E>
+where
+    E: From<ReplayTimeError>,
+{
+    query.validate().map_err(E::from)?;
     let mut scan = Scan {
         query,
         cancel,
@@ -30,24 +57,17 @@ pub(super) fn query(
         source_only: Vec::new(),
         observations: Vec::new(),
     };
-    // This loader invokes metadata admission before any original read, then
-    // verifies each original exactly once before visiting it. Its final custody
-    // and cancellation checks run after every projection callback has completed.
-    let receipt = storage::load_codec_receipt_visit(
-        publisher,
-        query.codec,
-        query.receipt_root,
-        &query.scope,
-        query.request,
-        cancel,
-        &mut scan,
-    )?;
+    let receipt = load(&mut scan)?;
     if scan.windows != receipt.windows().len()
         || scan.samples != scan.matches.len() + scan.unknown.len() + scan.outside
     {
-        return Err(ReplayTimeError::Receipt(ReplayReceiptError::WindowMismatch));
+        return Err(E::from(ReplayTimeError::Receipt(
+            ReplayReceiptError::WindowMismatch,
+        )));
     }
-    let index_digest = proof::index(query, &scan.observations)?;
+    let index_digest = proof::index(query, &scan.observations)
+        .map_err(ReplayTimeError::from)
+        .map_err(E::from)?;
     let mut report = ReplayTimeReport {
         query: query.clone(),
         receipt,
@@ -63,8 +83,12 @@ pub(super) fn query(
         unknown: scan.unknown,
         source_only: scan.source_only,
     };
-    report.digest = proof::report(&report)?;
-    storage::cancelled(cancel)?;
+    report.digest = proof::report(&report)
+        .map_err(ReplayTimeError::from)
+        .map_err(E::from)?;
+    storage::cancelled(cancel)
+        .map_err(ReplayTimeError::from)
+        .map_err(E::from)?;
     Ok(report)
 }
 
@@ -88,6 +112,13 @@ struct Scan<'a> {
 impl ReceiptVisitor for Scan<'_> {
     fn admit_receipt(&mut self, receipt: &ReplayReceipt) -> Result<()> {
         storage::cancelled(self.cancel)?;
+        if receipt.request().codec() != self.query.codec
+            || receipt.scope() != &self.query.scope
+            || receipt.root() != self.query.receipt_root
+            || receipt.request().digest() != self.query.request
+        {
+            return Err(ReplayReceiptError::Scope);
+        }
         let limits = self.query.limits;
         if receipt.windows().len() > limits.max_windows {
             return Err(ReplayReceiptError::Limit);

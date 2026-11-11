@@ -7,8 +7,10 @@
 
 mod inspection;
 mod provenance;
+mod time;
 
 pub use inspection::retained_replay_receipt;
+pub use time::{RetainedReplayTimeError, query_retained_replay_time};
 
 pub(crate) use provenance::{
     OriginCache, verify_membership, verify_originals, verify_range_budgeted,

@@ -56,7 +56,8 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
     --test live_hevc_archive_contract
   run_tests 'whole recorder replay retained custody, cold decode and review provenance' \
-    -p fss-reference --test rtsp_replay_import_contract
+    -p fss-reference --test rtsp_replay_import_contract --test rtsp_replay_import_lifecycle_contract \
+    --test rtsp_retained_replay_time_contract
   run_tests 'exact whole replay import plans and source-free command-line decoding' \
     -p fss-cli --bin fss-import-rtsp replay::
   run_tests 'approved whole replay custody through real import and retained-media commands' \

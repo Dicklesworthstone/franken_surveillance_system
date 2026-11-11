@@ -26,6 +26,8 @@ mod scan;
 #[path = "time/source.rs"]
 mod source;
 
+pub(crate) use scan::query_with_originals;
+
 use super::{ReplayCodec, ReplayReceipt, ReplayReceiptError};
 use crate::rtsp::recording_catalog::CatalogScope;
 use fss_core::ContentDigest;

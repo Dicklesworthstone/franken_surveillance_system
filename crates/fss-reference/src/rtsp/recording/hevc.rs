@@ -73,6 +73,37 @@ impl std::fmt::Debug for PreparedHevcRecording {
     }
 }
 impl PreparedHevcRecording {
+    /// Reconstruct a sealed retained original through the same complete HEVC source verifier.
+    /// Original lookahead and packet mappings remain codec-owned; no native archive slot or
+    /// publication claim is created by this pure internal operation.
+    pub(crate) fn verify_owned(
+        manifest: ObjectManifest,
+        objects: [Vec<u8>; 4],
+        scope: &RecordingScope,
+    ) -> Result<Self> {
+        let [source, initialization, media, index_bytes] = objects;
+        let summary = verify_hevc_recording(
+            &manifest,
+            RecordingObjects {
+                source: &source,
+                initialization: &initialization,
+                media: &media,
+                index: &index_bytes,
+            },
+            scope,
+        )?;
+        let index = wire::decode(&index_bytes)?;
+        let plan = PreparedRecording {
+            manifest,
+            source,
+            initialization,
+            media,
+            index: index_bytes,
+            summary: summary.recording,
+        };
+        Ok(Self { plan, index })
+    }
+
     /// Codec-verified plan accepted by the unchanged RecordingPublication state machine.
     /// A plan is not a publication receipt and never grants filesystem/export authority.
     pub fn publication_plan(&self) -> &PreparedRecording {

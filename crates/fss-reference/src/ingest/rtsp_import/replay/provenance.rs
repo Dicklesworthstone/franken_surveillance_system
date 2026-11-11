@@ -94,6 +94,80 @@ pub(super) struct Proof {
     omissions: Vec<FileOmissionSpan>,
 }
 impl Proof {
+    /// Project the original packet stream from retained custody without fabricating source
+    /// archive slots. Only the native codec owner may reconstruct each sealed recording.
+    pub(super) fn visit_originals(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        visitor: &mut dyn ReceiptVisitor,
+        reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
+    ) -> Result<ReplayReceipt, super::time::RetainedReplayTimeError> {
+        use crate::rtsp::recording::{PreparedRecording, hevc::PreparedHevcRecording};
+
+        let receipt = self.receipt()?;
+        // Metadata admission reserves the complete native envelope before any companion
+        // payload or original window read; no corrupt later object can bypass this bound.
+        visitor.admit_receipt(&receipt)?;
+        self.verify_companion(deployment, cx, reserve)?;
+        for (ordinal, (reference, descriptor)) in
+            self.windows.iter().zip(receipt.windows()).enumerate()
+        {
+            let root = read_original(
+                deployment,
+                descriptor.root(),
+                reference.root.len() as u64,
+                cx,
+                reserve,
+            )?;
+            if root != reference.root {
+                return Err(corrupt("retained replay window root differs").into());
+            }
+            let manifest =
+                ObjectManifest::from_canonical_bytes(&root).map_err(FileIngestError::from)?;
+            let mut objects: [Vec<u8>; 4] = std::array::from_fn(|_| Vec::new());
+            for (bytes, object) in objects.iter_mut().zip(&reference.objects) {
+                *bytes = read_original(deployment, object.digest, object.bytes, cx, reserve)?;
+            }
+            match self.request.codec {
+                RtspImportCodec::Avc => {
+                    let original = PreparedRecording::verify_owned(
+                        manifest,
+                        objects,
+                        &self.request.scope.recording,
+                    )
+                    .map_err(ReplayReceiptError::from)?;
+                    let actual = ReplayWindowProof::from_avc(descriptor.slot().clone(), &original)?;
+                    if &actual != descriptor {
+                        return Err(ReplayReceiptError::WindowMismatch.into());
+                    }
+                    visitor.original(ordinal, descriptor, VerifiedOriginal::Avc(&original))?;
+                }
+                RtspImportCodec::Hevc => {
+                    let original = PreparedHevcRecording::verify_owned(
+                        manifest,
+                        objects,
+                        &self.request.scope.recording,
+                    )
+                    .map_err(ReplayReceiptError::from)?;
+                    let actual =
+                        ReplayWindowProof::from_hevc(descriptor.slot().clone(), &original)?;
+                    if &actual != descriptor {
+                        return Err(ReplayReceiptError::WindowMismatch.into());
+                    }
+                    visitor.original(ordinal, descriptor, VerifiedOriginal::Hevc(&original))?;
+                }
+            }
+        }
+        self.verify_companion(deployment, cx, reserve)?;
+        live(
+            deployment,
+            &self.held(ContentDigest::sha256(&self.encode()?)),
+            cx,
+        )?;
+        Ok(receipt)
+    }
+
     pub(super) fn new(
         request: RtspReplayImportRequest,
         receipt: &ReplayReceipt,
