@@ -74,6 +74,32 @@ def grab_and_postshell():
     subprocess.run(["sudo","-n","bash","deliverables/scripts/c460_postshell.sh",HOST], capture_output=True, timeout=180)
     log("postshell dispatched")
 
+def try_sleep_off(sess, variants):
+    """Ask for sleep-off; returns True when a shape is accepted.
+
+    The window is freshest immediately after login, so the caller runs the two most likely
+    shapes BEFORE firing and the rest after the burst.
+    """
+    for sm in variants:
+        try:
+            r = T.req(HOST, sess, sm, timeout=6)
+        except BaseException as e:
+            log(f"sleep-off {sm['method']} exc {type(e).__name__}")
+            continue
+        code = None
+        try:
+            code = r["result"]["responses"][0]["error_code"]
+        except Exception:
+            code = None
+        log(f"sleep-off {sm['method']} {sm['params']} -> {code if code is not None else str(r)[:60]}")
+        emit("sleep_off", {"method": sm["method"], "params": sm["params"], "code": code})
+        if code == 0:
+            log("sleep-off accepted")
+            emit("sleep_off", {"accepted": True, "method": sm["method"]})
+            return True
+    return False
+
+
 def main():
     if os.path.exists(STATE):
         idx = int(open(STATE).read().strip() or 0)
@@ -88,6 +114,13 @@ def main():
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
             sess = stok  # T.login returns the whole session (stok/seq/lsk/ivb)
+            SO_FAST = ({"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": 0}},
+                       {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": "wired_always_on"}})
+            SO_REST = ({"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": 1}},
+                       {"method": "battery_set_power_save", "params": {"power_save": {"enable": False}}},
+                       {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 0}})
+            if try_sleep_off(sess, SO_FAST):
+                SO_REST = ()
             fired = 0
             while fired < 12:
                 addr = BASE + idx * STEP
@@ -121,31 +154,8 @@ def main():
             # Ask for sleep-off WITH the session. The shell script posts all methods blind to
             # the unauthenticated endpoint; a real session turns this into an answerable call,
             # and a unit that accepts it stops flapping and stops the whole sweep.
-            # Sleep-off is the highest-value call there is: a unit that accepts it stops
-            # flapping and the sweep stops racing 1 s windows. The param shape is not known —
-            # -40210 says "method known, args wrong" — so try the shapes the firmware strings
-            # imply and keep the first that answers error_code 0.
-            for sm in ({"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": 0}},
-                       {"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": 1}},
-                       {"method": "battery_set_power_save", "params": {"power_save": {"enable": False}}},
-                       {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 0}},
-                       {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": "wired_always_on"}}):
-                try:
-                    r = T.req(HOST, sess, sm, timeout=6)
-                except BaseException as e:
-                    log(f"sleep-off {sm['method']} exc {type(e).__name__}")
-                    continue
-                code = None
-                try:
-                    code = r["result"]["responses"][0]["error_code"]
-                except Exception:
-                    pass
-                log(f"sleep-off {sm['method']} {sm['params']} -> {code}")
-                emit("sleep_off", {"method": sm["method"], "params": sm["params"], "code": code})
-                if code == 0:
-                    log("sleep-off accepted")
-                    emit("sleep_off", {"accepted": True, "method": sm["method"]})
-                    break
+            if SO_REST:
+                try_sleep_off(sess, SO_REST)
             log("burst done (12) — back to polling")
             tries = 0
         else:
