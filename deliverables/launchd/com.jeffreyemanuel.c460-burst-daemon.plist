@@ -8,6 +8,8 @@
 		<string>0xbee00000</string>
 		<key>OFFSET</key>
 		<string>1024</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>SLED</key>
 		<string>512</string>
 	</dict>
