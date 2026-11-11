@@ -56,7 +56,8 @@ dump/verify/write chain with the pinned images.
 
 ## Known gap before any C460 flash
 
-The C460 image boots but has **no driver for its sensor** (sc5336p): image kernel is 4.9.84, the
+Both images boot blind, not just the C460: the built nt98567 rootfs carries **no compiled
+sensor driver at all** (0 matches for sensor_gc/sc/imx) and the C460 has none for sc5336p: image kernel is 4.9.84, the
 vendor module is 5.10.117, upstream has no sc5336 at all and the GPL drop has no sensor source.
 Expect a working shell and a blind camera. Details in `docs/exploit/c460-openipc-flash.md`.
 
