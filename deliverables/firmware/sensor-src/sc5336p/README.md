@@ -41,7 +41,8 @@ infinity6e-ssc012b.config`, `make modules_prepare`) on 212.90.121.76:
   vendor module's vermagic apart from the version it was compiled for
 - 18 undefined symbols, all framework API (`CamOs*`, `Drv*Sensor*`) plus core `printk`/`msleep`
   — the same set a sibling sensor module carries
-- md5 `ff36b365e26afce674f6726e7fe940ba`, 73,688 B
+- md5 `ff36b365e26afce674f6726e7fe940ba`, 73,688 B (host-gcc-15 build)
+- **rebuilt 2026-11-11 with the buildroot cross compiler and the kernel's own Module.symvers**: md5 `411096a136b38046ea75c150d7b00ee8`, same vermagic — this is the module shipped in the image
 
 `KCFLAGS="-march=armv7-a -mthumb"` is required: host gcc 15 against 4.9.84 otherwise emits
 Thumb-1 that the old kernel's inline asm rejects.

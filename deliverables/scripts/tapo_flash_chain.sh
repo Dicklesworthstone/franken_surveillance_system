@@ -42,7 +42,7 @@ case "$FAMILY" in
     # nor1: 10 IPLXXX 11 rootfs 12 objdmodel
     TARGET_ROOTFS=11; TARGET_KERNEL=4
     BOOT_ROOT="/dev/mtdblock11"
-    IMG_ROOTFS=rootfs.squashfs.ssc30kq; MD5_ROOTFS=af37b5fe9e4f358942ea02b1f7d662db
+    IMG_ROOTFS=rootfs.squashfs.ssc30kq; MD5_ROOTFS=9d7ef189695def2d4dbd96a6b07468c2
     IMG_KERNEL=uImage.ssc30kq;           MD5_KERNEL=79578351a0527ec9a82ecb8224aaaad2
     PARTS=13
     ;;
