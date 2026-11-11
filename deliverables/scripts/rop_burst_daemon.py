@@ -35,7 +35,9 @@ def emit(event, details):
         pass
 
 def login_once():
-    r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=1)
+    # 1 s is shorter than the TLS handshake on this SoC once it is cold; curl -m 3 answers
+    # 200 in windows where the 1 s probe never connects, so the old value hid every window.
+    r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3)
     try:
         j = json.loads(r)
         if "stok" in j:
