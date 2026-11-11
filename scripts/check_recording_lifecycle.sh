@@ -54,7 +54,7 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
     -p fss-packet --test onvif_replay_contract
   run_tests 'native AVC/HEVC recorder replay and durable receipts' \
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
-    --test live_hevc_archive_contract
+    --test live_hevc_archive_contract --test rtsp_replay_time_pinned_contract
   run_tests 'whole recorder replay retained custody, cold decode and review provenance' \
     -p fss-reference --test rtsp_replay_import_contract --test rtsp_replay_import_lifecycle_contract \
     --test rtsp_retained_replay_time_contract

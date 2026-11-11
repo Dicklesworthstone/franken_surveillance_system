@@ -43,11 +43,16 @@ An era is never selected from the requested range, acknowledged range, receive
 clock, host wall clock, RTP timestamp or RTCP sender report. Use `--codec avc` for
 an AVC receipt; stored metadata cannot choose a verifier or enable fallback.
 
-The existing archive owner takes exclusive locks and may perform its normal
-recovery I/O when opened. The query creates no new publication, import, deletion
-or network operation. It emits one complete bounded JSON report, with no original
-media payload. Invalid options are rejected before archive opening; absent,
-changed, corrupt or tombstoned required originals refuse the whole query.
+The query uses an exact-slot read-only capability and works while the recorder
+holds its publication locks. It does not open the writer, enumerate the archive,
+recover pending work, create directories, or alter staging files. Unrelated
+pending publications do not block the query; an in-flight replacement of a
+selected root refuses it.
+
+It emits one complete bounded JSON report, with no original media payload.
+Invalid options are rejected before archive access; absent, changed, corrupt or
+tombstoned required originals refuse the whole query. The receipt, native sample
+proofs, report schema and digest semantics remain unchanged.
 
 ## Interpret the result
 
@@ -107,15 +112,27 @@ authenticity. Empty results do not prove absence or complete interval coverage.
 | `--max-query-packets` | 262,144 | 1–262,144 |
 | `--max-query-source-bytes` | 268,435,456 | 1–2,147,483,648 |
 | `--max-query-results` | 4,096 | 1–32,768 |
+| `--max-query-read-bytes` | 1,073,741,824 | 1–4,294,967,296 |
+| `--max-query-io-calls` | 1,000,000 | 1–4,000,000 |
 
 Before original reads, each window reserves the native 32 MiB verification
 ceiling. The default 256 MiB allowance therefore admits eight windows even when
 their actual objects are small. `source_bytes_reserved` reports that conservative
 reservation; `verified_source_bytes` reports the actual original root plus four
-child payloads verified. Receipt metadata, spool envelopes and normal archive
-opening are outside that original-payload accounting and retain their own bounds.
-Every original child read is capped by the remaining window allowance before
-allocation, including a hostile replacement of a later child.
+child payloads verified. Receipt metadata, spool envelopes and revalidation
+reads are outside that original-payload accounting and are charged to the new
+read-byte and I/O-call allowances. Every original child read is capped by the
+remaining window allowance before allocation, including a hostile replacement
+of a later child.
+
+The CLI divides each whole-request read allowance between long-lived metadata
+verification and native original verification. Metadata receives at most half
+the bytes, capped at 64 MiB, and at most half the calls, capped at 100,000.
+Original verification receives the remainder. Neither allowance refills when a
+window finishes or borrows unused capacity from the other. Metadata objects are
+bounded to 2 MiB to accommodate supported native indexes; each receipt still
+has its existing 64 KiB bound. These are cumulative read allowances, including
+repeated checks, rather than a promise to read each stored byte only once.
 
 Sample and packet limits check receipt admission and actual projected counts.
 They do not lower the native verifier's intrinsic per-window ceiling of 256
@@ -127,9 +144,19 @@ The result limit counts `matches + unknown + source_only` together. The CLI also
 requires the complete report to fit 8 MiB. There is no truncation or partial
 success on a budget, allocation, custody, cancellation or output-size refusal.
 The existing `--timeout-ms`, `--max-scan-roots`, `--max-objects`,
-`--max-object-bytes` and `--max-total-bytes` limits remain independent. Cancellation
-is cooperative; exact roots, tombstones and companion bytes are checked again
-after native projection and before a complete result is released.
+`--max-object-bytes` and `--max-total-bytes` limits also constrain the read
+capability. For this command, the roots limit bounds selected roots; it does not
+authorize a namespace scan. Object allowances are divided between metadata and
+original verification without refill. The total-byte limit also caps cumulative
+reads, so increasing the read allowance beyond its default requires increasing
+`--max-total-bytes` as well.
+
+Cancellation is cooperative. Each native original's complete closure is verified
+and rechecked before its callback completes. The receipt and every selected
+root, native index and tombstone observation remain live for final whole-query
+revalidation before a result is released. This detects changes at the observed
+boundaries; it does not promise an atomic filesystem snapshot against arbitrary
+concurrent replacement.
 
 Native whole-query error codes are `ERR-REPLAY-TIME-SCOPE-001`,
 `ERR-REPLAY-TIME-INTERVAL-001`, `ERR-REPLAY-TIME-LIMIT-001`,
@@ -139,13 +166,18 @@ with the packet parser's stable code where applicable; they are not empty succes
 
 ## Library and validation
 
-The library entry point is
-`fss_reference::rtsp::recording_replay::time::query_replay_time`, taking an existing
-`LocalRootPublisher`, a `ReplayTimeQuery` and `PublishCancellation`. It reuses the
-native receipt loader with metadata admission before original reads and sealed
-native callbacks after source verification. Existing recording, catalog, live
-capture and direct replay receipt encodings are unchanged. `query-utc` retains
-its existing node-clock meaning.
+The CLI uses
+`fss_reference::rtsp::recording_replay::time::pinned::query_replay_time_read_only`.
+It takes a `SpoolIo`, root path, `ReplayTimeQuery`, `ReplayTimeReadLimits` and
+cooperative cancellation callback. Its `ReplayTimeReadReport` contains the
+unchanged native report plus separate metadata and original read usage.
+
+The existing `time::query_replay_time` entry point remains available to callers
+that already own a `LocalRootPublisher`. Both paths use the same native timestamp
+projection, with metadata admission before original reads and sealed native
+callbacks after source verification. Recording, catalog, live capture and direct
+replay receipt encodings are unchanged. `query-utc` retains its existing
+node-clock meaning.
 
 There are 44 new contracts: 18 packet contracts in `onvif_replay_contract`, 18
 reference contracts under `recording_replay_contract::utc`, and eight real CLI
@@ -172,3 +204,22 @@ separately. VIT-022 is not closed.
 
 Protocol interpretation follows the [ONVIF Streaming Specification](https://www.onvif.org/specs/stream/ONVIF-Streaming-Spec.pdf),
 sections 6.3, 6.3.1, 6.5.4 and 6.11, and [RFC 5905 section 6](https://www.rfc-editor.org/rfc/rfc5905#section-6).
+
+## Read-only query validation status — 2026-11-11
+
+The new read-only owner has nine authored native contract tests, and the CLI has
+three additional real-process regressions plus expanded argument/help checks.
+They cover AVC/HEVC parity with the existing native report, queries under an
+active writer, complete selected-scope revalidation, read budgets, cancellation,
+unrelated pending work and refusal without recovery or archive changes.
+
+The existing replay qualification lane includes the new native contracts and
+the CLI process tests. Run `bash scripts/check_recording_lifecycle.sh replay` with
+the pinned toolchain and locked dependency cache.
+
+Independent source/API review is complete. These new contracts, compilation and
+formatting remain **unexecuted**: the execution service disconnected during
+validation setup. No historical pass above is evidence that this new owner
+compiled or passed. The implementation is not release-qualified on that basis.
+The canonical `fss query`/MCP bridge to recorder-asserted UTC and hardware
+interoperability remain open; this change supplies their read-only source owner.

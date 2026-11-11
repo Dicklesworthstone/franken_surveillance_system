@@ -87,6 +87,9 @@ fn query_help_exposes_explicit_era_pins_and_bounded_historical_time() -> Test {
             "--expected-replay-root",
             "--expected-replay-request",
             "--max-query-results",
+            "--max-query-read-bytes",
+            "--max-query-io-calls",
+            "Read-only exact-slot verification",
             "8 MiB",
             "not calibrated capture time",
             "low byte",
@@ -118,6 +121,10 @@ fn invalid_time_inputs_refuse_before_open_and_never_echo_private_values() -> Tes
         ("--max-query-samples", Some("0")),
         ("--max-query-source-bytes", Some("2147483649")),
         ("--max-query-results", Some("32769")),
+        ("--max-query-read-bytes", Some("0")),
+        ("--max-query-read-bytes", Some("4294967297")),
+        ("--max-query-io-calls", Some("0")),
+        ("--max-query-io-calls", Some("4000001")),
     ] {
         let mut values = query_args(&missing, &receipt)?;
         change(&mut values, key, value)?;
@@ -383,5 +390,141 @@ fn empty_failed_attempt_reports_no_samples_without_an_absence_claim() -> Test {
     assert_eq!(text(&report, "termination")?, "protocol_failure");
     assert_eq!(text(&report, "absence_claim")?, "not_claimed");
     assert_eq!(text(&report, "coverage_claim")?, "not_claimed");
+    Ok(())
+}
+
+fn archive_snapshot(
+    root: &Path,
+) -> Test<std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        result: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) -> Test {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path.strip_prefix(root)?.to_path_buf();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                result.insert(relative, None);
+                visit(root, &path, result)?;
+            } else if kind.is_file() {
+                result.insert(relative, Some(std::fs::read(path)?));
+            } else {
+                return Err("unexpected non-file fixture entry".into());
+            }
+        }
+        Ok(())
+    }
+
+    let mut result = std::collections::BTreeMap::new();
+    visit(root, root, &mut result)?;
+    Ok(result)
+}
+
+#[test]
+fn utc_queries_preserve_the_archive_and_work_under_an_active_writer() -> Test {
+    let _serial = serial();
+    for (root, receipt) in [
+        setup(
+            "time-reader-held-avc",
+            2,
+            ReplayTermination::RequestedStop,
+            true,
+        )?,
+        timed_hevc("time-reader-held-hevc")?,
+    ] {
+        let values = query_args(&root, &receipt)?;
+        let baseline = run(&values)?;
+        assert!(baseline.status.success());
+        let publisher = LocalRootPublisher::open(&root, limits())?;
+        std::fs::write(
+            root.join("roots").join(format!(
+                "unrelated{}{}",
+                fss_publication::ROOT_RECORD_SUFFIX,
+                fss_publication::ROOT_TEMP_SUFFIX
+            )),
+            b"unrelated pending publication",
+        )?;
+        std::fs::write(
+            root.join("spool/staging/query-sentinel.tmp"),
+            b"unfinished source",
+        )?;
+        let before = archive_snapshot(&root)?;
+        let output = run(&values)?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, baseline.stdout);
+        assert_eq!(archive_snapshot(&root)?, before);
+        assert_eq!(
+            publisher.spool().read(receipt.root())?,
+            receipt.manifest().canonical_bytes()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn exhausted_read_allowances_do_not_mutate_the_archive_or_emit_partial_rows() -> Test {
+    let _serial = serial();
+    let (root, receipt) = timed_hevc("time-reader-limits")?;
+    let _publisher = LocalRootPublisher::open(&root, limits())?;
+    let before = archive_snapshot(&root)?;
+    for key in [
+        "--max-query-read-bytes",
+        "--max-query-io-calls",
+        "--max-total-bytes",
+        "--max-scan-roots",
+        "--max-objects",
+        "--max-object-bytes",
+    ] {
+        let mut values = query_args(&root, &receipt)?;
+        change(&mut values, key, Some("1"))?;
+        let output = run(&values)?;
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(ExitIdentity::RUNTIME_FAILURE.code)),
+            "{key}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "{key}");
+        assert_eq!(archive_snapshot(&root)?, before, "{key}");
+    }
+    let output = run(&query_args(&root, &receipt)?)?;
+    assert!(output.status.success());
+    assert_eq!(archive_snapshot(&root)?, before);
+    Ok(())
+}
+
+#[test]
+fn read_only_time_query_does_not_recover_an_in_flight_selected_root() -> Test {
+    let _serial = serial();
+    let (root, receipt) = setup(
+        "time-reader-selected-pending",
+        1,
+        ReplayTermination::RequestedStop,
+        true,
+    )?;
+    let _publisher = LocalRootPublisher::open(&root, limits())?;
+    let pending = root.join("roots").join(format!(
+        "{}{}{}",
+        receipt.slot()?.as_str(),
+        fss_publication::ROOT_RECORD_SUFFIX,
+        fss_publication::ROOT_TEMP_SUFFIX
+    ));
+    std::fs::write(pending, b"unsettled selected publication")?;
+    let before = archive_snapshot(&root)?;
+    let output = run(&query_args(&root, &receipt)?)?;
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(ExitIdentity::RUNTIME_FAILURE.code))
+    );
+    assert!(output.stdout.is_empty());
+    assert_eq!(archive_snapshot(&root)?, before);
     Ok(())
 }

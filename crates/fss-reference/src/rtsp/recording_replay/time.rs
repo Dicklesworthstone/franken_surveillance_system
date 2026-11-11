@@ -26,6 +26,10 @@ mod scan;
 #[path = "time/source.rs"]
 mod source;
 
+/// Exact pinned recorder-time queries without a writer lock, recovery, or archive scan.
+#[path = "time/pinned.rs"]
+pub mod pinned;
+
 pub(crate) use scan::query_with_originals;
 
 use super::{ReplayCodec, ReplayReceipt, ReplayReceiptError};

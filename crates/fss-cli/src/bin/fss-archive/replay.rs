@@ -311,15 +311,18 @@ fn run(options: Options) -> Result<String> {
         start: Instant::now(),
         timeout: options.timeout,
     };
+    clock.check()?;
+    if let Some(query) = &options.time {
+        // The selected read capability owns layout validation and every I/O
+        // allowance. Do not open, canonicalize or recover a writer first.
+        return time::run(&options.root, &options, query, &clock);
+    }
     let root = existing(&options.root)?;
     clock.check()?;
     let publisher = LocalRootPublisher::open(root, options.storage)
         .map_err(|_| runtime("archive open or exclusive ownership refused"))?;
     // Existing owner open is count/byte bounded but has no cancellation argument.
     clock.check()?;
-    if let Some(query) = &options.time {
-        return time::run(&publisher, &options, query, &clock);
-    }
     let load = match options.codec {
         ReplayCodec::Avc => load_replay_receipt,
         ReplayCodec::Hevc => load_hevc_replay_receipt,
