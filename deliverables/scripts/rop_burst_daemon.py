@@ -84,7 +84,7 @@ def main():
         if stok:
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
-            sess = {"stok": stok}
+            sess = stok  # T.login returns the whole session (stok/seq/lsk/ivb)
             # Ask for sleep-off WITH the session. The shell script posts all methods blind to
             # the unauthenticated endpoint; a real session turns this into an answerable call,
             # and a unit that accepts it stops flapping and stops the whole sweep.
