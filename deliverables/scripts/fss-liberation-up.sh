@@ -10,6 +10,10 @@
 #   fss-liberation-up.sh            # arm everything missing, then verify
 #   fss-liberation-up.sh --force    # arm even if the readiness gate is dirty
 #
+# NOTE: `launchctl kickstart -k` does NOT re-read the plist, so an EnvironmentVariables edit is
+# invisible to a kickstarted job. Anything that changes a plist env must be booted out and
+# bootstrapped — which is what this script does. That trap cost two wrong runs.
+#
 # Idempotent by construction: a lane that is already loaded (running or spawn-scheduled) is
 # left alone — never booted out, never kickstarted, because KeepAlive supervisors fight back
 # and a camera session that drops takes 15-30 min of backoff with it. Only missing lanes are
