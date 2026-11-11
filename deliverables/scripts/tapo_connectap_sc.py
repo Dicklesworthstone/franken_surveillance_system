@@ -181,13 +181,14 @@ def req(host, sess, inner, timeout=8):
 def connect_params(b64: str, ssid: str, bssid: str) -> dict:
     """The only shape that reaches the decode: the connect object directly.
 
-    `params.onboarding.connect` is rejected with -40209 on 1.2.2/1.1.7; the
-    connect object must be `params` itself. `pwd_encrypted` is what selects the
+    `params.onboarding.connect` is rejected (-40209 on a small payload, -40214 on a full one);
+    the connect object must be `params` itself. Verified on the C460: the flat shape answers
+    error_code 0 for both a 96-byte probe and a 2,448-byte payload. `pwd_encrypted` is what selects the
     decode, `unique_key` must be an Integer, and rssi/band are part of the model.
     """
-    return {"onboarding": {"connect": {
+    return {
         "ssid": ssid, "bssid": bssid, "auth": 1, "encryption": 3, "rssi": -50,
-        "password": b64, "unique_key": 0, "band": 0}}}
+        "password": b64, "unique_key": 0, "band": 0}
 
 
 def arp_present(host: str) -> bool | None:
