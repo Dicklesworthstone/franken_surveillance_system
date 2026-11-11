@@ -84,8 +84,10 @@ def post(host, path, body, hdrs=None, timeout=6):
     h = ["-H", "Content-Type: application/json", "-H", "User-Agent: Tapo CameraClient Android"]
     for k, v in (hdrs or {}).items():
         h += ["-H", "%s: %s" % (k, v)]
+    ct = max(0.5, min(1.0, timeout / 3.0))
     try:
-        p = subprocess.run(["curl", "-sk", "--interface", "en1", "-m", str(timeout), *h, "-X", "POST",
+        p = subprocess.run(["curl", "-sk", "--interface", "en1", "--connect-timeout", str(ct),
+                            "-m", str(timeout), *h, "-X", "POST",
                             "-d", json.dumps(body),
                             "https://%s%s" % (host, path)], capture_output=True, text=True,
                            timeout=timeout + 2)
