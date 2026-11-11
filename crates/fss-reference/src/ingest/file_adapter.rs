@@ -3160,6 +3160,7 @@ impl FileIngestAdapter {
             || manifest.adapter_id == super::rtsp_import::catalog::ADAPTER
             || manifest.adapter_id == super::rtsp_import::pages::ADAPTER
             || manifest.adapter_id == super::rtsp_import::gaps::ADAPTER
+            || manifest.adapter_id == super::rtsp_import::replay::ADAPTER
         {
             return Err(FileIngestError::CorruptSegment {
                 detail: "RTSP originals require context-bound RetainedFileImport::read_segment"

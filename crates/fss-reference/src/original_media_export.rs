@@ -444,6 +444,7 @@ fn is_native_rtsp(adapter: &str) -> bool {
             | crate::ingest::rtsp_import::catalog::ADAPTER
             | crate::ingest::rtsp_import::pages::ADAPTER
             | crate::ingest::rtsp_import::gaps::ADAPTER
+            | crate::ingest::rtsp_import::replay::ADAPTER
     )
 }
 

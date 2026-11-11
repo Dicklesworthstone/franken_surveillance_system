@@ -1,9 +1,9 @@
 {
  "schema": "fss.device_adapters.v1",
- "asOf": "2026-10-10",
+ "asOf": "2026-11-10",
  "semanticProtocol": "fss/1",
- "generation": "gen:fss1:adapters-v2",
- "registryDigest": "sha256:ff11d7d98704225532c8e8411094c5356dd18908145d676636c57c4fa2706cc1",
+ "generation": "gen:fss1:adapters-v3",
+ "registryDigest": "sha256:bd81e61933f6fa2f8dfd62a9d63a582a74b04693aa3a44c407e04633eda11e54",
  "adapters": [
   {
    "id": "ADP-AOSU-P1MAX-LAB-001",
@@ -11,7 +11,7 @@
    "tier": "T3",
    "currentState": "research target",
    "promotionGate": "GATE-090",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-DJI-FLIP-LAB-001",
@@ -19,7 +19,7 @@
    "tier": "T3/T4",
    "currentState": "research target",
    "promotionGate": "GATE-100",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-FILE-001",
@@ -27,7 +27,7 @@
    "tier": "T0/T4",
    "currentState": "specified",
    "promotionGate": "GATE-010",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-INSTA-LINK-001",
@@ -35,7 +35,7 @@
    "tier": "T1",
    "currentState": "researched, unimplemented",
    "promotionGate": "GATE-020",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-ONVIF-M-001",
@@ -43,7 +43,7 @@
    "tier": "T1",
    "currentState": "specified",
    "promotionGate": "GATE-030",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-ONVIF-T-001",
@@ -51,7 +51,7 @@
    "tier": "T1",
    "currentState": "specified",
    "promotionGate": "GATE-030",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-REPLAY-001",
@@ -59,7 +59,7 @@
    "tier": "T0",
    "currentState": "specified",
    "promotionGate": "GATE-010",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-RTSP-001",
@@ -67,7 +67,23 @@
    "tier": "T1",
    "currentState": "specified",
    "promotionGate": "GATE-030",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
+  },
+  {
+   "id": "ADP-RTSP-JPEG-ARCHIVE-001",
+   "surface": "exact retained RTP/JPEG prefix to source-closed MJPEG import",
+   "tier": "T4",
+   "currentState": "finite native reference profile; independent physical mapping and unknown capture time",
+   "promotionGate": "GATE-040",
+   "generation": "gen:fss1:adapters-v3"
+  },
+  {
+   "id": "ADP-RTSP-REPLAY-ARCHIVE-001",
+   "surface": "whole-receipt AVC/HEVC replay to source-closed MP4 import",
+   "tier": "T4",
+   "currentState": "finite native reference profile; recorder provenance retained and capture time unknown unless separately declared",
+   "promotionGate": "GATE-040",
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-S3-IMPORT-001",
@@ -75,7 +91,7 @@
    "tier": "T4",
    "currentState": "specified",
    "promotionGate": "GATE-040",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-UVC-001",
@@ -83,7 +99,7 @@
    "tier": "T1",
    "currentState": "specified",
    "promotionGate": "GATE-020",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-WYZE-V4-LAB-001",
@@ -91,7 +107,7 @@
    "tier": "T3",
    "currentState": "research target",
    "promotionGate": "GATE-090",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   },
   {
    "id": "ADP-YI-IPC-LAB-001",
@@ -99,7 +115,7 @@
    "tier": "T3",
    "currentState": "research target",
    "promotionGate": "GATE-090",
-   "generation": "gen:fss1:adapters-v2"
+   "generation": "gen:fss1:adapters-v3"
   }
  ],
  "tombstones": []

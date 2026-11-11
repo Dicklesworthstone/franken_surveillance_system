@@ -110,14 +110,14 @@ fn load_codec_receipt(
 }
 
 /// Only sealed native windows reach this internal callback, after exact proof equality.
-pub(super) enum VerifiedOriginal<'a> {
+pub(crate) enum VerifiedOriginal<'a> {
     Avc(&'a PreparedRecording),
     Hevc(&'a PreparedHevcRecording),
 }
 
 /// Internal bounded projections may preflight metadata before original I/O. They cannot
 /// replace native source verification or the final root/tombstone revalidation.
-pub(super) trait ReceiptVisitor {
+pub(crate) trait ReceiptVisitor {
     fn admit_receipt(&mut self, receipt: &ReplayReceipt) -> Result<()>;
     fn original(
         &mut self,
@@ -137,7 +137,7 @@ impl ReceiptVisitor for NoopVisitor {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn load_codec_receipt_visit(
+pub(crate) fn load_codec_receipt_visit(
     publisher: &LocalRootPublisher,
     expected_codec: ReplayCodec,
     expected_root: ContentDigest,
@@ -242,6 +242,19 @@ fn verify_originals(
         }
     }
     Ok(())
+}
+
+/// Revalidate the same source owner's receipt, window slots and deletion state at an import
+/// publication boundary. This does not replace native verification of the retained bytes.
+pub(crate) fn revalidate_receipt(
+    publisher: &LocalRootPublisher,
+    receipt: &ReplayReceipt,
+    cancel: &dyn PublishCancellation,
+) -> Result<()> {
+    cancelled(cancel)?;
+    owner_ready(publisher)?;
+    durable_root(publisher, &receipt.slot()?, receipt.root())?;
+    live_originals(publisher, receipt, cancel)
 }
 
 fn live_originals(

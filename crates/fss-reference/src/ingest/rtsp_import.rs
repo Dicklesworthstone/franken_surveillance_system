@@ -11,6 +11,8 @@ mod catalog_provenance;
 /// Explicit gap-preserving native catalog import profile.
 pub mod gaps;
 pub mod pages;
+/// Whole-receipt replay import preserving discovery and historical-request provenance.
+pub mod replay;
 mod provenance;
 mod publication;
 /// Protected metadata query followed by exact selected-window native acquisition.

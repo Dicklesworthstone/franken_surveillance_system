@@ -36,6 +36,8 @@ mod localize;
 mod media;
 #[path = "fss-file/movie.rs"]
 mod movie;
+#[path = "fss-file/replay_origin.rs"]
+mod replay_origin;
 
 const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
@@ -52,6 +54,8 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
           --rtp-mode single-nal|non-interleaved; capsules are per recorded access unit;\n\
           no capture hint; the import is re-read and verified before it is reported\n\
   inspect/verify: --import-id sha256:HEX\n\
+          Recorder imports expose verified retained replay metadata, including requested and\n\
+          acknowledged UTC ranges; verify also reconstructs every original recording.\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
           Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
@@ -652,6 +656,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 localize::run(action, &retained, &mut deployment, &options.root, &cx, out)?
             }
             Action::Inspect(_) | Action::LocalizationReplay(_) => {}
+        }
+        if matches!(&options.action, Action::Inspect(_) | Action::Verify(_))
+            && manifest.adapter_id == fss_reference::ingest::rtsp_import::replay::ADAPTER
+        {
+            replay_origin::report(&deployment, identity, options.limits, &cx, out)?;
         }
         if let Some(path) = &options.manifest_output {
             write_new(path, &manifest.canonical_bytes(), &options.root, &cx)?;

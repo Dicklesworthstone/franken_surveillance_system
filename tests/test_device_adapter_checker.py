@@ -155,7 +155,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
             "tier": "T1",
             "currentState": "specified",
             "promotionGate": "GATE-010",
-            "generation": "gen:fss1:adapters-v1",
+            "generation": CURRENT_GENERATION,
         })
         self.write_json(data)
         res = validate_device_adapter_registry(self.fake_root)
@@ -300,7 +300,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
         self.assertIn(ERR_ADAPTER_GENERATION_MISMATCH, codes)
-        self.assertTrue(any("expected 'gen:fss1:adapters-v1'" in e.message for e in res.errors))
+        self.assertTrue(any(f"expected '{CURRENT_GENERATION}'" in e.message for e in res.errors))
 
     def test_23_mutant_p4_killing_baseline_field_check(self) -> None:
         """Kills mutant P4: baseline field invariant check disabled."""

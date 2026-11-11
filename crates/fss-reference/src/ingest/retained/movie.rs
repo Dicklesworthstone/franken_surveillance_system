@@ -22,7 +22,7 @@ const STAGE_COMPLETE: &str = "file_retained:movie_complete";
 const HASH_CHECKPOINT_BYTES: usize = 64 * 1024;
 
 /// Maximum independently reserved native-origin replay bytes for one movie selection.
-/// Catalog/page replay admits at most 128 MiB of originals plus a 4 MiB proof reservation.
+/// Catalog/page/recorder replay admits at most 128 MiB of originals plus a 4 MiB proof reservation.
 /// Single-window closures retain their 32 MiB limit; import-authority metadata is separately bounded.
 pub const MAX_MOVIE_ORIGIN_READ_BYTES: u64 = rtsp_import::catalog::MAX_REPLAY_READ_BYTES;
 
@@ -54,7 +54,8 @@ pub struct RetainedMovieSelection {
     pub source_bytes_read: u64,
     /// Native origin-replay reservations before I/O, independent of the reconstructed MP4.
     /// Zero for ordinary files; single-window replay charges the exact root and four children.
-    /// Catalog/page replay also charges every original catalog root/index and a conservative
+    /// Catalog/page replay also charges every original catalog root/index; recorder replay charges
+    /// its exact receipt and complete original closure. Both include a conservative
     /// 4 MiB proof reservation. Other proof/authority reads keep their separately bounded owners.
     pub origin_read_bytes_charged: u64,
     /// Nonrefillable allowance for the separate native-origin replay reservations.
@@ -87,12 +88,12 @@ impl RetainedFileImport {
     /// are checked before any result is released. Cancellation or any refusal is atomic.
     ///
     /// Supports original `ADP-FILE-001` MP4/MOV imports and completed native RTSP window,
-    /// catalog and catalog-page imports. Native origins additionally replay every retained packet,
+    /// catalog, catalog-page and recorder-replay imports. Native origins additionally replay every retained packet,
     /// index, catalog and remux object, then match the complete MP4 byte-for-byte before selection.
     /// Their independent read allowance defaults to [`MAX_MOVIE_ORIGIN_READ_BYTES`]; use
     /// [`Self::select_movie_interval_with_origin_limit`] to narrow it. Native catalog admission
-    /// requires identical initialization bytes. Only the separately authorized gap-preserving
-    /// profile admits decode gaps; selection keeps those gaps and separate decoder runs. No page
+    /// requires identical initialization bytes. Only separately authorized gap-preserving
+    /// requests admit decode gaps; selection keeps those gaps and separate decoder runs. No page
     /// boundary rebases the timeline or refills a budget. Movie ticks never imply UTC or a capture origin.
     pub fn select_movie_interval(
         &self,
@@ -218,6 +219,15 @@ impl RetainedFileImport {
             &mut None,
             &mut reserve_origin,
         )?;
+        rtsp_import::replay::verify_range_budgeted(
+            deployment,
+            &self.manifest,
+            0,
+            &source,
+            cx,
+            &mut None,
+            &mut reserve_origin,
+        )?;
 
         let mut check = || {
             cx.checkpoint(STAGE_PARSE)
@@ -277,6 +287,7 @@ fn source_admission(
                 | rtsp_import::catalog::ADAPTER
                 | rtsp_import::pages::ADAPTER
                 | rtsp_import::gaps::ADAPTER
+                | rtsp_import::replay::ADAPTER
         );
     if !supported_origin || !matches!(manifest.format.as_str(), "mp4avc" | "mp4hevc") {
         return Err(demux_refusal(DemuxError::Unsupported, STAGE_SOURCE));
@@ -313,7 +324,11 @@ fn verify_sample_index(
         .enumerate()
     {
         check()?;
-        let expected_gap = if manifest.adapter_id == rtsp_import::gaps::ADAPTER && index > 0 {
+        let expected_gap = if matches!(
+            manifest.adapter_id.as_str(),
+            rtsp_import::gaps::ADAPTER | rtsp_import::replay::ADAPTER
+        ) && index > 0
+        {
             let previous = &movie.samples()[index - 1];
             let end = previous
                 .decode_time

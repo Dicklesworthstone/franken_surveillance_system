@@ -12,7 +12,7 @@
 #[path = "recording_replay/time.rs"]
 pub mod time;
 
-mod storage;
+pub(crate) mod storage;
 mod wire;
 
 use std::collections::BTreeSet;
@@ -922,4 +922,21 @@ fn bounded_vec<T>(capacity: usize) -> Result<Vec<T>> {
         .try_reserve_exact(capacity)
         .map_err(|_| ReplayReceiptError::Limit)?;
     Ok(values)
+}
+
+/// Decode a copied companion only under independent codec, source and request pins.
+/// This validates canonical metadata and root identity; original native verification remains
+/// mandatory at the consumer boundary before any source-derived result can be returned.
+pub(crate) fn decode_retained_receipt(
+    metadata: &[u8],
+    expected_codec: ReplayCodec,
+    expected_scope: &CatalogScope,
+    expected_request: ContentDigest,
+    expected_root: ContentDigest,
+) -> Result<ReplayReceipt> {
+    let receipt = wire::decode(metadata, expected_codec, expected_scope, expected_request)?;
+    if receipt.root() != expected_root {
+        return Err(ReplayReceiptError::Digest);
+    }
+    Ok(receipt)
 }
