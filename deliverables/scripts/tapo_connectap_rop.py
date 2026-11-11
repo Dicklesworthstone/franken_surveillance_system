@@ -128,9 +128,8 @@ def main() -> int:
                              "system": a.system}, a.prefix.encode())
     print("payload %d decoded bytes; cmd: %s" % (n, a.cmd))
     # the connect object IS params; the onboarding wrapper is refused (-40209/-40214)
-    body = {"method": "connectAp", "params": {
-        "ssid": a.ssid, "bssid": a.bssid, "auth": 1, "encryption": 3, "rssi": -50,
-        "password": b64, "unique_key": 0, "band": 0}}
+    import tapo_connectap_sc as _sc
+    body = {"method": "connectAp", "params": _sc.connect_params(b64, a.ssid, a.bssid)}
     t0 = time.time()
     try:
         out = post(a.host, "/stok=%s/ds" % sess["stok"], body, timeout=10)
