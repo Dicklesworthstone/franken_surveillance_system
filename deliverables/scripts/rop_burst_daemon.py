@@ -132,9 +132,9 @@ def main():
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
             sess = stok  # T.login returns the whole session (stok/seq/lsk/ivb)
-            globals()["SO_IDX"] = (SO_IDX + 4) % len(SO_SHAPES)
+            globals()["SO_IDX"] = (SO_IDX + 1) % len(SO_SHAPES)
             n = len(SO_SHAPES)
-            SO_FAST = tuple(SO_SHAPES[(SO_IDX + k) % n] for k in range(min(4, n)))
+            SO_FAST = tuple(SO_SHAPES[(SO_IDX + k) % n] for k in range(min(1, n)))
             SO_REST = ()
             if try_sleep_off(sess, SO_FAST):
                 SO_REST = ()
