@@ -84,10 +84,20 @@ def main():
         if stok:
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
-            # disable sleep mode first (keeps camera awake for future attempts)
-            subprocess.run(["bash", "deliverables/scripts/disable_tapo_sleep.sh", HOST],
-                           capture_output=True, timeout=30)
             sess = {"stok": stok}
+            # Ask for sleep-off WITH the session. The shell script posts all methods blind to
+            # the unauthenticated endpoint; a real session turns this into an answerable call,
+            # and a unit that accepts it stops flapping and stops the whole sweep.
+            for sm in ({"method": "battery_set_power_save",
+                        "params": {"power_save": {"enable": False}}},
+                       {"method": "battery_set_power_supply_mode",
+                        "params": {"power_supply_mode": "wired_always_on"}}):
+                try:
+                    r = T.req(HOST, sess, sm, timeout=6)
+                    log(f"sleep-off {sm['method']} -> {r[:100]}")
+                    emit("sleep_off", {"method": sm["method"], "resp": r[:100]})
+                except Exception as e:
+                    log(f"sleep-off {sm['method']} exc {e}")
             fired = 0
             while fired < 12:
                 addr = BASE + idx * STEP
