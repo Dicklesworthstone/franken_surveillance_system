@@ -84,9 +84,15 @@ def post(host, path, body, hdrs=None, timeout=6):
     h = ["-H", "Content-Type: application/json", "-H", "User-Agent: Tapo CameraClient Android"]
     for k, v in (hdrs or {}).items():
         h += ["-H", "%s: %s" % (k, v)]
-    p = subprocess.run(["curl", "-sk", "--interface", "en1", "-m", str(timeout), *h, "-X", "POST",
-                        "-d", json.dumps(body),
-                        "https://%s%s" % (host, path)], capture_output=True, text=True)
+    try:
+        p = subprocess.run(["curl", "-sk", "--interface", "en1", "-m", str(timeout), *h, "-X", "POST",
+                            "-d", json.dumps(body),
+                            "https://%s%s" % (host, path)], capture_output=True, text=True,
+                           timeout=timeout + 2)
+    except subprocess.TimeoutExpired:
+        # curl can outlive -m while the socket is black-holed; without this the caller's loop
+        # blocks forever and the lane looks alive while doing nothing
+        return ""
     return p.stdout
 
 
