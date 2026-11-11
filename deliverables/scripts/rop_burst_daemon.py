@@ -114,11 +114,19 @@ def main():
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
             emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
             sess = stok  # T.login returns the whole session (stok/seq/lsk/ivb)
-            SO_FAST = ({"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": 0}},
-                       {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": "wired_always_on"}})
-            SO_REST = ({"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": 1}},
-                       {"method": "battery_set_power_save", "params": {"power_save": {"enable": False}}},
-                       {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 0}})
+            SO_FAST = (
+                {"method": "battery_set_power_save", "params": {"cur_status": 0, "power_save": {"enable": False}}},
+                {"method": "battery_set_power_save", "params": {"cur_status": 1, "power_save": 0}},
+                {"method": "battery_set_power_save", "params": {"cur_status": "0", "power_save": "0"}},
+                {"method": "battery_set_power_save", "params": {"power_save": {"enable": 0}}},
+                {"method": "battery_set_power_save", "params": {"power_save": {"enabled": False}}},
+                {"method": "battery_set_power_save", "params": {"power_save": 0}},
+                {"method": "battery_set_power_save", "params": {"power_save": False}},
+                {"method": "battery_set_power_supply_mode", "params": {"mode": "wired_always_on"}},
+                {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": {"mode": 0}}},
+                {"method": "battery_set_power_supply_mode", "params": {"power_supply_mode": 1}},
+            )
+            SO_REST = ()
             if try_sleep_off(sess, SO_FAST):
                 SO_REST = ()
             fired = 0
