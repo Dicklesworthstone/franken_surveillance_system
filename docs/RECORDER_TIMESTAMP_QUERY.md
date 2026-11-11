@@ -159,8 +159,10 @@ Independent source/API review and scoped pinned formatting are complete. The
 [retained native results](validation/2026-11-10-recorder-time-native-results.json)
 identify the exact sources, commands, passes and blocked attempts. Parser passes
 do not establish that the cold-query source/custody/operator path passed. Hardware recorder
-interoperability, replay-provenance-preserving ordinary import, calibrated device
-time and release qualification remain open. VIT-022 is not closed.
+interoperability, calibrated device time and release qualification remain open.
+The separate [whole-receipt retained import](RTSP_REPLAY_IMPORT.md) now carries
+replay provenance into ordinary analysis; its own execution status is documented
+separately. VIT-022 is not closed.
 
 Protocol interpretation follows the [ONVIF Streaming Specification](https://www.onvif.org/specs/stream/ONVIF-Streaming-Spec.pdf),
 sections 6.3, 6.3.1, 6.5.4 and 6.11, and [RFC 5905 section 6](https://www.rfc-editor.org/rfc/rfc5905#section-6).

@@ -55,6 +55,12 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
   run_tests 'native AVC/HEVC recorder replay and durable receipts' \
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
     --test live_hevc_archive_contract
+  run_tests 'whole recorder replay retained custody, cold decode and review provenance' \
+    -p fss-reference --test rtsp_replay_import_contract
+  run_tests 'exact whole replay import plans and source-free command-line decoding' \
+    -p fss-cli --bin fss-import-rtsp replay::
+  run_tests 'approved whole replay custody through real import and retained-media commands' \
+    -p fss-cli --test rtsp_replay_import_cli
   run_tests 'approved recorder replay through the capture CLI' \
     -p fss-cli --test capture_rtsp_cli replay::
   run_tests 'cold recorder replay inspection and historical time queries through the archive CLI' \

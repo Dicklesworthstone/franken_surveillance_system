@@ -18,6 +18,8 @@ mod plan;
 mod query;
 #[path = "fss-import-rtsp/query_utc.rs"]
 mod query_utc;
+#[path = "fss-import-rtsp/replay.rs"]
+mod replay;
 
 use plan::{MAX_ARGUMENTS, Options};
 
@@ -57,7 +59,8 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   Acquire only queried windows: fss-import-rtsp query --help.\n\
   Acquire conditional UTC candidates: fss-import-rtsp query-utc --help.\n\
   Import independent epochs together: fss-import-rtsp batch --help.\n\
-  Import retained RTP/JPEG originals: fss-import-rtsp jpeg --help.\n";
+  Import retained RTP/JPEG originals: fss-import-rtsp jpeg --help.\n\
+  Preserve complete recorder replay provenance: fss-import-rtsp replay --help.\n";
 
 fn emit(text: &str) -> io::Result<()> {
     // A full 64-page plan includes every exact slot/root plus bounded paths and JSON escaping.
@@ -98,11 +101,15 @@ fn main() -> ExitCode {
                 .max(jpeg::MAX_ARGUMENTS)
                 .max(query::MAX_ARGUMENTS)
                 .max(query_utc::MAX_ARGUMENTS)
+                .max(replay::MAX_ARGUMENTS)
                 + 2,
         )
         .collect();
     if args.first().and_then(|arg| arg.to_str()) == Some("jpeg") {
         return jpeg::main(&args[1..]);
+    }
+    if args.first().and_then(|arg| arg.to_str()) == Some("replay") {
+        return replay::main(&args[1..]);
     }
     if args.first().and_then(|arg| arg.to_str()) == Some("query") {
         return query::main(&args[1..]);

@@ -13,6 +13,12 @@ verification, fragmented MP4 handling and retained file publication. It does not
 open a camera connection. The source archive and the destination deployment remain
 separate owners.
 
+For historical recorder capture, use
+[`fss-import-rtsp replay`](RTSP_REPLAY_IMPORT.md) to retain the complete companion
+replay request, acknowledgement, capture approval and discovery provenance together
+with every original window. Window/catalog/page selection alone does not carry
+that separate historical receipt.
+
 To import a finite ordered collection of windows, catalogs or page selections and
 run independent whole-recording watch in one approved operation, use
 [`fss-watch-rtsp-selected`](RTSP_SELECTED_WATCH.md).

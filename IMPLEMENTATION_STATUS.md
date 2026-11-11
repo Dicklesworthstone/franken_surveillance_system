@@ -1,8 +1,44 @@
 # Implementation status
 
-**As of:** 2026-11-10 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-11 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Whole recorder replay custody through ordinary retained analysis
+
+`fss-import-rtsp replay` now imports a complete, independently pinned AVC/HEVC
+replay receipt together with every native original window into the ordinary
+retained-media workflow. The original capture approval, requested/acknowledged
+protocol ranges, optional protected ONVIF recording-selection provenance and
+termination/publication state survive import. Empty or over-budget receipts refuse
+as a whole. Positive decode gaps require explicit approval and remain visible;
+source-only HEVC tails remain evidence, never fabricated samples.
+
+Cold destination verification reconstructs all original packet windows and the
+exact derived MP4 without reopening the source archive. Retained range reads,
+native decode, movie selection, original export and deletion use the full replay
+closure. `fss-file inspect` and `verify` expose verified retained replay metadata;
+`verify` additionally performs full original-source reconstruction. Existing
+window/catalog imports retain their identities. Requested recorder UTC never
+becomes calibrated sample time: capture time remains unknown or an independently
+approved operator assumption, and historical retrieval completeness stays unknown.
+
+Validation: **36 adapter registry tests passed**, including the unchanged previous
+freeze digests and the new current generation. Pinned scoped Rust formatting,
+whitespace checks, shell syntax, Draft 2020-12 schema validation, exact JSON field
+agreement and independent source/API reviews passed. The **22 new native cases**
+(13 reference contracts, five command-plan cases and four real CLI process cases)
+remain **unexecuted**. Local compilation was repeatedly SIGKILLed in unchanged
+Asupersync 0.5.0 or `fss-core` before the changed feature source compiled, including
+single-job builds with debug metadata/incremental disabled and a final bounded
+glibc-arena attempt. There is no passing native compilation or runtime result yet.
+Existing hosted supplemental checks are triggered by direct commits; their result
+does not replace repository-owned release qualification.
+
+See [operator commands, provenance and precise limits](docs/RTSP_REPLAY_IMPORT.md).
+This closes the implemented replay-provenance handoff gap within VIT-022 while
+leaving hardware recorder interoperability, remote search, calibrated device time
+and proof of complete historical retrieval open. VIT-022 is not closed.
 
 ## Cold recorder-reported UTC queries over retained AVC/HEVC
 
@@ -45,8 +81,10 @@ No dependency or qualification gate has changed. The [retained native results](d
 record exact source identities, commands, passing targets and blocked attempts.
 
 See [operator commands and precise time/budget semantics](docs/RECORDER_TIMESTAMP_QUERY.md).
-Replay-provenance-preserving ordinary import, calibrated device time and complete
-historical retrieval remain open. This advances VIT-022 without closing it.
+The separate [whole-receipt retained import](docs/RTSP_REPLAY_IMPORT.md) now preserves
+replay provenance through ordinary analysis, with its own validation scope above.
+Calibrated device time and complete historical retrieval remain open. This advances
+VIT-022 without closing it.
 
 ## Full-class detector probabilities before foreground selection
 

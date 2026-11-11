@@ -735,6 +735,10 @@ Implemented (reference, unqualified):
 - [exact saved RTSP campaign watch](docs/rtsp_campaign_watch.md) across independent retained
   AVC/HEVC archives (`fss-watch-rtsp-campaign`), preserving failed, empty and unknown attempts,
   with separate tracking per attempt and native reruns from destination custody;
+- [historical recorder replay into retained analysis](docs/RTSP_REPLAY_IMPORT.md)
+  (`fss-import-rtsp replay`), preserving the complete AVC/HEVC replay receipt, every native
+  original, requested/acknowledged ranges and discovery provenance through cold decode,
+  inspection and review, with explicit gaps and partial retrieval status;
 - two-sensor corroboration of recorded ground-zone entries through owner-supplied or site-calibrated
   homographies, optional 3D scene-mesh/pose visibility and covariance guards, and gated global
   association (`fss-event corroborate`), plus one approval-gated plaintext webhook alert per

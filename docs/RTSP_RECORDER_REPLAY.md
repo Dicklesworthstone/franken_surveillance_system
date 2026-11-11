@@ -10,9 +10,10 @@ This advances VIT-022 (`fss-vit022-recorder-retrieval-5js5o`). The separate
 scoped GetReplayUri from an exact recording selection and supplies a protected
 `from-onvif-replay` handoff. The [cold recorder UTC query](RECORDER_TIMESTAMP_QUERY.md)
 now associates supported historical RTP assertions with verified native samples.
-Remote search sessions, vendor-specific URI discovery, proof of upstream media
-retention, calibrated device time and preservation of replay provenance through
-ordinary evidence import remain open.
+The [whole-receipt retained import](RTSP_REPLAY_IMPORT.md) now preserves that replay
+provenance through ordinary decode, analysis and review, including cold inspection
+after the source archive is offline. Remote search sessions, vendor-specific URI
+discovery, proof of upstream media retention and calibrated device time remain open.
 
 ## Capture an explicitly selected interval
 

@@ -1,0 +1,499 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.local/schemas/rtsp_replay_import_operator.v1.json",
+  "title": "Complete recorder replay import operator projection v1",
+  "description": "Pure exact plan and successful whole-receipt import projection. Native root/source verification, cross-field constraints, canonical identity and current authority remain mandatory. JSON alone grants no authority. Partial retrieval and unknown capture time remain explicit.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/plan"
+    },
+    {
+      "$ref": "#/$defs/imported"
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "ticks": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Exact unsigned 64-bit decode coordinate; native bounds and ordering remain mandatory."
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,38})$",
+      "description": "Exact nonnegative i128 nanoseconds; native arithmetic bounds remain mandatory."
+    },
+    "window": {
+      "type": "string",
+      "pattern": "^clock=[0-9]{8}T[0-9]{6}(\\.[0-9]{1,9})?Z-[0-9]{8}T[0-9]{6}(\\.[0-9]{1,9})?Z$",
+      "description": "Canonical protocol UTC assertion, not calibrated sample time or proof of media completeness."
+    },
+    "captureOrigin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_ns",
+        "uncertainty_ns"
+      ],
+      "properties": {
+        "start_ns": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "uncertainty_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/ticks"
+        },
+        "end": {
+          "$ref": "#/$defs/ticks"
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "kind",
+        "approval_digest",
+        "archive",
+        "root",
+        "site",
+        "principal",
+        "request_digest",
+        "codec",
+        "replay_root",
+        "replay_request",
+        "sensor_id",
+        "stream_id",
+        "generation",
+        "source_anchor",
+        "receive_clock",
+        "decode_clock",
+        "time_scale",
+        "receive_time_ns",
+        "capture_time_label",
+        "capture_origin",
+        "sample_timing",
+        "decode_gaps",
+        "selection",
+        "retention",
+        "maximum_windows",
+        "maximum_frames",
+        "maximum_original_bytes",
+        "maximum_media_bytes",
+        "maximum_work",
+        "timeout_ms",
+        "writes",
+        "network",
+        "continuity_certified",
+        "absence_certifiable",
+        "historical_utc_calibrated"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.rtsp_replay_import_operator.v1"
+        },
+        "kind": {
+          "const": "plan"
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "archive": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "site": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "principal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "request_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "codec": {
+          "enum": [
+            "avc",
+            "hevc"
+          ]
+        },
+        "replay_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "replay_request": {
+          "$ref": "#/$defs/digest"
+        },
+        "sensor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "stream_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "source_anchor": {
+          "$ref": "#/$defs/digest"
+        },
+        "receive_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "decode_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "time_scale": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "receive_time_ns": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "capture_time_label": {
+          "enum": [
+            "unknown",
+            "operator_assumption"
+          ]
+        },
+        "capture_origin": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/captureOrigin"
+            }
+          ]
+        },
+        "sample_timing": {
+          "const": "retained_mp4_presentation_timestamps"
+        },
+        "decode_gaps": {
+          "enum": [
+            "reject",
+            "preserve"
+          ]
+        },
+        "selection": {
+          "const": "complete_replay_receipt"
+        },
+        "retention": {
+          "const": "complete_replay_receipt_and_every_original_window"
+        },
+        "maximum_windows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maximum_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "maximum_original_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "maximum_media_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "maximum_work": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000000000
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "writes": {
+          "const": "none"
+        },
+        "network": {
+          "const": "none"
+        },
+        "continuity_certified": {
+          "const": false
+        },
+        "absence_certifiable": {
+          "const": false
+        },
+        "historical_utc_calibrated": {
+          "const": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capture_time_label": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "capture_origin": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "capture_origin": {
+                "$ref": "#/$defs/captureOrigin"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "imported": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "kind",
+        "approval_digest",
+        "import_identity",
+        "import_root",
+        "manifest_digest",
+        "origin_proof",
+        "codec",
+        "frames",
+        "windows",
+        "replay_root",
+        "replay_request",
+        "replay_approval",
+        "requested_window",
+        "acknowledged_window",
+        "onvif_source",
+        "replay_termination",
+        "replay_publication_complete",
+        "capture_time_label",
+        "sample_timing",
+        "decode_clock",
+        "time_scale",
+        "decode_start",
+        "decode_end",
+        "decode_gaps",
+        "decode_gap_intervals",
+        "reused",
+        "source_archive_retained_separately",
+        "destination_contains_complete_replay",
+        "work_used",
+        "network",
+        "continuity_certified",
+        "absence_certifiable",
+        "historical_utc_calibrated",
+        "upstream_interval_completeness"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.rtsp_replay_import_operator.v1"
+        },
+        "kind": {
+          "const": "imported"
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "import_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "import_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "origin_proof": {
+          "$ref": "#/$defs/digest"
+        },
+        "codec": {
+          "enum": [
+            "avc",
+            "hevc"
+          ]
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "windows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "replay_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "replay_request": {
+          "$ref": "#/$defs/digest"
+        },
+        "replay_approval": {
+          "$ref": "#/$defs/digest"
+        },
+        "requested_window": {
+          "$ref": "#/$defs/window"
+        },
+        "acknowledged_window": {
+          "$ref": "#/$defs/window"
+        },
+        "onvif_source": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "replay_termination": {
+          "enum": [
+            "requested_stop",
+            "input_ended",
+            "source_failure",
+            "deadline",
+            "budget",
+            "authority",
+            "storage",
+            "output",
+            "progress_stalled",
+            "cancelled",
+            "protocol_failure"
+          ]
+        },
+        "replay_publication_complete": {
+          "type": "boolean"
+        },
+        "capture_time_label": {
+          "enum": [
+            "unknown",
+            "operator_assumption"
+          ]
+        },
+        "sample_timing": {
+          "const": "retained_mp4_presentation_timestamps"
+        },
+        "decode_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "time_scale": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "decode_start": {
+          "$ref": "#/$defs/ticks"
+        },
+        "decode_end": {
+          "$ref": "#/$defs/ticks"
+        },
+        "decode_gaps": {
+          "enum": [
+            "reject",
+            "preserve"
+          ]
+        },
+        "decode_gap_intervals": {
+          "type": "array",
+          "maxItems": 63,
+          "items": {
+            "$ref": "#/$defs/gap"
+          }
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "source_archive_retained_separately": {
+          "const": true
+        },
+        "destination_contains_complete_replay": {
+          "const": true
+        },
+        "work_used": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000000
+        },
+        "network": {
+          "const": "none"
+        },
+        "continuity_certified": {
+          "const": false
+        },
+        "absence_certifiable": {
+          "const": false
+        },
+        "historical_utc_calibrated": {
+          "const": false
+        },
+        "upstream_interval_completeness": {
+          "const": "unknown"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "decode_gaps": {
+                "const": "reject"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "decode_gap_intervals": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
