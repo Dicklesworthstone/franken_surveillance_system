@@ -39,6 +39,14 @@ so FSS ingests real footage from real sensors. All owner-authorized, all on our 
 | **Yi .20** | SSID injection payload ready, listener alive 3+ days on :4444. Camera must scan during setup and hear the payload SSID | **macOS Internet Sharing** (System Settings → Sharing) with the payload SSID, or a standalone travel router broadcasting the payload SSID | Operator (the one disruptive step) |
 | **AOSU ×4** | `ILLEGAL_CLIENT_ID` — now proven **not** IP-related: a fresh Contabo egress still refuses, so the burn is on the app_id/cert. Unit located at `.126` (0x23 broadcast) | **New Tuya app registration** — unavoidable; a fresh IoT account yields app_id/secret → `local_key` → LAN OTA | Operator (web browser) |
 
+## The connectAp shape (read this before firing anything)
+
+The camera refuses `params.onboarding.connect` with `-40209`/`-40214`; the connect object must be
+`params` **itself**. Every guard, fire and daemon shot for days was rejected at the parse because
+three call sites carried the wrapper. All three now use `tapo_connectap_sc.connect_params`, and
+`tests/tapo_params_test.py` fails if the wrapper returns or if a sender stops using the helper.
+Verified on a live C460: the flat shape answers `error_code 0`.
+
 ## Power-cycle list (one trip, four units)
 
 Every armed lane is now waiting on a dead process, not on code:
