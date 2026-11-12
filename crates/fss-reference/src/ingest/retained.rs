@@ -14,6 +14,7 @@ use super::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, FILE_IMPORT_MANIFEST_SCHEMA, FileImportManifest,
     FileIngestError, FileOmissionSpan, SegmentSpan,
 };
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReplayCx};
 use fss_core::{
     BatchId, CanonicalDecoder, CapsuleId, ContentDigest, ContractError, DigestAlgorithm,
@@ -479,7 +480,7 @@ pub struct RetainedFileImport {
 impl RetainedFileImport {
     /// Recovers a completed import without reading or requiring the original source file.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         import_identity: ContentDigest,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
@@ -496,9 +497,9 @@ impl RetainedFileImport {
 
     /// Applies an additional manifest payload allowance before the spool allocates its read.
     /// Returns the exact admitted manifest length, without re-encoding the decoded metadata.
-    /// Root membership and other custody reads retain their independent owner limits.
+    /// Root membership and other custody reads use the source owner's shared allowance.
     pub(crate) fn open_with_manifest_limit(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         import_identity: ContentDigest,
         limits: RetainedReadLimits,
         maximum_manifest_bytes: usize,
@@ -508,7 +509,7 @@ impl RetainedFileImport {
         if import_identity.algorithm() != DigestAlgorithm::Sha256 {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
         }
-        refuse_deleted(deployment, import_identity)?;
+        deployment.refuse_deleted_import(import_identity)?;
         let hex: String = import_identity
             .bytes()
             .iter()
@@ -554,14 +555,7 @@ impl RetainedFileImport {
         {
             return Err(invalid("completion and manifest authority disagree"));
         }
-        let visible = deployment
-            .publisher()
-            .root(&slot)
-            .ok_or_else(|| invalid("import root is unavailable"))?;
-        if visible.root != import_root {
-            return Err(ContractError::DigestMismatch.into());
-        }
-        let bytes = deployment.publisher().spool().read_bounded(
+        let bytes = deployment.read_object_bounded(
             manifest_digest,
             maximum_manifest_bytes.min(MAX_RETAINED_MANIFEST_BYTES),
         )?;

@@ -38,6 +38,8 @@ mod alert;
 pub mod alert_control;
 /// Owner-attested reconciliation of a dispatched alert (operator_asserted, never a provider receipt).
 pub mod alert_reconcile;
+/// Shared bounded immutable custody reads for retained source consumers.
+pub mod retained_source;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
 pub use alert::webhook;
 

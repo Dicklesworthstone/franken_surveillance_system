@@ -3,6 +3,7 @@
 
 use super::super::file_adapter::{FileOmissionSpan, SegmentSpan};
 use super::*;
+use crate::retained_source::RetainedSource;
 use crate::rtsp::recording::{
     PreparedRecording, RECORDING_KIND, RecordingObjects,
     hevc::{HEVC_RECORDING_KIND, verify_hevc_recording},
@@ -432,7 +433,7 @@ fn count(
     Ok(n)
 }
 fn proof(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<Option<(ContentDigest, Proof)>, FileIngestError> {
@@ -446,20 +447,15 @@ fn proof(
         .filter(|h| h.len() == 64)
         .ok_or_else(|| corrupt("adapter generation"))?;
     let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
-    if deployment.publisher().tombstones().any(|d| *d == digest) {
-        return Err(corrupt("deleted proof"));
-    }
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, MAX_PROOF_BYTES)?;
+    deployment.check_object_available(digest)?;
+    let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;
     if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest {
         return Err(corrupt("proof digest"));
     }
     Ok(Some((digest, Proof::decode(&bytes)?)))
 }
 fn load_window(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     proof: &Proof,
     cx: &ReplayCx,
     reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
@@ -469,14 +465,9 @@ fn load_window(
                 reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>| {
         checkpoint(cx)?;
         reserve(length)?;
-        if deployment.publisher().tombstones().any(|d| *d == digest) {
-            return Err(corrupt("deleted original"));
-        }
+        deployment.check_object_available(digest)?;
         let maximum = usize::try_from(length).map_err(|_| corrupt("object length"))?;
-        let bytes = deployment
-            .publisher()
-            .spool()
-            .read_bounded(digest, maximum)?;
+        let bytes = deployment.read_object_bounded(digest, maximum)?;
         if bytes.len() as u64 != length || ContentDigest::sha256(&bytes) != digest {
             return Err(corrupt("original payload"));
         }
@@ -517,7 +508,7 @@ impl fmt::Debug for OriginCache {
     }
 }
 pub(crate) fn verify_range_budgeted(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     offset: u64,
     bytes: &[u8],
@@ -545,7 +536,7 @@ pub(crate) fn verify_range_budgeted(
     checkpoint(cx)
 }
 pub(crate) fn verify_originals(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
@@ -556,7 +547,7 @@ pub(crate) fn verify_originals(
     checkpoint(cx)
 }
 pub(crate) fn verify_membership(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     held: &BTreeSet<ContentDigest>,
     capsules: &BTreeMap<&str, ContentDigest>,

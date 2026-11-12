@@ -3,6 +3,8 @@
 //! Source-only data, missing assertions and partial retrieval never become media/coverage.
 
 mod hevc_recording_support;
+#[path = "rtsp_retained_replay_time_contract/immutable.rs"]
+mod immutable;
 #[path = "rtsp_replay_import_contract/support.rs"]
 mod import_support;
 mod recording_support;

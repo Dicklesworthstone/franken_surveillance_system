@@ -8,19 +8,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{CanonicalEncode, ContentDigest, EvidenceDeltaBatch, Plane};
 use fss_object::ObjectManifest;
 use fss_publication::{
-    LocalPublicationState, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY, SlotName,
-    root_reachability_batch_id, root_reachability_object_id,
+    ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY, SlotName, root_reachability_batch_id,
+    root_reachability_object_id,
 };
 
 use super::{FileImportManifest, FileIngestError, checkpoint, invalid};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::ReplayCx;
+use crate::retained_source::RetainedSource;
 
 const STAGE: &str = "file_retained:root_binding";
 
 /// Verify bounded metadata/authority membership, not detection quality or full source bytes.
 /// Source/segment reads still verify their actual chunks through the existing retained reader.
 pub(super) fn verify(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     slot: &SlotName,
     import_root: ContentDigest,
     manifest_digest: ContentDigest,
@@ -29,17 +30,9 @@ pub(super) fn verify(
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
     checkpoint(cx, STAGE)?;
-    let visible = deployment
-        .publisher()
-        .root(slot)
-        .ok_or_else(|| invalid("import root is unavailable"))?;
-    if visible.state != LocalPublicationState::Durable || visible.root != import_root {
-        return Err(invalid(
-            "import root is not the witnessed durable publication",
-        ));
-    }
-    let root_bytes = deployment.publisher().spool().read(import_root)?;
+    let root_bytes = deployment.read_object(import_root)?;
     let root = ObjectManifest::from_canonical_bytes(&root_bytes)?;
+    deployment.check_publication(slot, import_root, root.children().len())?;
     if root.root() != import_root
         || root.kind() != slot.as_str()
         || root.metadata_digest() != Some(manifest_digest)
@@ -98,7 +91,9 @@ pub(super) fn verify(
         ));
     }
     checkpoint(cx, STAGE)?;
-    if deployment.publisher().spool().read(custody.root())? != custody.canonical_bytes() {
+    if deployment.read_object_bounded(custody.root(), custody.canonical_bytes().len())?
+        != custody.canonical_bytes()
+    {
         return Err(invalid(
             "import custody manifest disagrees with source chunk identities",
         ));
@@ -202,7 +197,7 @@ pub(super) fn verify(
 /// A current, canonical reachability claim must already exist at the consuming publication.
 /// Shared by the aggregate and its typed parts; returning the batch preserves its exact order.
 fn check_reachability<'a>(
-    deployment: &'a ReferenceDeployment,
+    deployment: &'a dyn RetainedSource,
     slot: &SlotName,
     root: ContentDigest,
     before: u64,

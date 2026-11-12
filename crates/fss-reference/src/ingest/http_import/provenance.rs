@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ingest::http_camera::HttpWireReceipt;
+use crate::retained_source::RetainedSource;
 use fss_codec_mjpeg::stream::StreamBasis;
 use fss_core::{CanonicalDecoder, DigestAlgorithm, Sha256Hasher};
 
@@ -251,7 +252,7 @@ impl Proof {
 }
 
 fn proof(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<Option<(ContentDigest, Proof)>, FileIngestError> {
@@ -265,7 +266,7 @@ fn proof(
         .filter(|s| s.len() == 64)
         .ok_or_else(|| corrupt("adapter generation"))?;
     let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
-    let bytes = deployment.publisher().spool().read(digest)?;
+    let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;
     if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest {
         return Err(corrupt("proof digest"));
     }
@@ -273,7 +274,7 @@ fn proof(
 }
 
 fn originals(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     proof: &Proof,
     held: Option<&BTreeSet<ContentDigest>>,
     cx: &ReplayCx,
@@ -307,8 +308,8 @@ fn originals(
         )
         .map_err(|_| corrupt("wire chain"))?;
         if verify_objects {
-            if deployment.publisher().spool().read(origin.root)? != origin.manifest
-                || deployment.publisher().spool().read(metadata)? != origin.metadata
+            if deployment.read_object(origin.root)? != origin.manifest
+                || deployment.read_object(metadata)? != origin.metadata
             {
                 return Err(corrupt("original metadata copies"));
             }
@@ -329,7 +330,7 @@ fn originals(
 }
 
 pub(crate) fn verify_membership(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     held: &BTreeSet<ContentDigest>,
     capsules: &BTreeMap<&str, ContentDigest>,
@@ -403,7 +404,7 @@ pub(crate) fn verify_membership(
 
 /// Re-read original read objects and compare each JPEG byte before decoding or exporting it.
 pub(crate) fn verify_segment_budgeted(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     index: usize,
     bytes: &[u8],
@@ -433,7 +434,7 @@ pub(crate) fn verify_segment_budgeted(
 }
 
 fn verify_frame(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     records: &[HttpWireReceipt],
     frame: &FrameOrigin,
     reconstructed: Option<&[u8]>,
@@ -457,7 +458,7 @@ fn verify_frame(
             let digest = ContentDigest::new(DigestAlgorithm::Sha256, record.sha256);
             if cache.as_ref().is_none_or(|(held, _)| *held != digest) {
                 reserve(record.range[1] - record.range[0])?;
-                let source = deployment.publisher().spool().read(digest)?;
+                let source = deployment.read_object(digest)?;
                 if source.len() as u64 != record.range[1] - record.range[0]
                     || ContentDigest::sha256(&source) != digest
                 {
@@ -490,7 +491,7 @@ fn verify_frame(
 
 /// Full custody verification includes headers, delimiters and a partial trailing frame.
 pub(crate) fn verify_originals(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
@@ -501,7 +502,7 @@ pub(crate) fn verify_originals(
     for record in &records {
         checkpoint(cx)?;
         let digest = ContentDigest::new(DigestAlgorithm::Sha256, record.sha256);
-        let bytes = deployment.publisher().spool().read(digest)?;
+        let bytes = deployment.read_object(digest)?;
         if bytes.len() as u64 != record.range[1] - record.range[0]
             || ContentDigest::sha256(&bytes) != digest
         {

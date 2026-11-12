@@ -483,7 +483,7 @@ impl MetadataReadBudget {
                 (state.0, state.1)
             })
     }
-    fn fail(&self) {
+    pub(crate) fn fail(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.2 = true;
         }
@@ -501,15 +501,27 @@ impl MetadataReadBudget {
     }
 }
 
-struct Reader {
+struct Reader<'a> {
     files_read: u64,
     bytes_read: u64,
     budget: Option<MetadataReadBudget>,
+    cancelled: Option<&'a dyn Fn() -> bool>,
 }
 
-impl Reader {
+impl Reader<'_> {
+    fn admit(&self) -> io::Result<()> {
+        if self.cancelled.is_some_and(|cancelled| cancelled()) {
+            if let Some(budget) = &self.budget {
+                budget.fail();
+            }
+            return Err(io::Error::other("retained read authority cancelled"));
+        }
+        Ok(())
+    }
+
     /// Reads at most `max` bytes from a regular, non-symlink file; `Ok(None)` when absent.
     fn read_file(&mut self, path: &Path, max: usize) -> io::Result<Option<Vec<u8>>> {
+        self.admit()?;
         let max = match &self.budget {
             Some(budget) => budget.allowance(max)?,
             None => max,
@@ -546,6 +558,8 @@ impl Reader {
         digest: ContentDigest,
         max: usize,
     ) -> Result<Vec<u8>, DeploymentReadError> {
+        self.admit()
+            .map_err(|_| corrupt("retained read authority cancelled"))?;
         let max = match &self.budget {
             Some(budget) => budget
                 .allowance(max)
@@ -597,6 +611,7 @@ pub struct DeploymentHistory {
     layout_bytes: u64,
     layout_digest: ContentDigest,
     genesis_anchor: LedgerAnchor,
+    retained_ledger_snapshot: fss_core::LedgerSnapshot,
     batches: Vec<EvidenceDeltaBatch>,
     ledger_positions: Vec<fss_ledger::CommittedBatchPosition>,
     ledger_tail_uncommitted: bool,
@@ -633,7 +648,7 @@ impl DeploymentHistory {
             }
             DoctorVerdict::Healthy | DoctorVerdict::AttentionRequired => {}
         }
-        Self::read_inner(root, limits, doctor_verdict, None)
+        Self::read_inner(root, limits, doctor_verdict, None, None)
     }
 
     /// Bounded metadata-only history. Skips the global spool doctor (which hydrates media).
@@ -643,6 +658,20 @@ impl DeploymentHistory {
         limits: &OrientLimits,
         budget: &MetadataReadBudget,
     ) -> Result<Self, DeploymentReadError> {
+        Self::read_metadata_cancellable(root, limits, budget, &|| false)
+    }
+
+    /// The borrowed admission is checked before every payload read, including history metadata.
+    pub(crate) fn read_metadata_cancellable(
+        root: &Path,
+        limits: &OrientLimits,
+        budget: &MetadataReadBudget,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, DeploymentReadError> {
+        if cancelled() {
+            budget.fail();
+            return Err(corrupt("retained read authority cancelled"));
+        }
         if !fs::symlink_metadata(root)
             .map_err(|_| DeploymentReadError::NotADeployment {
                 reason: "missing deployment root".to_owned(),
@@ -659,6 +688,7 @@ impl DeploymentHistory {
             limits,
             DoctorVerdict::AttentionRequired,
             Some(budget.clone()),
+            Some(cancelled),
         )
     }
 
@@ -667,11 +697,13 @@ impl DeploymentHistory {
         limits: &OrientLimits,
         doctor_verdict: DoctorVerdict,
         budget: Option<MetadataReadBudget>,
+        cancelled: Option<&dyn Fn() -> bool>,
     ) -> Result<Self, DeploymentReadError> {
         let mut reader = Reader {
             files_read: 0,
             bytes_read: 0,
             budget: budget.clone(),
+            cancelled,
         };
         let layout_bytes = reader
             .read_file(
@@ -811,6 +843,7 @@ impl DeploymentHistory {
             layout_bytes: layout_len,
             layout_digest,
             genesis_anchor,
+            retained_ledger_snapshot: ledger.snapshot.clone(),
             batches: ledger.batches.clone(),
             ledger_positions,
             ledger_tail_uncommitted: !ledger.is_clean(),
@@ -820,6 +853,14 @@ impl DeploymentHistory {
             limits: *limits,
             metadata_budget: budget,
         })
+    }
+
+    pub(crate) fn retained_ledger_snapshot(&self) -> &fss_core::LedgerSnapshot {
+        &self.retained_ledger_snapshot
+    }
+
+    pub(crate) fn has_uncommitted_tail(&self) -> bool {
+        self.ledger_tail_uncommitted || self.effect_tail_uncommitted
     }
 
     pub(crate) fn metadata_layout_digest(&self) -> ContentDigest {
@@ -911,6 +952,15 @@ impl DeploymentHistory {
         slot: &fss_publication::SlotName,
         maximum: usize,
     ) -> Result<Vec<u8>, DeploymentReadError> {
+        self.wait_read_publication_cancellable(slot, maximum, &|| false)
+    }
+
+    pub(crate) fn wait_read_publication_cancellable(
+        &self,
+        slot: &fss_publication::SlotName,
+        maximum: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, DeploymentReadError> {
         let directory = self.objects.join(fss_publication::LOCAL_ROOTS_DIR);
         if !fs::symlink_metadata(&directory)
             .map_err(|_| corrupt("source custody root directory is unavailable"))?
@@ -937,6 +987,7 @@ impl DeploymentHistory {
             files_read: 0,
             bytes_read: 0,
             budget: self.metadata_budget.clone(),
+            cancelled: Some(cancelled),
         }
         .read_file(&directory.join(name), maximum)
         .map_err(|_| corrupt(format!("source custody publication {slot} cannot be read")))?
@@ -1027,6 +1078,14 @@ impl DeploymentHistory {
         &self,
         position: HistoryPosition,
     ) -> Result<DeploymentSnapshot, DeploymentReadError> {
+        self.snapshot_at_cancellable(position, &|| false)
+    }
+
+    pub(crate) fn snapshot_at_cancellable(
+        &self,
+        position: HistoryPosition,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<DeploymentSnapshot, DeploymentReadError> {
         let not_committed = || DeploymentReadError::NotCommitted {
             reason: format!(
                 "commit {} with {} effect record(s) is not a committed prefix of this deployment",
@@ -1054,6 +1113,7 @@ impl DeploymentHistory {
             files_read: 2,
             bytes_read: self.layout_bytes + ledger_len,
             budget: self.metadata_budget.clone(),
+            cancelled: Some(cancelled),
         };
         let (effect_journal_digest, obligations, operations) = match effect_count {
             None => (ContentDigest::sha256(&[]), Vec::new(), Vec::new()),

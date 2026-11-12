@@ -2,19 +2,20 @@
 //! Resolve typed part roots without hydrating their media payloads.
 
 use super::{FileImportManifest, FileIngestError, STAGE, checkpoint, invalid};
+use crate::ReplayCx;
 use crate::ingest::file_publication::{
     FilePublicationPlan, MAX_FILE_PUBLICATION_PARTS, MAX_FILE_PUBLICATION_PAYLOADS,
 };
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::retained_source::RetainedSource;
 use fss_core::{ContentDigest, DigestAlgorithm};
 use fss_object::ObjectManifest;
-use fss_publication::{LocalPublicationState, SlotName};
+use fss_publication::SlotName;
 use std::collections::BTreeSet;
 
 /// Returns the exact payload union and the first publication sequence. Source consumers still
 /// verify each requested chunk. The aggregate's native closure deliberately excludes parts.
 pub(super) fn resolve(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     slot: &SlotName,
     root: &ObjectManifest,
     metadata: &FileImportManifest,
@@ -69,21 +70,12 @@ pub(super) fn resolve(
         }
         let part_slot = SlotName::parse(&format!("{slot}-p{ordinal:06}"))
             .map_err(|_| invalid("invalid part slot"))?;
-        let publisher = deployment.publisher();
-        let visible = publisher
-            .root(&part_slot)
-            .ok_or_else(|| invalid("retained import part is absent"))?;
-        if visible.state != LocalPublicationState::Durable || visible.root != digest {
-            return Err(invalid(
-                "retained import part is not the exact durable root",
-            ));
-        }
-        let part = ObjectManifest::from_canonical_bytes(&publisher.spool().read(digest)?)?;
+        let part = ObjectManifest::from_canonical_bytes(&deployment.read_object(digest)?)?;
+        deployment.check_publication(&part_slot, digest, part.children().len())?;
         if part.root() != digest
             || part.kind() != part_slot.as_str()
             || part.metadata_digest().is_some()
             || part.children().is_empty()
-            || visible.child_count != part.children().len()
         {
             return Err(invalid("invalid retained import part manifest"));
         }

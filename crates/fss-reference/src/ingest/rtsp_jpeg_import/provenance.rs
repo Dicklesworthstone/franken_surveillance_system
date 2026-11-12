@@ -5,6 +5,7 @@ use super::replay::{FrameOrigin, Reconstruction};
 use super::request::{read_digest, read_size};
 use super::*;
 use crate::ingest::file_adapter::FileImportManifest;
+use crate::retained_source::RetainedSource;
 use fss_core::{
     CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval, ClockBasis, SensorCapsule,
 };
@@ -300,7 +301,7 @@ impl DatagramObjectReader for RetainedReader<'_> {
 }
 
 fn proof(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
     reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
@@ -316,13 +317,8 @@ fn proof(
         .ok_or_else(|| corrupt("adapter generation"))?;
     let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
     reserve(MAX_PROOF_BYTES as u64)?;
-    if deployment.publisher().tombstones().any(|d| *d == digest) {
-        return Err(corrupt("proof tombstone"));
-    }
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, MAX_PROOF_BYTES)?;
+    deployment.check_object_available(digest)?;
+    let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;
     if ContentDigest::sha256(&bytes) != digest {
         return Err(corrupt("proof digest"));
     }
@@ -381,7 +377,7 @@ fn verify(
 }
 
 pub(crate) fn verify_membership(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     held: &BTreeSet<ContentDigest>,
     capsules: &BTreeMap<&str, ContentDigest>,

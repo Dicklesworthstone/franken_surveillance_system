@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ingest::file_adapter::{FileOmissionSpan, SegmentSpan};
+use crate::retained_source::RetainedSource;
 use crate::rtsp::recording::{
     RECORDING_KIND, RecordingSummary,
     hevc::{HEVC_RECORDING_KIND, verify_hevc_recording},
@@ -98,7 +99,7 @@ impl Proof {
     /// archive slots. Only the native codec owner may reconstruct each sealed recording.
     pub(super) fn visit_originals(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
         visitor: &mut dyn ReceiptVisitor,
         reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
@@ -474,7 +475,7 @@ impl Proof {
     }
     pub(super) fn verify_companion(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
         reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
     ) -> Result<(), FileIngestError> {
@@ -494,7 +495,7 @@ impl Proof {
     }
     fn load_media(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
         reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
     ) -> Result<Vec<u8>, FileIngestError> {
@@ -649,32 +650,25 @@ fn selected_digest(
     Ok(Some(ContentDigest::parse(&format!("sha256:{value}"))?))
 }
 fn live(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     held: &BTreeSet<ContentDigest>,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
     checkpoint(cx)?;
-    if deployment
-        .publisher()
-        .tombstones()
-        .any(|d| held.contains(d))
-    {
-        return Err(corrupt("deleted replay origin"));
+    for digest in held {
+        deployment.check_object_available(*digest)?;
     }
     Ok(())
 }
 pub(super) fn proof(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
     cx: &ReplayCx,
     reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
 ) -> Result<Proof, FileIngestError> {
     live(deployment, &BTreeSet::from([digest]), cx)?;
     reserve(MAX_PROOF_BYTES as u64)?;
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, MAX_PROOF_BYTES)?;
+    let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;
     if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest {
         return Err(corrupt("replay proof digest"));
     }
@@ -683,7 +677,7 @@ pub(super) fn proof(
     Ok(proof)
 }
 fn read_original(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
     length: u64,
     cx: &ReplayCx,
@@ -693,10 +687,7 @@ fn read_original(
     reserve(length)?;
     live(deployment, &BTreeSet::from([digest]), cx)?;
     let maximum = usize::try_from(length).map_err(|_| corrupt("replay original length"))?;
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, maximum)?;
+    let bytes = deployment.read_object_bounded(digest, maximum)?;
     if bytes.len() as u64 != length || ContentDigest::sha256(&bytes) != digest {
         return Err(corrupt("replay original payload"));
     }
@@ -718,7 +709,7 @@ impl fmt::Debug for OriginCache {
     }
 }
 pub(crate) fn verify_range_budgeted(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     offset: u64,
     bytes: &[u8],
@@ -754,7 +745,7 @@ pub(crate) fn verify_range_budgeted(
     checkpoint(cx)
 }
 pub(crate) fn verify_originals(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
@@ -766,7 +757,7 @@ pub(crate) fn verify_originals(
     checkpoint(cx)
 }
 pub(crate) fn verify_membership(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     held: &BTreeSet<ContentDigest>,
     capsules: &BTreeMap<&str, ContentDigest>,
