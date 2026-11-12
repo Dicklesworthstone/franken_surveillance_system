@@ -4,6 +4,48 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Privacy closure, effect recovery and QSR read isolation — 2026-11-12
+
+Three observed contract defects are addressed in separate direct-main commits.
+The code and regression fixtures are source-reviewed and formatted; native
+execution remains blocked before the changed reference crate.
+
+- `fss-event qsr` now uses a reference-owned existing-store constructor that
+  preserves prepared, committed and indeterminate effect states and obligations,
+  including on refused reads. Exact original capacity limits remain required.
+  The exclusive publisher lock and local recovery still apply; this is not the
+  canonical immutable `fss/1` query boundary.
+- All eight in-memory/durable alert observation and reconciliation entry points
+  compare the complete supplied intent with the retained operation and verify its
+  linked obligation before provider lookup. A genuine provider proof for another
+  intent cannot terminalize an operation that merely reuses its ID.
+- Deletion expands every direct and nested manifest holder before classifying
+  audit candidates. Source-owned malformed prefixes and complete copied audit
+  bytes remain ordinary closure members. Verified committed audit identities
+  stay protected and shared copies are explicitly retained as
+  `deletion_audit_metadata`. Unowned candidates require complete canonical
+  decoding and local retained basis; completions must match a verified plan.
+
+The deletion change preserves the existing convention for unowned canonical
+local proposals. It does not prove which interrupted operation staged one;
+exact caller-pinned staging context remains follow-up work across deletion,
+retention, review expiry and policy adoption.
+
+Seventeen new regressions cover exact journal bytes and durable reopening,
+foreign intent/proof pairs, actual QSR CLI output, absent/corrupt/refused reads,
+nested audit-shaped content, legitimate audit preservation and interrupted
+staging retries. Pinned rustfmt, whitespace checks and retention-script syntax
+checks pass. The genuine locked/offline native build, using one Cargo job,
+single compiler workers and zero debug information, exited 101 when unchanged
+Asupersync 0.5.0 rustc received SIGKILL. A separate metadata-only check of the
+selected reference and CLI targets also exited 101 in unchanged Asupersync with
+SIGKILL. Neither attempt reached the changed project code or executed its tests.
+
+See the [QSR read boundary](docs/QSR_OBSERVATIONS.md),
+[deletion audit-role rules](docs/retention_cleanup.md#audit-records-and-source-ownership)
+and [typed continuation](docs/SESSION_HANDOFF_2026-11-12_PRIVACY_EFFECT_RECOVERY.json).
+No release qualification or umbrella bead completion is claimed.
+
 ## Canonical transport stops and retained metadata read limits
 
 Status: implemented and source-reviewed; the new Rust regressions remain unexecuted.

@@ -154,6 +154,29 @@ Original input files, exports, backups, replicas and device remanence remain exp
 this proof. Event revision history is preserved, with deleted evidence availability kept
 orthogonal to conclusions about the physical world.
 
+### Audit records and source ownership
+
+Deletion first expands every retained publication through its complete manifest ownership.
+Source or derivative bytes remain part of that closure even if they begin with a deletion
+plan, completion or retention-policy marker, or contain a complete canonical copy of such a
+record. The same rule applies below nested manifests. Serialization alone cannot remove
+published content from deletion accounting.
+
+Actual committed deletion plans, completions and preserved review-expiry issuance records
+are identified through verified deletion history. If later content shares those exact bytes,
+the plan lists them as retained with reason `deletion_audit_metadata`. Their historical
+provenance does not expand the new deletion closure, and their bytes remain available for
+subsequent audit replay.
+
+Interrupted operations still require their unowned staged proposals to survive exact retry.
+Those candidates now require complete canonical decoding, this site's identity and an exact
+retained ledger basis. A staged completion must also equal the expected completion of a
+verified committed plan. Malformed, foreign or unbound unowned candidates refuse planning
+and commit before writes. One limitation remains: an unowned, fully canonical local proposal
+is still recognized by this staging convention without proving which interrupted operation
+staged it. Exact caller-pinned staging context remains follow-up work across deletion,
+retention, review expiry and policy adoption.
+
 ## Adopt and use durable per-sensor settings
 
 `policy-plan` previews a complete prospective policy generation and the current inventory
@@ -227,8 +250,9 @@ the policy authority family or its reserved object namespace.
 
 The deployment lock serializes updates with cleanup. No new policy revision can be adopted
 while a durable deletion is incomplete. Cancellation after staging the impact plan or policy
-object leaves no effective revision: both are verified audit metadata, and reopening permits
-the original adoption approval to be retried exactly. After the policy batch commits, a
+object leaves no effective revision. Fully decoded unowned staging with the exact local
+retained basis permits the original adoption approval to be retried exactly; it grants no
+policy authority. After the policy batch commits, a
 post-commit cancellation does not report the completed adoption as a failure.
 
 Once a cleanup's deletion record is durable, its original policy pin and exact request remain
@@ -288,7 +312,7 @@ History is never evicted or truncated to make a new policy fit.
 bash scripts/check_retention_reference.sh
 ```
 
-The script runs selector/codec and CLI unit tests, `retention_cli_contract`,
+The script runs selector/codec and CLI unit tests, `deletion_audit_role_contract`, `retention_cli_contract`,
 `retention_cohort_contract`, and existing import/sensor/event deletion integration targets,
 then formatting checks.
 The new tests cover real retained MJPEG imports, old versus recent and unknown-time recordings,

@@ -19,7 +19,8 @@
 //! closure content units publish or hold, until nothing changes. Objects some unit
 //! outside the closure also holds are retained (`shared_with_retained_authority`); objects held by
 //! authority-history units (event revisions, tamper status, alert outcomes) are retained
-//! (`authority_history`). Spool objects no unit holds are attributed when they reference a key or
+//! (`authority_history`). Verified deletion audit bytes shared with content are explicitly kept
+//! (`deletion_audit_metadata`). Spool objects no unit holds are attributed when they reference a key or
 //! are referenced by deletable content; the rest are counted as unattributed, never deleted.
 //!
 //! Scope membership: a sensor scope's members are the retained imports whose capsules name the
@@ -33,9 +34,9 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fss_core::{
-    CanonicalDecode, CaptureInterval, ContentDigest, DigestAlgorithm, EffectState, EventHypothesis,
-    EventId, EvidenceDeltaBatch, LedgerAnchor, ObjectId, OperationReceipt, Plane, SensorCapsule,
-    SensorId,
+    CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, DigestAlgorithm,
+    EffectState, EventHypothesis, EventId, EvidenceDeltaBatch, LedgerAnchor, ObjectId,
+    OperationReceipt, Plane, SensorCapsule, SensorId,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY, SlotName};
@@ -203,6 +204,8 @@ pub(super) struct Universe {
     effect_journal_root: ContentDigest,
     units: Vec<Unit>,
     objects: BTreeMap<ContentDigest, ObjectInfo>,
+    /// Verified deletion/expiry audit identities, protected even when content also holds them.
+    protected_audit: BTreeSet<ContentDigest>,
     holders: BTreeMap<ContentDigest, Vec<usize>>,
     /// Units whose `refs` (embedded custody references) contain the digest.
     /// A digest a unit outside the closure merely references is shared
@@ -295,6 +298,50 @@ pub(super) fn embedded(
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), DeletionError> {
     cx.checkpoint(stage)
         .map_err(|_| DeletionError::Cancelled { stage })
+}
+
+/// Validate an unowned staging candidate; a framing hint alone is never an exemption.
+/// Held objects bypass this helper and retain their source/derivative ownership.
+fn unheld_audit_record(
+    deployment: &ReferenceDeployment,
+    index: &DeletionIndex,
+    bytes: &[u8],
+    digest: ContentDigest,
+) -> Result<bool, DeletionError> {
+    let retained_basis = |basis: &LedgerAnchor| {
+        basis == deployment.current_anchor()
+            || deployment
+                .ledger()
+                .batches()
+                .iter()
+                .any(|batch| basis == &batch.basis_anchor || basis == &batch.new_anchor)
+    };
+    if DeletionPlan::is_plan_bytes(bytes) {
+        let plan = DeletionPlan::decode(bytes, digest)?;
+        if plan.site_lineage != deployment.site_lineage() || !retained_basis(&plan.basis_anchor) {
+            return Err(DeletionError::RecordMismatch);
+        }
+        return Ok(true);
+    }
+    if DeletionCompletion::is_completion_bytes(bytes) {
+        let completion = DeletionCompletion::decode(bytes, digest)?;
+        // Completion staging occurs only after the exact deletion plan is authoritative.
+        let entry = index
+            .plan(completion.plan_digest)
+            .ok_or(DeletionError::RecordMismatch)?;
+        if completion != DeletionCompletion::of(&entry.plan)? {
+            return Err(DeletionError::RecordMismatch);
+        }
+        return Ok(true);
+    }
+    if super::retention::policy::is_policy_record_bytes(bytes, digest)? {
+        let record = super::retention::policy::RetentionPolicyRecord::from_bytes(bytes, digest)?;
+        if record.site() != deployment.site_lineage() || !retained_basis(record.basis()) {
+            return Err(DeletionError::RecordMismatch);
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 impl Universe {
@@ -490,37 +537,41 @@ impl Universe {
         }
 
         let mut objects: BTreeMap<ContentDigest, ObjectInfo> = BTreeMap::new();
-        // Expiry retains bounded issuance metadata as audit history. Its historical media
-        // references cannot keep bytes live, nor may another cleanup classify it as an orphan.
-        let mut records: BTreeSet<ContentDigest> = index
-            .entries()
-            .iter()
-            .flat_map(|entry| match &entry.plan.scope {
-                DeletionScope::ReviewExpiry(selection) => selection
-                    .candidates()
-                    .iter()
-                    .filter(|candidate| {
-                        candidate.disposition()
-                            == super::review_expiry::ReviewExpiryDisposition::Expired
-                    })
-                    .map(|candidate| candidate.record_digest())
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
-            })
-            .collect();
+        // A committed audit identity comes from verified ledger history, never byte framing.
+        // Keep it protected if a later content publication happens to hold the same bytes.
+        let mut protected_audit = BTreeSet::new();
+        for entry in index.entries() {
+            protected_audit.insert(entry.plan_digest);
+            protected_audit.extend(entry.completion_digest);
+            // Expiry retains bounded issuance metadata as audit history. Its historical media
+            // references cannot keep bytes live, nor may cleanup classify it as an orphan.
+            if let DeletionScope::ReviewExpiry(selection) = &entry.plan.scope {
+                protected_audit.extend(
+                    selection
+                        .candidates()
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.disposition()
+                                == super::review_expiry::ReviewExpiryDisposition::Expired
+                        })
+                        .map(|candidate| candidate.record_digest()),
+                );
+            }
+        }
+        let mut audit_candidates = BTreeSet::new();
         for digest in &spool_digests {
             checkpoint(cx, STAGE_DELETION_SCAN)?;
             // Unreadable bytes have unknown references, not an empty reference set. Even an
             // apparently unrelated object may hold the only edge into this closure. Refuse the
             // scan with its custody error rather than authorize a smaller, incomplete deletion.
             let bytes = spool.read(*digest)?;
-            if records.contains(digest)
-                || DeletionPlan::is_plan_bytes(&bytes)
+            if DeletionPlan::is_plan_bytes(&bytes)
                 || DeletionCompletion::is_completion_bytes(&bytes)
-                || super::retention::policy::is_policy_record_bytes(&bytes, *digest)?
+                || CanonicalDecoder::new(&bytes)
+                    .text()
+                    .is_ok_and(|domain| domain == super::retention::policy::POLICY_DOMAIN)
             {
-                records.insert(*digest);
-                continue;
+                audit_candidates.insert(*digest);
             }
             let mut info = ObjectInfo {
                 bytes: bytes.len() as u64,
@@ -534,7 +585,9 @@ impl Universe {
             objects.insert(*digest, info);
         }
 
-        // Expand members through contained manifests; compute refs and holders.
+        // Expand every direct and transitive holder before considering staging exceptions.
+        // Media may contain either a forged audit prefix or a complete canonical audit record.
+        // Neither spelling changes content ownership, even several manifests below a root.
         let mut holders: BTreeMap<ContentDigest, Vec<usize>> = BTreeMap::new();
         let mut identity_holders: BTreeMap<ContentDigest, Vec<usize>> = BTreeMap::new();
         for (index, unit) in units.iter_mut().enumerate() {
@@ -556,15 +609,46 @@ impl Universe {
                     pending.extend(info.manifest_children.iter().copied());
                 }
             }
-            let mut refs: BTreeSet<ContentDigest> = unit.identities.clone();
             for member in &members {
+                holders.entry(*member).or_default().push(index);
+            }
+            unit.members = members;
+        }
+
+        // Preserve the existing retry convention for unowned staged audit proposals, with
+        // complete canonical decoding and a local retained basis. This is a staging exception,
+        // not authority: a caller-pinned retry identity is still needed to distinguish arbitrary
+        // canonical, unowned proposals from this process's own interrupted staging.
+        let mut records = protected_audit.clone();
+        for digest in audit_candidates {
+            if holders.contains_key(&digest) || records.contains(&digest) {
+                continue;
+            }
+            checkpoint(cx, STAGE_DELETION_SCAN)?;
+            let bytes = spool.read(digest)?;
+            if unheld_audit_record(deployment, index, &bytes, digest)? {
+                records.insert(digest);
+            }
+        }
+        for digest in &records {
+            if holders.contains_key(digest) {
+                // Audit provenance is history, not a new edge that can absorb surviving data.
+                // The shared object itself remains a visible retained member of the closure.
+                if let Some(info) = objects.get_mut(digest) {
+                    info.refs.clear();
+                }
+            } else {
+                objects.remove(digest);
+            }
+        }
+        for unit in &mut units {
+            let mut refs: BTreeSet<ContentDigest> = unit.identities.clone();
+            for member in &unit.members {
                 refs.insert(*member);
                 if let Some(info) = objects.get(member) {
                     refs.extend(info.refs.iter().copied());
                 }
-                holders.entry(*member).or_default().push(index);
             }
-            unit.members = members;
             unit.refs = refs;
         }
         let mut ref_holders: BTreeMap<ContentDigest, Vec<usize>> = BTreeMap::new();
@@ -606,6 +690,7 @@ impl Universe {
             effect_journal_root: deployment.effects().last_root(),
             units,
             objects,
+            protected_audit,
             holders,
             ref_holders,
             identity_holders,
@@ -928,7 +1013,9 @@ impl Universe {
                     });
                     retained.insert(
                         *member,
-                        if authority {
+                        if self.protected_audit.contains(member) {
+                            "deletion_audit_metadata"
+                        } else if authority {
                             "authority_history"
                         } else {
                             "shared_with_retained_authority"
@@ -1335,7 +1422,7 @@ impl Universe {
             .flatten()
             .chain(self.holders.get(&digest).into_iter().flatten())
             .all(|h| via[*h].is_some() && !self.units[*h].authority);
-        holders_ok && self.foreign_refs_ok(digest, via)
+        !self.protected_audit.contains(&digest) && holders_ok && self.foreign_refs_ok(digest, via)
     }
 
     /// A digest referenced only through embedded custody refs of a unit
@@ -1353,11 +1440,13 @@ impl Universe {
 
     /// Whether every unit holding `digest` is closure content.
     fn exclusive(&self, digest: ContentDigest, via: &[Option<ContentDigest>]) -> bool {
-        self.holders.get(&digest).is_some_and(|holders| {
-            holders
-                .iter()
-                .all(|h| via[*h].is_some() && !self.units[*h].authority)
-        }) && self.foreign_refs_ok(digest, via)
+        !self.protected_audit.contains(&digest)
+            && self.holders.get(&digest).is_some_and(|holders| {
+                holders
+                    .iter()
+                    .all(|h| via[*h].is_some() && !self.units[*h].authority)
+            })
+            && self.foreign_refs_ok(digest, via)
     }
 }
 

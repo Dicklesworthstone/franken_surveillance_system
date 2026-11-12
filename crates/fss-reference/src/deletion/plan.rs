@@ -75,7 +75,7 @@ pub struct DeletableObject {
 pub struct RetainedObject {
     /// Object digest.
     pub digest: ContentDigest,
-    /// `shared_with_retained_authority` or `authority_history`.
+    /// `shared_with_retained_authority`, `authority_history`, or `deletion_audit_metadata`.
     pub reason: String,
 }
 
@@ -349,7 +349,8 @@ impl DeletionPlan {
         Ok(ContentDigest::sha256(&self.canonical_bytes()?))
     }
 
-    /// Whether bytes begin with a canonical plan framing; all versions stay out of source scans.
+    /// Whether bytes begin with a recognized plan framing. This is only a parsing hint:
+    /// callers must decode the whole record and establish its role before treating it as audit.
     #[must_use]
     pub fn is_plan_bytes(bytes: &[u8]) -> bool {
         let mut d = CanonicalDecoder::new(bytes);
@@ -703,7 +704,8 @@ impl DeletionCompletion {
         Ok(ContentDigest::sha256(&self.canonical_bytes()?))
     }
 
-    /// Whether bytes begin with a canonical completion framing.
+    /// Whether bytes begin with a recognized completion framing. This is only a parsing hint,
+    /// never proof that source/derivative bytes have an audit role.
     #[must_use]
     pub fn is_completion_bytes(bytes: &[u8]) -> bool {
         let mut d = CanonicalDecoder::new(bytes);

@@ -745,8 +745,8 @@ pub fn commit_policy_change(
     Ok(receipt)
 }
 
-/// Policy approval records, including staged pre-commit records, are audit metadata rather
-/// than source/derivative keys. The walker treats them like retained deletion-plan records.
+/// Detects policy framing and verifies its complete canonical grammar. This does not establish
+/// an audit role: the walker separately checks ownership, site and retained authority basis.
 pub(crate) fn is_policy_record_bytes(
     bytes: &[u8],
     digest: ContentDigest,

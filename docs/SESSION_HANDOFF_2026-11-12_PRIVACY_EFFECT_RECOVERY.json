@@ -1,0 +1,125 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-12",
+  "timezone": "UTC",
+  "state": "source_implemented_formatted_native_execution_blocked",
+  "mission": {
+    "goal": "Prioritize substantive remaining privacy, effect-correctness and retained-observation gaps from the comprehensive plan and beads; commit meaningful changes directly to main without PRs.",
+    "initial_source_head": "d5995229b0b42fbcd5b9fa5956ac74626804b405",
+    "requirement_scope": [
+      "FSS-037 / fss-x4a.9.7",
+      "FSS-085 / fss-x4a.16.5",
+      "FSS-086 / fss-x4a.16.6",
+      "INV-007 / fss-x4a.30.1.7",
+      "VIT-012 / fss-vit-je36t.12",
+      "VIT-015 / fss-vit-je36t.15"
+    ],
+    "broad_bead_completion_claimed": false
+  },
+  "published_checkpoints": [
+    {
+      "commit": "e6c1abd80b8f1dcb860458d3cad0edf898922e4e",
+      "change": "Existing-store QSR owner preserves effect state; standard and exact explicit capacities; native fixture and actual CLI regressions."
+    },
+    {
+      "commit": "3f9c2d0734eee5fae0f9cbfa666950b09473bc92",
+      "change": "All eight alert observation/reconciliation wrappers bind exact retained intent and owned obligation before provider lookup."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Expand source ownership before audit classification; retain verified shared audit identities explicitly; reject malformed or foreign unowned candidates; preserve interrupted staging retries."
+    }
+  ],
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "qsr": "crates/fss-reference/src/ingest/qsr_observations/existing.rs",
+    "effects": "crates/fss-reference/src/alert.rs",
+    "deletion": "crates/fss-reference/src/deletion/walk.rs",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "findings": [
+    "QSR inspection previously opened the ordinary deployment initializer/reconciler, which could reclassify unrelated committed effects even when the requested report was subsequently refused.",
+    "Provider proofs were checked against the supplied alert plan, but reconciliation wrappers did not bind that plan's full intent to the journal operation sharing its operation ID.",
+    "Deletion omitted source/derivative bytes based on audit framing before computing direct and nested manifest ownership.",
+    "The repository's broad open beads include substantially implemented functionality; the selected fixes address observed contract defects rather than treating every open title as missing code."
+  ],
+  "decisions": [
+    "Keep the QSR deployment handle inside a reference-owned existing-store reader. Preserve native source/privacy/deletion validation and report identity.",
+    "Use existing IdempotencyConflict and ObligationConflict contracts; preserve informational terminal predicates and exact successful recovery semantics.",
+    "Protect actual committed deletion and expiry audit identities from verified history, and expose shared audit bytes as retained deletion_audit_metadata.",
+    "Preserve concurrent upstream TCP/discovery cancellation and retained metadata-limit commits.",
+    "Do not introduce dependencies, substitute the runtime, relax qualification gates, or claim umbrella completion."
+  ],
+  "authority": {
+    "user": "Direct commits to main through GitHub, no PRs.",
+    "scope": "Repository implementation and deterministic fixtures; no live device changes or external messages.",
+    "local_recovery": "QSR still opens the exclusive local publisher and its recovery. It is not the immutable canonical fss/1 query boundary.",
+    "deployment_limits": "Layout v1 retains only a digest. Nonstandard QSR API callers must supply exact original limits; CLI retains standard-capacity support.",
+    "release": "Repository-owned local qualification and retained DSR receipts remain required."
+  },
+  "validation": {
+    "passed": [
+      "Pinned nightly-2026-08-31 rustfmt on changed Rust files.",
+      "git diff --check.",
+      "bash -n scripts/check_retention_reference.sh.",
+      "Independent production and regression source/API review.",
+      "Published GitHub blob identities matched reviewed formatted source."
+    ],
+    "authored_new_regressions": {
+      "qsr_reference": 5,
+      "qsr_actual_cli": 3,
+      "alert_memory": 2,
+      "alert_durable": 2,
+      "deletion_audit_role": 5,
+      "total": 17
+    },
+    "native_test_attempt": {
+      "command": "cargo test --locked --offline -j1 -p fss-reference --test qsr_observations_existing_contract --test deletion_audit_role_contract --test effect_plane_contract --test durable_effect_contract",
+      "exit_code": 101,
+      "failure": "rustc compiling unchanged Asupersync 0.5.0 received signal 9 (SIGKILL), before FSS reference code or tests executed.",
+      "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30), pinned nightly-2026-08-31",
+      "resource_settings": "One Cargo job; one frontend/backend/linker job; incremental disabled; zero debug info; Asupersync and fss-reference codegen units 256.",
+      "test_pass_claimed": false
+    },
+    "metadata_check": {
+      "state": "blocked_before_project_code",
+      "command": "cargo check --locked --offline -j1 -p fss-reference -p fss-cli --test qsr_observations_existing_contract --test deletion_audit_role_contract --test effect_plane_contract --test durable_effect_contract --test qsr_cli_contract --bin fss-event",
+      "exit_code": 101,
+      "failure": "rustc compiling unchanged Asupersync 0.5.0 with --emit=dep-info,metadata received signal 9 (SIGKILL), before the selected project targets were checked.",
+      "test_pass_claimed": false
+    },
+    "qualification": "No native regression pass, full-graph compile pass, release qualification or hardware qualification is claimed."
+  },
+  "unknowns": [
+    "The new Rust regressions have not executed.",
+    "Unowned fully canonical same-site proposals with a retained ledger basis still use the existing staging convention without an exact caller-pinned retry identity.",
+    "Canonical immutable QSR CLI/MCP query integration remains separate work; this change isolates the existing operational command's effect state.",
+    "Existing baseline registry/dependency policy drift still blocks broader qualification."
+  ],
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Compile and run all five targeted integration suites and the existing QSR parser tests on a host capable of building pinned Asupersync."
+    },
+    {
+      "state": "open",
+      "action": "Thread an exact caller-pinned staged audit identity through deletion, retention age/budget, review-expiry and policy preview/commit to remove the residual unowned-staging ambiguity."
+    },
+    {
+      "state": "open",
+      "action": "Finish immutable QSR storage ownership before adding canonical fss/1 CLI/MCP views."
+    }
+  ],
+  "next_affordances": [
+    "cargo test --locked --offline -p fss-reference --test deletion_audit_role_contract --test effect_plane_contract --test durable_effect_contract --test qsr_observations_existing_contract",
+    "cargo test --locked --offline -p fss-cli --test qsr_cli_contract",
+    "cargo test --locked --offline -p fss-cli --bin fss-event qsr::tests",
+    "Run applicable repository-owned local qualification after native regressions succeed."
+  ],
+  "invalidations": [
+    "Changes to audit ownership/staging or deletion history",
+    "Changes to prepared effect intent/obligation binding or provider proof semantics",
+    "Changes to retained QSR source verification, local recovery or persisted capacity identity"
+  ]
+}
