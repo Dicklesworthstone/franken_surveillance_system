@@ -8,6 +8,8 @@
 
 mod permit;
 mod projection;
+/// Recorder assertions reconstructed from an exact completed deployment import.
+pub mod retained;
 
 pub use permit::ReplaySourceReadPermit;
 
@@ -128,6 +130,10 @@ pub enum RecordingReplayContextError {
     Deployment(DeploymentReadError),
     /// Exact native custody, scope, budget or recorder-time verification refused.
     Replay(ReplayTimeReadError),
+    /// Current imported custody, bounded immutable reads or final revalidation refused.
+    RetainedSource(crate::ingest::FileIngestError),
+    /// Native recorder projection from imported original custody refused.
+    RetainedReplay(crate::ingest::rtsp_import::replay::RetainedReplayTimeError),
     /// Current deployment prefix, layout or deletion state refuses the observation.
     AnchorChanged,
     /// The shared deployment metadata allowance was exhausted.
@@ -145,6 +151,8 @@ impl std::fmt::Display for RecordingReplayContextError {
             Self::Unauthorized => "recorder-time source verification is not authorized",
             Self::Deployment(_) => "deployment metadata verification failed",
             Self::Replay(_) => "native recorder-time verification refused",
+            Self::RetainedSource(_) => "retained recorder custody verification refused",
+            Self::RetainedReplay(_) => "retained recorder-time verification refused",
             Self::AnchorChanged => "deployment authority, layout or deletion state refused",
             Self::OverBudget => "deployment metadata read allowance exhausted",
             Self::Cancelled => "recorder-time query cancelled",

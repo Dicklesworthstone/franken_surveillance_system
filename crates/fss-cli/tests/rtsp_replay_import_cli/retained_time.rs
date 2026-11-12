@@ -18,7 +18,7 @@ fn item<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
         .ok_or("missing recorder-time report field")?)
 }
 
-fn query_args(fixture: &Fixture, identity: Option<&str>) -> Vec<OsString> {
+pub(super) fn query_args(fixture: &Fixture, identity: Option<&str>) -> Vec<OsString> {
     let scope = fixture.receipt.scope();
     let mut args = vec![
         "query-replay-utc".into(),
@@ -85,7 +85,7 @@ fn retained_query(args: &[OsString]) -> Test<Output> {
         .output()?)
 }
 
-fn import(fixture: &Fixture) -> Test<String> {
+pub(super) fn import(fixture: &Fixture) -> Test<String> {
     let mut args = fixture.args()?;
     approve(&mut args)?;
     let imported = parse(&good(run(&args)?)?)?;

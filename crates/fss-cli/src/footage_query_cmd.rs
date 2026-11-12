@@ -119,6 +119,8 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--end-utc-ns",
             "--max-windows",
             "--max-hydration-bytes",
+            "--retained-import",
+            "--max-query-read-objects",
             "--replay-root",
             "--replay-request",
             "--ntp-era",
@@ -149,6 +151,13 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             crate::onvif_query_cmd::parse_onvif_query_args(tokens).map(FssCommand::OnvifQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
+            if ["--retained-import", "--max-query-read-objects"]
+                .iter()
+                .any(|name| take(&values, name).is_some())
+            {
+                return crate::recording_query_cmd::replay::retained::parse_retained_recording_replay_query_args(tokens)
+                    .map(FssCommand::RetainedRecordingReplayQuery);
+            }
             if crate::recording_query_cmd::replay::SELECTORS
                 .iter()
                 .any(|name| take(&values, name).is_some())

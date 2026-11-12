@@ -44,7 +44,7 @@ fn read_context(root: &Path) -> Test<ReplayCx> {
 }
 
 /// Compare all directory entries and bytes, including journals, pending files and writer locks.
-fn filesystem(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+pub(super) fn filesystem(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
     fn visit(base: &Path, path: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) -> Test {
         let meta = fs::symlink_metadata(path)?;
         if meta.file_type().is_dir() {

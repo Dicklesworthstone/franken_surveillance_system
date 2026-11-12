@@ -359,8 +359,23 @@ fn response(
 }
 
 fn render_response(
+    query: RecordingResponseView<'_>,
+    orientation: &DeploymentOrientation,
+) -> Result<String, Box<dyn std::error::Error>> {
+    render_response_profile(query, orientation, false)
+}
+
+fn render_retained_response(
+    query: RecordingResponseView<'_>,
+    orientation: &DeploymentOrientation,
+) -> Result<String, Box<dyn std::error::Error>> {
+    render_response_profile(query, orientation, true)
+}
+
+fn render_response_profile(
     mut query: RecordingResponseView<'_>,
     orientation: &DeploymentOrientation,
+    retained: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = query.request_digest.to_text();
     let hex = text.strip_prefix("sha256:").unwrap_or(&text);
@@ -458,7 +473,13 @@ fn render_response(
             remaining_json: agent_json::remaining(&requested, &consumed),
             degraded_dimensions: vec![
                 "query-cpu-and-output-tokens-not-metered".to_owned(),
-                "deployment-io-counts-payload-reads-archive-io-counts-filesystem-calls".to_owned(),
+                if retained {
+                    "all-read-counters-measure-payload-bytes-and-attempts-not-filesystem-calls"
+                        .to_owned()
+                } else {
+                    "deployment-io-counts-payload-reads-archive-io-counts-filesystem-calls"
+                        .to_owned()
+                },
             ],
             marginal_work_declined: Vec::new(),
         },
@@ -486,7 +507,11 @@ fn render_response(
         .ok_or(RenderError("recording query cognitive envelope"))?;
     let mut warnings = orientation.warnings.clone();
     warnings.push(query.warning.to_owned());
-    warnings.push("The current deployment and historical archive are independently verified; there is no cross-owner atomic snapshot or inferred source registration.".to_owned());
+    warnings.push(if retained {
+        "Current import authority and original recorder provenance were independently verified. Revalidation is not an atomic filesystem snapshot or a future availability lease.".to_owned()
+    } else {
+        "The current deployment and historical archive are independently verified; there is no cross-owner atomic snapshot or inferred source registration.".to_owned()
+    });
     query.proof_pointers.push(frame_digest.to_text());
     (query.build_response)(ResponseParts {
         operation: "query",
@@ -505,7 +530,11 @@ fn render_response(
         completeness: Completeness::Bounded,
         warnings,
         contradictions: orientation.contradictions.clone(),
-        degradation: vec!["CPU, full output tokens and elapsed latency are not metered. The 60-second read deadline is cooperative. Deployment counters measure metadata payload reads/bytes; archive counters include metered filesystem calls and framing reads.".to_owned()],
+        degradation: vec![if retained {
+            "CPU, full output tokens and elapsed latency are not metered. The 60-second deadline is cooperative. A single balance counts all history, metadata and original payload bytes/read attempts, including revalidation; filesystem probes and framing are not measured.".to_owned()
+        } else {
+            "CPU, full output tokens and elapsed latency are not metered. The 60-second read deadline is cooperative. Deployment counters measure metadata payload reads/bytes; archive counters include metered filesystem calls and framing reads.".to_owned()
+        }],
         budgets_json: agent_json::budget_summary(&requested, &consumed),
         proof_pointers: query.proof_pointers,
         affordances: action_ids,

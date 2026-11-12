@@ -240,3 +240,94 @@ fn typed_recorder_query_without_source_consent_refuses_before_deployment_io() ->
     assert!(!output.contains(crate::error::ERR_DOCTOR_NOT_A_DEPLOYMENT));
     Ok(())
 }
+
+fn retained_pins(codec: &str) -> Vec<(String, String)> {
+    let mut values = pins(codec);
+    values.retain(|(name, _)| name != "--archive-root");
+    values.push((
+        "--retained-import".to_owned(),
+        ContentDigest::sha256(b"import").to_text(),
+    ));
+    values
+}
+
+#[test]
+fn retained_recorder_grammar_preserves_native_pins_without_an_archive() -> Test {
+    for codec in ["avc", "hevc"] {
+        let values = retained_pins(codec);
+        let command = parse(&values, false)?;
+        assert_eq!(command, parse(&values, true)?);
+        let FssCommand::RetainedRecordingReplayQuery(args) = command else {
+            return Err("imported recorder query chose another source owner".into());
+        };
+        assert!(args.verify_replay_source);
+        assert_eq!(
+            args.request.import_identity,
+            ContentDigest::sha256(b"import")
+        );
+        assert_eq!(args.request.replay.replay.codec.as_str(), codec);
+        assert_eq!(
+            args.request.replay.replay.start_ns,
+            18_446_744_073_709_551_616
+        );
+        assert_eq!(args.limits.read.max_read_bytes, 1024 * 1024 * 1024);
+        assert_eq!(args.limits.read.max_read_objects, 1_000_000);
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_recorder_grammar_refuses_cross_source_selectors_and_invalid_bounds() -> Test {
+    for (name, value) in [
+        ("--archive-root", "/owner/archive"),
+        ("--catalog-slot", "catalog"),
+        ("--max-query-io-calls", "100"),
+        ("--max-query-read-objects", "0"),
+        ("--max-query-read-objects", "4000001"),
+        ("--max-query-read-objects", "01"),
+        ("--max-query-read-bytes", "0"),
+        ("--max-query-read-bytes", "4294967297"),
+        ("--max-query-results", "129"),
+        ("--at", "latest"),
+    ] {
+        let mut values = retained_pins("avc");
+        values.push((name.to_owned(), value.to_owned()));
+        assert!(parse(&values, true).is_err(), "accepted {name}={value}");
+    }
+    let mut zero = retained_pins("avc");
+    replace(
+        &mut zero,
+        "--retained-import",
+        &format!("sha256:{}", "0".repeat(64)),
+    )?;
+    assert!(parse(&zero, false).is_err());
+    let mut incomplete = retained_pins("avc");
+    incomplete.retain(|(name, _)| name != "--retained-import");
+    incomplete.push(("--max-query-read-objects".to_owned(), "5".to_owned()));
+    assert!(parse(&incomplete, false).is_err());
+    for missing in [
+        "--verify-replay-source",
+        "--replay-root",
+        "--replay-request",
+        "--ntp-era",
+    ] {
+        let mut values = retained_pins("hevc");
+        values.retain(|(name, _)| name != missing);
+        assert!(parse(&values, false).is_err(), "accepted missing {missing}");
+    }
+    Ok(())
+}
+
+#[test]
+fn typed_retained_recorder_query_cannot_bypass_explicit_source_consent() -> Test {
+    let FssCommand::RetainedRecordingReplayQuery(mut args) = parse(&retained_pins("avc"), false)?
+    else {
+        return Err("wrong retained query fixture".into());
+    };
+    args.verify_replay_source = false;
+    args.root = PathBuf::from("/missing/fss-retained-no-grant");
+    let (output, exit) = retained::execute_retained_recording_replay_query(&args);
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED);
+    assert!(output.contains(ERR_AGENT_CONTEXT_INCOMPLETE));
+    Ok(())
+}

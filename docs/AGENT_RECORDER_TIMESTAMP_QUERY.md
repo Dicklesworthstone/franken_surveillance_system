@@ -11,6 +11,12 @@ This mode reads original packet payloads internally to verify the assertions.
 The operator must grant that source verification separately. The result contains
 no media bytes and grants no export, device, publication or deletion authority.
 
+Completed native replay imports also support this canonical query without an
+archive directory: select `--retained-import` and preserve all independent
+original recorder pins. The destination reader shares one immutable payload
+budget through final revalidation. See the [retained-import CLI/MCP contract](AGENT_RETAINED_RECORDER_QUERY.md)
+for its source grant, launcher and payload-read accounting.
+
 ## CLI
 
 Supply independent pins from the replay capture/inspection and the source's

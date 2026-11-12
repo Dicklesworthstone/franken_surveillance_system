@@ -15,6 +15,8 @@ pub(super) fn arguments(
 ) -> Result<Vec<OsString>, (i32, &'static str)> {
     if fields.keys().any(|field| {
         [
+            "retained_import",
+            "max_query_read_objects",
             "replay_root",
             "replay_request",
             "ntp_era",
@@ -232,10 +234,6 @@ fn replay_arguments(
             "Recorder UTC queries require the launcher's explicit source-verification grant",
         ));
     }
-    let archive_root = archive_root.ok_or((
-        -32602,
-        "Recorder UTC queries require an operator-bound archive root at launch",
-    ))?;
     if fields.keys().any(|field| {
         ![
             "target",
@@ -247,6 +245,8 @@ fn replay_arguments(
             "receive_clock",
             "decode_clock",
             "time_scale",
+            "retained_import",
+            "max_query_read_objects",
             "replay_root",
             "replay_request",
             "ntp_era",
@@ -267,10 +267,15 @@ fn replay_arguments(
     }
     argv.extend([
         "--target=recordings".into(),
-        "--archive-root".into(),
-        archive_root.to_os_string(),
         "--verify-replay-source=yes".into(),
     ]);
+    if !fields.contains_key("retained_import") {
+        let archive_root = archive_root.ok_or((
+            -32602,
+            "Recorder UTC archive queries require an operator-bound archive root at launch",
+        ))?;
+        argv.extend(["--archive-root".into(), archive_root.to_os_string()]);
+    }
     for (field, option, bound, required) in [
         ("codec", "codec", 4, true),
         ("sensor", "sensor", 128, true),
@@ -279,6 +284,13 @@ fn replay_arguments(
         ("source_anchor", "source-anchor", 71, true),
         ("receive_clock", "receive-clock", 71, true),
         ("decode_clock", "decode-clock", 71, true),
+        ("retained_import", "retained-import", 71, false),
+        (
+            "max_query_read_objects",
+            "max-query-read-objects",
+            20,
+            false,
+        ),
         ("replay_root", "replay-root", 71, true),
         ("replay_request", "replay-request", 71, true),
         ("utc_start_ns", "utc-start-ns", 39, true),

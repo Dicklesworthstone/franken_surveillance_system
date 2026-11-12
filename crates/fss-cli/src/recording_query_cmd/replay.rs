@@ -4,6 +4,9 @@
 //! Catalog UTC remains a separate metadata-only request. This mode verifies original packet
 //! custody through the native replay owner and discloses only its source-linked assertions.
 
+/// Imported recorder queries share the original pin grammar and explicit source grant.
+pub mod retained;
+
 use super::*;
 use crate::orient_cmd::build_recording_replay_response;
 use fss_core::{ContextAuthority, OperationId, RootAuthoritySpec, TimestampNs};
@@ -64,6 +67,92 @@ fn optional_number<T: std::str::FromStr + ToString>(
         .map(|value| value.unwrap_or(default))
 }
 
+pub(super) fn parse_replay_request(
+    values: &[(String, String, usize)],
+) -> Result<RecordingReplayContextRequest, CliError> {
+    let (target, index) = required(values, "--target")?;
+    if target != "recordings" {
+        return Err(malformed("--target", target, "expected recordings", index));
+    }
+    let (consent, index) = required(values, "--verify-replay-source")?;
+    if consent != "yes" {
+        return Err(malformed(
+            "--verify-replay-source",
+            "[redacted]",
+            "explicit yes is required to verify private replay sources without disclosing media",
+            index,
+        ));
+    }
+    let (codec, index) = required(values, "--codec")?;
+    let codec = match codec {
+        "avc" => ReplayCodec::Avc,
+        "hevc" => ReplayCodec::Hevc,
+        _ => return Err(malformed("--codec", codec, "expected avc or hevc", index)),
+    };
+    let (sensor, index) = required(values, "--sensor")?;
+    let sensor = SensorId::parse(sensor)
+        .map_err(|_| malformed("--sensor", sensor, "invalid sensor identity", index))?;
+    let (stream, index) = required(values, "--stream")?;
+    let stream = StreamId::parse(stream)
+        .map_err(|_| malformed("--stream", stream, "invalid stream identity", index))?;
+    let defaults = ReplayTimeLimits::default();
+    let query_limits = ReplayTimeLimits {
+        max_windows: optional_number(values, "--max-query-windows", defaults.max_windows)?,
+        max_samples: optional_number(values, "--max-query-samples", defaults.max_samples)?,
+        max_packets: optional_number(values, "--max-query-packets", defaults.max_packets)?,
+        max_source_bytes: optional_number(
+            values,
+            "--max-query-source-bytes",
+            defaults.max_source_bytes,
+        )?,
+        max_results: optional_number(values, "--max-query-results", DEFAULT_REPLAY_QUERY_RESULTS)?,
+    };
+    if !(1..=MAX_REPLAY_QUERY_RESULTS).contains(&query_limits.max_results) {
+        return Err(malformed(
+            "--max-query-results",
+            "[redacted]",
+            "expected 1..128 complete rows; unknown and source-only rows consume the same bound",
+            0,
+        ));
+    }
+    let (time_scale, index) = required(values, "--time-scale")?;
+    let time_scale = number("--time-scale", time_scale, index)?;
+    let (era, index) = required(values, "--ntp-era")?;
+    let ntp_era = number("--ntp-era", era, index)?;
+    let (start, index) = required(values, "--utc-start-ns")?;
+    let start_ns = number("--utc-start-ns", start, index)?;
+    let (end, index) = required(values, "--utc-end-ns")?;
+    let end_ns = number("--utc-end-ns", end, index)?;
+    let replay = ReplayTimeQuery {
+        codec,
+        scope: CatalogScope {
+            recording: RecordingScope {
+                sensor,
+                stream,
+                generation: pin_integer(values, "--generation")?,
+                anchor: pin_digest(values, "--source-anchor")?,
+                receive_clock: pin_digest(values, "--receive-clock")?,
+            },
+            decode_clock: pin_digest(values, "--decode-clock")?,
+            time_scale,
+        },
+        receipt_root: pin_digest(values, "--replay-root")?,
+        request: pin_digest(values, "--replay-request")?,
+        ntp_era,
+        start_ns,
+        end_ns,
+        limits: query_limits,
+    };
+    replay
+        .validate()
+        .map_err(|error| malformed("query", "[redacted]", error.code(), 0))?;
+    Ok(RecordingReplayContextRequest {
+        replay,
+        principal: principal("query", values)?,
+        expected_anchor: expected_anchor(values)?,
+    })
+}
+
 /// Parse independent replay interpretation pins and explicit local source-read consent.
 /// Existing catalog/clock selectors, imported footage filters and mutation options are refused.
 pub fn parse_recording_replay_query_args(
@@ -101,82 +190,7 @@ pub fn parse_recording_replay_query_args(
             "--max-query-io-calls",
         ],
     )?;
-    let (target, index) = required(&values, "--target")?;
-    if target != "recordings" {
-        return Err(malformed("--target", target, "expected recordings", index));
-    }
-    let (consent, index) = required(&values, "--verify-replay-source")?;
-    if consent != "yes" {
-        return Err(malformed(
-            "--verify-replay-source",
-            "[redacted]",
-            "explicit yes is required to verify private replay sources without disclosing media",
-            index,
-        ));
-    }
-    let (codec, index) = required(&values, "--codec")?;
-    let codec = match codec {
-        "avc" => ReplayCodec::Avc,
-        "hevc" => ReplayCodec::Hevc,
-        _ => return Err(malformed("--codec", codec, "expected avc or hevc", index)),
-    };
-    let (sensor, index) = required(&values, "--sensor")?;
-    let sensor = SensorId::parse(sensor)
-        .map_err(|_| malformed("--sensor", sensor, "invalid sensor identity", index))?;
-    let (stream, index) = required(&values, "--stream")?;
-    let stream = StreamId::parse(stream)
-        .map_err(|_| malformed("--stream", stream, "invalid stream identity", index))?;
-    let defaults = ReplayTimeLimits::default();
-    let query_limits = ReplayTimeLimits {
-        max_windows: optional_number(&values, "--max-query-windows", defaults.max_windows)?,
-        max_samples: optional_number(&values, "--max-query-samples", defaults.max_samples)?,
-        max_packets: optional_number(&values, "--max-query-packets", defaults.max_packets)?,
-        max_source_bytes: optional_number(
-            &values,
-            "--max-query-source-bytes",
-            defaults.max_source_bytes,
-        )?,
-        max_results: optional_number(&values, "--max-query-results", DEFAULT_REPLAY_QUERY_RESULTS)?,
-    };
-    if !(1..=MAX_REPLAY_QUERY_RESULTS).contains(&query_limits.max_results) {
-        return Err(malformed(
-            "--max-query-results",
-            "[redacted]",
-            "expected 1..128 complete rows; unknown and source-only rows consume the same bound",
-            0,
-        ));
-    }
-    let (time_scale, index) = required(&values, "--time-scale")?;
-    let time_scale = number("--time-scale", time_scale, index)?;
-    let (era, index) = required(&values, "--ntp-era")?;
-    let ntp_era = number("--ntp-era", era, index)?;
-    let (start, index) = required(&values, "--utc-start-ns")?;
-    let start_ns = number("--utc-start-ns", start, index)?;
-    let (end, index) = required(&values, "--utc-end-ns")?;
-    let end_ns = number("--utc-end-ns", end, index)?;
-    let replay = ReplayTimeQuery {
-        codec,
-        scope: CatalogScope {
-            recording: RecordingScope {
-                sensor,
-                stream,
-                generation: pin_integer(&values, "--generation")?,
-                anchor: pin_digest(&values, "--source-anchor")?,
-                receive_clock: pin_digest(&values, "--receive-clock")?,
-            },
-            decode_clock: pin_digest(&values, "--decode-clock")?,
-            time_scale,
-        },
-        receipt_root: pin_digest(&values, "--replay-root")?,
-        request: pin_digest(&values, "--replay-request")?,
-        ntp_era,
-        start_ns,
-        end_ns,
-        limits: query_limits,
-    };
-    replay
-        .validate()
-        .map_err(|error| malformed("query", "[redacted]", error.code(), 0))?;
+    let request = parse_replay_request(&values)?;
     let read_bytes = optional_number(&values, "--max-query-read-bytes", 1024_u64 * 1024 * 1024)?;
     let io_calls = optional_number(&values, "--max-query-io-calls", 1_000_000_u64)?;
     if !(1..=4_u64 * 1024 * 1024 * 1024).contains(&read_bytes)
@@ -207,11 +221,7 @@ pub fn parse_recording_replay_query_args(
     Ok(RecordingReplayQueryArgs {
         root: required_root("query", &values)?,
         archive_root: PathBuf::from(archive_root),
-        request: RecordingReplayContextRequest {
-            replay,
-            principal: principal("query", &values)?,
-            expected_anchor: expected_anchor(&values)?,
-        },
+        request,
         limits,
         verify_replay_source: true,
     })

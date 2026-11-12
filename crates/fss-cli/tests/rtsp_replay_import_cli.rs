@@ -2,12 +2,14 @@
 //! Whole recorder replay custody through real binaries, including source-free cold decoding.
 //! Synthetic AVC/HEVC fixtures establish custody behavior, not camera interoperability.
 
+#[path = "rtsp_replay_import_cli/canonical.rs"]
+mod canonical;
+#[path = "rtsp_replay_import_cli/footage.rs"]
+mod footage;
 #[path = "../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod hevc_recording_support;
 #[path = "../../fss-reference/tests/recording_support/mod.rs"]
 mod recording_support;
-#[path = "rtsp_replay_import_cli/footage.rs"]
-mod footage;
 #[path = "rtsp_replay_import_cli/retained_time.rs"]
 mod retained_time;
 #[path = "rtsp_replay_import_cli/support.rs"]

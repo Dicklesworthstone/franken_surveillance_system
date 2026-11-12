@@ -724,6 +724,20 @@ pub(crate) fn build_recording_utc_response(
 pub(crate) fn build_recording_replay_response(
     parts: ResponseParts,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    build_recording_replay_response_profile(parts, false)
+}
+
+/// Current import metadata is visible only in the explicit imported recorder query profile.
+pub(crate) fn build_retained_recording_replay_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    build_recording_replay_response_profile(parts, true)
+}
+
+fn build_recording_replay_response_profile(
+    parts: ResponseParts,
+    retained: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
     if parts.operation != "query"
         || parts.view != AgentView::Case
         || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
@@ -739,6 +753,12 @@ pub(crate) fn build_recording_replay_response(
         "native-recording-window-metadata".to_owned(),
         "source-verified-recorder-time-assertions".to_owned(),
     ]);
+    if retained {
+        projection.visible_domains.extend([
+            "retained-import-metadata".to_owned(),
+            "retained-original-custody-metadata".to_owned(),
+        ]);
+    }
     build_response_for_basis_privacy_and_capabilities(
         parts,
         false,

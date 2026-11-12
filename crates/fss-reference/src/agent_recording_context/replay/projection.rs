@@ -1,16 +1,23 @@
 #![forbid(unsafe_code)]
 
-use fss_core::{EnvelopeCoverage, EnvelopeEpistemic, EnvelopeProposition, KnowledgeState};
+use fss_core::{
+    ContentDigest, EnvelopeCoverage, EnvelopeEpistemic, EnvelopeProposition, KnowledgeState,
+};
 
 use super::DeploymentRecordingReplayQuery;
-use crate::rtsp::recording_replay::time::{ReplaySampleTime, ReplayTimeEvidence};
+use crate::rtsp::recording_replay::time::{ReplaySampleTime, ReplayTimeEvidence, ReplayTimeReport};
 
-impl DeploymentRecordingReplayQuery {
+pub(super) struct ReplayProjection<'a> {
+    pub report: &'a ReplayTimeReport,
+    pub source_permit_digest: ContentDigest,
+}
+
+impl ReplayProjection<'_> {
     /// Project every native match, unknown and source-only observation without upgrading
     /// recorded assertions into trusted UTC, exposure time or physical coverage.
     #[must_use]
     pub fn epistemic(&self) -> EnvelopeEpistemic {
-        let report = &self.native.report;
+        let report = self.report;
         let query = &report.query;
         let source_observation = if report.scanned_windows == 0 {
             "This receipt declares no original windows; no original source bytes were read."
@@ -87,6 +94,65 @@ impl DeploymentRecordingReplayQuery {
             omission_reasons: Vec::new(),
             stop_reason: "pinned_replay_receipt_exhausted".to_owned(),
         }
+    }
+}
+
+impl DeploymentRecordingReplayQuery {
+    /// Complete native assertions, preserving unknowns and unauthenticated clock semantics.
+    #[must_use]
+    pub fn epistemic(&self) -> EnvelopeEpistemic {
+        ReplayProjection {
+            report: &self.native.report,
+            source_permit_digest: self.source_permit_digest,
+        }
+        .epistemic()
+    }
+
+    /// Exact receipt exhaustion without physical coverage or absence claims.
+    #[must_use]
+    pub fn coverage(&self) -> EnvelopeCoverage {
+        ReplayProjection {
+            report: &self.native.report,
+            source_permit_digest: self.source_permit_digest,
+        }
+        .coverage()
+    }
+}
+
+impl super::retained::DeploymentRetainedReplayQuery {
+    /// The same native assertions plus their independently verified current destination import.
+    #[must_use]
+    pub fn epistemic(&self) -> EnvelopeEpistemic {
+        let mut result = ReplayProjection {
+            report: &self.report,
+            source_permit_digest: self.source_permit_digest,
+        }
+        .epistemic();
+        result.propositions.insert(0, EnvelopeProposition {
+            id: "claim:recordings-replay:retained-import".to_owned(),
+            statement: format!(
+                "Verified current destination import={}, publication_root={}, manifest={}. The complete recorder receipt and original packets were reconstructed from this deployment's retained custody; the original archive directory was not opened. Original recorder scope remains historical provenance, distinct from current destination authority.",
+                self.import_identity, self.import_root, self.manifest_digest,
+            ),
+            state: KnowledgeState::Known,
+            provenance: "derived".to_owned(),
+            evidence: vec![self.import_identity.to_text(), self.import_root.to_text(), self.manifest_digest.to_text()],
+        });
+        result.assumptions[1] = "The exact completed destination import, retained publication and original ancestry were verified under matching current authority observations. The original recorder pins are independently supplied historical source scope. Revalidation is not an atomic filesystem snapshot or future availability lease.".to_owned();
+        result
+    }
+
+    /// Complete selected imported receipt, without extending its physical or temporal coverage.
+    #[must_use]
+    pub fn coverage(&self) -> EnvelopeCoverage {
+        let mut result = ReplayProjection {
+            report: &self.report,
+            source_permit_digest: self.source_permit_digest,
+        }
+        .coverage();
+        result.authorized_domain = vec!["one explicitly selected completed destination import and its independently pinned AVC/HEVC replay originals under a current source-read grant".to_owned()];
+        result.stop_reason = "retained_replay_receipt_exhausted".to_owned();
+        result
     }
 }
 

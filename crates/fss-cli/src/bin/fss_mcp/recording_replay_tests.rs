@@ -336,7 +336,7 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                     }));
                 }
             }
-            assert_eq!(replay_modes, 1);
+            assert_eq!(replay_modes, 2);
         } else {
             assert!(
                 branch
@@ -350,6 +350,119 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                             .iter()
                             .any(|value| value.text() == Some("replay_root")))))
             );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_replay_mcp_needs_source_grant_but_not_an_archive_binding() -> Test {
+    for codec in ["avc", "hevc"] {
+        let mut values = replay_fields(codec);
+        values.insert("retained_import", quote(CATALOG));
+        values.insert("max_query_read_objects", quote("12345"));
+        let mut calls = 0;
+        let output = ready(false)
+            .with_replay_source_verification()
+            .handle_with(&request(&values), |command| {
+                calls += 1;
+                let FssCommand::RetainedRecordingReplayQuery(args) = command else {
+                    panic!("retained selector chose external archive");
+                };
+                assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+                assert_eq!(args.request.import_identity.to_text(), CATALOG);
+                assert_eq!(args.request.replay.replay.codec.as_str(), codec);
+                assert_eq!(args.limits.read.max_read_objects, 12345);
+                assert!(args.verify_replay_source);
+                ("{\"retained\":true}".to_owned(), ExitIdentity::SUCCESS)
+            })
+            .ok_or("missing imported replay response")?;
+        assert_eq!(calls, 1);
+        assert_eq!(
+            response_text(&output)?,
+            ("{\"retained\":true}".to_owned(), false)
+        );
+        refused(&mut ready(false), &values);
+        for (field, value) in [
+            ("max_query_io_calls", quote("100")),
+            ("archive_root", quote("/client/archive")),
+            ("root", quote("/client/root")),
+            ("verify_replay_source", quote("yes")),
+            ("max_query_read_objects", "100".to_owned()),
+            ("retained_import", "null".to_owned()),
+        ] {
+            let mut invalid = values.clone();
+            invalid.insert(field, value);
+            refused(
+                &mut ready(false).with_replay_source_verification(),
+                &invalid,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> Test {
+    use fss_cli::json_input as input;
+    let value = input::parse(&tools_list())?;
+    let schema = value
+        .get("tools")
+        .and_then(input::Value::array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name").and_then(input::Value::text) == Some("query"))
+        })
+        .and_then(|tool| tool.get("inputSchema"))
+        .ok_or("query schema")?;
+    let branches = schema
+        .get("oneOf")
+        .and_then(input::Value::array)
+        .ok_or("branches")?;
+    for branch in branches {
+        let target = branch
+            .get("properties")
+            .and_then(|v| v.get("target"))
+            .and_then(|v| v.get("const"))
+            .and_then(input::Value::text)
+            .ok_or("target")?;
+        let excludes = |node: &input::Value, field: &str| {
+            node.get("not")
+                .and_then(|v| v.get("anyOf"))
+                .and_then(input::Value::array)
+                .is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row.get("required")
+                            .and_then(input::Value::array)
+                            .is_some_and(|r| r.iter().any(|v| v.text() == Some(field)))
+                    })
+                })
+        };
+        if target == "recordings" {
+            let modes = branch
+                .get("oneOf")
+                .and_then(input::Value::array)
+                .ok_or("modes")?;
+            let mut retained_modes = 0;
+            for mode in modes {
+                let retained = mode
+                    .get("required")
+                    .and_then(input::Value::array)
+                    .is_some_and(|rows| rows.iter().any(|v| v.text() == Some("retained_import")));
+                if retained {
+                    retained_modes += 1;
+                    assert!(excludes(mode, "max_query_io_calls"));
+                    assert!(!excludes(mode, "max_query_read_objects"));
+                } else {
+                    assert!(excludes(mode, "retained_import"));
+                    assert!(excludes(mode, "max_query_read_objects"));
+                }
+            }
+            assert_eq!(retained_modes, 1);
+        } else {
+            assert!(excludes(branch, "retained_import"));
+            assert!(excludes(branch, "max_query_read_objects"));
         }
     }
     Ok(())

@@ -4,6 +4,40 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Imported recorder queries and source-loss fusion — 2026-11-12
+
+Canonical `fss query --target recordings --retained-import` and MCP `query` can
+now reconstruct recorder UTC assertions from a completed destination import
+without the original archive. Original receipt/request/codec/clock pins and a
+separate source-verification grant remain required. The MCP launcher accepts
+that grant with a fixed deployment alone; archive queries retain their archive
+binding requirement. One immutable retained owner shares a nonrenewing payload
+read balance across current history, native provenance, original packets and
+final revalidation. It exposes no publisher or writer handle and refuses changed
+custody, deletion, pending publications, partial journals or authority/effect
+prefixes. Native unknowns remain visible; no clock, coverage or absence upgrade.
+See [the retained recorder query](docs/AGENT_RETAINED_RECORDER_QUERY.md).
+
+Fusion now supports bounded simultaneous sensor/failure-domain loss scenarios.
+It preserves unavailable evidence and rebuilds remaining dependency clusters,
+including splitting a cluster when a lost sensor was its bridge. The new
+`fss-fuse --query --without-sensor/--without-domain` output preserves both complete
+replay queries, decisions, raw calibration lineage and baseline transit context.
+`EventFusionReport::explain_ablation` binds exact native candidate provenance and
+the original historical authority basis without claiming current revalidation.
+See [fusion ablation](docs/fusion_ablation.md).
+
+The eight native fusion-core ablation tests **passed** on pinned
+nightly-2026-08-31. New retained-source, canonical CLI/MCP and fusion integration
+tests are authored and independently source reviewed, but remain **unexecuted**;
+reference compilation attempts stalled without diagnostics and were stopped.
+Pinned scoped formatting, whitespace and JSON-schema checks passed. The earlier
+retention `HoldError` conversion compiler failure is repaired, but a native
+reference build has not yet confirmed that repair. These checkpoints do not
+qualify the runtime or a physical recorder. Full immutable QSR/inference remains
+unfinished; VIT-008, VIT-012, VIT-015 and VIT-022 remain open.
+
+
 ## Exact interrupted deletion and retention recovery — 2026-11-12
 
 Uncommitted canonical audit-looking bytes no longer disappear from the deletion

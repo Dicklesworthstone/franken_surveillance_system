@@ -12,7 +12,7 @@ use fss_reference::ingest::rtsp_import::RtspImportCodec;
 
 use super::support::{Fixture, Test, approve, field, good, run, serial};
 
-fn snapshot(root: &Path) -> Test<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
+pub(super) fn snapshot(root: &Path) -> Test<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
     let mut pending = vec![root.to_path_buf()];
     let mut result = BTreeMap::new();
     while let Some(path) = pending.pop() {

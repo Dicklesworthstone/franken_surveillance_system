@@ -2,6 +2,8 @@
 //! Identical packet-derived recorder UTC from archive custody and imported retained custody.
 //! Source-only data, missing assertions and partial retrieval never become media/coverage.
 
+#[path = "rtsp_retained_replay_time_contract/agent.rs"]
+mod agent;
 mod hevc_recording_support;
 #[path = "rtsp_retained_replay_time_contract/immutable.rs"]
 mod immutable;

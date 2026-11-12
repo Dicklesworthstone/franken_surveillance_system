@@ -28,9 +28,10 @@ const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID
         [--allow-replay-source-verification]\n\
 MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root, optional archive root and principal; clients cannot override them.\n\
-Native recording queries require an archive binding and return metadata, never media bytes.\n\
-Recorder UTC replay additionally requires the launcher's explicit source-verification grant;\n\
-clients cannot enable it. The grant permits bounded verification in the fixed archive only,\n\
+Catalog queries and archive recorder replay require the optional archive binding.\n\
+Explicit retained-import recorder queries use the fixed deployment without an archive.\n\
+Recorder UTC replay requires the launcher's explicit source-verification grant in either mode;\n\
+clients cannot enable it. The grant permits bounded verification in the fixed source owner,\n\
 with exact replay pins and no source disclosure, pixel decode, network or publication.\n\
 The principal is an audit label, not authentication. Session open/handoff/resume and explicit\n\
 durable follow, investigate and advisory feedback write agent state. Alert controls\n\
@@ -94,9 +95,6 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
         flag = args.next();
     }
     let root = root.ok_or("--root is required")?;
-    if allow_replay_source_verification && archive_root.is_none() {
-        return Err("replay source verification requires an explicit archive root");
-    }
     let principal = principal.map_or_else(
         || Ok(fss_cli::orient_cmd::DEFAULT_PRINCIPAL.to_owned()),
         |value| value.into_string().map_err(|_| "principal must be UTF-8"),
@@ -241,12 +239,22 @@ mod tests {
         )?
         .ok_or("missing launcher options")?;
         assert!(parsed.allow_replay_source_verification);
-        for args in [
-            vec![
+        let retained = options(
+            [
                 "--root",
-                "/owner/deployment",
+                "/owner/deployment with spaces",
                 "--allow-replay-source-verification",
-            ],
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing retained-source launcher options")?;
+        assert!(retained.allow_replay_source_verification);
+        assert!(retained.archive_root.is_none());
+        assert_eq!(
+            retained.root,
+            OsString::from("/owner/deployment with spaces")
+        );
+        for args in [
             vec![
                 "--root",
                 "/owner/deployment",

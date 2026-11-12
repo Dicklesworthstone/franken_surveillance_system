@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_retained_recording_replay_query.v1.json",
+  "title": "Retained-import recorder UTC selector for AOP-005",
+  "description": "Closed recordings selector over one completed destination import and independently pinned original AVC/HEVC replay. The operator binds the deployment and principal and separately grants internal source verification; no archive directory is required. One immutable reader shares a nonrenewing payload-byte/read-attempt allowance across current history, retained metadata, original packets and final revalidation. Client-supplied roots, principals, grants, archive syscall quotas and mixed catalog selectors are refused. Responses use existing QueryPlan, AgentResponseEnvelope and AgentCognitiveEnvelope contracts, disclose no media, and preserve unknown recorder assertions. Native admission remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target",
+    "retained_import",
+    "codec",
+    "sensor",
+    "stream",
+    "generation",
+    "source_anchor",
+    "receive_clock",
+    "decode_clock",
+    "time_scale",
+    "replay_root",
+    "replay_request",
+    "ntp_era",
+    "utc_start_ns",
+    "utc_end_ns"
+  ],
+  "properties": {
+    "target": {
+      "const": "recordings"
+    },
+    "codec": {
+      "enum": [
+        "avc",
+        "hevc"
+      ]
+    },
+    "sensor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "stream": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generation": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 20
+    },
+    "source_anchor": {
+      "$ref": "#/$defs/sha256"
+    },
+    "receive_clock": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decode_clock": {
+      "$ref": "#/$defs/sha256"
+    },
+    "time_scale": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "replay_root": {
+      "$ref": "#/$defs/sha256"
+    },
+    "replay_request": {
+      "$ref": "#/$defs/sha256"
+    },
+    "ntp_era": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "utc_start_ns": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 21,
+      "description": "Half-open recorder-asserted UTC interval start, lossless Unix nanoseconds. Native admission requires 0 <= start < end <= 253402300800000000000."
+    },
+    "utc_end_ns": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 21,
+      "description": "Exclusive recorder-asserted UTC interval end. This selector never reinterprets node-clock start_utc_ns/end_utc_ns."
+    },
+    "max_query_windows": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64,
+      "default": 64
+    },
+    "max_query_samples": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16384,
+      "default": 16384
+    },
+    "max_query_packets": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 262144,
+      "default": 262144
+    },
+    "max_query_source_bytes": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 10,
+      "default": "268435456",
+      "description": "Native payload reservation ceiling, 1..2147483648; every original reserves 32 MiB before reads."
+    },
+    "max_query_results": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 128,
+      "default": 32,
+      "description": "Complete matches + unknown samples + source-only observations. No prefix success or omission on overflow; the complete protected response must also fit 256 KiB."
+    },
+    "max_query_read_bytes": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 10,
+      "default": "1073741824",
+      "description": "One whole-request payload-byte ceiling, 1..4294967296, including current history, retained metadata, original packets and final revalidation. Successful bounded read payloads are charged; framing and filesystem probes are not included. Failed reads invalidate the balance. No refill between stages."
+    },
+    "anchor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Exact current deployment authority/effect-history token; independent of the historical source anchor."
+    },
+    "retained_import": {
+      "$ref": "#/$defs/sha256",
+      "description": "Exact nonzero destination import completion identity. Original recorder receipt/request/codec/scope pins remain independently required."
+    },
+    "max_query_read_objects": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 7,
+      "default": "1000000",
+      "description": "One whole-request payload-read-attempt ceiling, 1..4000000, including history, retained metadata, original packets and final revalidation. It is not a filesystem syscall count. Failed reads invalidate the remaining balance."
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  }
+}
+
