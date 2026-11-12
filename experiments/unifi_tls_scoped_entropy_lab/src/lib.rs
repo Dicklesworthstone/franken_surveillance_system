@@ -20,4 +20,7 @@ pub mod fleet_leased;
 pub mod camera_setup;
 
 #[cfg(target_os = "linux")]
+pub mod prepared_setup;
+
+#[cfg(target_os = "linux")]
 pub mod setup_upgrade;
