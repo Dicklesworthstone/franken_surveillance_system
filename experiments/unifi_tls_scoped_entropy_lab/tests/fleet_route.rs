@@ -107,6 +107,17 @@ impl fss_reference::unifi_direct::conversation::Approval for Approval {
         })
     }
 }
+struct SlowApproval;
+static SLOW_APPROVAL: SlowApproval = SlowApproval;
+impl fss_reference::unifi_direct::conversation::Approval for SlowApproval {
+    fn approve(&self, prepared: &PreparedEffect) -> Option<CommitApproval> {
+        std::thread::sleep(Duration::from_secs(4));
+        Some(CommitApproval {
+            prepared_digest: prepared.digest(),
+            current_precondition_digest: prepared.precondition_digest(),
+        })
+    }
+}
 struct Handoff;
 impl camera_api::HandoffAuthority for Handoff {
     fn permits(
@@ -170,7 +181,7 @@ fn camera_fixture(
     peer: Ipv4Addr,
     config: Arc<ServerConfig>,
 ) -> io::Result<()> {
-    camera_fixture_with_gate(listener, port, peer, config, None, None, false)
+    camera_fixture_with_gate(listener, port, peer, config, None, None, false, false)
 }
 
 /// Reject login or close early before any camera-management effect is prepared.
@@ -217,6 +228,7 @@ fn camera_fixture_with_gate(
     gate: Option<Arc<std::sync::atomic::AtomicBool>>,
     login_seen: Option<Arc<std::sync::atomic::AtomicBool>>,
     changed_readback: bool,
+    stop_before_handoff: bool,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -310,6 +322,16 @@ fn camera_fixture_with_gate(
             "HTTP/1.1 200 OK\r\n{cookie}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
             body.len()
         )?;
+        if stop_before_handoff && index == 3 {
+            socket.flush()?;
+            let mut byte = [0_u8; 1];
+            return match socket.read(&mut byte) {
+                Ok(0) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
+                Ok(_) => Err(io::Error::other("unexpected handoff after deadline")),
+                Err(error) => Err(error),
+            };
+        }
     }
     Ok(())
 }
@@ -1652,6 +1674,70 @@ fn parallel_fleet_upgrade_scenario(
                     drop(retry_offered);
                     reject_peer.finish()?;
 
+                    // A witnessed deadline after preparation must retain its
+                    // evidence before the existing scheduler admits a retry.
+                    if capacity == 2 && !full_resolution && !changed_readback {
+                        let timeout_listener = std::net::TcpListener::bind((PEERS[2], 0))?;
+                        let SocketAddr::V4(timeout_address) = timeout_listener.local_addr()? else {
+                            return Err("IPv4 required".into());
+                        };
+                        let timeout_server = server.clone();
+                        let timeout_port = endpoint.port();
+                        let timeout_peer = Joined(Some(std::thread::spawn(move || {
+                            camera_fixture_with_gate(timeout_listener, timeout_port, peer, timeout_server, None, None, false, true)
+                        })));
+                        third_owner.approval = &SLOW_APPROVAL;
+                        let timeout_operation = OperationId::parse("operation:synthetic-deadline-recovery")?;
+                        let completion_operation = timeout_operation.clone();
+                        let mut deadline_trace = setup::Trace::default();
+                        let preflight_trace = camera_setup::PreflightRetryTrace::default();
+                        let preflight_policy = camera_setup::PreflightRetryPolicy::new(1, Duration::from_millis(10))?;
+                        let mut acquisitions = [fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(task, cx, clock, &resources[2], 128)?];
+                        let mut spool = fss_object::StagingSpool::open(
+                            temp.0.join("deadline-evidence"), fss_object::SpoolLimits::new(4, 4096, 1024, 4),
+                        )?;
+                        let future: CameraWork<'_, RetryCompletion<camera_setup::DeadlineRecoveredSetup>> = Box::pin(async {
+                            let output = camera_setup::run_with_preflight_retries_and_deadline_recovery(
+                                &fleet, 2, &mut third_owner, &listener, &policy, timeout_address, cert,
+                                handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
+                                &resources[2], &mut acquisitions, scoped_camera_provider.clone(), fences[2],
+                                peer, &timeout_operation, handoff::Framing::ContentLength, Duration::from_secs(3),
+                                &mut deadline_trace, &preflight_trace, preflight_policy, &mut spool, &resources[2],
+                            ).await;
+                            RetryCompletion { operation: completion_operation, output }
+                        });
+                        let mut offered = Some(future);
+                        let mut factory = |_: usize, _: Enrollment| offered.take().ok_or_else(|| io::ErrorKind::AlreadyExists.into());
+                        let mut auto = AutomaticWork::new(&fleet, 1).map_err(|_| "deadline work capacity")?;
+                        assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut auto, &mut retry_streams, &mut retry_queue, &mut factory).await.map_err(|e| format!("deadline admission: {e:?}"))?,
+                            RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Started { index: 2 }), .. }));
+                        let evidence = loop {
+                            match timeout(cx.now(), Duration::from_secs(15), supply.next_with_retries_and_streams(&mut pump, &mut auto, &mut retry_streams, &mut retry_queue, &mut factory)).await?.map_err(|e| format!("deadline setup: {e:?}"))? {
+                                RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Camera { index: 2, output })), retry: Some(discovery::pump::RetryDisposition::Scheduled) } => {
+                                    assert!(matches!(output.output.outcome, Err(camera_setup::Error::Setup(discovery::fleet::Error::Setup(setup::Error::Deadline)))));
+                                    break output.output.deadline_recovery.ok_or("deadline recovery skipped")??;
+                                }
+                                RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)) | Some(SupplyEvent::Installed(_)))))), .. } => (),
+                                _ => return Err("unexpected deadline setup event".into()),
+                            }
+                        };
+                        loop {
+                            match timeout(cx.now(), Duration::from_secs(5), supply.next_with_retries_and_streams(&mut pump, &mut auto, &mut retry_streams, &mut retry_queue, &mut factory)).await?.map_err(|e| format!("deadline timer: {e:?}"))? {
+                                RetryingFleetEvent::Retry { event: discovery::retry::Event::Rearmed { index: 2, state: discovery::fleet::State::Ready { .. } }, selection: RetrySelection::Released } => break,
+                                RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)) | Some(SupplyEvent::Installed(_)))))), .. } => (),
+                                _ => return Err("unexpected deadline retry event".into()),
+                            }
+                        }
+                        drop(factory);
+                        drop(offered);
+                        drop(auto);
+                        assert_eq!(spool.state(evidence), Some(fss_object::SpoolObjectState::Verified));
+                        assert!(deadline_trace.preparation_cancelled());
+                        assert_eq!(third_owner.effects.journal().operation(&timeout_operation).ok_or("lost preparation")?.state, fss_core::EffectState::Cancelled);
+                        third_owner.approval = &Approval;
+                        timeout_peer.finish()?;
+                    }
+
                     // Carry the newly discovered and owner-enrolled camera
                     // through the actual synthetic HTTPS setup owner while the
                     // existing camera handshake remains stalled and owned.
@@ -1665,7 +1751,7 @@ fn parallel_fleet_upgrade_scenario(
                     let third_gate = (capacity == 2).then(|| gate.clone());
                     let third_seen = (capacity == 2).then(|| login_seen.clone());
                     let third_fixture = Joined(Some(std::thread::spawn(move || {
-                        camera_fixture_with_gate(third_listener, endpoint.port(), peer, third_server, third_gate, third_seen, changed_readback)
+                        camera_fixture_with_gate(third_listener, endpoint.port(), peer, third_server, third_gate, third_seen, changed_readback, false)
                     })));
                     // Refuse a pin or credential-handle mismatch before any
                     // connection or credential-bearing HTTP operation.
@@ -2463,7 +2549,22 @@ fn task_owned_fleet_routes_two_synthetic_cameras() -> Test {
         .map_err(Into::into)
 }
 
-fn run_fleet_scenarios() -> Test {
+#[test]
+fn deadline_recovery_schedules_over_synthetic_tls() -> Test {
+    std::thread::Builder::new()
+        .name("scoped-deadline-fixture".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false)
+                .map_err(|error| error.to_string())
+        })?
+        .join()
+        .map_err(|_| "deadline fixture thread panicked")?
+        .map_err(Into::into)
+}
+
+fn fleet_fixture_inputs() -> Result<(Ipv4Addr, Vec<u8>, Vec<u8>), Box<dyn Error>> {
     // Setup intentionally refuses loopback controller destinations. Select an
     // address assigned to this worker; the synthetic cameras are loopback-only.
     let interfaces = std::process::Command::new("ip")
@@ -2489,6 +2590,11 @@ fn run_fleet_scenarios() -> Test {
         .ok_or("no local private interface for the fixture")?;
     let cert = std::fs::read("tests/fixtures/cert.der")?;
     let key = std::fs::read("tests/fixtures/key.der")?;
+    Ok((peer, cert, key))
+}
+
+fn run_fleet_scenarios() -> Test {
+    let (peer, cert, key) = fleet_fixture_inputs()?;
     parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false)?;
     parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false)?;
     parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false)?;

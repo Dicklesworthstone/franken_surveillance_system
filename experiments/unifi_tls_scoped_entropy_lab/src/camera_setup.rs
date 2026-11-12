@@ -282,6 +282,61 @@ pub async fn run_with_preflight_retries<'scope, 'task>(
     Err(Error::RetryConfiguration)
 }
 
+/// Setup outcome and, when applicable, the separately retained deadline
+/// settlement result. An error in settlement must not be mistaken for a
+/// successful cancellation or permission to retry.
+#[must_use]
+pub struct DeadlineRecoveredSetup {
+    pub outcome: Result<setup::Outcome, Error>,
+    pub deadline_recovery: Option<Result<ContentDigest, fleet::DeadlineSettlementError>>,
+}
+
+/// Run the bounded preflight path and retain evidence before cancelling an
+/// exact, witnessed pre-commit deadline. The HTTPS session has been dropped
+/// before settlement. A successful settlement makes the operation eligible
+/// for the existing bounded fleet retry queue; this function does not start a
+/// new attempt. The caller retains the trace, spool, and recovery result.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_preflight_retries_and_deadline_recovery<'scope, 'task>(
+    fleet: &Fleet<'_>,
+    index: usize,
+    owner: &mut setup::Owner<'_, 'scope, 'task>,
+    listener: &controller_listener::Listener<'_, '_, '_>,
+    http_authority: &dyn camera_http::Authority,
+    peer: SocketAddrV4,
+    certificate_der: &[u8],
+    credential_handle: ContentDigest,
+    credential: &[u8],
+    resource: &'scope str,
+    acquisitions: &mut [Acquisition<'scope, 'task>],
+    provider: Arc<CryptoProvider>,
+    fence: u64,
+    destination: Ipv4Addr,
+    operation: &OperationId,
+    framing: handoff::Framing,
+    wait: Duration,
+    setup_trace: &mut setup::Trace,
+    retry_trace: &PreflightRetryTrace,
+    policy: PreflightRetryPolicy,
+    spool: &mut fss_object::StagingSpool,
+    storage_resource: &str,
+) -> DeadlineRecoveredSetup {
+    let outcome = run_with_preflight_retries(
+        fleet, index, owner, listener, http_authority, peer, certificate_der,
+        credential_handle, credential, resource, acquisitions, provider, fence,
+        destination, operation, framing, wait, setup_trace, retry_trace, policy,
+    ).await;
+    let deadline_recovery = if matches!(
+        &outcome,
+        Err(Error::Setup(fleet::Error::Setup(setup::Error::Deadline)))
+    ) && setup_trace.has_precommit_deadline() {
+        Some(fleet.settle_expired_setup(index, owner, setup_trace, spool, storage_resource))
+    } else {
+        None
+    };
+    DeadlineRecoveredSetup { outcome, deadline_recovery }
+}
+
 /// Connect and run the existing tracked setup for an enrolled ready camera.
 /// The supplied lease is already acquired and drained: dropping this future
 /// drops the connection and lease, while `trace` and the effect journal remain
