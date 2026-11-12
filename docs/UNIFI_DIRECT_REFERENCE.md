@@ -15577,3 +15577,35 @@ the new transition. These are direct Linux runs, not RCH test passes or a
 physical-camera result. Cancellation and actual rollover through this new
 outer owner still require direct tests; existing inner-owner tests do not prove
 those paths for the composition.
+
+### Managed-owner rollover and capacity retry (2026-11-12 UTC)
+
+The outer recording owner can now retain an existing managed session. A video
+retry is refused while a reported journal-capacity boundary is pending, so it
+cannot bypass rollover. The existing managed-rollover fixture was exercised
+through the outer owner, including the initial supplies wait, refusal to arm a
+retry at capacity, rollover, and resumed pending publication.
+
+Strict-remote `j-30107133341073409` ran
+`video_session_managed_rollover_waits_for_supplies_and_resumes` on `trj`:
+1 passed, 116 filtered. Its clean overlay used base
+`9eafc26cefb77708f3a3183b73deb99e3d427283` and fingerprint
+`e40e38523454da3313f6deaa9f1ffaf06eeffb02ae18d8a363cdacc35a911afd`.
+The synthetic test reported three published video segments, two separate
+source records, and an unknown capture-time bound. It did not prove live G4
+rollover, storage independence, long-term retention, or cancellation through
+the outer owner.
+
+For cancellation, strict-remote no-run build `j-30107138793668610` compiled
+base `12fbd7e3c95f8601335c5694225eecaa0e938e2d` with the patched TLS-vendor
+overlay. Its wrapper returned 102 at Linux-to-macOS artifact transfer and
+acknowledged terminal release. The exact Linux binary, SHA-256
+`0b63a73d894fd97e1901e715104f5cc527b57420fd5d2649e4de134c47ec3e1a`,
+matched on the worker and isolated omarchy host. The direct
+`managed_recording_cancellation_retains_blocked_source` test passed (1 passed,
+3 filtered): it blocked the source worker in its retention authority, stopped
+the outer owner, verified the source could not be released before joining,
+dropped a pending join, released the gate, drained the exact completion, and
+checked the retained original bytes and source/camera claims. This establishes
+that synthetic bootstrap cancellation path only, not cancellation of managed
+video publication or rollover, physical-camera behavior, or retention.
