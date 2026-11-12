@@ -32,6 +32,8 @@ use std::{
 /// Payload-free setup failure. A caller-owned trace and journal remain authoritative.
 #[derive(Debug)]
 pub enum Error {
+    /// A retained camera owner, attempt or evidence spool is already borrowed.
+    Busy,
     /// Retry bounds, timer, acquisition set, or trace state was invalid.
     RetryConfiguration,
     /// Enrollment, certificate, resource, source, lease, or listener did not match.

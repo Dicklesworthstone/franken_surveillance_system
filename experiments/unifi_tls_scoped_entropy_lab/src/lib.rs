@@ -23,4 +23,10 @@ pub mod camera_setup;
 pub mod prepared_setup;
 
 #[cfg(target_os = "linux")]
+pub mod prepared_camera;
+
+#[cfg(target_os = "linux")]
+pub mod camera_factory;
+
+#[cfg(target_os = "linux")]
 pub mod setup_upgrade;

@@ -412,6 +412,37 @@ pub enum RearmRefusal {
     Stopped,
 }
 
+/// Why a camera plan could not be attached to this automatic setup owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlanRegistrationRefusal {
+    /// Factory and automatic owner do not reference the same fleet.
+    FleetMismatch,
+    /// Shutdown has stopped further admission.
+    Stopped,
+    /// An operation is still retained by the setup owner.
+    InFlight,
+    /// A prior attempt may need reconciliation or came from another factory.
+    NeedsReconciliation,
+    /// A prior missing-plan selection is no longer ready for setup.
+    NotReady,
+}
+
+#[derive(Debug)]
+pub(crate) struct MissingPlan {
+    identity: Arc<()>,
+    index: usize,
+}
+impl std::fmt::Display for MissingPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no owner-supplied camera plan")
+    }
+}
+impl std::error::Error for MissingPlan {}
+
+pub(crate) fn missing_plan(identity: Arc<()>, index: usize) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, MissingPlan { identity, index })
+}
+
 /// Bounded, caller-owned camera work and per-enrollment admission latches.
 /// A completed or refused attempt is not silently retried in this owner. The
 /// caller may explicitly rearm after reconciling any possible external effects.
@@ -421,6 +452,7 @@ pub struct AutomaticWork<'fleet, 'report, 'work, W> {
     work: CameraWorkSet<'work, W>,
     attempted: [bool; MAX_RESOURCES],
     in_flight: [bool; MAX_RESOURCES],
+    missing_factory: [Option<Arc<()>>; MAX_RESOURCES],
     transport: Option<Rc<()>>,
     capacity: usize,
     cursor: usize,
@@ -434,6 +466,7 @@ impl<'fleet, 'report, 'work, W> AutomaticWork<'fleet, 'report, 'work, W> {
             work: CameraWorkSet::new(capacity)?,
             attempted: [false; MAX_RESOURCES],
             in_flight: [false; MAX_RESOURCES],
+            missing_factory: std::array::from_fn(|_| None),
             transport: None,
             capacity,
             cursor: 0,
@@ -471,7 +504,45 @@ impl<'fleet, 'report, 'work, W> AutomaticWork<'fleet, 'report, 'work, W> {
             return Err(RearmRefusal::NotReady);
         }
         self.attempted[index] = false;
+        self.missing_factory[index] = None;
         Ok(())
+    }
+    /// Validate registration without altering the selection latch.
+    pub(crate) fn check_plan_registration(
+        &self,
+        fleet: &Fleet<'_>,
+        index: usize,
+        identity: &Arc<()>,
+    ) -> Result<bool, PlanRegistrationRefusal> {
+        if !std::ptr::eq(self.fleet, fleet) || index >= MAX_RESOURCES {
+            return Err(PlanRegistrationRefusal::FleetMismatch);
+        }
+        if self.stopped {
+            return Err(PlanRegistrationRefusal::Stopped);
+        }
+        if self.in_flight[index] {
+            return Err(PlanRegistrationRefusal::InFlight);
+        }
+        if !self.attempted[index] {
+            return Ok(false);
+        }
+        if !self.missing_factory[index]
+            .as_ref()
+            .is_some_and(|saved| Arc::ptr_eq(saved, identity))
+        {
+            return Err(PlanRegistrationRefusal::NeedsReconciliation);
+        }
+        if !matches!(self.fleet.state(index), Some(State::Ready { .. })) {
+            return Err(PlanRegistrationRefusal::NotReady);
+        }
+        Ok(true)
+    }
+    /// Commit a previously validated synchronous registration.
+    pub(crate) fn commit_plan_registration(&mut self, index: usize, rearm: bool) {
+        if rearm {
+            self.attempted[index] = false;
+            self.missing_factory[index] = None;
+        }
     }
     /// Return every outstanding future for explicit cancellation or retirement.
     pub fn into_pending(self) -> Vec<(usize, CameraWork<'work, W>)> {
@@ -1230,12 +1301,24 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
                 }
                 let enrollment = fleet.enrollment(index).ok_or(io::ErrorKind::InvalidData)?;
                 automatic.attempted[index] = true;
+                automatic.missing_factory[index] = None;
                 automatic.cursor = (index + 1) % len;
                 return Ok(match factory(index, enrollment) {
-                    Err(error) => AutomaticEvent::FactoryFailed {
-                        index,
-                        kind: error.kind(),
-                    },
+                    Err(error) => {
+                        if let Some(missing) = error
+                            .get_ref()
+                            .and_then(|value| value.downcast_ref::<MissingPlan>())
+                            .filter(|missing| {
+                                missing.index == index && error.kind() == io::ErrorKind::NotFound
+                            })
+                        {
+                            automatic.missing_factory[index] = Some(missing.identity.clone());
+                        }
+                        AutomaticEvent::FactoryFailed {
+                            index,
+                            kind: error.kind(),
+                        }
+                    }
                     Ok(work) => match automatic.work.insert(index, work) {
                         Ok(()) => {
                             automatic.in_flight[index] = true;
@@ -1467,6 +1550,7 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
                     && !automatic.in_flight[index]
                 {
                     automatic.attempted[index] = false;
+                    automatic.missing_factory[index] = None;
                     RetrySelection::Released
                 } else {
                     RetrySelection::NotReleased
@@ -1545,6 +1629,44 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
             }
             other => Ok(AutoRoutedFleetEvent::Progress(other)),
         }
+    }
+
+    /// Drive an enrolled camera factory, retry queue, routed stream factory,
+    /// discovery and entropy supply under the same caller-owned supervisor.
+    /// A mismatched camera factory is refused before any owner is polled.
+    /// The caller must retain and reconcile returned attempt and stream state;
+    /// this does not enroll unknown devices or prove physical identity.
+    pub async fn next_with_camera_factory_and_automatic_streams<
+        'pump, 'fleet, 'report, 'policy, 'work, 'owner, 'stream, A, S, G,
+    >(
+        &mut self,
+        pump: &mut Pump<'pump, 'fleet, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work,
+            RetryCompletion<Result<fss_reference::unifi_direct::setup::Outcome, crate::camera_setup::Error>>>,
+        streams: &mut ActiveStreams<'fleet, 'report, 'stream, S>,
+        retries: &mut RetryCoordinator<'fleet, 'report, 'scope, 'task>,
+        factory: &mut crate::camera_factory::Factory<'fleet, 'work, 'owner, 'report, 'scope, 'task, 'policy>,
+        stream_factory: &mut G,
+    ) -> Result<AutoRoutedFleetEvent<'scope, 'task, 'policy, 'work, 'stream,
+        Result<fss_reference::unifi_direct::setup::Outcome, crate::camera_setup::Error>, S>, RetryLoopError>
+    where
+        'fleet: 'pump,
+        'report: 'fleet + 'work,
+        'scope: 'fleet + 'work,
+        'task: 'scope,
+        'policy: 'scope,
+        'owner: 'work,
+        A: PeerAdmission + 'fleet,
+        G: FnMut(usize, Enrollment, Option<(VideoChannel, VideoProfile)>,
+            controller_acceptor::Session<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>)
+            -> TrackedStreamWork<'stream, S>,
+    {
+        if !factory.matches_fleet(pump.driver().fleet()) {
+            return Err(RetryLoopError::Binding);
+        }
+        let mut setup = |index, enrollment| factory.take(index, enrollment);
+        self.next_with_automatic_streams(pump, automatic, streams, retries, &mut setup, stream_factory).await
     }
 
     /// Drive workers and replenish empty slots without detached tasks.
