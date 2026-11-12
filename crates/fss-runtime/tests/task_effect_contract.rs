@@ -66,6 +66,74 @@ fn approval(prepared: &PreparedEffect) -> CommitApproval {
 }
 
 #[test]
+fn owning_task_cancels_prepared_effect_with_caller_evidence() -> Test {
+    let (mut authority, mut tree, mut leases, fence) = setup()?;
+    let mut effects = EffectCoordinator::new();
+    let operation = OperationId::parse("operation:cancel-before-dispatch")?;
+    let evidence = ContentDigest::sha256(b"retained fixture cancellation evidence");
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:cancel-before-dispatch")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = (|| {
+                    let prepared = task.prepare_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        spec(&operation, fence)?,
+                        TimestampNs(4),
+                    )?;
+                    task.cancel_prepared_effect(
+                        cx,
+                        &mut effects,
+                        prepared,
+                        evidence,
+                        TimestampNs(5),
+                    )?;
+                    Ok(())
+                })();
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("cancellation fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(6),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })?;
+    let receipt = effects
+        .journal()
+        .operation(&operation)
+        .ok_or("missing effect")?;
+    assert_eq!(receipt.state, fss_core::EffectState::Cancelled);
+    assert_eq!(
+        receipt.result_digest,
+        Some(effects.journal().cancellation_proof(&operation, evidence)?)
+    );
+    assert_eq!(
+        effects.journal().cancellation_record_version(&operation),
+        Some(fss_core::effect::EffectRecordVersion::V3)
+    );
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn observed_task_can_prepare_and_commit_with_retained_failed_approval() -> Test {
     let (mut authority, mut tree, mut leases, fence) = setup()?;
     let mut effects = EffectCoordinator::new();
@@ -118,6 +186,26 @@ fn observed_task_can_prepare_and_commit_with_retained_failed_approval() -> Test 
                         permit.prepared().effect_class(),
                         "EFFECT-CAMERA-MANAGEMENT-001"
                     );
+                    let inert = effects.prepared(&operation).ok_or("missing preparation")?;
+                    let refusal = task
+                        .cancel_prepared_effect(
+                            cx,
+                            &mut effects,
+                            inert,
+                            ContentDigest::sha256(b"late cancel"),
+                            TimestampNs(7),
+                        )
+                        .expect_err("committed effect must not be cancelled as prepared");
+                    assert!(matches!(refusal.reason, TaskEffectError::Coordinator(_)));
+                    assert_eq!(refusal.into_prepared().operation(), &operation);
+                    assert_eq!(
+                        effects
+                            .journal()
+                            .operation(&operation)
+                            .ok_or("missing effect")?
+                            .state,
+                        fss_core::EffectState::Committed
+                    );
                     drop(permit);
                     Ok(())
                 }
@@ -130,7 +218,7 @@ fn observed_task_can_prepare_and_commit_with_retained_failed_approval() -> Test 
                 TaskCompletion {
                     output,
                     outcome,
-                    completed_at: TimestampNs(7),
+                    completed_at: TimestampNs(8),
                 }
             },
         )
@@ -213,6 +301,20 @@ fn another_task_cannot_claim_or_commit_existing_preparation() -> Test {
                         TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
                     ));
                     let prepared = refused.into_prepared();
+                    let refusal = task
+                        .cancel_prepared_effect(
+                            cx,
+                            &mut effects,
+                            prepared,
+                            ContentDigest::sha256(b"foreign fixture cancellation"),
+                            TimestampNs(8),
+                        )
+                        .expect_err("foreign cancellation must fail");
+                    assert!(matches!(
+                        refusal.reason,
+                        TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
+                    ));
+                    let prepared = refusal.into_prepared();
                     assert!(matches!(
                         task.prepare_effect(
                             cx,

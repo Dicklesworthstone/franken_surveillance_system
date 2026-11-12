@@ -179,6 +179,27 @@ impl std::fmt::Display for TaskEffectCommitRefusal {
 }
 impl std::error::Error for TaskEffectCommitRefusal {}
 
+/// A refused cancellation retains the exact inert preparation for recovery.
+#[must_use]
+#[derive(Debug)]
+pub struct TaskEffectCancellationRefusal {
+    /// Why the task or coordinator refused the cancellation.
+    pub reason: TaskEffectError,
+    prepared: PreparedEffect,
+}
+impl TaskEffectCancellationRefusal {
+    /// Recover the original preparation; this grants no dispatch authority.
+    pub fn into_prepared(self) -> PreparedEffect {
+        self.prepared
+    }
+}
+impl std::fmt::Display for TaskEffectCancellationRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.reason.fmt(f)
+    }
+}
+impl std::error::Error for TaskEffectCancellationRefusal {}
+
 impl From<AuthorityError> for ExecutionError {
     fn from(error: AuthorityError) -> Self {
         Self::Authority(error)
@@ -437,6 +458,56 @@ impl<'a> TaskCx<'a> {
             .map_err(|error| {
                 let (reason, prepared) = error.into_parts();
                 TaskEffectCommitRefusal {
+                    reason: TaskEffectError::Coordinator(reason),
+                    prepared,
+                }
+            })
+    }
+
+    /// Cancel this task's prepared effect using caller-retained evidence.
+    ///
+    /// This only admits a live task before its authority deadline. The
+    /// coordinator checks the exact preparation, scope and state, and durably
+    /// records the cancellation before resolving its obligation. This method
+    /// may synchronously block on storage. It cannot cancel a committed effect
+    /// or establish that the caller's evidence is independently retained.
+    pub fn cancel_prepared_effect(
+        &self,
+        runtime_cx: &asupersync::Cx,
+        effects: &mut EffectCoordinator,
+        prepared: PreparedEffect,
+        evidence: ContentDigest,
+        now: TimestampNs,
+    ) -> Result<(), TaskEffectCancellationRefusal> {
+        let admission = (|| -> Result<_, TaskEffectError> {
+            runtime_cx
+                .checkpoint()
+                .map_err(|_| TaskEffectError::Execution(ExecutionError::RuntimeCancelled))?;
+            let mut state = self.state().map_err(TaskEffectError::Execution)?;
+            self.check_registration(&state)
+                .map_err(TaskEffectError::Execution)?;
+            Self::observe_time(&mut state, now).map_err(TaskEffectError::Execution)?;
+            self.check_deadline(&mut state, now)
+                .map_err(TaskEffectError::Execution)?;
+            if !state.effect_operations.contains(prepared.operation()) {
+                return Err(TaskEffectError::Execution(
+                    ExecutionError::ObligationOwnerMismatch,
+                ));
+            }
+            Ok(state)
+        })();
+        let mut state = match admission {
+            Ok(state) => state,
+            Err(reason) => return Err(TaskEffectCancellationRefusal { reason, prepared }),
+        };
+        let ExecutionState {
+            authority, tree, ..
+        } = &mut *state;
+        effects
+            .cancel_prepared(tree, authority, prepared, evidence, now)
+            .map_err(|error| {
+                let (reason, prepared) = error.into_parts();
+                TaskEffectCancellationRefusal {
                     reason: TaskEffectError::Coordinator(reason),
                     prepared,
                 }
