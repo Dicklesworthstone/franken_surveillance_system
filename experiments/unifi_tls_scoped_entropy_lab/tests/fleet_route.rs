@@ -762,6 +762,11 @@ fn parallel_fleet_upgrade_scenario(
                     }
                 }
                 let transition = OperationId::parse(format!("operation:auto-archive-{index}-transition"))?;
+                assert!(matches!(recording.step(&mut owner, &transition, Duration::ZERO, task, cx, clock, admission, admission).await,
+                    video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::Configuration)));
+                let other_clock = MeteredClock::new(task, cx, TimestampNs(99))?;
+                assert!(matches!(recording.step(&mut owner, &transition, Duration::from_millis(100), task, cx, other_clock, admission, admission).await,
+                    video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::Context)));
                 assert!(matches!(recording.step(&mut owner, &transition, Duration::from_millis(100), task, cx, clock, admission, admission).await,
                     video_bootstrap::ManagedRecordingStep::RecordingStarted));
                 loop {

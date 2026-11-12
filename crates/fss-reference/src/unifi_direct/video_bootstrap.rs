@@ -292,6 +292,26 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope,
     ) -> ManagedRecordingStep {
         if self.halted { return ManagedRecordingStep::Halted; }
         if self.ready {
+            if wait.is_zero() || wait > Duration::from_secs(30) {
+                return ManagedRecordingStep::Bootstrap(Step::Configuration);
+            }
+            let matches = match self.owner.as_ref() {
+                Some(ManagedRecordingOwner::Bootstrap(bootstrap)) => {
+                    owner.clock.matches(owner.task, owner.cx)
+                        && owner.clock.matches(task, cx)
+                        && clock.matches(task, cx)
+                        && bootstrap.parts.supervisor.matches_clock(&owner.clock)
+                        && bootstrap.parts.supervisor.matches_clock(&clock)
+                }
+                _ => false,
+            };
+            if !matches {
+                return ManagedRecordingStep::Bootstrap(Step::Context);
+            }
+            if owner.cx.checkpoint().is_err() {
+                self.abort();
+                return ManagedRecordingStep::Bootstrap(Step::Halted);
+            }
             self.ready = false;
             let bootstrap = match self.owner.take() {
                 Some(ManagedRecordingOwner::Bootstrap(bootstrap)) => bootstrap,
