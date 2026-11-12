@@ -15221,3 +15221,21 @@ full-resolution archive/concurrent-handshake scenario with
 `archive stream route refused: Listener(Deadline)`. Its cause remains
 unresolved; these runs are failures, not full-suite or high-resolution
 concurrency passes. The standalone test does not override that result.
+
+Investigation found that the fleet router reports an unmatched accept timeout
+as `RouteRefused { index: None, reason: Listener(Deadline) }`. The fixture
+now accepts this specific idle event only after the concurrent camera route
+has succeeded. Other route refusals, handshake failures, and the original
+concurrency and archive readback assertions remain failures. Strict-remote
+trj build `j-30106308287922602` compiled this change; its wrapper again exited
+102 on the Linux-to-macOS artifact check, so it is not a passing RCH test
+job. Its exact Linux binary, SHA-256
+`db6cebbc3381d0bd9a8460a0d01687eb8c31bc55a405a2489f17d7950db0481d`,
+matched before and after a direct omarchy execution in an isolated user and
+network namespace. The broad fleet test passed (1 passed, 1 filtered),
+including all four scenarios, synthetic 2688 x 1512 archive readback and
+the TLS deadline recovery scenario. This fixes the fixture's idle-timeout
+handling; it does not establish physical-camera concurrency, production
+readiness, or a gap-free recording. The shared head advanced while these
+jobs ran; they used base `ea5dacbd0ffbcfde721868e6acefbfa7f79704e9` plus
+the explicitly supplied TLS lab and fleet source overlays.
