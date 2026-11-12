@@ -15147,3 +15147,77 @@ direct runs of an RCH-built binary, not additional RCH job passes. The shared
 repository head advanced while they ran; the changed UniFi and runtime files
 matched the tested overlay afterward, but the tests used the stated earlier
 base. No physical camera was contacted.
+
+After the shared head advanced, strict-remote ts1 job `j-30106308287922584`
+passed both selected evidence tests (22 filtered) on base
+`da1eea14febcc0d3023abf7129900a06f59ec378` and overlay fingerprint
+`41a78ddd5f521596b4bcde9dc5ce0c3369f1a1899639ee9e577e3687a4bb9f64`.
+Its terminal result was acknowledged and source and pair released. Its exact
+Linux test binary, SHA-256
+`8efae6c6044beac3aa100305075b2c6b809282e895d318cb5d30e442098b9770`,
+was copied and hash-checked on omarchy; all five ignored interface tests
+passed in a private user/network namespace, including the full synthetic
+evidence-failure, cancellation, bounded rearm and fresh-operation scenario.
+The binary hash matched afterward. This was a separate direct invocation, not
+an additional RCH job pass. The production setup driver does not yet invoke
+settlement automatically, and no physical camera was contacted.
+
+### Setup wrapper with deadline recovery (2026-11-12 UTC)
+
+`Fleet::setup_one_with_deadline_recovery` now owns and closes the camera HTTP
+session after setup, then invokes evidence-backed settlement for an eligible
+pre-commit deadline. It returns the original setup outcome and the separate
+recovery result; a failed evidence write remains visible and does not make a
+retry eligible. When the caller supplies this future to the existing
+coordinated pump, the pump schedules the bounded retry after successful
+settlement. The caller still supplies the spool and the next setup factory;
+the experimental TLS driver and a deployed unattended service have not been
+switched to this wrapper. Journal and spool operations remain synchronous.
+
+Strict-remote ts1 job `j-30106308287922594` passed the two evidence tests
+(23 filtered) on base `ea5dacbd0ffbcfde721868e6acefbfa7f79704e9` with
+overlay fingerprint
+`0946fa3acaae0857ba54970fbf1f99103894f4753b8c0c34f3a577b96b8c0670be6b`.
+Its terminal result was acknowledged and source and pair released. The exact
+Linux test binary, SHA-256
+`b4dbfe57c0c1553ff36705cfbe9a499e5b70fcc355117171b598de770be4efa7`,
+was copied and hash-checked on omarchy. In isolated user/network namespaces,
+separate direct invocations passed all 19 ordinary and all six normally
+ignored interface tests. The new pump-driven fixture checks both automatic
+settlement and scheduling, and refusal to schedule when evidence storage
+fails. Hashes matched after the runs. These direct runs are not additional
+RCH job passes, and no physical camera was contacted.
+
+### Experimental TLS deadline recovery (2026-11-12 UTC)
+
+The scoped TLS lab now offers a preflight-and-setup wrapper that settles a
+witnessed pre-commit deadline after its HTTPS session has been dropped. It
+returns the original result and the separate evidence/cancellation result.
+Successful settlement makes the attempt eligible for the existing bounded
+retry scheduler; the wrapper itself does not launch a new operation. The
+caller retains the evidence spool, traces, and result. This is an opt-in lab
+API, not an unattended production integration; journal and spool I/O remain
+synchronous and the TLS provider remains experimental.
+
+The first strict-remote build, `j-30106308287922596`, failed before tests on a
+fixture approval-lifetime error. After correction, builds
+`j-30106308287922599` and `j-30106308287922600` compiled on trj, but both
+wrappers exited 102 because RCH rejected copying a Linux artifact to macOS.
+Neither is a passing RCH test job. The final Linux binary from job
+`j-30106308287922600`, SHA-256
+`fe528974c73a7a180bad5c9f5953c13fe78d74aa583974459f756f2c4fafbd2c`,
+was copied to omarchy and matched before and after execution. A direct run
+in an isolated user/network namespace passed the standalone synthetic TLS
+deadline-recovery test (1 passed, 1 filtered). It observed the original
+deadline, verified the retained evidence, saw the prepared effect cancelled,
+and observed bounded retry scheduling and rearming without a handoff request.
+No physical camera was contacted.
+
+The larger fleet test was also run twice in that namespace using the previous
+compiled binary (SHA-256
+`997d5706a8554e69c3ae33619de9169cb10cde48a8b80fc23b16660bc4043204`).
+Both runs completed the new recovery scenario and then failed in the separate
+full-resolution archive/concurrent-handshake scenario with
+`archive stream route refused: Listener(Deadline)`. Its cause remains
+unresolved; these runs are failures, not full-suite or high-resolution
+concurrency passes. The standalone test does not override that result.
