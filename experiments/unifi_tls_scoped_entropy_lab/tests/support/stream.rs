@@ -160,6 +160,54 @@ pub fn camera_with_hold(
     full_resolution: bool,
     hold: Option<Arc<AtomicBool>>,
 ) -> io::Result<()> {
+    camera_impl(
+        endpoint,
+        peer,
+        config,
+        mac_hex,
+        stream_seen,
+        release,
+        full_resolution,
+        hold,
+        None,
+    )
+}
+
+pub fn camera_with_candidates(
+    endpoint: SocketAddrV4,
+    peer: Ipv4Addr,
+    config: Arc<ClientConfig>,
+    mac_hex: &str,
+    stream_seen: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    full_resolution: bool,
+    hold: Arc<AtomicBool>,
+    proceed: Arc<AtomicBool>,
+) -> io::Result<()> {
+    camera_impl(
+        endpoint,
+        peer,
+        config,
+        mac_hex,
+        stream_seen,
+        release,
+        full_resolution,
+        Some(hold),
+        Some(proceed),
+    )
+}
+
+fn camera_impl(
+    endpoint: SocketAddrV4,
+    peer: Ipv4Addr,
+    config: Arc<ClientConfig>,
+    mac_hex: &str,
+    stream_seen: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    full_resolution: bool,
+    hold: Option<Arc<AtomicBool>>,
+    competing_candidates: Option<Arc<AtomicBool>>,
+) -> io::Result<()> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.bind(&SocketAddr::V4(SocketAddrV4::new(peer, 0)).into())?;
     socket.connect_timeout(&SocketAddr::V4(endpoint).into(), Duration::from_secs(5))?;
@@ -244,6 +292,29 @@ pub fn camera_with_hold(
     );
     tls.write_all(&frame(reply.as_bytes()))?;
     tls.flush()?;
+    let mut held_candidates = Vec::new();
+    if let Some(proceed) = competing_candidates {
+        for (index, prefix) in [b'X', b'F'].into_iter().enumerate() {
+            let candidate = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+            candidate.bind(&SocketAddr::V4(SocketAddrV4::new(peer, 0)).into())?;
+            candidate.connect_timeout(&destination.into(), Duration::from_secs(5))?;
+            let mut candidate: std::net::TcpStream = candidate.into();
+            candidate.write_all(&[prefix])?;
+            held_candidates.push(candidate);
+            if index == 0 {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !proceed.load(Ordering::Acquire) {
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "candidate selection did not resume",
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
     let media = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     media.bind(&SocketAddr::V4(SocketAddrV4::new(peer, 0)).into())?;
     media.connect_timeout(&destination.into(), Duration::from_secs(5))?;

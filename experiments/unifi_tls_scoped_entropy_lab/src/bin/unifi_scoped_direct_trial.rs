@@ -1008,7 +1008,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(8,8*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
                 let startup_sync_limit=if matches!(args.time_sync_policy, TimeSyncPolicy::BoundedPreHelloClockExchange | TimeSyncPolicy::BoundedAnyPreHelloClockExchange | TimeSyncPolicy::BoundedContinuingClockExchange) { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
-                let (session,started,event_trace,startup_trace)=loop {
+                let (session,started,event_trace,startup_trace,source_key)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() { return Err("controller TLS deadline elapsed".into()); }
                     let mut session=if let Some(session)=setup_session.take() {
@@ -1052,21 +1052,21 @@ fn run(args: Options) -> ResultBox<()> {
                     let startup=async {
                         if args.media_before_reply {
                             let result=if args.reply_events || args.reply_startup_requests {
-                                listener::start_before_reply_with_events_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace,None,&event_replies,&mut event_trace).await
+                                listener::start_with_events_retaining_listener(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace,None,&event_replies,&mut event_trace).await
                             } else {
-                                listener::start_before_reply_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await
+                                listener::start_before_reply_retaining_listener(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await
                             };
-                            result.and_then(|started| {
-                                for observation in started.observations_during_accept {
+                            result.and_then(|retained| {
+                                for observation in retained.started.observations_during_accept {
                                     if let Observation::StreamSettingsReply {success,..}=observation {
                                         if success==Some(false) {return Err(listener::StartError::Conversation(conversation::Error::Unexpected));}
                                         println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
                                     }
                                 }
-                                Ok(started.pipeline)
+                                Ok((retained.started.pipeline,Some(retained.listener)))
                             })
                         } else {
-                            listener::start_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.map(|started| started.pipeline)
+                            listener::start_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.map(|started| (started.pipeline,None))
                         }
                     };
                     let startup_result=timeout_at(deadline,startup).await;
@@ -1083,7 +1083,54 @@ fn run(args: Options) -> ResultBox<()> {
                     let unhandled=session.unhandled_request_counts();
                     println!("trial_stage=unhandled_response_requests pre_hello={} later={} correlated={} claims_unverified=true",unhandled.pre_hello,unhandled.later,unhandled.correlated);
                     match startup_result {
-                        Ok(Ok(pipeline))=>break (session,pipeline,event_trace,startup_trace),
+                        Ok(Ok((pipeline,retained_listener)))=>{
+                            let pipeline=if let Some(media_listener)=retained_listener {
+                                let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos())).min(MAX_IO_WAIT);
+                                let mut candidates=match listener::MediaCandidates::new_validating(media_listener,pipeline,4,16*1024,MAX_SOURCE,remaining) {
+                                    Ok(candidates)=>candidates,
+                                    Err(refusal)=>{
+                                        let retired=refusal.pipeline.retire();
+                                        println!("trial_stage=media_candidate_configuration_refused source_bytes_omitted={} unread_bytes_unknown=true effects_require_reconciliation=true",retired.ingress.source.received);
+                                        return Err("invalid bounded media candidate policy".into());
+                                    }
+                                };
+                                let mut create=|index:usize| -> std::io::Result<_> {
+                                    let key=SourceKey {connection:(attempts as u64)+(index as u64)*(MAX_INITIAL_CONNECTIONS as u64),generation:1};
+                                    let framer=Framer::with_mode(flv_limits,flv_limits.complete_candidate_buffer().map_err(std::io::Error::other)?,framing).map_err(std::io::Error::other)?;
+                                    let recorder=recorder_factory(key,recording::Limits::default()).map_err(std::io::Error::other)?;
+                                    Ok((framer,recorder))
+                                };
+                                println!("trial_stage=media_candidate_selection_started identity=network_claim");
+                                let replies=if args.reply_events || args.reply_startup_requests {Some((&event_replies,&mut event_trace))} else {None};
+                                if let Err(error)=listener::select_candidates_with_control(&mut candidates,&mut owner,&mut session,&request,&mut startup_trace,replies,&mut create).await {
+                                    let count=candidates.attempts();
+                                    let (_listener,current,additional)=candidates.into_parts();
+                                    let mut retained=0usize;
+                                    for candidate in std::iter::once(current).chain(additional.into_iter().map(|candidate| candidate.map(|pipeline| *pipeline))) {
+                                        if let Some(candidate)=candidate {
+                                            let retired=candidate.retire();
+                                            retained+=1;
+                                            println!("trial_stage=media_candidate_stopped attempts={count} source_bytes_omitted={} unread_bytes_unknown=true effects_require_reconciliation=true",retired.ingress.source.received);
+                                        }
+                                    }
+                                    if retained==0 {println!("trial_stage=media_candidate_stopped attempts={count} source_bytes_omitted=0 effects_require_reconciliation=true");}
+                                    return Err(error.into());
+                                }
+                                println!("trial_stage=media_selection_control clocks={} event_replies={} effects_require_reconciliation=true",startup_trace.clock_replies_written(),event_trace.attempts().len());
+                                println!("trial_stage=media_candidate_selected attempts={} header_retained=true identity=network_claim",candidates.attempts());
+                                let selected=candidates.take_ready().ok_or("selected media missing")?;
+                                let (_listener,current,additional)=candidates.into_parts();
+                                for candidate in std::iter::once(current).chain(additional.into_iter().map(|candidate| candidate.map(|pipeline| *pipeline))) {
+                                    if let Some(candidate)=candidate {
+                                        let retired=candidate.retire();
+                                        println!("trial_stage=unselected_media_candidate source_bytes_omitted={} unread_bytes_unknown=true",retired.ingress.source.received);
+                                    }
+                                }
+                                selected
+                            } else { pipeline };
+                            let source_key=pipeline.source_key();
+                            break (session,pipeline,event_trace,startup_trace,source_key)
+                        },
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::Deadline)))=>{
                             let counts=session.time_sync_counts();
                             println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={} sync_to_last_written={} sync_expected_to_last_written={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected,counts.correlated_to_last_written_reply,counts.correlated_expected_to_last_written_reply);
@@ -1111,9 +1158,9 @@ fn run(args: Options) -> ResultBox<()> {
                 if args.lab_owned_archive {
                     println!("trial_mode=owned_archive bounded=true identity=network_claim capture_bounds=unknown");
                     if args.lab_inband_avc {println!("trial_owned_avc_profile=avc3");}
-                    let source=SourceKey {connection:attempts as u64,generation:1};
+                    let source=source_key;
                     let claim=ContentDigest::sha256(&args.mac);
-                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,args.lab_anchor_root.as_deref(),args.lab_decode_owned,args.lab_video_still,args.lab_save_still.as_deref(),args.lab_managed_archive,args.lab_av_history_records,args.lab_video_only_archive,args.lab_inband_avc,args.lab_renew_batch,args.lab_retained_video_generations,args.lab_stop_after_retained_reservation,args.lab_auto_retained_generations)).await;
+                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,startup_answered,args.lab_anchor_root.as_deref(),args.lab_decode_owned,args.lab_video_still,args.lab_save_still.as_deref(),args.lab_managed_archive,args.lab_av_history_records,args.lab_video_only_archive,args.lab_inband_avc,args.lab_renew_batch,args.lab_retained_video_generations,args.lab_stop_after_retained_reservation,args.lab_auto_retained_generations)).await;
                     return match result {
                         Ok(segments)=>{println!("trial_complete archive=published segments={segments} continuous_recording=false identity=network_claim capture_bounds=unknown");Ok(())},
                         Err(error)=>Err(error),

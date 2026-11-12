@@ -10,11 +10,13 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import socket
 import ssl
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import urlsplit
 
 MAC = bytes.fromhex("001122aabbcc")
@@ -165,6 +167,8 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         command.append("--bounded-continuing-clock")
     if media is not None:
         command.append("--media-before-reply")
+        if name in ("full-empty-events", "full-empty-control", "full-idle-control", "full-prefix-control"):
+            command.append("--reply-events")
         if archive == "av":
             command.append("--lab-aac-config=1408")
         command.append("--lab-segments=3" if archive else "--lab-segments=2")
@@ -274,12 +278,62 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                         target = urlsplit(stream["payload"]["video"][expected]["avSerializer"]["destinations"][0])
                         if target.scheme != "tcp" or target.hostname != address or not target.port:
                             raise ValueError("media destination escaped fixture address")
+                        prefix = b""
+                        if name in ("full-empty-first", "full-empty-events", "full-empty-av", "full-empty-control"):
+                            with socket.create_connection((address, target.port), timeout=5):
+                                pass
+                        held = []
+                        if name == "full-idle-control":
+                            held.append(socket.create_connection((address, target.port), timeout=5))
+                        if name == "full-prefix-control":
+                            for prefix_byte in (b"X", b"F"):
+                                candidate = socket.create_connection((address, target.port), timeout=5)
+                                candidate.sendall(prefix_byte)
+                                held.append(candidate)
+                        if name in ("full-empty-control", "full-idle-control", "full-prefix-control"):
+                            deadline = time.monotonic() + 10
+                            marker = b"trial_stage=media_candidate_selection_started"
+                            while marker not in prefix:
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0 or not select.select([child.stdout], [], [], remaining)[0]:
+                                    raise TimeoutError("candidate selection did not begin")
+                                chunk = os.read(child.stdout.fileno(), 4096)
+                                if not chunk:
+                                    raise EOFError("trial stopped before candidate selection")
+                                prefix += chunk
+                                if len(prefix) > 65536:
+                                    raise ValueError("fixture output limit")
+                            request = message("ubnt_avclient_timeSync", 11)
+                            request["responseExpected"] = True
+                            control.sendall(frame(request))
+                            reply = received(control)
+                            if reply.get("functionName") != "ubnt_avclient_timeSync" or reply.get("inResponseTo") != 11:
+                                raise ValueError("selection-time clock reply missing")
+                            event = message("EventSmartMotion", 78, payload={"active": True})
+                            event["responseExpected"] = True
+                            control.sendall(frame(event))
+                            reply = received(control)
+                            if reply.get("functionName") != "EventSmartMotion" or reply.get("inResponseTo") != 78:
+                                raise ValueError("selection-time event reply missing")
                         with socket.create_connection((address, target.port), timeout=5) as transport:
                             transport.sendall(media)
-                        out, err = child.communicate(timeout=90)
+                        try:
+                            out, err = child.communicate(timeout=90)
+                        finally:
+                            for candidate in held:
+                                candidate.close()
+                        out = prefix + out
                         if child.returncode != 0 or b"trial_complete" not in out:
                             report = out.decode(errors="replace")
                             raise RuntimeError("synthetic media trial failed: " + err.decode(errors="replace")[-1200:] + " stages=" + " | ".join(report.splitlines()[-20:]))
+                        if name in ("full-empty-first", "full-empty-events", "full-empty-av", "full-empty-control", "full-idle-control") and b"trial_stage=media_candidate_selected attempts=2 header_retained=true" not in out:
+                            raise ValueError("empty-first selection marker missing")
+                        if name in ("full-empty-control", "full-idle-control", "full-prefix-control") and (b"trial_stage=media_selection_control clocks=2 event_replies=1" not in out or b"trial_owned_startup_event=already_answered" not in out):
+                            raise ValueError("selection-time control trace missing or event not retained")
+                        if name == "full-idle-control" and b"trial_stage=unselected_media_candidate source_bytes_omitted=0 unread_bytes_unknown=true" not in out:
+                            raise ValueError("idle candidate omission not reported")
+                        if name == "full-prefix-control" and (b"trial_stage=media_candidate_selected attempts=3 header_retained=true" not in out or out.count(b"trial_stage=unselected_media_candidate source_bytes_omitted=1 unread_bytes_unknown=true") != 2):
+                            raise ValueError("invalid or partial prefix not retained and accounted")
                         clip = case / "clip.mp4"
                         if archive:
                             report = out.decode(errors="replace")
@@ -352,6 +406,12 @@ def main():
             sys.path.insert(0, str(Path(sys.argv[3]).resolve()))
             from media_before_reply_fixture import flv_tag, media_fixture
             run(binary, address, root, (pem, pem_key, cert, key), "full-media", profiles, "video1", media=media_fixture(sys.argv[4]))
+            run(binary, address, root, (pem, pem_key, cert, key), "full-empty-first", profiles, "video1", media=media_fixture(sys.argv[4]))
+            run(binary, address, root, (pem, pem_key, cert, key), "full-empty-events", profiles, "video1", media=archive_media(sys.argv[4], flv_tag), archive="video")
+            run(binary, address, root, (pem, pem_key, cert, key), "full-empty-av", profiles, "video1", media=archive_media(sys.argv[4], flv_tag, audio=True), archive="av")
+            run(binary, address, root, (pem, pem_key, cert, key), "full-empty-control", profiles, "video1", media=archive_media(sys.argv[4], flv_tag), archive="video")
+            run(binary, address, root, (pem, pem_key, cert, key), "full-idle-control", profiles, "video1", media=archive_media(sys.argv[4], flv_tag), archive="video")
+            run(binary, address, root, (pem, pem_key, cert, key), "full-prefix-control", profiles, "video1", media=archive_media(sys.argv[4], flv_tag), archive="video")
             run(binary, address, root, (pem, pem_key, cert, key), "full-managed-archive", profiles, "video1", media=archive_media(sys.argv[4], flv_tag), archive="video")
             run(binary, address, root, (pem, pem_key, cert, key), "full-managed-av", profiles, "video1", media=archive_media(sys.argv[4], flv_tag, audio=True), archive="av")
             run(binary, address, root, (pem, pem_key, cert, key), "handoff-clock-conservative", profiles, "video1", clock_burst="conservative")

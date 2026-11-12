@@ -381,6 +381,7 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     segment_limit: usize,
     management: management::Preconditions,
     reply_events: bool,
+    mut startup_answered: Vec<ContentDigest>,
     decode_owned: bool,
     still_color: Option<video_still::Color>,
     still_export_path: Option<&Path>,
@@ -756,7 +757,10 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             }
         }
         if let Some(frame) = event {
-            if !frame.response_expected() {
+            if let Some(index) = startup_answered.iter().position(|digest| *digest == frame.digest()) {
+                startup_answered.remove(index);
+                println!("trial_owned_startup_event=already_answered source_bytes_omitted={} effects_require_reconciliation=true", frame.source().len());
+            } else if !frame.response_expected() {
                 println!(
                     "trial_owned_event=observed source_bytes_omitted={} identity=network_claim",
                     frame.source().len()

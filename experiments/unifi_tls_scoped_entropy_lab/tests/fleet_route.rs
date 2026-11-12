@@ -387,7 +387,7 @@ fn parallel_fleet_upgrade_scenario(
     use fss_unifi_scoped_tls_entropy_lab::fleet_leased::{
         ActiveStreams, AutoRoutedFleetEvent, AutomaticEvent, AutomaticWork, FleetLeased, FleetResources,
         FleetStreamEvent, LeaseSupply, RearmRefusal, RetryCompletion, RetryCoordinator,
-        RoutedStreamAdmission, RoutedStreamRefusal, RoutedTransport, StreamCompletionRefusal,
+        RoutedStreamAdmission, RoutedStreamRefusal, RoutedTransport, StreamCompletionRefusal, TrackedStreamWork,
         RetryLoopError, RetrySelection, RetryingFleetEvent, StreamRefusal, Supervised, SupplyEvent,
     };
     use std::{
@@ -521,7 +521,7 @@ fn parallel_fleet_upgrade_scenario(
         cx: &'scope asupersync::Cx,
         task: &'scope fss_runtime::execution::TaskCx<'task>,
         clock: MeteredClock<'scope, 'task>,
-        effects: Option<&'scope mut EffectCoordinator>,
+        effects: Option<EffectCoordinator>,
         leases: &'scope RefCell<LeaseRegistry>,
         policy: &'scope PairPolicy,
         resource: &'scope str,
@@ -530,6 +530,8 @@ fn parallel_fleet_upgrade_scenario(
         admission: ContentDigest,
         fence: u64,
         full_resolution: bool,
+        candidate_hold: Arc<AtomicBool>,
+        candidate_proceed: Arc<AtomicBool>,
     }
     fn auto_media_factory<'scope, 'task: 'scope, 'policy: 'scope>(
         mut state: AutoMedia<'scope, 'task>,
@@ -538,7 +540,7 @@ fn parallel_fleet_upgrade_scenario(
         release: Rc<Cell<bool>>,
     ) -> impl FnMut(usize, Enrollment, Option<(VideoChannel, camera_api::VideoProfile)>,
         fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy,
-            RoutedTransport<'scope, 'task, 'policy>>) -> CameraWork<'scope, Test> {
+            RoutedTransport<'scope, 'task, 'policy>>) -> TrackedStreamWork<'scope, (Test, EffectCoordinator)> {
         move |index, enrollment, reported_video, mut session| {
             assert_eq!(index, 1);
             assert_eq!(enrollment.mac(), MACS[1]);
@@ -552,16 +554,21 @@ fn parallel_fleet_upgrade_scenario(
             let polled = polled.clone();
             let release = release.clone();
             let effects = state.effects.take().expect("one effect owner per fixture stream");
+            let candidate_hold = state.candidate_hold.clone();
+            let candidate_proceed = state.candidate_proceed.clone();
             let (cx, task, clock, leases, policy, resource, peer, camera, admission, fence, full_resolution) =
                 (state.cx, state.task, state.clock, state.leases, state.policy, state.resource,
                  state.peer, state.camera, state.admission, state.fence, state.full_resolution);
-            Box::pin(async move {
+            TrackedStreamWork::with_owned_effects(effects, move |mut effects| async move {
+                let _release_guard = ReleaseOnDrop(candidate_hold.clone());
+                let _proceed_guard = ReleaseOnDrop(candidate_proceed.clone());
+                let result: Test = async {
                 poll_fn(|_| {
                     polled.set(polled.get() + 1);
                     if release.get() { Poll::Ready(()) } else { Poll::Pending }
                 }).await;
                 let guard = Guard { leases, clock, mac: MACS[1] };
-                let mut owner = conversation::Owner { cx, task, clock, effects, leases, approval: &Approval, management_authority: &guard, stream_authority: &guard, wall: &Wall };
+                let mut owner = conversation::Owner { cx, task, clock, effects: &mut effects, leases, approval: &Approval, management_authority: &guard, stream_authority: &guard, wall: &Wall };
                 let hello = OperationId::parse("operation:auto-media-hello")?;
                 let agreement = OperationId::parse("operation:auto-media-agreement")?;
                 let stream = OperationId::parse("operation:auto-media-stream")?;
@@ -571,7 +578,45 @@ fn parallel_fleet_upgrade_scenario(
                 let framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
                 let recorder = recording::Recorder::new(SourceKey { connection: 3, generation: 1 }, recording::Limits::default())?;
                 let mut trace = listener::StartTrace::default();
-                let mut pipeline = listener::start_tracked(&mut owner, &mut session, &request, framer, recorder, &mut trace).await?.pipeline;
+                let started = listener::start_before_reply_retaining_listener(&mut owner, &mut session, &request, framer, recorder, &mut trace).await?;
+                let initial_clocks = started.started.time_syncs_during_accept;
+                let initial_observations = started.started.observations_during_accept.len();
+                let refusal = match listener::ValidatedMediaSelection::new(started, 3, 4096, 12, Duration::from_secs(10)) {
+                    Err(refusal) => refusal,
+                    Ok(_) => return Err("automatic short source limit accepted".into()),
+                };
+                assert_eq!(refusal.startup.started.pipeline.source_key().connection, 3);
+                assert_eq!(refusal.startup.started.time_syncs_during_accept, initial_clocks);
+                assert_eq!(refusal.startup.started.observations_during_accept.len(), initial_observations);
+                let mut selection = listener::ValidatedMediaSelection::new(refusal.startup, 3, 4096, 1_000_000, Duration::from_secs(10)).map_err(|_| "automatic candidate configuration refused")?;
+                assert_eq!(selection.startup().time_syncs_during_accept, initial_clocks);
+                assert_eq!(selection.startup().observations_during_accept.len(), initial_observations);
+                let mut fresh = |index: usize| -> io::Result<_> {
+                    let framer = Framer::new(FlvLimits::default(), 1024 * 1024).map_err(io::Error::other)?;
+                    let recorder = recording::Recorder::new(SourceKey { connection: 3 + index as u64, generation: 1 }, recording::Limits::default()).map_err(io::Error::other)?;
+                    Ok((framer, recorder))
+                };
+                let mut waiting = Box::pin(selection.select(&mut owner, &mut session, &request, &mut trace, None, &mut fresh));
+                poll_fn(|context| match waiting.as_mut().poll(context) {
+                    Poll::Pending => Poll::Ready(()),
+                    Poll::Ready(_) => panic!("selection unexpectedly completed before peer released"),
+                }).await;
+                drop(waiting);
+                candidate_proceed.store(true, Ordering::Release);
+                selection.select(&mut owner, &mut session, &request, &mut trace, None, &mut fresh).await?;
+                assert_eq!(selection.attempts(), 3);
+                let mut pipeline = selection.take_ready().ok_or("automatic valid media missing")?;
+                assert_eq!(pipeline.source_key().connection, 5);
+                let (startup, candidates) = selection.into_parts();
+                assert_eq!(startup.time_syncs_during_accept, initial_clocks);
+                assert_eq!(startup.observations_during_accept.len(), initial_observations);
+                let (_listener, malformed, additional) = candidates.into_parts();
+                assert_eq!(malformed.ok_or("automatic malformed source missing")?.retire().ingress.framing.bytes(), b"X");
+                let mut held = additional.into_iter().flatten();
+                let partial = held.next().ok_or("automatic partial source missing")?;
+                assert_eq!(partial.retire().ingress.framing.bytes(), b"F");
+                assert!(held.next().is_none());
+                candidate_hold.store(true, Ordering::Release);
                 let mut frames = 0usize;
                 loop {
                     match pipeline.step(task, cx, clock.now()?).await? {
@@ -597,6 +642,8 @@ fn parallel_fleet_upgrade_scenario(
                 let _ = pipeline.retire();
                 let _ = session.retire();
                 Ok(())
+                }.await;
+                (result, effects)
             })
         }
     }
@@ -700,7 +747,7 @@ fn parallel_fleet_upgrade_scenario(
         EffectJournalLimits::default(),
         Arc::new(HostSpoolIo),
     )?;
-    let mut auto_effects = EffectCoordinator::with_journal(Box::new(auto_store))?;
+    let auto_effects = EffectCoordinator::with_journal(Box::new(auto_store))?;
     let upgrade_store = FileEffectJournal::create(
         temp.0.join("journal-scoped-upgrade"),
         EffectJournalLimits::default(),
@@ -1753,28 +1800,29 @@ fn parallel_fleet_upgrade_scenario(
                                 assert!(!parallel_finished);
                                 assert!(login_seen.load(Ordering::Acquire));
                                 assert_eq!(session.claimed_mac(), MACS[1]);
-                                let session = match retry_streams.admit_routed_session(&retry_auto, 999, session, |_, _| -> CameraWork<'_, Test> { panic!("invalid enrollment reached factory") }) {
+                                let session = match retry_streams.admit_routed_session(&retry_auto, 999, session, |_, _| -> TrackedStreamWork<'_, Test> { panic!("invalid enrollment reached factory") }) {
                                     Err(RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::UnknownEnrollment, session }) => session,
                                     _ => return Err("unknown enrollment did not retain session".into()),
                                 };
-                                let session = match retry_streams.admit_routed_session(&retry_auto, 2, session, |_, _| -> CameraWork<'_, Test> { panic!("mismatched claim reached factory") }) {
+                                let session = match retry_streams.admit_routed_session(&retry_auto, 2, session, |_, _| -> TrackedStreamWork<'_, Test> { panic!("mismatched claim reached factory") }) {
                                     Err(RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::ClaimMismatch, session }) => session,
                                     _ => return Err("mismatched enrollment did not retain session".into()),
                                 };
                                 let mut stopped_auto: AutomaticWork<'_, '_, '_, RetryCompletion<Test>> = AutomaticWork::new(&fleet, 1).map_err(|_| "stopped work capacity")?;
                                 stopped_auto.request_stop();
-                                let session = match retry_streams.admit_routed_session(&stopped_auto, 1, session, |_, _| -> CameraWork<'_, Test> { panic!("stopped admission reached factory") }) {
+                                let session = match retry_streams.admit_routed_session(&stopped_auto, 1, session, |_, _| -> TrackedStreamWork<'_, Test> { panic!("stopped admission reached factory") }) {
                                     Err(RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::Stopped, session }) => session,
                                     _ => return Err("shutdown did not retain session".into()),
                                 };
                                 let mut full_streams = ActiveStreams::new(&fleet, 1).map_err(|_| "full stream capacity")?;
                                 assert!(full_streams.insert(0, Box::pin(std::future::pending::<Test>())).is_ok());
-                                let session = match full_streams.admit_routed_session(&retry_auto, 1, session, |_, _| -> CameraWork<'_, Test> { panic!("full stream set reached factory") }) {
+                                let session = match full_streams.admit_routed_session(&retry_auto, 1, session, |_, _| -> TrackedStreamWork<'_, Test> { panic!("full stream set reached factory") }) {
                                     Err(RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::Capacity, session }) => session,
                                     _ => return Err("capacity refusal did not retain session".into()),
                                 };
                                 drop(full_streams.into_pending().ok().ok_or("unexpected completion fence")?);
                                 let stream_effects = concurrent_effects_slot.take().ok_or("stream effect owner missing")?;
+                                let stream_effect_binding = stream_effects.binding();
                                 let stream_leases = &leases;
                                 let stream_policy = &policy;
                                 let stream_resource = &resources[1];
@@ -1820,7 +1868,7 @@ fn parallel_fleet_upgrade_scenario(
                                     let _ = session.retire();
                                     Ok(())
                                   });
-                                  work
+                                  TrackedStreamWork { work, effects: stream_effect_binding }
                                 });
                                 if result.is_err() { return Err("concurrent stream refused".into()); }
                             }
@@ -2129,8 +2177,12 @@ fn parallel_fleet_upgrade_scenario(
                         let tls_client = client.clone();
                         let auto_stream_seen = Arc::new(AtomicBool::new(false));
                         let auto_peer_seen = auto_stream_seen.clone();
+                        let candidate_hold = Arc::new(AtomicBool::new(false));
+                        let candidate_proceed = Arc::new(AtomicBool::new(false));
+                        let peer_hold = candidate_hold.clone();
+                        let peer_proceed = candidate_proceed.clone();
                         let other = Joined(Some(std::thread::spawn(move || {
-                            stream_fixture::camera(endpoint, PEERS[1], tls_client, "001122aabbdd", auto_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution)
+                            stream_fixture::camera_with_candidates(endpoint, PEERS[1], tls_client, "001122aabbdd", auto_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution, peer_hold, peer_proceed)
                         })));
                         let auto_policy = discovery::retry::Policy::new(Duration::from_millis(50), Duration::from_millis(100), 1)?;
                         let queue = discovery::retry::Queue::new(&fleet, task, cx, clock, auto_policy)?;
@@ -2141,9 +2193,9 @@ fn parallel_fleet_upgrade_scenario(
                         let made = Rc::new(Cell::new(0usize));
                         let polled = Rc::new(Cell::new(0usize));
                         let release = Rc::new(Cell::new(false));
-                        let media = AutoMedia { cx, task, clock, effects: Some(&mut auto_effects), leases: &leases,
+                        let media = AutoMedia { cx, task, clock, effects: Some(auto_effects), leases: &leases,
                             policy: &policy, resource: &resources[1], peer, camera: cameras[1],
-                            admission: admissions[1], fence: fences[1], full_resolution };
+                            admission: admissions[1], fence: fences[1], full_resolution, candidate_hold, candidate_proceed };
                         let mut make_stream = auto_media_factory(media, made.clone(), polled.clone(), release.clone());
                         let mut auto_lease_installed = false;
                         loop {
@@ -2157,6 +2209,10 @@ fn parallel_fleet_upgrade_scenario(
                         assert_eq!(made.get(), 1);
                         assert_eq!(polled.get(), 0);
                         assert_eq!(auto_streams.len(), 1);
+                        let mut auto_streams = match auto_streams.into_pending() {
+                            Err(owner) => owner,
+                            Ok(_) => return Err("running automatic stream owner was discarded".into()),
+                        };
                         let mut park_polls = 0;
                         loop {
                             park_polls += 1;
@@ -2176,9 +2232,9 @@ fn parallel_fleet_upgrade_scenario(
                         assert_eq!(auto_streams.len(), 1);
                         let before_resume = polled.get();
                         release.set(true);
-                        let completion = loop {
+                        let (completion, returned_effects) = loop {
                             match timeout(cx.now(), Duration::from_secs(30), supply.next_with_automatic_streams(&mut pump, &mut auto_setup, &mut auto_streams, &mut auto_retries, &mut no_setup, &mut make_stream)).await?.map_err(|e| format!("automatic stream completion: {e:?}"))? {
-                                AutoRoutedFleetEvent::StreamFinished { index: 1, output, completion } => { output?; break completion; }
+                                AutoRoutedFleetEvent::StreamFinished { index: 1, output: (result, returned_effects), completion } => { result?; break (completion, returned_effects); }
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))), .. }) => (),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))), .. }) => { if i == 1 { auto_lease_installed = true; } },
                                 _ => return Err("automatic stream did not finish".into()),
@@ -2189,8 +2245,23 @@ fn parallel_fleet_upgrade_scenario(
                         assert!(auto_retries.is_empty());
                         assert_eq!(completion.index(), 1);
                         assert_eq!(completion.generation(), 1);
-                        let mut unrelated_streams = ActiveStreams::<Test>::new(&fleet, 1).map_err(|_| "unrelated stream capacity")?;
-                        assert_eq!(unrelated_streams.release_after_reconciliation(&completion), Err(StreamCompletionRefusal::WrongOwner));
+                        let mut auto_streams = match auto_streams.into_pending() {
+                            Err(owner) => owner,
+                            Ok(_) => return Err("unresolved automatic stream owner was discarded".into()),
+                        };
+                        assert_eq!(auto_streams.pending_completion(1).map(|v| v.generation()), Some(1));
+                        let rejected_polled = Rc::new(Cell::new(false));
+                        let rejected_flag = rejected_polled.clone();
+                        let rejected = auto_streams.insert(1, Box::pin(poll_fn(move |_| {
+                            rejected_flag.set(true);
+                            Poll::Ready((Ok(()), EffectCoordinator::new()))
+                        })));
+                        assert!(matches!(rejected, Err((StreamRefusal::PreviousUnresolved, _))));
+                        assert!(!rejected_polled.get());
+                        let mut unrelated_streams = ActiveStreams::<(Test, EffectCoordinator)>::new(&fleet, 1).map_err(|_| "unrelated stream capacity")?;
+                        assert_eq!(unrelated_streams.release_after_reconciliation(&completion, &EffectCoordinator::new()), Err(StreamCompletionRefusal::WrongOwner));
+                        assert_eq!(auto_streams.release_after_reconciliation(&completion, &EffectCoordinator::new()), Err(StreamCompletionRefusal::WrongCoordinator));
+                        assert_eq!(auto_streams.release_after_reconciliation(&completion, &returned_effects), Err(StreamCompletionRefusal::UnsettledEffects));
                         other.finish()?;
                         assert!(auto_stream_seen.load(Ordering::Acquire));
                         while !auto_lease_installed {

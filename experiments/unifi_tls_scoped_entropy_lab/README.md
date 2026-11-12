@@ -1218,3 +1218,205 @@ not establish an unattended recorder, real-camera takeover or video, robust
 profile freshness, production TLS, uninterrupted recording or 30-day retention.
 The existing recorder and both associated timers were active with zero
 reported restarts after the tests; no physical-camera setting was changed.
+
+### Stream completion fence (2026-11-12 UTC)
+
+An automatically admitted stream receives a monotone owner-local generation.
+When its future completes, `ActiveStreams` retains a per-camera disposition
+fence and emits an owner-bound completion handle. Automatic admission of a
+new session for that camera is refused until the caller explicitly releases
+the exact handle after reconciling its effects. Foreign and stale handles are
+refused. `into_pending` returns the original owner instead of discarding a
+running automatic stream or undisposed completion. The release method verifies
+only owner and handle freshness; it cannot validate the caller's evidence.
+
+Strict-remote ts1 job `30106308287922392` passed the lab library tests
+(17/17) and fleet integration target (1/1, four scenarios), base
+`6d3381bb87fa43e183af5c7c37071df29a3f5dc5`, overlay
+`5f178a6c7bc8f9155ddc9886d9b8d6112a958a653584d702b33342a8e5a5d190`.
+The synthetic fleet test completed a video stream, including 2688 x 1512 in
+the high-profile case, and retained a subsequent session as refused while the
+previous completion remained unresolved. It also checked that running work
+and an unresolved completion keep the owner from being consumed. The unit
+tests checked wrong-owner and stale handles and release of a synthetic failed
+future with no effects. Source and fixture SHA-256 values were respectively
+`b4e284bc6e284e989fbc394b41ab496adcc04e123b67c744f5a62b01d8e08195` and
+`408931cb58c9bf607663e30a3cf919649c3f9b358acf9a94cf111156f30882e1`.
+The fixture uses a bounded 16 MiB thread. The existing recorder and two
+associated timers were active afterward with zero reported recorder restarts.
+
+This owner-local fence is not persisted or coordinated with another owner;
+the unrestricted insertion path and dropping the owner are outside it. It
+does not perform reconciliation or validate evidence, and it cannot recover
+the earlier indeterminate physical G4 operations. A production service still
+needs durable restart ownership, bounded cancellation/draining and an
+evidence-backed reconciliation path. No physical camera setting was changed;
+this does not establish live direct G4 video, uninterrupted recording or
+30-day retention.
+
+
+### Coordinator-bound settlement check (2026-11-12 UTC)
+
+The experimental stream completion release now requires the live effect
+coordinator binding captured by its factory and checks that its retained
+journal contains only terminal operations and has no ambiguous persistence
+failure. It rejects another coordinator. This check scans the entire journal,
+so unrelated unsettled operations also prevent release. It does not establish
+durability or prove that a factory sent every effect through that coordinator;
+an empty journal passes. The caller must still reconcile and explicitly release
+the completion. Binding and owner are process-local, and other owners, generic
+insertion, restart or dropping the owner remain outside the fence.
+
+Strict-remote ts1 job `30106308287922399` passed 17/17 laboratory library tests
+and 1/1 fleet integration test (four synthetic scenarios). The synthetic fleet
+case checked another coordinator refusal and a full-resolution synthetic
+stream. Job `30106308287922400` failed because its new test attempted the
+illegal Committed-to-Observed transition; job `30106308287922403` passed all
+20 durable-effect contract tests after the test was corrected to record adapter
+acceptance. Both used base `67585f091e3261e27853cc78b671b6674e31f001`; the
+passing runtime overlay fingerprint was
+`5a9a890765013ceff235a822f0a293f02eb3dd810dad3883ce5e44e1b93d1202`.
+The main-tree runtime test subsequently had unrelated rustfmt changes removed;
+its tested logic was unchanged. These are synthetic tests, not direct physical
+G4 streaming or production recorder qualification.
+
+
+### Setup exclusion for unresolved streams (2026-11-12 UTC)
+
+The combined setup/stream loop now excludes an enrollment while an automatic
+stream is running or awaiting disposition, and refuses an already-in-flight
+setup overlap before polling either work set. The generic insertion method
+returns the unpolled future when an automatic completion remains unresolved.
+This applies only to the supplied owner pair; standalone setup, different owners,
+restart and dropped owners remain outside this process-local guard. A binding
+alone still cannot prove all stream effects used the claimed coordinator.
+
+On ts1 strict-remote job `30106308287922406` passed the lab library tests
+(17/17) and the synthetic fleet integration test (1/1; four scenarios), with
+base `67585f091e3261e27853cc78b671b6674e31f001` and overlay fingerprint
+`8fcd5c537313060b30a8690eec4cb5707c0061dc018eede785ef22a0700510d8`.
+The unit check exercises the exclusion mask before and after release; the fleet
+fixture verifies a same-camera generic insertion is returned unpolled while an
+automatic completion remains unresolved. It does not exercise a ready setup
+factory concurrently with an unresolved automatic completion. Job
+`30106308287922404` failed before compilation because the command named the
+lab package from the parent workspace; the passing command used its manifest.
+The tested source and fleet test SHA-256 values are
+`237c7ab7527a0d6c2f0b4c7ce2c2a5803b2de6cca4f0c62943843cbea3737b34` and
+`62b70eb44132ae9c788a13ad5f553b65460f649965b3f6a4d86a7a519095fbcc`.
+No real camera effect was attempted. The existing recorder and two timers
+were active afterward and its reported restart count was zero.
+
+
+### Stream work with an owned effect coordinator (2026-11-12 UTC)
+
+`TrackedStreamWork::with_owned_effects` binds an owned coordinator when work is
+created, invokes the work closure only when polled, and arranges for the
+closure's returned coordinator to accompany its result. The closure is still
+responsible for returning the same coordinator and using it for every effect.
+The release gate rejects a different coordinator, unresolved operations, or a
+poisoned persistence boundary. Dropping a work future or its owner is not
+restart recovery; actual effect reconciliation remains caller-owned.
+
+Strict-remote ts1 job `30106308287922414` passed 18/18 library tests and the
+1/1 synthetic fleet test (four scenarios). The fleet fixture now returns its
+actual coordinator after the synthetic media session and confirms that the
+matching coordinator is refused while its stream effects remain unsettled.
+The library test checks lazy invocation and exact binding on an empty journal.
+The fleet fixture does not reconcile those effects or exercise a ready setup
+competing with an unresolved completion. The ordinary fleet transition after
+a successful route is Finished, not Ready; this is not a demonstration of
+restart-safe exclusion or real-camera behavior.
+
+Base `67585f091e3261e27853cc78b671b6674e31f001`, overlay fingerprint
+`2e09bcbe8f774344159572347030401dd9d1c3248c657271b23652ff51fa3a7a`; source
+and fixture SHA-256 values respectively
+`dc34acd277c5495835538c4cf7c07761ae47d4dc309aeaf0de5cb6be2723fb63` and
+`6d2230c448d41d0c177854c6d0397dfc66ea64360be15bf866a8f4ad6e8a5a89`.
+Earlier job `30106308287922411` passed the fleet target with the same owned
+coordinator pattern written directly in the test. No camera effect was made.
+
+
+### Empty-first media in the scoped trial (2026-11-12 UTC)
+
+The media-before-reply trial now retains its listener and automatically skips
+a bounded number of zero-byte EOF candidates before passing the first nonempty
+connection to the recorder. A one-byte probe leaves the byte in the original
+framer; the selected connection's own source key is used for archive custody.
+Audio setup remains permitted after this probe. Selection does not validate the
+stream or service control messages while waiting. Deadlines, time-sync and
+event effects remain caller-owned; this is not a live or production service.
+
+The Linux trial build (`30106308287922443`) completed on ts1, while its RCH
+wrapper returned 102 refusing the Linux artifact on macOS. The exact worker
+binary then passed 14/14 private disposable-camera process cases, including
+synthetic 2688 x 1512 empty-first video, event-enabled video archive, and A/V
+archive. The first run exposed an audio initialization refusal; the final run
+passed after that fix. See `docs/UNIFI_DIRECT_REFERENCE.md` under “Bounded
+empty-media candidate selection” for checks, hashes and limits. No physical
+camera was contacted during the process tests.
+
+
+### Control during candidate selection (2026-11-12 UTC)
+
+The scoped trial now supervises the existing control session while selecting a
+nonempty media connection. Bounded clock and event replies remain in the
+startup effect traces; interrupted reply attempts fence reuse until reconciled.
+Already-answered startup events are carried into both owned archive modes to
+avoid an additional reply. The selector and current pipeline remain
+caller-owned on failure.
+
+Strict-remote ts1 job `30106308287922450` passed 2/2 selected synthetic
+controller tests with a 16 MiB test-thread stack. Worker build job
+`30106308287922451` compiled successfully, although RCH returned 102 refusing
+the Linux artifact on the Mac. The exact worker binary then passed 15/15
+disposable-camera process cases. In the new case the camera required a clock
+and event reply during selection before sending synthetic 2K video; three
+segments were archived, five frames decoded, and the already-answered event
+was recognized on archive processing. No real camera was contacted. See the
+matching section in `docs/UNIFI_DIRECT_REFERENCE.md` for hashes and limits.
+
+### Parallel media candidates
+
+The scoped trial opts into bounded concurrent first-byte selection. Additional
+live connections remain owned and their unread bytes are explicitly unknown
+when the trial retires them. A synthetic `full-idle-control` fixture holds the
+first connection open, services a clock request and an event request, and
+sends 2688 x 1512 video on a second connection. On ts1 it read back three
+archive segments across two generations and decoded five frames in Rust;
+all 16/16 synthetic process scenarios passed with inputs unchanged. The
+loopback test also verifies cancellation and later use of the retained idle
+connection. See `docs/UNIFI_DIRECT_REFERENCE.md` for job identities, the
+initial stack-overflow failure and exact qualification limits. This result
+is not physical-camera, production TLS, or continuous-recording proof.
+
+### Compare a private recorded clip
+
+`compare_recorded_decode.py ABSOLUTE_TEST_BINARY ABSOLUTE_MP4 --owner-authorized`
+compares the bounded Rust recorded-video test with an independent FFmpeg decode
+on the same host, using ordered per-frame hashes without saving images. On trj,
+the previously verified Scrypted-originated G4 high-profile clip passed for
+30 frames at 2688 x 1512. See `docs/UNIFI_DIRECT_REFERENCE.md` for exact hashes
+and the distinction between this recorded-media result and a live direct
+camera session. FFmpeg is a laboratory oracle, not a production dependency.
+
+### Structural media-header selection
+
+The trial opts into bounded concurrent selection of a complete FLV header,
+retaining invalid and incomplete source prefixes for explicit omission. A
+17-case synthetic process run on ts1 passed, including an invalid prefix, a
+stalled partial prefix, selection of a later header, controller clock and event
+replies, and full-resolution archive readback and Rust decode. The header is a
+structural signal, not authentication or proof of later video. See
+`docs/UNIFI_DIRECT_REFERENCE.md` for exact jobs and limitations.
+
+### Validated selection in automatic routing
+
+The synthetic fleet stream factory now uses the single-step validated
+candidate constructor and the control-aware selector. Its simulated peer opens
+malformed and partial candidate connections before valid media; the test
+retains the earlier prefixes and decodes the selected stream. The four-scenario
+fleet test and the constructor refusal loopback test passed on ts1. A separate
+updated-trial process rerun passed the competing-prefix case. This is not a
+production fleet service, physical-camera enrollment, or a real handoff; see
+`docs/UNIFI_DIRECT_REFERENCE.md` for exact receipts and limitations.

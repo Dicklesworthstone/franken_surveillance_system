@@ -21,7 +21,10 @@ use fss_reference::unifi_direct::{
     metered::MeteredClock,
     owner::PeerAdmission,
 };
-use fss_runtime::execution::TaskCx;
+use fss_runtime::{
+    effect::{EffectCoordinator, EffectCoordinatorBinding, EffectSettlementRefusal},
+    execution::TaskCx,
+};
 use rustls::ServerConfig;
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -481,6 +484,8 @@ impl<'fleet, 'report, 'work, W> AutomaticWork<'fleet, 'report, 'work, W> {
 pub enum StreamRefusal {
     /// No enrollment exists at the supplied index.
     UnknownEnrollment,
+    /// A prior automatic stream for this enrollment still needs disposition.
+    PreviousUnresolved,
     /// The underlying bounded work set refused the exact future.
     Work(WorkRefusal),
 }
@@ -529,6 +534,8 @@ pub enum RoutedStreamAdmission<'scope, 'task, 'policy, 'work, IO, S> {
         reason: RoutedStreamRefusal,
         /// The unpolled future and its owned session.
         work: CameraWork<'work, S>,
+        /// Binding supplied with that work, retained for reconciliation.
+        effects: EffectCoordinatorBinding,
     },
 }
 
@@ -555,6 +562,41 @@ pub enum StreamCompletionRefusal {
     WrongOwner,
     /// The completion was already released or is no longer current.
     Stale,
+    /// The supplied coordinator does not match the stream's original binding.
+    WrongCoordinator,
+    /// The coordinator's persisted state requires cold recovery.
+    PersistencePoisoned,
+    /// At least one retained operation has not reached a safe terminal state.
+    UnsettledEffects,
+}
+
+/// An unpolled stream future bound to its effect coordinator. The factory
+/// must send every stream effect through that exact coordinator; the binding
+/// cannot enforce that contract or establish independent custody.
+pub struct TrackedStreamWork<'work, S> {
+    /// Future that owns the routed session and stream work.
+    pub work: CameraWork<'work, S>,
+    /// Identity of the effect coordinator used by the future.
+    pub effects: EffectCoordinatorBinding,
+}
+
+impl<'work, S: 'work> TrackedStreamWork<'work, (S, EffectCoordinator)> {
+    /// Retain an effect coordinator in the unpolled stream future and return
+    /// it with the output. The closure is first invoked when work is polled.
+    /// It must return the same coordinator and route its effects through it;
+    /// the release check refuses a different returned coordinator. Dropping
+    /// the work can still discard this process-local owner and is not recovery.
+    pub fn with_owned_effects<F, Fut>(effects: EffectCoordinator, make: F) -> Self
+    where
+        F: FnOnce(EffectCoordinator) -> Fut + 'work,
+        Fut: Future<Output = (S, EffectCoordinator)> + 'work,
+    {
+        let binding = effects.binding();
+        Self {
+            work: Box::pin(async move { make(effects).await }),
+            effects: binding,
+        }
+    }
 }
 
 /// Fleet-bound stream futures with an explicit occupied-index inventory.
@@ -569,6 +611,8 @@ pub struct ActiveStreams<'fleet, 'report, 'work, S> {
     sequence: [u64; MAX_RESOURCES],
     running_automatic: [Option<u64>; MAX_RESOURCES],
     awaiting_disposition: [Option<u64>; MAX_RESOURCES],
+    running_effects: [Option<EffectCoordinatorBinding>; MAX_RESOURCES],
+    awaiting_effects: [Option<EffectCoordinatorBinding>; MAX_RESOURCES],
     emitted_completion: Option<StreamCompletion>,
 }
 impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
@@ -583,6 +627,8 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
             sequence: [0; MAX_RESOURCES],
             running_automatic: [None; MAX_RESOURCES],
             awaiting_disposition: [None; MAX_RESOURCES],
+            running_effects: std::array::from_fn(|_| None),
+            awaiting_effects: std::array::from_fn(|_| None),
             emitted_completion: None,
         })
     }
@@ -594,6 +640,9 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
     ) -> Result<(), (StreamRefusal, CameraWork<'work, S>)> {
         if index >= MAX_RESOURCES || self.fleet.enrollment(index).is_none() {
             return Err((StreamRefusal::UnknownEnrollment, work));
+        }
+        if self.awaiting_disposition[index].is_some() {
+            return Err((StreamRefusal::PreviousUnresolved, work));
         }
         match self.work.insert(index, work) {
             Ok(()) => {
@@ -621,7 +670,7 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
         F: FnOnce(
             Enrollment,
             fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>,
-        ) -> CameraWork<'work, S>,
+        ) -> TrackedStreamWork<'work, S>,
     {
         let refusal = if !std::ptr::eq(self.fleet, automatic.fleet) {
             Some(RoutedStreamRefusal::FleetMismatch)
@@ -654,20 +703,23 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
             return Err(RoutedStreamAdmission::Session { reason, session });
         }
         let enrollment = self.fleet.enrollment(index).expect("checked enrollment");
-        let work = factory(enrollment, session);
+        let TrackedStreamWork { work, effects } = factory(enrollment, session);
         match self.insert(index, work) {
             Ok(()) => {
                 let generation = self.sequence[index] + 1;
                 self.sequence[index] = generation;
                 self.running_automatic[index] = Some(generation);
+                self.running_effects[index] = Some(effects);
                 Ok(())
             }
             Err((reason, work)) => Err(RoutedStreamAdmission::Work {
                 reason: match reason {
                     StreamRefusal::UnknownEnrollment => RoutedStreamRefusal::UnknownEnrollment,
+                    StreamRefusal::PreviousUnresolved => RoutedStreamRefusal::PreviousUnresolved,
                     StreamRefusal::Work(reason) => RoutedStreamRefusal::Work(reason),
                 },
                 work,
+                effects,
             }),
         }
     }
@@ -680,9 +732,11 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
         })
     }
     /// Release only this exact completion after the caller has reconciled all
-    /// effects and retained work from that stream. This method checks identity
-    /// and freshness, not the caller's evidence or permission for a new effect.
-    pub fn release_after_reconciliation(&mut self, completion: &StreamCompletion) -> Result<(), StreamCompletionRefusal> {
+    /// effects and retained work from that stream. Checks the bound live
+    /// coordinator's entire journal and refuses ambiguous persistence. This
+    /// does not prove all stream effects used that coordinator or that its
+    /// storage and reconciliation evidence are independently trustworthy.
+    pub fn release_after_reconciliation(&mut self, completion: &StreamCompletion, effects: &EffectCoordinator) -> Result<(), StreamCompletionRefusal> {
         if !Rc::ptr_eq(&self.identity, &completion.owner) {
             return Err(StreamCompletionRefusal::WrongOwner);
         }
@@ -692,7 +746,15 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
         if *slot != Some(completion.generation) {
             return Err(StreamCompletionRefusal::Stale);
         }
+        let binding = self.awaiting_effects.get(completion.index)
+            .and_then(Option::as_ref).ok_or(StreamCompletionRefusal::Stale)?;
+        effects.check_all_terminal(binding).map_err(|reason| match reason {
+            EffectSettlementRefusal::WrongCoordinator => StreamCompletionRefusal::WrongCoordinator,
+            EffectSettlementRefusal::PersistencePoisoned => StreamCompletionRefusal::PersistencePoisoned,
+            EffectSettlementRefusal::Unsettled => StreamCompletionRefusal::UnsettledEffects,
+        })?;
         *slot = None;
+        self.awaiting_effects[completion.index] = None;
         Ok(())
     }
     /// Whether all retained stream futures have completed.
@@ -702,6 +764,12 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
     /// Number of retained stream futures.
     pub fn len(&self) -> usize {
         self.work.len()
+    }
+    // Both live streams and retained completions exclude a new setup attempt.
+    fn setup_exclusions(&self) -> [bool; MAX_RESOURCES] {
+        std::array::from_fn(|index| {
+            self.occupied[index] || self.awaiting_disposition[index].is_some()
+        })
     }
     /// Return remaining futures for explicit retirement only when there are
     /// no running or undisposed automatic streams; otherwise return this exact owner.
@@ -720,6 +788,7 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
                 self.emitted_completion = None;
                 if let Some(generation) = self.running_automatic[index].take() {
                     self.awaiting_disposition[index] = Some(generation);
+                    self.awaiting_effects[index] = self.running_effects[index].take();
                     self.emitted_completion = Some(StreamCompletion {
                         owner: Rc::clone(&self.identity), index, generation,
                     });
@@ -1197,7 +1266,7 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
     /// retire or drain their pending futures at shutdown. The caller must bind
     /// each stream's session, authority and effect trace to the camera; the
     /// work set does not authenticate that association. This method skips
-    /// setup for occupied stream indices and refuses existing overlaps before
+    /// setup for occupied or unresolved stream indices and refuses overlaps before
     /// polling either work set. This protection covers only the supplied pair;
     /// separate owners or the standalone setup method can still overlap. A
     /// completed future does not establish effect reconciliation. Polling only
@@ -1232,10 +1301,11 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let excluded = streams.setup_exclusions();
         if automatic
             .in_flight
             .iter()
-            .zip(streams.occupied.iter())
+            .zip(excluded.iter())
             .any(|(a, b)| *a && *b)
         {
             return Err(io::ErrorKind::AlreadyExists.into());
@@ -1245,7 +1315,6 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
             .checkpoint()
             .map_err(|_| io::ErrorKind::Interrupted)?;
         let prefer_stream = self.prefer_stream;
-        let excluded = streams.occupied;
         let selected = {
             let mut other =
                 pin!(self.next_with_automatic_setup_excluding(pump, automatic, factory, &excluded));
@@ -1311,10 +1380,11 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
         {
             return Err(RetryLoopError::Fleet(io::ErrorKind::InvalidInput.into()));
         }
+        let excluded = streams.setup_exclusions();
         if automatic
             .in_flight
             .iter()
-            .zip(streams.occupied.iter())
+            .zip(excluded.iter())
             .any(|(a, b)| *a && *b)
         {
             return Err(RetryLoopError::Fleet(io::ErrorKind::AlreadyExists.into()));
@@ -1435,7 +1505,7 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
         F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, RetryCompletion<W>>>,
         G: FnMut(usize, Enrollment, Option<(VideoChannel, VideoProfile)>,
             controller_acceptor::Session<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>)
-            -> CameraWork<'stream, S>,
+            -> TrackedStreamWork<'stream, S>,
     {
         let event = self.next_with_retries_and_streams(
             pump, automatic, streams, retries, setup_factory,
@@ -1595,6 +1665,29 @@ mod waiting_tests {
     use super::*;
 
     #[test]
+    fn owned_effect_work_is_lazy_and_returns_the_bound_coordinator() {
+        let called = Rc::new(Cell::new(false));
+        let called_in_work = called.clone();
+        let tracked = TrackedStreamWork::with_owned_effects(
+            EffectCoordinator::new(),
+            move |effects| async move {
+                called_in_work.set(true);
+                (42, effects)
+            },
+        );
+        assert!(!called.get());
+        let TrackedStreamWork { mut work, effects: binding } = tracked;
+        let mut cx = Context::from_waker(Waker::noop());
+        let Poll::Ready((value, effects)) = work.as_mut().poll(&mut cx) else {
+            panic!("immediate work unexpectedly pending");
+        };
+        assert!(called.get());
+        assert_eq!(value, 42);
+        assert_eq!(effects.check_all_terminal(&binding), Ok(()));
+        assert_eq!(EffectCoordinator::new().check_all_terminal(&binding), Err(EffectSettlementRefusal::WrongCoordinator));
+    }
+
+    #[test]
     fn stream_completion_release_is_owner_bound_and_rejects_stale_handles() {
         use fss_reference::unifi_direct::discovery::{Report, Stop};
         let fleet = Fleet::from_report(Report {
@@ -1603,15 +1696,48 @@ mod waiting_tests {
         }, &[]).unwrap();
         let mut first = ActiveStreams::<()>::new(&fleet, 1).unwrap();
         let mut second = ActiveStreams::<()>::new(&fleet, 1).unwrap();
+        let effects = EffectCoordinator::new();
         first.awaiting_disposition[0] = Some(1);
+        first.awaiting_effects[0] = Some(effects.binding());
+        first.occupied[1] = true;
+        assert!(first.setup_exclusions()[0]);
+        assert!(first.setup_exclusions()[1]);
+        assert!(!first.setup_exclusions()[2]);
         let old = first.pending_completion(0).unwrap();
-        assert_eq!(second.release_after_reconciliation(&old), Err(StreamCompletionRefusal::WrongOwner));
+        assert_eq!(second.release_after_reconciliation(&old, &effects), Err(StreamCompletionRefusal::WrongOwner));
         first.awaiting_disposition[0] = Some(2);
-        assert_eq!(first.release_after_reconciliation(&old), Err(StreamCompletionRefusal::Stale));
+        assert_eq!(first.release_after_reconciliation(&old, &effects), Err(StreamCompletionRefusal::Stale));
         let current = first.pending_completion(0).unwrap();
-        assert_eq!(first.release_after_reconciliation(&current), Ok(()));
+        assert_eq!(first.release_after_reconciliation(&current, &EffectCoordinator::new()), Err(StreamCompletionRefusal::WrongCoordinator));
+        assert_eq!(first.release_after_reconciliation(&current, &effects), Ok(()));
+        assert!(!first.setup_exclusions()[0]);
+        assert!(first.setup_exclusions()[1]);
         assert!(first.pending_completion(0).is_none());
-        assert_eq!(first.release_after_reconciliation(&current), Err(StreamCompletionRefusal::Stale));
+        assert_eq!(first.release_after_reconciliation(&current, &effects), Err(StreamCompletionRefusal::Stale));
+    }
+
+    #[test]
+    fn failed_automatic_work_remains_fenced_until_no_effect_is_resolved() {
+        use fss_reference::unifi_direct::discovery::{Report, Stop};
+        let fleet = Fleet::from_report(Report {
+            cameras: vec![], datagrams: 0, malformed: 0, out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        }, &[]).unwrap();
+        let mut streams = ActiveStreams::<Result<(), &'static str>>::new(&fleet, 1).unwrap();
+        let effects = EffectCoordinator::new();
+        assert!(streams.work.insert(0, Box::pin(async { Err("synthetic failure without effects") })).is_ok());
+        streams.occupied[0] = true;
+        streams.running_automatic[0] = Some(1);
+        streams.running_effects[0] = Some(effects.binding());
+        streams.sequence[0] = 1;
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(streams.poll_next(&mut cx), Poll::Ready((0, Err(_)))));
+        let completion = streams.pending_completion(0).unwrap();
+        let mut streams = match streams.into_pending() { Err(owner) => owner, Ok(_) => panic!("completion was lost") };
+        // The synthetic future above has no I/O or effect to reconcile.
+        assert_eq!(streams.release_after_reconciliation(&completion, &effects), Ok(()));
+        assert_eq!(streams.release_after_reconciliation(&completion, &effects), Err(StreamCompletionRefusal::Stale));
+        assert!(streams.into_pending().ok().is_some_and(|pending| pending.is_empty()));
     }
 
     #[test]

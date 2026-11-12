@@ -14515,3 +14515,400 @@ the three ignored worker-interface cases passed separately on ts1, including
 the unconfigured-profile check. The lab README records source identities
 and scope. No physical camera or recorder setting was changed; this does not
 prove direct G4 video, an unattended service, or 30-day retention.
+
+### Stream completion fence (2026-11-12 UTC)
+
+The experimental automatic stream owner now fences a completed stream until
+its exact owner-bound completion is explicitly released after reconciliation.
+Another routed session for that camera is returned to the caller while the
+completion remains unresolved. Running automatic work and unresolved
+completions also prevent `into_pending` from discarding that owner. The
+release method checks token ownership and freshness; the caller is responsible
+for the actual reconciliation evidence and authority.
+
+Strict-remote ts1 job `30106308287922392` passed 17/17 lab library tests and
+the four-scenario synthetic fleet test. The fixture decoded a synthetic
+2688 x 1512 stream and then refused a reconnect while its effects remained
+unresolved; it also tested stopped-owner and retained-work paths. This fence
+is process-local: a different owner, the unrestricted insertion path, a
+process restart, or a dropped owner can bypass its state. It is not durable
+restart recovery, automatic reconciliation, direct G4 capture, continuous
+recording or 30-day retention. Details are in the lab README under “Stream
+completion fence.”
+
+
+### Unresolved stream setup exclusion (2026-11-12 UTC)
+
+The experimental combined fleet loop excludes unresolved automatic stream
+completions from new setup selection and rejects a generic stream insertion for
+the same enrollment. Strict-remote ts1 job `30106308287922406` passed 17/17 lab
+library tests and the 1/1 synthetic fleet integration test. Unit tests check
+the exclusion mask; the integration test checks rejection of an unpolled
+generic future. A setup factory competing with an unresolved completion was
+not exercised end to end. Other owners, standalone setup, process restart and
+owner drop are outside this guard; it is not automatic reconciliation or a
+native G4 recorder. See the lab README for test identities and limitations.
+
+
+### Owned stream effect coordinator (2026-11-12 UTC)
+
+The lab can now carry an owned effect coordinator through a stream future and
+return it with the result for explicit reconciliation. Its synthetic fleet
+fixture uses the actual coordinator from a completed simulated media session
+and checks that unresolved journal operations prevent fence release. On ts1,
+job `30106308287922414` passed 18/18 library tests and 1/1 fleet integration
+test. This is still process-local; it neither performs reconciliation nor
+proves native live G4 capture or a replacement recorder. See the lab README
+for fixture scope and source identities.
+
+
+### Retaining the media listener for later connections (2026-11-12 UTC)
+
+The upstream direct-stream implementation describes cameras making multiple
+short-lived TCP connections before a stable media push
+(https://github.com/xuio/scrypted-unifi-direct/blob/main/src/direct-stream.ts).
+This is an interoperability hypothesis for the G4, not an observation that
+the earlier physical G4 failure was caused by this behavior.
+
+The Rust media listener now offers a task-scoped `accept_next` with exclusive
+mutable borrowing, retaining the same bound port after an accepted, denied, or
+cancelled accept. The original one-shot `accept` remains available. A new
+`start_before_reply_retaining_listener` returns the first pipeline with the
+listener so a caller may account for a failed candidate and accept another.
+The caller supplies fresh per-connection source keys and owns retirement; this
+does not itself choose a healthy candidate, bound the total number of attempts,
+reconcile control effects, recover on restart, or constitute an always-on
+service. Cancellation of a pending accept consumes its framer and recorder.
+
+Strict-remote ts1 job `30106308287922424` passed the loopback listener test
+(1/1): a cancelled accept, empty candidate, and policy-denied peer left the
+same port available for a later 13-byte FLV-header connection. Job
+`30106308287922429` passed 2/2 selected synthetic-controller cases: the first
+media connection closed empty, then the same listener accepted a second
+connection and the existing media pipeline proceeded both with and without a
+settings reply. Job `30106308287922431` passed 1/1 existing reply-first
+startup regression. Both larger-fixture jobs used `RUST_MIN_STACK=16777216`
+and do not qualify default or production stack sizing. The initial listener
+test job `30106308287922419` failed to compile due to a fixture type alias;
+job `30106308287922421` then failed its completion-clock bookkeeping; both
+were corrected. Job `30106308287922425` overflowed the default test-thread
+stack; `30106308287922427` failed to compile when a new fixture branch was
+inserted in the wrong scenario; the corrected run is `22429`.
+
+The tests used base `67585f091e3261e27853cc78b671b6674e31f001`; job `22424`
+used overlay `5fe53a32fbdf68158d9c8a69c930c30e158fc36d1b7dfc4883dcb6deb7c0e2a9`
+and jobs `22429` and `22431` used overlay
+`4160d7f6a000648767bbc303f768e71a6ec121f3730fd013a72830f06fc97286`. Source,
+loopback fixture and controller fixture SHA-256 values respectively:
+`4716455b3e300ab15317f5beb6b9763361e0f6c4ae4891186583dec485ac74ea`,
+`026055076e7734bd9ba1a0b6961009abb714a845c251d14973e3393e47b20798`,
+`61a94d6d3192a76d4e7c7effd34d740de08ff87303424c2d3e000eecb3c1b338`.
+The recorder and its two timers were active afterward, with zero reported
+recorder restarts. No physical-camera effect was attempted.
+
+
+### Bounded empty-media candidate selection (2026-11-12 UTC)
+
+The task-owned TCP ingress can now reserve and read only the first byte of a
+fresh source. The UniFi ingress retains that byte at offset zero in its framer;
+the pipeline distinguishes a zero-byte EOF from data without transferring or
+losing the byte. An interrupted pending probe retains its prepaid one-byte
+reservation. Audio tracking can still be enabled after a successful first-byte
+probe, because no FLV record has yet been parsed.
+
+`MediaCandidates` owns the retained listener and current pipeline, enforces a
+finite overall deadline and candidate count, and advances automatically only
+after a zero-byte EOF. It refuses reused source keys and preserves the current
+pipeline after a stalled or failed probe. A byte is not proof of valid FLV,
+healthy video, or physical identity; the caller still validates and retains
+subsequent records. The bounded scoped trial uses the selector for its
+media-before-reply path, including event-aware setup, and uses the selected
+connection key for its archive. It does not service controller messages while
+selection is pending; a camera waiting for such a reply can reach the deadline.
+This remains a bounded experimental trial, not an autonomous service, durable
+recovery, direct physical G4 capture, or 30-day retention.
+
+On ts1, job `30106308287922444` passed the loopback contract (1/1): empty and
+denied peers, cancellation/resume, exact first-byte custody, a one-byte budget
+reservation without double charging, audio setup, maximum candidates and
+duplicate keys. Earlier job `30106308287922435` passed 3/3 ordinary ingress
+contracts (three owner-input cases ignored) and 1/1 initial probe contract.
+Job `30106308287922436` passed 2/2 synthetic-controller cases (111 filtered)
+with a 16 MiB test-thread stack on the pre-audio-fix source.
+
+A first process run passed its synthetic 2K empty-first video and event-enabled
+video archive cases, then failed the A/V archive because audio setup refused
+after the probe. The fix allows audio initialization after that one-byte probe
+but before an ordinary media step. Linux build job `30106308287922443` completed
+Cargo successfully; its wrapper returned 102 because it correctly refused to
+install the foreign executable on the Mac. The SHA-matched executable then
+passed 14/14 disposable local-camera process cases on ts1. Among them, an
+empty connection followed by synthetic 2688 x 1512 media yielded six frames
+independently decoded; event-enabled video-only and A/V archive cases each
+read back three segments, with the A/V case reading 11 audio packets. The
+event-enabled case enabled event replies but did not inject a camera event.
+The A/V packets were not independently decoded. All fixture inputs and the
+executable matched before and after; no physical camera was contacted.
+
+The tested Linux executable SHA-256 was
+`db886b152ba7fb27bf8a783de0dc6da75b888fa077fd28a1106594f59d781ea2`; the
+profile fixture SHA-256 was
+`143584e3f8405d37dcce7a5303fc0f9fee6b2c3f580f1f00a0e1a9ad41b9c757`.
+The final source hashes for TCP ingress, UniFi ingress, listener, pipeline and
+trial were respectively
+`f2e3629069b4ed5a1c76346a53392a29dd5ceb3707b6161b89955bbfc3e93eb5`,
+`484807e8c7e32646238cc61f224338633eb07a53f11bd2fb3495da1a6c2d96ff`,
+`0ccb711d599b4cb677fdd79c6e90f6504480d9f9d5b8f7b0160b395a406b0184`,
+`160cd300c9a3e8dc443b91e777a97cdebd0f1621e9f44399715120b9709ec4c4`, and
+`e322f02a72db447b7cbec37df6924e0d403cde699cdaad7ef7794d4d0fceae20`.
+At the later service check, the existing recorder and its two timers were
+active and the recorder restart count was zero. Earlier physical handoff and
+time-sync effects remain indeterminate; none was replayed.
+
+
+### Controller service while selecting media candidates (2026-11-12 UTC)
+
+The candidate selector can now run alongside the same task-bound controller
+session. While it waits, it services bounded camera clock requests and optional
+startup event replies using the original operation lists, journal and traces.
+It verifies the task, runtime, clock and already-used operation identities.
+An interrupted or failed reply leaves `selection_reply_in_flight` set and
+fences a later selection using that trace; the retained effect still requires
+reconciliation. The caller retains the selector and any current pipeline on
+selection failure, and a captured event returned directly by a session is
+returned in the error rather than silently discarded. A negative stream-setting
+reply stops selection after retaining the observation. These are local protocol
+facts, not proof of remote effect, physical identity or valid media.
+
+The scoped trial uses this control-aware selector. It also passes the digests
+of already-answered startup events into the video and A/V archive paths so
+those retained frames are not answered a second time. A strict-remote ts1 job
+`30106308287922450` passed 2/2 selected synthetic-controller tests with
+`RUST_MIN_STACK=16777216` (111 filtered). In each, the synthetic camera closed
+an empty media connection, waited for a clock reply during candidate selection,
+then delivered video through the second connection. This does not qualify
+default-stack or production stack behavior.
+
+Linux build `30106308287922451` completed Cargo successfully; its wrapper
+returned 102 when it refused to install the foreign Linux binary on macOS.
+The SHA-matched binary then passed 15/15 disposable-camera process cases on
+ts1. The new control case waited until selection was active, demanded a clock
+reply and an event reply, then sent synthetic 2688 x 1512 video. It read back
+three archived segments across two generations, decoded five video frames in
+Rust and confirmed that the retained event was recognized as already answered.
+This was a synthetic event, not physical-camera evidence. The fixture did not
+inject cancellation during a reply or establish durable recovery. An initial
+compile job `30106308287922447` failed on an owner/task lifetime mismatch;
+`22448` passed the earlier corrected check before the final refinements.
+
+The process binary SHA-256 was
+`1dd65bb65304274dd4eccbb02c46f9f412a84ddf29db9ebe53dc619caae2e085`; the
+fixture SHA-256 was
+`7a83bedf733ea6f0e6fead2d3b8d316f8f6b6b9f28569875b3870a9a6f5e72a9`.
+The listener, controller-test, trial, A/V archive and video archive source
+hashes were respectively
+`09aca4d612a8fcb21f3b972a1c9f798ef9ed789348a92b90e0c7e95b1ce82d37`,
+`1c9d03edaad5f5b2e8b07b6f8405bae4672843b7eb353304e68711b13f2cf0f1`,
+`b875f34f389e17d283d4d160cfb8cb8cc9e52d9fb2a2b99b1043560ad855a691`,
+`ca2d9b79e26e8a74787216d0f2209900fb4617620971ff2c48f7fdbbb7a3ce49`, and
+`169e1e27266c88a186ac863ab256a43e527f4ccf5675154649507067e3199d55`.
+All fixture inputs matched before and after. No physical-camera operation was
+performed; the existing recorder and both timers remained active, with zero
+reported recorder restarts. The earlier physical handoff and clock effects
+remain indeterminate, and native unattended recording and 30-day retention
+remain unverified.
+
+### Parallel media candidates with retained ownership (2026-11-12 UTC)
+
+The opt-in candidate selector can now admit and probe up to its configured
+finite connection limit concurrently. It selects the first candidate to supply
+one byte and returns every other live pipeline and the listener to its caller;
+a pending or unselected socket is not classified as empty. The scoped trial
+reports an explicit omission and unknown unread byte count before retiring such
+an unselected pipeline. This is a selection policy, not camera authentication,
+valid media, continuous coverage, or a safe retry of an indeterminate effect.
+The one-byte probe remains resumable after cancellation. The default sequential
+path remains available; the experimental trial opts into parallel selection.
+
+On ts1, strict-remote job `j-30106308287922456` passed 1/1 loopback tests at
+the normal test stack limit. Its added case leaves the first socket open,
+cancels and resumes the selector, sends data on a second socket, checks that
+the second byte remains in the selected framer, then sends data on the still
+owned first socket and checks that byte too. An earlier implementation stored
+all pipeline values inline and job `j-30106308287922455` aborted with stack
+overflow; the additional owners are now boxed. This test is not a general
+production stack qualification. Strict-remote job `j-30106308287922459`
+passed 2/2 selected controller tests (111 filtered), with a 16 MiB test stack.
+
+Lab Cargo build job `j-30106308287922458` completed compilation on ts1; RCH
+returned 102 / `RCH-E327` while refusing to download its Linux binary to macOS.
+The binary was copied to a new private ts1 directory and run there against
+local synthetic fixtures. All 16/16 process scenarios passed with input hashes
+unchanged. In the new `full-idle-control` case the first socket remained open,
+the controller clock and event requests were answered, and a second socket
+sent synthetic 2688 x 1512 video; three archived segments across two journal
+generations were read back and five frames decoded in Rust. The idle candidate
+was reported with unread bytes unknown. Other A/V cases read back audio packets
+but did not independently decode audio. Binary SHA-256:
+`c835e81e498abb6232db902d8987c37e7798665d9c0b274fd751481cc7e43da0`;
+fixture SHA-256:
+`7e9ebc332c41a269682ebc9e86e8b3b498fd6b0141ef3716d0fb2484f2fb3a44`.
+No physical camera effect was attempted in these tests. The experimental TLS
+boundary and earlier indeterminate device effects remain unresolved; this is
+not evidence of a real G4 high-resolution frame, unattended native recording,
+or 30-day retention.
+
+### Native decoding of a real fallback recording (2026-11-12 UTC)
+
+A new opt-in test, `crates/fss-container/tests/unifi_recorded_mp4_contract.rs`,
+parses a bounded supplied MP4 with the first-party demuxer and decodes up to
+30 H.264 samples through the same native access-unit driver used for retained
+video. The ordinary indexed-fixture test passed 1/1 in strict-remote ts1 job
+`j-30106308287922462`; its private-input test was correctly ignored in that
+job. The test source SHA-256 was
+`f4d82c29c7d80b1966feea4127fcd37baf0571d0fbf4b5ffff39fe0548fb549c`.
+
+The SHA-matched Linux test binary was run separately on trj, under a bounded
+operator-supplied path to a recent regular MP4 in the G4 fallback recording
+directory. The selection required a modification age greater than three
+minutes and a size below 64 MiB; the Rust test also checked the opened file's
+size and modification time before and after reading. The complete indexed MP4
+parsed successfully and 30 consecutive samples produced 30 native Rust frames
+at 1280 x 720. The source SHA-256 was
+`a69f0c6179d7d7df11eedecc63c2a656c48dda5519398bb78f7f3025e28a95fc`.
+The first sample was the initial IDR. The first native I420 frame's digest
+matched an independently decoded FFmpeg first frame byte for byte; the other
+29 frames were not independently compared. The source and test binary hashes
+were unchanged across the comparison, and no image or recording was copied
+from trj. The binary SHA-256 was
+`f3219e4319f216371082856bd574a2007d7564926e800089402838069f5a0dd0`.
+
+This verifies native decoding of actual media from the existing fallback
+recording path, not direct camera streaming, independently established camera
+identity or capture time, full-resolution G4 delivery, archive custody,
+continuous coverage, or 30-day retention. The recorder and its two timers
+were active afterward with zero reported recorder restarts. No camera setting
+or unresolved physical effect was retried.
+
+A subsequent revision of the same test computes a digest of the ordered list
+of 30 individual I420 frame digests. Strict-remote job
+`j-30106308287922463` passed the synthetic fixture (1 passed, private-input
+case ignored), with test source SHA-256
+`67b74201022815dc54f7b4534956d6cd85c6e197b8e0c85895911a45f6113fc2`.
+The SHA-matched Linux binary
+`653376ff9f0c4a6a9ef71bff3a7b5b92630560db7adadf0f52d281775c05ec5c`
+then decoded a different recent fallback recording on trj: 30 samples and 30
+frames at 1280 x 720, starting at sample zero. The ordered list of 30 native
+frame hashes had SHA-256
+`ace06351bd9886eaeee29eb581640f55428f85a66ab0da04d3137ab1d00129ee`,
+matching the same 30-frame list independently produced by FFmpeg. The source
+recording SHA-256 was
+`0be870cc36a777525452f412eeb697a0b44e2d209f9008200faa7656e4ec50a6`;
+source and executable hashes remained unchanged. This comparison retained
+no pixels and has the same external-custody and non-direct-stream limits as
+the preceding observation.
+
+### Full-resolution G4 recording: native 30-frame comparison (2026-11-12 UTC)
+
+The same private-input Rust test was run on trj against the previously
+verified Scrypted-originated G4 high-profile clip, identified by SHA-256
+`2ce702b355fa7d8a56780a5dc881d3c0e68b5a21d2e9db7d0bd8b0cef6b55361`.
+The test parsed the complete stored MP4, decoded 30 consecutive AVC samples
+and returned 30 frames at 2688 x 1512. Their ordered I420 frame-digest-list
+SHA-256 was `83de7fc2b9682efbcbaba730681634b8085e9f32923fdd325aea25ac1e235b7a`;
+an independent FFmpeg decode produced the same list digest. The source clip
+and the test binary remained byte-identical before and after.
+
+The reusable `experiments/unifi_tls_scoped_entropy_lab/compare_recorded_decode.py`
+helper performs the comparison on the host with explicit owner authorization,
+a 64 MiB source bound, at most 30 frames, an external deadline, source and
+binary hash rechecks, and a streaming oracle pipe; it does not persist pixels.
+Its SHA-256 was
+`562eb780318d1df1d0478b6b17443dff34b7e70760ebab121510419fb581de58`.
+The helper itself was run successfully on that same clip and SHA-matched
+Rust test binary; no camera or controller command was sent. This is recorded
+media from the existing Scrypted path, not a fresh live capture, native camera
+session, independent physical identity, continuous recording, or retention
+proof. The previously unresolved physical effects remain unresolved.
+
+### Structural header selection for concurrent media connections (2026-11-12 UTC)
+
+The optional parallel candidate selector can now require a complete structural
+FLV header before selecting a connection. The framer previews the header
+without consuming it, rejects an invalid signature or version as soon as it
+can, and otherwise checks the declared header length and initial size field.
+The byte-at-a-time TCP probe retains its prepaid reservation on cancellation;
+round-robin polling and cooperative yields let other candidates and controller
+traffic make progress. Invalid or incomplete candidates remain owned for
+explicit disposition, and the experimental trial reports their admitted bytes
+as omitted with unread bytes unknown. Exhaustion has a distinct
+`NoValidHeader` outcome. The normal sequential and first-byte selection modes
+remain available. A valid header is not camera authentication, valid later
+media, or proof of uninterrupted coverage.
+
+Strict-remote ts1 job `j-30106308287922472` passed all 14 FLV framing
+contracts, including incremental preview, extended header, rejected prefix,
+and retained-byte checks. Job `j-30106308287922466` passed the loopback
+listener contract, including malformed, partial and valid concurrent
+candidates, cancellation and resumption, and exhaustion with bytes retained.
+Job `j-30106308287922476` passed 2/2 selected controller regressions (111
+filtered) with a 16 MiB test-thread stack. Job `j-30106308287922480` passed
+3/3 ordinary ingress contracts with three private/live cases ignored.
+
+Lab Cargo build job `j-30106308287922467` compiled on ts1; its wrapper returned
+102 / `RCH-E327` because the Linux executable was not downloaded to macOS.
+The independently copied worker binary, SHA-256
+`71e78d12e274306bb807c9f07e33f7193a93a0a5f8779c4faae2d928d28bacc3`,
+passed all 17/17 local synthetic process cases on ts1. In the new
+`full-prefix-control` case, an invalid prefix and a stalled partial header
+preceded the valid connection while synthetic clock and event replies were
+serviced; the candidate omissions were reported, three synthetic 2688 x 1512
+archive segments were read back across two generations, and five frames were
+Rust-decoded. Fixture SHA-256 was
+`084f89cf28d0bb9c9970efd00a722d6646d4c06e526167b9c34a1ae6ec8a7e21`;
+all executable and fixture input hashes matched before and after. These are
+synthetic media and identity observations, not physical-camera, production
+TLS, live direct recording, or retention proof. The earlier physical
+handoff and time-sync effects remain indeterminate and were not replayed.
+
+### Validated candidates in automatic fleet routing (2026-11-12 UTC)
+
+`MediaCandidates::new_validating` constructs a parallel, structural-FLV-header
+selector in one operation and refuses a supplied later-candidate byte limit
+below the shortest legal header while returning the original listener and
+pipeline. The first pipeline retains its separately configured source limit.
+The scoped trial now uses this constructor and explicitly reports retained and
+unknown unread bytes if selector construction is refused. That diagnostic
+failure branch was compiled but was not separately exercised in a trial
+process. The existing selector remains caller-owned on later refusal.
+
+The synthetic automatic fleet stream factory now uses the retained-listener
+startup, validates and selects among three admitted candidate connections,
+and resumes decoding on the selected pipeline. Its simulated peer keeps a
+malformed prefix and an incomplete prefix open while a later connection sends
+media; the fixture asserts both earlier source prefixes remain available. This
+exercises the experimental automatic route and profile handoff, not a deployed
+fleet service or actual automatic enrollment of a physical camera.
+
+Strict-remote ts1 job `j-30106308287922483` passed the fleet integration test
+(1/1, four synthetic scenarios), including a 2688 x 1512 video scenario, with
+an explicit 16 MiB fixture thread. Job `j-30106308287922484` passed the
+loopback listener contract (1/1), including returning both original owners on
+a 12-byte candidate-limit refusal. A prior fleet job
+`j-30106308287922481` also passed using the previous explicit configuration
+sequence. Job `j-30106308287922485` checked the updated trial binary.
+
+Job `j-30106308287922487` compiled the Linux trial on ts1, but its RCH wrapper
+returned 102 / `RCH-E327` when it refused to install the Linux binary on the
+Mac. A copied, hash-checked binary then passed the `full-prefix-control`
+synthetic process case on ts1: three full-resolution archive segments across
+two generations were read back and five frames Rust-decoded while the earlier
+candidate bytes were accounted for. Binary SHA-256 was
+`eaa9d6a77be7f5d83b46e2ad99c933e55f476aa0eac201595cc380a65677edbb`;
+fixture SHA-256 was
+`084f89cf28d0bb9c9970efd00a722d6646d4c06e526167b9c34a1ae6ec8a7e21`.
+All fixture inputs matched before and after. This one-case rerun does not
+replace the earlier 17-case process run at its earlier source revision.
+No physical camera command was issued; the earlier unresolved handoff and
+clock effects, production TLS boundary, continuous recording, and retention
+remain unresolved.

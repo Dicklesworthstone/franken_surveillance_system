@@ -515,6 +515,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     segment_limit: usize,
     management: management::Preconditions,
     reply_events: bool,
+    mut startup_answered: Vec<ContentDigest>,
     anchor_root: Option<&Path>,
     decode_owned: bool,
     video_still: Option<fss_reference::unifi_direct::video_still::Color>,
@@ -651,7 +652,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         } else { None };
         return Box::pin(video::run(supervisor, owner, run_id, task, cx, clock, root,
             source, camera_claim, retention, access, created, wait, segment_limit,
-            management, reply_events, decode_owned, video_still, still_export_path, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations)).await;
+            management, reply_events, startup_answered, decode_owned, video_still, still_export_path, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations)).await;
     }
     let collector = av_bootstrap::Collector::new(
         audio,
@@ -901,7 +902,10 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             println!("trial_stage=owned_segment_published count={published} kind={:?}", pin.1);
         }
         if let Some(frame) = event {
-            if !frame.response_expected() {
+            if let Some(index) = startup_answered.iter().position(|digest| *digest == frame.digest()) {
+                startup_answered.remove(index);
+                println!("trial_owned_startup_event=already_answered source_bytes_omitted={} effects_require_reconciliation=true", frame.source().len());
+            } else if !frame.response_expected() {
                 println!(
                     "trial_owned_event=observed source_bytes_omitted={} identity=network_claim",
                     frame.source().len()
