@@ -1,8 +1,43 @@
 # Implementation status
 
-**As of:** 2026-11-11 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-12 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Source-verified recorder UTC through canonical CLI and MCP
+
+The existing AOP-005 `fss query --target recordings` and MCP `query` now have a
+closed selector for one exact AVC/HEVC replay receipt, independent source pins,
+an explicit NTP era and an exact integer UTC interval. They preserve the native
+query/report/index identities and project every matching, unknown and source-only
+observation through the ordinary response/cognitive envelopes, together with
+current deployment obligations and protected uncertainty.
+
+Original packet reads require a separate operator grant: CLI
+`--verify-replay-source=yes`, or MCP launcher
+`--allow-replay-source-verification`. Clients cannot grant that permission or
+override launcher roots/principal. The native context bridge accepts an opaque
+permit derived from current query plus media-read capabilities, scoped to the
+exact request and finite read bounds. Complete replay-reference deletion checks
+precede original reads; matching deployment prefix/layout/deletion observations
+bracket native verification. No publisher, recovery, network or media disclosure
+path is opened.
+
+The canonical surface defaults to 32 total rows, admits at most 128, and refuses
+an over-budget or over-256-KiB response in full. Recorder assertions remain
+unauthenticated clock evidence; calibrated exposure time, continuous coverage and
+physical absence remain unknown. Existing catalog/node-clock UTC selectors keep
+their distinct semantics.
+
+Validation: the actual storage/custody/AVC/HEVC component suite passes **95 tests**,
+including all nine prior read-only replay UTC regressions and an executable
+pre-original receipt-admission regression. New deployment-context, parser, MCP and real-process
+contracts are authored; full execution remains pending. Native and single-thread
+metadata-only full-graph builds were both killed in unchanged Asupersync 0.5.0
+before the new deployment bridge and CLI compiled. This is component evidence,
+not full runtime qualification. See the
+[operator guide and exact boundaries](docs/AGENT_RECORDER_TIMESTAMP_QUERY.md).
+VIT-008, VIT-015 and VIT-022 are advanced but remain open.
 
 ## Recorder UTC queries from imported custody
 

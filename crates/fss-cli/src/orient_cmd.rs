@@ -719,11 +719,60 @@ pub(crate) fn build_recording_utc_response(
     )
 }
 
+/// Source-verified recorder assertions remain private metadata; original media stays redacted.
+/// This profile is separate from catalog and retained node-clock metadata queries.
+pub(crate) fn build_recording_replay_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+        || parts.capability != fss_core::RuntimeGrant::AgentQuery.as_str()
+    {
+        return Err(RenderError("invalid recorder UTC query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only recorder UTC query with explicitly authorized source verification".to_owned();
+    projection.visible_domains.extend([
+        "native-replay-receipt-metadata".to_owned(),
+        "native-recording-window-metadata".to_owned(),
+        "source-verified-recorder-time-assertions".to_owned(),
+    ]);
+    build_response_for_basis_privacy_and_capabilities(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+        vec![
+            fss_core::RuntimeGrant::AgentQuery.as_str().to_owned(),
+            fss_core::RuntimeGrant::ReadMedia.as_str().to_owned(),
+        ],
+    )
+}
+
 fn build_response_for_basis_and_privacy(
     parts: ResponseParts,
     resnapshot_required: bool,
     basis: fss_core::ContractBasis,
     privacy: String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let capabilities = vec![parts.capability.to_owned()];
+    build_response_for_basis_privacy_and_capabilities(
+        parts,
+        resnapshot_required,
+        basis,
+        privacy,
+        capabilities,
+    )
+}
+
+fn build_response_for_basis_privacy_and_capabilities(
+    parts: ResponseParts,
+    resnapshot_required: bool,
+    basis: fss_core::ContractBasis,
+    privacy: String,
+    capabilities: Vec<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let payload_digest = ContentDigest::sha256(parts.payload_json.as_bytes());
     let short = parts.request_digest.to_text();
@@ -741,7 +790,7 @@ fn build_response_for_basis_and_privacy(
         None,
         parts.workspace_revision,
         parts.view,
-        vec![parts.capability.to_owned()],
+        capabilities,
         privacy,
         parts.outcome,
         None,

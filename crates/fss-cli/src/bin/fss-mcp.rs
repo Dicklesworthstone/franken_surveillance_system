@@ -25,13 +25,18 @@ mod recordings;
 mod server;
 
 const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID] [--archive-root EXISTING_ARCHIVE]\n\
+        [--allow-replay-source-verification]\n\
 MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root, optional archive root and principal; clients cannot override them.\n\
 Native recording queries require an archive binding and return metadata, never media bytes.\n\
+Recorder UTC replay additionally requires the launcher's explicit source-verification grant;\n\
+clients cannot enable it. The grant permits bounded verification in the fixed archive only,\n\
+with exact replay pins and no source disclosure, pixel decode, network or publication.\n\
 The principal is an audit label, not authentication. Session open/handoff/resume and explicit\n\
 durable follow, investigate and advisory feedback write agent state. Alert controls\n\
 use native exact approvals and durable receipts; inspect with wait after response loss.\n\
-No network listener. Read waits are at most 10 seconds; approved dispatch at most 60.\n\
+No network listener. Follow/wait reads are at most 10 seconds; recorder source verification\n\
+and approved dispatch are at most 60 seconds.\n\
 Mission text is literal, never a file to read. Session budgets are cumulative;\n\
 same-head retry and resume behavior comes from the native session implementation.\n\
 Input frames are limited to 64 KiB; semantic responses to 4 MiB before escaping.\n\
@@ -42,6 +47,7 @@ struct Options {
     root: OsString,
     principal: String,
     archive_root: Option<OsString>,
+    allow_replay_source_verification: bool,
 }
 
 fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, &'static str> {
@@ -59,8 +65,17 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
     let mut root = None;
     let mut principal = None;
     let mut archive_root = None;
+    let mut allow_replay_source_verification = false;
     let mut flag = Some(first);
     while let Some(current) = flag {
+        if current == "--allow-replay-source-verification" {
+            if allow_replay_source_verification {
+                return Err("duplicate replay source-verification grant");
+            }
+            allow_replay_source_verification = true;
+            flag = args.next();
+            continue;
+        }
         if current != "--root" && current != "--principal" && current != "--archive-root" {
             return Err("unknown option");
         }
@@ -79,6 +94,9 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
         flag = args.next();
     }
     let root = root.ok_or("--root is required")?;
+    if allow_replay_source_verification && archive_root.is_none() {
+        return Err("replay source verification requires an explicit archive root");
+    }
     let principal = principal.map_or_else(
         || Ok(fss_cli::orient_cmd::DEFAULT_PRINCIPAL.to_owned()),
         |value| value.into_string().map_err(|_| "principal must be UTF-8"),
@@ -96,6 +114,7 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
         root,
         principal,
         archive_root,
+        allow_replay_source_verification,
     }))
 }
 
@@ -104,6 +123,7 @@ fn main() -> ExitCode {
         root,
         principal,
         archive_root,
+        allow_replay_source_verification,
     } = match options(std::env::args_os().skip(1)) {
         Ok(Some(options)) => options,
         Ok(None) => {
@@ -132,6 +152,9 @@ fn main() -> ExitCode {
             }
         };
         server = server.with_archive(archive_root.into_os_string());
+    }
+    if allow_replay_source_verification {
+        server = server.with_replay_source_verification();
     }
     match server::serve(&mut server, io::stdin().lock(), io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -195,11 +218,64 @@ mod tests {
                 root: "/owner/deployment".into(),
                 principal: "principal:archive-operator".into(),
                 archive_root: Some("/owner/archive with spaces".into()),
+                allow_replay_source_verification: false,
             }))
         );
         assert!(
             options(["--root", "/owner/deployment"].map(OsString::from))
                 .is_ok_and(|value| value.is_some_and(|value| value.archive_root.is_none()))
         );
+    }
+
+    #[test]
+    fn replay_source_verification_is_an_explicit_launcher_only_grant() -> Result<(), &'static str> {
+        let parsed = options(
+            [
+                "--root",
+                "/owner/deployment",
+                "--archive-root",
+                "/owner/archive",
+                "--allow-replay-source-verification",
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing launcher options")?;
+        assert!(parsed.allow_replay_source_verification);
+        for args in [
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--allow-replay-source-verification",
+            ],
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--archive-root",
+                "/owner/archive",
+                "--allow-replay-source-verification",
+                "--allow-replay-source-verification",
+            ],
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--archive-root",
+                "/owner/archive",
+                "--allow-replay-source-verification=yes",
+            ],
+        ] {
+            assert!(options(args.into_iter().map(OsString::from)).is_err());
+        }
+        let ordinary = options(
+            [
+                "--root",
+                "/owner/deployment",
+                "--archive-root",
+                "/owner/archive",
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing ordinary options")?;
+        assert!(!ordinary.allow_replay_source_verification);
+        Ok(())
     }
 }

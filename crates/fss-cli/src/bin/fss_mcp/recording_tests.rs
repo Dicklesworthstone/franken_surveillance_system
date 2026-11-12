@@ -6,6 +6,9 @@ use super::*;
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Fields = BTreeMap<&'static str, String>;
 
+#[path = "recording_replay_tests.rs"]
+mod replay;
+
 const CATALOG: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 const SOURCE: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const RECEIVE: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";

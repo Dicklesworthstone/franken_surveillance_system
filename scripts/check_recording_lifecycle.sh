@@ -52,9 +52,19 @@ fi
 if [[ "$selection" == all || "$selection" == replay ]]; then
   run_tests 'recorded RTP time assertions and explicit-era boundaries' \
     -p fss-packet --test onvif_replay_contract
+  run_tests 'actual pinned recording custody and pre-original replay admission' \
+    -p fss-container --test pinned_recording_contract
   run_tests 'native AVC/HEVC recorder replay and durable receipts' \
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
     --test live_hevc_archive_contract --test rtsp_replay_time_pinned_contract
+  run_tests 'source-authorized recorder assertions with current deployment context' \
+    -p fss-reference --test agent_recording_replay_context_contract
+  run_tests 'canonical recorder UTC CLI admission and MCP source authority' \
+    -p fss-cli --lib --bin fss-mcp recorder_utc
+  run_tests 'MCP recorder UTC exact pins, schema and owner permission' \
+    -p fss-cli --bin fss-mcp replay_
+  run_tests 'actual CLI and MCP recorder UTC parity and whole-query refusals' \
+    -p fss-cli --test recording_replay_query_contract
   run_tests 'whole recorder replay retained custody, cold decode and review provenance' \
     -p fss-reference --test rtsp_replay_import_contract --test rtsp_replay_import_lifecycle_contract \
     --test rtsp_retained_replay_time_contract

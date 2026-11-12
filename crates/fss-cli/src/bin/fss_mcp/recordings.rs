@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Closed MCP argument adapter for explicitly pinned native recording metadata.
+//! Closed MCP adapter for native recording metadata and separately granted source verification.
 //! The native CLI parser owns identities, exact integers, scope and interval validation.
 
 use std::collections::BTreeMap;
@@ -10,8 +10,28 @@ use super::json::Value;
 pub(super) fn arguments(
     fields: &BTreeMap<String, Value>,
     archive_root: Option<&OsStr>,
+    allow_replay_source_verification: bool,
     mut argv: Vec<OsString>,
 ) -> Result<Vec<OsString>, (i32, &'static str)> {
+    if fields.keys().any(|field| {
+        [
+            "replay_root",
+            "replay_request",
+            "ntp_era",
+            "utc_start_ns",
+            "utc_end_ns",
+            "max_query_windows",
+            "max_query_samples",
+            "max_query_packets",
+            "max_query_source_bytes",
+            "max_query_results",
+            "max_query_read_bytes",
+            "max_query_io_calls",
+        ]
+        .contains(&field.as_str())
+    }) {
+        return replay_arguments(fields, archive_root, allow_replay_source_verification, argv);
+    }
     if fields.keys().any(|field| {
         ![
             "target",
@@ -194,6 +214,123 @@ pub(super) fn arguments(
                 .is_ok_and(|number| number > 0 && number <= maximum)
         {
             return Err((-32602, "Recording integer is outside the admitted range"));
+        }
+        argv.push(format!("--{option}={text}").into());
+    }
+    Ok(argv)
+}
+
+fn replay_arguments(
+    fields: &BTreeMap<String, Value>,
+    archive_root: Option<&OsStr>,
+    allow_replay_source_verification: bool,
+    mut argv: Vec<OsString>,
+) -> Result<Vec<OsString>, (i32, &'static str)> {
+    if !allow_replay_source_verification {
+        return Err((
+            -32602,
+            "Recorder UTC queries require the launcher's explicit source-verification grant",
+        ));
+    }
+    let archive_root = archive_root.ok_or((
+        -32602,
+        "Recorder UTC queries require an operator-bound archive root at launch",
+    ))?;
+    if fields.keys().any(|field| {
+        ![
+            "target",
+            "codec",
+            "sensor",
+            "stream",
+            "generation",
+            "source_anchor",
+            "receive_clock",
+            "decode_clock",
+            "time_scale",
+            "replay_root",
+            "replay_request",
+            "ntp_era",
+            "utc_start_ns",
+            "utc_end_ns",
+            "max_query_windows",
+            "max_query_samples",
+            "max_query_packets",
+            "max_query_source_bytes",
+            "max_query_results",
+            "max_query_read_bytes",
+            "max_query_io_calls",
+            "anchor",
+        ]
+        .contains(&field.as_str())
+    }) {
+        return Err((-32602, "Unexpected recorder UTC argument or scope override"));
+    }
+    argv.extend([
+        "--target=recordings".into(),
+        "--archive-root".into(),
+        archive_root.to_os_string(),
+        "--verify-replay-source=yes".into(),
+    ]);
+    for (field, option, bound, required) in [
+        ("codec", "codec", 4, true),
+        ("sensor", "sensor", 128, true),
+        ("stream", "stream", 128, true),
+        ("generation", "generation", 20, true),
+        ("source_anchor", "source-anchor", 71, true),
+        ("receive_clock", "receive-clock", 71, true),
+        ("decode_clock", "decode-clock", 71, true),
+        ("replay_root", "replay-root", 71, true),
+        ("replay_request", "replay-request", 71, true),
+        ("utc_start_ns", "utc-start-ns", 39, true),
+        ("utc_end_ns", "utc-end-ns", 39, true),
+        (
+            "max_query_source_bytes",
+            "max-query-source-bytes",
+            20,
+            false,
+        ),
+        ("max_query_read_bytes", "max-query-read-bytes", 20, false),
+        ("max_query_io_calls", "max-query-io-calls", 20, false),
+        ("anchor", "anchor", 256, false),
+    ] {
+        let Some(value) = fields.get(field) else {
+            if required {
+                return Err((-32602, "Missing required recorder UTC pin or interval"));
+            }
+            continue;
+        };
+        let text = value
+            .text()
+            .filter(|text| !text.is_empty() && text.len() <= bound)
+            .ok_or((
+                -32602,
+                "Expected an exact bounded recorder token or decimal string",
+            ))?;
+        argv.push(format!("--{option}={text}").into());
+    }
+    for (field, option, minimum, maximum, required) in [
+        ("time_scale", "time-scale", 1, u64::from(u32::MAX), true),
+        ("ntp_era", "ntp-era", 0, u64::from(u32::MAX), true),
+        ("max_query_windows", "max-query-windows", 1, 64, false),
+        ("max_query_samples", "max-query-samples", 1, 16_384, false),
+        ("max_query_packets", "max-query-packets", 1, 262_144, false),
+        ("max_query_results", "max-query-results", 1, 128, false),
+    ] {
+        let Some(value) = fields.get(field) else {
+            if required {
+                return Err((-32602, "Missing recorder time scale or explicit NTP era"));
+            }
+            continue;
+        };
+        let Value::Number(text) = value else {
+            return Err((-32602, "Expected an exact recorder integer"));
+        };
+        if !text.bytes().all(|byte| byte.is_ascii_digit())
+            || !text.parse::<u64>().is_ok_and(|value| {
+                (minimum..=maximum).contains(&value) && value.to_string() == *text
+            })
+        {
+            return Err((-32602, "Recorder integer is outside the admitted range"));
         }
         argv.push(format!("--{option}={text}").into());
     }

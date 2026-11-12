@@ -1,0 +1,100 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-12",
+  "timezone": "UTC",
+  "state": "source_implemented_component_validated_full_runtime_pending",
+  "mission": {
+    "goal": "Implement the highest-value remaining recorder evidence access through canonical CLI/MCP, with meaningful direct-main GitHub commits and no PRs.",
+    "initial_source_head": "407c7d8b095ec3ef03ba3536970e22ed3d6305b0",
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "VIT-015 / fss-vit-je36t.15",
+      "VIT-022 / fss-vit022-recorder-retrieval-5js5o"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "backend": "crates/fss-reference/src/agent_recording_context/replay.rs",
+    "operator": "crates/fss-cli/src/recording_query_cmd/replay.rs",
+    "mcp": "crates/fss-cli/src/bin/fss_mcp/recordings.rs",
+    "guide": "docs/AGENT_RECORDER_TIMESTAMP_QUERY.md",
+    "validation": "docs/validation/2026-11-12-recorder-agent-native-results.json"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "d03954cc9bb8fae40794646f490c872d5f486629",
+      "change": "Current Query+ReadMedia source permit, pre-original complete-receipt deletion admission, final deployment context checks and complete native projection; nine context contracts and 95 passing actual-source component contracts."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Canonical AOP-005 recorder UTC CLI/MCP selector, owner-only source verification grant, complete bounded response and capabilities, precision/permission/process contracts, operator guide and existing replay qualification lane."
+    }
+  ],
+  "findings": [
+    "The existing canonical recordings query could select catalog/node-clock metadata but could not access original packet-linked recorder UTC assertions.",
+    "Recorder UTC verification reads private original datagrams internally, so existing metadata-only query permission cannot silently authorize it.",
+    "Complete receipt references must be checked against current deployment deletions before original root/index/payload reads, including originals outside the requested interval.",
+    "The native query/report/index and every matched, unknown or source-only proof retain their existing identity under the same exact native request.",
+    "An empty receipt remains explicit and states that no original source bytes were read; it cannot establish physical absence.",
+    "CLI and MCP share one parser/renderer; the replay response accurately exposes both effective Query and ReadMedia capabilities while existing metadata query envelopes remain unchanged."
+  ],
+  "authority": {
+    "user": "Implement and commit directly to main with GitHub; no PRs.",
+    "scope": "Existing code and deterministic fixtures; no live recorder, network acquisition or device changes.",
+    "new_runtime_scope": "Exact source-read verification only, bound to request/principal/source anchor/generation/read limits, with current cancellation/deadline checks.",
+    "transport": "CLI explicit yes; MCP launcher-only grant; clients cannot grant source authority or override roots/principal.",
+    "release": "Local repository qualification and retained DSR receipts remain required; hosted checks are supplementary."
+  },
+  "budgets": {
+    "source": "64 windows, 16384 samples, 262144 packets; default256MiB reserved source allowance, hard2GiB.",
+    "archive_io": "Default1GiB and1000000 I/O calls, hard4GiB and4000000 calls, split metadata/original allowances without refill.",
+    "deployment": "256MiB and65536 metadata reads shared across both deployment observations.",
+    "output": "Default32 total matches/unknown/source-only rows, hard128, complete256KiB response or whole-query refusal.",
+    "deadline": "Cooperative60seconds through response delivery; no hard real-time or atomic cross-owner snapshot claim."
+  },
+  "validation": {
+    "executed": [
+      "95 actual native component tests passed, zero failed/ignored/filtered; includes nine prior read-only UTC regressions and new pre-original admission gate regression.",
+      "32 Draft2020-12 positive/negative cases against actual MCP query schema passed.",
+      "Registered standalone selector schema validation passed.",
+      "Pinned scoped formatting, whitespace and recording-lifecycle shell syntax checks passed.",
+      "Independent source/API review of backend, source authority, CLI/MCP and process fixtures."
+    ],
+    "new_full_graph_cases_pending": {
+      "deployment_context": 9,
+      "cli_parser_and_consent": 5,
+      "mcp_dispatch_and_schema": 4,
+      "mcp_launcher": 1,
+      "real_cli_mcp_process": 4
+    },
+    "full_graph_blocker": "Two unchanged-baseline attempts (native and -Zthreads=1 metadata-only) ended with Asupersync0.5.0 rustc SIGKILL before fss-reference compilation. Exact mechanism unconfirmed. No dependency substitution or gate weakening.",
+    "other_gate": "Repository-wide semantic-plane registry check remains failing. New source modules and explicit boundary classifications were registered; no full qualification pass is claimed.",
+    "hosted": "Existing hosted recording-lifecycle and reference-rust lanes are available, but predecessor runs were still queued without allocated jobs when inspected."
+  },
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Run new context and actual CLI/MCP contracts on a host that can compile pinned Asupersync, or inspect the existing hosted lanes when capacity becomes available; fix concrete failures before declaring the feature qualified."
+    },
+    {
+      "state": "open",
+      "action": "Complete repository-owned local qualification and owned-recorder interoperability before production deployment."
+    }
+  ],
+  "unknowns": [
+    "Full runtime compilation and new CLI/MCP execution have not passed yet.",
+    "Recorder clock authenticity, physical clock error, calibrated exposure time, continuous coverage and physical absence remain unknown.",
+    "This selector addresses one exact native archive replay; canonical source queries over an offline imported replay and multi-recorder historical search remain separate work."
+  ],
+  "next_affordances": [
+    "Run bash scripts/check_recording_lifecycle.sh replay with the exact pinned toolchain and locked cache on a sufficiently capable native host.",
+    "Extend canonical source queries to already imported whole-replay custody without requiring the original archive, retaining the same source authority and deletion checks."
+  ],
+  "invalidation_conditions": [
+    "Changes to current deployment authority/effect prefix/layout/deletions",
+    "Changes to source grant, exact receipt/request/source/clock pins, original closure or tombstones",
+    "Changes to NTP era, query interval or read/output limits"
+  ]
+}

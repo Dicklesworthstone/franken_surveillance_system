@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Byte-free AOP-005 queries of explicitly pinned native AVC/HEVC recording catalogs.
 
+/// Recorder-asserted UTC from exact replay sources under a separate source-verification grant.
+pub mod replay;
+
 /// Explicit retained-clock UTC selection, separate from the legacy decode-clock request.
 pub mod utc;
 

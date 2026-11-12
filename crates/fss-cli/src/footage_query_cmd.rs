@@ -119,6 +119,19 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--end-utc-ns",
             "--max-windows",
             "--max-hydration-bytes",
+            "--replay-root",
+            "--replay-request",
+            "--ntp-era",
+            "--utc-start-ns",
+            "--utc-end-ns",
+            "--verify-replay-source",
+            "--max-query-windows",
+            "--max-query-samples",
+            "--max-query-packets",
+            "--max-query-source-bytes",
+            "--max-query-results",
+            "--max-query-read-bytes",
+            "--max-query-io-calls",
             "--analysis",
             "--sources",
             "--zone-policy",
@@ -136,6 +149,15 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             crate::onvif_query_cmd::parse_onvif_query_args(tokens).map(FssCommand::OnvifQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
+            if crate::recording_query_cmd::replay::SELECTORS
+                .iter()
+                .any(|name| take(&values, name).is_some())
+            {
+                return crate::recording_query_cmd::replay::parse_recording_replay_query_args(
+                    tokens,
+                )
+                .map(FssCommand::RecordingReplayQuery);
+            }
             if take(&values, "--sessions").is_some() {
                 return crate::recording_query_cmd::utc_sessions::parse_recording_utc_sessions_query_args(tokens)
                     .map(FssCommand::RecordingUtcSessionsQuery);

@@ -1,5 +1,10 @@
 # Query recorder-reported UTC in retained replay originals
 
+For canonical `fss query --target recordings` and MCP `query`, see the
+[agent recorder UTC guide](AGENT_RECORDER_TIMESTAMP_QUERY.md). That surface adds
+current deployment context and an explicit source-read grant to this same native
+query, with bounded byte-free responses.
+
 `fss-archive query-replay-utc` finds native AVC or HEVC samples whose original
 ONVIF replay RTP timestamps overlap an explicit UTC interval. It cold-loads an
 independently pinned replay receipt, replays every original through its native
