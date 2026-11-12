@@ -594,6 +594,314 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
 }
 
 #[test]
+fn durable_reconciliation_binds_exact_intent_before_lookup_and_append() -> Result<(), Box<dyn Error>>
+{
+    let path = temp_journal("reconcile-exact-intent");
+    let ledger_path = temp_journal("reconcile-exact-intent-ledger");
+    let (plan, _, _, _) = setup_alert_plan(&path, &ledger_path)?;
+    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Committed,
+        TimestampNs(101),
+        None,
+        None,
+    )?;
+    journal.mark_indeterminate(&plan.intent.operation_id, TimestampNs(102), "lost_ack")?;
+    let before = journal.effect_journal().clone();
+    let root = journal.last_root();
+    let committed_len = journal.committed_len();
+    let bytes = fs::read(&path)?;
+    let empty_provider = ReferenceAlertProvider::new("provider:durable:exact-intent:empty");
+
+    assert!(
+        journal
+            .reconcile_alert(&plan, TimestampNs(200), &empty_provider)?
+            .is_none()
+    );
+    assert_eq!(journal.effect_journal(), &before);
+    assert_eq!(journal.last_root(), root);
+    assert_eq!(journal.committed_len(), committed_len);
+    assert_eq!(fs::read(&path)?, bytes);
+
+    for change_key in [true, false] {
+        let mut foreign = plan.clone();
+        if change_key {
+            foreign.intent.idempotency_key = IdempotencyKey::parse("idempotency:foreign")?;
+        } else {
+            foreign.intent.precondition_digest = ContentDigest::sha256(b"foreign-precondition");
+        }
+        let unavailable_proof = ContentDigest::sha256(b"no-provider-proof");
+
+        for refused in [
+            journal
+                .observe_alert(
+                    &foreign,
+                    unavailable_proof,
+                    TimestampNs(200),
+                    &empty_provider,
+                )
+                .map(|_| ()),
+            journal
+                .verify_alert(&foreign, TimestampNs(200), &empty_provider)
+                .map(|_| ()),
+            journal
+                .reconcile_failed_alert(
+                    &foreign,
+                    unavailable_proof,
+                    "timeout",
+                    TimestampNs(200),
+                    &empty_provider,
+                )
+                .map(|_| ()),
+            journal
+                .reconcile_alert(&foreign, TimestampNs(200), &empty_provider)
+                .map(|_| ()),
+        ] {
+            assert!(matches!(
+                refused,
+                Err(DurableEffectError::Contract(
+                    ContractError::IdempotencyConflict
+                ))
+            ));
+            assert_eq!(journal.effect_journal(), &before);
+            assert_eq!(journal.last_root(), root);
+            assert_eq!(journal.committed_len(), committed_len);
+            assert_eq!(fs::read(&path)?, bytes);
+        }
+
+        // A provider-issued failure for another intent must not discharge this obligation.
+        let mut foreign_provider =
+            ReferenceAlertProvider::new("provider:durable:exact-intent:foreign");
+        let failure = foreign_provider.record_failure(&foreign.intent, "timeout")?;
+        for refused in [
+            journal
+                .reconcile_failed_alert(
+                    &foreign,
+                    failure.receipt_digest(),
+                    "timeout",
+                    TimestampNs(201),
+                    &foreign_provider,
+                )
+                .map(|_| ()),
+            journal
+                .reconcile_alert(&foreign, TimestampNs(201), &foreign_provider)
+                .map(|_| ()),
+        ] {
+            assert!(matches!(
+                refused,
+                Err(DurableEffectError::Contract(
+                    ContractError::IdempotencyConflict
+                ))
+            ));
+            assert_eq!(journal.effect_journal(), &before);
+            assert_eq!(journal.last_root(), root);
+            assert_eq!(journal.committed_len(), committed_len);
+            assert_eq!(fs::read(&path)?, bytes);
+        }
+    }
+    drop(journal);
+
+    // Refusals leave no durable transition to replay after a crash.
+    let mut reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.effect_journal(), &before);
+    assert_eq!(reopened.last_root(), root);
+    assert_eq!(reopened.committed_len(), committed_len);
+    assert_eq!(fs::read(&path)?, bytes);
+    let mut provider = ReferenceAlertProvider::new("provider:durable:exact-intent:original");
+    let failure = provider.record_failure(&plan.intent, "timeout")?;
+    let receipt = reopened.reconcile_failed_alert(
+        &plan,
+        failure.receipt_digest(),
+        "timeout",
+        TimestampNs(202),
+        &provider,
+    )?;
+    assert_eq!(receipt.state, EffectState::Failed);
+    assert_eq!(
+        reopened.obligation(&plan.obligation_id).map(|o| o.state),
+        Some(ObligationState::Failed)
+    );
+    let terminal = reopened.effect_journal().clone();
+    let terminal_root = reopened.last_root();
+    let terminal_len = reopened.committed_len();
+    let terminal_bytes = fs::read(&path)?;
+    drop(reopened);
+
+    let mut retried = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(
+        retried.reconcile_alert(&plan, TimestampNs(203), &provider)?,
+        Some(receipt)
+    );
+    assert_eq!(retried.effect_journal(), &terminal);
+    assert_eq!(retried.last_root(), terminal_root);
+    assert_eq!(retried.committed_len(), terminal_len);
+    assert_eq!(fs::read(&path)?, terminal_bytes);
+    assert_eq!((provider.message_count(), provider.failure_count()), (0, 1));
+    drop(retried);
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn durable_foreign_delivery_and_obligation_cannot_terminalize_another_preparation()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("reconcile-foreign-delivery");
+    let ledger_path = temp_journal("reconcile-foreign-delivery-ledger");
+    let context = setup_alert_context(&ledger_path)?;
+    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    let plan = journal.prepare_alert(PrepareAlertParams {
+        decision: &context.decision,
+        event_receipt: &context.event_receipt,
+        authority: &context.authority,
+        operation_id: OperationId::parse("operation:delivery-binding")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:delivery-binding")?,
+        obligation_id: ObligationId::parse("obligation:delivery-binding")?,
+        channel: "security-sms".to_owned(),
+        now: TimestampNs(100),
+    })?;
+    let mut other_journal = EffectJournal::new();
+    let foreign = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &context.decision,
+            event_receipt: &context.event_receipt,
+            authority: &context.authority,
+            operation_id: plan.intent.operation_id.clone(),
+            idempotency_key: IdempotencyKey::parse("idempotency:other-delivery")?,
+            obligation_id: plan.obligation_id.clone(),
+            channel: plan.channel.clone(),
+            now: TimestampNs(100),
+        },
+        &mut other_journal,
+    )?;
+    let mut provider = ReferenceAlertProvider::new("provider:durable:delivery:original");
+    let mut foreign_provider = ReferenceAlertProvider::new("provider:durable:delivery:foreign");
+    journal.dispatch_alert(
+        &plan,
+        &context.authority,
+        &context.objects,
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
+        &mut provider,
+    )?;
+    dispatch_reference_alert(
+        &foreign,
+        &context.authority,
+        &context.objects,
+        ReferenceProviderBehavior::Deliver,
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
+        &mut other_journal,
+        &mut foreign_provider,
+    )?;
+    let proof = provider
+        .lookup(&plan.intent)?
+        .ok_or(ContractError::NotFound)?
+        .receipt_digest();
+    let foreign_proof = foreign_provider
+        .lookup(&foreign.intent)?
+        .ok_or(ContractError::NotFound)?
+        .receipt_digest();
+    assert_ne!(proof, foreign_proof);
+    let before = journal.effect_journal().clone();
+    let root = journal.last_root();
+    let committed_len = journal.committed_len();
+    let bytes = fs::read(&path)?;
+
+    for refused in [
+        journal
+            .observe_alert(&foreign, foreign_proof, TimestampNs(200), &foreign_provider)
+            .map(|_| ()),
+        journal
+            .reconcile_alert(&foreign, TimestampNs(200), &foreign_provider)
+            .map(|_| ()),
+    ] {
+        assert!(matches!(
+            refused,
+            Err(DurableEffectError::Contract(
+                ContractError::IdempotencyConflict
+            ))
+        ));
+        assert_eq!(journal.effect_journal(), &before);
+        assert_eq!(journal.last_root(), root);
+        assert_eq!(journal.committed_len(), committed_len);
+        assert_eq!(fs::read(&path)?, bytes);
+    }
+    drop(journal);
+
+    let mut reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.effect_journal(), &before);
+    assert_eq!(reopened.last_root(), root);
+    assert_eq!(reopened.committed_len(), committed_len);
+    assert_eq!(fs::read(&path)?, bytes);
+    reopened.observe_alert(&plan, proof, TimestampNs(201), &provider)?;
+
+    let mut unrelated_intent = plan.intent.clone();
+    unrelated_intent.operation_id = OperationId::parse("operation:unrelated")?;
+    unrelated_intent.idempotency_key = IdempotencyKey::parse("idempotency:unrelated")?;
+    let unrelated_obligation = ObligationId::parse("obligation:unrelated")?;
+    reopened.prepare(
+        unrelated_intent,
+        unrelated_obligation.clone(),
+        fss_reference::REFERENCE_ALERT_TERMINAL_PREDICATE,
+        TimestampNs(202),
+    )?;
+    let observed = reopened.effect_journal().clone();
+    let observed_root = reopened.last_root();
+    let observed_len = reopened.committed_len();
+    let observed_bytes = fs::read(&path)?;
+    for obligation_id in [
+        ObligationId::parse("obligation:missing")?,
+        unrelated_obligation,
+    ] {
+        let mut wrong_obligation = plan.clone();
+        wrong_obligation.obligation_id = obligation_id;
+        assert!(matches!(
+            reopened.verify_alert(&wrong_obligation, TimestampNs(203), &provider),
+            Err(DurableEffectError::Contract(
+                ContractError::ObligationConflict
+            ))
+        ));
+        assert_eq!(reopened.effect_journal(), &observed);
+        assert_eq!(reopened.last_root(), observed_root);
+        assert_eq!(reopened.committed_len(), observed_len);
+        assert_eq!(fs::read(&path)?, observed_bytes);
+    }
+    let verified = reopened.verify_alert(&plan, TimestampNs(204), &provider)?;
+    assert_eq!(verified.state, EffectState::Verified);
+    assert_eq!(verified.result_digest, Some(proof));
+    assert_eq!(
+        reopened.obligation(&plan.obligation_id).map(|o| o.state),
+        Some(ObligationState::Verified)
+    );
+    let terminal = reopened.effect_journal().clone();
+    let terminal_root = reopened.last_root();
+    let terminal_len = reopened.committed_len();
+    let terminal_bytes = fs::read(&path)?;
+    drop(reopened);
+
+    let mut retried = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(
+        retried.reconcile_alert(&plan, TimestampNs(205), &provider)?,
+        Some(verified)
+    );
+    assert_eq!(retried.effect_journal(), &terminal);
+    assert_eq!(retried.last_root(), terminal_root);
+    assert_eq!(retried.committed_len(), terminal_len);
+    assert_eq!(fs::read(&path)?, terminal_bytes);
+    assert_eq!(
+        (provider.message_count(), foreign_provider.message_count()),
+        (1, 1)
+    );
+    drop(retried);
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
 fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_provider_proof()
 -> Result<(), Box<dyn Error>> {
     let path = temp_journal("planted-reopen-reconcile");

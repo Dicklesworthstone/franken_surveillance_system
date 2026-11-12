@@ -1699,7 +1699,7 @@ pub fn observe_reference_alert(
     journal: &mut EffectJournal,
     provider: &ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
-    validate_reference_alert_plan(plan)?;
+    validate_reference_alert_journal_binding(plan, journal)?;
     let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
         return Err(ReferenceError::InvalidSpec("provider_proof_missing"));
     };
@@ -1725,7 +1725,7 @@ pub fn verify_reference_alert(
     journal: &mut EffectJournal,
     provider: &ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
-    validate_reference_alert_plan(plan)?;
+    validate_reference_alert_journal_binding(plan, journal)?;
     let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
         return Err(ReferenceError::InvalidSpec("provider_proof_missing"));
     };
@@ -1746,7 +1746,7 @@ pub fn reconcile_failed_reference_alert(
     journal: &mut EffectJournal,
     provider: &ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
-    validate_reference_alert_plan(plan)?;
+    validate_reference_alert_journal_binding(plan, journal)?;
     if provider.lookup(&plan.intent)?.is_some() {
         return Err(ReferenceError::Contract(
             fss_core::ContractError::InvalidEffectTransition,
@@ -1783,7 +1783,7 @@ pub fn reconcile_reference_alert(
     journal: &mut EffectJournal,
     provider: &ReferenceAlertProvider,
 ) -> Result<Option<OperationReceipt>, ReferenceError> {
-    validate_reference_alert_plan(plan)?;
+    validate_reference_alert_journal_binding(plan, journal)?;
     let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
         return Ok(None);
     };
@@ -1844,6 +1844,31 @@ fn alert_request_digest_parts(
     encoder.digest(event_revision_digest);
     encoder.text(channel);
     ContentDigest::sha256(&encoder.finish())
+}
+
+/// Refuses a provider-facing plan that does not name this journal's exact preparation.
+///
+/// Provider proof is bound to the intent passed to the provider lookup. An operation ID alone
+/// cannot transfer that proof to a different retained intent or terminal obligation. This
+/// check is read-only and runs before lookup, transition, or durable append.
+pub(crate) fn validate_reference_alert_journal_binding<J: AlertEffectTransitioner>(
+    plan: &ReferenceAlertPlan,
+    journal: &J,
+) -> Result<(), ReferenceError> {
+    validate_reference_alert_plan(plan)?;
+    let operation = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?;
+    if operation.intent != plan.intent {
+        return Err(fss_core::ContractError::IdempotencyConflict.into());
+    }
+    let obligation = journal
+        .obligation(&plan.obligation_id)
+        .ok_or(fss_core::ContractError::ObligationConflict)?;
+    if obligation.operation_id != plan.intent.operation_id {
+        return Err(fss_core::ContractError::ObligationConflict.into());
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_reference_alert_plan(

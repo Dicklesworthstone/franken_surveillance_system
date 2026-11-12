@@ -1069,7 +1069,7 @@ impl DurableEffectJournal {
         observed_at: TimestampNs,
         provider: &ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
-        crate::alert::validate_reference_alert_plan(plan)?;
+        crate::alert::validate_reference_alert_journal_binding(plan, self)?;
         let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
             return Err(ReferenceError::InvalidSpec("provider_proof_missing").into());
         };
@@ -1093,7 +1093,7 @@ impl DurableEffectJournal {
         verified_at: TimestampNs,
         provider: &ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
-        crate::alert::validate_reference_alert_plan(plan)?;
+        crate::alert::validate_reference_alert_journal_binding(plan, self)?;
         let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
             return Err(ReferenceError::InvalidSpec("provider_proof_missing").into());
         };
@@ -1160,7 +1160,7 @@ impl DurableEffectJournal {
         now: TimestampNs,
         provider: &ReferenceAlertProvider,
     ) -> Result<Option<OperationReceipt>, DurableEffectError> {
-        crate::alert::validate_reference_alert_plan(plan)?;
+        crate::alert::validate_reference_alert_journal_binding(plan, self)?;
         let op = &plan.intent.operation_id;
 
         // Finding 4: Must check for recorded provider failures and transition to Failed
@@ -1263,7 +1263,7 @@ impl DurableEffectJournal {
         now: TimestampNs,
         provider: &ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
-        crate::alert::validate_reference_alert_plan(plan)?;
+        crate::alert::validate_reference_alert_journal_binding(plan, self)?;
         if provider.lookup(&plan.intent)?.is_some() {
             return Err(ContractError::InvalidEffectTransition.into());
         }

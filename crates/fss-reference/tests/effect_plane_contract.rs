@@ -1572,3 +1572,248 @@ fn test_f3_unissued_observation_receipt_rejected() -> Result<(), Box<dyn Error>>
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+#[test]
+fn reconciliation_requires_exact_prepared_intent_before_provider_lookup()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("reconcile-exact-intent");
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Committed,
+        TimestampNs(101),
+        None,
+        None,
+    )?;
+    journal.mark_indeterminate(&plan.intent.operation_id, TimestampNs(102), "lost_ack")?;
+    let before = journal.clone();
+    let empty_provider = ReferenceAlertProvider::new("provider:exact-intent:empty");
+
+    // A valid recovery request without provider evidence remains unresolved and read-only.
+    assert!(
+        reconcile_reference_alert(&plan, TimestampNs(200), &mut journal, &empty_provider)?
+            .is_none()
+    );
+    assert_eq!(journal, before);
+
+    for change_key in [true, false] {
+        let mut foreign = plan.clone();
+        if change_key {
+            foreign.intent.idempotency_key = IdempotencyKey::parse("idempotency:foreign")?;
+        } else {
+            foreign.intent.precondition_digest = ContentDigest::sha256(b"foreign-precondition");
+        }
+        let unavailable_proof = ContentDigest::sha256(b"no-provider-proof");
+
+        // Every entry point rejects the foreign plan even when lookup would find no proof.
+        for refused in [
+            observe_reference_alert(
+                &foreign,
+                unavailable_proof,
+                TimestampNs(200),
+                &mut journal,
+                &empty_provider,
+            )
+            .map(|_| ()),
+            verify_reference_alert(&foreign, TimestampNs(200), &mut journal, &empty_provider)
+                .map(|_| ()),
+            reconcile_failed_reference_alert(
+                &foreign,
+                unavailable_proof,
+                "timeout",
+                TimestampNs(200),
+                &mut journal,
+                &empty_provider,
+            )
+            .map(|_| ()),
+            reconcile_reference_alert(&foreign, TimestampNs(200), &mut journal, &empty_provider)
+                .map(|_| ()),
+        ] {
+            assert!(matches!(
+                refused,
+                Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+            ));
+            assert_eq!(journal, before);
+        }
+
+        // This is a genuine provider proof for the foreign intent, not a forged receipt.
+        let mut foreign_provider = ReferenceAlertProvider::new("provider:exact-intent:foreign");
+        let failure = foreign_provider.record_failure(&foreign.intent, "timeout")?;
+        assert!(matches!(
+            reconcile_failed_reference_alert(
+                &foreign,
+                failure.receipt_digest(),
+                "timeout",
+                TimestampNs(201),
+                &mut journal,
+                &foreign_provider,
+            ),
+            Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+        ));
+        assert_eq!(journal, before);
+    }
+
+    let mut provider = ReferenceAlertProvider::new("provider:exact-intent:original");
+    let failure = provider.record_failure(&plan.intent, "timeout")?;
+    let receipt = reconcile_failed_reference_alert(
+        &plan,
+        failure.receipt_digest(),
+        "timeout",
+        TimestampNs(202),
+        &mut journal,
+        &provider,
+    )?;
+    assert_eq!(receipt.state, EffectState::Failed);
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .map(|o| o.state),
+        Some(ObligationState::Failed)
+    );
+    let terminal = journal.clone();
+    assert_eq!(
+        reconcile_failed_reference_alert(
+            &plan,
+            failure.receipt_digest(),
+            "timeout",
+            TimestampNs(203),
+            &mut journal,
+            &provider,
+        )?,
+        receipt
+    );
+    assert_eq!(journal, terminal);
+    assert_eq!((provider.message_count(), provider.failure_count()), (0, 1));
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn foreign_delivery_cannot_verify_another_preparation_or_obligation() -> Result<(), Box<dyn Error>>
+{
+    let path = temp_journal("reconcile-foreign-delivery");
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut other_journal = EffectJournal::new();
+    let foreign = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: plan.intent.operation_id.clone(),
+            idempotency_key: IdempotencyKey::parse("idempotency:other-delivery")?,
+            obligation_id: plan.obligation_id.clone(),
+            channel: plan.channel.clone(),
+            now: TimestampNs(100),
+        },
+        &mut other_journal,
+    )?;
+    let mut provider = ReferenceAlertProvider::new("provider:delivery:original");
+    let mut foreign_provider = ReferenceAlertProvider::new("provider:delivery:foreign");
+    dispatch_reference_alert(
+        &plan,
+        &authority,
+        &objects,
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
+        &mut journal,
+        &mut provider,
+    )?;
+    dispatch_reference_alert(
+        &foreign,
+        &authority,
+        &objects,
+        ReferenceProviderBehavior::Deliver,
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
+        &mut other_journal,
+        &mut foreign_provider,
+    )?;
+    let proof = provider
+        .lookup(&plan.intent)?
+        .ok_or(ContractError::NotFound)?
+        .receipt_digest();
+    let foreign_proof = foreign_provider
+        .lookup(&foreign.intent)?
+        .ok_or(ContractError::NotFound)?
+        .receipt_digest();
+    assert_ne!(proof, foreign_proof);
+    let before = journal.clone();
+
+    assert!(matches!(
+        observe_reference_alert(
+            &foreign,
+            foreign_proof,
+            TimestampNs(200),
+            &mut journal,
+            &foreign_provider,
+        ),
+        Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+    ));
+    assert_eq!(journal, before);
+    assert!(matches!(
+        reconcile_reference_alert(&foreign, TimestampNs(200), &mut journal, &foreign_provider,),
+        Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+    ));
+    assert_eq!(journal, before);
+
+    // The original lost-ACK proof still observes the exact prepared operation.
+    observe_reference_alert(&plan, proof, TimestampNs(201), &mut journal, &provider)?;
+    let mut unrelated_intent = plan.intent.clone();
+    unrelated_intent.operation_id = OperationId::parse("operation:unrelated")?;
+    unrelated_intent.idempotency_key = IdempotencyKey::parse("idempotency:unrelated")?;
+    let unrelated_obligation = ObligationId::parse("obligation:unrelated")?;
+    journal.prepare(
+        unrelated_intent,
+        unrelated_obligation.clone(),
+        REFERENCE_ALERT_TERMINAL_PREDICATE,
+        TimestampNs(202),
+    )?;
+    let observed = journal.clone();
+    for obligation_id in [
+        ObligationId::parse("obligation:missing")?,
+        unrelated_obligation,
+    ] {
+        let mut wrong_obligation = plan.clone();
+        wrong_obligation.obligation_id = obligation_id;
+        assert!(matches!(
+            verify_reference_alert(&wrong_obligation, TimestampNs(203), &mut journal, &provider,),
+            Err(ReferenceError::Contract(ContractError::ObligationConflict))
+        ));
+        assert_eq!(journal, observed);
+    }
+
+    let verified = verify_reference_alert(&plan, TimestampNs(204), &mut journal, &provider)?;
+    assert_eq!(verified.state, EffectState::Verified);
+    assert_eq!(verified.result_digest, Some(proof));
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .map(|o| o.state),
+        Some(ObligationState::Verified)
+    );
+    let terminal = journal.clone();
+    assert_eq!(
+        reconcile_reference_alert(&plan, TimestampNs(205), &mut journal, &provider)?,
+        Some(verified)
+    );
+    assert_eq!(journal, terminal);
+    assert_eq!(
+        (provider.message_count(), foreign_provider.message_count()),
+        (1, 1)
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
