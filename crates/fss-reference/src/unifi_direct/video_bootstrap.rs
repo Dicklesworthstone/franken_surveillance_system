@@ -20,7 +20,8 @@ use fss_runtime::execution::TaskCx;
 use super::{
     av_unknown_worker_guard::BootstrapResources, av_worker, conversation, evidence,
     metered::MeteredClock, pipeline, recording, source_coordinator::ArchiveAdmission,
-    source_worker, supervisor, video_owned_sink, video_session, video_worker,
+    management, receive, recording_storage, source_worker, supervisor, video_owned_sink,
+    video_session, video_worker,
 };
 
 /// Video initialization policy supplied before any source is read.
@@ -114,6 +115,226 @@ pub enum HandoffRefusal<'scope, 'task, IO> {
     NotReady(Bootstrap<'scope, 'task, IO>),
     /// Session attachment refused the supplied owners.
     Attach(video_session::Parts<'scope, 'task, IO>),
+}
+
+/// A selected media source, its controller and fresh or recovered archive
+/// owners. All identities are caller-supplied claims, not authentication.
+#[must_use = "attach or retain the session, pipeline, and archive owners"]
+pub struct SelectedRecording<'scope, 'task, IO> {
+    /// Controller session associated with the selected source by the caller.
+    pub session: receive::Session<'scope, 'task, IO>,
+    /// Selected pipeline, including any buffered prefix bytes.
+    pub pipeline: pipeline::Pipeline,
+    /// Caller-bound camera, peer and lease preconditions.
+    pub management: management::Preconditions,
+    /// Source and video archive owners supplied by the caller.
+    pub storage: recording_storage::Created,
+    /// Separately authorized video retention and media limits.
+    pub policy: Policy,
+}
+
+/// Refusal retains every input or the exact post-construction bootstrap parts.
+#[must_use = "recover and reconcile the returned owners"]
+pub enum SelectedRefusal<'scope, 'task, IO> {
+    /// Camera or source binding did not match, or preconditions were invalid.
+    Binding(SelectedRecording<'scope, 'task, IO>),
+    /// Bootstrap refused after controller and storage owners were assembled.
+    Bootstrap(Parts<'scope, 'task, IO>),
+}
+
+/// Attach an already selected stream to its exact archive owners without
+/// reading from the camera or starting a publication. A successful handoff
+/// does not establish physical identity, continuity, or recording durability.
+pub fn begin_selected<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
+    selected: SelectedRecording<'scope, 'task, IO>,
+) -> Result<Bootstrap<'scope, 'task, IO>, SelectedRefusal<'scope, 'task, IO>> {
+    let key = selected.pipeline.source_key();
+    if selected.management.validate().is_err()
+        || !selected.storage.coordinator.matches_binding(key, selected.management.camera)
+    {
+        return Err(SelectedRefusal::Binding(selected));
+    }
+    let SelectedRecording { session, pipeline, management, storage, policy } = selected;
+    let supervisor = supervisor::Supervisor::new(session, pipeline, management);
+    Bootstrap::begin(
+        supervisor,
+        storage.coordinator.into_worker(),
+        storage.av,
+        key,
+        management.camera,
+        policy,
+    )
+    .map_err(SelectedRefusal::Bootstrap)
+}
+
+/// The exact owner retained while joining bootstrap and managed recording.
+#[must_use = "drain or reconcile the returned owner"]
+pub enum ManagedRecordingOwner<'scope, 'task, IO> {
+    /// Bootstrap and its source worker remain owned.
+    Bootstrap(Bootstrap<'scope, 'task, IO>),
+    /// Recording and any rollover remain owned.
+    Recording(video_session::ManagedSession<'scope, 'task, IO>),
+    /// Session attachment refused after bootstrap; every part is returned.
+    Refused(video_session::Parts<'scope, 'task, IO>),
+}
+
+/// One complete bootstrap, transition, or managed-recording outcome.
+#[must_use = "account for the returned control and publication outcomes"]
+pub enum ManagedRecordingStep {
+    /// The original bootstrap event, including its source completions.
+    Bootstrap(Step),
+    /// The ready bootstrap became a managed session; no media was polled.
+    RecordingStarted,
+    /// The transition refused; the owner remains available for recovery.
+    TransitionRefused,
+    /// The original managed-session result, including rollover outcomes.
+    Recording(video_session::ManagedStep),
+    /// Admission was stopped or the transition requires reconciliation.
+    Halted,
+}
+
+/// Caller-driven transition from a selected source through bootstrap to a
+/// managed video session. Dropping a borrowing step wait retains its owner.
+/// This does not create storage, authenticate cameras, or establish continuity.
+#[must_use = "abort and drain or recover the retained owner"]
+pub struct ManagedRecording<'scope, 'task, IO> {
+    owner: Option<ManagedRecordingOwner<'scope, 'task, IO>>,
+    ready: bool,
+    halted: bool,
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope, 'task, IO> {
+    /// Retain an existing bootstrap without starting any work.
+    pub fn new(bootstrap: Bootstrap<'scope, 'task, IO>) -> Self {
+        Self { owner: Some(ManagedRecordingOwner::Bootstrap(bootstrap)), ready: false, halted: false }
+    }
+
+    /// Retain an existing managed session without polling it or changing its
+    /// capacity, retry, or rollover state. Its owner remains caller-supplied.
+    pub fn from_managed(recording: video_session::ManagedSession<'scope, 'task, IO>) -> Self {
+        Self { owner: Some(ManagedRecordingOwner::Recording(recording)), ready: false, halted: false }
+    }
+
+    /// Borrow the controller while the retained phase permits it.
+    pub fn control(&mut self) -> Option<super::recording_session::Control<'_, 'scope, 'task, IO>> {
+        if self.halted { return None; }
+        match self.owner.as_mut()? {
+            ManagedRecordingOwner::Bootstrap(bootstrap) => bootstrap.control(),
+            ManagedRecordingOwner::Recording(recording) => recording.control(),
+            ManagedRecordingOwner::Refused(_) => None,
+        }
+    }
+
+    /// Offer one caller-prepared rollover supply after recording starts.
+    /// A refusal returns the original supplies unchanged.
+    pub fn provide(
+        &mut self,
+        supplies: super::av_rollover_worker::Supplies,
+    ) -> Result<(), super::av_rollover_worker::Supplies> {
+        if self.halted { return Err(supplies); }
+        match self.owner.as_mut() {
+            Some(ManagedRecordingOwner::Recording(recording)) => recording.provide(supplies),
+            _ => Err(supplies),
+        }
+    }
+
+    /// Authorize one explicit retry of a retained source in the current phase.
+    pub fn authorize_source_retry(&mut self) -> bool {
+        if self.halted { return false; }
+        match self.owner.as_mut() {
+            Some(ManagedRecordingOwner::Bootstrap(bootstrap)) => bootstrap.authorize_source_retry(),
+            Some(ManagedRecordingOwner::Recording(recording)) => recording.authorize_source_retry(),
+            _ => false,
+        }
+    }
+
+    /// Authorize one explicit retry of a retained video segment.
+    pub fn authorize_video_retry(&mut self) -> bool {
+        if self.halted { return false; }
+        match self.owner.as_mut() {
+            Some(ManagedRecordingOwner::Recording(recording)) => recording.authorize_video_retry(),
+            _ => false,
+        }
+    }
+
+    /// Authorize one explicit rollover retry after a reported refusal.
+    pub fn authorize_rollover_retry(&mut self) -> bool {
+        if self.halted { return false; }
+        match self.owner.as_mut() {
+            Some(ManagedRecordingOwner::Recording(recording)) => recording.authorize_rollover_retry(),
+            _ => false,
+        }
+    }
+
+    /// Stop new work and request cancellation of the phase's active workers.
+    /// The returned owner still has to be drained and reconciled by the caller.
+    pub fn abort(&mut self) {
+        self.halted = true;
+        match self.owner.as_mut() {
+            Some(ManagedRecordingOwner::Bootstrap(bootstrap)) => bootstrap.abort(),
+            Some(ManagedRecordingOwner::Recording(recording)) => recording.abort(),
+            _ => (),
+        }
+    }
+
+    /// Advance one bounded phase decision. Ready is reported before the
+    /// subsequent call changes phase; all underlying events remain visible.
+    pub async fn step(
+        &mut self,
+        owner: &mut conversation::Owner<'_, 'scope, 'task>,
+        operation: &OperationId,
+        wait: Duration,
+        task: &'scope TaskCx<'task>,
+        cx: &'scope Cx,
+        clock: MeteredClock<'scope, 'task>,
+        video_archive: ArchiveAdmission<'_>,
+        source_archive: ArchiveAdmission<'_>,
+    ) -> ManagedRecordingStep {
+        if self.halted { return ManagedRecordingStep::Halted; }
+        if self.ready {
+            self.ready = false;
+            let bootstrap = match self.owner.take() {
+                Some(ManagedRecordingOwner::Bootstrap(bootstrap)) => bootstrap,
+                other => {
+                    self.owner = other;
+                    self.halted = true;
+                    return ManagedRecordingStep::Halted;
+                }
+            };
+            return match bootstrap.into_session() {
+                Ok(session) => {
+                    self.owner = Some(ManagedRecordingOwner::Recording(video_session::ManagedSession::new(session)));
+                    ManagedRecordingStep::RecordingStarted
+                }
+                Err(HandoffRefusal::NotReady(bootstrap)) => {
+                    self.owner = Some(ManagedRecordingOwner::Bootstrap(bootstrap));
+                    self.halted = true;
+                    ManagedRecordingStep::TransitionRefused
+                }
+                Err(HandoffRefusal::Attach(parts)) => {
+                    self.owner = Some(ManagedRecordingOwner::Refused(parts));
+                    self.halted = true;
+                    ManagedRecordingStep::TransitionRefused
+                }
+            };
+        }
+        match self.owner.as_mut() {
+            Some(ManagedRecordingOwner::Bootstrap(bootstrap)) => {
+                let step = bootstrap.step(owner, operation, wait, task, cx, clock, source_archive).await;
+                self.ready = matches!(step, Step::Ready);
+                ManagedRecordingStep::Bootstrap(step)
+            }
+            Some(ManagedRecordingOwner::Recording(recording)) => ManagedRecordingStep::Recording(
+                recording.step(owner, operation, wait, task, cx, clock, video_archive, source_archive).await,
+            ),
+            _ => ManagedRecordingStep::Halted,
+        }
+    }
+
+    /// Return the exact current owner, including any unfinished worker state.
+    pub fn into_owner(mut self) -> ManagedRecordingOwner<'scope, 'task, IO> {
+        self.owner.take().expect("owner retained between public calls")
+    }
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task, IO> {

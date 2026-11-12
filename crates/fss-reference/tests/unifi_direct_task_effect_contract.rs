@@ -5536,10 +5536,12 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                                 Err(current) => current,
                                 Ok(_) => return Err("managed session accepted wrong capacity candidate".into()),
                             };
-                            let mut managed = video_session::ManagedSession::at_capacity(current, candidate).map_err(|_| "managed capacity refused")?;
+                            let managed = video_session::ManagedSession::at_capacity(current, candidate).map_err(|_| "managed capacity refused")?;
+                            let mut managed = video_bootstrap::ManagedRecording::from_managed(managed);
+                            if managed.authorize_source_retry() || managed.authorize_video_retry() || managed.authorize_rollover_retry() { return Err("outer owner armed a retry without a refusal".into()); }
                             if managed.control().is_none() { return Err("managed session lost controller".into()); }
                             match Box::pin(managed.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission)).await {
-                                video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle)) => (),
+                                video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle))) => (),
                                 _ => return Err("managed session did not wait for supplies".into()),
                             }
                             managed.provide(supplies).map_err(|_| "managed supplies refused")?;
@@ -5547,20 +5549,24 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                             for round in 0..2048u64 {
                                 let op = OperationId::parse(format!("{}:managed-video-{round:016x}", operation.as_str()))?;
                                 match Box::pin(managed.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission)).await {
-                                    video_session::ManagedStep::RolloverBeginning => began = true,
-                                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started) => starts += 1,
-                                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady)) => (),
-                                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle))) => (),
-                                    video_session::ManagedStep::Resumed(value) => { receipt = Some(value); break; },
+                                    video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::RolloverBeginning) => began = true,
+                                    video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started)) => starts += 1,
+                                    video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady))) => (),
+                                    video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle)))) => (),
+                                    video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Resumed(value)) => { receipt = Some(value); break; },
                                     _ => return Err("managed video rollover stopped".into()),
                                 }
                             }
                             if !began || starts != 2 || receipt.as_ref().is_none_or(|value| value.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered) { return Err("managed rollover did not resume".into()); }
+                            let managed = match managed.into_owner() {
+                                video_bootstrap::ManagedRecordingOwner::Recording(managed) => managed,
+                                _ => return Err("outer owner lost managed recording".into()),
+                            };
                             let parts = managed.into_parts();
                             if parts.halted || parts.capacity.is_some() || parts.supplies.is_some() { return Err("managed rollover left pending state".into()); }
                             let resumed = match parts.owner { Some(video_session::ManagedOwner::Recording(session)) => *session, _ => return Err("managed session not returned".into()) };
                             session = Some(resumed); rollover_count += 1; rollover_candidate = Some(candidate);
-                            println!("video_session_managed_rollover=verified supplies_waited=true");
+                            println!("video_session_outer_managed_rollover=verified supplies_waited=true");
                             continue;
                         }
                         let mut rollover = current.begin_rollover(supplies).map_err(|_| "session rollover refused")?;

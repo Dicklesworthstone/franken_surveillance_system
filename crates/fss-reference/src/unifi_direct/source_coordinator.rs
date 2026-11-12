@@ -382,6 +382,12 @@ impl Coordinator {
         }
     }
 
+    /// Check the caller-supplied source and camera binding without changing
+    /// worker state or granting authority to publish.
+    pub(crate) fn matches_binding(&self, key: SourceKey, camera_claim: ContentDigest) -> bool {
+        self.key == key && self.camera_claim == camera_claim
+    }
+
     /// Transfer an event if it contains a separate source, returning all other
     /// events and all refusals intact. Only a newly accepted source arms its
     /// first attempt.

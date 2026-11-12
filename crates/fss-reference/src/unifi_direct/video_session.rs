@@ -1299,6 +1299,31 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
         }
     }
 
+    /// Authorize one retry of a retained source while ordinary recording owns
+    /// the session. Rollover, shutdown, and other states refuse unchanged.
+    pub fn authorize_source_retry(&mut self) -> bool {
+        if self.parts.halted {
+            return false;
+        }
+        match self.parts.owner.as_mut() {
+            Some(ManagedOwner::Recording(session)) => session.authorize_source_retry(),
+            _ => false,
+        }
+    }
+
+    /// Authorize one retry of a retained video segment while ordinary
+    /// recording owns the session. A reported capacity boundary must be
+    /// rolled over first. No publication starts in this call.
+    pub fn authorize_video_retry(&mut self) -> bool {
+        if self.parts.halted || self.parts.capacity.is_some() {
+            return false;
+        }
+        match self.parts.owner.as_mut() {
+            Some(ManagedOwner::Recording(session)) => session.authorize_video_retry(),
+            _ => false,
+        }
+    }
+
     /// Stop admission and request cooperative cancellation of active work.
     pub fn abort(&mut self) {
         self.parts.halted = true;
