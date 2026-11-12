@@ -2387,6 +2387,10 @@ fn parallel_fleet_upgrade_scenario(
                             }
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(1)))))), .. } => (),
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(1)))))), .. } => second_replenished = true,
+                            RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))), .. } => return Err(format!("third setup handshake failed: index={index} reason={reason:?}").into()),
+                            RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. } => return Err(format!("third setup route refused: index={index:?} reason={reason:?}").into()),
+                            RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(index)))))), .. } => return Err(format!("third setup unexpected lease start: index={index}").into()),
+                            RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(index)))))), .. } => return Err(format!("third setup unexpected lease install: index={index}").into()),
                             _ => return Err("unexpected event while driving third setup".into()),
                         }
                     };
@@ -2793,6 +2797,7 @@ fn parallel_fleet_upgrade_scenario(
                         let mut make_stream = auto_media_factory(media, made.clone(), polled.clone(), release.clone());
                         let mut auto_lease_installed = false;
                         let mut renewed_auto_stall = false;
+                        let mut idle_accept_expired = false;
                         loop {
                             match timeout(cx.now(), Duration::from_secs(5), supply.next_with_automatic_streams(&mut pump, &mut auto_setup, &mut auto_streams, &mut auto_retries, &mut no_setup, &mut make_stream)).await?.map_err(|e| format!("automatic stream admission: {e:?}"))? {
                                 AutoRoutedFleetEvent::StreamStarted { index: 1 } => break,
@@ -2808,6 +2813,14 @@ fn parallel_fleet_upgrade_scenario(
                                     stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
                                     renewed_auto_stall = true;
                                 }
+                                // An unmatched listener accept may have expired
+                                // while the preceding high-resolution archive
+                                // was running. The router installs a fresh accept
+                                // on its next poll; still require this peer's
+                                // actual stream admission below.
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused {
+                                    index: None, reason: discovery::fleet::RouteError::Listener(listener::Error::Deadline),
+                                }))))), .. }) if !idle_accept_expired && made.get() == 0 => { idle_accept_expired = true; }
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))), .. }) => return Err(format!("automatic stream admission handshake failed: index={index} reason={reason:?}").into()),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. }) => return Err(format!("automatic stream admission route refused: index={index:?} reason={reason:?}").into()),
                                 _ => return Err("automatic stream was not admitted".into()),
