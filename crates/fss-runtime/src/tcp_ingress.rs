@@ -235,6 +235,51 @@ impl TcpIngress {
         runtime_cx: &Cx,
         now: TimestampNs,
     ) -> Result<Receive, IngressError> {
+        self.receive_limited(owner, runtime_cx, now, self.chunk_bytes)
+            .await
+    }
+
+    /// Receive at most the first byte of a fresh connection. A cancelled pending
+    /// read retains its one-byte reservation and can be resumed; the byte is
+    /// still transferred through the ordinary pending-chunk custody path.
+    pub async fn receive_first_byte(
+        &mut self,
+        owner: &TaskCx<'_>,
+        runtime_cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<Receive, IngressError> {
+        if self.received != 0
+            || self.pending.is_some()
+            || self.reserved > 1
+            || self.state != EndState::Open
+        {
+            return Err(IngressError::Configuration);
+        }
+        self.receive_limited(owner, runtime_cx, now, 1).await
+    }
+
+    /// Receive at most one byte at the current offset, retaining a pending
+    /// one-byte reservation across cancellation. The caller owns framing and
+    /// must consume any pending chunk before the next read.
+    pub async fn receive_one_byte(
+        &mut self,
+        owner: &TaskCx<'_>,
+        runtime_cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<Receive, IngressError> {
+        if self.pending.is_some() || self.reserved > 1 || self.state != EndState::Open {
+            return Err(IngressError::Configuration);
+        }
+        self.receive_limited(owner, runtime_cx, now, 1).await
+    }
+
+    async fn receive_limited(
+        &mut self,
+        owner: &TaskCx<'_>,
+        runtime_cx: &Cx,
+        now: TimestampNs,
+        max_read: usize,
+    ) -> Result<Receive, IngressError> {
         if self.pending.is_some() {
             return Err(IngressError::PendingChunk);
         }
@@ -281,7 +326,7 @@ impl TcpIngress {
             let available = owner
                 .remaining_budget()
                 .map_err(|_| IngressError::Authority)?;
-            let limit = (self.chunk_bytes as u64)
+            let limit = (max_read as u64)
                 .min(self.max_total_bytes - self.received)
                 .min(available.bytes)
                 .min(available.network_bytes);
