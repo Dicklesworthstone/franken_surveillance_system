@@ -1599,10 +1599,10 @@ fn parallel_fleet_upgrade_scenario(
                     }
                     let deny_login = DenyLogin;
                     let deny_admission = DenyAdmission;
-                    let mut third_owner = setup::Owner {
+                    let third_owner = Rc::new(RefCell::new(setup::Owner {
                         cx, task, clock, effects: &mut third_effects, leases: &leases,
                         approval: &Approval, admission: &policy, handoff_authority: &Handoff,
-                    };
+                    }));
                     let mut third_acquisition = fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(
                         task, cx, clock, &resources[2], 128,
                     )?;
@@ -1686,43 +1686,53 @@ fn parallel_fleet_upgrade_scenario(
                         let timeout_peer = Joined(Some(std::thread::spawn(move || {
                             camera_fixture_with_gate(timeout_listener, timeout_port, peer, timeout_server, None, None, false, true)
                         })));
-                        third_owner.approval = &SLOW_APPROVAL;
+                        third_owner.borrow_mut().approval = &SLOW_APPROVAL;
                         let timeout_operation = OperationId::parse("operation:synthetic-deadline-recovery")?;
                         let completion_operation = timeout_operation.clone();
-                        let mut deadline_trace = setup::Trace::default();
-                        let preflight_trace = camera_setup::PreflightRetryTrace::default();
+                        let deadline_trace = Rc::new(RefCell::new(setup::Trace::default()));
+                        let preflight_trace = Rc::new(camera_setup::PreflightRetryTrace::default());
                         let preflight_policy = camera_setup::PreflightRetryPolicy::new(1, Duration::from_millis(10))?;
-                        let mut acquisitions = [fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(task, cx, clock, &resources[2], 128)?];
-                        let mut spool = fss_object::StagingSpool::open(
+                        let acquisitions = Rc::new(RefCell::new([fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(task, cx, clock, &resources[2], 128)?]));
+                        let spool = Rc::new(RefCell::new(fss_object::StagingSpool::open(
                             temp.0.join("deadline-evidence"), fss_object::SpoolLimits::new(4, 4096, 1024, 4),
-                        )?;
-                        let future: CameraWork<'_, RetryCompletion<camera_setup::DeadlineRecoveredSetup>> = Box::pin(async {
+                        )?));
+                        let recovery = Rc::new(RefCell::new(None));
+                        let (owner_work, trace_work, acquisitions_work, spool_work, recovery_work, preflight_work) =
+                            (third_owner.clone(), deadline_trace.clone(), acquisitions.clone(), spool.clone(), recovery.clone(), preflight_trace.clone());
+                        let operation_work = timeout_operation.clone();
+                        let provider_work = scoped_camera_provider.clone();
+                        let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
+                        let future: CameraWork<'_, RetryCompletion<Result<setup::Outcome, camera_setup::Error>>> = Box::pin(async move {
+                            let mut owner = owner_work.borrow_mut();
+                            let mut trace = trace_work.borrow_mut();
+                            let mut acquisitions = acquisitions_work.borrow_mut();
+                            let mut spool = spool_work.borrow_mut();
                             let output = camera_setup::run_with_preflight_retries_and_deadline_recovery(
-                                &fleet, 2, &mut third_owner, &listener, &policy, timeout_address, cert,
+                                fleet_work, 2, &mut owner, listener_work, policy_work, timeout_address, cert,
                                 handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
-                                &resources[2], &mut acquisitions, scoped_camera_provider.clone(), fences[2],
-                                peer, &timeout_operation, handoff::Framing::ContentLength, Duration::from_secs(3),
-                                &mut deadline_trace, &preflight_trace, preflight_policy, &mut spool, &resources[2],
+                                resource_work, &mut *acquisitions, provider_work, fences[2],
+                                peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(3),
+                                &mut trace, &preflight_work, preflight_policy, &mut spool, resource_work,
                             ).await;
-                            RetryCompletion { operation: completion_operation, output }
+                            *recovery_work.borrow_mut() = output.deadline_recovery;
+                            RetryCompletion { operation: completion_operation, output: output.outcome }
                         });
                         let mut offered = Some(future);
                         let mut factory = |_: usize, _: Enrollment| offered.take().ok_or_else(|| io::ErrorKind::AlreadyExists.into());
-                        let mut auto = AutomaticWork::new(&fleet, 1).map_err(|_| "deadline work capacity")?;
-                        assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut auto, &mut retry_streams, &mut retry_queue, &mut factory).await.map_err(|e| format!("deadline admission: {e:?}"))?,
+                        assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut factory).await.map_err(|e| format!("deadline admission: {e:?}"))?,
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Started { index: 2 }), .. }));
-                        let evidence = loop {
-                            match timeout(cx.now(), Duration::from_secs(15), supply.next_with_retries_and_streams(&mut pump, &mut auto, &mut retry_streams, &mut retry_queue, &mut factory)).await?.map_err(|e| format!("deadline setup: {e:?}"))? {
+                        loop {
+                            match timeout(cx.now(), Duration::from_secs(15), supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut factory)).await?.map_err(|e| format!("deadline setup: {e:?}"))? {
                                 RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Camera { index: 2, output })), retry: Some(discovery::pump::RetryDisposition::Scheduled) } => {
-                                    assert!(matches!(output.output.outcome, Err(camera_setup::Error::Setup(discovery::fleet::Error::Setup(setup::Error::Deadline)))));
-                                    break output.output.deadline_recovery.ok_or("deadline recovery skipped")??;
+                                    assert!(matches!(output.output, Err(camera_setup::Error::Setup(discovery::fleet::Error::Setup(setup::Error::Deadline)))));
+                                    break;
                                 }
                                 RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)) | Some(SupplyEvent::Installed(_)))))), .. } => (),
                                 _ => return Err("unexpected deadline setup event".into()),
                             }
                         };
                         loop {
-                            match timeout(cx.now(), Duration::from_secs(5), supply.next_with_retries_and_streams(&mut pump, &mut auto, &mut retry_streams, &mut retry_queue, &mut factory)).await?.map_err(|e| format!("deadline timer: {e:?}"))? {
+                            match timeout(cx.now(), Duration::from_secs(5), supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut factory)).await?.map_err(|e| format!("deadline timer: {e:?}"))? {
                                 RetryingFleetEvent::Retry { event: discovery::retry::Event::Rearmed { index: 2, state: discovery::fleet::State::Ready { .. } }, selection: RetrySelection::Released } => break,
                                 RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)) | Some(SupplyEvent::Installed(_)))))), .. } => (),
                                 _ => return Err("unexpected deadline retry event".into()),
@@ -1730,11 +1740,11 @@ fn parallel_fleet_upgrade_scenario(
                         }
                         drop(factory);
                         drop(offered);
-                        drop(auto);
-                        assert_eq!(spool.state(evidence), Some(fss_object::SpoolObjectState::Verified));
-                        assert!(deadline_trace.preparation_cancelled());
-                        assert_eq!(third_owner.effects.journal().operation(&timeout_operation).ok_or("lost preparation")?.state, fss_core::EffectState::Cancelled);
-                        third_owner.approval = &Approval;
+                        let evidence = recovery.borrow_mut().take().ok_or("deadline recovery skipped")??;
+                        assert_eq!(spool.borrow().state(evidence), Some(fss_object::SpoolObjectState::Verified));
+                        assert!(deadline_trace.borrow().preparation_cancelled());
+                        assert_eq!(third_owner.borrow().effects.journal().operation(&timeout_operation).ok_or("lost preparation")?.state, fss_core::EffectState::Cancelled);
+                        third_owner.borrow_mut().approval = &Approval;
                         timeout_peer.finish()?;
                     }
 
@@ -1771,9 +1781,10 @@ fn parallel_fleet_upgrade_scenario(
                         let candidate_address = if failure == 2 { SocketAddrV4::new(PEERS[1], probe_address.port()) } else { probe_address };
                         let resource = if failure == 3 { &resources[1] } else { &resources[2] };
                         let http_auth: &dyn camera_http::Authority = if failure == 4 { &deny_login } else { &policy };
-                        third_owner.admission = if failure == 5 { &deny_admission } else { &policy };
+                        let mut owner = third_owner.borrow_mut();
+                        owner.admission = if failure == 5 { &deny_admission } else { &policy };
                         let result = camera_setup::run(
-                            &fleet, 2, &mut third_owner, &listener, http_auth, candidate_address,
+                            &fleet, 2, &mut owner, &listener, http_auth, candidate_address,
                             candidate_cert, handle, br#"{"username":"fixture","password":"synthetic"}"#,
                             resource, lease, scoped_camera_provider.clone(), fences[2], peer,
                             &operations[2], handoff::Framing::ContentLength, Duration::from_secs(5), &mut trace,
@@ -1787,7 +1798,7 @@ fn parallel_fleet_upgrade_scenario(
                         assert!(matches!(probe.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
                         assert!(matches!(other_probe.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
                     }
-                    third_owner.admission = &policy;
+                    third_owner.borrow_mut().admission = &policy;
                     let mut denied_acquisitions = [
                         fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(task, cx, clock, &resources[2], 128)?,
                         fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(task, cx, clock, &resources[2], 128)?,
@@ -1796,7 +1807,7 @@ fn parallel_fleet_upgrade_scenario(
                     let mut denied_trace = setup::Trace::default();
                     let denied_operation = OperationId::parse("operation:denied-preflight-retry")?;
                     assert!(matches!(camera_setup::run_with_preflight_retries(
-                        &fleet, 2, &mut third_owner, &listener, &deny_login, probe_address, cert, handles[2],
+                        &fleet, 2, &mut third_owner.borrow_mut(), &listener, &deny_login, probe_address, cert, handles[2],
                         br#"{"username":"fixture","password":"synthetic"}"#, &resources[2], &mut denied_acquisitions,
                         scoped_camera_provider.clone(), fences[2], peer, &denied_operation, handoff::Framing::ContentLength,
                         Duration::from_secs(5), &mut denied_trace, &denied_progress, preflight_policy,
@@ -1815,7 +1826,7 @@ fn parallel_fleet_upgrade_scenario(
                     )?;
                     let mut refused_trace = setup::Trace::default();
                     assert!(matches!(camera_setup::run_with_acquisition(
-                        &fleet, 2, &mut third_owner, &listener, &policy, probe_address, cert,
+                        &fleet, 2, &mut third_owner.borrow_mut(), &listener, &policy, probe_address, cert,
                         handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
                         &resources[2], &mut wrong_acquisition, scoped_camera_provider.clone(), fences[2],
                         peer, &operations[2], handoff::Framing::ContentLength, Duration::from_secs(5), &mut refused_trace,
@@ -1826,15 +1837,21 @@ fn parallel_fleet_upgrade_scenario(
                     assert!(wrong_acquisition.is_drained());
                     assert!(refused_trace.operation().is_none());
                     assert!(matches!(probe.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
-                    let setup_inner = camera_setup::run_with_acquisition(
-                        &fleet, 2, &mut third_owner, &listener, &policy, third_address, cert,
-                        handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
-                        &resources[2], &mut third_acquisition, scoped_camera_provider.clone(), fences[2],
-                        peer, &operations[2], handoff::Framing::ContentLength, Duration::from_secs(10), &mut third_trace,
-                    );
                     let setup_operation = operations[2].clone();
+                    let operation_work = operations[2].clone();
+                    let owner_work = third_owner.clone();
+                    let provider_work = scoped_camera_provider.clone();
+                    let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
+                    let (acquisition_work, trace_work) = (&mut third_acquisition, &mut third_trace);
                     let setup_future: CameraWork<'_, RetryCompletion<Result<setup::Outcome, camera_setup::Error>>> = Box::pin(async move {
-                        RetryCompletion { operation: setup_operation, output: setup_inner.await }
+                        let mut owner = owner_work.borrow_mut();
+                        let output = camera_setup::run_with_acquisition(
+                            fleet_work, 2, &mut owner, listener_work, policy_work, third_address, cert,
+                            handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
+                            resource_work, acquisition_work, provider_work, fences[2],
+                            peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(10), trace_work,
+                        ).await;
+                        RetryCompletion { operation: setup_operation, output }
                     });
                     let mut offered = Some(setup_future);
                     let factory_calls = Rc::new(Cell::new(0usize));
