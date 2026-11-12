@@ -38,6 +38,26 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # the JSONL is the log
 
+    def translate_path(self, path):
+        """Serve the flat root, but also honour an upstream-shaped path.
+
+        The injected Wyze upgrade tells the camera to fetch
+        `/wuv2/upgrade/<model>/firmware/<ver>.tar`, while this root is the flat
+        firmware directory. Without the fallback that request is a 404 that looks
+        exactly like a camera that never asked.
+        """
+        local = super().translate_path(path)
+        if os.path.exists(local):
+            return local
+        parts = [p for p in path.split("?")[0].split("/") if p]
+        if "firmware" in parts:
+            rest = parts[parts.index("firmware") + 1:]
+            if rest:
+                cand = os.path.join(ROOT, *rest)
+                if os.path.exists(cand):
+                    return cand
+        return local
+
     # -- byte accounting ---------------------------------------------------
     def copyfile(self, source, outputfile):
         sent = 0
