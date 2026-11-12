@@ -448,7 +448,11 @@ pub(super) fn terminal(
         ("capture_time", string("unknown")),
         (
             "timing_basis",
-            string("caller_fixed_cadence_validated_against_rtp"),
+            string(if options.source_duration_limit.is_some() {
+                "consecutive_source_pictures_asserted_no_reorder"
+            } else {
+                "caller_fixed_cadence_validated_against_rtp"
+            }),
         ),
         ("pixel_decode", "false".into()),
         ("capture_continuity", "false".into()),

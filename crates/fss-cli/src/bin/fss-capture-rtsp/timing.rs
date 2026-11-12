@@ -32,6 +32,105 @@ pub(super) struct FixedTiming {
     reordered: Option<ReorderedRtpClock>,
 }
 
+/// Relative timing from two complete, consecutively retained pictures.
+/// The owner must explicitly assert decode order equals presentation order;
+/// source timestamps do not prove capture time or the absence of missing frames.
+#[derive(Debug)]
+pub(super) struct VariableTiming {
+    max_step: u32,
+    next: Option<PreviousPicture>,
+}
+
+impl VariableTiming {
+    pub(super) fn new(max_step: u32) -> Result<Self, &'static str> {
+        if !(1..=90_000).contains(&max_step) {
+            return Err("source duration limit must be in 1..=90000 ticks");
+        }
+        Ok(Self {
+            max_step,
+            next: None,
+        })
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        current: PictureTimingRequest,
+        next: PictureTimingRequest,
+    ) -> Result<RecordingTiming, &'static str> {
+        if current.key.ingress == 0 || current.key.generation == 0 || current.key != next.key {
+            return Err("source stream changed");
+        }
+        let decode_time = match self.next {
+            Some(previous)
+                if previous.key == current.key
+                    && previous.rtp_timestamp == current.rtp_timestamp =>
+            {
+                previous.next_decode_time
+            }
+            Some(_) => return Err("lookahead witness changed"),
+            None => 0,
+        };
+        let duration = next.rtp_timestamp.wrapping_sub(current.rtp_timestamp);
+        if duration == 0 || duration > self.max_step {
+            return Err(
+                "source timestamps are duplicate, reordered, or exceed the admitted duration",
+            );
+        }
+        let next_decode_time = decode_time
+            .checked_add(u64::from(duration))
+            .ok_or("relative source timeline exceeded its bound")?;
+        self.next = Some(PreviousPicture {
+            key: current.key,
+            rtp_timestamp: next.rtp_timestamp,
+            next_decode_time,
+        });
+        Ok(RecordingTiming {
+            decode_time,
+            duration,
+            composition_offset: 0,
+        })
+    }
+}
+
+/// The approved AVC timing strategy for a single capture.
+pub(super) enum CaptureTiming {
+    Fixed(FixedTiming),
+    Source(VariableTiming),
+}
+impl CaptureTiming {
+    pub(super) fn new(
+        duration: u32,
+        reorder: u8,
+        source_limit: Option<u32>,
+    ) -> Result<Self, &'static str> {
+        match source_limit {
+            Some(limit) if reorder == 0 => Ok(Self::Source(VariableTiming::new(limit)?)),
+            Some(_) => Err("source timing cannot be combined with reordered presentation"),
+            None => Ok(Self::Fixed(FixedTiming::with_reorder(duration, reorder)?)),
+        }
+    }
+    pub(super) fn finish(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Fixed(timing) => timing.finish(),
+            // The capture owner retains and reports the unwitnessed final picture.
+            Self::Source(_) => Ok(()),
+        }
+    }
+    pub(super) fn observe(
+        &mut self,
+        current: PictureTimingRequest,
+        next: Option<PictureTimingRequest>,
+    ) -> Result<RecordingTiming, &'static str> {
+        match self {
+            Self::Fixed(timing) => timing.observe(current),
+            Self::Source(timing) => timing.observe(
+                current,
+                next.ok_or("missing complete-picture timing witness")?,
+            ),
+        }
+    }
+}
+
 impl FixedTiming {
     /// Accept a positive duration expressed in the caller's fixed 90 kHz clock.
     pub(super) fn new(frame_duration: u32) -> Result<Self, &'static str> {
@@ -171,6 +270,56 @@ mod tests {
             boundary: AvcBoundary::RtpMarker,
             bytes: 1,
         }
+    }
+
+    #[test]
+    fn source_lookahead_uses_the_next_picture_and_survives_wrap() -> Result<(), &'static str> {
+        let mut timing = VariableTiming::new(4_000)?;
+        let origin = u32::MAX - 1_000;
+        assert_eq!(
+            timing.observe(picture(origin), picture(1_969))?,
+            RecordingTiming {
+                decode_time: 0,
+                duration: 2_970,
+                composition_offset: 0,
+            }
+        );
+        assert_eq!(
+            timing.observe(picture(1_969), picture(5_029))?,
+            RecordingTiming {
+                decode_time: 2_970,
+                duration: 3_060,
+                composition_offset: 0,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_lookahead_refuses_changed_witness_and_invalid_deltas_without_advancing()
+    -> Result<(), &'static str> {
+        let mut timing = VariableTiming::new(4_000)?;
+        timing.observe(picture(100_000), picture(102_970))?;
+        for (current, next) in [
+            (102_971, 106_031),
+            (102_970, 102_970),
+            (102_970, 102_969),
+            (102_970, 106_971),
+        ] {
+            assert!(timing.observe(picture(current), picture(next)).is_err());
+        }
+        let mut changed = picture(106_030);
+        changed.key.ssrc += 1;
+        assert!(timing.observe(picture(102_970), changed).is_err());
+        assert_eq!(
+            timing
+                .observe(picture(102_970), picture(106_030))?
+                .decode_time,
+            2_970
+        );
+        assert!(VariableTiming::new(0).is_err());
+        assert!(VariableTiming::new(90_001).is_err());
+        Ok(())
     }
 
     #[test]

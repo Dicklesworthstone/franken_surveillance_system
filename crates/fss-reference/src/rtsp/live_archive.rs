@@ -26,7 +26,7 @@ use super::recording_archive::{
     ArchiveAdmission, ArchiveError, ArchiveLimits, ArchiveNamespace, ArchiveRetirement,
     ArchiveSnapshot, ArchiveWriteProgress, RecordingArchiveWriter,
 };
-use super::recording_capture::{CapturePoll, TimedCapture};
+use super::recording_capture::{CaptureError, CapturePoll, PictureTimingRequest, TimedCapture};
 use super::recording_collector::RecordingTiming;
 use super::tcp::{TcpAuthority, TcpBinding, TcpDenial, TcpOperation, TcpTotals};
 
@@ -235,6 +235,23 @@ impl fmt::Debug for LiveAvcArchive<'_> {
     }
 }
 impl<'a> LiveAvcArchive<'a> {
+    /// Select bounded complete-picture lookahead before the recording owner
+    /// accepts media. This changes local buffering only; the caller still owns
+    /// the timing policy, authority, and unresolved final picture.
+    pub fn enable_timing_lookahead(&mut self) -> Result<(), CaptureError> {
+        self.recording
+            .as_mut()
+            .ok_or(CaptureError::Closed)?
+            .enable_timing_lookahead()
+    }
+
+    /// Metadata for the next held picture, not proof of continuity or time.
+    pub fn timing_lookahead(&self) -> Option<PictureTimingRequest> {
+        self.recording
+            .as_ref()
+            .and_then(LiveAvcRecording::timing_lookahead)
+    }
+
     /// Validate exact cross-owner scope, recover inventory, then connect once. A configuration or
     /// recovery failure performs no network attempt; open itself publishes no recording or page.
     #[allow(clippy::too_many_arguments)]

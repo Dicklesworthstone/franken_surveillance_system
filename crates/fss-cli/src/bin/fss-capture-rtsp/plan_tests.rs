@@ -60,6 +60,48 @@ pub(crate) fn set(args: &mut Vec<OsString>, key: &str, value: &str) {
 }
 
 #[test]
+fn source_lookahead_requires_explicit_scope_and_has_distinct_approval() -> Result<(), &'static str>
+{
+    let fixed = Options::parse(&args())?;
+    let mut input = args();
+    set(&mut input, "--source-duration-max-ticks", "6000");
+    assert!(Options::parse(&input).is_err());
+    set(&mut input, "--source-no-reorder", "yes");
+    let variable = Options::parse(&input)?;
+    assert_ne!(variable.digest()?, fixed.digest()?);
+    assert_ne!(
+        variable.catalog_scope().decode_clock,
+        fixed.catalog_scope().decode_clock
+    );
+    assert!(
+        variable
+            .preview()?
+            .contains("source-lookahead-relative-dts-asserted-no-reorder")
+    );
+    assert!(
+        variable
+            .preview()?
+            .contains("\"source_duration_max_ticks\":6000")
+    );
+    for (key, value) in [
+        ("--source-duration-max-ticks", "0"),
+        ("--source-duration-max-ticks", "90001"),
+        ("--source-no-reorder", "no"),
+        ("--max-reorder-pictures", "1"),
+        ("--codec", "hevc"),
+    ] {
+        let mut refused = input.clone();
+        set(&mut refused, key, value);
+        assert!(Options::parse(&refused).is_err(), "accepted {key}={value}");
+    }
+    let approved = variable.digest()?;
+    set(&mut input, "--approve", &approved.to_text());
+    set(&mut input, "--source-duration-max-ticks", "7000");
+    assert_ne!(Options::parse(&input)?.digest()?, approved);
+    Ok(())
+}
+
+#[test]
 fn automatic_ssrc_has_distinct_approval_clock_and_explicit_unobserved_state()
 -> Result<(), &'static str> {
     for codec in ["avc", "hevc"] {
@@ -778,7 +820,6 @@ fn owner_hevc_tuple_refuses_partial_wrong_codec_and_unbounded_nals() -> Result<(
     Ok(())
 }
 
-
 #[test]
 fn replay_request_binds_approval_and_archive_clock_without_replacing_observation_scope()
 -> Result<(), &'static str> {
@@ -790,12 +831,23 @@ fn replay_request_binds_approval_and_archive_clock_without_replacing_observation
     let replay = Options::parse(&input)?;
     let request = replay.replay.as_ref().ok_or("missing replay request")?;
     assert_eq!(live.recording.scope, replay.recording.scope);
-    assert_eq!(request.base_decode_clock(), live.catalog_scope().decode_clock);
+    assert_eq!(
+        request.base_decode_clock(),
+        live.catalog_scope().decode_clock
+    );
     assert_eq!(request.decode_clock(), replay.catalog_scope().decode_clock);
     assert_ne!(live.catalog_scope(), replay.catalog_scope());
     assert_ne!(live.digest()?, replay.digest()?);
-    assert!(replay.preview()?.contains("\"complete_interval_retrieval\":false"));
-    assert!(replay.preview()?.contains("\"historical_frame_time\":\"unknown\""));
+    assert!(
+        replay
+            .preview()?
+            .contains("\"complete_interval_retrieval\":false")
+    );
+    assert!(
+        replay
+            .preview()?
+            .contains("\"historical_frame_time\":\"unknown\"")
+    );
 
     // Equivalent spelling is normalized before identity construction.
     set(&mut input, "--replay-start", "20261101T120000.000Z");
@@ -810,17 +862,23 @@ fn replay_request_binds_approval_and_archive_clock_without_replacing_observation
     let changed = Options::parse(&input)?;
     assert_eq!(changed.approve, Some(approved));
     assert_ne!(changed.digest()?, approved);
-    assert_ne!(changed.catalog_scope().decode_clock, replay.catalog_scope().decode_clock);
     assert_ne!(
-        changed.replay.as_ref().ok_or("missing changed request")?.digest(),
+        changed.catalog_scope().decode_clock,
+        replay.catalog_scope().decode_clock
+    );
+    assert_ne!(
+        changed
+            .replay
+            .as_ref()
+            .ok_or("missing changed request")?
+            .digest(),
         request.digest(),
     );
     Ok(())
 }
 
 #[test]
-fn replay_route_and_fixed_cadence_are_part_of_request_provenance()
--> Result<(), &'static str> {
+fn replay_route_and_fixed_cadence_are_part_of_request_provenance() -> Result<(), &'static str> {
     let mut input = args();
     set(&mut input, "--replay-start", "20261101T120000Z");
     set(&mut input, "--replay-end", "20261101T120100Z");
@@ -828,16 +886,29 @@ fn replay_route_and_fixed_cadence_are_part_of_request_provenance()
     let request = initial.replay.as_ref().ok_or("missing replay")?;
     set(&mut input, "--peer", "127.0.0.2:8554");
     let route = Options::parse(&input)?;
-    assert_ne!(route.replay.as_ref().ok_or("missing route replay")?.route(), request.route());
-    assert_ne!(route.catalog_scope().decode_clock, initial.catalog_scope().decode_clock);
+    assert_ne!(
+        route.replay.as_ref().ok_or("missing route replay")?.route(),
+        request.route()
+    );
+    assert_ne!(
+        route.catalog_scope().decode_clock,
+        initial.catalog_scope().decode_clock
+    );
     set(&mut input, "--peer", "127.0.0.1:8554");
     set(&mut input, "--frame-duration-ticks", "3000");
     let cadence = Options::parse(&input)?;
     assert_ne!(
-        cadence.replay.as_ref().ok_or("missing cadence replay")?.base_decode_clock(),
+        cadence
+            .replay
+            .as_ref()
+            .ok_or("missing cadence replay")?
+            .base_decode_clock(),
         request.base_decode_clock(),
     );
-    assert_ne!(cadence.catalog_scope().decode_clock, initial.catalog_scope().decode_clock);
+    assert_ne!(
+        cadence.catalog_scope().decode_clock,
+        initial.catalog_scope().decode_clock
+    );
     Ok(())
 }
 
@@ -876,9 +947,18 @@ fn hevc_replay_is_explicit_and_binds_a_separate_clock_namespace_and_approval()
     let request = hevc.replay.as_ref().ok_or("missing HEVC replay")?;
     assert_eq!(request.codec().as_str(), "hevc");
     assert_eq!(hevc.recording.scope, avc.recording.scope);
-    assert_ne!(request.digest(), avc.replay.as_ref().ok_or("missing AVC replay")?.digest());
-    assert_ne!(hevc.catalog_scope().decode_clock, avc.catalog_scope().decode_clock);
-    assert_ne!(hevc.pin_scope().archive_namespace, avc.pin_scope().archive_namespace);
+    assert_ne!(
+        request.digest(),
+        avc.replay.as_ref().ok_or("missing AVC replay")?.digest()
+    );
+    assert_ne!(
+        hevc.catalog_scope().decode_clock,
+        avc.catalog_scope().decode_clock
+    );
+    assert_ne!(
+        hevc.pin_scope().archive_namespace,
+        avc.pin_scope().archive_namespace
+    );
     assert_ne!(hevc.digest()?, avc.digest()?);
     assert!(hevc.preview()?.contains("recorder-replay:hevc:"));
     set(&mut input, "--ssrc", "auto");

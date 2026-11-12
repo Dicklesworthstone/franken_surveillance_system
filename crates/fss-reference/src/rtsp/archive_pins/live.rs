@@ -15,7 +15,7 @@ use crate::rtsp::live_avc::{LiveAvcConfig, QueuedAvcRequest, SocketReadiness};
 use crate::rtsp::recording::PreparedRecording;
 use crate::rtsp::recording_archive::ArchiveSnapshot;
 use crate::rtsp::recording_archive::checkpoint::write_ahead::CheckpointedArchiveProgress;
-use crate::rtsp::recording_capture::TimedCapture;
+use crate::rtsp::recording_capture::{CaptureError, PictureTimingRequest, TimedCapture};
 use crate::rtsp::recording_collector::RecordingTiming;
 use crate::rtsp::tcp::{TcpAuthority, TcpTotals};
 
@@ -111,6 +111,22 @@ impl fmt::Debug for JournaledLiveAvcArchive<'_, '_> {
     }
 }
 impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
+    /// Enable complete-picture lookahead before accepting media. This selects
+    /// local buffering only and does not authorize or derive media timing.
+    pub fn enable_timing_lookahead(&mut self) -> Result<(), CaptureError> {
+        self.inner
+            .as_mut()
+            .ok_or(CaptureError::Closed)?
+            .enable_timing_lookahead()
+    }
+
+    /// Next held picture's unverified source metadata, when present.
+    pub fn timing_lookahead(&self) -> Option<PictureTimingRequest> {
+        self.inner
+            .as_ref()
+            .and_then(CheckpointedLiveAvcArchive::timing_lookahead)
+    }
+
     /// Validate journal namespace and settled prior work BEFORE connecting. The caller already
     /// owns each separately opened storage capability and its independent protection policy.
     #[allow(clippy::too_many_arguments)]

@@ -24,8 +24,8 @@ use fss_reference::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use fss_reference::rtsp::campaign_history::{
     CampaignRetryReason, NativeAttemptObservation, NativeBindings,
 };
-use fss_reference::rtsp::client::{ClientCommand, ClientError, ClientProgress, ClientState};
 use fss_reference::rtsp::client::replay::ReplayRejection;
+use fss_reference::rtsp::client::{ClientCommand, ClientError, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
 use fss_reference::rtsp::live_avc::{LiveAvcError, LiveAvcStep, SocketReadiness};
@@ -41,7 +41,7 @@ use fss_runtime::execution::TaskCx;
 
 use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, SecretError};
 use super::plan::Options;
-use super::timing::FixedTiming;
+use super::timing::{CaptureTiming, FixedTiming};
 
 #[path = "attempt.rs"]
 mod attempt;
@@ -768,10 +768,11 @@ fn network_step<W: Write>(
                         } else {
                             ClientCommand::Setup
                         }),
-                        ClientState::Ready => Some(stats.replay.as_ref().map_or(
-                            ClientCommand::Play,
-                            |replay| ClientCommand::PlayReplay(replay.window()),
-                        )),
+                        ClientState::Ready => {
+                            Some(stats.replay.as_ref().map_or(ClientCommand::Play, |replay| {
+                                ClientCommand::PlayReplay(replay.window())
+                            }))
+                        }
                         _ => None,
                     };
                     log.emit(
@@ -1047,9 +1048,17 @@ fn drive<W: Write>(
         codec: "avc",
         owner,
     };
-    let mut timing =
-        FixedTiming::with_reorder(options.frame_duration, options.max_reorder_pictures)
+    let mut timing = CaptureTiming::new(
+        options.frame_duration,
+        options.max_reorder_pictures,
+        options.source_duration_limit,
+    )
+    .map_err(|_| Failure::Timing)?;
+    if options.source_duration_limit.is_some() {
+        capture
+            .enable_timing_lookahead()
             .map_err(|_| Failure::Timing)?;
+    }
     let mut next_command = Some(ClientCommand::Describe);
     let mut challenge = None;
     let mut ready = false;
@@ -1363,8 +1372,9 @@ fn drive<W: Write>(
                                 // Cancellation below accounts for the still-held picture once.
                                 return Err(Failure::State);
                             }
-                            let selected_timing =
-                                timing.observe(request).map_err(|_| Failure::Timing)?;
+                            let selected_timing = timing
+                                .observe(request, capture.timing_lookahead())
+                                .map_err(|_| Failure::Timing)?;
                             let timed = capture
                                 .supply_timing(selected_timing, owner.now()?, owner, owner)
                                 .map_err(|e| failure(e, stats))?;
@@ -1690,8 +1700,7 @@ fn run_owned<W: Write>(
             && matches!(
                 capture_result,
                 Err(Failure::Authority | Failure::Protocol | Failure::Connect)
-            )
-        {
+            ) {
             Err(Failure::Clock)
         } else {
             capture_result

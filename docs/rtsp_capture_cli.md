@@ -12,7 +12,7 @@ use [`fss-capture-rtsp sentinel`](LIVE_RTSP_SENTINEL.md). Its outer approval als
 binds the destination, package, sampling and analysis bounds.
 
 This bounded reference command supports one owner-approved plaintext RTSP-over-TCP
-session, one selected video track and an explicitly declared fixed cadence. Authentication
+session, one selected video track and an explicitly declared timing policy. Authentication
 challenges are refused by default. Linux operators can explicitly authorize scoped
 Digest authentication using the private credential-file contract below. It does not
 discover devices, reconnect, decode pixels or certify scene coverage.
@@ -51,6 +51,17 @@ identities, destinations or timing need new approval; argument order does not ma
 Ingress accepts the full nonzero 128-bit unsigned range. Its preview field is a decimal
 string, and the approval and decode-clock identities bind all 16 bytes exactly.
 Source digests and an audit principal do not authenticate the camera.
+
+For AVC sources with variable frame intervals, an operator who has established
+that the source does not reorder pictures can instead add
+`--source-duration-max-ticks N --source-no-reorder yes`. Each complete picture's
+duration comes from the next complete picture's RTP timestamp, bounded by N
+(1–90,000 ticks). The final picture without a following timestamp is retained as
+untimed rather than assigned an invented duration. `--frame-duration-ticks` is
+still required as a declared nominal value; it does not set those durations.
+This policy requires a fresh plan and approval, and is not available for HEVC,
+reordered pictures or historical replay. Timestamp spacing does not prove that
+frames were not lost, establish exposure time, or prove the no-reordering claim.
 
 For a server that chooses its RTP sender ID per session, use `--ssrc auto` for
 single AVC/HEVC recording. The preview reports the sender as unresolved. SETUP's

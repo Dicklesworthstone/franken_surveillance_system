@@ -1,0 +1,20 @@
+[package]
+name = "rtsp-lookahead-process-lab"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dev-dependencies]
+fss-cli = { path = "../../crates/fss-cli" }
+fss-container = { path = "../../crates/fss-container" }
+fss-core = { path = "../../crates/fss-core" }
+fss-object = { path = "../../crates/fss-object" }
+fss-packet = { path = "../../crates/fss-packet" }
+fss-publication = { path = "../../crates/fss-publication" }
+fss-reference = { path = "../../crates/fss-reference" }
+fss-tutk = { path = "../../crates/fss-tutk" }
+
+[[test]]
+name = "capture_rtsp_cli"
+path = "../../crates/fss-cli/tests/capture_rtsp_cli.rs"

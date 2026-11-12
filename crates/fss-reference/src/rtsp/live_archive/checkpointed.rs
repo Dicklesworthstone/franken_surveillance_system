@@ -80,6 +80,19 @@ impl fmt::Debug for CheckpointedLiveAvcArchive<'_> {
     }
 }
 impl<'a> CheckpointedLiveAvcArchive<'a> {
+    /// Enable complete-picture lookahead before accepting media. This does not
+    /// select or authorize a timing policy.
+    pub fn enable_timing_lookahead(
+        &mut self,
+    ) -> Result<(), crate::rtsp::recording_capture::CaptureError> {
+        self.inner.enable_timing_lookahead()
+    }
+
+    /// Next held picture's unverified source metadata, when present.
+    pub fn timing_lookahead(&self) -> Option<crate::rtsp::recording_capture::PictureTimingRequest> {
+        self.inner.timing_lookahead()
+    }
+
     /// Validate work/inventory ceilings before archive recovery or any connection attempt.
     /// Existing live scope, authentication, owner authority and network limits still apply.
     #[allow(clippy::too_many_arguments)]

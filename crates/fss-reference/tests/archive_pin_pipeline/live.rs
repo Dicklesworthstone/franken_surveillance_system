@@ -276,6 +276,87 @@ impl<'a, 'p> Fixture<'a, 'p> {
     }
 }
 #[test]
+fn journaled_live_owner_preserves_variable_timing_witnesses() -> Test {
+    let path = fresh("live_variable_timing")?;
+    let mut publisher = LocalRootPublisher::open(path.join("media"), storage())?;
+    let mut pins = ArchivePinJournal::create(
+        path.join("pins"),
+        pin_scope()?,
+        ArchivePinLimits::default(),
+        &NeverCancel,
+    )?;
+    let mut f = Fixture::playing(&mut publisher, &mut pins)?;
+    f.driver.enable_timing_lookahead()?;
+    let source = fixture(31, false)?;
+    let first = source.packets.first().ok_or("no fixture packet")?;
+    let mut probation = recording_support::packet(0, false, &first.2[12..]);
+    probation[4..8].copy_from_slice(&90_000_u32.to_be_bytes());
+    assert!(!f.datagram(&probation, 6)?);
+    let mut sequence = 1_u16;
+    for (group, timestamp) in [90_000_u32, 92_970, 96_030].into_iter().enumerate() {
+        let mut asked = false;
+        for (_, _, original) in &source.packets {
+            let mut packet = original.clone();
+            packet[2..4].copy_from_slice(&sequence.to_be_bytes());
+            packet[4..8].copy_from_slice(&timestamp.to_be_bytes());
+            sequence += 1;
+            asked |= f.datagram(&packet, 10 + (group as u64) * 100 + u64::from(sequence))?;
+        }
+        if group == 0 {
+            assert!(!asked);
+            assert!(f.driver.timing_lookahead().is_none());
+        } else if group == 1 {
+            assert!(asked);
+            assert_eq!(
+                f.driver
+                    .timing_lookahead()
+                    .ok_or("missing lookahead")?
+                    .rtp_timestamp,
+                timestamp
+            );
+            assert!(matches!(
+                f.driver.supply_timing(
+                    RecordingTiming {
+                        decode_time: 0,
+                        duration: 2_970,
+                        composition_offset: 0,
+                    },
+                    200,
+                    &f.authority,
+                    &NeverCancel
+                )?,
+                fss_reference::rtsp::recording_capture::TimedCapture::Collected { .. }
+            ));
+        } else {
+            assert!(asked);
+            assert_eq!(
+                f.driver
+                    .timing_lookahead()
+                    .ok_or("missing second lookahead")?
+                    .rtp_timestamp,
+                timestamp
+            );
+        }
+    }
+    let retired = f.driver.cancel().ok_or("missing retirement")?;
+    let capture = &retired
+        .live
+        .live
+        .recording
+        .as_ref()
+        .ok_or("missing recording")?
+        .capture;
+    assert_eq!(
+        capture.picture.as_ref().map(|p| p.timestamp()),
+        Some(92_970)
+    );
+    assert_eq!(
+        capture.lookahead_picture.as_ref().map(|p| p.timestamp()),
+        Some(96_030)
+    );
+    Ok(())
+}
+#[test]
 fn live_camera_source_crosses_both_journal_barriers_without_socket_read_ahead() -> Test {
     let path = fresh("live_complete")?;
     let mut p = LocalRootPublisher::open(path.join("media"), storage())?;

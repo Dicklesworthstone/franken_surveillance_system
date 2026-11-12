@@ -41,7 +41,7 @@ No DNS, API login, stream enablement, camera setting change, or alternate route 
 All models use their reported capabilities. Package quality requires hasPackageCamera=true\n\
 and remains a distinct view. Disabled, missing and unsupported qualities never fall back.\n\
 An exported connection state is historical metadata, not proof of current camera liveness.\n\
-The caller supplies --codec, exact cadence, unique sensor/stream identity per view, generation,\n\
+The caller supplies --codec, an admitted timing policy, unique sensor/stream identity per view, generation,\n\
 source/clock/timing evidence, original-retention authorization and new archive/pin paths.\n\
 Do not supply --authority or --presentation: they come from the private selected endpoint.\n\
 The default control root is its exact path without the query; any wider root is explicit.\n\

@@ -145,6 +145,64 @@ fn exact_retained_sender(
 }
 
 #[test]
+fn source_lookahead_records_variable_intervals_and_accounts_for_final_picture() -> Test {
+    let directory = Directory::new("source-lookahead")?;
+    let listener = listener()?;
+    let mut args = args(&directory, listener.local_addr()?, 2);
+    args.extend([
+        "--source-duration-max-ticks".into(),
+        "6000".into(),
+        "--source-no-reorder".into(),
+        "yes".into(),
+    ]);
+    let wire = video(3, 3600, 96, false)?;
+    let mut sent = Vec::new();
+    let mut at = 0;
+    while at < wire.len() {
+        let length = usize::from(u16::from_be_bytes([wire[at + 2], wire[at + 3]]));
+        let mut packet = wire[at + 4..at + 4 + length].to_vec();
+        let original = u32::from_be_bytes(packet[4..8].try_into()?);
+        let timestamp: u32 = match original {
+            9_000 => 9_000,
+            12_600 => 11_970,
+            16_200 => 15_030,
+            _ => return Err("unexpected fixture timestamp".into()),
+        };
+        packet[4..8].copy_from_slice(&timestamp.to_be_bytes());
+        sent.push(packet);
+        at += 4 + length;
+    }
+    let output = captured_sender(listener, &approve(&args)?, Some(7), &sent)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = rows(&output)?;
+    let terminal = detail(&rows, "terminal")?;
+    assert!(boolean(terminal, "complete")?);
+    assert_eq!(integer(terminal, "durable_pictures")?, 2);
+    assert_eq!(
+        text(terminal, "timing_basis")?,
+        "consecutive_source_pictures_asserted_no_reorder"
+    );
+    assert!(integer(terminal, "untimed_picture_bytes")? > 0);
+    let durations: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            let event = value(row, "detail").ok()?;
+            (text(row, "kind").ok()? == "picture_collected")
+                .then(|| integer(event, "duration").ok())
+                .flatten()
+        })
+        .collect();
+    assert_eq!(durations, [2_970, 3_060]);
+    import_and_decode(&directory, &rows, 2)?;
+    Ok(())
+}
+
+#[test]
 fn auto_ssrc_avc_retains_setup_or_packet_sender_through_cold_import() -> Test {
     for (advertised, ssrc) in [(Some(0x1020_3040), 0x1020_3040), (None, 0)] {
         let directory = Directory::new("ssrc-avc")?;

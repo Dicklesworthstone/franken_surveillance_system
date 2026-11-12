@@ -25,8 +25,8 @@ use fss_reference::rtsp::recording_archive::{
     checkpoint::{ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES},
 };
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::rtsp::recording_replay::{OnvifReplaySource, ReplayRequest};
 use fss_reference::rtsp::recording_collector::{CollectorLimits, RecordingCollector};
+use fss_reference::rtsp::recording_replay::{OnvifReplaySource, ReplayRequest};
 use fss_reference::rtsp::tcp::{SsrcPolicy, TcpBinding, TcpLimits, TcpSecurityPolicy};
 
 use super::authentication::{AuthPlan, MAX_CREDENTIAL_BYTES, MAX_SECRET_IO_CALLS};
@@ -108,10 +108,16 @@ Replay has no live fallback, reconnect, retain-source, sentinel or onboarding-wr
 \n\
 The operator supplies a fixed 90000 Hz cadence (for example 3600 ticks for 25 pictures/s)\n\
 and evidence identifying that timing policy. Default mode requires monotonic RTP cadence.\n\
+For AVC, --source-duration-max-ticks N --source-no-reorder yes selects bounded source\n\
+lookahead timing. The operator asserts decode order equals presentation order. Durations\n\
+come from consecutive completed source pictures, not a wall clock or completeness proof.\n\
+The required --frame-duration-ticks remains a declared nominal value in approval; it does\n\
+not supply durations in lookahead mode. Source gaps within the bound are not detected.\n\
+The last unwitnessed picture is accounted for but is not assigned a guessed duration.\n\
 Opt in with --max-reorder-pictures 1..16 for fixed-cadence closed-GOP B-picture presentation.\n\
 This binds a new approval and decode clock, retains decoding order and signed PTS-DTS offsets.\n\
 The requested stop must close every presentation position; an unresolved prefix fails instead\n\
-of exceeding the picture target or filling a gap. Variable cadence, open GOPs, duplicates,\n\
+of exceeding the picture target or filling a gap. Open GOPs, duplicates,\n\
 drift correction, guessed capture time and loss concealment remain unsupported.\n\
 Pictures are source-linked assembled pictures, not a claim of successful pixel decode.\n\
 Original RTP and derived recording children are published through the native journaled\n\
@@ -164,6 +170,7 @@ pub(super) struct Options {
     pub(super) stop_after_pictures: u64,
     pub(super) frame_duration: u32,
     pub(super) max_reorder_pictures: u8,
+    pub(super) source_duration_limit: Option<u32>,
     pub(super) keepalive: ClientCommand,
     pub(super) time_scale: u32,
     pub(super) timeout_ns: u64,
@@ -195,6 +202,18 @@ fn timing_policy(base: &str, depth: u8) -> String {
     } else {
         base.replace("exact-cadence:relative-dts:zero-composition-offset",
             "declared-fixed-cadence:relative-dts:signed-composition-offset:bounded-reorder:closed-presentation-prefix:v1")
+    }
+}
+
+fn selected_timing_policy(base: &str, depth: u8, source_limit: Option<u32>) -> String {
+    let policy = timing_policy(base, depth);
+    if source_limit.is_some() {
+        policy.replace(
+            "exact-cadence:relative-dts:zero-composition-offset",
+            "source-picture-lookahead:relative-dts:asserted-no-reorder:unwitnessed-tail-omitted:v1",
+        )
+    } else {
+        policy
     }
 }
 
@@ -336,6 +355,8 @@ impl Options {
             "--journal-id",
             "--frame-duration-ticks",
             "--max-reorder-pictures",
+            "--source-duration-max-ticks",
+            "--source-no-reorder",
             "--keepalive-method",
             "--replay-start",
             "--replay-end",
@@ -537,6 +558,27 @@ impl Options {
             0,
             u64::from(fss_packet::cadence::MAX_CADENCE_REORDER),
         )? as u8;
+        let source_duration_limit = match (
+            values.get("--source-duration-max-ticks"),
+            values.get("--source-no-reorder"),
+        ) {
+            (None, None) => None,
+            (Some(limit), Some(&"yes")) => {
+                let limit = u32::try_from(unsigned(limit)?)
+                    .map_err(|_| "source duration limit exceeds 32 bits")?;
+                if is_hevc || max_reorder_pictures != 0 || !(1..=90_000).contains(&limit) {
+                    return Err(
+                        "source lookahead requires AVC, no reorder, and a 1..=90000 tick limit",
+                    );
+                }
+                Some(limit)
+            }
+            _ => {
+                return Err(
+                    "source lookahead requires a duration bound and explicit no-reorder assertion",
+                );
+            }
+        };
         let time_scale = 90_000;
         let timing_evidence = digest(required("--timing-evidence")?)?;
         let scope = RecordingScope {
@@ -564,8 +606,12 @@ impl Options {
         )
         .map_err(|_| "native recording scope or limits refused")?;
         let mut clock = CanonicalEncoder::new();
-        clock.text("fss.rtsp_capture_fixed_clock.v1");
-        clock.text(&timing_policy(
+        clock.text(if source_duration_limit.is_some() {
+            "fss.rtsp_capture_source_lookahead_clock.v1"
+        } else {
+            "fss.rtsp_capture_fixed_clock.v1"
+        });
+        clock.text(&selected_timing_policy(
             if supplied.is_some() {
                 HEVC_SUPPLIED_POLICY
             } else if is_hevc {
@@ -574,6 +620,7 @@ impl Options {
                 POLICY
             },
             max_reorder_pictures,
+            source_duration_limit,
         ));
         clock.digest(timing_evidence);
         clock.digest(scope.receive_clock);
@@ -586,6 +633,10 @@ impl Options {
         }
         clock.u32(time_scale);
         clock.u32(frame_duration);
+        if let Some(limit) = source_duration_limit {
+            clock.text("source-picture-lookahead:no-reorder:unwitnessed-tail-omitted:v1");
+            clock.u32(limit);
+        }
         if max_reorder_pictures != 0 {
             clock.u32(u32::from(max_reorder_pictures));
         }
@@ -606,6 +657,9 @@ impl Options {
             base_decode_clock,
             onvif_source,
         )?;
+        if source_duration_limit.is_some() && replay.is_some() {
+            return Err("source lookahead is not admitted for recorder replay");
+        }
         // Historical request identity is part of archive media-clock provenance.
         // It never replaces the authority anchor or local packet receive clock.
         let decode_clock = replay
@@ -707,6 +761,7 @@ impl Options {
             stop_after_pictures,
             frame_duration,
             max_reorder_pictures,
+            source_duration_limit,
             keepalive,
             time_scale,
             timeout_ns,
@@ -734,11 +789,22 @@ impl Options {
     }
 
     /// Seal the checked outer handoff approval while delegating its exact native child plan.
-    pub(super) fn approve_protected_replay(&mut self, outer: ContentDigest) -> Result<(), &'static str> {
-        if self.approve.is_some() || self.protected_replay_approval.is_some()
-            || self.replay.as_ref().is_none_or(|request| request.onvif_source().is_none())
-            || outer.algorithm() != DigestAlgorithm::Sha256 || outer.is_laboratory() || outer.bytes() == [0; 32]
-        { return Err("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001"); }
+    pub(super) fn approve_protected_replay(
+        &mut self,
+        outer: ContentDigest,
+    ) -> Result<(), &'static str> {
+        if self.approve.is_some()
+            || self.protected_replay_approval.is_some()
+            || self
+                .replay
+                .as_ref()
+                .is_none_or(|request| request.onvif_source().is_none())
+            || outer.algorithm() != DigestAlgorithm::Sha256
+            || outer.is_laboratory()
+            || outer.bytes() == [0; 32]
+        {
+            return Err("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001");
+        }
         self.approve = Some(self.digest()?);
         self.protected_replay_approval = Some(outer);
         Ok(())
@@ -790,13 +856,14 @@ impl Options {
         if self.hevc.is_some() { "hevc" } else { "avc" }
     }
     fn policy(&self) -> String {
-        let mut policy = timing_policy(
+        let mut policy = selected_timing_policy(
             match self.hevc.as_ref() {
                 Some(plan) if plan.supplied.is_some() => HEVC_SUPPLIED_POLICY,
                 Some(_) => HEVC_POLICY,
                 None => POLICY,
             },
             self.max_reorder_pictures,
+            self.source_duration_limit,
         );
         if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
             policy.push(':');
@@ -930,6 +997,9 @@ impl Options {
         }
         if self.max_reorder_pictures != 0 {
             numbers.push(("max_reorder_pictures", u64::from(self.max_reorder_pictures)));
+        }
+        if let Some(limit) = self.source_duration_limit {
+            numbers.push(("source_duration_max_ticks", u64::from(limit)));
         }
         if let Some(preview) = &self.live_preview {
             numbers.extend(preview.numbers());
@@ -1110,7 +1180,9 @@ impl Options {
             ),
             (
                 "timing",
-                string(if self.max_reorder_pictures == 0 {
+                string(if self.source_duration_limit.is_some() {
+                    "source-lookahead-relative-dts-asserted-no-reorder"
+                } else if self.max_reorder_pictures == 0 {
                     "operator-asserted-fixed-cadence-relative-dts"
                 } else {
                     "operator-asserted-fixed-cadence-bounded-reorder-signed-offsets"
