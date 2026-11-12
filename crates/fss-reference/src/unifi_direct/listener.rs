@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! One task-bound, policy-scoped TCP listener for a UniFi media stream.
+//! One task-bound, policy-scoped TCP listener for UniFi media connections.
 //!
 //! IP admission is not cryptographic camera authentication. The caller must
 //! bind policy to independently established identity, controller session and
@@ -8,7 +8,8 @@
 use super::{
     ingress::DirectIngress, metered::MeteredClock, pipeline::Pipeline, recording::Recorder,
 };
-use asupersync::{Cx, net::TcpListener, time::timeout_at};
+use asupersync::{Cx, net::TcpListener, time::timeout_at, types::Time};
+use fss_container::flv_avc::SourceKey;
 use fss_core::{BudgetVector, RuntimeGrant};
 use fss_packet::extended_flv::stream::Framer;
 use fss_runtime::{
@@ -27,6 +28,7 @@ use std::{
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
 const MAX_ACCEPT_OBSERVATIONS: usize = 128;
+const MAX_MEDIA_CANDIDATES: usize = 16;
 
 /// Current bounded, nonblocking authorization for this listener and peer.
 /// The implementation must bind these addresses to the owner's independently
@@ -179,7 +181,26 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
     /// task capabilities and clock are rechecked on every accept poll and once
     /// after acceptance. The listener is consumed on every outcome.
     pub async fn accept(
-        self,
+        mut self,
+        framer: Framer,
+        recorder: Recorder,
+        chunk_bytes: usize,
+        max_bytes: u64,
+        wait: Duration,
+    ) -> Result<Pipeline, Error> {
+        self.accept_next(framer, recorder, chunk_bytes, max_bytes, wait)
+            .await
+    }
+
+    /// Accept one candidate while keeping this listener bound for subsequent
+    /// connections. The mutable borrow prevents overlapping accepts. Each
+    /// returned pipeline owns its own socket and caller-supplied source key;
+    /// the caller must retire it and account for any bytes before deciding
+    /// whether another connection is appropriate. This method neither selects
+    /// a healthy stream nor changes camera settings. Cancellation or refusal
+    /// preserves the listener, but consumes the supplied framer and recorder.
+    pub async fn accept_next(
+        &mut self,
         framer: Framer,
         recorder: Recorder,
         chunk_bytes: usize,
@@ -306,6 +327,462 @@ pub struct StartedBeforeReply {
     pub pipeline: Pipeline,
 }
 
+/// A media startup that keeps the original listener for later connections.
+/// Returning this owner does not select a healthy source or settle effects.
+#[must_use = "retire the pipeline and explicitly supervise the retained listener"]
+pub struct StartedWithListener<'scope, 'task, 'policy> {
+    /// The first admitted connection and local startup observations.
+    pub started: StartedBeforeReply,
+    /// The same bound listener, available for another admitted connection.
+    pub listener: Listener<'scope, 'task, 'policy>,
+}
+
+/// Refusal while selecting a nonempty connection. Source bytes remain with the
+/// selector's candidate pipelines; no refusal authorizes another camera command.
+#[derive(Debug)]
+pub enum CandidateError {
+    /// Invalid limits, a non-fresh initial pipeline, or an exhausted selector.
+    Configuration,
+    /// The finite total selection deadline elapsed.
+    Deadline,
+    /// All allowed candidates closed without sending data.
+    EmptyLimit,
+    /// The attempt limit was reached with no structurally valid header.
+    NoValidHeader,
+    /// The factory could not construct the next inert source owners.
+    Factory(std::io::ErrorKind),
+    /// The next caller-supplied source key was already used in this selection.
+    DuplicateSource,
+    /// Listener policy, task, network or accept failure.
+    Accept(Error),
+    /// First-byte probe failed; the candidate pipeline remains caller-owned.
+    Probe(super::pipeline::ProbeError),
+}
+impl fmt::Display for CandidateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi media candidate selection stopped: {self:?}")
+    }
+}
+impl std::error::Error for CandidateError {}
+
+/// A constructor refusal returning both original owners.
+#[must_use]
+pub struct CandidateRefusal<'scope, 'task, 'policy> {
+    /// Original listener, unchanged and still bound.
+    pub listener: Listener<'scope, 'task, 'policy>,
+    /// Original first pipeline.
+    pub pipeline: Pipeline,
+}
+
+/// Bounded, caller-owned selection of the first connection to send a byte.
+/// A nonempty connection is not necessarily valid media or an authenticated
+/// camera. Control traffic must be supervised independently while this runs.
+#[must_use = "retain the selected or unfinished pipeline and listener"]
+pub struct MediaCandidates<'scope, 'task, 'policy> {
+    listener: Listener<'scope, 'task, 'policy>,
+    current: Option<Pipeline>,
+    additional: [Option<Box<Pipeline>>; MAX_MEDIA_CANDIDATES - 1],
+    parallel: bool,
+    validate_header: bool,
+    probeable: [bool; MAX_MEDIA_CANDIDATES],
+    cursor: usize,
+    selected: usize,
+    keys: [Option<SourceKey>; MAX_MEDIA_CANDIDATES],
+    attempts: usize,
+    max_attempts: usize,
+    chunk_bytes: usize,
+    max_bytes: u64,
+    deadline: Time,
+    ready: bool,
+}
+
+impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
+    /// Start with the fresh first connection from a retained-listener startup.
+    /// The count includes that connection. Refusal returns both owners.
+    pub fn new(
+        listener: Listener<'scope, 'task, 'policy>,
+        pipeline: Pipeline,
+        max_attempts: usize,
+        chunk_bytes: usize,
+        max_bytes: u64,
+        wait: Duration,
+    ) -> Result<Self, CandidateRefusal<'scope, 'task, 'policy>> {
+        if !pipeline.is_fresh()
+            || !(1..=MAX_MEDIA_CANDIDATES).contains(&max_attempts)
+            || !(1..=MAX_CHUNK_BYTES).contains(&chunk_bytes)
+            || max_bytes == 0
+            || !valid_wait(wait)
+        {
+            return Err(CandidateRefusal { listener, pipeline });
+        }
+        let mut keys = [None; MAX_MEDIA_CANDIDATES];
+        keys[0] = Some(pipeline.source_key());
+        let deadline = listener.cx.now() + wait;
+        Ok(Self {
+            listener,
+            current: Some(pipeline),
+            additional: std::array::from_fn(|_| None),
+            parallel: false,
+            validate_header: false,
+            probeable: std::array::from_fn(|index| index == 0),
+            cursor: 0,
+            selected: 0,
+            keys,
+            attempts: 1,
+            max_attempts,
+            chunk_bytes,
+            max_bytes,
+            deadline,
+            ready: false,
+        })
+    }
+
+    /// Start directly in concurrent FLV-header mode. Refusal returns the
+    /// original owners when the supplied limit for subsequent candidates
+    /// cannot hold the shortest legal header. The first pipeline keeps its
+    /// separately configured limit. This neither authenticates a peer nor proves
+    /// that any subsequent media tag is valid.
+    pub fn new_validating(
+        listener: Listener<'scope, 'task, 'policy>,
+        pipeline: Pipeline,
+        max_attempts: usize,
+        chunk_bytes: usize,
+        max_bytes: u64,
+        wait: Duration,
+    ) -> Result<Self, CandidateRefusal<'scope, 'task, 'policy>> {
+        if max_bytes < 13 {
+            return Err(CandidateRefusal { listener, pipeline });
+        }
+        let mut owner = Self::new(
+            listener,
+            pipeline,
+            max_attempts,
+            chunk_bytes,
+            max_bytes,
+            wait,
+        )?;
+        owner.parallel = true;
+        owner.validate_header = true;
+        Ok(owner)
+    }
+
+    /// Try candidates until one sends a byte or a finite bound/refusal is met.
+    /// The factory must be inert and return a fresh key for each accepted
+    /// connection. A dropped borrowing wait retains the listener and current
+    /// pipeline; if it was waiting to accept, the unaccepted factory products
+    /// are consumed and may need to be reconstructed. Stalled candidates are
+    /// retained on deadline rather than classified as empty.
+    pub async fn select<F>(&mut self, factory: &mut F) -> Result<(), CandidateError>
+    where
+        F: FnMut(usize) -> std::io::Result<(Framer, Recorder)>,
+    {
+        if self.ready {
+            return Err(CandidateError::Configuration);
+        }
+        if self.parallel {
+            return self.select_parallel(factory).await;
+        }
+        loop {
+            if self.listener.cx.now() >= self.deadline {
+                return Err(CandidateError::Deadline);
+            }
+            if self.current.is_none() {
+                if self.attempts >= self.max_attempts {
+                    return Err(CandidateError::EmptyLimit);
+                }
+                let (framer, recorder) = factory(self.attempts)
+                    .map_err(|error| CandidateError::Factory(error.kind()))?;
+                let key = recorder.source_key();
+                if self.keys[..self.attempts].contains(&Some(key)) {
+                    return Err(CandidateError::DuplicateSource);
+                }
+                let remaining = Duration::from_nanos(
+                    self.deadline
+                        .as_nanos()
+                        .saturating_sub(self.listener.cx.now().as_nanos()),
+                );
+                if remaining.is_zero() {
+                    return Err(CandidateError::Deadline);
+                }
+                let pipeline = self
+                    .listener
+                    .accept_next(
+                        framer,
+                        recorder,
+                        self.chunk_bytes,
+                        self.max_bytes,
+                        remaining,
+                    )
+                    .await
+                    .map_err(CandidateError::Accept)?;
+                self.keys[self.attempts] = Some(key);
+                self.attempts += 1;
+                self.current = Some(pipeline);
+            }
+            let now = self
+                .listener
+                .clock
+                .now()
+                .map_err(|_| CandidateError::Accept(Error::Authority))?;
+            let probe = self
+                .current
+                .as_mut()
+                .expect("candidate installed")
+                .probe_first_byte(self.listener.task, self.listener.cx, now);
+            match timeout_at(self.deadline, probe).await {
+                Err(_) => return Err(CandidateError::Deadline),
+                Ok(Err(error)) => return Err(CandidateError::Probe(error)),
+                Ok(Ok(super::ingress::FirstByte::Data)) => {
+                    self.ready = true;
+                    return Ok(());
+                }
+                Ok(Ok(super::ingress::FirstByte::Empty)) => {
+                    let retired = self
+                        .current
+                        .take()
+                        .expect("empty candidate retained")
+                        .retire();
+                    debug_assert_eq!(retired.ingress.source.received, 0);
+                }
+            }
+        }
+    }
+
+    /// Enable bounded concurrent probing before selection begins. Each live
+    /// candidate remains owned even when another connection is selected.
+    pub fn enable_parallel(&mut self) -> Result<(), CandidateError> {
+        if self.attempts != 1
+            || self.ready
+            || !self.current.as_ref().is_some_and(Pipeline::is_fresh)
+        {
+            return Err(CandidateError::Configuration);
+        }
+        self.parallel = true;
+        Ok(())
+    }
+
+    /// Require a complete structural FLV header in parallel mode. Invalid and
+    /// incomplete candidates remain caller-owned; the header is not proof of
+    /// peer identity, valid subsequent tags, or successful stream effects.
+    pub fn require_flv_header(&mut self) -> Result<(), CandidateError> {
+        if !self.parallel
+            || self.attempts != 1
+            || self.ready
+            || !self.current.as_ref().is_some_and(Pipeline::is_fresh)
+        {
+            return Err(CandidateError::Configuration);
+        }
+        self.validate_header = true;
+        Ok(())
+    }
+
+    async fn select_parallel<F>(&mut self, factory: &mut F) -> Result<(), CandidateError>
+    where
+        F: FnMut(usize) -> std::io::Result<(Framer, Recorder)>,
+    {
+        enum Observation {
+            First(super::ingress::FirstByte),
+            Header(super::ingress::HeaderProbe),
+        }
+        enum Ready {
+            Probe(usize, Result<Observation, super::pipeline::ProbeError>),
+            Accept(Result<Pipeline, Error>),
+        }
+        loop {
+            let remaining = Duration::from_nanos(
+                self.deadline
+                    .as_nanos()
+                    .saturating_sub(self.listener.cx.now().as_nanos()),
+            );
+            if remaining.is_zero() {
+                return Err(CandidateError::Deadline);
+            }
+            if !self.probeable.iter().any(|value| *value) && self.attempts == self.max_attempts {
+                return Err(if self.validate_header {
+                    CandidateError::NoValidHeader
+                } else {
+                    CandidateError::EmptyLimit
+                });
+            }
+            // Factory products are inert. If the wait is cancelled before an
+            // accept, they may be reconstructed; accepted pipelines stay here.
+            let next = if self.attempts < self.max_attempts {
+                let (framer, recorder) =
+                    factory(self.attempts).map_err(|e| CandidateError::Factory(e.kind()))?;
+                let key = recorder.source_key();
+                if self.keys[..self.attempts].contains(&Some(key)) {
+                    return Err(CandidateError::DuplicateSource);
+                }
+                Some((framer, recorder, key))
+            } else {
+                None
+            };
+            let key = next.as_ref().map(|(_, _, key)| *key);
+            let listener = &mut self.listener;
+            let task = listener.task;
+            let cx = listener.cx;
+            let clock = listener.clock;
+            let mut accept = next.map(|(framer, recorder, _)| {
+                Box::pin(listener.accept_next(
+                    framer,
+                    recorder,
+                    self.chunk_bytes,
+                    self.max_bytes,
+                    remaining,
+                ))
+            });
+            let current = &mut self.current;
+            let additional = &mut self.additional;
+            let probeable = &self.probeable;
+            let cursor = self.cursor;
+            let validate_header = self.validate_header;
+            let ready = timeout_at(
+                self.deadline,
+                poll_fn(|context| {
+                    for step in 0..MAX_MEDIA_CANDIDATES {
+                        let index = (cursor + step) % MAX_MEDIA_CANDIDATES;
+                        if !probeable[index] {
+                            continue;
+                        }
+                        let candidate = if index == 0 {
+                            current.as_mut()
+                        } else {
+                            additional[index - 1].as_deref_mut()
+                        };
+                        if let Some(pipeline) = candidate {
+                            let now = match clock.now() {
+                                Ok(now) => now,
+                                Err(_) => return Poll::Ready(Ready::Accept(Err(Error::Authority))),
+                            };
+                            if validate_header {
+                                let mut probe = pin!(pipeline.probe_header_step(task, cx, now));
+                                if let Poll::Ready(result) = probe.as_mut().poll(context) {
+                                    return Poll::Ready(Ready::Probe(
+                                        index,
+                                        result.map(Observation::Header),
+                                    ));
+                                }
+                            } else {
+                                let mut probe = pin!(pipeline.probe_first_byte(task, cx, now));
+                                if let Poll::Ready(result) = probe.as_mut().poll(context) {
+                                    return Poll::Ready(Ready::Probe(
+                                        index,
+                                        result.map(Observation::First),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(accept) = accept.as_mut() {
+                        if let Poll::Ready(result) = accept.as_mut().poll(context) {
+                            return Poll::Ready(Ready::Accept(result));
+                        }
+                    }
+                    Poll::Pending
+                }),
+            )
+            .await
+            .map_err(|_| CandidateError::Deadline)?;
+            drop(accept);
+            match ready {
+                Ready::Accept(Err(error)) => return Err(CandidateError::Accept(error)),
+                Ready::Accept(Ok(pipeline)) => {
+                    self.keys[self.attempts] = key;
+                    self.attempts += 1;
+                    let (index, slot) = self
+                        .additional
+                        .iter_mut()
+                        .enumerate()
+                        .find(|(_, slot)| slot.is_none())
+                        .expect("bounded candidate slot");
+                    *slot = Some(Box::new(pipeline));
+                    self.probeable[index + 1] = true;
+                }
+                Ready::Probe(_index, Err(error)) => return Err(CandidateError::Probe(error)),
+                Ready::Probe(
+                    index,
+                    Ok(
+                        Observation::First(super::ingress::FirstByte::Data)
+                        | Observation::Header(super::ingress::HeaderProbe::Valid),
+                    ),
+                ) => {
+                    self.selected = index;
+                    self.ready = true;
+                    return Ok(());
+                }
+                Ready::Probe(
+                    index,
+                    Ok(Observation::Header(super::ingress::HeaderProbe::Progress)),
+                ) => {
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                    asupersync::runtime::yield_now().await;
+                }
+                Ready::Probe(
+                    index,
+                    Ok(Observation::Header(
+                        super::ingress::HeaderProbe::Invalid
+                        | super::ingress::HeaderProbe::Incomplete,
+                    )),
+                ) => {
+                    self.probeable[index] = false;
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                }
+                Ready::Probe(
+                    index,
+                    Ok(
+                        Observation::First(super::ingress::FirstByte::Empty)
+                        | Observation::Header(super::ingress::HeaderProbe::Empty),
+                    ),
+                ) => {
+                    self.probeable[index] = false;
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                    let retired = if index == 0 {
+                        self.current.take().expect("probed candidate").retire()
+                    } else {
+                        self.additional[index - 1]
+                            .take()
+                            .expect("probed candidate")
+                            .retire()
+                    };
+                    debug_assert_eq!(retired.ingress.source.received, 0);
+                }
+            }
+        }
+    }
+
+    /// The count of accepted candidate connections, including the first.
+    pub fn attempts(&self) -> usize {
+        self.attempts
+    }
+
+    /// Transfer a nonempty pipeline only after selection succeeds.
+    pub fn take_ready(&mut self) -> Option<Pipeline> {
+        if !self.ready {
+            return None;
+        }
+        if self.selected == 0 {
+            self.current.take()
+        } else {
+            self.additional[self.selected - 1]
+                .take()
+                .map(|pipeline| *pipeline)
+        }
+    }
+
+    /// Recover every unfinished pipeline and the listener, including on
+    /// timeout or after a different candidate was selected. An idle socket
+    /// may contain unread bytes: its retirement is not proof of emptiness.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Listener<'scope, 'task, 'policy>,
+        Option<Pipeline>,
+        [Option<Box<Pipeline>>; MAX_MEDIA_CANDIDATES - 1],
+    ) {
+        (self.listener, self.current, self.additional)
+    }
+}
+
 /// Caller-owned, bounded observations from a media-before-reply startup.
 ///
 /// The owner retains this value if the startup future fails or is dropped.
@@ -319,6 +796,7 @@ pub struct StartTrace {
     clock_replies_written: usize,
     observations: Vec<super::Observation>,
     protocol: super::conversation::StartupProtocolTrace,
+    selection_reply_in_flight: bool,
 }
 
 impl StartTrace {
@@ -357,12 +835,19 @@ impl StartTrace {
         &mut self.protocol
     }
 
+    /// Whether a candidate-selection reply was interrupted or failed before
+    /// its local completion was observed. Such an attempt must be reconciled.
+    pub fn selection_reply_in_flight(&self) -> bool {
+        self.selection_reply_in_flight
+    }
+
     fn is_empty(&self) -> bool {
         !self.attempted
             && self.dispatched.is_none()
             && self.clock_requests == 0
             && self.clock_replies_written == 0
             && self.observations.is_empty()
+            && !self.selection_reply_in_flight
             && !self.protocol.attempted()
     }
 }
@@ -424,7 +909,7 @@ pub async fn start_tracked<IO: asupersync::io::AsyncRead + asupersync::io::Async
         return Err(StartError::Listener(Error::Configuration));
     }
     trace.attempted = true;
-    let (progress, pipeline) = start_inner(
+    let (progress, pipeline, _listener) = start_inner(
         owner, session, cfg, framer, recorder, true, trace, None, None,
     )
     .await?;
@@ -472,7 +957,7 @@ pub async fn start_before_reply_tracked<
         return Err(StartError::Listener(Error::Configuration));
     }
     trace.attempted = true;
-    let (progress, pipeline) = start_inner(
+    let (progress, pipeline, _listener) = start_inner(
         owner, session, cfg, framer, recorder, false, trace, None, None,
     )
     .await?;
@@ -486,6 +971,49 @@ pub async fn start_before_reply_tracked<
             time_syncs_during_accept,
             observations_during_accept,
             pipeline,
+        }),
+        StartProgress::Confirmed(_) => Err(StartError::Conversation(
+            super::conversation::Error::Configuration,
+        )),
+    }
+}
+
+/// Like [`start_before_reply_tracked`], but keeps the original media listener
+/// after the first accepted connection. Callers must supervise and retire each
+/// candidate, choose fresh source keys, and account for gaps themselves.
+/// No reconnect, media-health test, or additional camera command is implied.
+pub async fn start_before_reply_retaining_listener<'scope, 'task, 'policy, IO>(
+    owner: &mut super::conversation::Owner<'_, 'scope, 'task>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'policy>,
+    framer: Framer,
+    recorder: Recorder,
+    trace: &mut StartTrace,
+) -> Result<StartedWithListener<'scope, 'task, 'policy>, StartError>
+where
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+{
+    if !trace.is_empty() {
+        return Err(StartError::Listener(Error::Configuration));
+    }
+    trace.attempted = true;
+    let (progress, pipeline, listener) = start_inner(
+        owner, session, cfg, framer, recorder, false, trace, None, None,
+    )
+    .await?;
+    match progress {
+        StartProgress::Dispatched {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+        } => Ok(StartedWithListener {
+            started: StartedBeforeReply {
+                dispatched,
+                time_syncs_during_accept,
+                observations_during_accept,
+                pipeline,
+            },
+            listener,
         }),
         StartProgress::Confirmed(_) => Err(StartError::Conversation(
             super::conversation::Error::Configuration,
@@ -511,7 +1039,7 @@ pub async fn start_before_reply_with_motion_tracked<
         return Err(StartError::Listener(Error::Configuration));
     }
     trace.attempted = true;
-    let (progress, pipeline) = start_inner(
+    let (progress, pipeline, _listener) = start_inner(
         owner,
         session,
         cfg,
@@ -565,7 +1093,7 @@ pub async fn start_before_reply_with_events_tracked<
         return Err(StartError::Listener(Error::Configuration));
     }
     trace.attempted = true;
-    let (progress, pipeline) = start_inner(
+    let (progress, pipeline, _listener) = start_inner(
         owner,
         session,
         cfg,
@@ -594,10 +1122,421 @@ pub async fn start_before_reply_with_events_tracked<
     }
 }
 
-async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
-    owner: &mut super::conversation::Owner<'_, '_, '_>,
+/// Event-aware startup that retains the media listener for candidate selection.
+/// The caller still owns both traces, the controller session and every source.
+pub async fn start_with_events_retaining_listener<'scope, 'task, 'policy, IO>(
+    owner: &mut super::conversation::Owner<'_, 'scope, 'task>,
     session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'policy>,
+    framer: Framer,
+    recorder: Recorder,
+    trace: &mut StartTrace,
+    motion: Option<(
+        &super::conversation::StartupMotion<'_>,
+        &mut super::conversation::StartupMotionTrace,
+    )>,
+    events: &super::conversation::StartupEventReplies<'_>,
+    event_trace: &mut super::conversation::StartupEventTrace,
+) -> Result<StartedWithListener<'scope, 'task, 'policy>, StartError>
+where
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+{
+    if !trace.is_empty()
+        || event_trace.attempted()
+        || motion.as_ref().is_some_and(|(_, t)| t.attempted())
+    {
+        return Err(StartError::Listener(Error::Configuration));
+    }
+    trace.attempted = true;
+    let (progress, pipeline, listener) = start_inner(
+        owner,
+        session,
+        cfg,
+        framer,
+        recorder,
+        false,
+        trace,
+        motion,
+        Some((events, event_trace)),
+    )
+    .await?;
+    match progress {
+        StartProgress::Dispatched {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+        } => Ok(StartedWithListener {
+            started: StartedBeforeReply {
+                dispatched,
+                time_syncs_during_accept,
+                observations_during_accept,
+                pipeline,
+            },
+            listener,
+        }),
+        StartProgress::Confirmed(_) => Err(StartError::Conversation(
+            super::conversation::Error::Configuration,
+        )),
+    }
+}
+
+/// Startup observations retained separately from the media source owner.
+/// These are local and remote claims, not authenticated device outcomes.
+#[must_use]
+pub struct ValidatedStartupEvidence {
+    /// Local stream-dispatch observation.
+    pub dispatched: super::conversation::Dispatched,
+    /// Clock replies written during the initial media accept.
+    pub time_syncs_during_accept: usize,
+    /// Controller observations received during that accept.
+    pub observations_during_accept: Vec<super::Observation>,
+}
+
+/// Constructor refusal preserving the original listener, pipeline, and
+/// observations for caller-directed disposition.
+#[must_use]
+pub struct ValidatedSelectionRefusal<'scope, 'task, 'policy> {
+    /// Exact startup owner supplied to the constructor.
+    pub startup: StartedWithListener<'scope, 'task, 'policy>,
+}
+
+/// Caller-owned validated media selection after a retained-listener startup.
+/// This owner does not start a camera or independently reconcile its effects.
+/// Dropping a borrowing selection wait retains this owner, while the caller
+/// continues to own the controller session, effect journal and startup trace.
+#[must_use = "retain or explicitly retire every candidate and startup observation"]
+pub struct ValidatedMediaSelection<'scope, 'task, 'policy> {
+    startup: ValidatedStartupEvidence,
+    candidates: MediaCandidates<'scope, 'task, 'policy>,
+}
+
+impl<'scope, 'task, 'policy> ValidatedMediaSelection<'scope, 'task, 'policy> {
+    /// Wrap an already accepted startup and install a bounded validating
+    /// selector. Refusal returns the complete original startup owner.
+    pub fn new(
+        startup: StartedWithListener<'scope, 'task, 'policy>,
+        max_attempts: usize,
+        chunk_bytes: usize,
+        max_bytes: u64,
+        wait: Duration,
+    ) -> Result<Self, ValidatedSelectionRefusal<'scope, 'task, 'policy>> {
+        let StartedWithListener { listener, started } = startup;
+        let StartedBeforeReply {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+            pipeline,
+        } = started;
+        match MediaCandidates::new_validating(
+            listener,
+            pipeline,
+            max_attempts,
+            chunk_bytes,
+            max_bytes,
+            wait,
+        ) {
+            Ok(candidates) => Ok(Self {
+                startup: ValidatedStartupEvidence {
+                    dispatched,
+                    time_syncs_during_accept,
+                    observations_during_accept,
+                },
+                candidates,
+            }),
+            Err(CandidateRefusal { listener, pipeline }) => Err(ValidatedSelectionRefusal {
+                startup: StartedWithListener {
+                    listener,
+                    started: StartedBeforeReply {
+                        dispatched,
+                        time_syncs_during_accept,
+                        observations_during_accept,
+                        pipeline,
+                    },
+                },
+            }),
+        }
+    }
+
+    /// Borrow the exact startup observations, which do not prove remote success.
+    pub fn startup(&self) -> &ValidatedStartupEvidence {
+        &self.startup
+    }
+
+    /// Number of admitted candidate connections, including the initial one.
+    pub fn attempts(&self) -> usize {
+        self.candidates.attempts()
+    }
+
+    /// Select while supervising the supplied controller. Cancellation preserves
+    /// this owner; an interrupted control write still requires reconciliation.
+    pub async fn select<IO, F>(
+        &mut self,
+        owner: &mut super::conversation::Owner<'_, 'scope, 'task>,
+        session: &mut super::receive::Session<'scope, 'task, IO>,
+        cfg: &Start<'_>,
+        trace: &mut StartTrace,
+        event_replies: Option<(
+            &super::conversation::StartupEventReplies<'_>,
+            &mut super::conversation::StartupEventTrace,
+        )>,
+        factory: &mut F,
+    ) -> Result<(), CandidateControlError>
+    where
+        IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+        F: FnMut(usize) -> std::io::Result<(Framer, Recorder)>,
+    {
+        select_candidates_with_control(
+            &mut self.candidates,
+            owner,
+            session,
+            cfg,
+            trace,
+            event_replies,
+            factory,
+        )
+        .await
+    }
+
+    /// Transfer the selected pipeline without disposing of other connections.
+    pub fn take_ready(&mut self) -> Option<Pipeline> {
+        self.candidates.take_ready()
+    }
+
+    /// Recover startup observations and all remaining candidate owners.
+    pub fn into_parts(
+        self,
+    ) -> (
+        ValidatedStartupEvidence,
+        MediaCandidates<'scope, 'task, 'policy>,
+    ) {
+        (self.startup, self.candidates)
+    }
+}
+
+/// Selection or controller failure. Both the candidate owner and startup
+/// traces remain with the caller for retirement and reconciliation.
+#[derive(Debug)]
+pub enum CandidateControlError {
+    /// Candidate selection stopped without selecting a source.
+    Candidate(CandidateError),
+    /// The controller, its reply effect, or its bounded trace stopped.
+    Conversation(super::conversation::Error),
+    /// An already-captured event or request requires caller custody.
+    CapturedFrame(super::events::Frame),
+}
+impl fmt::Display for CandidateControlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi candidate supervision stopped: {self:?}")
+    }
+}
+impl std::error::Error for CandidateControlError {}
+
+/// Select a nonempty media connection while servicing the same controller.
+/// Bounded clock and optional startup-event replies use the original startup
+/// trace, fresh operation identities and current owner authority. A dropped
+/// wait preserves candidates; a dropped in-flight reply fences further use of
+/// this trace until the caller reconciles it. Neither a reply nor a nonempty
+/// connection proves camera identity, successful effects or valid media.
+pub async fn select_candidates_with_control<'scope, 'task, 'policy, IO, F>(
+    candidates: &mut MediaCandidates<'scope, 'task, 'policy>,
+    owner: &mut super::conversation::Owner<'_, 'scope, 'task>,
+    session: &mut super::receive::Session<'scope, 'task, IO>,
     cfg: &Start<'_>,
+    trace: &mut StartTrace,
+    mut event_replies: Option<(
+        &super::conversation::StartupEventReplies<'_>,
+        &mut super::conversation::StartupEventTrace,
+    )>,
+    factory: &mut F,
+) -> Result<(), CandidateControlError>
+where
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+    F: FnMut(usize) -> std::io::Result<(Framer, Recorder)>,
+{
+    use super::conversation::Error as ConversationError;
+    let dispatched = trace.dispatched.ok_or(CandidateControlError::Conversation(
+        ConversationError::Configuration,
+    ))?;
+    let used = dispatched
+        .time_syncs
+        .checked_add(trace.clock_replies_written)
+        .ok_or(CandidateControlError::Conversation(
+            ConversationError::Limit,
+        ))?;
+    if trace.selection_reply_in_flight
+        || trace.clock_requests != trace.clock_replies_written
+        || trace.protocol.clocks().len() != used
+        || used > cfg.time_sync.len()
+        || trace
+            .protocol
+            .clocks()
+            .iter()
+            .zip(cfg.time_sync)
+            .any(|(prior, operation)| prior.operation() != Some(operation))
+        || !std::ptr::eq(candidates.listener.task, owner.task)
+        || !std::ptr::eq(candidates.listener.cx, owner.cx)
+        || !candidates.listener.clock.same_mapping(&owner.clock)
+        || !session.matches_clock(&owner.clock)
+        || event_replies.as_ref().is_some_and(|(events, event_trace)| {
+            !event_trace.attempted()
+                || event_trace.attempts().len() > events.operations.len()
+                || event_trace
+                    .attempts()
+                    .iter()
+                    .zip(events.operations)
+                    .any(|(prior, operation)| prior.operation() != operation)
+        })
+    {
+        return Err(CandidateControlError::Conversation(
+            ConversationError::Configuration,
+        ));
+    }
+    let deadline = candidates.deadline;
+    let mut selection = pin!(candidates.select(factory));
+    loop {
+        if trace.observations.len() == MAX_ACCEPT_OBSERVATIONS {
+            return Err(CandidateControlError::Conversation(
+                ConversationError::Limit,
+            ));
+        }
+        trace
+            .observations
+            .try_reserve(1)
+            .map_err(|_| CandidateControlError::Conversation(ConversationError::Limit))?;
+        let left = deadline
+            .as_nanos()
+            .checked_sub(owner.cx.now().as_nanos())
+            .filter(|v| *v > 0)
+            .map(Duration::from_nanos)
+            .ok_or(CandidateControlError::Candidate(CandidateError::Deadline))?;
+        enum Ready {
+            Media(Result<(), CandidateError>),
+            Control(Result<super::receive::Step, super::receive::Error>),
+        }
+        let ready = timeout_at(
+            deadline,
+            poll_fn(|cx| {
+                let mut control = pin!(session.next(left));
+                if let Poll::Ready(result) = control.as_mut().poll(cx) {
+                    return Poll::Ready(Ready::Control(result));
+                }
+                selection.as_mut().poll(cx).map(Ready::Media)
+            }),
+        )
+        .await
+        .map_err(|_| CandidateControlError::Candidate(CandidateError::Deadline))?;
+        match ready {
+            Ready::Media(result) => return result.map_err(CandidateControlError::Candidate),
+            Ready::Control(Err(error)) => {
+                return Err(CandidateControlError::Conversation(
+                    ConversationError::SessionDetail(error),
+                ));
+            }
+            Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => {
+                trace.protocol.retain_controller_retirement(controller);
+                return Err(CandidateControlError::Conversation(
+                    ConversationError::SessionRetired {
+                        reason,
+                        phase: controller.previous_phase,
+                        rejected_message: controller.rejected_message,
+                    },
+                ));
+            }
+            Ready::Control(Ok(super::receive::Step::WaitElapsed)) => {
+                return Err(CandidateControlError::Candidate(CandidateError::Deadline));
+            }
+            Ready::Control(Ok(super::receive::Step::StartupEventBackpressure)) => {
+                return Err(CandidateControlError::Conversation(
+                    ConversationError::EventBackpressure,
+                ));
+            }
+            Ready::Control(Ok(super::receive::Step::EventReplyBackpressure)) => {
+                let Some((events, event_trace)) = event_replies.as_mut() else {
+                    return Err(CandidateControlError::Conversation(
+                        ConversationError::EventBackpressure,
+                    ));
+                };
+                let left = deadline
+                    .as_nanos()
+                    .checked_sub(owner.cx.now().as_nanos())
+                    .filter(|v| *v > 0)
+                    .map(Duration::from_nanos)
+                    .ok_or(CandidateControlError::Candidate(CandidateError::Deadline))?;
+                trace.selection_reply_in_flight = true;
+                owner
+                    .answer_startup_event(session, cfg.management, events, event_trace, left)
+                    .await
+                    .map_err(CandidateControlError::Conversation)?;
+                trace.selection_reply_in_flight = false;
+            }
+            Ready::Control(Ok(
+                super::receive::Step::CameraEvent(frame)
+                | super::receive::Step::StartupRequest(frame),
+            )) => return Err(CandidateControlError::CapturedFrame(frame)),
+            Ready::Control(Ok(super::receive::Step::Observation(
+                super::Observation::TimeSyncRequested,
+            ))) => {
+                trace.clock_requests = trace.clock_requests.checked_add(1).ok_or(
+                    CandidateControlError::Conversation(ConversationError::Limit),
+                )?;
+                let index = dispatched
+                    .time_syncs
+                    .checked_add(trace.clock_replies_written)
+                    .ok_or(CandidateControlError::Conversation(
+                        ConversationError::Limit,
+                    ))?;
+                let operation =
+                    cfg.time_sync
+                        .get(index)
+                        .ok_or(CandidateControlError::Conversation(
+                            ConversationError::Limit,
+                        ))?;
+                let left = deadline
+                    .as_nanos()
+                    .checked_sub(owner.cx.now().as_nanos())
+                    .filter(|v| *v > 0)
+                    .map(Duration::from_nanos)
+                    .ok_or(CandidateControlError::Candidate(CandidateError::Deadline))?;
+                let sync_trace = trace
+                    .protocol
+                    .next_clock()
+                    .map_err(CandidateControlError::Conversation)?;
+                trace.selection_reply_in_flight = true;
+                owner
+                    .answer_time_sync_tracked(session, operation, cfg.management, left, sync_trace)
+                    .await
+                    .map_err(CandidateControlError::Conversation)?;
+                trace.clock_replies_written += 1;
+                trace.selection_reply_in_flight = false;
+            }
+            Ready::Control(Ok(super::receive::Step::Observation(observation))) => {
+                let rejected = matches!(
+                    observation,
+                    super::Observation::StreamSettingsReply {
+                        success: Some(false),
+                        ..
+                    }
+                );
+                trace.observations.push(observation);
+                if rejected {
+                    return Err(CandidateControlError::Conversation(
+                        ConversationError::Unexpected,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+async fn start_inner<
+    'scope,
+    'task,
+    'policy,
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+>(
+    owner: &mut super::conversation::Owner<'_, 'scope, 'task>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'policy>,
     framer: Framer,
     recorder: Recorder,
     wait_for_reply: bool,
@@ -610,7 +1549,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         &super::conversation::StartupEventReplies<'_>,
         &mut super::conversation::StartupEventTrace,
     )>,
-) -> Result<(StartProgress, Pipeline), StartError> {
+) -> Result<(StartProgress, Pipeline, Listener<'scope, 'task, 'policy>), StartError> {
     if !valid_wait(cfg.bind_wait)
         || !valid_wait(cfg.conversation_wait)
         || !valid_wait(cfg.accept_wait)
@@ -630,7 +1569,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         cfg.stream_name,
     )
     .map_err(|_| StartError::Request)?;
-    let listener = Listener::bind(
+    let mut listener = Listener::bind(
         owner.task,
         owner.cx,
         owner.clock,
@@ -682,7 +1621,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
             .await
             .map_err(StartError::Conversation)?;
         let pipeline = listener
-            .accept(
+            .accept_next(
                 framer,
                 recorder,
                 cfg.chunk_bytes,
@@ -691,7 +1630,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
             )
             .await
             .map_err(StartError::Listener)?;
-        return Ok((StartProgress::Confirmed(reply), pipeline));
+        return Ok((StartProgress::Confirmed(reply), pipeline, listener));
     }
     let dispatched = guarded_owner
         .start_dispatched_with_protocol_trace(
@@ -707,138 +1646,147 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         .map_err(StartError::Conversation)?;
     trace.dispatched = Some(dispatched);
     let deadline = guarded_owner.cx.now() + cfg.accept_wait;
-    let mut accept = pin!(listener.accept(
-        framer,
-        recorder,
-        cfg.chunk_bytes,
-        cfg.max_bytes,
-        cfg.accept_wait
-    ));
-    loop {
-        // Reserve before receiving: a completed observation has already
-        // advanced controller state and cannot be recovered from the socket.
-        if trace.observations.len() == MAX_ACCEPT_OBSERVATIONS {
-            return Err(StartError::Conversation(super::conversation::Error::Limit));
-        }
-        trace
-            .observations
-            .try_reserve(1)
-            .map_err(|_| StartError::Conversation(super::conversation::Error::Limit))?;
-        let left = deadline
-            .as_nanos()
-            .checked_sub(guarded_owner.cx.now().as_nanos())
-            .filter(|v| *v > 0)
-            .map(Duration::from_nanos)
-            .ok_or(StartError::Listener(Error::Deadline))?;
-        enum Ready {
-            Media(Result<Pipeline, Error>),
-            Control(Result<super::receive::Step, super::receive::Error>),
-        }
-        let ready = timeout_at(
-            deadline,
-            poll_fn(|cx| {
-                let mut control = pin!(session.next(left));
-                if let Poll::Ready(result) = control.as_mut().poll(cx) {
-                    return Poll::Ready(Ready::Control(result));
+    let (progress, pipeline) = {
+        let mut accept = pin!(listener.accept_next(
+            framer,
+            recorder,
+            cfg.chunk_bytes,
+            cfg.max_bytes,
+            cfg.accept_wait
+        ));
+        loop {
+            // Reserve before receiving: a completed observation has already
+            // advanced controller state and cannot be recovered from the socket.
+            if trace.observations.len() == MAX_ACCEPT_OBSERVATIONS {
+                return Err(StartError::Conversation(super::conversation::Error::Limit));
+            }
+            trace
+                .observations
+                .try_reserve(1)
+                .map_err(|_| StartError::Conversation(super::conversation::Error::Limit))?;
+            let left = deadline
+                .as_nanos()
+                .checked_sub(guarded_owner.cx.now().as_nanos())
+                .filter(|v| *v > 0)
+                .map(Duration::from_nanos)
+                .ok_or(StartError::Listener(Error::Deadline))?;
+            enum Ready {
+                Media(Result<Pipeline, Error>),
+                Control(Result<super::receive::Step, super::receive::Error>),
+            }
+            let ready = timeout_at(
+                deadline,
+                poll_fn(|cx| {
+                    let mut control = pin!(session.next(left));
+                    if let Poll::Ready(result) = control.as_mut().poll(cx) {
+                        return Poll::Ready(Ready::Control(result));
+                    }
+                    accept.as_mut().poll(cx).map(Ready::Media)
+                }),
+            )
+            .await
+            .map_err(|_| StartError::Listener(Error::Deadline))?;
+            match ready {
+                Ready::Media(result) => {
+                    break (
+                        StartProgress::Dispatched {
+                            dispatched,
+                            time_syncs_during_accept: trace.clock_replies_written,
+                            observations_during_accept: trace.observations.clone(),
+                        },
+                        result.map_err(StartError::Listener)?,
+                    );
                 }
-                accept.as_mut().poll(cx).map(Ready::Media)
-            }),
-        )
-        .await
-        .map_err(|_| StartError::Listener(Error::Deadline))?;
-        match ready {
-            Ready::Media(result) => {
-                return Ok((
-                    StartProgress::Dispatched {
-                        dispatched,
-                        time_syncs_during_accept: trace.clock_replies_written,
-                        observations_during_accept: trace.observations.clone(),
-                    },
-                    result.map_err(StartError::Listener)?,
-                ));
-            }
-            Ready::Control(Err(error)) => {
-                return Err(StartError::Conversation(
-                    super::conversation::Error::SessionDetail(error),
-                ));
-            }
-            Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => {
-                trace.protocol.retain_controller_retirement(controller);
-                return Err(StartError::Conversation(
-                    super::conversation::Error::SessionRetired {
-                        reason,
-                        phase: controller.previous_phase,
-                        rejected_message: controller.rejected_message,
-                    },
-                ));
-            }
-            Ready::Control(Ok(super::receive::Step::WaitElapsed)) => {
-                return Err(StartError::Listener(Error::Deadline));
-            }
-            Ready::Control(Ok(super::receive::Step::StartupEventBackpressure)) => {
-                return Err(StartError::Conversation(
-                    super::conversation::Error::EventBackpressure,
-                ));
-            }
-            Ready::Control(Ok(super::receive::Step::EventReplyBackpressure)) => {
-                let Some((events, event_trace)) = event_replies.as_mut() else {
+                Ready::Control(Err(error)) => {
+                    return Err(StartError::Conversation(
+                        super::conversation::Error::SessionDetail(error),
+                    ));
+                }
+                Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => {
+                    trace.protocol.retain_controller_retirement(controller);
+                    return Err(StartError::Conversation(
+                        super::conversation::Error::SessionRetired {
+                            reason,
+                            phase: controller.previous_phase,
+                            rejected_message: controller.rejected_message,
+                        },
+                    ));
+                }
+                Ready::Control(Ok(super::receive::Step::WaitElapsed)) => {
+                    return Err(StartError::Listener(Error::Deadline));
+                }
+                Ready::Control(Ok(super::receive::Step::StartupEventBackpressure)) => {
                     return Err(StartError::Conversation(
                         super::conversation::Error::EventBackpressure,
                     ));
-                };
-                let left = deadline
-                    .as_nanos()
-                    .checked_sub(guarded_owner.cx.now().as_nanos())
-                    .filter(|v| *v > 0)
-                    .map(Duration::from_nanos)
-                    .ok_or(StartError::Listener(Error::Deadline))?;
-                guarded_owner
-                    .answer_startup_event(session, cfg.management, events, event_trace, left)
-                    .await
-                    .map_err(StartError::Conversation)?;
-            }
-            // This listener runs before the supervisor enables event capture.
-            Ready::Control(Ok(
-                super::receive::Step::CameraEvent(_) | super::receive::Step::StartupRequest(_),
-            )) => {
-                return Err(StartError::Conversation(
-                    super::conversation::Error::Unexpected,
-                ));
-            }
-            Ready::Control(Ok(super::receive::Step::Observation(
-                super::Observation::TimeSyncRequested,
-            ))) => {
-                trace.clock_requests = trace
-                    .clock_requests
-                    .checked_add(1)
-                    .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
-                let index = dispatched
-                    .time_syncs
-                    .checked_add(trace.clock_replies_written)
-                    .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
-                let operation = cfg
-                    .time_sync
-                    .get(index)
-                    .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
-                let left = deadline
-                    .as_nanos()
-                    .checked_sub(guarded_owner.cx.now().as_nanos())
-                    .filter(|v| *v > 0)
-                    .map(Duration::from_nanos)
-                    .ok_or(StartError::Listener(Error::Deadline))?;
-                let sync_trace = trace
-                    .protocol
-                    .next_clock()
-                    .map_err(StartError::Conversation)?;
-                guarded_owner
-                    .answer_time_sync_tracked(session, operation, cfg.management, left, sync_trace)
-                    .await
-                    .map_err(StartError::Conversation)?;
-                trace.clock_replies_written += 1;
-            }
-            Ready::Control(Ok(super::receive::Step::Observation(observation))) => {
-                trace.observations.push(observation);
+                }
+                Ready::Control(Ok(super::receive::Step::EventReplyBackpressure)) => {
+                    let Some((events, event_trace)) = event_replies.as_mut() else {
+                        return Err(StartError::Conversation(
+                            super::conversation::Error::EventBackpressure,
+                        ));
+                    };
+                    let left = deadline
+                        .as_nanos()
+                        .checked_sub(guarded_owner.cx.now().as_nanos())
+                        .filter(|v| *v > 0)
+                        .map(Duration::from_nanos)
+                        .ok_or(StartError::Listener(Error::Deadline))?;
+                    guarded_owner
+                        .answer_startup_event(session, cfg.management, events, event_trace, left)
+                        .await
+                        .map_err(StartError::Conversation)?;
+                }
+                // This listener runs before the supervisor enables event capture.
+                Ready::Control(Ok(
+                    super::receive::Step::CameraEvent(_) | super::receive::Step::StartupRequest(_),
+                )) => {
+                    return Err(StartError::Conversation(
+                        super::conversation::Error::Unexpected,
+                    ));
+                }
+                Ready::Control(Ok(super::receive::Step::Observation(
+                    super::Observation::TimeSyncRequested,
+                ))) => {
+                    trace.clock_requests = trace
+                        .clock_requests
+                        .checked_add(1)
+                        .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
+                    let index = dispatched
+                        .time_syncs
+                        .checked_add(trace.clock_replies_written)
+                        .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
+                    let operation = cfg
+                        .time_sync
+                        .get(index)
+                        .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
+                    let left = deadline
+                        .as_nanos()
+                        .checked_sub(guarded_owner.cx.now().as_nanos())
+                        .filter(|v| *v > 0)
+                        .map(Duration::from_nanos)
+                        .ok_or(StartError::Listener(Error::Deadline))?;
+                    let sync_trace = trace
+                        .protocol
+                        .next_clock()
+                        .map_err(StartError::Conversation)?;
+                    guarded_owner
+                        .answer_time_sync_tracked(
+                            session,
+                            operation,
+                            cfg.management,
+                            left,
+                            sync_trace,
+                        )
+                        .await
+                        .map_err(StartError::Conversation)?;
+                    trace.clock_replies_written += 1;
+                }
+                Ready::Control(Ok(super::receive::Step::Observation(observation))) => {
+                    trace.observations.push(observation);
+                }
             }
         }
-    }
+    };
+    Ok((progress, pipeline, listener))
 }

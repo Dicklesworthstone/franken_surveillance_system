@@ -51,6 +51,30 @@ pub enum Step {
     LimitReached,
 }
 
+/// Result of a fresh connection's first-byte probe, not media validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FirstByte {
+    /// The peer closed before sending any source byte.
+    Empty,
+    /// One original byte was retained at offset zero in the framer.
+    Data,
+}
+
+/// One bounded, non-consuming header-probe step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeaderProbe {
+    /// More source bytes are needed; any prefix remains in the framer.
+    Progress,
+    /// A structurally complete FLV header is retained in the framer.
+    Valid,
+    /// The peer closed without sending any byte.
+    Empty,
+    /// The prefix is invalid; its original bytes remain owned.
+    Invalid,
+    /// A nonempty prefix ended or hit the input limit before a complete header.
+    Incomplete,
+}
+
 /// A socket chunk partly copied into the framer. Prefix bytes may overlap
 /// framer records or its remainder; the suffix has not been appended.
 #[must_use]
@@ -98,6 +122,121 @@ impl DirectIngress {
             source,
             framer,
             buffered: None,
+        }
+    }
+
+    /// Probe a fresh connection without transferring or discarding the first
+    /// byte. A dropped pending read may be retried using the same owner.
+    pub async fn probe_first_byte(
+        &mut self,
+        owner: &TaskCx<'_>,
+        runtime_cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<FirstByte, Error> {
+        if self.framer.next_offset() != 0 || self.buffered.is_some() {
+            return Err(Error::Source(tcp_ingress::IngressError::Configuration));
+        }
+        runtime_cx
+            .checkpoint()
+            .map_err(|_| Error::CancelledOrUnauthorized)?;
+        owner
+            .checkpoint(now, &BudgetVector::ZERO)
+            .map_err(|_| Error::CancelledOrUnauthorized)?;
+        match self
+            .source
+            .receive_first_byte(owner, runtime_cx, now)
+            .await
+            .map_err(Error::Source)?
+        {
+            Receive::Eof => Ok(FirstByte::Empty),
+            Receive::LimitReached => Err(Error::Source(tcp_ingress::IngressError::Configuration)),
+            Receive::Data { .. } => {
+                let source = self
+                    .source
+                    .take_chunk()
+                    .map_err(Error::Source)?
+                    .ok_or(Error::Source(tcp_ingress::IngressError::PendingChunk))?;
+                self.buffered = Some(BufferedChunk {
+                    source,
+                    appended: 0,
+                });
+                let buffered = self.buffered.as_mut().expect("buffered first byte");
+                if buffered.source.offset() != 0 || buffered.source.bytes().len() != 1 {
+                    return Err(Error::Source(tcp_ingress::IngressError::Configuration));
+                }
+                self.framer
+                    .append(0, buffered.source.bytes())
+                    .map_err(Error::Framing)?;
+                buffered.appended = 1;
+                self.buffered = None;
+                Ok(FirstByte::Data)
+            }
+        }
+    }
+
+    /// Advance the initial FLV header by at most one byte without consuming it.
+    /// A cancelled read can resume with the same prepaid byte; invalid and
+    /// incomplete prefixes remain owned for caller-directed disposition.
+    pub async fn probe_header_step(
+        &mut self,
+        owner: &TaskCx<'_>,
+        runtime_cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<HeaderProbe, Error> {
+        if self.buffered.is_some() {
+            return Err(Error::Source(tcp_ingress::IngressError::Configuration));
+        }
+        match self.framer.initial_header_complete() {
+            Ok(true) => return Ok(HeaderProbe::Valid),
+            Ok(false) => (),
+            Err(stream::Error::Parse(extended_flv::Error::InvalidHeader)) => {
+                return Ok(HeaderProbe::Invalid);
+            }
+            Err(error) => return Err(Error::Framing(error)),
+        }
+        runtime_cx
+            .checkpoint()
+            .map_err(|_| Error::CancelledOrUnauthorized)?;
+        owner
+            .checkpoint(now, &BudgetVector::ZERO)
+            .map_err(|_| Error::CancelledOrUnauthorized)?;
+        match self
+            .source
+            .receive_one_byte(owner, runtime_cx, now)
+            .await
+            .map_err(Error::Source)?
+        {
+            Receive::Eof if self.framer.next_offset() == 0 => return Ok(HeaderProbe::Empty),
+            Receive::Eof | Receive::LimitReached => return Ok(HeaderProbe::Incomplete),
+            Receive::Data { .. } => (),
+        }
+        let source = self
+            .source
+            .take_chunk()
+            .map_err(Error::Source)?
+            .ok_or(Error::Source(tcp_ingress::IngressError::PendingChunk))?;
+        self.buffered = Some(BufferedChunk {
+            source,
+            appended: 0,
+        });
+        let buffered = self.buffered.as_mut().expect("header byte retained");
+        if buffered.source.bytes().len() != 1
+            || buffered.source.offset() != self.framer.next_offset()
+        {
+            return Err(Error::Source(tcp_ingress::IngressError::Configuration));
+        }
+        self.framer
+            .append(buffered.source.offset(), buffered.source.bytes())
+            .map_err(Error::Framing)?;
+        buffered.appended = 1;
+        self.buffered = None;
+        match self.framer.initial_header_complete() {
+            Ok(true) => Ok(HeaderProbe::Valid),
+            Ok(false) => Ok(HeaderProbe::Progress),
+            Err(stream::Error::Parse(extended_flv::Error::InvalidHeader)) => {
+                Ok(HeaderProbe::Invalid)
+            }
+            Err(error) => Err(Error::Framing(error)),
         }
     }
 

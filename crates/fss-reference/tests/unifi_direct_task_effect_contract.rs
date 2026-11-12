@@ -2011,6 +2011,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 }
                 let expected=wire.clone();
                 let (media_seen_tx,media_seen_rx)=std::sync::mpsc::channel();
+                let (selection_started_tx,selection_started_rx)=std::sync::mpsc::channel();
                 let (ready_to_cancel_tx,ready_to_cancel_rx)=std::sync::mpsc::channel();
                 let (control_probe_tx,control_probe_rx)=std::sync::mpsc::channel();
                 let (control_sent_tx,control_sent_rx)=std::sync::mpsc::channel();
@@ -2061,8 +2062,17 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                     if !reply_after_media {
                         socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
                     }
+                    if reply_after_media {
+                        // Model a camera's short-lived preliminary media connection.
+                            drop(std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?);
+                            selection_started_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+                        if !early_reply {
+                            socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":14}"#))?;
+                            if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") { return Err(io::Error::other("selection-time clock reply missing")); }
+                        }
+                    }
                     let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;
-                    let split=if reply_after_media {1} else if audio_change {
+                    let split=if reply_after_media {13} else if audio_change {
                         let length=(usize::from(wire[14])<<16)|(usize::from(wire[15])<<8)|usize::from(wire[16]);
                         13+11+length+4
                     } else {wire.len().min(100)};
@@ -2155,7 +2165,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
                 let started=if reply_after_media {
                     let mut trace=listener::StartTrace::default();
-                    let future=listener::start_before_reply_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace);
+                    let future=listener::start_before_reply_retaining_listener(&mut owner,&mut session,&start,framer,recorder,&mut trace);
                     let result=if stop_mode==2 {
                         let mut future=Box::pin(future);
                         timeout(cx.now(),Duration::from_secs(5),poll_fn(|context| {
@@ -2206,17 +2216,41 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                         peer.join().map_err(|_|"fixture peer panic")??;
                         return Ok(());
                     }
-                    let started=result.ok_or("unexpected timeout")??;
+                    if matches!(&result,Some(Err(_))) {
+                        eprintln!("fixture_startup_failure dispatched={} clock_requests={} clock_replies={} observations={} hello={:?} agreement={:?} stream={:?} clock_attempts={}",trace.dispatched().is_some(),trace.clock_requests(),trace.clock_replies_written(),trace.observations().len(),trace.protocol().hello(),trace.protocol().agreement(),trace.protocol().stream(),trace.protocol().clocks().len());
+                    }
+                    let retained=result.ok_or("unexpected timeout")?.map_err(|error|format!("initial startup: {error:?}"))?;
+                    let mut selection=listener::ValidatedMediaSelection::new(retained,3,4096,1_000_000,Duration::from_secs(5)).map_err(|_|"candidate configuration refused")?;
+                    let mut fresh=|index:usize| -> io::Result<_> {
+                        let framer=Framer::new(FlvLimits::default(),1024*1024).map_err(io::Error::other)?;
+                        let recorder=recording::Recorder::new(SourceKey {connection:10+index as u64,generation:1},recording::Limits::default()).map_err(io::Error::other)?;
+                        Ok((framer,recorder))
+                    };
+                    let mut interrupted=Box::pin(selection.select(&mut owner,&mut session,&start,&mut trace,None,&mut fresh));
+                    poll_fn(|context| match interrupted.as_mut().poll(context) {
+                        Poll::Pending=>Poll::Ready(()),
+                        Poll::Ready(_)=>panic!("selection unexpectedly finished before fixture release"),
+                    }).await;
+                    drop(interrupted);
+                    selection_started_tx.send(())?;
+                    selection.select(&mut owner,&mut session,&start,&mut trace,None,&mut fresh).await.map_err(|error|format!("resumed selection: {error:?}"))?;
+                    assert_eq!(selection.attempts(),2);
+                    let pipeline=selection.take_ready().ok_or("no selected media")?;
+                    let (evidence,candidates)=selection.into_parts();
+                    let (_listener,remaining,additional)=candidates.into_parts();
+                    assert!(additional.iter().all(Option::is_none));
+                    assert!(remaining.is_none());
+                    let started=listener::StartedBeforeReply {dispatched:evidence.dispatched,time_syncs_during_accept:evidence.time_syncs_during_accept,observations_during_accept:evidence.observations_during_accept,pipeline};
                     assert!(trace.dispatched().is_some());
-                    assert_eq!(trace.clock_requests(),if early_reply {2} else {1});
-                    assert_eq!(trace.clock_replies_written(),if early_reply {2} else {1});
+                    assert_eq!(trace.clock_requests(),2);
+                    assert_eq!(trace.clock_replies_written(),2);
                     assert_eq!(started.dispatched.time_syncs,1);
                     assert_eq!(started.time_syncs_during_accept,if early_reply {2} else {1});
                     let protocol=trace.protocol_mut();
                     assert!(matches!(protocol.hello_mut().take_written(),Some(ManagementWrite::Written {..})));
                     assert!(matches!(protocol.agreement_mut().take_written(),Some(ManagementWrite::Written {..})));
                     assert!(matches!(protocol.stream_mut().take_written(),Some(fss_reference::unifi_direct::receive::StreamWrite::Written {..})));
-                    assert_eq!(protocol.clocks().len(),1+if early_reply {2}else{1});
+                    assert_eq!(protocol.clocks().len(),3);
                     for clock in protocol.clocks_mut() {
                         assert!(matches!(clock.take_written(),Some(ManagementWrite::Written {..})));
                     }
@@ -2261,10 +2295,8 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 let mut supervisor=supervisor::Supervisor::new(session,pipeline,conditions);
                 if async_archive { supervisor.enable_audio_tracking()?; }
                 if reply_after_media {
-                    match supervisor.step(&mut owner,&operations[6],Duration::from_secs(5)).await {
-                        supervisor::Step::Media(pipeline::Step::Progress {appended:1})=>(),
-                        other=>return Err(format!("expected media before the withheld reply: {other:?}").into()),
-                    }
+                    // Selection retained the complete FLV header in the framer;
+                    // release the synthetic peer before consuming the rest.
                     media_seen_tx.send(()).map_err(io::Error::other)?;
                 }
                 let audio_bytes=[0x14,0x08];

@@ -46,6 +46,21 @@ pub enum Error {
     /// Cancellation stopped the pipeline; retire to recover all owned state.
     Cancelled,
 }
+
+/// Prefix-probing refusal; a stopped pipeline still retains source custody.
+#[derive(Debug)]
+pub enum ProbeError {
+    /// Another pipeline operation has already begun or the owner stopped.
+    NotFresh,
+    /// Source admission or I/O failed.
+    Ingress(ingress::Error),
+}
+impl fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi first-byte probe refused: {self:?}")
+    }
+}
+impl std::error::Error for ProbeError {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -104,10 +119,17 @@ pub struct Pipeline {
     audio: Option<aac_track::Track>,
     pending_audio: Option<AudioEvent>,
     started: bool,
+    probing: bool,
+    first_byte_only: bool,
     stopped: bool,
 }
 impl Pipeline {
-    pub(crate) fn source_key(&self) -> fss_container::flv_avc::SourceKey {
+    pub(crate) fn is_fresh(&self) -> bool {
+        !self.started && !self.stopped
+    }
+
+    /// Caller-supplied connection and generation claim; this does not authenticate the peer.
+    pub fn source_key(&self) -> fss_container::flv_avc::SourceKey {
         self.recorder.source_key()
     }
 
@@ -120,15 +142,18 @@ impl Pipeline {
             audio: None,
             pending_audio: None,
             started: false,
+            probing: false,
+            first_byte_only: false,
             stopped: false,
         }
     }
 
-    /// Attach one AAC source interpreter before any pipeline step. The default
-    /// video-only path is unchanged. This does not decode, mux, save, or play
-    /// audio, and does not authenticate the sender or configuration epoch.
+    /// Attach one AAC source interpreter before any ordinary pipeline step.
+    /// A completed prefix probe is allowed because it cannot emit a record.
+    /// This does not decode, mux, save, or play audio, and does not authenticate
+    /// the sender or configuration epoch.
     pub fn enable_audio_tracking(&mut self) -> Result<(), AudioSetupError> {
-        if self.started || self.stopped {
+        if self.stopped || (self.started && !self.first_byte_only) {
             return Err(AudioSetupError::AlreadyStarted);
         }
         if self.audio.is_some() {
@@ -171,6 +196,74 @@ impl Pipeline {
         self.recorder.av_initialization(audio)
     }
 
+    /// Distinguish an empty fresh connection from one that sent at least one
+    /// byte. The byte stays in the framer for normal recording; data is not
+    /// proof of a valid stream. A dropped pending probe can be polled again or
+    /// replaced by ordinary `step`, with its prepaid read reservation retained.
+    pub async fn probe_first_byte(
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<ingress::FirstByte, ProbeError> {
+        if self.stopped || (self.started && !self.probing) {
+            return Err(ProbeError::NotFresh);
+        }
+        self.started = true;
+        self.probing = true;
+        let result = self.ingress.probe_first_byte(task, cx, now).await;
+        self.probing = false;
+        match result {
+            Ok(ingress::FirstByte::Empty) => {
+                self.stopped = true;
+                Ok(ingress::FirstByte::Empty)
+            }
+            Ok(ingress::FirstByte::Data) => {
+                self.first_byte_only = true;
+                Ok(ingress::FirstByte::Data)
+            }
+            Err(error) => {
+                self.stopped = true;
+                Err(ProbeError::Ingress(error))
+            }
+        }
+    }
+
+    /// Probe at most one initial-header byte while retaining the original
+    /// prefix. Invalid or incomplete connections stop but retain their bytes.
+    /// A dropped pending read can resume; a valid header is not media or peer
+    /// authentication. Audio may still be enabled before ordinary processing.
+    pub async fn probe_header_step(
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<ingress::HeaderProbe, ProbeError> {
+        if self.stopped || (self.started && !self.probing) {
+            return Err(ProbeError::NotFresh);
+        }
+        self.started = true;
+        self.probing = true;
+        match self.ingress.probe_header_step(task, cx, now).await {
+            Ok(ingress::HeaderProbe::Progress) => Ok(ingress::HeaderProbe::Progress),
+            Ok(ingress::HeaderProbe::Valid) => {
+                self.probing = false;
+                self.first_byte_only = true;
+                Ok(ingress::HeaderProbe::Valid)
+            }
+            Ok(result) => {
+                self.probing = false;
+                self.stopped = true;
+                Ok(result)
+            }
+            Err(error) => {
+                self.probing = false;
+                self.stopped = true;
+                Err(ProbeError::Ingress(error))
+            }
+        }
+    }
+
     /// Perform at most one source step and admit at most one resulting record.
     /// The caller supplies a current canonical timestamp, supervises the wait,
     /// and consumes each returned original record or explicit omission.
@@ -191,6 +284,8 @@ impl Pipeline {
             return Err(Error::AudioPending);
         }
         self.started = true;
+        self.probing = false;
+        self.first_byte_only = false;
         let source = match self.ingress.step(task, cx, now).await {
             Ok(source) => source,
             Err(error) => {
