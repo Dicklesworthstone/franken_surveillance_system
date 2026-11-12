@@ -11,11 +11,144 @@ use fss_core::{
 use fss_reference::unifi_direct::{
     archive, av_bootstrap, av_bootstrap_driver, av_owned_sink, av_unknown_worker_guard as unknown,
     av_worker, conversation, events, management, metered::MeteredClock, pipeline, recording,
+    av_rollover_generation, av_rollover_supplies, recording_provision, recording_rollover,
     recording_session, recording_storage, source_coordinator, source_handoff, source_worker,
     supervisor,
 };
 use fss_runtime::execution::TaskCx;
 use std::{path::Path, sync::Arc, time::Duration};
+
+mod video;
+
+// Explicit lifetime limit for this laboratory run; installed custody remains
+// held by the trial. This does not provide restart-safe generation planning.
+struct Renewal {
+    batch: u64,
+    remaining: u64,
+}
+impl Renewal {
+    fn next(&self) -> Option<u64> {
+        (self.remaining > 0).then_some(self.batch.min(self.remaining))
+    }
+    fn committed(&mut self, count: u64) {
+        self.remaining -= count;
+    }
+}
+
+enum TrialSession<'scope, 'task, IO> {
+    Plain(Box<recording_session::Session<'scope, 'task, IO>>),
+    Managed {
+        session: Box<recording_provision::ProvisioningSession<'scope, 'task, IO>>,
+        custody: Vec<recording_provision::SupplyCustody>,
+        renewal: Option<Renewal>,
+    },
+}
+
+enum TrialStep {
+    Session(recording_session::Step),
+    Control(supervisor::Step, Option<&'static str>),
+    Progress,
+    Stopped(&'static str),
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> TrialSession<'scope, 'task, IO> {
+    fn control(&mut self) -> Option<recording_session::Control<'_, 'scope, 'task, IO>> {
+        match self {
+            Self::Plain(session) => session.control(),
+            Self::Managed { session, .. } => session.control(),
+        }
+    }
+
+    async fn step(
+        &mut self,
+        owner: &mut conversation::Owner<'_, 'scope, 'task>,
+        operation: &OperationId,
+        wait: Duration,
+        task: &'scope TaskCx<'task>,
+        cx: &'scope Cx,
+        clock: MeteredClock<'scope, 'task>,
+        av: source_coordinator::ArchiveAdmission<'_>,
+        source: source_coordinator::ArchiveAdmission<'_>,
+    ) -> TrialStep {
+        match self {
+            Self::Plain(session) => TrialStep::Session(
+                Box::pin(session.step(owner, operation, wait, task, cx, clock, av, source)).await,
+            ),
+            Self::Managed { session, custody, renewal } => match Box::pin(
+                session.step(owner, operation, wait, task, cx, clock, av, source, &BudgetVector::ZERO),
+            ).await {
+                recording_provision::Step::SupplyPlanned(identity) => {println!("trial_owned_supply=planned generation={}",identity.generation);TrialStep::Progress},
+                recording_provision::Step::SupplyStarted => TrialStep::Progress,
+                recording_provision::Step::SupplyInstalled(completion) if completion.runtime.is_ok() && completion.outcome==av_rollover_supplies::Outcome::Ready => {
+                    if custody.len()>=8 {
+                        TrialStep::Stopped("managed supply custody capacity exhausted")
+                    } else {
+                        match session.take_custody() {
+                            Some(owner) => {custody.push(owner);println!("trial_owned_supply=installed custody=retained");TrialStep::Progress},
+                            None => TrialStep::Stopped("managed supply custody unavailable"),
+                        }
+                    }
+                },
+                recording_provision::Step::PlanExhausted => {
+                    if let Some((policy,count))=renewal.as_mut().and_then(|policy| policy.next().map(|count| (policy,count))) {
+                        if session.extend_plan(count).is_err() {TrialStep::Stopped("managed plan renewal refused")}
+                        else {policy.committed(count);println!("trial_owned_supply=plan_renewed count={count} remaining={}",policy.remaining);TrialStep::Progress}
+                    } else {println!("trial_owned_supply=plan_exhausted");TrialStep::Progress}
+                },
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Session(step))) => TrialStep::Session(step),
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Renewed { .. })) => TrialStep::Progress,
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Exhausted { control, .. })) => TrialStep::Control(control, Some("managed audio allowance exhausted")),
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Refused { control, .. })) => TrialStep::Control(control, Some("managed audio allowance refused")),
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::SuppliesRequired { control, .. }) => TrialStep::Control(control, None),
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::Control(step))) => TrialStep::Control(step, None),
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::PreflightStarted) => {println!("trial_owned_rollover=preflight_started");TrialStep::Progress},
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::RolloverStarted)) => {println!("trial_owned_rollover=started");TrialStep::Progress},
+                recording_provision::Step::Managed(recording_rollover::ManagedStep::Resumed(receipt)) => {println!("trial_owned_rollover=resumed outcome={:?}",receipt.outcome);TrialStep::Progress},
+                _ => TrialStep::Stopped("managed recording requires reconciliation"),
+            },
+        }
+    }
+
+    async fn into_session(
+        self,
+        owner: &mut conversation::Owner<'_, 'scope, 'task>,
+        operation: &OperationId,
+        task: &'scope TaskCx<'task>,
+        cx: &'scope Cx,
+        clock: MeteredClock<'scope, 'task>,
+        av: source_coordinator::ArchiveAdmission<'_>,
+        source: source_coordinator::ArchiveAdmission<'_>,
+    ) -> Result<Box<recording_session::Session<'scope, 'task, IO>>, &'static str> {
+        match self {
+            Self::Plain(session) => Ok(session),
+            Self::Managed { mut session, custody, .. } => {
+                let _=asupersync::time::timeout(cx.now(),Duration::from_secs(5),session.join_supply()).await;
+                session.abort();
+                let _=session.join_supply().await;
+                let _=session.join_rollover().await;
+                match session.step(owner,operation,Duration::from_millis(100),task,cx,clock,av,source,&BudgetVector::ZERO).await {
+                    recording_provision::Step::Aborted => (),
+                    recording_provision::Step::SupplyFailed(_) => return Err("managed creator stopped; reconcile partial stores"),
+                    _ => return Err("managed creator drain requires reconciliation"),
+                }
+                let owners=session.into_parts();
+                if owners.started || owners.failed.is_some() || owners.custody.is_some() {return Err("managed creator ownership requires reconciliation");}
+                if let Some(worker)=owners.worker {
+                    let retired=worker.retire().map_err(|_|"managed creator still running")?;
+                    if retired.outcome.is_some() || retired.root_created || retired.pin_root_created {return Err("managed unstarted creator requires reconciliation");}
+                }
+                let pending=owners.ready.is_some();
+                if owners.completion.is_some()!=pending {return Err("managed completion ownership mismatch");}
+                println!("trial_owned_supply_shutdown installed={} uninstalled={} restart_recovery=unverified",custody.len(),pending);
+                let (owner, _policy, supplies) = owners.managed.into_parts();
+                match owner {
+                    Some(recording_rollover::ManagedOwners::Session(session)) => {drop((custody,owners.ready,supplies));Ok(session)},
+                    _ => Err("managed transition owners require reconciliation"),
+                }
+            }
+        }
+    }
+}
 
 struct Retention(ContentDigest);
 impl archive::RetainAuthority for Retention {
@@ -132,6 +265,8 @@ pub fn inspect<'task>(
         av_scope: ContentDigest::sha256(b"unifi-owned-trial-av"),
         source_deployment_limits: fss_reference::DeploymentLimits::standard(),
         av_deployment_limits: fss_reference::DeploymentLimits::standard(),
+        source_history_limits: fss_object::effect_journal::EffectJournalLimits::default(),
+        av_history_limits: fss_object::effect_journal::EffectJournalLimits::default(),
         limits: archive::Limits::default(),
         max_source_bytes: 1024 * 1024,
         work_limit: 4_000_000_000,
@@ -247,9 +382,30 @@ fn av_completion(
         _ => Err("A/V publication requires reconciliation"),
     }
 }
+
+fn av_completion_or_rollover(
+    c: av_worker::UnknownTimeCompletion,
+    managed: bool,
+) -> Result<Option<(archive::UnknownTimePin, archive::UnknownTimeAvKind)>, &'static str> {
+    if managed && c.runtime.is_ok() && matches!(
+        &c.outcome,
+        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {
+            stage: av_worker::UnknownTimeFailureStage::BeforePublication,
+            reason: av_worker::FailureReason::JournalCapacity,
+            pending: None,
+            receipt: None,
+            rollover: Some(_),
+        })
+    ) {
+        println!("trial_owned_rollover=capacity_boundary");
+        return Ok(None);
+    }
+    av_completion(c).map(Some)
+}
 fn control(step: supervisor::Step, event: &mut Option<events::Frame>) -> Result<(), &'static str> {
     match step {
         supervisor::Step::Idle | supervisor::Step::Media(pipeline::Step::Progress { .. }) => Ok(()),
+        supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)) => Ok(()),
         supervisor::Step::Observation(
             fss_reference::unifi_direct::Observation::StreamSettingsReply { success, .. },
         ) if success != Some(false) => Ok(()),
@@ -263,6 +419,19 @@ fn control(step: supervisor::Step, event: &mut Option<events::Frame>) -> Result<
         },
         supervisor::Step::TimeSyncStopped { error, .. } => {
             eprintln!("trial_owned_time_sync_stopped reason={error:?}");
+            Err("control observation requires reconciliation")
+        }
+        supervisor::Step::MediaError(error) => {
+            match error {
+                pipeline::Error::Ingress(fss_reference::unifi_direct::ingress::Error::Framing(reason)) =>
+                    eprintln!("trial_owned_media_error stage=framing reason={reason:?}"),
+                pipeline::Error::Ingress(_) => eprintln!("trial_owned_media_error stage=ingress"),
+                pipeline::Error::Recording(refusal) =>
+                    eprintln!("trial_owned_media_error stage=recording reason={:?}", refusal.reason),
+                pipeline::Error::Stopped => eprintln!("trial_owned_media_error stage=stopped"),
+                pipeline::Error::AudioPending => eprintln!("trial_owned_media_error stage=audio_pending"),
+                pipeline::Error::Cancelled => eprintln!("trial_owned_media_error stage=cancelled"),
+            }
             Err("control observation requires reconciliation")
         }
         supervisor::Step::CameraEvent(frame) => {
@@ -313,9 +482,10 @@ fn av_control(
     step: supervisor::Step,
     completion: Option<av_worker::UnknownTimeCompletion>,
     event: &mut Option<events::Frame>,
+    managed: bool,
 ) -> Result<Option<(archive::UnknownTimePin, archive::UnknownTimeAvKind)>, &'static str> {
     let publication = match completion {
-        Some(c) => av_completion(c).map(Some),
+        Some(c) => av_completion_or_rollover(c,managed),
         None => Ok(None),
     };
     let control = control(step, event);
@@ -346,9 +516,33 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     reply_events: bool,
     anchor_root: Option<&Path>,
     decode_owned: bool,
+    video_still: Option<fss_reference::unifi_direct::video_still::Color>,
+    managed: bool,
+    av_history_records: Option<usize>,
+    video_only: bool,
+    inband: bool,
+    renewal_batch: Option<u64>,
+    retained_video_generations: bool,
+    stop_after_retained_reservation: bool,
+    auto_retained_generations: Option<u64>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     if !(1..=8).contains(&segment_limit) {
         return Err("invalid segment limit".into());
+    }
+    if video_still.is_some() && (!video_only || !decode_owned) {
+        return Err("video still requires video-only archive and owned decode".into());
+    }
+    if renewal_batch.is_some_and(|batch| !managed || !(1..=8).contains(&batch)) {
+        return Err("invalid managed renewal batch".into());
+    }
+    if retained_video_generations && (!managed || !video_only || anchor_root.is_none() || (renewal_batch.is_some() && auto_retained_generations.is_none())) {
+        return Err("retained video generations require managed video-only archive, an anchor root, and automatic mode for renewal".into());
+    }
+    if stop_after_retained_reservation && !retained_video_generations {
+        return Err("laboratory reservation stop requires retained video generations".into());
+    }
+    if auto_retained_generations.is_some_and(|n| !(1..=7).contains(&n) || !retained_video_generations || stop_after_retained_reservation) {
+        return Err("invalid automatic retained generation allowance".into());
     }
     let parent = root.parent().ok_or("archive parent missing")?;
     let storage_authority = fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
@@ -370,6 +564,10 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         fss_reference::ReplayCx::from_context_authority(&storage_authority, parent.to_path_buf())?;
     let retention = ContentDigest::sha256(b"unifi-owned-trial-retention");
     let access = Arc::new(Retention(retention));
+    let av_history_limits = fss_object::effect_journal::EffectJournalLimits {
+        max_records: av_history_records.unwrap_or(fss_object::effect_journal::EffectJournalLimits::default().max_records),
+        ..Default::default()
+    };
     let configuration = recording_storage::Configuration {
         root,
         site_lineage: "site:unifi-owned-trial",
@@ -380,6 +578,8 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         av_scope: ContentDigest::sha256(b"unifi-owned-trial-av"),
         source_deployment_limits: fss_reference::DeploymentLimits::standard(),
         av_deployment_limits: fss_reference::DeploymentLimits::standard(),
+        source_history_limits: fss_object::effect_journal::EffectJournalLimits::default(),
+        av_history_limits,
         limits: archive::Limits::default(),
         max_source_bytes: 1024 * 1024,
         work_limit: 4_000_000_000,
@@ -411,6 +611,41 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             access.clone(),
         )?
     };
+    if video_only {
+        let mut plan = if managed {
+            task.checkpoint_for(RuntimeGrant::ObjectStage, root.to_str().ok_or("archive root is not UTF-8")?, clock.now()?, &BudgetVector::ZERO)?;
+            let journal_replay = Arc::new(fss_reference::ReplayCx::from_context_authority(&storage_authority, root.to_path_buf())?);
+            let pin_parent = if retained_video_generations { anchor_root.ok_or("video anchor root missing")? } else { root };
+            let pin_replay = Arc::new(fss_reference::ReplayCx::from_context_authority(&storage_authority, pin_parent.to_path_buf())?);
+            Some(av_rollover_generation::Plan::new(av_rollover_generation::Configuration {
+                namespace: run_id.as_str().into(), scope_seed: ContentDigest::sha256(run_id.as_str().as_bytes()), first: 1, count: renewal_batch.unwrap_or(8),
+                journal_replay, pin_replay, journal_io: Arc::new(fss_object::HostSpoolIo), pin_io: Arc::new(fss_object::HostSpoolIo),
+                journal_limits: av_history_limits, pin_limits: fss_object::effect_journal::EffectJournalLimits::default(), read: access.clone(),
+                object_limits: archive::StagedAvLimits { max_objects: 8192, max_object_bytes: 64 * 1024 * 1024, max_total_bytes: 128 * 1024 * 1024 }, work_limit: 100_000_000_000,
+            }).map_err(|_| "managed video generation plan refused")?)
+        } else { None };
+        let retained_bootstrap = if retained_video_generations {
+            let anchor = anchor_root.ok_or("video anchor root missing")?;
+            let journal_replay = Arc::new(fss_reference::ReplayCx::from_context_authority(&storage_authority, root.to_path_buf())?);
+            let custody_replay = Arc::new(fss_reference::ReplayCx::from_context_authority(&storage_authority, anchor.to_path_buf())?);
+            Some(av_rollover_generation::BootstrapWorker::new(av_rollover_generation::BootstrapInputs {
+                plan: plan.take().ok_or("video generation plan missing")?,
+                storage: av_rollover_generation::BootstrapStorage {
+                    mode: av_rollover_generation::BootstrapMode::Create,
+                    journal_root: root.join("video-generation-journal"),
+                    custody_root: anchor.join("video-generation-pin"),
+                    journal_replay, custody_replay,
+                    journal_io: Arc::new(fss_object::HostSpoolIo), custody_io: Arc::new(fss_object::HostSpoolIo),
+                    journal_limits: fss_object::effect_journal::EffectJournalLimits::default(),
+                    custody_limits: fss_object::effect_journal::EffectJournalLimits::default(),
+                    custody_scope: anchor_scope("video-generation", camera_claim)?,
+                },
+            }).map_err(|_| "retained video generation bootstrap refused")?)
+        } else { None };
+        return Box::pin(video::run(supervisor, owner, run_id, task, cx, clock, root,
+            source, camera_claim, retention, access, created, wait, segment_limit,
+            management, reply_events, decode_owned, video_still, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations)).await;
+    }
     let collector = av_bootstrap::Collector::new(
         audio,
         retention,
@@ -423,10 +658,32 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             evidence_limits: fss_reference::unifi_direct::evidence::Limits::default(),
         },
     );
-    let mut session = Box::new(
+    let session = Box::new(
         recording_session::Session::begin(supervisor, collector, created.coordinator, created.av)
             .map_err(|_| "session startup refused; inspect archive")?,
     );
+    let mut session = if managed {
+        let policy=recording_session::AudioAllowancePolicy::new(128,1_000_000,2_000_000).ok_or("managed audio policy refused")?;
+        task.checkpoint_for(RuntimeGrant::ObjectStage,root.to_str().ok_or("archive root is not UTF-8")?,clock.now()?,&BudgetVector::ZERO)?;
+        let journal_replay=Arc::new(fss_reference::ReplayCx::from_context_authority(&storage_authority,root.to_path_buf())?);
+        let pin_replay=Arc::new(fss_reference::ReplayCx::from_context_authority(&storage_authority,root.to_path_buf())?);
+        let limits=fss_object::effect_journal::EffectJournalLimits::default();
+        let mut plan=av_rollover_generation::Plan::new(av_rollover_generation::Configuration {
+            namespace:run_id.as_str().into(),scope_seed:ContentDigest::sha256(run_id.as_str().as_bytes()),first:1,count:renewal_batch.unwrap_or(8),
+            journal_replay,pin_replay,journal_io:Arc::new(fss_object::HostSpoolIo),pin_io:Arc::new(fss_object::HostSpoolIo),
+            journal_limits:av_history_limits,pin_limits:limits,read:access.clone(),
+            object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:1024*1024,max_total_bytes:128*1024*1024},work_limit:100_000_000_000,
+        }).map_err(|_|"managed generation plan refused")?;
+        let (first,worker)=plan.next_worker().map_err(|_|"managed generation refused")?.ok_or("managed generation missing")?;
+        let mut driver=recording_provision::ProvisioningSession::new(recording_rollover::ManagedSession::new(*session,policy),worker);
+        driver.set_plan(plan).map_err(|_|"managed generation plan unavailable")?;
+        let mut custody=Vec::new();custody.try_reserve_exact(8)?;
+        println!("trial_owned_driver=managed first_generation={} pin_independence=unverified",first.generation);
+        let renewal=renewal_batch.map(|batch|Renewal {batch,remaining:8-batch});
+        TrialSession::Managed {session:Box::new(driver),custody,renewal}
+    } else {
+        TrialSession::Plain(session)
+    };
     let av = source_coordinator::ArchiveAdmission {
         resource: "unifi:owned-av",
         cost: &BudgetVector::ZERO,
@@ -481,7 +738,12 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         ))
         .await;
         let mut event = None;
+        let mut stop_after_control = None;
         let step_result: Result<Option<(archive::UnknownTimePin, archive::UnknownTimeAvKind)>, &'static str> = match step {
+            TrialStep::Control(step, stop) => {stop_after_control=stop;control(step,&mut event).map(|_|None)},
+            TrialStep::Progress => Ok(None),
+            TrialStep::Stopped(reason) => Err(reason),
+            TrialStep::Session(step) => match step {
             recording_session::Step::Bootstrap(
                 source_coordinator::BootstrapStep::SourceOffered(
                     source_handoff::BootstrapResult::Accepted {
@@ -542,7 +804,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                     ..
                 },
             )) => match completion {
-                Some(c) => av_completion(c).map(Some),
+                Some(c) => av_completion_or_rollover(c,managed),
                 None => Ok(None),
             },
             recording_session::Step::Recording(source_coordinator::Step::SourceArchive(
@@ -573,12 +835,12 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                 unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Archive(
                     c,
                 ))),
-            )) => av_completion(c).map(Some),
+            )) => av_completion_or_rollover(c,managed),
             recording_session::Step::Recording(source_coordinator::Step::Session(
                 unknown::SessionEvent::Advance(unknown::Advance::Archive(
                     unknown::Drive::Control { step, completion },
                 )),
-            )) => av_control(step, completion, &mut event),
+            )) => av_control(step, completion, &mut event, managed),
             other => {
                 match &other {
                     recording_session::Step::Bootstrap(event) => eprintln!(
@@ -614,6 +876,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                 }
                 Err("owned session stopped with an unhandled observation")
             }
+            },
         };
         let pin = match step_result {
             Ok(pin) => pin,
@@ -681,6 +944,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                 }
             }
         }
+        if let Some(reason)=stop_after_control {break Err(reason);}
         if published == segment_limit {
             break Ok(());
         }
@@ -689,6 +953,8 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         // Preserve the payload-free reason even if later drain or custody checks also fail.
         eprintln!("trial_owned_capture_stop reason={reason}");
     }
+    let shutdown_operation=run_id.owned_step(count.saturating_add(1))?;
+    let session=session.into_session(owner,&shutdown_operation,task,cx,clock,av,source_admission).await.map_err(|reason| -> Box<dyn std::error::Error> {reason.into()})?;
     match (*session).stop() {
         recording_session::Stop::Bootstrap(mut stop) => {
             let source_result = stop.join_source().await.map_or(Ok(()), source_completion);
@@ -803,7 +1069,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                         first_media.ok_or("archive video decode was not performed")?
                     };
                     task.checkpoint_for(RuntimeGrant::MediaDecode, resource, clock.now()?, &BudgetVector::ZERO)?;
-                    let movie = fss_container::demux::AvcMp4::parse(&media, None, fss_container::demux::DemuxLimits::default())?;
+                    let movie = fss_container::demux::AvcMp4::parse_inband(&media, None, fss_container::demux::DemuxLimits::default())?;
                     let count = movie.samples().len().min(3);
                     if count == 0 { return Err("archive video has no samples".into()); }
                     let annex = movie.annex_b(0, count)?;

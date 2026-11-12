@@ -684,6 +684,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-codec-jpeg-encode"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
+
+[[package]]
 name = "fss-codec-mjpeg"
 version = "0.0.1"
 dependencies = [
@@ -762,6 +769,7 @@ dependencies = [
  "asupersync",
  "fss-codec-h264",
  "fss-codec-h265",
+ "fss-codec-jpeg-encode",
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",
@@ -1996,6 +2004,7 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "fss-codec-h264",
+ "fss-codec-jpeg-encode",
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",

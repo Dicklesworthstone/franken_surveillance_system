@@ -70,7 +70,7 @@ use trial_run_id::TrialRunId;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-decode-owned] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -103,7 +103,16 @@ struct Options {
     lab_zero_stream_id: bool,
     lab_segments: usize,
     lab_owned_archive: bool,
+    lab_video_only_archive: bool,
+    lab_managed_archive: bool,
+    lab_retained_video_generations: bool,
+    lab_auto_retained_generations: Option<u64>,
+    lab_stop_after_retained_reservation: bool,
+    lab_inband_avc: bool,
+    lab_av_history_records: Option<usize>,
+    lab_renew_batch: Option<u64>,
     lab_decode_owned: bool,
+    lab_video_still: Option<fss_reference::unifi_direct::video_still::Color>,
     lab_anchor_root: Option<PathBuf>,
     setup: Option<SetupOptions>,
 }
@@ -167,8 +176,37 @@ fn options() -> ResultBox<Options> {
     let lab_anchor_root=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-anchor-root=")) {
         let path=PathBuf::from(value);args.pop();Some(path)
     } else {None};
+    let lab_video_still = if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-video-still=")) {
+        let color=match value {"full"=>fss_reference::unifi_direct::video_still::Color::Bt601Full,"limited"=>fss_reference::unifi_direct::video_still::Color::Bt601Limited,_=>return Err("video still requires explicit full or limited color".into())};
+        args.pop();Some(color)
+    } else {None};
     let lab_decode_owned = args.last().is_some_and(|s| s == "--lab-decode-owned");
     if lab_decode_owned { args.pop(); }
+    let lab_av_history_records=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-av-history-records=")) {
+        let count=value.parse::<usize>()?;
+        if !(5..=32).contains(&count) {return Err("laboratory A/V history records must be 5 to 32".into());}
+        args.pop();Some(count)
+    } else {None};
+    let lab_renew_batch=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-renew-batch=")) {
+        let count=value.parse::<u64>()?;
+        if !(1..=8).contains(&count) {return Err("laboratory renewal batch must be 1 to 8".into());}
+        args.pop();Some(count)
+    } else {None};
+    let lab_inband_avc = args.last().is_some_and(|s| s == "--lab-inband-avc");
+    if lab_inband_avc { args.pop(); }
+    let lab_stop_after_retained_reservation = args.last().is_some_and(|s| s == "--lab-stop-after-retained-reservation");
+    if lab_stop_after_retained_reservation { args.pop(); }
+    let lab_auto_retained_generations = if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-auto-retained-generations=")) {
+        let count=value.parse::<u64>()?;
+        if !(1..=7).contains(&count) {return Err("automatic retained generations must be 1 to 7".into());}
+        args.pop();Some(count)
+    } else {None};
+    let lab_retained_video_generations = args.last().is_some_and(|s| s == "--lab-retained-video-generations");
+    if lab_retained_video_generations { args.pop(); }
+    let lab_managed_archive = args.last().is_some_and(|s| s == "--lab-managed-archive");
+    if lab_managed_archive { args.pop(); }
+    let lab_video_only_archive = args.last().is_some_and(|s| s == "--lab-video-only-archive");
+    if lab_video_only_archive { args.pop(); }
     let lab_owned_archive = args.last().is_some_and(|s| s == "--lab-owned-archive");
     if lab_owned_archive { args.pop(); }
     let observe_snapshot = args.last().is_some_and(|s| s == "--observe-snapshot");
@@ -240,8 +278,11 @@ fn options() -> ResultBox<Options> {
     if lab_aac_source && lab_aac_config.is_some() {
         return Err("choose one laboratory AAC configuration source".into());
     }
-    if lab_owned_archive && lab_aac_config.is_none() && !lab_aac_source {
+    if lab_owned_archive && !lab_video_only_archive && lab_aac_config.is_none() && !lab_aac_source {
         return Err("owned archive requires an explicit or in-band AAC configuration".into());
+    }
+    if lab_video_only_archive && (lab_aac_source || lab_aac_config.is_some()) {
+        return Err("video-only archive cannot use an AAC configuration".into());
     }
     let reply_startup_requests = args.last().is_some_and(|s| s == "--reply-startup-requests");
     if reply_startup_requests {
@@ -312,8 +353,17 @@ fn options() -> ResultBox<Options> {
     if lab_owned_archive && observe_only {
         return Err("owned archive cannot be combined with read-only observation".into());
     }
+    if lab_managed_archive && !lab_owned_archive {return Err("managed archive requires owned archive mode".into());}
+    if lab_video_only_archive && !lab_owned_archive {return Err("video-only archive requires owned archive mode".into());}
+    if lab_inband_avc && !lab_owned_archive {return Err("in-band AVC requires owned archive mode".into());}
+    if lab_av_history_records.is_some() && !lab_managed_archive {return Err("laboratory A/V history limit requires managed archive mode".into());}
+    if lab_renew_batch.is_some() && !lab_managed_archive {return Err("laboratory renewal requires managed archive mode".into());}
+    if lab_retained_video_generations && (!lab_managed_archive || !lab_video_only_archive || lab_anchor_root.is_none() || (lab_renew_batch.is_some() && lab_auto_retained_generations.is_none())) {return Err("retained video generations require managed video-only archive, an anchor root, and automatic mode for renewal".into());}
+    if lab_stop_after_retained_reservation && !lab_retained_video_generations {return Err("laboratory reservation stop requires retained video generations".into());}
+    if lab_auto_retained_generations.is_some() && (!lab_retained_video_generations || lab_stop_after_retained_reservation) {return Err("automatic retained generations require retained mode and no stop injection".into());}
     if lab_anchor_root.is_some() && !lab_owned_archive {return Err("anchor root requires owned archive mode".into());}
     if lab_decode_owned && !lab_owned_archive {return Err("owned decode requires owned archive mode".into());}
+    if lab_video_still.is_some() && (!lab_video_only_archive || !lab_decode_owned) {return Err("video still requires video-only archive and owned decode".into());}
     let raw = args[2].as_bytes();
     if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
         return Err("MAC must be twelve hexadecimal digits".into());
@@ -393,7 +443,16 @@ fn options() -> ResultBox<Options> {
         lab_zero_stream_id,
         lab_segments,
         lab_owned_archive,
+        lab_video_only_archive,
+        lab_managed_archive,
+        lab_retained_video_generations,
+        lab_auto_retained_generations,
+        lab_stop_after_retained_reservation,
+        lab_inband_avc,
+        lab_av_history_records,
+        lab_renew_batch,
         lab_decode_owned,
+        lab_video_still,
         lab_anchor_root,
         setup,
     })
@@ -721,7 +780,13 @@ fn run(args: Options) -> ResultBox<()> {
         budget,
         start,
     )?;
-    let runtime = if args.lab_owned_archive { RuntimeBuilder::current_thread().blocking_threads(1,1).build()? } else { RuntimeBuilder::current_thread().build()? };
+    let runtime = if args.lab_video_still.is_some() {
+        RuntimeBuilder::current_thread().blocking_threads(2,2).build()?
+    } else if args.lab_owned_archive {
+        RuntimeBuilder::current_thread().blocking_threads(1,1).build()?
+    } else {
+        RuntimeBuilder::current_thread().build()?
+    };
     runtime.block_on(async {
         let cx=asupersync::Cx::current().ok_or("missing runtime")?;
         let task_start=TimestampNs(start.0+1);
@@ -902,7 +967,8 @@ fn run(args: Options) -> ResultBox<()> {
                     let io_wait=remaining.min(MAX_IO_WAIT);
                     let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:args.video_channel,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
                     let framing=if args.lab_zero_stream_id {SearchMode::ZeroStreamId} else if args.lab_g4_trailer {SearchMode::StructuredTrailer16AvFlag} else {SearchMode::Conservative};
-                    let framer=Framer::with_mode(FlvLimits::default(),1024*1024,framing)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
+                    let flv_limits=FlvLimits::default();
+                    let framer=Framer::with_mode(flv_limits,flv_limits.complete_candidate_buffer()?,framing)?; let recorder_factory=if args.lab_inband_avc {recording::Recorder::new_inband} else {recording::Recorder::new}; let recorder=recorder_factory(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
                     let mut startup_trace=listener::StartTrace::default();
                     let mut event_trace=conversation::StartupEventTrace::default();
                     let startup=async {
@@ -966,9 +1032,10 @@ fn run(args: Options) -> ResultBox<()> {
                 let mut supervisor=supervisor::Supervisor::new(session,started,management);
                 if args.lab_owned_archive {
                     println!("trial_mode=owned_archive bounded=true identity=network_claim capture_bounds=unknown");
+                    if args.lab_inband_avc {println!("trial_owned_avc_profile=avc3");}
                     let source=SourceKey {connection:attempts as u64,generation:1};
                     let claim=ContentDigest::sha256(&args.mac);
-                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,args.lab_anchor_root.as_deref(),args.lab_decode_owned)).await;
+                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,args.lab_anchor_root.as_deref(),args.lab_decode_owned,args.lab_video_still,args.lab_managed_archive,args.lab_av_history_records,args.lab_video_only_archive,args.lab_inband_avc,args.lab_renew_batch,args.lab_retained_video_generations,args.lab_stop_after_retained_reservation,args.lab_auto_retained_generations)).await;
                     return match result {
                         Ok(segments)=>{println!("trial_complete archive=published segments={segments} continuous_recording=false identity=network_claim capture_bounds=unknown");Ok(())},
                         Err(error)=>Err(error),

@@ -7,6 +7,22 @@ TLS feature or changing the workspace's dependency versions. The server
 adapter and `rustls-pure` provider are experimental; this crate is not an
 admitted FSS dependency and must not be deployed as a camera service.
 
+The standalone trial has an experimental managed archive mode selected by
+`--lab-owned-archive --lab-managed-archive` in that order. It prepares up to
+eight successor generations; its journal and pin locations share the archive
+host and do not establish independent durability. The optional
+`--lab-av-history-records=5` forces a small capacity boundary for controlled
+tests; it is not a production setting. The archive inspection command assumes
+default history limits and does not support inspection of these small-limit
+test archives. The trial is bounded and does not establish unattended restart
+recovery, 30-day retention, or physical-camera handoff.
+
+`--lab-inband-avc` (after the managed flag, when present) selects the explicit
+`avc3` profile for an owned archive. It preserves repeated parameter sets only
+when they match the original configuration; changes still refuse. The saved
+G4 clip replay required a test-only timestamp adjustment and synthetic audio;
+video-only bootstrap and a physical direct-camera session remain unproven.
+
 The handshake future owns its transport and drops it if interrupted. The
 adapter bounds work per poll and plaintext buffering, and retains partial TLS
 records inside rustls. Its current handshake drains outgoing records before
@@ -112,6 +128,173 @@ python3 experiments/unifi_tls_05_server_lab/media_before_reply_fixture.py TRIAL_
 
 The loopback result does not establish physical camera identity, successful
 controller handoff, continuous recording, or settlement of a camera effect.
+
+## Finch interoperability laboratory
+
+[`finch_interop.py`](finch_interop.py) runs the independently developed
+[Finch synthetic camera](https://github.com/rjmotion/finch) against a supplied
+Linux trial executable on IPv4 loopback. It requires clean checkouts at Finch
+`97c338adda3d6f9cfa35703c464826c37c12d63d` and pyunifiwire
+`ab424de6426826a9fba4cab7b5e20684355fea66`; these Python projects are test
+oracles, not production components. The runner creates private disposable
+credentials and retains its logs, journal and clip in a private temporary
+directory. Do not point Finch at an actual controller for this fixture.
+
+Finch's original pusher sends HEVC; the trial currently requests AVC and
+explicitly refuses that HEVC video. For an AVC test only,
+[`finch_avc_shim.py`](finch_avc_shim.py) adapts the synthetic elementary
+stream and video-tag bodies to AVC. Finch still supplies the TLS client,
+WebSocket and control conversation, metadata and extended-FLV framing. The
+adapter expects an Annex B synthetic source with one slice per frame and uses
+only loopback. Optional synthetic audio is 16 kHz mono AAC-LC in ADTS; the
+adapter inserts the audio tags and marks metadata accordingly. This is a
+single-stream test adapter, not an upstream Finch feature. The emulated device
+is a G5 PTZ, not a G4 Instant; its metadata names video2 even when the test
+source has 2K dimensions.
+
+On `ts1`, an older Linux trial binary with SHA-256
+`9fae565ed95723ab3d47e0276297d3f81e75176fcbe12e1d45feefea2e401674`
+accepted the adapted Finch connection and assembled a 2688 × 1512 synthetic AVC
+clip. The trial reported three decoded frames; FFprobe independently counted
+15 H.264 frames and FFmpeg decoded the clip. A subsequent 30-fps-source
+AVC/AAC run produced 30 video frames and 14 AAC frames, both decoded by
+FFmpeg; its video reports `1000/33` fps and a 0.99-second duration because
+Finch's test sender uses 33 ms timestamp steps. An unmodified Finch HEVC run
+was refused with `UnsupportedVideo` and produced no clip. The
+conservative-framing 30-fps-source AVC/AAC and HEVC cases were retained at
+`/data/tmp/fss-finch-interop-6d0qs26c` and
+`/data/tmp/fss-finch-interop-zieo7j24` on `ts1`. The respective runner
+SHA-256 values were
+`317cd4783520ba5aeb083f7698874b7746b5657faedba27f27d3b2b5fa9a6a2b` and
+`c3695d146258b9f63b2a1aecbb09e77e6c679ec4ddda286e02d5eb489e495f31`.
+The AVC adapter SHA-256 was
+`ec35e2e3256deaa77cfad4efe73dbb8f819134ddb336d9ba23b255d719b59d5b`;
+the adapter also refused a non-loopback destination. A separate parallel
+video-only run with the conservative search refused `Framing(BufferLimit)`
+without a clip (`/data/tmp/fss-finch-interop-7gd80n2k`); the cause has not
+been established. That source's largest AVC picture NAL was 136,769 bytes,
+below the 1 MiB framing buffer configured by the current trial source; the
+older binary's exact source and the reason for its refusal remain unverified.
+One video-only and one A/V case using the explicitly selected
+zero-stream-ID assumption passed; that is not proof the buffer-limit failure
+is fixed or that the assumption applies to every physical source. The 2K source SHA-256 was
+`6a24658b6cb786cee74343eafc5adfb1fe812341686786e6eea369770ed763ff`.
+The 30-fps 2K source SHA-256 was
+`566f9ed19480010fe1791d12de93d3f248f841e438826cdad96725270b460bcb`.
+This is independent control-protocol and adapted synthetic media evidence for
+that older binary only; it is not a physical-camera capture, production TLS
+qualification, media authentication, continuous recording, or settled effect.
+
+A subsequent full-dependency build of the current source at base
+`a978d5dd1bbfdfbba254ced7df493c4f9a73bbcc`, with the eight changed UniFi
+source files explicitly overlaid, completed Cargo compilation in strict-remote
+job `30103800983322934` on `vmi1264463`. The job was acknowledged and its
+source and pair released. The wrapper returned 102 because RCH correctly
+refused to transfer a Linux executable to the macOS host; this is not a
+successful wrapper result. The source-matched Linux executable, SHA-256
+`99200eb5bb3833a22c29114b0708440739e2f39a1f0cb41ec6ac3eca751e5760`, was
+copied within the worker to a private directory and run directly there.
+The runner selected channel 1, and both the Rust trial and Finch reported that
+selection. A video-only case produced 30 FFprobe-counted 2688 × 1512 AVC
+frames; an A/V case produced 30 video and 15 AAC frames, independently decoded
+by FFmpeg. The latter's synthetic sender-clock hypothesis reported audio and
+video both starting at zero; physical synchronization remains unverified. The
+retained cases on that worker are `/data/tmp/fss-finch-interop-8uh07tg5` and
+`/data/tmp/fss-finch-interop-cbilwt21`. The A/V case used runner SHA-256
+`317cd4783520ba5aeb083f7698874b7746b5657faedba27f27d3b2b5fa9a6a2b` and
+adapter SHA-256
+`191788720ef80ba2656ceb818c22ea5e5d85a981458d66edbad27d1967b50dcb`.
+The preceding adapter sent the first audio packet before the first video
+packet at the same timestamp; in that separate case the trial reported a
+64 ms audio offset and retained 14 audio frames. This ordering difference is
+not proof of the behavior of a physical G4. The current-source case uses the
+same experimental TLS and leaves its simulated effects for reconciliation;
+it does not resolve the earlier conservative-framing refusal or establish
+continuous recording or an independently authenticated live camera.
+
+The trial's prior 1 MiB framing buffer was smaller than the 4 MiB tag limit it
+configured. A separate Finch case used synthetic 2K AVC
+whose picture NALs were 2,523,035, 2,347,779 and 2,646,761 bytes; the earlier
+source-matched trial rejected it with `Framing(BufferLimit)` and no clip. The
+source SHA-256 is
+`58ac99834c0616a2dc382440b601ea8b2d9bed065e42a82708b84d73730673ce`;
+the retained negative case on `vmi1264463` is
+`/data/tmp/fss-finch-interop-1n5xywv6`. The trial now derives a finite buffer
+size from its exact FLV header, trailer and maximum-payload bounds. Separate
+parser contract tests cover both a maximum-size tag after the maximum trailer
+and an incomplete earlier candidate that cannot be resolved in a 1 MiB
+buffer. Strict-remote job `30103800983322953` passed all 12 framing tests,
+with terminal acknowledgment and source/pair release; overlay fingerprint
+`8334eebc7a2afe1ecc34932fd2239d0d15927eeea3764b548e9e429b7ac3d79e`.
+The subsequent full-dependency trial build in strict-remote job
+`30103800983322957` completed Cargo compilation and acknowledged/released its
+source and pair. Its wrapper returned 102 because RCH refused the Linux-to-Mac
+artifact transfer. The Linux trial, SHA-256
+`08eb6b6bbb632ef4338e6849ca1fc948ec027e58a4644b4547a9833313f71d35`,
+was copied privately within the worker and tested against the same retained
+large-picture source. It assembled a two-frame 2688 × 1512 AVC clip, both
+decoded by Rust and FFmpeg, where the prior binary had refused. A separate
+30-fps-source 2K AVC/AAC case produced 30 video and 15 AAC frames, decoded by
+FFmpeg. These cases are retained at `/data/tmp/fss-finch-interop-16h2kguj`
+and `/data/tmp/fss-finch-interop-4resyh05` on `vmi1264463`. They used runner
+SHA-256 `005de835402542cbcfa5b9ea02eafd807e356c056d983d72db0846d7010da975`
+and adapter SHA-256
+`191788720ef80ba2656ceb818c22ea5e5d85a981458d66edbad27d1967b50dcb`.
+The exact size mismatch is fixed for this bounded trial; this does not establish
+the cause of the earlier small-picture failure or qualify a physical camera,
+continuous recording, effect reconciliation, or production TLS.
+
+The independent Finch fixture now also drives three consecutive segments
+through the same current-source binary on channel 1. A single 2.97-second 2K
+clip contained 90 H.264 frames and 46 AAC packets, all decoded by FFmpeg.
+FFprobe reported a zero-based 33 ms step for every video packet and 64 ms for
+every audio packet across both segment joins. FFmpeg-decoded frame digests
+matched all 90 frames against the 60-frame looping synthetic source, and all
+46 AAC packet bodies matched the 33-packet looping synthetic input. The
+comparison checks rejected a wrong video source, wrong audio source, and wrong
+video cadence as negative controls. The retained case on `vmi1264463` is
+`/data/tmp/fss-finch-interop-x0y4u4iy`; the runner SHA-256 is
+`6e9dccb200870b837c038c20e1d3db2ccb17e6be214ab716789d10eaa6868839` and
+the trial and adapter hashes are unchanged from the preceding paragraph.
+These checks establish neither physical capture timing nor sustained recording:
+they exercise a bounded, simulated controller session, one short source loop,
+and a single in-memory clip with effects still requiring reconciliation.
+At the trial's maximum of eight segments, the same checks passed on a
+7.92-second video: FFprobe counted 240 video frames and 124 AAC packets; all
+240 decoded video frame digests and all 124 AAC packet bodies matched the
+looping synthetic source, and both packet timelines had the expected cadence.
+The trial decoded 24 selected video frames itself. The retained eight-segment
+case is `/data/tmp/fss-finch-interop-2joid4fy` on the same worker. It still
+omits original source bytes and reports its simulated effects unsettled.
+
+For example, generate a synthetic one-slice AVC input, then run the fixture
+with a pinned experimental binary and the clean checkouts:
+
+```text
+ffmpeg -f lavfi -i testsrc2=size=2688x1512:rate=15 -t 2 -threads 2 \
+  -c:v libx264 -profile:v baseline -pix_fmt yuv420p -preset ultrafast -crf 32 \
+  -x264-params keyint=15:min-keyint=15:scenecut=0:repeat-headers=1:aud=1:slices=1 \
+  -f h264 synthetic-2k.h264
+python3 finch_interop.py --finch /path/to/finch --wire /path/to/pyunifiwire \
+  --trial /path/to/unifi_direct_trial --source synthetic-2k.h264 \
+  --codec avc --width 2688 --height 1512
+```
+
+On a newer trial supporting `--video-channel`, pass `--channel 1` to request
+Finch's high-resolution channel and check both peers observed the selection.
+The older binary used in the result above does not accept this option.
+
+For the independent HEVC refusal control, supply a synthetic Annex B HEVC
+source and `--codec hevc`; the expected result is refusal without a clip.
+To exercise A/V, generate synthetic ADTS with `ffmpeg -f lavfi -i
+anullsrc=r=16000:cl=mono -t 2 -c:a aac -b:a 24k -f adts synthetic.aac` and
+add `--audio-source synthetic.aac`. `--framing zero-stream-id` selects an
+explicit laboratory assumption; the default remains conservative. To test
+another input cadence, make the source at that cadence and pass `--fps`.
+For a synthetic three-segment 30-fps input, add `--fps 30 --channel 1
+--segments 3 --min-video-frames 90 --min-audio-frames 40 --check-cadence
+--compare-video-source --compare-audio-source`. The source-comparison options
+are limited to 1,000 frames or packets and expect the fixture's looping input.
 
 The optional `--lab-aac-config=HEX` argument derives a two-track clip
 from completed video segments and AAC records within them.
