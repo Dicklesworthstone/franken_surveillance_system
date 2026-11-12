@@ -1699,7 +1699,51 @@ fn parallel_fleet_upgrade_scenario(
                         assert_eq!(retained[0].operation(), &operation);
                         assert_eq!(polls.get(), 0);
                         drop(retained);
+                        let mut eager = Queue::new(&fleet, 2, 2)?;
+                        let first_id = OperationId::parse("operation:queue-first")?;
+                        let second_id = OperationId::parse("operation:queue-second")?;
+                        for (operation, value) in [(first_id.clone(), 1), (second_id.clone(), 2)] {
+                            let counter = polls.clone();
+                            let future: CameraWork<'_, usize> = Box::pin(async move {
+                                counter.set(counter.get() + 1);
+                                value
+                            });
+                            eager.enqueue(PreparedSetup::new(2, enrolled, operation, future))
+                                .map_err(|(reason, _)| format!("preloaded queue admission: {reason:?}"))?;
+                        }
+                        assert_eq!(polls.get(), 0);
+                        let first = eager.take(2, enrolled)?.await;
+                        assert_eq!((first.operation, first.output), (first_id, 1));
+                        let second = eager.take(2, enrolled)?.await;
+                        assert_eq!((second.operation, second.output), (second_id, 2));
+                        assert_eq!(polls.get(), 2);
+                        assert!(eager.into_pending().is_empty());
                     }
+
+                    // Construct the next camera attempt before any deadline
+                    // occurs. It remains unpolled in the queue until the
+                    // retry coordinator makes this enrollment ready again.
+                    let third_listener = std::net::TcpListener::bind((PEERS[2], 0))?;
+                    let SocketAddr::V4(third_address) = third_listener.local_addr()? else {
+                        return Err("IPv4 required".into());
+                    };
+                    let operation_work = operations[2].clone();
+                    let owner_work = third_owner.clone();
+                    let provider_work = scoped_camera_provider.clone();
+                    let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
+                    let (acquisition_work, trace_work) = (&mut third_acquisition, &mut third_trace);
+                    let fresh_polled = Rc::new(Cell::new(false));
+                    let fresh_polled_work = fresh_polled.clone();
+                    let mut fresh_future: Option<CameraWork<'_, Result<setup::Outcome, camera_setup::Error>>> = Some(Box::pin(async move {
+                        fresh_polled_work.set(true);
+                        let mut owner = owner_work.borrow_mut();
+                        camera_setup::run_with_acquisition(
+                            fleet_work, 2, &mut owner, listener_work, policy_work, third_address, cert,
+                            handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
+                            resource_work, acquisition_work, provider_work, fences[2],
+                            peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(10), trace_work,
+                        ).await
+                    }));
 
                     // A witnessed deadline after preparation must retain its
                     // evidence before the existing scheduler admits a retry.
@@ -1755,6 +1799,11 @@ fn parallel_fleet_upgrade_scenario(
                         assert_eq!(setup_queue.len(), 1);
                         assert!(matches!(setup_queue.take(2, fleet.enrollment(0).ok_or("missing other enrollment")?), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
                         assert_eq!(setup_queue.len(), 1);
+                        setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
+                            2, enrolled, operations[2].clone(), fresh_future.take().ok_or("missing prebuilt setup")?,
+                        )).map_err(|(reason, _)| format!("prebuilt setup admission: {reason:?}"))?;
+                        assert_eq!(setup_queue.len(), 2);
+                        assert!(!fresh_polled.get());
                         let mut factory = |index: usize, enrollment: Enrollment| setup_queue.take(index, enrollment);
                         assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut factory).await.map_err(|e| format!("deadline admission: {e:?}"))?,
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Started { index: 2 }), .. }));
@@ -1776,7 +1825,8 @@ fn parallel_fleet_upgrade_scenario(
                             }
                         }
                         drop(factory);
-                        assert!(setup_queue.is_empty());
+                        assert_eq!(setup_queue.len(), 1);
+                        assert!(!fresh_polled.get());
                         let reused: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("used operation future polled") });
                         let (reason, reused) = setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
                             2, enrolled, timeout_operation.clone(), reused,
@@ -1794,10 +1844,6 @@ fn parallel_fleet_upgrade_scenario(
                     // Carry the newly discovered and owner-enrolled camera
                     // through the actual synthetic HTTPS setup owner while the
                     // existing camera handshake remains stalled and owned.
-                    let third_listener = std::net::TcpListener::bind((PEERS[2], 0))?;
-                    let SocketAddr::V4(third_address) = third_listener.local_addr()? else {
-                        return Err("IPv4 required".into());
-                    };
                     let third_server = server.clone();
                     let gate = Arc::new(AtomicBool::new(false));
                     let login_seen = Arc::new(AtomicBool::new(false));
@@ -1880,24 +1926,12 @@ fn parallel_fleet_upgrade_scenario(
                     assert!(wrong_acquisition.is_drained());
                     assert!(refused_trace.operation().is_none());
                     assert!(matches!(probe.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
-                    let operation_work = operations[2].clone();
-                    let owner_work = third_owner.clone();
-                    let provider_work = scoped_camera_provider.clone();
-                    let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
-                    let (acquisition_work, trace_work) = (&mut third_acquisition, &mut third_trace);
-                    let setup_future: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async move {
-                        let mut owner = owner_work.borrow_mut();
-                        let output = camera_setup::run_with_acquisition(
-                            fleet_work, 2, &mut owner, listener_work, policy_work, third_address, cert,
-                            handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
-                            resource_work, acquisition_work, provider_work, fences[2],
-                            peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(10), trace_work,
-                        ).await;
-                        output
-                    });
-                    setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
-                        2, enrolled, operations[2].clone(), setup_future,
-                    )).map_err(|(reason, _)| format!("fresh queue admission: {reason:?}"))?;
+                    if let Some(future) = fresh_future.take() {
+                        setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
+                            2, enrolled, operations[2].clone(), future,
+                        )).map_err(|(reason, _)| format!("fresh queue admission: {reason:?}"))?;
+                    }
+                    drop(fresh_future);
                     let factory_calls = Rc::new(Cell::new(0usize));
                     let setup_calls = factory_calls.clone();
                     let mut setup_factory = |index: usize, enrollment: Enrollment| {
@@ -2032,6 +2066,7 @@ fn parallel_fleet_upgrade_scenario(
                             _ => return Err("unexpected event while driving third setup".into()),
                         }
                     };
+                    assert!(fresh_polled.get());
                     assert_eq!(parallel_finished, capacity == 2);
                     assert!(matches!(&outcome, setup::Outcome::Observed { readback: handoff::Readback::Requested, .. }));
                     let selected = outcome.select_reported_video(profile_limits(full_resolution))?.ok_or("setup had no profile observation")?;
@@ -2292,6 +2327,7 @@ fn parallel_fleet_upgrade_scenario(
                         let mut parallel_done = false;
                         let mut concurrent = Some(concurrent);
                         let mut refreshed = [false; 3];
+                        let mut renewed_stall = false;
                         loop {
                             match timeout(cx.now(), Duration::from_secs(60), supply.next_with_setup_and_streams(&mut pump, &mut stream_auto, &mut active_streams, &mut no_setup)).await?? {
                                 FleetStreamEvent::Stream { index: 2, output } => { output?; assert!(parallel_done); break; }
@@ -2310,8 +2346,18 @@ fn parallel_fleet_upgrade_scenario(
                                 FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused {
                                     index: None, reason: discovery::fleet::RouteError::Listener(listener::Error::Deadline),
                                 }))))) if parallel_done => (),
+                                FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed {
+                                    index: 0, reason: fss_reference::unifi_direct::controller_upgrade::Error::Deadline,
+                                }))))) if !renewed_stall => {
+                                    let mut byte = [0_u8; 1];
+                                    assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));
+                                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                                    socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[0], 0)))?;
+                                    stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
+                                    renewed_stall = true;
+                                }
                                 FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { reason, .. }))))) => return Err(format!("archive stream route refused: {reason:?}").into()),
-                                FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { reason, .. }))))) => return Err(format!("archive stream handshake failed: {reason:?}").into()),
+                                FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))) => return Err(format!("archive stream handshake failed: index={index} reason={reason:?}").into()),
                                 _ => return Err("unexpected fleet event while streaming".into()),
                             }
                         }
