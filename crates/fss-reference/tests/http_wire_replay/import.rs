@@ -593,3 +593,52 @@ fn imported_http_recording_finds_late_stream_entry_and_rechecks_originals_before
     assert_eq!(target.effects().last_root(), effects);
     Ok(())
 }
+
+#[test]
+fn canonical_footage_discovers_http_metadata_without_original_or_origin_proof_reads() -> Test {
+    use super::footage_assertions::{
+        assert_metadata, mark_tombstone, object_path, query, snapshot,
+    };
+
+    let mut f = Fixture::new(false, false)?;
+    let archive = HttpWireArchive::load(
+        f.source.as_ref().ok_or("source")?,
+        scope(),
+        f.request.pin,
+        archive_limits(),
+        &NeverCancel,
+        &mut work(),
+    )?;
+    let original_wires: Vec<_> = archive
+        .reads()
+        .map(|(_, wire)| ContentDigest::new(DigestAlgorithm::Sha256, wire.sha256))
+        .collect();
+    let receipt = f.run()?;
+    let retained = f.retained(&receipt)?;
+    let baseline = assert_metadata(&f.target_dir.0, &retained, receipt.proof)?;
+    drop(f.source.take());
+    std::fs::remove_dir_all(&f.source_dir.0)?;
+    for digest in retained
+        .manifest()
+        .ordered_chunks
+        .iter()
+        .copied()
+        .chain(original_wires)
+        .chain(std::iter::once(receipt.proof))
+    {
+        std::fs::write(
+            object_path(&f.target_dir.0, digest)?,
+            b"unavailable original wire, origin proof or media",
+        )?;
+    }
+    let observed = assert_metadata(&f.target_dir.0, &retained, receipt.proof)?;
+    assert_eq!(observed.rows, baseline.rows);
+    assert_eq!(observed.selection_witness, baseline.selection_witness);
+    std::fs::remove_file(object_path(&f.target_dir.0, receipt.proof)?)?;
+    assert_eq!(query(&f.target_dir.0)?.rows, baseline.rows);
+    mark_tombstone(&f.target_dir.0, receipt.proof)?;
+    let before = snapshot(&f.target_dir.0)?;
+    assert!(query(&f.target_dir.0).is_err());
+    assert_eq!(snapshot(&f.target_dir.0)?, before);
+    Ok(())
+}

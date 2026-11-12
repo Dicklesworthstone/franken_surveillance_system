@@ -127,6 +127,12 @@ fn paged_read_is_deterministic_exact_and_never_writes_or_claims_payload_availabi
     assert_eq!(first.rows[0].import_identity, receipt.import_identity);
     assert_eq!(first.rows[0].capsule.clock_basis, ClockBasis::Estimated);
     assert_eq!(first.rows[0].capture_time_label, "unknown");
+    assert_eq!(first.rows[0].adapter_id, crate::ingest::ADP_FILE_ROW_ID);
+    assert_eq!(
+        first.rows[0].adapter_generation,
+        crate::ingest::ADP_FILE_GENERATION,
+    );
+    assert_eq!(first.rows[0].declared_origin_digest, None);
     assert!(first.metadata_bytes_read > first.snapshot.bytes_read);
     assert!(
         first
@@ -154,6 +160,28 @@ fn paged_read_is_deterministic_exact_and_never_writes_or_claims_payload_availabi
     let unique: std::collections::BTreeSet<_> = seen.iter().copied().collect();
     assert_eq!(unique.len(), seen.len());
     assert_eq!(bytes(&root)?, before);
+    Ok(())
+}
+
+#[test]
+fn row_identity_binds_adapter_generation_and_declared_origin_without_source_reads() -> TestResult {
+    let (root, _) = fixture("adapter-identity")?;
+    let result = query(&root, &request()?)?;
+    let row = result.rows.first().ok_or("fixture capsule")?;
+    let expected = row.row_digest();
+    let mut changed = row.clone();
+    changed.adapter_id = "ADP-RTSP-REPLAY-ARCHIVE-001".to_owned();
+    assert_ne!(changed.row_digest(), expected);
+    let mut changed = row.clone();
+    changed.adapter_generation.push_str(":other");
+    assert_ne!(changed.row_digest(), expected);
+    let mut changed = row.clone();
+    changed.declared_origin_digest = Some(ContentDigest::sha256(b"declared origin"));
+    assert_ne!(changed.row_digest(), expected);
+    assert!(result.epistemic().propositions.iter().any(|p| {
+        p.statement.contains("adapter_origin_verification=not_performed")
+            && p.statement.contains("declared_origin_digest=not_applicable")
+    }));
     Ok(())
 }
 

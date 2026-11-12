@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 //! Genuine packet publication -> retained import -> existing native pixel/privacy owners.
 
+#[allow(dead_code)]
+#[path = "agent_native_footage_contract/assertions.rs"]
+mod footage_assertions;
+
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeLimits};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
@@ -780,5 +784,49 @@ fn interrupted_multipart_completion_resumes_exactly_but_never_repairs_committed_
             assert!(f.run()?.reused);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn canonical_footage_discovers_partitioned_jpeg_metadata_and_refuses_corrupt_part_roots() -> Test {
+    use footage_assertions::{assert_metadata, object_path, query, snapshot};
+
+    let limits = fss_reference::DeploymentLimits {
+        manifest_children_max: 4,
+        batch_entries_max: 4,
+        ..fss_reference::DeploymentLimits::standard()
+    };
+    let mut f = Fixture::with_limits(&observations()?, limits)?;
+    let receipt = f.run()?;
+    let retained = f.retained(&receipt)?;
+    assert!(retained.manifest().part_roots.len() > 1);
+    let root = f.target.root().to_path_buf();
+    let baseline = assert_metadata(&root, &retained, receipt.proof)?;
+    drop(f.source.take());
+    fs::rename(
+        &f.source_path,
+        f._directory.0.join("offline-original-jpeg-archive"),
+    )?;
+    for digest in retained
+        .manifest()
+        .ordered_chunks
+        .iter()
+        .copied()
+        .chain(f.records.iter().map(|record| record.payload_digest))
+        .chain(std::iter::once(receipt.proof))
+    {
+        fs::write(
+            object_path(&root, digest)?,
+            b"unavailable original RTP or origin proof",
+        )?;
+    }
+    let observed = assert_metadata(&root, &retained, receipt.proof)?;
+    assert_eq!(observed.rows, baseline.rows);
+    assert_eq!(observed.selection_witness, baseline.selection_witness);
+    let part = retained.manifest().part_roots[0];
+    fs::write(object_path(&root, part)?, b"invalid published part manifest")?;
+    let before = snapshot(&root)?;
+    assert!(query(&root).is_err());
+    assert_eq!(snapshot(&root)?, before);
     Ok(())
 }

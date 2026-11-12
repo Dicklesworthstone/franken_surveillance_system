@@ -26,7 +26,7 @@ pub struct DeploymentFootageQuery {
     pub anchor_token: String,
     /// Canonical identity of this exact cursor request.
     pub request_digest: ContentDigest,
-    /// Complete verified file-capsule index witness, including rows outside the filter.
+    /// Complete verified file/native-import capsule index witness, including unselected rows.
     pub selection_witness: ContentDigest,
     /// Exact result-page fingerprint.
     pub decision_digest: ContentDigest,
@@ -38,7 +38,7 @@ pub struct DeploymentFootageQuery {
     pub scanned_capsules: usize,
     /// Total matching records, independent of this page's length.
     pub matched_capsules: usize,
-    /// Complete imports belonging to another adapter; outside this query's declared scope.
+    /// Complete imports outside the admitted file/native-camera adapter set (e.g. lab profiles).
     pub other_adapter_imports: usize,
     /// Native cursor consumed by this page.
     pub cursor: ContinuationCursor,
@@ -61,24 +61,26 @@ impl DeploymentFootageQuery {
     pub fn epistemic(&self) -> EnvelopeEpistemic {
         let mut propositions=vec![EnvelopeProposition {
             id:"claim:footage:record-selection".to_owned(),
-            statement:format!("Verified {} retained completed-file capsule metadata records; {} overlap the requested source-native filters; this page returns {} from position {}; {} remain. Other-adapter completed imports outside this scope: {}. Metadata availability is verified; source payload availability is unknown.",
+            statement:format!("Verified {} retained completed-import capsule metadata records from admitted file and native HTTP/RTSP adapters; {} overlap the requested source-native filters; this page returns {} from position {}; {} remain. Other-adapter completed imports outside this scope: {}. Metadata availability is verified; original-source reconstruction and source payload availability are unknown.",
                 self.scanned_capsules,self.matched_capsules,self.rows.len(),self.cursor.position,self.remaining_capsules(),self.other_adapter_imports),
             state:KnowledgeState::Known,provenance:"derived".to_owned(),
             evidence:vec![self.selection_witness.to_text()],
         },EnvelopeProposition {
             id:"claim:footage:physical-observability".to_owned(),
-            statement:"Physical presence, absence, live coverage, current source-payload availability, trusted UTC and capture-time precision are unknown. Zero matches or gap_before=false cannot establish physical absence or continuous recording. No source-media bytes were read.".to_owned(),
+            statement:"Physical presence, absence, live coverage, current source-payload availability, adapter-origin reconstruction, trusted UTC and capture-time precision are unknown. Zero matches or gap_before=false cannot establish physical absence or continuous recording. No source-media or adapter-origin proof bytes were read.".to_owned(),
             state:KnowledgeState::Unknown,provenance:"derived".to_owned(),evidence:Vec::new(),
         }];
         for row in &self.rows {
             let c = &row.capsule;
             propositions.push(EnvelopeProposition {
                 id:format!("claim:footage:{}:{}",hex(row.import_identity),row.segment_index),
-                statement:format!("Retained capsule metadata: import_identity={}, import_root={}, manifest_digest={}, capsule_id={}, capsule_digest={}, sensor={}, stream={}, sequence={}, declared_capture_interval_ns=[{},{}], clock_basis={}, capture_time_label={}, time_uncertainty=unknown, receive_time_ns={}, segment_index={}, source_offset={}, source_len={}, segment_digest={}, input_digest={}, input_bytes={}, format={}, frame_count={}, gap_before={}, completion_commit={}, metadata_availability=verified, source_payload_availability=unknown. Source-native endpoints are not UTC and a broad interval is not a precise occurrence time.",
+                statement:format!("Retained capsule metadata: import_identity={}, import_root={}, manifest_digest={}, capsule_id={}, capsule_digest={}, sensor={}, stream={}, sequence={}, declared_capture_interval_ns=[{},{}], clock_basis={}, capture_time_label={}, time_uncertainty=unknown, receive_time_ns={}, segment_index={}, source_offset={}, source_len={}, segment_digest={}, input_digest={}, input_bytes={}, format={}, adapter_id={}, adapter_generation={}, declared_origin_digest={}, adapter_origin_verification=not_performed, frame_count={}, gap_before={}, completion_commit={}, metadata_availability=verified, source_payload_availability=unknown. Source-native endpoints are not UTC and a broad interval is not a precise occurrence time.",
                     row.import_identity,row.import_root,row.manifest_digest,c.capsule_id.as_str(),row.capsule_digest,
                     c.sensor_id.as_str(),c.stream_id.as_str(),c.sequence,c.capture.earliest.0,c.capture.latest.0,
                     c.clock_basis.as_str(),row.capture_time_label,c.receive_time.0,row.segment_index,row.source_offset,
-                    row.source_len,c.source_digest,row.input_digest,row.input_bytes,row.format,c.frame_count,c.gap_before,row.committed_sequence),
+                    row.source_len,c.source_digest,row.input_digest,row.input_bytes,row.format,row.adapter_id,row.adapter_generation,
+                    row.declared_origin_digest.map_or_else(|| "not_applicable".to_owned(), |digest| digest.to_text()),
+                    c.frame_count,c.gap_before,row.committed_sequence),
                 state:KnowledgeState::Known,provenance:"derived".to_owned(),
                 evidence:vec![row.import_root.to_text(),row.manifest_digest.to_text(),row.capsule_digest.to_text()],
             });
@@ -93,10 +95,10 @@ impl DeploymentFootageQuery {
     pub fn coverage(&self) -> EnvelopeCoverage {
         let remaining = self.remaining_capsules();
         EnvelopeCoverage {
-            authorized_domain:vec!["local committed ADP-FILE-001 capsule metadata".to_owned()],
-            observed_domain:vec!["verified metadata of complete, non-deleted file imports at the exact committed head".to_owned()],
-            not_observable_domain:vec!["live streams, other adapters, incomplete or deleted imports".to_owned(),
-                "source payload availability/content, trusted UTC, physical activity, continuous coverage and absence".to_owned()],
+            authorized_domain:vec!["local committed file, HTTP MJPEG, RTSP JPEG, AVC/HEVC recording, catalog, catalog-page, gap-preserving and whole-replay import capsule metadata".to_owned()],
+            observed_domain:vec!["verified metadata of complete, non-deleted imports from the admitted adapters at the exact committed head".to_owned()],
+            not_observable_domain:vec!["live streams, laboratory/other adapters, incomplete or deleted imports".to_owned(),
+                "adapter-origin reconstruction, original packet/wire validity, source payload availability/content, trusted UTC, physical activity, continuous coverage and absence".to_owned()],
             omitted_count:remaining as u64,
             omission_reasons:if remaining==0 {Vec::new()} else {vec!["remaining matching metadata is available through the exact continuation".to_owned()]},
             stop_reason:if remaining==0 {"committed_index_exhausted"} else {"page_limit"}.to_owned(),
@@ -123,7 +125,9 @@ pub(super) fn compile(
         .collect();
     let basis = reference_contract_basis();
     let mut e = CanonicalEncoder::new();
-    e.text("fss.agent_footage.scope.v1");
+    // A broader adapter domain must never reinterpret a cursor issued for the file-only v1
+    // query. Row v2 also binds the exact declared adapter, generation and origin identity.
+    e.text("fss.agent_footage.scope.v2");
     basis.encode_canonical(&mut e);
     e.text(&anchor_token);
     request.principal.encode_canonical(&mut e);

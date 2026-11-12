@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
-//! Bounded AOP-005 discovery of retained recorded-file capsule metadata.
+//! Bounded AOP-005 discovery of retained file and native camera-import capsule metadata.
 //!
 //! This read never opens a writable deployment, runs recovery, or reads source-media chunks.
 //! Completion, native publication records, ledger reachability, import custody and exact
 //! capsule bytes must agree. Availability here means verified metadata; payload availability,
-//! clock precision, physical coverage and absence remain unknown. Closed time predicates
+//! adapter-origin reconstruction, clock precision, physical coverage and absence remain unknown.
+//! Native origin identities are declarations bound by the import, never source-read authority.
+//! Closed time predicates
 //! compare declared source-native intervals conservatively, without converting them to UTC.
 //!
 //! A shared allowance covers history replay, metadata, and final revalidation. A changed head,
@@ -75,7 +77,7 @@ impl FootageQueryFilter {
     /// Literal, reviewable interpretation of the typed predicates.
     pub fn description(&self) -> String {
         format!(
-            "Completed ADP-FILE-001 import capsule metadata; sensor={}; stream={}; closed source-native overlap [{},{}]; clock conversion and physical absence are not established",
+            "Completed file and native HTTP/RTSP import capsule metadata; sensor={}; stream={}; closed source-native overlap [{},{}]; adapter-origin reconstruction, clock conversion and physical absence are not established",
             self.sensor.as_ref().map_or("any", |id| id.as_str()),
             self.stream.as_ref().map_or("any", |id| id.as_str()),
             self.from_ns
@@ -227,6 +229,13 @@ pub struct FootageQueryRow {
     pub input_bytes: u64,
     /// Retained adapter format identifier.
     pub format: String,
+    /// Exact admitted adapter identity from the canonical import manifest.
+    pub adapter_id: String,
+    /// Immutable adapter generation; native imports bind their declared original-custody proof.
+    pub adapter_generation: String,
+    /// Origin identity declared by a native adapter and held by the verified import root.
+    /// Its bytes, type and original-source reconstruction are not verified by this metadata read.
+    pub declared_origin_digest: Option<ContentDigest>,
     /// `unknown` or `operator_assumption`, never upgraded to trusted UTC.
     pub capture_time_label: String,
     /// Commit sequence completing the enclosing import.
@@ -236,7 +245,7 @@ impl FootageQueryRow {
     /// Canonical result identity also binds import membership and source range.
     pub fn row_digest(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();
-        e.text("fss.agent_footage.row.v1");
+        e.text("fss.agent_footage.row.v2");
         for d in [
             self.import_identity,
             self.import_root,
@@ -258,6 +267,12 @@ impl FootageQueryRow {
         }
         e.text(&self.format);
         e.text(&self.capture_time_label);
+        e.text(&self.adapter_id);
+        e.text(&self.adapter_generation);
+        e.bool(self.declared_origin_digest.is_some());
+        if let Some(digest) = self.declared_origin_digest {
+            e.digest(digest);
+        }
         ContentDigest::sha256(&e.finish())
     }
 }

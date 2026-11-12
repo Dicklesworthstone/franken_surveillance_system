@@ -431,7 +431,7 @@ fn footage_response(
     let payload = agent_json::cognitive_envelope(&cognitive, &handles, &action_objects)
         .ok_or(RenderError("footage query cognitive envelope"))?;
     let mut warnings = orientation.warnings.clone();
-    warnings.push("Footage metadata only. Source-media availability is unknown; no media bytes, UTC conversion, physical coverage or absence certificate is returned.".to_owned());
+    warnings.push("Footage metadata only. Adapter and immutable generation remain explicit. Declared native origin identities are checked for import membership and deletion, but original packets/wire and adapter-origin reconstruction are not read or verified. Source-media availability is unknown; no media bytes, UTC conversion, physical coverage or absence certificate is returned.".to_owned());
     warnings.push("Time predicates compare conservative recorded intervals in their declared clock basis. Estimated or overlapping intervals remain uncertain.".to_owned());
     build_footage_response(ResponseParts {
         operation: "query", request_digest: query.request_digest,

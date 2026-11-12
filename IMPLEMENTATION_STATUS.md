@@ -4,6 +4,36 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Discover native camera imports through canonical footage queries — 2026-11-12
+
+`fss query --target footage` and the MCP `query` tool now include completed
+native HTTP MJPEG, RTP/JPEG and AVC/HEVC window/catalog/page/gap/replay imports.
+These already retained sources were previously skipped by the file-only reader.
+The existing immutable owner verifies completion, exact publication and partition
+membership, custody/capsule metadata, current deletions and final history without
+opening a publisher, acquiring a writer lock or running recovery.
+
+Every row carries its adapter, immutable generation and optional declared origin
+identity. Native origin membership and deletion are checked; original packets,
+HTTP wire, reconstructed media and origin-proof payloads are not hydrated. Their
+availability and reconstruction remain explicitly unknown. Source-native times
+are not converted to UTC and metadata matches cannot certify physical absence.
+The expanded row/scope use v2 digest domains, so earlier file-only continuations
+are refused instead of being silently reinterpreted.
+
+Regressions cover offline AVC/HEVC replay discovery, unavailable original/proof
+payloads, HTTP MJPEG, partitioned RTP/JPEG, metadata corruption despite excluding
+filters, local origin tombstones, committed deletion, adapter-bound row identities
+and real CLI/MCP response parity without writes. They are source-reviewed but
+**not executed at this checkpoint**. The fresh local workspace lacked the locked
+Asupersync cache; an isolated native model test attempt was SIGKILLed compiling
+unchanged `fss-core`, before tests. A separate metadata-only core compilation
+succeeded. The execution environment then became unavailable; reviewed edits were
+preserved through GitHub. Final reconstructed files have not had a complete
+rustfmt, compile or runtime pass. No qualification or camera interoperability is
+claimed. See [the query contract](docs/AGENT_FOOTAGE_QUERY.md).
+VIT-008 and VIT-015 remain open.
+
 ## Privacy closure, effect recovery and QSR read isolation — 2026-11-12
 
 Three observed contract defects are addressed in separate direct-main commits.

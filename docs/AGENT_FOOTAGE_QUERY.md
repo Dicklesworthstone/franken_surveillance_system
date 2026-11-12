@@ -1,6 +1,6 @@
 # Canonical retained-footage metadata query
 
-`fss query --target footage` exposes completed recorded-file imports through the
+`fss query --target footage` exposes completed file and native camera imports through the
 existing `fss/1` **AOP-005 query** operation and **AVIEW-003 case** response. The MCP
 `query` tool selects the same implementation with `"target":"footage"`. Omitting
 the target, or selecting `events`, preserves the existing event-record query.
@@ -48,8 +48,13 @@ options are not silently ignored.
 
 Each bounded result retains the completed import identity and publication root,
 file manifest digest, capsule digest, sensor and stream, sequence, segment ordinal,
-source byte range, whole-input digest and declared length, declared format, clock
-basis, capture interval, capture-time label and gap-before flag. An `H0` evidence
+source byte range, whole-input digest and declared length, declared format, exact
+adapter and immutable generation, clock basis, capture interval, capture-time label
+and gap-before flag. Native imports also expose `declared_origin_digest`, bound by
+their generation and verified import membership. This digest is a declaration:
+the query does not read its payload, verify its type or reconstruct original packets
+or HTTP wire. `adapter_origin_verification=not_performed` and
+`source_payload_availability=unknown` remain explicit. An `H0` evidence
 handle points to the verified capsule metadata; it does not grant hydration of
 the original recording. The effective privacy projection declares retained-import
 and sensor-capsule metadata while keeping media payloads redacted.
@@ -75,6 +80,12 @@ principal or different filter. Authority advancement or a changed effect prefix
 requires a fresh query. `--anchor` supplies an exact current-head precondition;
 there is no historical footage selector in this version.
 
+The expanded native-adapter scope uses `fss.agent_footage.scope.v2` and rows use
+`fss.agent_footage.row.v2`, which additionally bind adapter, generation and the
+optional declared origin identity. Cursors issued by the earlier file-only scope
+are refused; start a fresh query after upgrading. Historical v1 digest domains
+remain registered and are not reinterpreted.
+
 The native owner bounds the complete index before selecting a page. Default hard
 ceilings are 1,024 imports, 16,384 capsules, 65,536 ledger objects, 256 MiB of
 metadata payload reads and 65,536 read attempts. A single shared allowance covers
@@ -90,10 +101,30 @@ background work.
 
 ## Custody and limits of the implementation
 
-Only imports completed by `ADP-FILE-001` are admitted. The owner checks committed
-authority, native publication records, canonical manifests, partition membership,
-capsule identity and source ranges, current deletion restrictions and local
-tombstones. It revalidates metadata custody and the authority/effect prefix before
+The owner admits these exact retained metadata profiles:
+
+| Adapter | Retained import |
+| --- | --- |
+| `ADP-FILE-001` | Recorded files |
+| `ADP-HTTP-MJPEG-ARCHIVE-001` | Reconstructed HTTP MJPEG |
+| `ADP-RTSP-JPEG-ARCHIVE-001` | Reconstructed RTP/JPEG |
+| `ADP-RTSP-RECORDING-ARCHIVE-001` | AVC/HEVC original recording windows |
+| `ADP-RTSP-CATALOG-ARCHIVE-001` | AVC/HEVC catalog selections |
+| `ADP-RTSP-CATALOG-PAGES-001` | AVC/HEVC selections spanning catalog pages |
+| `ADP-RTSP-GAPPED-CATALOG-001` | Gap-preserving AVC/HEVC selections |
+| `ADP-RTSP-REPLAY-ARCHIVE-001` | Whole AVC/HEVC recorder replay receipts |
+
+Laboratory and other adapters remain outside this scope and their completed-import
+count stays explicit. The owner checks committed authority, native publication
+records, canonical manifests with exact adapter/format/generation tuples, partition
+membership, custody manifests, capsule identity and source ranges, current deletion
+restrictions and local tombstones. Every native declared-origin identity must belong
+to the verified import closure. Its bytes are deliberately not hydrated: discovery
+works with the source archive offline and cannot certify payload availability or
+source reconstruction. Corrupt or missing *required metadata*, a missing declared
+origin membership, or a deletion marker refuses the result.
+
+The owner revalidates metadata custody and the authority/effect prefix before
 returning a page. An incomplete import, unreadable required metadata, corrupt root,
 changed custody, exhausted budget or invalid continuation cannot become an empty
 successful result. Full spool doctor scanning is deliberately not part of this

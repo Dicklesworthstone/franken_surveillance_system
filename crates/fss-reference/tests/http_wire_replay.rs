@@ -3,6 +3,8 @@
 
 #[path = "http_wire_replay/import.rs"]
 mod import;
+#[path = "agent_native_footage_contract/assertions.rs"]
+mod footage_assertions;
 use std::cell::Cell;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};

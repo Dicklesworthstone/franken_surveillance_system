@@ -17,6 +17,43 @@ use fss_publication::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// This allowlist admits declared capsule metadata, not an adapter's original-source proof.
+/// Keep laboratory profiles outside the canonical query, even if their manifest is decodable.
+enum ImportProfile {
+    File,
+    Native(ContentDigest),
+    OutsideScope,
+}
+
+fn import_profile(metadata: &FileImportManifest) -> Result<ImportProfile, FootageQueryError> {
+    use crate::ingest::{http_import, rtsp_import, rtsp_jpeg_import};
+
+    let prefix = match metadata.adapter_id.as_str() {
+        ADP_FILE_ROW_ID => return Ok(ImportProfile::File),
+        http_import::ADAPTER => http_import::GENERATION,
+        rtsp_jpeg_import::ADAPTER => rtsp_jpeg_import::GENERATION,
+        rtsp_import::ADAPTER => rtsp_import::GENERATION,
+        rtsp_import::catalog::ADAPTER => rtsp_import::catalog::GENERATION,
+        rtsp_import::pages::ADAPTER => rtsp_import::pages::GENERATION,
+        rtsp_import::gaps::ADAPTER => rtsp_import::gaps::GENERATION,
+        rtsp_import::replay::ADAPTER => rtsp_import::replay::GENERATION,
+        _ => return Ok(ImportProfile::OutsideScope),
+    };
+    // decode_metadata has already checked the exact adapter/format/generation tuple. Bind the
+    // declared origin separately so downstream consumers cannot flatten a reconstruction into
+    // an ordinary file or mistake metadata availability for verified original packets/wire.
+    let suffix = metadata
+        .adapter_generation
+        .strip_prefix(prefix)
+        .ok_or(FootageQueryError::InvalidRecord)?;
+    let digest = ContentDigest::parse(format!("sha256:{suffix}"))
+        .map_err(|_| FootageQueryError::InvalidRecord)?;
+    if digest.to_text() != format!("sha256:{suffix}") {
+        return invalid();
+    }
+    Ok(ImportProfile::Native(digest))
+}
+
 fn invalid<T>() -> Result<T, FootageQueryError> {
     Err(FootageQueryError::InvalidRecord)
 }
@@ -409,9 +446,11 @@ fn import_rows(
         RetainedReadLimits::default(),
     )
     .map_err(|_| FootageQueryError::InvalidRecord)?;
-    if metadata.adapter_id != ADP_FILE_ROW_ID {
-        return Ok(true);
-    }
+    let declared_origin_digest = match import_profile(&metadata)? {
+        ImportProfile::File => None,
+        ImportProfile::Native(digest) => Some(digest),
+        ImportProfile::OutsideScope => return Ok(true),
+    };
     if rows.len().saturating_add(metadata.capsule_ids.len()) > reader.limits.max_capsules {
         return Err(FootageQueryError::OverBudget);
     }
@@ -419,6 +458,9 @@ fn import_rows(
         .map_err(|_| FootageQueryError::InvalidRecord)?;
     let (held, first) =
         root_membership(reader, index, identity, &slot, root, &metadata, completion)?;
+    if declared_origin_digest.is_some_and(|digest| !held.contains(&digest)) {
+        return invalid();
+    }
     let chunks: BTreeSet<_> = metadata.ordered_chunks.iter().copied().collect();
     if !chunks.is_subset(&held) {
         return invalid();
@@ -510,6 +552,9 @@ fn import_rows(
             input_digest: metadata.input_sha256,
             input_bytes: metadata.input_bytes,
             format: metadata.format.clone(),
+            adapter_id: metadata.adapter_id.clone(),
+            adapter_generation: metadata.adapter_generation.clone(),
+            declared_origin_digest,
             capture_time_label: metadata.capture_time_label.clone(),
             committed_sequence: completion.new_anchor.commit_sequence,
         });
