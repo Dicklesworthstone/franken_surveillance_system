@@ -19,12 +19,9 @@ fn policy() -> String {
     )
 }
 fn ready() -> Server {
-    Server {
-        root: ROOT.into(),
-        principal: PRINCIPAL.to_owned(),
-        archive_root: None,
-        phase: Phase::Ready,
-    }
+    let mut server = Server::new(ROOT.into(), PRINCIPAL.to_owned());
+    server.phase = Phase::Ready;
+    server
 }
 fn request(arguments: &str) -> String {
     format!(

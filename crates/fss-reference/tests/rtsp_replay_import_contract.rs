@@ -12,7 +12,9 @@ mod support;
 use std::cell::Cell;
 use std::fs;
 
-use fss_container::demux::{AvcMp4, DemuxLimits, MovieSelectionLimits, VideoCodec};
+use fss_container::demux::{
+    AvcMp4, DemuxLimits, MovieGapKind, MovieSelectionLimits, VideoCodec,
+};
 use fss_core::{ContentDigest, TimestampNs};
 use fss_geometry::WorkBudget;
 use fss_reference::ReferenceDeployment;
@@ -358,8 +360,28 @@ fn recorder_gaps_need_explicit_consent_and_remain_decoder_and_movie_boundaries()
         MovieSelectionLimits::default(),
         &f.cx,
     )?;
-    assert!(!movie.selection.gaps.is_empty());
-    assert_eq!(movie.selection.decode_spans.len(), 2);
+    assert_eq!(movie.selection.gaps.len(), 1);
+    let hole = &movie.selection.gaps[0];
+    assert_eq!(hole.kind, MovieGapKind::Unrepresented);
+    assert_eq!(hole.interval.denominator, 90_000);
+    assert_eq!(hole.interval.start_numerator, 10_800_u128 * 90_000);
+    assert_eq!(hole.interval.end_numerator, 18_000_u128 * 90_000);
+    // Every fixture picture is an IDR, so a continuous run can have several
+    // independently bootstrapped spans. None may cross the recorder gap.
+    assert!(
+        movie.selection.decode_spans.iter().all(|span| {
+            span.first_sample >= 3 || span.first_sample + span.sample_count <= 3
+        })
+    );
+    assert_eq!(
+        movie
+            .selection
+            .decode_spans
+            .iter()
+            .flat_map(|span| span.first_sample..span.first_sample + span.sample_count)
+            .collect::<Vec<_>>(),
+        (0..f.frames).collect::<Vec<_>>()
+    );
     for span in movie.selection.decode_spans {
         decoded_samples(
             &f,

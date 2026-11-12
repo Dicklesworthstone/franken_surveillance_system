@@ -187,9 +187,31 @@ fn native_cold_created_recovery_keeps_receipt_on_postcommit_refusal_and_retries_
                 "safe_next=control_inspect_create_outcome_then_explicit_recover_created\n"
             )
         );
-        let journal = fs::read(plan.root.join("effects/journal.fssj"))?;
+        let committed_journal = fs::read(plan.root.join("effects/journal.fssj"))?;
         drop(receipts);
         drop(deployment);
+
+        // A cold reopen durably classifies the unfinished dispatch before local
+        // receipt recovery. The consumed operation never grants a Create retry.
+        let cold_cx = directory.context(&plan)?;
+        let cold = ReferenceDeployment::reopen(&plan.root, SITE, &cold_cx)?;
+        let binding = plan.operation.as_ref().ok_or("operation binding missing")?;
+        assert_eq!(
+            cold.restart_reclassified(),
+            std::slice::from_ref(&binding.operation_id)
+        );
+        let operation = capture_operation::inspect(
+            &cold,
+            &binding.operation_id,
+            Some(binding),
+            None,
+            &cold_cx,
+        )?;
+        assert_eq!(operation.receipt.state, EffectState::Indeterminate);
+        let journal = fs::read(plan.root.join("effects/journal.fssj"))?;
+        assert!(journal.starts_with(&committed_journal));
+        assert!(journal.len() > committed_journal.len());
+        drop(cold);
 
         let args = recovery_args(&plan, raw_handle.0, raw_handle.1);
         let reached = Cell::new(false);

@@ -117,7 +117,7 @@ mod native {
     };
     use fss_object::HostSpoolIo;
     use fss_reference::agent_follow::{AnchorToken, snapshot_anchor_token};
-    use fss_reference::agent_orient::{DeploymentHistory, MetadataReadBudget, OrientLimits};
+    use fss_reference::agent_orient::{DeploymentHistory, OrientLimits};
     use fss_reference::rtsp::recording_replay::time::pinned::{
         ReplayTimeReadLimits, query_replay_time_read_only,
     };
@@ -566,11 +566,7 @@ mod native {
             assert!(!result.0.contains("claim:recordings-replay:source-only:"));
             same_mcp(&fixture, extra, &result)?;
         }
-        let history = DeploymentHistory::read_metadata(
-            &fixture.deployment,
-            &OrientLimits::default(),
-            &MetadataReadBudget::new(256 * 1024 * 1024, 65_536),
-        )?;
+        let history = DeploymentHistory::read(&fixture.deployment, &OrientLimits::default())?;
         let snapshot = history.snapshot_at(history.head())?;
         let mut stale = snapshot_anchor_token(&snapshot);
         let tail = stale.pop().ok_or("anchor tail")?;

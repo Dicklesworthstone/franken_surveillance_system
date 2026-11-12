@@ -545,15 +545,21 @@ fn coherent_receipt_rehash_cannot_replace_a_native_original_source_role() -> Tes
     replace_digest(&mut metadata, old_source, new_source)?;
     rechecksum(&mut metadata)?;
     let metadata = publisher.stage_object(&metadata)?;
-    let children = receipt.manifest().children().iter().map(|digest| {
-        if *digest == old_source {
-            new_source
-        } else if *digest == old_metadata {
-            metadata
-        } else {
-            *digest
-        }
-    });
+    // The constructor inserts typed metadata into the child closure itself.
+    // Preserve a valid manifest so the query reaches the original-source role check.
+    let children = receipt
+        .manifest()
+        .children()
+        .iter()
+        .copied()
+        .filter(|digest| *digest != old_metadata)
+        .map(|digest| {
+            if digest == old_source {
+                new_source
+            } else {
+                digest
+            }
+        });
     let manifest = ObjectManifest::new(receipt.manifest().kind(), children, Some(metadata))?;
     publisher.publish(&receipt.slot()?, &manifest)?;
     drop(publisher);

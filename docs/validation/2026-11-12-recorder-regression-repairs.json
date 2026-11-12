@@ -1,0 +1,69 @@
+{
+  "schema": "engineering-validation-note.v1",
+  "date": "2026-11-12",
+  "state": "source_repaired_native_retest_pending",
+  "source_basis": "15e1689050de634426cc378680f03ee1c1bc1eb4",
+  "changes": [
+    {
+      "path": "crates/fss-cli/src/bin/fss_mcp/onvif_tests.rs",
+      "failure": "E0063: incomplete Server initializer",
+      "repair": "Construct through Server::new, preserving the disabled-by-default replay source grant."
+    },
+    {
+      "path": "crates/fss-cli/tests/recording_replay_query_contract.rs",
+      "failure": "E0603/E0624: integration fixture used crate-private metadata APIs",
+      "repair": "Use the public read-only deployment history reader for stale-anchor fixture setup; no visibility widening."
+    },
+    {
+      "path": "crates/fss-reference/tests/recording_replay_contract/utc.rs",
+      "failure": "DuplicateChild in coherently forged receipt fixture, before the source-role assertion",
+      "repair": "Let ObjectManifest::new insert metadata exactly once; retain the original-source custody refusal assertion."
+    },
+    {
+      "path": "crates/fss-reference/tests/rtsp_replay_import_contract.rs",
+      "failure": "Six valid IDR decode spans compared against two continuity runs",
+      "repair": "Assert exact gap, no span crossing the discontinuity and complete once-only frame coverage; retain native decode and whole-range refusal."
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-onvif-metadata/capture/operation_tests.rs",
+      "failure": "Expected no journal change across required cold-restart reconciliation",
+      "repair": "Assert the exact operation becomes Indeterminate with preserved journal prefix, then enforce byte-identical local recovery/retry."
+    }
+  ],
+  "prior_native_evidence": [
+    {
+      "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43197185444/job/131127818797",
+      "head": "b0a2d578c6501ec5031a5ce3352d936cdb39a250",
+      "command": "bash scripts/check_recording_lifecycle.sh all",
+      "observed": [
+        "recording_replay_contract: 39 passed, 1 failed",
+        "rtsp_replay_import_contract: 12 passed, 1 failed",
+        "MCP E0063 and replay-query integration E0603/E0624"
+      ]
+    },
+    {
+      "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43250805414/job/131295747335",
+      "head": "3250b774812866f3b79451caab7cefb3624054a5",
+      "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-onvif-metadata --test onvif_rtp_metadata_cli",
+      "observed": [
+        "fss-onvif-metadata unit target: 70 passed, 1 failed",
+        "The full workflow was later cancelled; no complete workflow pass."
+      ]
+    }
+  ],
+  "validation": {
+    "passed": [
+      "Independent source/API review against the exact native CI failure diagnostics.",
+      "Final stored changes preserve production source-read authority and effect semantics."
+    ],
+    "post_fix_compile": false,
+    "post_fix_tests": false,
+    "final_rustfmt": false,
+    "limitation": "The local environment disconnected and then restarted without the previously available pinned toolchain. Final files were reconstructed and preserved through GitHub; no dependency substitution or lowered gate."
+  },
+  "next": [
+    "Run the existing recording lifecycle replay/imports lanes.",
+    "Run the existing ONVIF metadata unit and CLI targets.",
+    "Keep local repository qualification as release authority."
+  ]
+}
