@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerAnchor};
 
 use super::DeletionError;
-use super::plan::DeletionPlan;
+use super::plan::{DeletionPlan, MAX_DELETION_RECORD_BYTES};
 use crate::ReferenceDeployment;
 
 /// One committed deletion record.
@@ -83,7 +83,9 @@ impl DeletionIndex {
         }
         let spool = deployment.publisher().spool();
         Self::from_batches(batches, |digest| {
-            spool.read(digest).map_err(DeletionError::from)
+            spool
+                .read_bounded(digest, MAX_DELETION_RECORD_BYTES)
+                .map_err(DeletionError::from)
         })
     }
 

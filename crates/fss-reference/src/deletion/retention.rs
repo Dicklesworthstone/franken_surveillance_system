@@ -19,7 +19,9 @@ use fss_core::{
 };
 
 use super::{CommitReceipt, DeletionError, DeletionIndex, DeletionPlan, DeletionScope, Finding};
-use crate::ingest::{RetainedFileImport, RetainedReadLimits};
+use crate::ingest::retained::MAX_RETAINED_MANIFEST_BYTES;
+use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
+use fss_object::{CorruptionKind, SpoolError};
 use crate::reference_deployment::FAMILY_SENSOR_CAPSULE;
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -44,6 +46,8 @@ pub const MAX_RETENTION_CAPSULES: u64 = 16_384;
 pub const MAX_RETENTION_LEDGER_ENTRIES: u64 = 1_000_000;
 /// Maximum aggregate metadata bytes; source media is never read by the selector.
 pub const MAX_RETENTION_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum canonical payload of one sensor capsule inspected by retention.
+const MAX_RETENTION_CAPSULE_BYTES: usize = 16_384;
 /// Aggregate blocker findings retained across all excluded candidates; overflow refuses.
 pub const MAX_RETENTION_BLOCKERS: usize = 4096;
 /// Maximum bytes in one blocker field. Diagnostics never include source media.
@@ -635,6 +639,31 @@ fn charge(
     Ok(())
 }
 
+fn metadata_allowance(
+    used: u64,
+    maximum: u64,
+    per_record: usize,
+) -> Result<usize, DeletionError> {
+    let remaining = maximum
+        .checked_sub(used)
+        .filter(|remaining| *remaining != 0)
+        .ok_or(DeletionError::Bound {
+            limit: "retention_metadata_bytes",
+        })?;
+    Ok(remaining.min(per_record as u64) as usize)
+}
+
+fn exceeds_metadata_allowance(error: &SpoolError, allowance: usize, per_record: usize) -> bool {
+    allowance < per_record
+        && matches!(
+            error,
+            SpoolError::Corrupt {
+                kind: CorruptionKind::DeclaredLengthExceedsLimit { maximum, .. },
+                ..
+            } if *maximum == allowance as u64
+        )
+}
+
 fn checkpoint(cx: &ReplayCx) -> Result<(), DeletionError> {
     cx.checkpoint(STAGE_RETENTION_READ)
         .map_err(|_| DeletionError::Cancelled {
@@ -662,6 +691,16 @@ fn assess_age_retention(
     request: &RetentionRequest,
     cx: &ReplayCx,
 ) -> Result<RetentionAssessment, DeletionError> {
+    assess_age_retention_with_metadata_limit(deployment, request, cx, MAX_RETENTION_METADATA_BYTES)
+}
+
+fn assess_age_retention_with_metadata_limit(
+    deployment: &ReferenceDeployment,
+    request: &RetentionRequest,
+    cx: &ReplayCx,
+    maximum_metadata_bytes: u64,
+) -> Result<RetentionAssessment, DeletionError> {
+    let maximum_metadata_bytes = maximum_metadata_bytes.min(MAX_RETENTION_METADATA_BYTES);
     checkpoint(cx)?;
     if cx.root_dir() != deployment.root() {
         return Err(DeletionError::RecordMismatch);
@@ -701,14 +740,40 @@ fn assess_age_retention(
     let mut outside_sensor = 0;
     for identity in complete {
         checkpoint(cx)?;
-        let retained =
-            RetainedFileImport::open(deployment, identity, RetainedReadLimits::default(), cx)
-                .map_err(|_| DeletionError::RecordMismatch)?;
+        let manifest_allowance = metadata_allowance(
+            usage.bytes,
+            maximum_metadata_bytes,
+            MAX_RETAINED_MANIFEST_BYTES,
+        )?;
+        let (retained, manifest_bytes) = RetainedFileImport::open_with_manifest_limit(
+            deployment,
+            identity,
+            RetainedReadLimits::default(),
+            manifest_allowance,
+            cx,
+        )
+        .map_err(|error| {
+            if matches!(
+                &error,
+                FileIngestError::Spool(error)
+                    if exceeds_metadata_allowance(
+                        error,
+                        manifest_allowance,
+                        MAX_RETAINED_MANIFEST_BYTES,
+                    )
+            ) {
+                DeletionError::Bound {
+                    limit: "retention_metadata_bytes",
+                }
+            } else {
+                DeletionError::RecordMismatch
+            }
+        })?;
         let manifest = retained.manifest();
         charge(
             &mut usage.bytes,
-            manifest.canonical_bytes().len() as u64,
-            MAX_RETENTION_METADATA_BYTES,
+            manifest_bytes as u64,
+            maximum_metadata_bytes,
             "retention_metadata_bytes",
         )?;
         if manifest.segment_spans.is_empty() {
@@ -743,14 +808,35 @@ fn assess_age_retention(
                     MAX_RETENTION_CAPSULES,
                     "retention_capsules",
                 )?;
-                let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
+                let capsule_allowance = metadata_allowance(
+                    usage.bytes,
+                    maximum_metadata_bytes,
+                    MAX_RETENTION_CAPSULE_BYTES,
+                )?;
+                let bytes = deployment
+                    .publisher()
+                    .spool()
+                    .read_bounded(delta.payload_digest, capsule_allowance)
+                    .map_err(|error| {
+                        if exceeds_metadata_allowance(
+                            &error,
+                            capsule_allowance,
+                            MAX_RETENTION_CAPSULE_BYTES,
+                        ) {
+                            DeletionError::Bound {
+                                limit: "retention_metadata_bytes",
+                            }
+                        } else {
+                            DeletionError::from(error)
+                        }
+                    })?;
                 charge(
                     &mut usage.bytes,
                     bytes.len() as u64,
-                    MAX_RETENTION_METADATA_BYTES,
+                    maximum_metadata_bytes,
                     "retention_metadata_bytes",
                 )?;
-                if bytes.len() > 16_384 || ContentDigest::sha256(&bytes) != delta.payload_digest {
+                if ContentDigest::sha256(&bytes) != delta.payload_digest {
                     return Err(DeletionError::RecordMismatch);
                 }
                 let capsule = SensorCapsule::from_canonical_bytes(&bytes)?;
@@ -1051,6 +1137,10 @@ pub fn commit_retention(
     checkpoint(cx)?;
     super::commit::commit_retention(deployment, request, plan_digest, approval, principal, cx)
 }
+
+#[cfg(test)]
+#[path = "retention/metadata_tests.rs"]
+mod metadata_tests;
 
 #[cfg(test)]
 mod tests {

@@ -484,6 +484,26 @@ impl RetainedFileImport {
         limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> Result<Self, FileIngestError> {
+        Self::open_with_manifest_limit(
+            deployment,
+            import_identity,
+            limits,
+            MAX_RETAINED_MANIFEST_BYTES,
+            cx,
+        )
+        .map(|(retained, _)| retained)
+    }
+
+    /// Applies an additional manifest payload allowance before the spool allocates its read.
+    /// Returns the exact admitted manifest length, without re-encoding the decoded metadata.
+    /// Root membership and other custody reads retain their independent owner limits.
+    pub(crate) fn open_with_manifest_limit(
+        deployment: &ReferenceDeployment,
+        import_identity: ContentDigest,
+        limits: RetainedReadLimits,
+        maximum_manifest_bytes: usize,
+        cx: &ReplayCx,
+    ) -> Result<(Self, usize), FileIngestError> {
         checkpoint(cx, STAGE_RETAINED_OPEN)?;
         if import_identity.algorithm() != DigestAlgorithm::Sha256 {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
@@ -541,7 +561,11 @@ impl RetainedFileImport {
         if visible.root != import_root {
             return Err(ContractError::DigestMismatch.into());
         }
-        let bytes = deployment.publisher().spool().read(manifest_digest)?;
+        let bytes = deployment.publisher().spool().read_bounded(
+            manifest_digest,
+            maximum_manifest_bytes.min(MAX_RETAINED_MANIFEST_BYTES),
+        )?;
+        let manifest_bytes = bytes.len();
         let manifest = FileImportManifest::decode_metadata(&bytes, manifest_digest, limits)?;
         root_binding::verify(
             deployment,
@@ -553,13 +577,16 @@ impl RetainedFileImport {
             cx,
         )?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
-        Ok(Self {
-            import_identity,
-            import_root,
-            manifest_digest,
-            authority_anchor: batch.new_anchor.clone(),
-            manifest,
-        })
+        Ok((
+            Self {
+                import_identity,
+                import_root,
+                manifest_digest,
+                authority_anchor: batch.new_anchor.clone(),
+                manifest,
+            },
+            manifest_bytes,
+        ))
     }
 
     /// Exact import identity.

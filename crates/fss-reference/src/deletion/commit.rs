@@ -24,7 +24,9 @@ use fss_core::{BatchId, ContentDigest, EvidenceDelta, ObjectId, Plane};
 use fss_publication::{ROOT_RETRACTION_FAMILY, SlotName, root_reachability_object_id};
 
 use super::index::DeletionIndex;
-use super::plan::{DeletionCompletion, DeletionPlan, approval_digest};
+use super::plan::{
+    DeletionCompletion, DeletionPlan, MAX_DELETION_RECORD_BYTES, approval_digest,
+};
 use super::walk::Universe;
 use super::{
     DeletionError, DeletionScope, STAGE_DELETION_COMPLETE, STAGE_DELETION_COMPLETION_STAGED,
@@ -318,7 +320,10 @@ fn commit_request(
             return Err(DeletionError::ApprovalMismatch(approval));
         }
         if let Some(completion_digest) = entry.completion_digest {
-            let bytes = deployment.publisher().spool().read(completion_digest)?;
+            let bytes = deployment
+                .publisher()
+                .spool()
+                .read_bounded(completion_digest, MAX_DELETION_RECORD_BYTES)?;
             let completion = DeletionCompletion::decode(&bytes, completion_digest)?;
             return Ok(CommitReceipt {
                 outcome: CommitOutcome::AlreadyComplete,

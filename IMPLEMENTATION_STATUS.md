@@ -4,6 +4,43 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Canonical transport stops and retained metadata read limits
+
+Status: implemented and source-reviewed; the new Rust regressions remain unexecuted.
+
+TCP ingress now checks canonical task cancellation and drain before every resumed
+socket read. UniFi discovery checks the runtime and canonical owner before every
+send/receive poll, preserves earlier candidates, and keeps prepaid byte reservations.
+These guards do not install cancellation wakeups or replace the enclosing owner's
+deadline and drain supervision.
+
+Retained import manifests, sensor capsules inspected by retention, hold records,
+and deletion plans/completions now pass their format limits into the spool read.
+Retention also passes the remaining inventory metadata allowance before each
+manifest/capsule read and charges the actual admitted manifest length. The 64 MiB
+aggregate covers those inventory payloads; root/custody verification and history
+reads retain their separate limits. Canonical formats and identities are unchanged.
+
+Added contracts cover parked TCP cancellation/drain; four UDP cancellation/drain
+cases with and without an earlier candidate; oversized manifest, capsule, hold,
+and deletion metadata; and zero, exact, and exhausted cumulative metadata budgets.
+The storage cases also check refusal without authority writes and successful retry
+after restoring the original bytes.
+
+Verification is limited to source/API review. The execution workspace disconnected,
+and the initial supplementary [Rust workflow](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43193433958)
+stopped on unchanged registry/dependency policy checks before Rust tests. No native
+test pass, formatting pass, release qualification, or umbrella bead closure is claimed.
+Run the following with the pinned toolchain when execution is available, then the
+applicable repository-owned qualification lanes:
+
+```sh
+cargo +nightly-2026-08-31 test --locked -p fss-runtime --test async_execution_contract tcp_ingress_
+cargo +nightly-2026-08-31 test --locked -p fss-reference --test unifi_direct_discovery_contract parked_discovery_rechecks_canonical_cancellation_and_drain
+cargo +nightly-2026-08-31 test --locked -p fss-reference --test retention_cohort_contract metadata_bounds
+cargo +nightly-2026-08-31 test --locked -p fss-reference --lib deletion::retention::metadata_tests
+```
+
 ## Source-verified recorder UTC through canonical CLI and MCP
 
 The existing AOP-005 `fss query --target recordings` and MCP `query` now have a

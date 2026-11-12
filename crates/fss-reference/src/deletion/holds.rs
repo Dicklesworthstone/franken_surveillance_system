@@ -488,7 +488,7 @@ impl HoldIndex {
                 deployment
                     .publisher()
                     .spool()
-                    .read(digest)
+                    .read_bounded(digest, MAX_HOLD_RECORD_BYTES)
                     .map_err(HoldError::from)
             },
         )

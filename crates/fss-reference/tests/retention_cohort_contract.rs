@@ -2,6 +2,8 @@
 //! Real imported media, durable holds and graph-aware partial retention cleanup.
 //! No camera, host clock, network effect or automatically released hold is involved.
 
+#[path = "retention_cohort_contract/metadata_bounds.rs"]
+mod metadata_bounds;
 #[path = "retention_cohort_contract/policy.rs"]
 mod policy;
 
