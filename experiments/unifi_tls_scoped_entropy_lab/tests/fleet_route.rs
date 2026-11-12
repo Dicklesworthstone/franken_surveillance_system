@@ -2243,6 +2243,12 @@ fn parallel_fleet_upgrade_scenario(
                                 }
                                 FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))) => (),
                                 FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))) => refreshed[i] = true,
+                                // An unmatched accept may expire while the already
+                                // connected stream is being archived. Only tolerate
+                                // this after the concurrent route has succeeded.
+                                FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused {
+                                    index: None, reason: discovery::fleet::RouteError::Listener(listener::Error::Deadline),
+                                }))))) if parallel_done => (),
                                 FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { reason, .. }))))) => return Err(format!("archive stream route refused: {reason:?}").into()),
                                 FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { reason, .. }))))) => return Err(format!("archive stream handshake failed: {reason:?}").into()),
                                 _ => return Err("unexpected fleet event while streaming".into()),
