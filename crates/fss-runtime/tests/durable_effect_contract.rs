@@ -10,8 +10,8 @@ use fss_core::{
 };
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::effect::{
-    CommitApproval, EffectCoordError, EffectCoordinator, PrepareSpec, PreparedEffect,
-    Reconciliation,
+    CommitApproval, EffectCoordError, EffectCoordinator, EffectSettlementRefusal, PrepareSpec,
+    PreparedEffect, Reconciliation,
 };
 use fss_runtime::effect_journal::{
     EffectJournalPin, EffectJournalStore, EffectPersistenceError, EffectPinRetainer,
@@ -416,6 +416,72 @@ impl Fixture {
         )?;
         Ok((owner, authority, tree))
     }
+}
+
+#[test]
+fn settlement_check_requires_exact_coordinator_all_terminal_and_unpoisoned() -> Test {
+    let mut f = Fixture::new()?;
+    let binding = f.owner.binding();
+    assert_eq!(f.owner.check_all_terminal(&binding), Ok(()));
+    assert_eq!(
+        EffectCoordinator::new().check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::WrongCoordinator)
+    );
+    let prepared = f.prepare("settlement-gate")?;
+    assert_eq!(
+        f.owner.check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::Unsettled)
+    );
+    let mut permit = f.owner.commit(
+        &f.authority,
+        &f.tree,
+        &mut f.leases,
+        prepared.clone(),
+        TimestampNs(4),
+        approval(&prepared),
+    )?;
+    assert_eq!(
+        f.owner.check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::Unsettled)
+    );
+    f.owner
+        .adapter_accepted(&mut permit, None, TimestampNs(5))?;
+    assert_eq!(
+        f.owner.check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::Unsettled)
+    );
+    let proof = digest(b"synthetic settlement evidence");
+    f.owner.observed(&mut permit, proof, TimestampNs(6))?;
+    assert_eq!(
+        f.owner.check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::Unsettled)
+    );
+    f.owner
+        .verified(&mut f.tree, &f.authority, permit, proof, TimestampNs(7))?;
+    assert_eq!(f.owner.check_all_terminal(&binding), Ok(()));
+    let another = f.prepare("settlement-gate-second")?;
+    assert_eq!(
+        f.owner.check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::Unsettled)
+    );
+    f.disk.lock().expect("disk lock").fault = Fault::AfterAppend;
+    assert!(
+        f.owner
+            .commit(
+                &f.authority,
+                &f.tree,
+                &mut f.leases,
+                another.clone(),
+                TimestampNs(8),
+                approval(&another)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        f.owner.check_all_terminal(&binding),
+        Err(EffectSettlementRefusal::PersistencePoisoned)
+    );
+    Ok(())
 }
 
 fn retained_fixture() -> Test<(Fixture, Arc<Mutex<RetainedPins>>)> {

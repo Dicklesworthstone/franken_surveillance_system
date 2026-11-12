@@ -576,6 +576,22 @@ pub struct EffectCoordinator {
     reconciliation_only: bool,
 }
 
+/// Opaque, process-local identity of an effect coordinator. This binds a
+/// later check to the same owner; it is not authority or a durable identity.
+#[derive(Clone, Debug)]
+pub struct EffectCoordinatorBinding(Arc<()>);
+
+/// Why a coordinator cannot establish that its retained operations are terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EffectSettlementRefusal {
+    /// The supplied binding belongs to another coordinator.
+    WrongCoordinator,
+    /// A durable append had an ambiguous outcome and requires cold recovery.
+    PersistencePoisoned,
+    /// At least one retained operation is not in a safe terminal state.
+    Unsettled,
+}
+
 impl Default for EffectCoordinator {
     fn default() -> Self {
         Self::new()
@@ -602,6 +618,32 @@ impl EffectCoordinator {
     #[must_use]
     pub fn journal(&self) -> &EffectJournal {
         &self.journal
+    }
+
+    /// Bind a later read-only settlement check to this exact live owner.
+    #[must_use]
+    pub fn binding(&self) -> EffectCoordinatorBinding {
+        EffectCoordinatorBinding(self.identity.clone())
+    }
+
+    /// Check every retained operation, not a caller-selected subset, against
+    /// this exact live owner. A poisoned persistence boundary is never a pass.
+    /// This does not establish storage durability, independent evidence, or
+    /// that all external effects were routed through this coordinator.
+    pub fn check_all_terminal(
+        &self,
+        binding: &EffectCoordinatorBinding,
+    ) -> Result<(), EffectSettlementRefusal> {
+        if !Arc::ptr_eq(&self.identity, &binding.0) {
+            return Err(EffectSettlementRefusal::WrongCoordinator);
+        }
+        if self.persistence_poisoned {
+            return Err(EffectSettlementRefusal::PersistencePoisoned);
+        }
+        if self.journal.operations().any(|receipt| !receipt.state.is_terminal()) {
+            return Err(EffectSettlementRefusal::Unsettled);
+        }
+        Ok(())
     }
 
     /// Recovers only inert preparation metadata, including after dispatch or settlement.
