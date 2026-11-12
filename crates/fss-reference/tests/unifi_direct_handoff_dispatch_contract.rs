@@ -1331,7 +1331,7 @@ fn run_discovered_setup_with_listener(
                             port_claim,
                             matches!(integrated_mode, 5 | 6 | 8 | 9),
                             if integrated_mode == 8 { 1 } else if integrated_mode == 9 { 2 } else { 0 },
-                            matches!(integrated_mode, 13..=16),
+                            matches!(integrated_mode, 13..=18),
                         )
                     });
                     let (socket, _) =
@@ -1360,7 +1360,7 @@ fn run_discovered_setup_with_listener(
                         clock,
                         effects: &mut effects,
                         leases: &leases,
-                        approval: if matches!(integrated_mode, 13..=16) { &slow_approval } else { &SetupApproval },
+                        approval: if matches!(integrated_mode, 13..=18) { &slow_approval } else { &SetupApproval },
                         admission: &admission,
                         handoff_authority: &Guard(true),
                     };
@@ -1532,7 +1532,7 @@ fn run_discovered_setup_with_listener(
                         return Ok(());
                     }
                     let result = if ready.is_some() {
-                        let shared_mode = matches!(integrated_mode, 10 | 11 | 12 | 16);
+                        let shared_mode = matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18);
                         let policy = ReadyPolicy {
                             live: Arc::clone(&live),
                             shared: Arc::clone(&shared),
@@ -1629,7 +1629,7 @@ fn run_discovered_setup_with_listener(
                         ));
                         assert_eq!(http.phase(), Phase::Login);
                         live.store(true, std::sync::atomic::Ordering::Release);
-                        if matches!(integrated_mode, 10 | 11 | 12 | 16) {
+                        if matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18) {
                             use discovery::fleet::{Enrollment, Error as FleetError, Fleet, State};
                             let certificate = ContentDigest::sha256(b"fixture certificate binding");
                             let credential_handle = ContentDigest::sha256(b"fixture credential handle");
@@ -1650,7 +1650,55 @@ fn run_discovered_setup_with_listener(
                             assert!(matches!(wrong, Err(FleetError::Binding)));
                             assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
                             assert_eq!(http.phase(), Phase::Login);
-                            if integrated_mode == 16 {
+                            if matches!(integrated_mode, 17 | 18) {
+                                use discovery::{pump::{CameraWorkSet, Coordinated, Pump, RetryDisposition, SetupCompletion}, retry, scan::Scanner};
+                                let limits=if integrated_mode==17 {fss_object::SpoolLimits::new(4,4096,1024,4)} else {fss_object::SpoolLimits::new(4,1,1,4)};
+                                let mut spool=fss_object::StagingSpool::open(path.join("automatic-deadline-evidence"),limits)?;
+                                let scanner=Scanner::new(cx,task,clock,&fleet,config.clone(),Duration::from_secs(5))?;
+                                let mut router=discovery::fleet::Router::new(&fleet,&control,1,4096,Duration::from_secs(5))?;
+                                let mut pump=Pump::new(&scanner,&mut router)?;
+                                pump.request_scan_stop();
+                                let policy=retry::Policy::new(Duration::from_millis(10),Duration::from_secs(1),3)?;
+                                let mut retries=retry::Queue::new(&fleet,task,cx,clock,policy)?;
+                                let mut work=CameraWorkSet::new(1).map_err(|_| "work capacity")?;
+                                let recovery_slot=Rc::new(RefCell::new(None));
+                                let slot=Rc::clone(&recovery_slot);
+                                let setup_operation=operation.clone();
+                                let fleet_ref=&fleet;
+                                let control_ref=&control;
+                                let owner_ref=&mut owner;
+                                let trace_ref=&mut trace;
+                                let spool_ref=&mut spool;
+                                work.insert(0,Box::pin(async move {
+                                    let recovered=fleet_ref.setup_one_with_deadline_recovery(
+                                        0,owner_ref,control_ref,port,http,certificate,credential_handle,credential,
+                                        fence,destination,&setup_operation,framing,Duration::from_millis(250),trace_ref,
+                                        spool_ref,"fixture:setup-evidence",
+                                    ).await;
+                                    *slot.borrow_mut()=Some(recovered.deadline_recovery);
+                                    SetupCompletion {operation:setup_operation,outcome:recovered.outcome}
+                                })).map_err(|_| "setup work")?;
+                                let event=pump.next_coordinated(&mut work,&mut retries).await?;
+                                if integrated_mode==17 {
+                                    assert!(matches!(event,Coordinated::Setup {index:0,retry:RetryDisposition::Scheduled,completion:SetupCompletion {outcome:Err(FleetError::Setup(setup::Error::Deadline)),..}}));
+                                    assert!(matches!(pump.next_coordinated(&mut work,&mut retries).await?,Coordinated::Retry(retry::Event::Rearmed {index:0,state:State::Ready {candidate:0}})));
+                                } else {
+                                    assert!(matches!(event,Coordinated::Setup {index:0,retry:RetryDisposition::NotEligible,completion:SetupCompletion {outcome:Err(FleetError::Setup(setup::Error::Deadline)),..}}));
+                                    assert!(retries.is_empty());
+                                }
+                                drop(work);
+                                let recovery=recovery_slot.borrow_mut().take().ok_or("setup future did not return")?.ok_or("deadline recovery was skipped")?;
+                                if integrated_mode==17 {
+                                    let evidence=recovery?;
+                                    assert_eq!(spool.state(evidence),Some(fss_object::SpoolObjectState::Verified));
+                                    assert!(trace.preparation_cancelled());
+                                } else {
+                                    assert!(matches!(recovery,Err(discovery::fleet::DeadlineSettlementError::Cancellation(_))));
+                                    assert!(!trace.preparation_cancelled());
+                                }
+                                peer.join().map_err(|_| "HTTP fixture panic")??;
+                                return Ok(());
+                            } else if integrated_mode == 16 {
                                 use discovery::retry;
                                 let result = fleet.setup_one(
                                     0, &mut owner, &control, port, &mut http,
@@ -2142,7 +2190,7 @@ fn run_discovered_setup_with_listener(
                 }
                 .await;
                 let outcome = if output.is_ok()
-                    && (already || observe || changed || revoked || port_mode != 0 || matches!(integrated_mode, 13..=15))
+                    && (already || observe || changed || revoked || port_mode != 0 || matches!(integrated_mode, 13..=15) || integrated_mode == 17)
                 {
                     TaskOutcome::Success
                 } else if output.is_ok() {
@@ -2162,8 +2210,10 @@ fn run_discovered_setup_with_listener(
         run.output
     })?;
     let journal_entry = effects.journal().operation(&operation);
-    if matches!(integrated_mode, 13..=16) {
+    if matches!(integrated_mode, 13..=17) {
         assert_eq!(journal_entry.ok_or("missing cancelled setup")?.state, fss_core::EffectState::Cancelled);
+    } else if integrated_mode == 18 {
+        assert_eq!(journal_entry.ok_or("missing prepared setup")?.state, fss_core::EffectState::Prepared);
     } else if already || observe || changed || revoked || port_mode != 0 {
         assert!(journal_entry.is_none());
     } else {
@@ -2210,6 +2260,20 @@ fn fleet_retries_only_after_retained_deadline_cancellation() -> Test {
         return Err("test controller interface is not suitable".into());
     }
     run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 0, false, 16)
+}
+
+/// Exercises automatic settlement and pump scheduling without a real camera.
+#[test]
+#[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on an isolated test worker"]
+fn fleet_setup_automatically_settles_and_schedules_deadline_retry() -> Test {
+    let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(ip.is_private() || ip.is_link_local()) || ip == Ipv4Addr::new(192, 168, 1, 10) {
+        return Err("test controller interface is not suitable".into());
+    }
+    for mode in [17, 18] {
+        run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 0, false, mode)?;
+    }
+    Ok(())
 }
 
 #[test]

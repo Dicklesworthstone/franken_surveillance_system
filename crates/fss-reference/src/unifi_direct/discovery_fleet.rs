@@ -206,6 +206,15 @@ impl fmt::Display for DeadlineSettlementError {
 }
 impl std::error::Error for DeadlineSettlementError {}
 
+/// Original setup result and any automatic deadline-recovery result.
+#[must_use = "retain the setup outcome and any deadline recovery result"]
+pub struct RecoveredSetup {
+    /// Original setup result; any committed permit remains in its outcome.
+    pub outcome: Result<setup::Outcome, Error>,
+    /// A recovery was attempted only for a recorded pre-commit deadline.
+    pub deadline_recovery: Option<Result<ContentDigest, DeadlineSettlementError>>,
+}
+
 /// A refused refresh returns the exact supplied discovery window.
 #[must_use = "retain or explicitly discard the refused discovery window"]
 pub struct RefreshRefusal {
@@ -1415,6 +1424,63 @@ impl<'a> Fleet<'a> {
         drop(latest);
         self.records[index].changed.notify_waiters();
         result.map_err(Error::Setup)
+    }
+
+    /// Run one setup, retire its HTTP session, and settle an eligible local
+    /// pre-commit deadline before returning to the retry scheduler. The caller
+    /// retains the spool, trace, original result and recovery result. This does
+    /// not start the next setup, authenticate discovery or reconcile a
+    /// committed effect. Evidence and journal storage may synchronously block.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn setup_one_with_deadline_recovery<IO: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        index: usize,
+        owner: &mut setup::Owner<'_, '_, '_>,
+        listener: &controller_listener::Listener<'_, '_, '_>,
+        expected_port: u16,
+        mut camera: camera_http::Owner<'_, '_, '_, IO>,
+        certificate: ContentDigest,
+        credential_handle: ContentDigest,
+        credential: &[u8],
+        fence: u64,
+        destination: Ipv4Addr,
+        operation: &OperationId,
+        framing: handoff::Framing,
+        wait: Duration,
+        trace: &mut setup::Trace,
+        spool: &mut fss_object::StagingSpool,
+        storage_resource: &str,
+    ) -> RecoveredSetup {
+        let outcome = self
+            .setup_one(
+                index,
+                owner,
+                listener,
+                expected_port,
+                &mut camera,
+                certificate,
+                credential_handle,
+                credential,
+                fence,
+                destination,
+                operation,
+                framing,
+                wait,
+                trace,
+            )
+            .await;
+        drop(camera);
+        let deadline_recovery = if matches!(&outcome, Err(Error::Setup(setup::Error::Deadline)))
+            && trace.has_precommit_deadline()
+        {
+            Some(self.settle_expired_setup(index, owner, trace, spool, storage_resource))
+        } else {
+            None
+        };
+        RecoveredSetup {
+            outcome,
+            deadline_recovery,
+        }
     }
 }
 

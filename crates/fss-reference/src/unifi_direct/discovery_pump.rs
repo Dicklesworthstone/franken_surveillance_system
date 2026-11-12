@@ -291,9 +291,9 @@ pub struct SetupCompletion {
 /// Whether an exact completed failure was admitted to the retry queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetryDisposition {
-    /// A timer was created for the proven pre-effect failure.
+    /// A timer was created for a proven pre-effect or cancelled failure.
     Scheduled,
-    /// The result did not identify an eligible pre-effect failure.
+    /// The result did not identify an eligible failure.
     NotEligible,
     /// This camera already had a timer; its existing timer remains owned.
     AlreadyScheduled,
@@ -432,7 +432,7 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
     }
 
     /// Drive setup work, retry timers, discovery and routing without detached
-    /// tasks. A returned pre-effect setup failure is scheduled automatically
+    /// tasks. A returned eligible setup failure is scheduled automatically
     /// only when its exact operation still matches the queue's fleet marker.
     /// Every original completion is returned even if timer admission fails.
     /// The caller still owns credentials, transport creation and starting the
