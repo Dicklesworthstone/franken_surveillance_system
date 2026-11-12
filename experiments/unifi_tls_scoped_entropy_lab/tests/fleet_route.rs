@@ -2390,6 +2390,8 @@ fn parallel_fleet_upgrade_scenario(
                                 AutoRoutedFleetEvent::StreamRefused { index: 1, refusal: RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::PreviousUnresolved, session } } => { drop(session); break; }
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))), .. }) => (),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))), .. }) => { if i == 1 { after_unresolved_installed = true; } },
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. }) => return Err(format!("unresolved stream route refused: index={index:?} reason={reason:?}").into()),
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))), .. }) => return Err(format!("unresolved stream handshake failed: index={index} reason={reason:?}").into()),
                                 _ => return Err("unresolved stream was not fenced".into()),
                             }
                         }
