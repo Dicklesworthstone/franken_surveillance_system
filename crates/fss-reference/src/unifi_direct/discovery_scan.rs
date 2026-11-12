@@ -49,6 +49,8 @@ pub enum Outcome {
 pub enum Error {
     /// Interval, timer, or task-clock binding is invalid.
     Configuration,
+    /// The parked scanner belongs to a different fleet instance.
+    WrongFleet,
     /// Another next-window future is already owned by this scanner.
     Busy,
     /// A dropped probing future requires explicit acknowledgement.
@@ -94,7 +96,78 @@ pub struct Scanner<'fleet, 'report, 'scope, 'task> {
     phase: Cell<Phase>,
 }
 
+/// A scanner schedule detached from its fleet while inventory is updated.
+/// This token is local to its original fleet, task and runtime; it carries no
+/// credential or setup authority. Interrupted observations stay interrupted.
+#[must_use = "resume or explicitly discard the scanner schedule"]
+pub struct Parked<'scope, 'task> {
+    identity: Rc<()>,
+    owner: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    config: Config,
+    interval: Duration,
+    next_due: Option<Time>,
+    phase: Phase,
+}
+
+impl<'scope, 'task> Parked<'scope, 'task> {
+    /// Reattach to the same fleet without resetting the next due time.
+    /// A refusal returns the unchanged token for reconciliation or retry.
+    pub fn resume<'fleet, 'report>(
+        self,
+        fleet: &'fleet fleet::Fleet<'report>,
+    ) -> Result<Scanner<'fleet, 'report, 'scope, 'task>, (Error, Self)> {
+        if !Rc::ptr_eq(&self.identity, &fleet.identity()) {
+            return Err((Error::WrongFleet, self));
+        }
+        if !self.clock.matches(self.owner, self.cx) || !self.cx.has_timer() {
+            return Err((Error::Configuration, self));
+        }
+        if self.cx.checkpoint().is_err() {
+            return Err((Error::Authority, self));
+        }
+        Ok(Scanner {
+            fleet,
+            owner: self.owner,
+            cx: self.cx,
+            clock: self.clock,
+            config: self.config,
+            interval: self.interval,
+            next_due: Cell::new(self.next_due),
+            phase: Cell::new(self.phase),
+        })
+    }
+}
+
 impl<'fleet, 'report, 'scope, 'task> Scanner<'fleet, 'report, 'scope, 'task> {
+    pub(super) fn fleet_identity(&self) -> Rc<()> {
+        self.fleet.identity()
+    }
+
+    pub(super) fn clock(&self) -> MeteredClock<'scope, 'task> {
+        self.clock
+    }
+
+    /// Whether this scanner uses the exact supplied runtime context.
+    pub fn matches_context(&self, cx: &Cx) -> bool {
+        std::ptr::eq(self.cx, cx)
+    }
+
+    /// Release the fleet borrow while retaining the schedule and any
+    /// interrupted observation. A live `next` future prevents this move.
+    pub fn park(self) -> Parked<'scope, 'task> {
+        Parked {
+            identity: self.fleet.identity(),
+            owner: self.owner,
+            cx: self.cx,
+            clock: self.clock,
+            config: self.config,
+            interval: self.interval,
+            next_due: self.next_due.into_inner(),
+            phase: self.phase.into_inner(),
+        }
+    }
     /// Bind one existing task, clock, fleet, and already scoped network query.
     /// The first window is immediate; subsequent attempts are interval-spaced.
     pub fn new(

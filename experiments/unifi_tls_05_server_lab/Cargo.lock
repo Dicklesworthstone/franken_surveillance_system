@@ -2013,6 +2013,7 @@ dependencies = [
  "fss-packet",
  "fss-reference",
  "fss-runtime",
+ "rustix",
  "rustls",
  "rustls-pure",
  "socket2",

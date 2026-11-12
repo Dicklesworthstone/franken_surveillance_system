@@ -1557,8 +1557,8 @@ fn run_discovered_setup_with_listener(
                             if integrated_mode == 11 {
                                 let interrupted = timeout(
                                     cx.now(), Duration::from_secs(1),
-                                    fleet.setup_one(
-                                        0, &mut owner, &control, port, &mut http,
+                                    fleet.setup_available(
+                                        &mut owner, &control, port, &mut http,
                                         certificate, credential_handle, credential, fence,
                                         destination, &operation, framing, Duration::from_secs(5),
                                         &mut trace,
@@ -2089,6 +2089,8 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
     use discovery::fleet::{AcceptedRoute, Enrollment, Fleet, RouteError, Router, RouterEvent, State};
     use asupersync::io::{AsyncReadExt, AsyncWriteExt};
     use std::net::SocketAddrV4;
+    let stale_pending = std::env::var_os("FSS_TEST_STALE_PENDING").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
 
     struct PausedRead<IO> { inner: IO, allowed: Rc<Cell<bool>> }
     impl<IO: asupersync::io::AsyncRead + Unpin> asupersync::io::AsyncRead for PausedRead<IO> {
@@ -2196,7 +2198,8 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                     let shared = Arc::new(std::sync::atomic::AtomicBool::new(true));
                     let policy = ReadyPolicy {
                         live: Arc::clone(&live), shared: Arc::clone(&shared),
-                        shared_cameras: vec![(resources[0].clone(), peers[0]), (resources[1].clone(), peers[1])],
+                        shared_cameras: vec![(resources[0].clone(), peers[0]), (resources[1].clone(), peers[1]),
+                            (resources[0].clone(), Ipv4Addr::new(127, 0, 0, 3))],
                     };
                     let control = controller_listener::Listener::bind(
                         task, cx, clock, &policy, SocketAddrV4::new(destination, 0),
@@ -2410,7 +2413,7 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             leases: &leases, approval: &SetupApproval, admission: &admission,
                             handoff_authority: &Guard(true) };
                         let mut trace = setup::Trace::default();
-                        let setup = fleet.setup_one(index, &mut owner, &control, control.local_addr().port(),
+                        let setup = fleet.setup_available(&mut owner, &control, control.local_addr().port(),
                             &mut http, certificates[index], handles[index], br#"{"username":"fixture","password":"synthetic"}"#,
                             fences[index], destination, &operations[index], Framing::ContentLength,
                             Duration::from_secs(5), &mut trace);
@@ -2479,15 +2482,41 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             assert_eq!(&received, b"live");
                             drop(routed);
                             drop(client);
+                            if stale_pending {
+                                let mut changed = report.clone();
+                                changed.cameras.retain(|candidate| candidate.mac() != Some(macs[1]));
+                                fleet.refresh(changed)?;
+                            }
                             allowed.set(true);
                             held = Some((router, early_client));
                         }
-                        let outcome = setup.await?;
+                        let (selected, outcome) = setup.await?;
+                        assert_eq!(selected, index);
                         if let Some((mut router, mut client)) = held {
                             let later = connect_from(cx, peers[1], control.local_addr()).await?;
-                            assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_secs(5)).await,
-                                Err(RouteError::AlreadyPending)));
+                            let later_result = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await;
+                            if stale_pending {
+                                assert!(matches!(later_result, Err(RouteError::UnknownPeer)));
+                            } else {
+                                assert!(matches!(later_result, Err(RouteError::AlreadyPending)));
+                            }
                             drop(later);
+                            if stale_pending {
+                                assert!(matches!(router.next().await, RouterEvent::Refused {
+                                    index: Some(1), reason: RouteError::ClaimChanged
+                                }));
+                                assert_eq!(router.pending_len(), 0);
+                                assert!(!fleet.route_pending(1));
+                                drop(client);
+                                fleet.refresh(report.clone())?;
+                                let mut restored = connect_from(cx, peers[1], control.local_addr()).await?;
+                                let mut routed = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                                assert_eq!(routed.enrollment_index(), 1);
+                                restored.write_all(b"early").await?;
+                                let mut received = [0u8; 5];
+                                routed.read_exact(&mut received).await?;
+                                assert_eq!(&received, b"early");
+                            } else {
                             let mut routed = match router.next().await {
                                 RouterEvent::Ready(route) => route,
                                 RouterEvent::Refused { reason, .. } => return Err(format!("early route refused: {reason:?}").into()),
@@ -2499,6 +2528,7 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             let mut received = [0u8; 5];
                             routed.read_exact(&mut received).await?;
                             assert_eq!(&received, b"early");
+                            }
                         }
                         assert!(matches!(fleet.state(index), Some(State::Finished { .. })));
                         assert!(fleet.route_ready(index));
@@ -2554,6 +2584,39 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                     let replacement_route = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
                     assert_eq!(replacement_route.enrollment_index(), 0);
                     drop((route_two, replacement_route, client_one, client_two, replacement));
+
+                    // A later scoped discovery finds the first camera at a new
+                    // source address. No setup operation is replayed, and the
+                    // old source must no longer be eligible for a new route.
+                    let moved = Ipv4Addr::new(127, 0, 0, 3);
+                    let socket = std::net::UdpSocket::bind((moved, 0))?;
+                    let port = socket.local_addr()?.port();
+                    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    let responder = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut input = [0u8; 32];
+                        let (_, peer) = socket.recv_from(&mut input)?;
+                        socket.send_to(&discovery_packet_for(macs[0], moved), peer)?;
+                        Ok(())
+                    });
+                    let moved_cfg = discovery::Config::new(peers[0], 8, SocketAddrV4::new(moved, port),
+                        "fixture:fleet-discovery", Duration::from_millis(300), 8)?;
+                    let moved_window = discovery::discover(task, cx, clock.now()?, &moved_cfg).await?;
+                    responder.join().map_err(|_| "moved discovery thread panic")??;
+                    fleet.refresh(moved_window)?;
+                    assert_eq!(fleet.operation(0), Some(&operations[0]));
+                    let stale = connect_from(cx, peers[0], endpoint).await?;
+                    assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_secs(5)).await,
+                        Err(RouteError::UnknownPeer)));
+                    drop(stale);
+                    let mut moved_client = connect_from(cx, moved, endpoint).await?;
+                    let mut moved_route = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                    assert_eq!(moved_route.enrollment_index(), 0);
+                    assert_eq!(*moved_route.gate().source().ip(), moved);
+                    moved_client.write_all(b"move").await?;
+                    let mut moved_bytes = [0u8; 4];
+                    moved_route.read_exact(&mut moved_bytes).await?;
+                    assert_eq!(&moved_bytes, b"move");
+                    drop((moved_route, moved_client));
                     Ok(())
                 }.await;
                 let outcome = if output.is_ok() { TaskOutcome::Indeterminate("two handoffs require reconciliation".into()) }

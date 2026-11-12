@@ -2903,6 +2903,22 @@ pub struct RecoveredUnknownTimeVideoClip {
     continuity: VideoContinuity,
 }
 
+/// One original source record verified as part of a recovered video graph.
+///
+/// The offset is a caller-bound connection-relative claim, not a physical
+/// capture time or an authenticated camera identity. Retrieve the bytes with
+/// [`read_unknown_time_object`], which checks the current read authority and
+/// graph membership again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveredVideoSourceRecord {
+    /// Claimed byte offset in the original connection.
+    pub offset: u64,
+    /// Exact byte count of the stored original record.
+    pub length: usize,
+    /// Content address of the stored original record.
+    pub digest: ContentDigest,
+}
+
 impl RecoveredUnknownTimeVideoClip {
     /// Exact root and retention identity checked for this read, not a continuing grant.
     pub const fn pin(&self) -> UnknownTimePin {
@@ -2921,6 +2937,21 @@ impl RecoveredUnknownTimeVideoClip {
     /// Caller-bound connection and generation, not authenticated identity.
     pub fn claimed_source(&self) -> fss_container::flv_avc::SourceKey {
         self.source
+    }
+
+    /// Original records represented by this segment in connection order.
+    /// Lookahead witnesses and configuration copies are excluded so that a
+    /// caller can account for ranges without counting those copies twice.
+    /// This does not assert that adjacent segments or the whole stream exist.
+    pub fn source_records(&self) -> impl ExactSizeIterator<Item = RecoveredVideoSourceRecord> + '_ {
+        self.continuity
+            .records
+            .iter()
+            .map(|record| RecoveredVideoSourceRecord {
+                offset: record.offset,
+                length: record.length,
+                digest: record.digest,
+            })
     }
 }
 

@@ -4546,6 +4546,15 @@ fn video_session_archives_sources_and_video_without_audio() -> Test {
 }
 
 #[test]
+fn video_session_retirement_preserves_pending_video_and_archives_tail() -> Test {
+    let task = std::thread::Builder::new().name("video-pending-tail".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture()?, false, true, false, 22))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "pending video fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
 fn video_session_rolls_over_and_services_controller() -> Test {
     let task = std::thread::Builder::new().name("video-session-rollover".into()).stack_size(16 * 1024 * 1024).spawn(|| {
         let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 5))();
@@ -4938,6 +4947,78 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
             } else { Box::pin(session.as_mut().ok_or("video session owner missing")?.step(owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission)).await };
             match next {
                 video_session::Step::SourceOffered(_) => offered_sources += 1,
+                video_session::Step::VideoOffered if bootstrap_mode == 22 => {
+                    let mut active = session.take().ok_or("pending video session missing")?;
+                    active.abort();
+                    if active.join_source().await.is_some() || active.join_video().await.is_some() {
+                        return Err("unexpected running attempt during pending retirement".into());
+                    }
+                    let parts = active.into_parts().map_err(|_| "pending video session did not drain")?;
+                    if parts.video.status() != video_worker::Status::Pending {
+                        return Err("video segment not retained before retirement".into());
+                    }
+                    let retired = parts.prepare_retirement().map_err(|_| "pending video retirement refused")?;
+                    if !retired.halted || retired.time_sync.is_some() || retired.video.status() != video_worker::Status::Pending {
+                        return Err("pending video or controller custody changed".into());
+                    }
+                    let mut tail = retired.tail;
+                    let tail_count = tail.plan().len();
+                    if tail_count == 0 || tail.plan().pending_audio.is_some() || tail.plan().recorder_fenced {
+                        return Err("pending video fixture did not retain a valid tail".into());
+                    }
+                    let mut offered = None;
+                    let mut pins = Vec::new();
+                    let mut finished = false;
+                    for _ in 0..1024 {
+                        match Box::pin(tail.step(task, cx, clock, admission)).await {
+                            retirement_source::DriverStep::Offered { offset, len, disposition } if offered.is_none() => {
+                                offered = Some((offset, len, disposition));
+                            }
+                            retirement_source::DriverStep::Started => (),
+                            retirement_source::DriverStep::Completed(completion) if offered.is_some() => {
+                                if completion.runtime.is_err() { return Err("tail publication runtime failed".into()); }
+                                let pin = match completion.outcome {
+                                    source_worker::Outcome::Publication(source_worker::Publication::Published { pin, .. }) => pin,
+                                    _ => return Err("tail publication requires reconciliation".into()),
+                                };
+                                pins.push((pin, offered.take().ok_or("tail source missing")?));
+                            }
+                            retirement_source::DriverStep::Finished if offered.is_none() => { finished = true; break; },
+                            _ => return Err("tail source requires reconciliation".into()),
+                        }
+                    }
+                    let tail_parts = tail.into_parts().map_err(|_| "tail publication still running")?;
+                    if !finished || !tail_parts.plan.is_empty() || offered.is_some() || pins.len() != tail_count {
+                        return Err("pending video tail was not fully drained".into());
+                    }
+                    if retired.video.status() != video_worker::Status::Pending {
+                        return Err("pending video changed while the tail was archived".into());
+                    }
+                    let mut source = tail_parts.worker.retire().map_err(|_| "tail source did not retire")?;
+                    if source.fenced || source.pending.is_some() { return Err("tail source needs reconciliation".into()); }
+                    for (pin, (offset, len, disposition)) in pins {
+                        let record = archive::read_unknown_time_source(&mut source.parts.deployment, pin, access,
+                            archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &source.parts.replay)?;
+                        let start = usize::try_from(offset)?;
+                        let end = start.checked_add(len).ok_or("tail range overflow")?;
+                        if record.offset() != offset || record.disposition() != disposition || expected.get(start..end) != Some(record.bytes()) {
+                            return Err("tail source bytes changed".into());
+                        }
+                    }
+                    let video = retired.video.retire().map_err(|_| "pending video worker did not retire")?;
+                    if video.fenced || video.report.is_some() { return Err("pending video worker needs reconciliation".into()); }
+                    let sink = video.parts.sink.retire();
+                    if sink.pending_pin.is_some() { return Err("unstarted video acquired a candidate pin".into()); }
+                    let segment = sink.pending.ok_or("pending video segment disappeared")?;
+                    if segment.source().is_empty() { return Err("pending video source missing".into()); }
+                    for record in segment.source() {
+                        let start = usize::try_from(record.offset())?;
+                        let end = start.checked_add(record.bytes().len()).ok_or("video source range overflow")?;
+                        if expected.get(start..end) != Some(record.bytes()) { return Err("pending video source changed".into()); }
+                    }
+                    println!("video_pending_tail=verified tail_records={tail_count} pending_video_retained=true pending_pin=none");
+                    return Ok::<bool, Box<dyn Error>>(true);
+                }
                 video_session::Step::VideoOffered | video_session::Step::SourceStarted | video_session::Step::VideoStarted => (),
                 video_session::Step::Supervisor(step) => control = Some(step),
                 video_session::Step::SourceArchive { control: step, completion } => { control = step; source_completion = completion; },

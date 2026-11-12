@@ -307,6 +307,12 @@ impl Driver {
         Ok(Self { parts })
     }
 
+    /// Inspect terminal facts and ranges not yet offered to the source worker.
+    /// A range already offered is held separately by the worker until drained.
+    pub fn plan(&self) -> &Plan {
+        &self.parts.plan
+    }
+
     /// Explicitly authorize one retry of the same retained source.
     pub fn authorize_retry(&mut self) -> bool {
         if !self.parts.halted

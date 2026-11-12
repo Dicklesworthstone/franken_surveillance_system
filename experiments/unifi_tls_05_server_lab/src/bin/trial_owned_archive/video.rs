@@ -108,6 +108,25 @@ fn video_completion(
     }
 }
 
+fn controller_retirement_unresolved(
+    controller: &fss_reference::unifi_direct::Retirement,
+    clock_trace_present: bool,
+) -> bool {
+    clock_trace_present
+        || controller.previous_phase != fss_reference::unifi_direct::Phase::AgreementReplyObserved
+        || controller.prepared.is_some()
+        || controller.agreement_id.is_some()
+        || controller.hello_request_id.is_some()
+        || controller.time_sync_request_id.is_some()
+        || controller.stream_request.is_some()
+        || controller.stream_request_kind.is_some()
+        || controller.motion_request.is_some()
+        || controller.event_reply.is_some()
+        || controller.event_reply_is_startup_request
+        || controller.rejected_message.is_some()
+        || controller.unhandled_requests != Default::default()
+}
+
 fn session_step(
     step: video_session::Step,
     event: &mut Option<events::Frame>,
@@ -192,14 +211,40 @@ async fn archive_tail<'scope, 'task>(
             return Err("retired source ranges require reconciliation".into());
         }
     };
+    let driver = retirement_source::Driver::begin(worker, plan, key, camera_claim)
+        .map_err(|_| "tail worker unavailable; source requires reconciliation")?;
+    archive_prepared_tail(
+        driver,
+        key,
+        camera_claim,
+        task,
+        cx,
+        clock,
+        access,
+        resource,
+        wait,
+    )
+    .await
+}
+
+async fn archive_prepared_tail<'scope, 'task>(
+    mut driver: retirement_source::Driver,
+    key: SourceKey,
+    camera_claim: ContentDigest,
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    access: &Retention,
+    resource: &str,
+    wait: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plan = driver.plan();
     let start = plan.start;
     let end = plan.end;
     let received = plan.received;
     let count = plan.len();
     let fenced = plan.recorder_fenced;
     let audio_pending = plan.pending_audio.is_some();
-    let mut driver = retirement_source::Driver::begin(worker, plan, key, camera_claim)
-        .map_err(|_| "tail worker unavailable; source requires reconciliation")?;
     let admission = ArchiveAdmission {
         resource: "unifi:owned-source",
         cost: &BudgetVector::ZERO,
@@ -1262,26 +1307,58 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             let parts = session
                 .into_parts()
                 .map_err(|_| "video workers still running")?;
-            let media = parts.supervisor.retire().media;
             let resource = root.to_str().ok_or("archive path is not UTF-8")?;
-            let tail = Box::pin(archive_tail(
-                parts.source,
-                media,
-                key,
-                camera_claim,
-                task,
-                cx,
-                clock,
-                access.as_ref(),
-                resource,
-                wait,
-            ))
-            .await;
-            let video = parts
-                .video
-                .retire()
-                .map_err(|_| "video retirement refused")?;
+            let (tail, video, controller, time_sync) = match parts.prepare_retirement() {
+                Ok(retired) => {
+                    let tail = Box::pin(archive_prepared_tail(
+                        retired.tail,
+                        key,
+                        camera_claim,
+                        task,
+                        cx,
+                        clock,
+                        access.as_ref(),
+                        resource,
+                        wait,
+                    ))
+                    .await;
+                    (tail, retired.video, retired.controller, retired.time_sync)
+                }
+                Err(video_session::RetirementRefusal::NotDrained(parts)) => {
+                    // Preserve the previous tail-drain behavior for a fenced or
+                    // unavailable video owner; it still requires reconciliation.
+                    let retired = parts.supervisor.retire();
+                    let tail = Box::pin(archive_tail(
+                        parts.source,
+                        retired.media,
+                        key,
+                        camera_claim,
+                        task,
+                        cx,
+                        clock,
+                        access.as_ref(),
+                        resource,
+                        wait,
+                    ))
+                    .await;
+                    (tail, parts.video, retired.controller, retired.time_sync)
+                }
+                Err(video_session::RetirementRefusal::TailPlan { .. })
+                | Err(video_session::RetirementRefusal::TailDriver { .. }) => {
+                    eprintln!(
+                        "trial_owned_video_shutdown=tail_preparation_refused source_not_persisted=true"
+                    );
+                    return Err("video source retirement requires reconciliation".into());
+                }
+            };
+            let controller_unresolved =
+                controller_retirement_unresolved(&controller, time_sync.is_some());
+            println!(
+                "trial_owned_controller_retirement=observed reconciliation_required={controller_unresolved} remote_effects=unverified"
+            );
+            let video = video.retire().map_err(|_| "video retirement refused")?;
             if tail.is_err()
+                || controller_unresolved
                 || video.fenced
                 || video.report.is_some()
                 || video.parts.sink.has_pending()
@@ -1291,9 +1368,57 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             {
                 return Err("video archive custody requires reconciliation".into());
             }
+            let mut rollover_custody = video.rollover_custody;
             let mut video = video.parts;
             if result.is_ok() {
                 let resource = root.to_str().ok_or("archive path is not UTF-8")?;
+                task.checkpoint_for(
+                    RuntimeGrant::ReadMedia,
+                    resource,
+                    clock.now()?,
+                    &BudgetVector::ZERO,
+                )?;
+                let snapshot = video.journal.anchor();
+                if video.keeper.target() != snapshot {
+                    return Err("video journal keeper is not at the current prefix".into());
+                }
+                let page = video
+                    .journal
+                    .confirmed_page(snapshot, 0, 128, &video.replay)?;
+                let history_len = page.entries.len();
+                if page.has_more
+                    || page.pending.is_some()
+                    || history_len == 0
+                    || history_len > pins.len()
+                    || !pins[pins.len() - history_len..]
+                        .iter()
+                        .copied()
+                        .eq(page.entries.iter().map(|entry| entry.pin))
+                {
+                    return Err("video current-generation history mismatch".into());
+                }
+                println!(
+                    "trial_owned_journal_readback confirmed={} scope=current_generation earlier_generations=not_enumerated",
+                    history_len
+                );
+                if let Some(custody) = rollover_custody.as_mut() {
+                    let history = custody.history(&video.journal, &video.keeper, &video.replay)?;
+                    let page = history.page(None, 128, &video.replay)?;
+                    if page.next.is_some()
+                        || page.entries.len() != pins.len()
+                        || !pins
+                            .iter()
+                            .copied()
+                            .eq(page.entries.iter().map(|entry| entry.pin))
+                    {
+                        return Err("video rollover lineage history mismatch".into());
+                    }
+                    println!(
+                        "trial_owned_lineage_readback generations={} confirmed={} boundary_duplicates=excluded",
+                        history.generation_count(),
+                        page.entries.len()
+                    );
+                }
                 let mut samples = 0usize;
                 let mut first = None;
                 let mut first_samples = None;
@@ -1390,32 +1515,51 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                         &BudgetVector::ZERO,
                     )?;
                     let media = if pins.len() > 1 {
-                        task.checkpoint_for(
-                            RuntimeGrant::ReadMedia,
-                            resource,
-                            clock.now()?,
-                            &BudgetVector::ZERO,
-                        )?;
-                        let sequence = archive::read_unknown_time_video_sequence(
-                            &mut video.deployment,
-                            &pins,
-                            access.as_ref(),
-                            archive::Limits::default(),
-                            archive::AvSequenceLimits {
-                                max_fragments: 8,
-                                max_bytes: 128 * 1024 * 1024,
-                            },
-                            &mut fss_geometry::WorkBudget::new(100_000_000_000),
-                            &video.replay,
-                        )?;
-                        if sequence.parts().len() != pins.len() {
-                            return Err("video archive sequence incomplete".into());
+                        // Overlap one fragment so every adjacent boundary is verified,
+                        // while keeping each sequence read and its working set bounded.
+                        let mut start = 0usize;
+                        let mut windows = 0usize;
+                        let mut first_window = None;
+                        loop {
+                            let end = (start + 8).min(pins.len());
+                            task.checkpoint_for(
+                                RuntimeGrant::ReadMedia,
+                                resource,
+                                clock.now()?,
+                                &BudgetVector::ZERO,
+                            )?;
+                            let sequence = archive::read_unknown_time_video_sequence(
+                                &mut video.deployment,
+                                &pins[start..end],
+                                access.as_ref(),
+                                archive::Limits::default(),
+                                archive::AvSequenceLimits {
+                                    max_fragments: 8,
+                                    max_bytes: 128 * 1024 * 1024,
+                                },
+                                &mut fss_geometry::WorkBudget::new(100_000_000_000),
+                                &video.replay,
+                            )?;
+                            if sequence.parts().len() != end - start {
+                                return Err("video archive sequence incomplete".into());
+                            }
+                            if first_window.is_none() {
+                                first_window = Some(sequence.into_bytes());
+                            }
+                            windows += 1;
+                            if end == pins.len() {
+                                break;
+                            }
+                            start = end - 1;
                         }
                         println!(
                             "trial_owned_sequence segments={} capture_bounds=unknown",
-                            sequence.parts().len()
+                            pins.len()
                         );
-                        sequence.into_bytes()
+                        println!(
+                            "trial_owned_sequence_windows count={windows} max_fragments=8 overlap=1"
+                        );
+                        first_window.ok_or("archive video sequence missing")?
                     } else {
                         first.ok_or("archive video decode missing")?
                     };
@@ -1524,4 +1668,47 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         retained_unresolved,
     ));
     result.map(|()| pins.len()).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::controller_retirement_unresolved;
+    use fss_reference::unifi_direct::{
+        Controller, Identity, MessageKind, Phase, RejectedMessage, VideoChannel,
+    };
+
+    #[test]
+    fn controller_retirement_keeps_unresolved_facts_visible()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?;
+        let mut baseline = Controller::new(identity, 1)?.close();
+        baseline.previous_phase = Phase::AgreementReplyObserved;
+        assert!(!controller_retirement_unresolved(&baseline, false));
+        assert!(controller_retirement_unresolved(&baseline, true));
+        let mut cases = [baseline; 17];
+        cases[0].previous_phase = Phase::Indeterminate;
+        cases[1].prepared = Some((7, MessageKind::HelloReply));
+        cases[2].agreement_id = Some(7);
+        cases[3].hello_request_id = Some(7);
+        cases[4].time_sync_request_id = Some(7);
+        cases[5].stream_request = Some((7, VideoChannel::Video1));
+        cases[6].stream_request_kind = Some(MessageKind::StartStream(VideoChannel::Video1));
+        cases[7].motion_request = Some((7, true));
+        cases[8].event_reply = Some((7, fss_core::ContentDigest::sha256(b"fixture")));
+        cases[9].event_reply_is_startup_request = true;
+        cases[10].rejected_message = Some(RejectedMessage::Hello);
+        cases[11].unhandled_requests.pre_hello = 1;
+        cases[12].previous_phase = Phase::AwaitHello;
+        cases[13].previous_phase = Phase::HelloObserved;
+        cases[14].previous_phase = Phase::AwaitAgreementPreparation;
+        cases[15].previous_phase = Phase::AwaitAgreementReply;
+        cases[16].previous_phase = Phase::Closed;
+        for (index, case) in cases.iter().enumerate() {
+            assert!(
+                controller_retirement_unresolved(case, false),
+                "case {index}"
+            );
+        }
+        Ok(())
+    }
 }

@@ -23,6 +23,7 @@ use std::{
     future::{Future, poll_fn},
     marker::PhantomData,
     net::Ipv4Addr,
+    ops::Index,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
@@ -35,6 +36,13 @@ fn valid_digest(value: ContentDigest) -> bool {
     value.algorithm() == DigestAlgorithm::Sha256
         && !value.is_laboratory()
         && value.bytes() != [0; 32]
+}
+
+// A discovery source is only a routing hint. It must never be treated as
+// peer authentication or as a settlement of a prior setup effect.
+fn source_claim(report: &Report, mac: [u8; 6]) -> Option<Ipv4Addr> {
+    let index = report.select_mac_claim(mac).ok()?;
+    report.cameras.get(index).map(|camera| *camera.source().ip())
 }
 
 /// One caller-supplied camera binding, with opaque credential and pin handles.
@@ -181,10 +189,62 @@ struct Record {
     state: Cell<State>,
     operation: OnceCell<OperationId>,
     route_ready: Cell<bool>,
+    route_source: Cell<Option<Ipv4Addr>>,
     active: Rc<Cell<bool>>,
     setup_live: Cell<bool>,
     waiting: Cell<bool>,
     changed: Notify,
+}
+
+// All slots are allocated before the fleet is published. Once initialized, a
+// record never moves or disappears, so existing setup and pending-route owners
+// may keep borrowing it while another owner appends an authorized enrollment.
+struct Records {
+    slots: Vec<OnceCell<Record>>,
+    len: Cell<usize>,
+}
+
+impl Records {
+    fn new() -> Result<Self, Error> {
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(MAX_INVENTORY)
+            .map_err(|_| Error::Allocation)?;
+        slots.resize_with(MAX_INVENTORY, OnceCell::new);
+        Ok(Self {
+            slots,
+            len: Cell::new(0),
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.len.get()
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn get(&self, index: usize) -> Option<&Record> {
+        (index < self.len()).then(|| self.slots[index].get().expect("published record"))
+    }
+    fn iter(&self) -> impl ExactSizeIterator<Item = &Record> {
+        self.slots[..self.len()]
+            .iter()
+            .map(|slot| slot.get().expect("published record"))
+    }
+    fn push(&self, record: Record) -> Result<usize, Error> {
+        let index = self.len();
+        let slot = self.slots.get(index).ok_or(Error::Configuration)?;
+        slot.set(record).map_err(|_| Error::Configuration)?;
+        self.len.set(index + 1);
+        Ok(index)
+    }
+}
+
+impl Index<usize> for Records {
+    type Output = Record;
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("valid fleet record index")
+    }
 }
 
 struct SetupLease<'a> {
@@ -224,6 +284,8 @@ pub enum RouteError {
     SetupInterrupted,
     /// Setup completed without authorizing a connection attempt.
     SetupRejected,
+    /// The latest completed discovery window no longer matches this socket.
+    ClaimChanged,
     /// The total accept and setup-wait deadline elapsed.
     SetupDeadline,
     /// The router's bounded pending-socket capacity is full.
@@ -318,6 +380,9 @@ impl<'fleet, 'scope, 'task, 'policy> PendingRoute<'fleet, 'scope, 'task, 'policy
         }
         if !record.route_ready.get() {
             return Err(RouteError::SetupRejected);
+        }
+        if record.route_source.get() != Some(*gate.source().ip()) {
+            return Err(RouteError::ClaimChanged);
         }
         let routed = listener
             .route_accepted(
@@ -416,6 +481,16 @@ impl<'fleet, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, 'policy: 'fleet>
         self.pending.len()
     }
 
+    /// Check the exact fleet and task clock of a periodic scanner. This
+    /// proves only local owner binding, not authorization or peer identity.
+    pub fn matches_scanner(
+        &self,
+        scanner: &super::scan::Scanner<'_, '_, 'scope, 'task>,
+    ) -> bool {
+        Rc::ptr_eq(&self.fleet.identity, &scanner.fleet_identity())
+            && self.listener.matches_clock(&scanner.clock())
+    }
+
     /// Drive until a connection is ready or a refusal must be handled.
     /// Dropping this future preserves the router and its pending owners.
     pub async fn next(&mut self) -> RouterEvent<'scope, 'task, 'policy> {
@@ -499,9 +574,10 @@ impl DiscoverySnapshot {
 /// Holds no camera sockets or secrets. Attempted entries keep their original
 /// owned report while unattempted entries can follow newer completed windows.
 pub struct Fleet<'a> {
+    identity: Rc<()>,
     latest: RefCell<Rc<DiscoverySnapshot>>,
     initial_report: PhantomData<&'a Report>,
-    records: Vec<Record>,
+    records: Records,
 }
 
 impl<'a> Fleet<'a> {
@@ -531,10 +607,7 @@ impl<'a> Fleet<'a> {
                 return Err(Error::Configuration);
             }
         }
-        let mut records = Vec::new();
-        records
-            .try_reserve_exact(inventory.len())
-            .map_err(|_| Error::Allocation)?;
+        let records = Records::new()?;
         for entry in inventory {
             let state = match report.select_mac_claim(entry.mac) {
                 Ok(candidate) => State::Ready { candidate },
@@ -549,11 +622,12 @@ impl<'a> Fleet<'a> {
                 state: Cell::new(state),
                 operation: OnceCell::new(),
                 route_ready: Cell::new(false),
+                route_source: Cell::new(None),
                 active: Rc::new(Cell::new(false)),
                 setup_live: Cell::new(false),
                 waiting: Cell::new(false),
                 changed: Notify::new(),
-            });
+            })?;
         }
         let mut unknown = Vec::new();
         unknown
@@ -568,6 +642,7 @@ impl<'a> Fleet<'a> {
             }
         }
         Ok(Self {
+            identity: Rc::new(()),
             latest: RefCell::new(Rc::new(DiscoverySnapshot {
                 report,
                 unknown: unknown.into(),
@@ -577,9 +652,16 @@ impl<'a> Fleet<'a> {
         })
     }
 
+    pub(super) fn identity(&self) -> Rc<()> {
+        Rc::clone(&self.identity)
+    }
+
     /// Install a new completed window for entries without an entered setup.
-    /// Attempted entries retain their original report, operation and routing
-    /// state, including interrupted attempts. A refusal changes nothing.
+    /// Attempted entries retain their original report and operation, including
+    /// interrupted attempts. Finished entries that permit routing update their
+    /// untrusted source hint from this window; absent or conflicting claims
+    /// suspend new routes. Existing admitted sockets are not affected. A
+    /// refusal changes nothing.
     /// The caller supplies and owns the bounded scan; this does not scan,
     /// authenticate a peer, or authorize an automatic retry.
     pub fn refresh(&self, report: Report) -> Result<(), RefreshRefusal> {
@@ -596,7 +678,7 @@ impl<'a> Fleet<'a> {
                 report,
             });
         }
-        for record in &self.records {
+        for record in self.records.iter() {
             let state = match record.state.get() {
                 State::InFlight { .. } | State::Finished { .. } => None,
                 _ => Some(match report.select_mac_claim(record.enrollment.mac) {
@@ -640,6 +722,10 @@ impl<'a> Fleet<'a> {
             if let Some(state) = state {
                 *record.report.borrow_mut() = Rc::clone(&report);
                 record.state.set(state);
+            } else if matches!(record.state.get(), State::Finished { .. })
+                && record.route_ready.get()
+            {
+                record.route_source.set(source_claim(&report, record.enrollment.mac));
             }
         }
         *self.latest.borrow_mut() = Rc::new(DiscoverySnapshot {
@@ -652,7 +738,10 @@ impl<'a> Fleet<'a> {
     /// Add an explicitly supplied owner binding without rebuilding the fleet.
     /// An unknown discovery claim alone cannot create credentials or authority.
     /// Existing attempted entries and their reservations are left unchanged.
-    pub fn add_enrollment(&mut self, enrollment: Enrollment) -> Result<usize, Error> {
+    /// Stable bounded slots allow scanner, router, and existing session owners
+    /// to remain borrowed while a new binding is appended. This does not
+    /// authenticate a discovery claim or grant authority to start setup.
+    pub fn add_enrollment(&self, enrollment: Enrollment) -> Result<usize, Error> {
         if self.records.len() == MAX_INVENTORY
             || self.records.iter().any(|record| {
                 record.enrollment.mac == enrollment.mac
@@ -661,7 +750,7 @@ impl<'a> Fleet<'a> {
         {
             return Err(Error::Configuration);
         }
-        let report = Rc::clone(&self.latest.get_mut().report);
+        let report = Rc::clone(&self.latest.borrow().report);
         let state = match report.select_mac_claim(enrollment.mac) {
             Ok(candidate) => State::Ready { candidate },
             Err(SelectionError::NotObserved) => State::NotObserved,
@@ -683,23 +772,23 @@ impl<'a> Fleet<'a> {
                 unknown.push(index);
             }
         }
-        self.records.try_reserve(1).map_err(|_| Error::Allocation)?;
-        let index = self.records.len();
-        self.records.push(Record {
+        let snapshot = Rc::new(DiscoverySnapshot {
+            report: Rc::clone(&report),
+            unknown: unknown.into(),
+        });
+        let index = self.records.push(Record {
             enrollment,
             report: RefCell::new(Rc::clone(&report)),
             state: Cell::new(state),
             operation: OnceCell::new(),
             route_ready: Cell::new(false),
+            route_source: Cell::new(None),
             active: Rc::new(Cell::new(false)),
             setup_live: Cell::new(false),
             waiting: Cell::new(false),
             changed: Notify::new(),
-        });
-        *self.latest.get_mut() = Rc::new(DiscoverySnapshot {
-            report,
-            unknown: unknown.into(),
-        });
+        })?;
+        *self.latest.borrow_mut() = snapshot;
         Ok(index)
     }
 
@@ -746,6 +835,28 @@ impl<'a> Fleet<'a> {
         self.records
             .iter()
             .position(|record| matches!(record.state.get(), State::Ready { .. }))
+    }
+    /// Select a ready camera by its preexisting certificate and credential
+    /// handles, independently of inventory order. Shared handle pairs are
+    /// ambiguous even if only one of their cameras is currently visible.
+    /// Handles are claims; the transport and authority must still be checked.
+    pub fn ready_for(
+        &self,
+        certificate: ContentDigest,
+        credential: ContentDigest,
+    ) -> Result<usize, Error> {
+        let mut matches = self.records.iter().enumerate().filter(|(_, record)| {
+            record.enrollment.certificate == certificate
+                && record.enrollment.credential == credential
+        });
+        let (index, record) = matches.next().ok_or(Error::Binding)?;
+        if matches.next().is_some() {
+            return Err(Error::Binding);
+        }
+        if !matches!(record.state.get(), State::Ready { .. }) {
+            return Err(Error::NotReady);
+        }
+        Ok(index)
     }
     /// Whether setup returned an outcome that permits an untrusted connection
     /// attempt. This does not prove adoption, identity, or effect settlement.
@@ -811,12 +922,9 @@ impl<'a> Fleet<'a> {
                         .cameras
                         .get(candidate)
                         .is_some_and(|camera| *camera.source().ip() == source),
-                    State::Finished { candidate } if record.route_ready.get() => record
-                        .report
-                        .borrow()
-                        .cameras
-                        .get(candidate)
-                        .is_some_and(|camera| *camera.source().ip() == source),
+                    State::Finished { .. } if record.route_ready.get() => {
+                        record.route_source.get() == Some(source)
+                    }
                     _ => false,
                 });
         let (index, record) = matches.next().ok_or(RouteError::UnknownPeer)?;
@@ -902,6 +1010,48 @@ impl<'a> Fleet<'a> {
         Ok(result)
     }
 
+    /// Select one ready camera using its unique supplied bindings, then run
+    /// the existing listener-bound setup. No setup attempt is reserved when
+    /// the bindings are missing, shared or not currently ready.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn setup_available<IO: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        owner: &mut setup::Owner<'_, '_, '_>,
+        listener: &controller_listener::Listener<'_, '_, '_>,
+        expected_port: u16,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        certificate: ContentDigest,
+        credential_handle: ContentDigest,
+        credential: &[u8],
+        fence: u64,
+        destination: Ipv4Addr,
+        operation: &OperationId,
+        framing: handoff::Framing,
+        wait: Duration,
+        trace: &mut setup::Trace,
+    ) -> Result<(usize, setup::Outcome), Error> {
+        let index = self.ready_for(certificate, credential_handle)?;
+        let outcome = self
+            .setup_one(
+                index,
+                owner,
+                listener,
+                expected_port,
+                camera,
+                certificate,
+                credential_handle,
+                credential,
+                fence,
+                destination,
+                operation,
+                framing,
+                wait,
+                trace,
+            )
+            .await?;
+        Ok((index, outcome))
+    }
+
     /// Run one matched camera through the existing listener-bound setup owner.
     /// The returned setup outcome and the caller-owned trace retain every
     /// effect and uncertainty. The caller must resolve the credential handle,
@@ -964,7 +1114,7 @@ impl<'a> Fleet<'a> {
                 ),
             )
             .await?;
-        self.records[index].route_ready.set(match &result {
+        let route_ready = match &result {
             Ok(setup::Outcome::AlreadyAssociated { .. }) => true,
             Ok(setup::Outcome::Observed {
                 readback, response, ..
@@ -981,7 +1131,15 @@ impl<'a> Fleet<'a> {
                 )
             }
             _ => false,
+        };
+        self.records[index].route_ready.set(route_ready);
+        let latest = self.latest.borrow();
+        self.records[index].route_source.set(if route_ready {
+            source_claim(&latest.report, entry.mac)
+        } else {
+            None
         });
+        drop(latest);
         self.records[index].changed.notify_waiters();
         result.map_err(Error::Setup)
     }
@@ -1059,6 +1217,47 @@ mod tests {
     }
 
     #[test]
+    fn setup_selection_matches_unique_bindings_and_refuses_unavailable_or_shared() {
+        let first = entry(1);
+        let second = entry(2);
+        let missing = entry(3);
+        let observed = report(vec![
+            candidate(10, Some(first.mac)),
+            candidate(11, Some(second.mac)),
+        ]);
+        let fleet = Fleet::new(&observed, &[first, second, missing]).unwrap();
+        assert_eq!(fleet.next_ready(), Some(0));
+        assert_eq!(
+            fleet.ready_for(second.certificate, second.credential),
+            Ok(1)
+        );
+        assert_eq!(
+            fleet.ready_for(missing.certificate, missing.credential),
+            Err(Error::NotReady)
+        );
+        assert_eq!(
+            fleet.ready_for(first.certificate, second.credential),
+            Err(Error::Binding)
+        );
+        let shared = Enrollment::new(
+            missing.mac,
+            missing.camera,
+            missing.peer_admission,
+            first.certificate,
+            first.credential,
+            missing.generation,
+        )
+        .unwrap();
+        let ambiguous = Fleet::new(&observed, &[first, second, shared]).unwrap();
+        assert_eq!(
+            ambiguous.ready_for(first.certificate, first.credential),
+            Err(Error::Binding)
+        );
+        assert_eq!(ambiguous.state(0), Some(State::Ready { candidate: 0 }));
+        assert!(ambiguous.operation(0).is_none());
+    }
+
+    #[test]
     fn fleet_refuses_incomplete_reports_and_duplicate_owner_bindings() {
         let one = entry(1);
         let mut other = entry(2);
@@ -1094,6 +1293,52 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn enrollment_preserves_live_setup_and_prior_snapshot() {
+        let first = entry(1);
+        let second = entry(2);
+        let input = report(vec![
+            candidate(10, Some(first.mac)),
+            candidate(11, Some(second.mac)),
+        ]);
+        let fleet = Fleet::new(&input, &[first]).unwrap();
+        let snapshot = fleet.latest_snapshot();
+        assert_eq!(snapshot.unknown_claims(), &[1]);
+        let operation = OperationId::parse("operation:existing-camera").unwrap();
+        let mut work = Box::pin(fleet.drive(0, &operation, std::future::pending::<()>()));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(work.as_mut().poll(&mut context).is_pending());
+        let existing = &fleet.records[0] as *const Record;
+
+        assert_eq!(fleet.add_enrollment(second), Ok(1));
+        assert_eq!(&fleet.records[0] as *const Record, existing);
+        assert_eq!(fleet.operation(0), Some(&operation));
+        assert_eq!(fleet.state(0), Some(State::InFlight { candidate: 0 }));
+        assert_eq!(fleet.state(1), Some(State::Ready { candidate: 1 }));
+        assert_eq!(snapshot.unknown_claims(), &[1]);
+        assert!(fleet.latest_snapshot().unknown_claims().is_empty());
+        assert_eq!(fleet.add_enrollment(second), Err(Error::Configuration));
+        assert!(work.as_mut().poll(&mut context).is_pending());
+        drop(work);
+        assert_eq!(fleet.state(0), Some(State::InFlight { candidate: 0 }));
+        assert_eq!(fleet.operation(0), Some(&operation));
+        assert_eq!(fleet.state(1), Some(State::Ready { candidate: 1 }));
+    }
+
+    #[test]
+    fn live_enrollment_capacity_refuses_without_changing_the_snapshot() {
+        let fleet = Fleet::from_report(report(vec![]), &[]).unwrap();
+        for n in 1..=MAX_INVENTORY as u8 {
+            assert_eq!(fleet.add_enrollment(entry(n)), Ok(usize::from(n - 1)));
+        }
+        let snapshot = fleet.latest_snapshot();
+        assert_eq!(fleet.add_enrollment(entry(129)), Err(Error::Configuration));
+        assert_eq!(fleet.len(), MAX_INVENTORY);
+        assert!(Rc::ptr_eq(&snapshot, &fleet.latest_snapshot()));
+        assert_eq!(fleet.enrollment(0), Some(entry(1)));
+        assert_eq!(fleet.enrollment(MAX_INVENTORY - 1), Some(entry(128)));
     }
 
     #[test]
@@ -1237,10 +1482,46 @@ mod tests {
     }
 
     #[test]
+    fn finished_route_follows_unconflicted_windows_without_rewriting_setup() {
+        let one = entry(1);
+        let fleet = Fleet::from_report(report(vec![candidate(10, Some(one.mac))]), &[one]).unwrap();
+        let operation = OperationId::parse("operation:route-refresh").unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        let mut setup = Box::pin(fleet.drive(0, &operation, std::future::ready(())));
+        assert!(matches!(setup.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        drop(setup);
+        let record = &fleet.records[0];
+        record.route_ready.set(true);
+        record.route_source.set(source_claim(&record.report.borrow(), one.mac));
+        let initial = Rc::clone(&record.report.borrow());
+
+        fleet.refresh(report(vec![candidate(11, Some(one.mac))])).unwrap();
+        assert_eq!(record.route_source.get(), Some(Ipv4Addr::new(192, 168, 7, 11)));
+        assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
+        assert_eq!(fleet.operation(0), Some(&operation));
+        assert!(Rc::ptr_eq(&initial, &record.report.borrow()));
+
+        let mut partial = report(vec![candidate(12, Some(one.mac))]);
+        partial.stop = Stop::PacketLimit;
+        assert_eq!(fleet.refresh(partial).unwrap_err().reason, Error::IncompleteReport);
+        assert_eq!(record.route_source.get(), Some(Ipv4Addr::new(192, 168, 7, 11)));
+
+        fleet.refresh(report(vec![])).unwrap();
+        assert_eq!(record.route_source.get(), None);
+        assert!(fleet.route_ready(0));
+        fleet.refresh(report(vec![candidate(12, Some(one.mac)), candidate(13, Some(one.mac))])).unwrap();
+        assert_eq!(record.route_source.get(), None);
+        fleet.refresh(report(vec![candidate(14, Some(one.mac))])).unwrap();
+        assert_eq!(record.route_source.get(), Some(Ipv4Addr::new(192, 168, 7, 14)));
+        assert!(Rc::ptr_eq(&initial, &record.report.borrow()));
+        assert_eq!(fleet.operation(0), Some(&operation));
+    }
+
+    #[test]
     fn add_enrollment_preserves_attempts_and_matches_latest_window() {
         let first = entry(1);
         let second = entry(2);
-        let mut fleet = Fleet::from_report(
+        let fleet = Fleet::from_report(
             report(vec![
                 candidate(10, Some(first.mac)),
                 candidate(20, Some(second.mac)),

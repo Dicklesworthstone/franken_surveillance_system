@@ -369,6 +369,31 @@ impl Journal {
 pub struct UnknownTimeJournal {
     pub(super) inner: Journal,
 }
+
+/// A previously confirmed root and its one-based confirmation record number.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfirmedEntry {
+    /// Position in this particular journal generation.
+    pub sequence: u64,
+    /// Recorded root and retention claim; not a media-read grant.
+    pub pin: UnknownTimePin,
+}
+
+/// A bounded page from one exact verified journal prefix.
+#[derive(Debug)]
+pub struct ConfirmedPage {
+    /// The storage prefix to use again for subsequent pages.
+    pub snapshot: EffectJournalPin,
+    /// Confirmations after the requested cursor, in journal order.
+    pub entries: Vec<ConfirmedEntry>,
+    /// Last returned confirmation sequence, or the original cursor if empty.
+    pub next_after: u64,
+    /// Further confirmations exist in this same prefix.
+    pub has_more: bool,
+    /// The prefix ends with an unconfirmed publication intent.
+    pub pending: Option<UnknownTimePin>,
+}
+
 impl UnknownTimeJournal {
     /// Create a dedicated empty unknown-time journal.
     pub fn create(
@@ -411,6 +436,84 @@ impl UnknownTimeJournal {
     /// Last root with journaled confirmation, if any.
     pub fn confirmed(&self) -> Option<UnknownTimePin> {
         self.inner.confirmed().map(unknown_pin)
+    }
+
+    /// Read at most 128 confirmations from one verified prefix of this
+    /// generation. Supply zero for the first cursor, then `next_after` from
+    /// the previous page and the same `snapshot`. Later appends do not change
+    /// that prefix. This scans the bounded journal; it does not check media,
+    /// establish independent pin custody, cross a rollover, or grant access.
+    pub fn confirmed_page(
+        &self,
+        snapshot: EffectJournalPin,
+        after: u64,
+        limit: usize,
+        cx: &ReplayCx,
+    ) -> Result<ConfirmedPage, Error> {
+        checkpoint(cx)?;
+        if self.inner.is_fenced() {
+            return Err(Error::Fenced);
+        }
+        let count = usize::try_from(snapshot.sequence).map_err(|_| Error::Invalid)?;
+        if limit == 0
+            || limit > 128
+            || count == 0
+            || count > self.inner.store.records().len()
+            || count > MAX_RECORDS
+            || after > snapshot.sequence
+            || !self.inner.store.contains(snapshot)
+        {
+            return Err(Error::Invalid);
+        }
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(limit)
+            .map_err(|_| Error::Invalid)?;
+        let mut pending = None;
+        let mut cursor_valid = after == 0;
+        let mut has_more = false;
+        for (index, bytes) in self.inner.store.records()[..count].iter().enumerate() {
+            checkpoint(cx)?;
+            let sequence = u64::try_from(index + 1).map_err(|_| Error::Invalid)?;
+            let (kind, pin) = decode(bytes, UNKNOWN_TIME_DOMAIN, self.inner.scope)?;
+            if pin.is_some_and(|value| value.capture != super::unknown_ledger_validity()) {
+                return Err(Error::Invalid);
+            }
+            match (index, kind, pin) {
+                (0, 0, None) => (),
+                (0, _, _) | (_, 0, _) => return Err(Error::Invalid),
+                (_, 1, Some(pin)) if pending.is_none() => pending = Some(pin),
+                (_, 2, Some(pin)) if pending == Some(pin) => {
+                    pending = None;
+                    if sequence == after {
+                        cursor_valid = true;
+                    }
+                    if sequence > after {
+                        if entries.len() < limit {
+                            entries.push(ConfirmedEntry {
+                                sequence,
+                                pin: unknown_pin(pin),
+                            });
+                        } else {
+                            has_more = true;
+                        }
+                    }
+                }
+                _ => return Err(Error::Invalid),
+            }
+        }
+        if !cursor_valid {
+            return Err(Error::Invalid);
+        }
+        checkpoint(cx)?;
+        let next_after = entries.last().map_or(after, |entry| entry.sequence);
+        Ok(ConfirmedPage {
+            snapshot,
+            entries,
+            next_after,
+            has_more,
+            pending: pending.map(unknown_pin),
+        })
     }
 
     /// After reopening, the exact candidate required for deterministic replay.
@@ -874,6 +977,164 @@ mod capacity_tests {
     }
 
     #[test]
+    fn confirmed_pages_preserve_a_verified_prefix_during_later_publication()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let replay = rollover_replay()?;
+        let mut previous = settled_previous(&replay)?;
+        let snapshot = previous.journal.anchor();
+        let first = previous.journal.confirmed_page(snapshot, 0, 1, &replay)?;
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(first.entries[0].sequence, 3);
+        assert!(first.has_more);
+        assert_eq!(first.pending, None);
+        let pin = UnknownTimePin {
+            root: ContentDigest::sha256(b"third segment"),
+            retention: ContentDigest::sha256(b"retention"),
+        };
+        previous.journal.prepare(pin, &replay)?;
+        let incomplete =
+            previous
+                .journal
+                .confirmed_page(previous.journal.anchor(), 0, 8, &replay)?;
+        assert_eq!(incomplete.entries.len(), 2);
+        assert_eq!(incomplete.pending, Some(pin));
+        previous.journal.confirm(pin, &replay)?;
+        let second = previous
+            .journal
+            .confirmed_page(snapshot, first.next_after, 1, &replay)?;
+        assert_eq!(second.entries.len(), 1);
+        assert_eq!(second.entries[0].sequence, 5);
+        assert!(!second.has_more);
+        assert_eq!(second.pending, None);
+        let final_page = previous.journal.confirmed_page(
+            previous.journal.anchor(),
+            second.next_after,
+            8,
+            &replay,
+        )?;
+        assert_eq!(
+            final_page.entries,
+            vec![ConfirmedEntry { sequence: 7, pin }]
+        );
+        assert!(!final_page.has_more);
+        assert!(matches!(
+            previous.journal.confirmed_page(snapshot, 4, 1, &replay),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            previous.journal.confirmed_page(snapshot, 0, 0, &replay),
+            Err(Error::Invalid)
+        ));
+        let wrong = EffectJournalPin {
+            sequence: snapshot.sequence,
+            root: ContentDigest::sha256(b"wrong prefix"),
+        };
+        assert!(matches!(
+            previous.journal.confirmed_page(wrong, 0, 1, &replay),
+            Err(Error::Invalid)
+        ));
+        replay.set_cancel_at_checkpoint_occurrence("unifi-av-publication-journal", 2);
+        assert!(matches!(
+            previous.journal.confirmed_page(snapshot, 0, 1, &replay),
+            Err(Error::Cancelled)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn lineage_pages_skip_only_verified_boundary_and_reject_foreign_cursors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let replay = rollover_replay()?;
+        let previous = settled_previous(&replay)?;
+        let boundary = previous.journal.confirmed().ok_or("missing boundary")?;
+        let staged = rollover::Staged::begin(
+            previous,
+            Box::<Store>::default(),
+            Box::<Store>::default(),
+            &replay,
+        )
+        .map_err(|_| "staging refused")?;
+        let switch =
+            PinRetainedEffectJournal::new(Box::<Store>::default(), Box::<Retainer>::default())?;
+        let mut active = staged
+            .commit(switch, &replay)
+            .map_err(|_| "switch refused")?;
+        let third = UnknownTimePin {
+            root: ContentDigest::sha256(b"lineage third"),
+            retention: boundary.retention,
+        };
+        let (journal, keeper) = active.successor();
+        // Synthetic replay acknowledgement; no media custody is claimed.
+        journal.confirm(boundary, &replay)?;
+        journal.prepare(third, &replay)?;
+        keeper.retain(journal, &replay)?;
+        journal.confirm(third, &replay)?;
+        keeper.retain(journal, &replay)?;
+        let (mut current, keeper, mut custody) = active
+            .into_worker_parts(&replay)
+            .map_err(|_| "custody refused")?;
+        let old_cursor;
+        {
+            let history = custody.history(&current, &keeper, &replay)?;
+            assert_eq!(history.generation_count(), 2);
+            let all = history.page(None, 128, &replay)?;
+            assert_eq!(
+                all.entries
+                    .iter()
+                    .map(|entry| (entry.generation, entry.sequence))
+                    .collect::<Vec<_>>(),
+                vec![(0, 3), (0, 5), (1, 5)]
+            );
+            assert_eq!(
+                all.entries
+                    .iter()
+                    .map(|entry| entry.pin)
+                    .collect::<Vec<_>>(),
+                vec![
+                    UnknownTimePin {
+                        root: ContentDigest::sha256(&[0]),
+                        retention: boundary.retention
+                    },
+                    boundary,
+                    third
+                ]
+            );
+            assert!(all.next.is_none());
+            let first = history.page(None, 1, &replay)?;
+            assert_eq!(first.entries.len(), 1);
+            assert_eq!(first.entries[0].pin.root, ContentDigest::sha256(&[0]));
+            old_cursor = first.next.ok_or("first cursor missing")?;
+            let second = history.page(Some(&old_cursor), 1, &replay)?;
+            assert_eq!(second.entries[0].pin, boundary);
+            let third_page = history.page(second.next.as_ref(), 1, &replay)?;
+            assert_eq!(third_page.entries.len(), 1);
+            assert_eq!(third_page.entries[0].pin, third);
+            assert!(third_page.next.is_none());
+        }
+        {
+            let history = custody.history(&current, &keeper, &replay)?;
+            assert!(matches!(
+                history.page(Some(&old_cursor), 1, &replay),
+                Err(Error::Invalid)
+            ));
+            assert!(matches!(
+                history.page(None, 0, &replay),
+                Err(Error::Invalid)
+            ));
+        }
+        let pending = UnknownTimePin {
+            root: ContentDigest::sha256(b"lineage pending"),
+            retention: boundary.retention,
+        };
+        current.prepare(pending, &replay)?;
+        assert!(matches!(
+            custody.history(&current, &keeper, &replay),
+            Err(Error::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn rollover_keeps_last_root_fenced_until_replay_and_retains_exact_switch()
     -> Result<(), Box<dyn std::error::Error>> {
         let replay = rollover_replay()?;
@@ -1138,6 +1399,20 @@ mod capacity_tests {
                 latest_keeper,
                 &replay,
             )?;
+            let old_page = old.confirmed_page(binding.old_journal, 0, 8, &replay)?;
+            let new_page = new.confirmed_page(latest_journal, 0, 8, &replay)?;
+            assert_eq!(old_page.entries.len(), 2);
+            assert_eq!(
+                old_page.entries.last().map(|entry| entry.pin),
+                Some(binding.confirmed)
+            );
+            assert_eq!(new_page.entries.len(), 2);
+            assert_eq!(
+                new_page.entries.first().map(|entry| entry.pin),
+                Some(binding.confirmed)
+            );
+            assert_eq!(new_page.entries.last().map(|entry| entry.pin), Some(later));
+            assert!(!old_page.has_more && !new_page.has_more);
             let custody = FileTrustedRootPinRetainer::open_trusting_storage(
                 root.0.join("switch-custody"),
                 limits,

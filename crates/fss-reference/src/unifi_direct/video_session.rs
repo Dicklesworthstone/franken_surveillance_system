@@ -21,7 +21,7 @@ use fss_core::{ContentDigest, OperationId};
 use fss_runtime::execution::TaskCx;
 
 use super::{
-    av_worker, conversation, metered::MeteredClock, pipeline, recording,
+    av_worker, conversation, metered::MeteredClock, pipeline, recording, retirement_source,
     source_coordinator::ArchiveAdmission, source_worker, supervisor, video_worker,
 };
 
@@ -95,6 +95,130 @@ pub struct Parts<'scope, 'task, IO> {
     pub source_armed: bool,
     /// New work was stopped; pending owners still require reconciliation.
     pub halted: bool,
+}
+
+/// Quiescent recording owners after the controller and media pipeline retire.
+/// Tail records still need to be driven to a terminal publication or retained.
+#[must_use = "reconcile controller facts and drain or recover the tail and video owners"]
+pub struct Retired {
+    /// Outstanding controller facts, not proof that remote effects were undone.
+    pub controller: super::Retirement,
+    /// A clock-reply attempt that may still require reconciliation.
+    pub time_sync: Option<conversation::TimeSyncTrace>,
+    /// Non-running video worker and its archive custody, including any pending segment.
+    pub video: video_worker::Worker,
+    /// Driver holding the original unfinished media and source archive worker.
+    pub tail: retirement_source::Driver,
+    /// Whether admission had already been stopped by the session owner.
+    pub halted: bool,
+}
+
+/// Ownership-preserving refusal to prepare a retired video session.
+#[must_use = "retain or reconcile all returned owners and controller facts"]
+pub enum RetirementRefusal<'scope, 'task, IO> {
+    /// An attempt, admission flag, or source worker is not ready; no owner was retired.
+    NotDrained(Parts<'scope, 'task, IO>),
+    /// Media ranges could not be planned; every retired owner is returned.
+    TailPlan {
+        /// Outstanding controller protocol facts.
+        controller: super::Retirement,
+        /// A clock-reply attempt retained by the supervisor.
+        time_sync: Option<conversation::TimeSyncTrace>,
+        /// Non-running video archive worker and any pending segment.
+        video: video_worker::Worker,
+        /// Drained separate-source archive worker.
+        source: source_worker::Worker,
+        /// Caller-bound connection and generation claim.
+        key: SourceKey,
+        /// Caller-bound camera claim.
+        camera_claim: ContentDigest,
+        /// Whether the session had stopped admission.
+        halted: bool,
+        /// Reason and complete unchanged pipeline retirement.
+        refusal: retirement_source::Refusal,
+    },
+    /// Tail planning succeeded but the worker could not be joined to it.
+    TailDriver {
+        /// Outstanding controller protocol facts.
+        controller: super::Retirement,
+        /// A clock-reply attempt retained by the supervisor.
+        time_sync: Option<conversation::TimeSyncTrace>,
+        /// Non-running video archive worker and any pending segment.
+        video: video_worker::Worker,
+        /// Whether the session had stopped admission.
+        halted: bool,
+        /// The unchanged source worker, plan, and source claims.
+        parts: retirement_source::DriverParts,
+    },
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Parts<'scope, 'task, IO> {
+    /// Retire a quiescent session and prepare its held source for archival.
+    ///
+    /// This does not start publication, reconcile controller effects, infer a
+    /// capture time, or account for bytes not received from the socket. On
+    /// A pending video segment remains in the returned video worker; it is not
+    /// retried or published. On refusal all original owners remain available.
+    pub fn prepare_retirement(self) -> Result<Retired, RetirementRefusal<'scope, 'task, IO>> {
+        if self.video_armed
+            || self.source_armed
+            || !matches!(
+                self.video.status(),
+                video_worker::Status::Idle | video_worker::Status::Pending
+            )
+            || self.source.status() != source_worker::Status::Idle
+        {
+            return Err(RetirementRefusal::NotDrained(self));
+        }
+        let Parts {
+            supervisor,
+            video,
+            source,
+            key,
+            camera_claim,
+            halted,
+            ..
+        } = self;
+        let supervisor::Retirement {
+            controller,
+            media,
+            time_sync,
+        } = supervisor.retire();
+        let plan = match retirement_source::Plan::new(media) {
+            Ok(plan) => plan,
+            Err(refusal) => {
+                return Err(RetirementRefusal::TailPlan {
+                    controller,
+                    time_sync,
+                    video,
+                    source,
+                    key,
+                    camera_claim,
+                    halted,
+                    refusal,
+                });
+            }
+        };
+        let tail = match retirement_source::Driver::begin(source, plan, key, camera_claim) {
+            Ok(tail) => tail,
+            Err(parts) => {
+                return Err(RetirementRefusal::TailDriver {
+                    controller,
+                    time_sync,
+                    video,
+                    halted,
+                    parts,
+                });
+            }
+        };
+        Ok(Retired {
+            controller,
+            time_sync,
+            video,
+            tail,
+            halted,
+        })
+    }
 }
 
 /// Single session owner. At most one original record or segment is in flight.

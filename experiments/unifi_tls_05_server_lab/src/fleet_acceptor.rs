@@ -199,3 +199,27 @@ where
         }
     }
 }
+
+impl<
+    'fleet,
+    'report: 'fleet,
+    'scope: 'fleet,
+    'task: 'fleet,
+    'policy: 'fleet + 'scope,
+    A: PeerAdmission + 'fleet,
+> fss_reference::unifi_direct::discovery::pump::Driver<'scope, 'task>
+    for FleetAcceptor<'fleet, 'report, 'scope, 'task, 'policy, A>
+{
+    type Event = Event<'scope, 'task, 'policy>;
+
+    fn matches_scanner(
+        &self,
+        scanner: &fss_reference::unifi_direct::discovery::scan::Scanner<'_, '_, 'scope, 'task>,
+    ) -> bool {
+        self.router.matches_scanner(scanner) && scanner.matches_context(self.cx)
+    }
+
+    fn poll_driver(&mut self, context: &mut Context<'_>) -> Poll<Self::Event> {
+        self.poll_next(context)
+    }
+}

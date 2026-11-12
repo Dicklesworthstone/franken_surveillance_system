@@ -1181,6 +1181,17 @@ fn direct_trial_process_publishes_two_owned_segments() -> Test {
 }
 
 #[test]
+#[ignore = "requires disposable TLS certificate, managed video rollover, and decode fixture"]
+fn direct_trial_process_verifies_twelve_video_segments() -> Test {
+    for name in ["FSS_TEST_VIDEO_ONLY", "FSS_TEST_MANAGED_ARCHIVE", "FSS_TEST_MANAGED_ROLLOVER", "FSS_TEST_DECODE_OWNED", "FSS_TEST_LONG_VIDEO"] {
+        if std::env::var_os(name).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return Err("long managed video fixture options missing".into());
+        }
+    }
+    direct_trial_process_clip(false, false, false, false, 0, 12, false, false, false, false)
+}
+
+#[test]
 #[ignore = "requires disposable TLS certificate and key and managed rollover fixture"]
 fn direct_trial_process_managed_rollover() -> Test {
     direct_trial_process_clip(false, false, false, false, 0, 3, false, false, false, false)
@@ -1233,6 +1244,17 @@ fn direct_trial_process_video_still_export_during_capture() -> Test {
 fn direct_trial_process_video_still_export_preserves_existing_destination() -> Test {
     for name in ["FSS_TEST_VIDEO_ONLY", "FSS_TEST_MANAGED_ARCHIVE", "FSS_TEST_MANAGED_ROLLOVER", "FSS_TEST_STILL_READY_BEFORE_NEXT", "FSS_TEST_STILL_EXPORT", "FSS_TEST_STILL_EXPORT_EXISTS"] {
         if std::env::var_os(name).as_deref() != Some(std::ffi::OsStr::new("1")) {return Err("existing still export fixture options missing".into());}
+    }
+    if std::env::var_os("FSS_TEST_VIDEO_STILL").as_deref() != Some(std::ffi::OsStr::new("full")) {return Err("explicit still color missing".into());}
+    direct_trial_process_clip_for_channel(false, false, false, false, 0, 3, false, false, false, false,
+        Some(2), None, Some((160, 128)))
+}
+
+#[test]
+#[ignore = "requires disposable TLS fixtures and private still export options"]
+fn direct_trial_process_video_still_export_rejects_symlink_ancestor() -> Test {
+    for name in ["FSS_TEST_VIDEO_ONLY", "FSS_TEST_MANAGED_ARCHIVE", "FSS_TEST_MANAGED_ROLLOVER", "FSS_TEST_STILL_READY_BEFORE_NEXT", "FSS_TEST_STILL_EXPORT", "FSS_TEST_STILL_EXPORT_SYMLINK"] {
+        if std::env::var_os(name).as_deref() != Some(std::ffi::OsStr::new("1")) {return Err("symlink still export fixture options missing".into());}
     }
     if std::env::var_os("FSS_TEST_VIDEO_STILL").as_deref() != Some(std::ffi::OsStr::new("full")) {return Err("explicit still color missing".into());}
     direct_trial_process_clip_for_channel(false, false, false, false, 0, 3, false, false, false, false,
@@ -1464,6 +1486,18 @@ fn direct_trial_process_replays_high_resolution_video_only() -> Test {
 }
 
 #[test]
+#[ignore = "requires bounded private full-resolution camera-derived FLV and managed video rollover"]
+fn direct_trial_process_replays_high_resolution_camera_rollover() -> Test {
+    for name in ["FSS_TEST_VIDEO_ONLY", "FSS_TEST_MANAGED_ARCHIVE", "FSS_TEST_MANAGED_ROLLOVER", "FSS_TEST_INBAND_AVC"] {
+        if std::env::var_os(name).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return Err("high-resolution camera rollover options missing".into());
+        }
+    }
+    direct_trial_process_clip_for_channel(false, false, false, false, 0, 3, true, false, false, false,
+        Some(1), None, Some((2688, 1512)))
+}
+
+#[test]
 #[ignore = "requires private high-resolution camera-derived FLV and synthetic audio fixture"]
 fn direct_trial_process_replays_high_resolution_with_synthetic_audio() -> Test {
     for name in ["FSS_TEST_MANAGED_ARCHIVE", "FSS_TEST_INBAND_AVC", "FSS_TEST_SYNTH_AUDIO"] {
@@ -1662,6 +1696,7 @@ fn direct_trial_process_clip_for_channel(
     let ready_before_next=std::env::var_os("FSS_TEST_STILL_READY_BEFORE_NEXT").as_deref() == Some(std::ffi::OsStr::new("1"));
     let still_export=std::env::var_os("FSS_TEST_STILL_EXPORT").as_deref() == Some(std::ffi::OsStr::new("1"));
     let export_exists=std::env::var_os("FSS_TEST_STILL_EXPORT_EXISTS").as_deref() == Some(std::ffi::OsStr::new("1"));
+    let export_symlink=std::env::var_os("FSS_TEST_STILL_EXPORT_SYMLINK").as_deref() == Some(std::ffi::OsStr::new("1"));
     let private_still_output=std::env::var_os("FSS_TEST_PRIVATE_STILL_OUTPUT").map(PathBuf::from);
     let expect_exhaustion=std::env::var_os("FSS_TEST_EXPECT_RETAINED_EXHAUSTION").as_deref() == Some(std::ffi::OsStr::new("1"));
     let stop_retained=std::env::var_os("FSS_TEST_STOP_RETAINED_RESERVATION").as_deref() == Some(std::ffi::OsStr::new("1"));
@@ -1678,6 +1713,7 @@ fn direct_trial_process_clip_for_channel(
     if ready_before_next && (request_event || !video_only || !force_rollover || video_still.is_none() || camera_derived || synthetic_avc.is_some()) {return Err("live still fixture prerequisites missing".into());}
     if still_export && !ready_before_next {return Err("still export fixture prerequisites missing".into());}
     if export_exists && !still_export {return Err("existing export fixture prerequisites missing".into());}
+    if export_symlink && (!still_export || export_exists) {return Err("symlink export fixture prerequisites missing".into());}
     if private_still_output.is_some() && (!camera_derived || !video_only || video_still.is_none() || still_export) {return Err("private still export fixture prerequisites missing".into());}
     if decode_owned && !owned_archive { return Err("owned decode requires archive fixture".into()); }
     let supplied_wire=if camera_derived {
@@ -1694,7 +1730,13 @@ fn direct_trial_process_clip_for_channel(
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
     let temp = Temp(root);
-    let still_output=private_still_output.clone().unwrap_or_else(||temp.0.join("still.jpg"));
+    let still_output=if export_symlink {
+        let target=temp.0.join("target");
+        std::fs::DirBuilder::new().mode(0o700).create(&target)?;
+        std::fs::DirBuilder::new().mode(0o700).create(target.join("nested"))?;
+        std::os::unix::fs::symlink(&target,temp.0.join("redirect"))?;
+        temp.0.join("redirect/nested/still.jpg")
+    } else {private_still_output.clone().unwrap_or_else(||temp.0.join("still.jpg"))};
     if export_exists {std::fs::write(&still_output,b"unchanged fixture")?;}
     let bind = if with_setup {
         let addr: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
@@ -1759,7 +1801,7 @@ fn direct_trial_process_clip_for_channel(
         if stop_retained {command.arg("--lab-stop-after-retained-reservation");}
         if std::env::var_os("FSS_TEST_INBAND_AVC").as_deref() == Some(std::ffi::OsStr::new("1")) {command.arg("--lab-inband-avc");}
         if std::env::var_os("FSS_TEST_RENEW_PLAN").as_deref() == Some(std::ffi::OsStr::new("1")) {command.arg("--lab-renew-batch=1");}
-        if force_rollover {command.arg("--lab-av-history-records=5");}
+        if force_rollover {command.arg(if owned_segments > 8 {"--lab-av-history-records=9"} else {"--lab-av-history-records=5"});}
         if decode_owned {command.arg("--lab-decode-owned");}
         if let Some(color)=&video_still {command.arg(format!("--lab-video-still={color}"));}
         if still_export || private_still_output.is_some() {command.arg(format!("--lab-save-still={}",still_output.display()));}
@@ -2006,6 +2048,8 @@ fn direct_trial_process_clip_for_channel(
             || !stderr.contains("trial_owned_capture_stop reason=event reply required; enable the authorized reply option")
             || !report.contains("trial_stage=owned_segment_published count=1 kind=VideoOnly")
             || !report.lines().any(|line|line.starts_with("trial_owned_live_still=drained_after_stop source_returned=true ") && line.ends_with("outcome_known=true"))
+            || !report.contains("trial_owned_tail=archived ")
+            || !report.contains("trial_owned_controller_retirement=observed reconciliation_required=true remote_effects=unverified")
             || (event_after_ready && !report.lines().any(|line|line.starts_with("trial_owned_live_still=drained_after_stop ") && line.contains("completed_before_stop=true")))
             || report.contains("trial_owned_event_reply=written")
             || report.contains("trial_complete archive=published") {
@@ -2059,7 +2103,7 @@ fn direct_trial_process_clip_for_channel(
         }
     }
     media.set_write_timeout(Some(Duration::from_secs(15)))?;
-    if ready_before_next && !export_exists {
+    if ready_before_next && !export_exists && !export_symlink {
         // Keep the capture alive after the first segment until the still has
         // actually joined, then deliver the remaining complete FLV tags.
         let mut offset=13usize;
@@ -2076,7 +2120,7 @@ fn direct_trial_process_clip_for_channel(
     let writer=std::thread::spawn(move || media.write_all(&wire));
     // Camera-derived GOPs contain many more pictures than the synthetic fixture;
     // sequence readback and pure-Rust decode need a separate bounded allowance.
-    let deadline = Instant::now() + Duration::from_secs(if camera_derived && decode_owned && (owned_segments >= 5 || video_still.is_some()) {90} else {20});
+    let deadline = Instant::now() + Duration::from_secs(if camera_derived && decode_owned && (owned_segments >= 5 || video_still.is_some() || expected_dimensions == Some((2688, 1512))) {90} else {20});
     loop {
         if child
             .0
@@ -2095,10 +2139,19 @@ fn direct_trial_process_clip_for_channel(
     let output = child.0.take().ok_or("missing child")?.wait_with_output()?;
     match writer.join().map_err(|_|"fixture media writer panicked")? {
         Ok(())=>(),
-        Err(error) if (output.status.success() || stop_retained || expect_exhaustion || export_exists) && matches!(error.kind(),io::ErrorKind::BrokenPipe|io::ErrorKind::ConnectionReset)=>(),
+        Err(error) if (output.status.success() || stop_retained || expect_exhaustion || export_exists || export_symlink) && matches!(error.kind(),io::ErrorKind::BrokenPipe|io::ErrorKind::ConnectionReset)=>(),
         Err(error)=>return Err(error.into()),
     }
     let report = if let Some(reader)=stdout_reader {reader.join().map_err(|_|"stdout reader panicked")??} else {String::from_utf8(output.stdout)?};
+    if export_symlink {
+        let stderr=String::from_utf8(output.stderr)?;
+        if output.status.success() || !stderr.contains("trial_owned_still_export=not_published") || !stderr.contains("still export refused") || report.contains("trial_owned_still_export=published") || temp.0.join("target/nested/still.jpg").exists() {
+            return Err(format!("symlink ancestor was not refused: {stderr}").into());
+        }
+        if std::fs::read_dir(temp.0.join("target/nested"))?.next().is_some() {return Err("symlink target was modified".into());}
+        println!("owned_live_still_export=symlink_ancestor_refused");
+        return Ok(());
+    }
     if export_exists {
         let stderr=String::from_utf8(output.stderr)?;
         if output.status.success() || !stderr.contains("trial_owned_still_export=not_published") || !stderr.contains("still export refused") || report.contains("trial_owned_still_export=published") || std::fs::read(&still_output)? != b"unchanged fixture" {
@@ -2184,6 +2237,9 @@ fn direct_trial_process_clip_for_channel(
     {
         return Err(format!("incomplete report: {report}").into());
     }
+    if video_only && !report.contains("trial_owned_controller_retirement=observed reconciliation_required=false remote_effects=unverified") {
+        return Err("video controller retirement was not accounted for".into());
+    }
     if owned_archive {
         if video_only {
             let tail = report.lines().find(|line| line.starts_with("trial_owned_tail=archived ")).ok_or("native video-only tail archive missing")?;
@@ -2265,9 +2321,18 @@ fn direct_trial_process_clip_for_channel(
         let count=|name:&str| -> Result<usize,Box<dyn Error>> {Ok(readback.split_whitespace().find_map(|word|word.strip_prefix(name)).ok_or("missing readback count")?.parse()?)};
         let only_video = video_only || (owned_segments == 1 && (synthetic_avc.is_some_and(|bytes| bytes == &include_bytes!("fixtures/synthetic_g4_resolution.264")[..]) || (camera_derived && expected_dimensions.is_some() && !synthetic_audio)));
         if only_video && !report.contains("trial_stage=owned_segment_published count=1 kind=VideoOnly") {return Err("expected video-only first segment".into());}
+        if video_only && !report.lines().any(|line|line.starts_with("trial_owned_journal_readback confirmed=") && line.ends_with("scope=current_generation earlier_generations=not_enumerated")) {return Err("current video journal history readback missing".into());}
+        if video_only && force_rollover {
+            let lineage=report.lines().find(|line|line.starts_with("trial_owned_lineage_readback generations=") && line.ends_with("boundary_duplicates=excluded")).ok_or("video rollover lineage history readback missing")?;
+            let number=|key:&str| -> Result<usize,Box<dyn Error>> {Ok(lineage.split_whitespace().find_map(|field|field.strip_prefix(key)).ok_or("lineage count missing")?.parse()?)};
+            let (generations, confirmed)=(number("generations=")?,number("confirmed=")?);
+            if generations < 2 || confirmed != owned_segments || (auto_retained && generations < 3) {return Err("video rollover lineage counts invalid".into());}
+            println!("owned_video_lineage=passed generations={generations} confirmed={confirmed} duplicate_boundary=excluded");
+        }
         if count("segments=")?!=owned_segments || count("video_samples=")?==0 || (count("audio_frames=")?==0 && !only_video) {return Err("archive readback counts invalid".into());}
         if decode_owned {
             if owned_segments > 1 && !report.contains(&format!("trial_owned_sequence segments={owned_segments} capture_bounds=unknown")) {return Err("verified archive sequence missing".into());}
+            if owned_segments == 12 && !report.contains("trial_owned_sequence_windows count=2 max_fragments=8 overlap=1") {return Err("long archive sequence windows missing".into());}
             let decoded=report.lines().find(|line|line.starts_with("trial_owned_decoded ")).ok_or("owned video decode missing")?;
             let value=|name:&str| -> Result<usize,Box<dyn Error>> {Ok(decoded.split_whitespace().find_map(|word|word.strip_prefix(name)).ok_or("missing decoded field")?.parse()?)};
             let (width,height,frames)=(value("width=")?,value("height=")?,value("frames=")?);

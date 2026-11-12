@@ -159,6 +159,142 @@ fn packet() -> Vec<u8> {
 }
 
 #[test]
+fn discovery_and_routing_pump_retains_inflight_scan_across_events() -> TestResult {
+    use asupersync::time::timeout;
+    use fss_reference::unifi_direct::{
+        controller_listener,
+        discovery::{fleet::{Enrollment, Fleet, RouteError, Router, RouterEvent, State}, pump::{Event, Pump}, scan::{Outcome, Phase, Scanner}},
+        listener::Admission,
+        metered::MeteredClock,
+    };
+    use std::{future::{Future, poll_fn}, sync::{Arc, atomic::{AtomicBool, Ordering}}, task::Poll};
+
+    struct LocalAdmission;
+    impl Admission for LocalAdmission {
+        fn listener(&self, _: SocketAddrV4, _: Option<SocketAddrV4>) -> bool { true }
+        fn peer(&self, _: SocketAddrV4, _: SocketAddrV4) -> bool { true }
+    }
+
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
+    let query_seen = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&query_seen);
+    let responder = std::thread::spawn(move || -> std::io::Result<()> {
+        let mut query = [0u8; 32];
+        let (_, peer) = server.recv_from(&mut query)?;
+        server.send_to(&packet(), peer)?;
+        observed.store(true, Ordering::Release);
+        Ok(())
+    });
+    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:pump-discovery",
+        Duration::from_secs(2), 8)?;
+    let empty = Report { cameras: Vec::new(), datagrams: 0, malformed: 0,
+        out_of_scope: 0, stop: Stop::WindowElapsed };
+    let fleet = Fleet::from_report(empty.clone(), &[])?;
+    let other = Fleet::from_report(empty, &[])?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(&mut authority, &mut tree,
+            TaskSpec { task_id: TaskId::new("task:discovery-pump")?, started_at: TimestampNs(2) },
+            &cx, async |owner, cx| {
+                let start = cx.now().as_nanos();
+                let output: TestResult = async {
+                    let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
+                    let scanner = Scanner::new(cx, owner, clock, &fleet, config.clone(), Duration::from_secs(5))?;
+                    let admission = LocalAdmission;
+                    let listener = controller_listener::Listener::bind(owner, cx, clock, &admission,
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0), "fixture:pump-controller", Duration::from_secs(5)).await?;
+                    let mut wrong = Router::new(&other, &listener, 2, 4096, Duration::from_secs(5))?;
+                    assert!(matches!(Pump::new(&scanner, &mut wrong), Err(discovery::scan::Error::Configuration)));
+                    drop(wrong);
+                    let mut router = Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
+                    let mut pump = Pump::new(&scanner, &mut router)?;
+                    let mut next = Box::pin(pump.next());
+                    timeout(cx.now(), Duration::from_secs(5), poll_fn(|context| {
+                        match next.as_mut().poll(context) {
+                            Poll::Pending if scanner.phase() == Phase::Probing && query_seen.load(Ordering::Acquire) => Poll::Ready(()),
+                            Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
+                            Poll::Ready(_) => panic!("pump completed before the early connection"),
+                        }
+                    })).await.map_err(|_| "scan did not begin")?;
+                    drop(next);
+                    assert_eq!(scanner.phase(), Phase::Probing);
+                    pump.request_scan_stop();
+                    assert!(!pump.scan_drained());
+                    let client = asupersync::net::TcpStream::connect(listener.local_addr()).await?;
+                    match pump.next().await {
+                        Event::Route(RouterEvent::Refused { reason: RouteError::UnknownPeer, .. }) => (),
+                        _ => return Err("expected unrecognized local connection".into()),
+                    }
+                    assert_eq!(scanner.phase(), Phase::Probing);
+                    match pump.next().await {
+                        Event::Discovery(Ok(Outcome::Updated(snapshot))) => {
+                            assert_eq!(snapshot.report().cameras.len(), 1);
+                            assert_eq!(snapshot.unknown_claims(), &[0]);
+                            let enrollment = Enrollment::new(
+                                [0x10, 2, 3, 4, 5, 6],
+                                ContentDigest::sha256(b"live-pump camera"),
+                                ContentDigest::sha256(b"live-pump admission"),
+                                ContentDigest::sha256(b"live-pump certificate"),
+                                ContentDigest::sha256(b"live-pump credential"),
+                                1,
+                            )?;
+                            assert_eq!(fleet.add_enrollment(enrollment)?, 0);
+                            assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+                            assert!(fleet.latest_snapshot().unknown_claims().is_empty());
+                            assert_eq!(snapshot.unknown_claims(), &[0]);
+                        }
+                        _ => return Err("scan outcome lost after routing".into()),
+                    }
+                    assert!(pump.scan_drained());
+                    pump.resume_scanning()?;
+                    pump.request_scan_stop();
+                    assert!(pump.scan_drained());
+                    drop(pump);
+                    drop(client);
+                    assert_eq!(scanner.phase(), Phase::Idle);
+
+                    // A competing caller can still misuse the shared scanner.
+                    // The pump must surface Busy and stop instead of retrying.
+                    let scanner = Scanner::new(cx, owner, clock, &fleet, config, Duration::from_secs(5))?;
+                    let mut router = Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
+                    let mut pump = Pump::new(&scanner, &mut router)?;
+                    let mut competing = Box::pin(scanner.next());
+                    poll_fn(|context| match competing.as_mut().poll(context) {
+                        Poll::Pending if scanner.phase() == Phase::Probing => Poll::Ready(()),
+                        Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
+                        Poll::Ready(_) => panic!("competing scan unexpectedly completed"),
+                    }).await;
+                    assert!(matches!(pump.next().await, Event::Discovery(Err(discovery::scan::Error::Busy))));
+                    assert!(pump.scan_drained());
+                    assert!(matches!(pump.resume_scanning(), Err(discovery::scan::Error::Busy)));
+                    drop(competing);
+                    assert_eq!(scanner.phase(), Phase::Interrupted);
+                    assert!(matches!(pump.resume_scanning(), Err(discovery::scan::Error::Interrupted)));
+                    scanner.acknowledge_interruption()?;
+                    pump.resume_scanning()?;
+                    pump.request_scan_stop();
+                    assert!(pump.scan_drained());
+                    Ok(())
+                }.await;
+                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("discovery pump fixture failed".into()) };
+                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
+            }).await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    responder.join().map_err(|_| "discovery responder panicked")??;
+    run.output?;
+    run.receipt?;
+    Ok(())
+}
+
+#[test]
 fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestResult {
     use asupersync::time::{sleep, timeout};
     use fss_reference::unifi_direct::{
@@ -222,7 +358,8 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
         out_of_scope: 0,
         stop: Stop::WindowElapsed,
     };
-    let fleet = Fleet::from_report(initial, &[enrollment])?;
+    let fleet = Fleet::from_report(initial.clone(), &[])?;
+    let other_fleet = Fleet::from_report(initial, &[])?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
@@ -255,7 +392,7 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
                         Outcome::Updated(snapshot) => snapshot,
                         Outcome::Incomplete(_) => return Err("first scan incomplete".into()),
                     };
-                    assert_eq!(fleet.state(0), Some(State::NotObserved));
+                    assert_eq!(fleet.state(0), None);
                     assert!(first.report().cameras.is_empty());
                     assert_eq!(observed.load(Ordering::Acquire), 1);
                     let mut waiting = Box::pin(scanner.next());
@@ -269,12 +406,34 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
                     drop(waiting);
                     assert_eq!(scanner.phase(), Phase::Idle);
                     assert_eq!(observed.load(Ordering::Acquire), 1);
+                    let parked = scanner.park();
+                    let parked = match parked.resume(&other_fleet) {
+                        Err((ScanError::WrongFleet, parked)) => parked,
+                        _ => return Err("scanner accepted a different fleet".into()),
+                    };
+                    let scanner = parked.resume(&fleet).map_err(|_| "scanner resume refused")?;
+                    let mut resumed_wait = Box::pin(scanner.next());
+                    poll_fn(|context| {
+                        assert!(matches!(resumed_wait.as_mut().poll(context), Poll::Pending));
+                        Poll::Ready(())
+                    }).await;
+                    assert_eq!(scanner.phase(), Phase::Waiting);
+                    assert_eq!(observed.load(Ordering::Acquire), 1);
+                    drop(resumed_wait);
                     let second = match scanner.next().await? {
                         Outcome::Updated(snapshot) => snapshot,
                         Outcome::Incomplete(_) => return Err("second scan incomplete".into()),
                     };
-                    assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+                    assert_eq!(fleet.state(0), None);
                     assert_eq!(second.report().cameras[0].mac(), Some(enrollment.mac()));
+                    assert_eq!(second.unknown_claims(), &[0]);
+                    let parked = scanner.park();
+                    let index = fleet.add_enrollment(enrollment)?;
+                    assert_eq!(index, 0);
+                    assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+                    assert!(fleet.latest_snapshot().unknown_claims().is_empty());
+                    assert_eq!(second.unknown_claims(), &[0]);
+                    let scanner = parked.resume(&fleet).map_err(|_| "enrolled scanner resume refused")?;
                     assert!(first.report().cameras.is_empty());
                     sleep(cx.now(), Duration::from_millis(1100)).await;
                     let mut pending = Box::pin(scanner.next());
@@ -298,6 +457,8 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
                     .await
                     .map_err(|_| "third query not observed")?;
                     drop(pending);
+                    assert_eq!(scanner.phase(), Phase::Interrupted);
+                    let scanner = scanner.park().resume(&fleet).map_err(|_| "interrupted scanner resume refused")?;
                     assert_eq!(scanner.phase(), Phase::Interrupted);
                     assert!(matches!(scanner.next().await, Err(ScanError::Interrupted)));
                     scanner.acknowledge_interruption()?;

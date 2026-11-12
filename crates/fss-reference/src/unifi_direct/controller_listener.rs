@@ -312,6 +312,10 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
         self.cx
     }
 
+    pub(crate) fn matches_clock(&self, clock: &MeteredClock<'_, '_>) -> bool {
+        self.clock.same_mapping(clock)
+    }
+
     /// Recheck task and camera policy before holding an early socket.
     pub(crate) fn can_hold(&self, gate: &AdmissionGate<'_>, resource: &str) -> bool {
         Rc::ptr_eq(&self.identity, &gate.state.listener_identity)

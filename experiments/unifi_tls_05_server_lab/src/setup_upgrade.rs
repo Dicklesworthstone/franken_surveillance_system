@@ -12,7 +12,7 @@ use asupersync::{
     time::timeout_at,
 };
 use fss_reference::unifi_direct::{
-    Controller, camera_http, controller_listener, handoff, listener,
+    Controller, camera_http, controller_listener, controller_upgrade, handoff, listener,
     metered::MeteredIo,
     owner::{self, PeerAdmission},
     receive, setup,
@@ -78,17 +78,6 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-struct RouteAdmission<'a, A> {
-    mac: [u8; 6],
-    independent: &'a A,
-}
-
-impl<A: PeerAdmission> PeerAdmission for RouteAdmission<'_, A> {
-    fn permits(&self, claimed_mac: [u8; 6]) -> bool {
-        claimed_mac == self.mac && self.independent.permits(claimed_mac)
-    }
-}
-
 /// Upgrade one previously routed fleet connection through laboratory TLS.
 ///
 /// The connection owns its active slot through TLS and the returned session;
@@ -119,35 +108,24 @@ where
         return Err(Error::Configuration);
     }
     let connection = ServerConnection::new(tls_config).map_err(|_| Error::TlsConfiguration)?;
-    let gate = route.gate();
-    let clock = route.clock();
-    let resource = route.resource().to_owned();
-    let claimed = route.claimed_mac();
-    let deadline = cx.now() + wait;
-    let tls = timeout_at(deadline, Server::new(connection, route).handshake(cx))
-        .await
-        .map_err(|_| Error::Deadline)?
-        .map_err(|error| Error::Tls(error.kind()))?;
-    let plaintext = MeteredIo::with_clock(gate.wrap(tls), clock, &resource, max_poll)
-        .map_err(|error| Error::Meter(error.kind()))?;
-    let remaining = Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
-    if remaining.is_zero() {
-        return Err(Error::Deadline);
-    }
-    let restricted = RouteAdmission {
-        mac: claimed,
-        independent: admission,
-    };
-    owner::accept_guarded(
-        plaintext,
+    controller_upgrade::upgrade_routed(
+        cx,
+        route,
+        |route| Server::new(connection, route).handshake(cx),
         protocol_policy,
-        &restricted,
-        gate,
+        admission,
         controller,
-        remaining,
+        max_poll,
+        wait,
     )
     .await
-    .map_err(Error::Upgrade)
+    .map_err(|error| match error {
+        controller_upgrade::Error::Configuration => Error::Configuration,
+        controller_upgrade::Error::Deadline => Error::Deadline,
+        controller_upgrade::Error::Transport(kind) => Error::Tls(kind),
+        controller_upgrade::Error::Meter(kind) => Error::Meter(kind),
+        controller_upgrade::Error::Upgrade(error) => Error::Upgrade(error),
+    })
 }
 
 /// Perform one admitted setup and use its accepted socket for TLS and upgrade.

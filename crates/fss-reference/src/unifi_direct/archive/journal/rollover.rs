@@ -12,6 +12,7 @@ use fss_publication::{RootLedgerOutcome, RootLedgerReceipt};
 use fss_runtime::effect_journal::{
     EffectJournalPin, EffectJournalStore, EffectPersistenceError, PinRetainedEffectJournal,
 };
+use std::rc::Rc;
 
 use super::{Error, UnknownTimeAnchorKeeper, UnknownTimeJournal, checkpoint, valid_digest};
 use crate::{
@@ -128,6 +129,128 @@ struct WorkerTransition {
     switch_head: EffectJournalPin,
 }
 
+/// A read-only view of a verified, settled in-memory journal lineage.
+/// Retaining this view holds both the lineage and current journal borrowed.
+pub struct History<'a> {
+    custody: &'a WorkerCustody,
+    current: &'a UnknownTimeJournal,
+    identity: Rc<()>,
+}
+
+/// Position bound to the exact history view that produced it.
+#[derive(Clone, Debug)]
+pub struct HistoryCursor {
+    identity: Rc<()>,
+    generation: usize,
+    after: u64,
+}
+
+/// One bounded page; entries are ordered from the oldest generation forward.
+pub struct HistoryPage {
+    /// Confirmed roots, with each rollover's repeated seed excluded.
+    pub entries: Vec<HistoryEntry>,
+    /// Resume position; a final continuation may produce an empty page.
+    pub next: Option<HistoryCursor>,
+}
+
+/// One confirmation with its position in this particular lineage view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryEntry {
+    /// Zero-based generation, oldest first; not a durable generation ID.
+    pub generation: usize,
+    /// One-based confirmation sequence within that journal generation.
+    pub sequence: u64,
+    /// Confirmed root and retention claim, not a media-read grant.
+    pub pin: UnknownTimePin,
+}
+
+impl History<'_> {
+    /// Count the verified journal generations in this view.
+    pub fn generation_count(&self) -> usize {
+        self.custody.transitions.len() + 1
+    }
+
+    fn journal(&self, generation: usize) -> Option<&UnknownTimeJournal> {
+        if generation == self.custody.transitions.len() {
+            Some(self.current)
+        } else {
+            self.custody
+                .transitions
+                .get(generation)
+                .map(|transition| &transition.previous.journal)
+        }
+    }
+
+    /// Read at most 128 roots. A cursor from another view is refused. The
+    /// result identifies journaled roots, not media availability or time.
+    pub fn page(
+        &self,
+        cursor: Option<&HistoryCursor>,
+        limit: usize,
+        cx: &ReplayCx,
+    ) -> Result<HistoryPage, Error> {
+        checkpoint(cx)?;
+        if limit == 0 || limit > 128 {
+            return Err(Error::Invalid);
+        }
+        let (mut generation, mut after) = match cursor {
+            None => (0, 0),
+            Some(cursor) if Rc::ptr_eq(&self.identity, &cursor.identity) => {
+                (cursor.generation, cursor.after)
+            }
+            Some(_) => return Err(Error::Invalid),
+        };
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(limit)
+            .map_err(|_| Error::Invalid)?;
+        loop {
+            let journal = self.journal(generation).ok_or(Error::Invalid)?;
+            let page =
+                journal.confirmed_page(journal.anchor(), after, limit - entries.len(), cx)?;
+            if page.pending.is_some() {
+                return Err(Error::Invalid);
+            }
+            after = page.next_after;
+            entries.extend(page.entries.into_iter().map(|entry| HistoryEntry {
+                generation,
+                sequence: entry.sequence,
+                pin: entry.pin,
+            }));
+            if page.has_more {
+                return Ok(HistoryPage {
+                    entries,
+                    next: Some(HistoryCursor {
+                        identity: Rc::clone(&self.identity),
+                        generation,
+                        after,
+                    }),
+                });
+            }
+            generation += 1;
+            if generation == self.generation_count() {
+                return Ok(HistoryPage {
+                    entries,
+                    next: None,
+                });
+            }
+            // The first confirmation in every successor is the verified
+            // boundary replay, not an additional captured segment.
+            after = 3;
+            if entries.len() == limit {
+                return Ok(HistoryPage {
+                    entries,
+                    next: Some(HistoryCursor {
+                        identity: Rc::clone(&self.identity),
+                        generation,
+                        after,
+                    }),
+                });
+            }
+        }
+    }
+}
+
 impl WorkerCustody {
     /// Identity of the newest transition; this is not camera authentication.
     pub fn binding(&self) -> Binding {
@@ -140,6 +263,45 @@ impl WorkerCustody {
     /// Number of retained transitions, without implying restart recovery.
     pub fn transition_count(&self) -> usize {
         self.transitions.len()
+    }
+
+    /// Verify the complete retained switch chain and bind a read-only view to
+    /// the currently settled successor. This blocks mutable access until the
+    /// view is dropped, does not reopen files, and verifies no media bytes.
+    pub fn history<'a>(
+        &'a mut self,
+        current: &'a UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+        cx: &ReplayCx,
+    ) -> Result<History<'a>, Error> {
+        self.check(current, keeper, cx)?;
+        for (index, transition) in self.transitions.iter().enumerate() {
+            checkpoint(cx)?;
+            if transition.previous.journal.scope() != transition.binding.scope
+                || transition.previous.journal.confirmed() != Some(transition.binding.confirmed)
+            {
+                return Err(Error::Invalid);
+            }
+            let successor = if let Some(next) = self.transitions.get(index + 1) {
+                &next.previous.journal
+            } else {
+                current
+            };
+            let seed = successor.confirmed_page(transition.binding.new_journal, 0, 1, cx)?;
+            if seed.entries.len() != 1
+                || seed.entries[0].sequence != 3
+                || seed.entries[0].pin != transition.binding.confirmed
+                || seed.has_more
+                || seed.pending.is_some()
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        Ok(History {
+            custody: self,
+            current,
+            identity: Rc::new(()),
+        })
     }
 
     pub(crate) fn reserve_next(&mut self) -> bool {

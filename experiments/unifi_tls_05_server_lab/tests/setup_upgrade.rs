@@ -18,10 +18,11 @@ use fss_object::{
 use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
 use fss_reference::unifi_direct::{
     AudioCodec, Controller, Identity, VideoChannel, VideoCodec, camera_api, camera_http,
-    controller_listener, conversation, discovery, handoff, intent, listener, management,
+    controller_listener, controller_upgrade, conversation, discovery, handoff, intent, listener, management,
     metered::{MeteredClock, MeteredIo},
     owner::PeerAdmission,
-    pipeline, recording, setup,
+    archive, evidence, pipeline, recording, recording_storage, retirement_source, setup, source_worker, supervisor,
+    video_bootstrap, video_session, video_worker,
     upgrade::ProtocolPolicy,
 };
 use fss_runtime::{
@@ -385,6 +386,10 @@ fn media_fixture() -> TestMedia {
 }
 
 fn media_fixture_from(source: &[u8], cycle: usize) -> TestMedia {
+    media_fixture_from_frames(source, cycle, 7)
+}
+
+fn media_fixture_from_frames(source: &[u8], cycle: usize, frames: usize) -> TestMedia {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(source).collect();
     let sps = nals
         .iter()
@@ -411,7 +416,7 @@ fn media_fixture_from(source: &[u8], cycle: usize) -> TestMedia {
     config.extend_from_slice(pps);
     let mut wire = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
     wire.extend(flv_tag(0, &config));
-    for index in 0..7 {
+    for index in 0..frames {
         let nal = pictures[index % cycle];
         let mut payload = vec![0x17, 1, 0, 0, 0];
         payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
@@ -903,8 +908,10 @@ fn previous_readback_upgrades_or_retains_effect_after_tls_failure() -> Test {
 /// Checks that a fleet route remains the owner of its socket through TLS and
 /// that an untrusted WebSocket MAC cannot select a different inventory entry.
 fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bool) -> Test {
-    use fss_reference::unifi_direct::discovery::fleet::{
-        Enrollment, Fleet, RouteError, Router, RouterEvent,
+    use fss_reference::unifi_direct::discovery::{
+        fleet::{Enrollment, Fleet, RouteError, Router, RouterEvent},
+        pump::{Event as PumpEvent, Progress, Pump},
+        scan::{Outcome as ScanOutcome, Phase as ScanPhase, Scanner},
     };
     use std::{
         cell::Cell,
@@ -952,6 +959,33 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
             true
         }
     }
+    struct FixtureAccess(ContentDigest);
+    impl archive::RetainAuthority for FixtureAccess {
+        fn permits(&self, retention: ContentDigest, _: ContentDigest) -> bool { retention == self.0 }
+    }
+    impl archive::ReadAuthority for FixtureAccess {
+        fn permits(&self, retention: ContentDigest, _: ContentDigest) -> bool { retention == self.0 }
+    }
+    struct DeniedRead;
+    impl archive::ReadAuthority for DeniedRead {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { false }
+    }
+    fn source_confirmed(completion: source_worker::Completion) -> Test {
+        if completion.runtime.is_err() { return Err("source publication runtime failed".into()); }
+        match completion.outcome {
+            source_worker::Outcome::Publication(source_worker::Publication::Published { .. }) => Ok(()),
+            _ => Err("source publication requires reconciliation".into()),
+        }
+    }
+    fn control_event(step: supervisor::Step) -> Result<bool, Box<dyn Error>> {
+        match step {
+            supervisor::Step::Idle | supervisor::Step::Observation(_)
+            | supervisor::Step::Media(pipeline::Step::Progress { .. })
+            | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)) => Ok(false),
+            supervisor::Step::Media(pipeline::Step::Eof) => Ok(true),
+            other => Err(format!("media supervisor stopped: {other:?}").into()),
+        }
+    }
     let provider = Arc::new(rustls_pure::provider());
     let server = Arc::new(
         ServerConfig::builder_with_provider(provider.clone())
@@ -984,7 +1018,8 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
     let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 2_000_000;
-    budget.bytes = 2_000_000;
+    budget.bytes = 128 * 1024 * 1024;
+    budget.storage_operations = 10_000;
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:fleet-upgrade".into(),
@@ -999,6 +1034,8 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                 RuntimeGrant::CameraSettingPrepare,
                 RuntimeGrant::CameraSettingCommit,
                 RuntimeGrant::ReadMedia,
+                RuntimeGrant::ObjectStage,
+                RuntimeGrant::ObjectPublish,
             ]
             .iter()
             .map(|v| v.as_str().into())
@@ -1030,8 +1067,9 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
     let hello = OperationId::parse("operation:fleet-upgrade-hello")?;
     let agreement = OperationId::parse("operation:fleet-upgrade-agreement")?;
     let stream = OperationId::parse("operation:fleet-upgrade-stream")?;
-    let wire = media_fixture_from(include_bytes!("fixtures/synthetic_g4_resolution.264"), 4)?;
-    let runtime = RuntimeBuilder::current_thread().build()?;
+    let wire = media_fixture_from_frames(include_bytes!("fixtures/synthetic_g4_resolution.264"), 4, 13)?;
+    let expected_wire = wire.clone();
+    let runtime = RuntimeBuilder::current_thread().blocking_threads(2, 2).build()?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("runtime context")?;
         let run = run_owned_async(
@@ -1148,6 +1186,9 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                     }).await;
                     let tls_client = client.clone();
                     let (release_tls, await_tls) = std::sync::mpsc::sync_channel::<()>(1);
+                    let (release_scan, await_scan) = std::sync::mpsc::sync_channel::<()>(1);
+                    let (release_media, await_media) = std::sync::mpsc::sync_channel::<()>(1);
+                    let (release_controller, await_retire) = std::sync::mpsc::sync_channel::<()>(1);
                     let controller_peer =
                         Joined(Some(std::thread::spawn(move || -> io::Result<()> {
                             let socket =
@@ -1217,6 +1258,8 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                                 }
                                 let agreement = receive_binary(&mut tls)?;
                                 let agreement_id = message_id(std::str::from_utf8(&agreement).map_err(io::Error::other)?)?;
+                                await_scan.recv_timeout(Duration::from_secs(8))
+                                    .map_err(|_| io::Error::other("periodic scan did not finish during startup"))?;
                                 let reply = format!(r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":{agreement_id}}}"#);
                                 tls.write_all(&frame(reply.as_bytes()))?;
                                 tls.flush()?;
@@ -1241,7 +1284,12 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                                 media.bind(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).into())?;
                                 media.connect_timeout(&destination.into(), Duration::from_secs(5))?;
                                 let mut media: std::net::TcpStream = media.into();
+                                await_media.recv_timeout(Duration::from_secs(8))
+                                    .map_err(|_| io::Error::other("periodic scan did not finish during media supervision"))?;
                                 media.write_all(&wire)?;
+                                drop(media);
+                                await_retire.recv_timeout(Duration::from_secs(30))
+                                    .map_err(|_| io::Error::other("media supervisor did not retire"))?;
                             }
                             Ok(())
                         })));
@@ -1262,10 +1310,11 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                     assert!(fleet.route_ready(0));
                     drop(http);
                     camera_peer.finish()?;
-                    use unifi_tls_05_server_lab::fleet_acceptor::{Event, FleetAcceptor};
+                    use fss_reference::unifi_direct::controller_acceptor::{Acceptor as FleetAcceptor, Event};
+                    use unifi_tls_05_server_lab::fleet_transport::LabTls;
                     let admission = Permissive;
                     let mut acceptor = FleetAcceptor::new(
-                        router, cx, &admission, server.clone(),
+                        router, cx, &admission, LabTls(server.clone()),
                         Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
                         Default::default(), ProtocolPolicy::RequireOffer, 4096,
                         Duration::from_secs(10), 2,
@@ -1297,7 +1346,7 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                     if wrong_mac {
                         assert!(matches!(
                             outcome,
-                            Event::HandshakeFailed { index: 0, reason: setup_upgrade::Error::Upgrade(
+                            Event::HandshakeFailed { index: 0, reason: controller_upgrade::Error::Upgrade(
                                 fss_reference::unifi_direct::owner::Error::PeerDenied
                             ) }
                         ));
@@ -1345,38 +1394,351 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                             SourceKey { connection: 1, generation: 1 }, recording::Limits::default(),
                         )?;
                         let mut start_trace = listener::StartTrace::default();
-                        let started = listener::start_tracked(
+                        let periodic = std::net::UdpSocket::bind(target)?;
+                        periodic.set_read_timeout(Some(Duration::from_secs(8)))?;
+                        let periodic_sender = Joined(Some(std::thread::spawn(move || -> io::Result<()> {
+                            for _ in 0..2 {
+                                let mut input = [0u8; 64];
+                                let (_, source) = periodic.recv_from(&mut input)?;
+                                periodic.send_to(&discovery_packet(Ipv4Addr::LOCALHOST), source)?;
+                            }
+                            Ok(())
+                        })));
+                        let scanner = Scanner::new(cx, task, clock, &fleet, cfg.clone(), Duration::from_millis(50))?;
+                        let mut pump = Pump::new(&scanner, &mut acceptor)?;
+                        let startup_began = std::time::Instant::now();
+                        let mut start = Box::pin(listener::start_tracked(
                             &mut conversation, &mut session, &request, framer, recorder, &mut start_trace,
-                        ).await?;
-                        let mut pipeline = started.pipeline;
-                        let mut decoded_frames = 0;
-                        loop {
-                            match pipeline.step(task, cx, clock.now()?).await? {
-                                pipeline::Step::Recording(recording::Push::Segment(segment)) => {
-                                    if decoded_frames > 0 {
-                                        continue;
+                        ));
+                        let mut previous_poll = None;
+                        let mut longest_poll_gap = Duration::ZERO;
+                        let mut longest_poll = Duration::ZERO;
+                        let mut startup_work = Box::pin(poll_fn(|context| {
+                            let now = std::time::Instant::now();
+                            if let Some(previous) = previous_poll {
+                                longest_poll_gap = longest_poll_gap.max(now.duration_since(previous));
+                            }
+                            let result = start.as_mut().poll(context);
+                            let finished = std::time::Instant::now();
+                            longest_poll = longest_poll.max(finished.duration_since(now));
+                            previous_poll = Some(finished);
+                            result
+                        }));
+                        let mut interrupted_wait = Box::pin(pump.next_with(startup_work.as_mut()));
+                        poll_fn(|context| match interrupted_wait.as_mut().poll(context) {
+                            Poll::Pending if scanner.phase() == ScanPhase::Probing => Poll::Ready(()),
+                            Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
+                            Poll::Ready(_) => panic!("startup or scan finished before cancellation check"),
+                        }).await;
+                        drop(interrupted_wait);
+                        assert_eq!(scanner.phase(), ScanPhase::Probing);
+                        let mut scanned = false;
+                        let started = loop {
+                            match pump.next_with(startup_work.as_mut()).await {
+                                Progress::Event(PumpEvent::Discovery(Ok(ScanOutcome::Updated(snapshot)))) => {
+                                    eprintln!("fleet fixture startup discovery after {:?}", startup_began.elapsed());
+                                    if scanned || snapshot.report().cameras.len() != 1 {
+                                        return Err("unexpected periodic startup discovery".into());
                                     }
-                                    let initialization = pipeline.initialization().ok_or("missing media initialization")?;
-                                    let mut movie = initialization.bytes().to_vec();
-                                    movie.extend_from_slice(segment.fragment().bytes());
-                                    let demux = AvcMp4::parse(&movie, None, DemuxLimits::default())?;
-                                    let annex = demux.annex_b(0, 1)?;
-                                    let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
-                                    let mut frames = decoder.decode_annex_b(annex.bytes())?;
-                                    frames.extend(decoder.finish()?);
-                                    for frame in frames {
-                                        assert_eq!((frame.width(), frame.height()), (2688, 1512));
-                                        decoded_frames += 1;
+                                    scanned = true;
+                                    pump.request_scan_stop();
+                                    release_scan.send(()).map_err(|_| "startup controller stopped")?;
+                                }
+                                Progress::Work(result) if scanned => break result,
+                                _ => return Err("startup or periodic discovery stopped unexpectedly".into()),
+                            }
+                        };
+                        drop(startup_work);
+                        drop(start);
+                        let started = started.map_err(|error| format!("fleet startup failed after {:?} (longest poll gap {:?}, longest poll {:?}): {error:?}; trace: {start_trace:?}", startup_began.elapsed(), longest_poll_gap, longest_poll))?;
+                        eprintln!("fleet fixture startup timing elapsed={:?} poll_gap={longest_poll_gap:?} poll={longest_poll:?}", startup_began.elapsed());
+                        assert!(pump.scan_drained());
+                        pump.resume_scanning()?;
+                        let supervisor = supervisor::Supervisor::new(session, started.pipeline, management);
+                        let retention = ContentDigest::sha256(b"fixture fleet video retention");
+                        let source = SourceKey { connection: 1, generation: 1 };
+                        let access = Arc::new(FixtureAccess(retention));
+                        let replay_authority = fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
+                            trace_id: "trace:fleet-video-replay".into(),
+                            operation_id: OperationId::parse("operation:fleet-video-replay")?,
+                            principal: "principal:fixture".into(), capabilities: vec!["ADP-REPLAY-001".into()],
+                            deadline: None, priority: 1, budgets: budget,
+                            privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
+                            anchor_universe: ContentDigest::sha256(b"fleet video replay"), generation: 1,
+                        })?;
+                        let source_replay = fss_reference::ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                        let video_replay = fss_reference::ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                        let storage_root = temp.0.join("owned-storage");
+                        let created = recording_storage::create(task, cx, clock, recording_storage::Configuration {
+                            root: &storage_root, site_lineage: "site:fleet-video", source,
+                            camera_claim: camera, source_retention: retention,
+                            source_scope: ContentDigest::sha256(b"fixture source scope"),
+                            av_scope: ContentDigest::sha256(b"fixture video scope"),
+                            source_deployment_limits: fss_reference::DeploymentLimits::standard(),
+                            av_deployment_limits: fss_reference::DeploymentLimits::standard(),
+                            source_history_limits: EffectJournalLimits::default(),
+                            av_history_limits: EffectJournalLimits::default(),
+                            limits: archive::Limits::default(), max_source_bytes: 1024 * 1024,
+                            work_limit: 4_000_000_000,
+                        }, source_replay, video_replay, access.clone())?;
+                        let mut bootstrap = video_bootstrap::Bootstrap::begin(
+                            supervisor, created.coordinator.into_worker(), created.av, source, camera,
+                            video_bootstrap::Policy { inband: false, retention,
+                                media_limits: fss_container::Mp4Limits::default(),
+                                evidence_limits: evidence::Limits::default() },
+                        ).map_err(|_| "video bootstrap refused")?;
+                        let admission = fss_reference::unifi_direct::source_coordinator::ArchiveAdmission {
+                            resource: &resource, cost: &BudgetVector::ZERO,
+                        };
+                        let mut media_scan = false;
+                        let mut step_number = 0usize;
+                        let mut source_count = 0usize;
+                        let mut pins = Vec::new();
+                        pins.try_reserve_exact(16)?;
+                        loop {
+                            if step_number >= 512 { return Err("media bootstrap fixture step limit reached".into()); }
+                            let operation = OperationId::parse(format!("operation:fleet-media-step-{step_number}"))?;
+                            step_number += 1;
+                            let mut work = Box::pin(bootstrap.step(&mut conversation, &operation,
+                                Duration::from_millis(100), task, cx, clock, admission));
+                            let step = loop {
+                                match pump.next_with(work.as_mut()).await {
+                                    Progress::Event(PumpEvent::Discovery(Ok(ScanOutcome::Updated(snapshot)))) if !media_scan => {
+                                        if snapshot.report().cameras.len() != 1 { return Err("media discovery claim missing".into()); }
+                                        media_scan = true;
+                                        pump.request_scan_stop();
+                                        release_media.send(()).map_err(|_| "media producer stopped")?;
+                                    }
+                                    Progress::Event(PumpEvent::Route(Event::RouteRefused {
+                                        reason: RouteError::Listener(listener::Error::Deadline), ..
+                                    })) => (),
+                                    Progress::Work(step) => break step,
+                                    _ => return Err("media supervision or discovery stopped unexpectedly".into()),
+                                }
+                            };
+                            drop(work);
+                            match step {
+                                video_bootstrap::Step::SourceOffered(_) | video_bootstrap::Step::Configured
+                                | video_bootstrap::Step::SourceStarted => (),
+                                video_bootstrap::Step::SourceArchive { control, completion } => {
+                                    if let Some(control) = control { if control_event(control)? { return Err("media ended during bootstrap".into()); } }
+                                    if let Some(completion) = completion { source_confirmed(completion)?; source_count += 1; }
+                                }
+                                video_bootstrap::Step::Supervisor(control) => {
+                                    if control_event(control)? { return Err("media ended during bootstrap".into()); }
+                                }
+                                video_bootstrap::Step::Ready => break,
+                                _ => return Err("video bootstrap requires reconciliation".into()),
+                            }
+                        }
+                        let mut recording = bootstrap.into_session().map_err(|_| "video session handoff refused")?;
+                        loop {
+                            if step_number >= 512 { return Err("media session fixture step limit reached".into()); }
+                            let operation = OperationId::parse(format!("operation:fleet-media-step-{step_number}"))?;
+                            step_number += 1;
+                            // A different camera's stalled operation must not
+                            // prevent the live media owner from progressing.
+                            let mut work = discovery::pump::CameraWorkSet::new(2)
+                                .map_err(|_| "camera work capacity refused")?;
+                            work.insert(1, Box::pin(std::future::pending::<video_session::Step>()))
+                                .map_err(|_| "stalled camera work refused")?;
+                            work.insert(0, Box::pin(recording.step(&mut conversation, &operation,
+                                Duration::from_millis(100), task, cx, clock, admission, admission)))
+                                .map_err(|_| "recording work refused")?;
+                            let mut next_work = Box::pin(work.next());
+                            let step = loop {
+                                match pump.next_with(next_work.as_mut()).await {
+                                    Progress::Event(PumpEvent::Route(Event::RouteRefused {
+                                        reason: RouteError::Listener(listener::Error::Deadline), ..
+                                    })) => (),
+                                    Progress::Work((0, step)) => break step,
+                                    _ => return Err("unexpected event during video recording".into()),
+                                }
+                            };
+                            drop(next_work);
+                            let pending = work.into_pending();
+                            if pending.len() != 1 || pending[0].0 != 1 {
+                                return Err("stalled camera work was not retained".into());
+                            }
+                            drop(pending);
+                            match step {
+                                video_session::Step::SourceOffered(_) | video_session::Step::VideoOffered
+                                | video_session::Step::SourceStarted | video_session::Step::VideoStarted => (),
+                                video_session::Step::SourceArchive { control, completion } => {
+                                    if let Some(control) = control { if control_event(control)? { return Err("media ended during source publication".into()); } }
+                                    if let Some(completion) = completion { source_confirmed(completion)?; source_count += 1; }
+                                }
+                                video_session::Step::VideoArchive { control, completion } => {
+                                    if let Some(control) = control { if control_event(control)? { return Err("media ended during video publication".into()); } }
+                                    if let Some(completion) = completion {
+                                        if completion.runtime.is_err() { return Err("video publication runtime failed".into()); }
+                                        let published = match completion.outcome {
+                                            video_worker::Outcome::Publication(video_worker::Publication::Published(value)) => value,
+                                            _ => return Err("video publication requires reconciliation".into()),
+                                        };
+                                        if pins.len() == 16 || pins.contains(&published.pin) { return Err("invalid bounded video history".into()); }
+                                        pins.push(published.pin);
                                     }
                                 }
-                                pipeline::Step::Recording(_) | pipeline::Step::Progress { .. } => (),
-                                pipeline::Step::Eof => break,
-                                pipeline::Step::LimitReached => return Err("media limit reached".into()),
+                                video_session::Step::Supervisor(control) => if control_event(control)? { break; },
+                                _ => return Err("video recording requires reconciliation".into()),
+                            }
+                        }
+                        if pins.len() < 2 || source_count == 0 { return Err("multiple video and source publications required".into()); }
+                        let mut parts = recording.into_parts().map_err(|_| "video session not drained")?;
+                        parts.source_armed = true;
+                        let mut parts = match parts.prepare_retirement() {
+                            Err(video_session::RetirementRefusal::NotDrained(parts)) => parts,
+                            _ => return Err("armed source did not preserve session owners".into()),
+                        };
+                        if !parts.source_armed || parts.key != source || parts.camera_claim != camera {
+                            return Err("retirement refusal changed session ownership".into());
+                        }
+                        parts.source_armed = false;
+                        release_controller.send(()).map_err(|_| "controller fixture stopped")?;
+                        let retirement = parts.prepare_retirement().map_err(|_| "session retirement refused")?;
+                        if retirement.time_sync.is_some() || retirement.controller.prepared.is_some()
+                            || retirement.controller.agreement_id.is_some() || retirement.controller.hello_request_id.is_some()
+                            || retirement.controller.time_sync_request_id.is_some() || retirement.controller.stream_request.is_some()
+                            || retirement.controller.motion_request.is_some() || retirement.controller.event_reply.is_some()
+                            || retirement.controller.rejected_message.is_some() {
+                            return Err("controller retirement requires reconciliation".into());
+                        }
+                        let tail = retirement.tail.plan();
+                        let tail_count = tail.len();
+                        let tail_start = tail.start.ok_or("expected an unfinished video tail")?;
+                        if tail.end != Some(tail.received)
+                            || tail.received != u64::try_from(expected_wire.len())?
+                            || tail.recorder_fenced || tail.pending_audio.is_some() {
+                            return Err("invalid source retirement facts".into());
+                        }
+                        let mut tail_driver = retirement.tail;
+                        let mut tail_offered = 0usize;
+                        let mut tail_completed = 0usize;
+                        let mut tail_outstanding = false;
+                        let mut tail_records = Vec::new();
+                        loop {
+                            if step_number >= 512 { return Err("tail fixture step limit reached".into()); }
+                            step_number += 1;
+                            let mut work = Box::pin(tail_driver.step(task, cx, clock, admission));
+                            let step = loop {
+                                match pump.next_with(work.as_mut()).await {
+                                    Progress::Event(PumpEvent::Route(Event::RouteRefused {
+                                        reason: RouteError::Listener(listener::Error::Deadline), ..
+                                    })) => (),
+                                    Progress::Work(step) => break step,
+                                    _ => return Err("unexpected event during tail archival".into()),
+                                }
+                            };
+                            drop(work);
+                            match step {
+                                retirement_source::DriverStep::Offered { offset, len, disposition } if !tail_outstanding => {
+                                    tail_offered += 1;
+                                    tail_outstanding = true;
+                                    tail_records.push((offset, len, disposition));
+                                }
+                                retirement_source::DriverStep::Started => (),
+                                retirement_source::DriverStep::Completed(completion) if tail_outstanding => {
+                                    source_confirmed(completion)?;
+                                    source_count += 1;
+                                    tail_completed += 1;
+                                    tail_outstanding = false;
+                                }
+                                retirement_source::DriverStep::Finished if !tail_outstanding => break,
+                                _ => return Err("tail source requires reconciliation".into()),
+                            }
+                        }
+                        let tail_parts = tail_driver.into_parts().map_err(|_| "tail worker not drained")?;
+                        if !tail_parts.plan.is_empty() || tail_offered != tail_count || tail_completed != tail_count {
+                            return Err("tail source accounting incomplete".into());
+                        }
+                        let mut video = retirement.video.retire().map_err(|_| "video worker not retired")?;
+                        let mut source_retired = tail_parts.worker.retire().map_err(|_| "source worker not retired")?;
+                        if video.fenced || video.report.is_some() || source_retired.fenced || source_retired.pending.is_some() {
+                            return Err("archive worker requires reconciliation".into());
+                        }
+                        let page = video.parts.journal.confirmed_page(video.parts.journal.anchor(), 0, 128, &video.parts.replay)?;
+                        if page.has_more || page.pending.is_some() || !pins.iter().copied().eq(page.entries.iter().map(|entry| entry.pin)) {
+                            return Err("video publication history mismatch".into());
+                        }
+                        let source_page = source_retired.parts.journal.confirmed_page(source_retired.parts.journal.anchor(), 0, 128, &source_retired.parts.replay)?;
+                        if source_page.has_more || source_page.pending.is_some() || source_page.entries.len() != source_count {
+                            return Err("source publication history mismatch".into());
+                        }
+                        let mut source_end = 0u64;
+                        let mut source_ranges = Vec::new();
+                        for entry in &source_page.entries {
+                            task.checkpoint_for(RuntimeGrant::ReadMedia, &resource, clock.now()?, &BudgetVector::ZERO)?;
+                            let recovered = archive::read_unknown_time_source(&mut source_retired.parts.deployment,
+                                entry.pin, access.as_ref(), archive::Limits::default(),
+                                &mut fss_geometry::WorkBudget::new(4_000_000_000), &source_retired.parts.replay)?;
+                            let end = recovered.offset().checked_add(u64::try_from(recovered.bytes().len())?)
+                                .ok_or("source record offset overflow")?;
+                            let start_index = usize::try_from(recovered.offset())?;
+                            let end_index = usize::try_from(end)?;
+                            if recovered.key() != source || recovered.camera_claim() != camera || recovered.bytes().is_empty()
+                                || source_end > recovered.offset()
+                                || expected_wire.get(start_index..end_index) != Some(recovered.bytes()) {
+                                return Err("source record readback mismatch".into());
+                            }
+                            if recovered.offset() >= tail_start
+                                && !tail_records.contains(&(recovered.offset(), recovered.bytes().len(), recovered.disposition())) {
+                                return Err("tail record disposition mismatch".into());
+                            }
+                            source_end = end;
+                            source_ranges.push((recovered.offset(), end));
+                        }
+                        let mut decoded_frames = 0usize;
+                        let mut denial_checked = false;
+                        for pin in &pins {
+                            task.checkpoint_for(RuntimeGrant::ReadMedia, &resource, clock.now()?, &BudgetVector::ZERO)?;
+                            let clip = archive::read_unknown_time_video_clip(&mut video.parts.deployment, *pin,
+                                access.as_ref(), archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.parts.replay)?;
+                            if clip.claimed_source() != source || clip.samples() == 0 { return Err("archive source binding mismatch".into()); }
+                            for record in clip.source_records() {
+                                task.checkpoint_for(RuntimeGrant::ReadMedia, &resource, clock.now()?, &BudgetVector::ZERO)?;
+                                if !denial_checked {
+                                    if !matches!(archive::read_unknown_time_object(&mut video.parts.deployment, *pin,
+                                        record.digest, &DeniedRead, archive::Limits::default(),
+                                        &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.parts.replay), Err(archive::Error::Denied)) {
+                                        return Err("source object did not enforce read authority".into());
+                                    }
+                                    denial_checked = true;
+                                }
+                                let end = record.offset.checked_add(u64::try_from(record.length)?)
+                                    .ok_or("video source offset overflow")?;
+                                let bytes = archive::read_unknown_time_object(&mut video.parts.deployment, *pin,
+                                    record.digest, access.as_ref(), archive::Limits::default(),
+                                    &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.parts.replay)?;
+                                if bytes.len() != record.length || expected_wire.get(usize::try_from(record.offset)?..usize::try_from(end)?) != Some(bytes.as_slice()) {
+                                    return Err("video source readback mismatch".into());
+                                }
+                                source_ranges.push((record.offset, end));
+                            }
+                            if decoded_frames == 0 {
+                                let demux = AvcMp4::parse(clip.bytes(), None, DemuxLimits::default())?;
+                                let annex = demux.annex_b(0, 1)?;
+                                let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+                                let mut frames = decoder.decode_annex_b(annex.bytes())?;
+                                frames.extend(decoder.finish()?);
+                                for frame in frames { assert_eq!((frame.width(), frame.height()), (2688, 1512)); decoded_frames += 1; }
                             }
                         }
                         assert!(decoded_frames > 0, "no synthetic full-resolution video decoded");
-                        let _retired = pipeline.retire();
-                        let _session_retirement = session.retire();
+                        assert!(denial_checked, "source read denial was not checked");
+                        source_ranges.sort_unstable();
+                        let mut covered = 0u64;
+                        for (start, end) in source_ranges {
+                            if start != covered || end <= start { return Err("original source coverage gap or overlap".into()); }
+                            covered = end;
+                        }
+                        if covered != u64::try_from(expected_wire.len())? || tail_start >= covered {
+                            return Err("original source coverage incomplete".into());
+                        }
+                        assert!(media_scan && pump.scan_drained());
+                        println!("fleet_video_archive_readback=verified width=2688 height=1512 segments={} source_records_readback={} tail_records={} source_bytes={} discovery_windows=2 capture_bounds=unknown", pins.len(), source_count, tail_count, covered);
+                        drop(pump);
+                        periodic_sender.finish()?;
                     }
                     controller_peer.finish()?;
                     let mut router = acceptor.into_router();
@@ -1388,8 +1750,46 @@ fn fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], wrong_mac: bo
                         RouterEvent::Refused { reason, .. } => return Err(format!("reconnect refused: {reason:?}").into()),
                     };
                     assert_eq!(fresh_route.claimed_mac(), MAC);
-                    drop(fresh_route);
+                    let factory_called = Cell::new(false);
+                    let invalid = controller_upgrade::upgrade_routed(cx, fresh_route, |route| {
+                        factory_called.set(true);
+                        async move { Ok::<_, io::Error>(route) }
+                    }, ProtocolPolicy::RequireOffer, &admission,
+                        Controller::new(Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?, 1)?,
+                        4096, Duration::ZERO).await;
+                    assert!(matches!(invalid, Err(controller_upgrade::Error::Configuration)));
+                    assert!(!factory_called.get(), "invalid request started its handshake");
                     drop(reconnect);
+                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                    socket.bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)))?;
+                    let timeout_peer = socket.connect(SocketAddr::V4(endpoint)).await?;
+                    let route = match router.next().await {
+                        RouterEvent::Ready(route) => route,
+                        RouterEvent::Refused { reason, .. } => return Err(format!("timeout test route refused: {reason:?}").into()),
+                    };
+                    let factory_called = Cell::new(false);
+                    let timed_out = controller_upgrade::upgrade_routed(cx, route, |route| {
+                        factory_called.set(true);
+                        async move {
+                            std::future::pending::<()>().await;
+                            Ok::<_, io::Error>(route)
+                        }
+                    }, ProtocolPolicy::RequireOffer, &admission,
+                        Controller::new(Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?, 1)?,
+                        4096, Duration::from_millis(200)).await;
+                    assert!(matches!(timed_out, Err(controller_upgrade::Error::Deadline)));
+                    assert!(factory_called.get(), "timeout fixture handshake never started");
+                    drop(timeout_peer);
+                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                    socket.bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)))?;
+                    let retry_peer = socket.connect(SocketAddr::V4(endpoint)).await?;
+                    let route = match router.next().await {
+                        RouterEvent::Ready(route) => route,
+                        RouterEvent::Refused { reason, .. } => return Err(format!("route was not released after timeout: {reason:?}").into()),
+                    };
+                    assert_eq!(route.claimed_mac(), MAC);
+                    drop(route);
+                    drop(retry_peer);
                     Ok(())
                 }
                 .await;
@@ -1432,9 +1832,14 @@ fn fleet_route_upgrades_through_tls_and_rejects_wrong_mac() -> Test {
 /// is closed at the explicit handshake limit. No physical camera is involved.
 fn parallel_fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], capacity: usize) -> Test {
     use asupersync::{io::AsyncReadExt, time::timeout};
-    use fss_reference::unifi_direct::discovery::fleet::{Enrollment, Fleet, Router};
+    use fss_reference::unifi_direct::discovery::{
+        fleet::{Enrollment, Fleet, Router},
+        pump::{Event as PumpEvent, Pump},
+        scan::{Outcome as ScanOutcome, Scanner},
+    };
     use std::{future::poll_fn, task::Poll};
-    use unifi_tls_05_server_lab::fleet_acceptor::{Event, FleetAcceptor};
+    use fss_reference::unifi_direct::controller_acceptor::{Acceptor as FleetAcceptor, ConfigurationError, Event};
+    use unifi_tls_05_server_lab::fleet_transport::LabTls;
 
     const MACS: [[u8; 6]; 2] = [MAC, [0, 0x11, 0x22, 0xaa, 0xbb, 0xdd]];
     const PEERS: [Ipv4Addr; 2] = [Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2)];
@@ -1567,8 +1972,15 @@ fn parallel_fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], capa
                         fixture.finish()?;
                     }
                     let router = Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(10))?;
-                    let mut acceptor = FleetAcceptor::new(router, cx, &policy, server.clone(),
-                        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+                    let identity = Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?;
+                    let refused = match FleetAcceptor::new(router, cx, &policy, LabTls(server.clone()), identity,
+                        Default::default(), ProtocolPolicy::RequireOffer, 4096, Duration::from_secs(10), 0) {
+                        Err(refusal) => refusal,
+                        Ok(_) => return Err("zero handshake capacity was accepted".into()),
+                    };
+                    assert!(matches!(refused.reason, ConfigurationError::Invalid));
+                    let mut acceptor = FleetAcceptor::new(refused.router, cx, &policy, refused.transport,
+                        refused.identity,
                         Default::default(), ProtocolPolicy::RequireOffer, 4096, Duration::from_secs(10), capacity)
                         .map_err(|error| format!("acceptor configuration: {error:?}"))?;
                     let socket = asupersync::net::TcpSocket::new_v4()?;
@@ -1579,11 +1991,37 @@ fn parallel_fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], capa
                         Poll::Pending => Poll::Pending,
                         Poll::Ready(_) => panic!("first handshake unexpectedly completed"),
                     }).await;
+                    // Discover both synthetic cameras while the first TLS
+                    // handshake remains owned and unable to finish.
+                    let first_scan = std::net::UdpSocket::bind((PEERS[0], port))?;
+                    let second_scan = std::net::UdpSocket::bind((PEERS[1], port))?;
+                    let mut scan_senders = Vec::new();
+                    for (i, socket) in [first_scan, second_scan].into_iter().enumerate() {
+                        socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+                        scan_senders.push(Joined(Some(std::thread::spawn(move || -> io::Result<()> {
+                            let mut input = [0u8; 64];
+                            let (_, source) = socket.recv_from(&mut input)?;
+                            socket.send_to(&discovery_packet_for(PEERS[i], MACS[i]), source)?;
+                            Ok(())
+                        }))));
+                    }
+                    let scanner = Scanner::new(cx, task, clock, &fleet, config.clone(), Duration::from_secs(5))?;
+                    let mut pump = Pump::new(&scanner, &mut acceptor)?;
+                    match pump.next().await {
+                        PumpEvent::Discovery(Ok(ScanOutcome::Updated(snapshot))) => {
+                            assert_eq!(snapshot.report().cameras.len(), 2);
+                        }
+                        _ => return Err("periodic scan did not complete during stalled TLS".into()),
+                    }
+                    for sender in scan_senders { sender.finish()?; }
+                    assert_eq!(pump.driver().handshake_len(), 1);
+                    pump.request_scan_stop();
+                    assert!(pump.scan_drained());
                     if capacity == 1 {
                         let socket = asupersync::net::TcpSocket::new_v4()?;
                         socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[1], 0)))?;
                         let mut refused = socket.connect(SocketAddr::V4(endpoint)).await?;
-                        assert!(matches!(acceptor.next().await, Event::HandshakeCapacity { index: 1 }));
+                        assert!(matches!(pump.next().await, PumpEvent::Route(Event::HandshakeCapacity { index: 1 })));
                         let mut byte = [0u8; 1];
                         assert!(matches!(timeout(cx.now(), Duration::from_secs(5), refused.read(&mut byte)).await?, Ok(0)));
                     } else {
@@ -1607,15 +2045,16 @@ fn parallel_fleet_upgrade_scenario(peer: Ipv4Addr, cert: &[u8], key: &[u8], capa
                             if !response.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
                             Ok(())
                         })));
-                        let session = match acceptor.next().await {
-                            Event::Session { index: 1, session } => session,
+                        let session = match pump.next().await {
+                            PumpEvent::Route(Event::Session { index: 1, session }) => session,
                             _ => return Err("second camera failed to upgrade while first stalled".into()),
                         };
                         assert_eq!(session.claimed_mac(), MACS[1]);
-                        assert_eq!(acceptor.handshake_len(), 1);
+                        assert_eq!(pump.driver().handshake_len(), 1);
                         other.finish()?;
                         drop(session);
                     }
+                    drop(pump);
                     drop(acceptor);
                     let mut byte = [0u8; 1];
                     assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));

@@ -528,7 +528,9 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     stop_after_retained_reservation: bool,
     auto_retained_generations: Option<u64>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    if !(1..=8).contains(&segment_limit) {
+    if !(1..=64).contains(&segment_limit)
+        || (segment_limit > 8 && (!video_only || !managed || !decode_owned))
+    {
         return Err("invalid segment limit".into());
     }
     if video_still.is_some() && (!video_only || !decode_owned) {

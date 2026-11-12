@@ -238,9 +238,9 @@ fn options() -> ResultBox<Options> {
         if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-segments=")) {
             let count = value
                 .parse::<usize>()
-                .map_err(|_| "laboratory segment count must be 1 to 8")?;
-            if !(1..=8).contains(&count) {
-                return Err("laboratory segment count must be 1 to 8".into());
+                .map_err(|_| "laboratory segment count must be 1 to 64")?;
+            if !(1..=64).contains(&count) {
+                return Err("laboratory segment count must be 1 to 64".into());
             }
             args.pop();
             count
@@ -367,6 +367,7 @@ fn options() -> ResultBox<Options> {
     if lab_auto_retained_generations.is_some() && (!lab_retained_video_generations || lab_stop_after_retained_reservation) {return Err("automatic retained generations require retained mode and no stop injection".into());}
     if lab_anchor_root.is_some() && !lab_owned_archive {return Err("anchor root requires owned archive mode".into());}
     if lab_decode_owned && !lab_owned_archive {return Err("owned decode requires owned archive mode".into());}
+    if lab_segments > 8 && (!lab_video_only_archive || !lab_managed_archive || !lab_decode_owned) {return Err("more than eight segments require managed video-only archive and owned decode".into());}
     if lab_video_still.is_some() && (!lab_video_only_archive || !lab_decode_owned) {return Err("video still requires video-only archive and owned decode".into());}
     if lab_save_still.as_ref().is_some_and(|path| lab_video_still.is_none() || !path.is_absolute() || path.file_name().is_none() || !path.components().all(|part| matches!(part,std::path::Component::RootDir|std::path::Component::Normal(_)))) {return Err("still export requires a still and an absolute normal path".into());}
     let raw = args[2].as_bytes();

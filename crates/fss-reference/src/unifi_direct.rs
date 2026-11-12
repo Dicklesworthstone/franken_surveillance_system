@@ -57,6 +57,10 @@ pub mod camera_api;
 pub mod camera_http;
 /// Task-scoped, policy-admitted controller TCP listener.
 pub mod controller_listener;
+/// Bounded concurrent routed controller handshakes.
+pub mod controller_acceptor;
+/// Routed controller transport and WebSocket upgrade composition.
+pub mod controller_upgrade;
 /// Experimental owned hello, agreement and stream-request conversation.
 pub mod conversation;
 /// Bounded owner-scoped UniFi LAN discovery.

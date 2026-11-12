@@ -8,11 +8,12 @@ use fss_runtime::{
     drained_blocking::{self, Drained},
     execution::TaskCx,
 };
+use rustix::fs::{self as rfs, AtFlags, Mode, OFlags};
 use std::{
-    fs::{self, OpenOptions},
+    fs::File,
     io::Write,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Component, Path, PathBuf},
+    os::unix::fs::MetadataExt,
+    path::{Component, Path},
     sync::Arc,
 };
 
@@ -39,6 +40,35 @@ pub(super) fn valid_path(path: &Path) -> bool {
         && path
             .components()
             .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+}
+
+// Resolve every component without following symlinks, retaining the exact
+// directory handle for staging, publication and sync. This prevents path
+// redirection after opening; a renamed directory can still change its visible
+// pathname, which callers must treat as a separate namespace concern.
+fn open_private_parent(path: &Path) -> std::io::Result<File> {
+    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let mut directory = File::open("/")?;
+    for component in parent.components() {
+        match component {
+            Component::RootDir => (),
+            Component::Normal(name) => {
+                let fd = rfs::openat(
+                    &directory,
+                    name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?;
+                directory = File::from(fd);
+            }
+            _ => return Err(std::io::ErrorKind::InvalidInput.into()),
+        }
+    }
+    let meta = directory.metadata()?;
+    if !meta.is_dir() || meta.mode() & 0o077 != 0 {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(directory)
 }
 
 /// Admit the exact source and destination before scheduling bounded I/O.
@@ -103,15 +133,9 @@ fn write_one(
     if !allowed() {
         return Outcome::Refused;
     }
-    let Some(parent) = destination.parent() else {
+    let Ok(parent) = open_private_parent(destination) else {
         return Outcome::Refused;
     };
-    let Ok(meta) = fs::symlink_metadata(parent) else {
-        return Outcome::Refused;
-    };
-    if !meta.is_dir() || meta.mode() & 0o077 != 0 {
-        return Outcome::Refused;
-    }
     let Some(name) = destination.file_name() else {
         return Outcome::Refused;
     };
@@ -119,15 +143,15 @@ fn write_one(
     stage_name.push(std::process::id().to_string());
     stage_name.push("-");
     stage_name.push(name);
-    let stage: PathBuf = parent.join(stage_name);
-    let Ok(mut file) = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&stage)
-    else {
+    let Ok(fd) = rfs::openat(
+        &parent,
+        &stage_name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    ) else {
         return Outcome::Refused;
     };
+    let mut file = File::from(fd);
     let staged = (|| -> std::io::Result<bool> {
         for chunk in bytes.chunks(64 * 1024) {
             if !allowed() {
@@ -143,28 +167,28 @@ fn write_one(
     })();
     if !matches!(staged, Ok(true)) {
         drop(file);
-        return if fs::remove_file(&stage).is_ok() {
+        return if rfs::unlinkat(&parent, &stage_name, AtFlags::empty()).is_ok() {
             Outcome::Refused
         } else {
             Outcome::StagingNeedsInspection
         };
     }
-    let linked = fs::hard_link(&stage, destination);
+    let linked = rfs::linkat(&parent, &stage_name, &parent, name, AtFlags::empty());
     if let Err(error) = linked {
         // An error can be ambiguous on a remote filesystem. An existing final
         // name is a definite conflict only when it is a different inode from
         // this still-open staging file; otherwise preserve the staging name.
-        let conflict = error.kind() == std::io::ErrorKind::AlreadyExists
+        let conflict = error == rustix::io::Errno::EXIST
             && file
                 .metadata()
                 .ok()
-                .zip(fs::symlink_metadata(destination).ok())
+                .zip(rfs::statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW).ok())
                 .is_some_and(|(source, target)| {
-                    source.dev() != target.dev() || source.ino() != target.ino()
+                    source.dev() != target.st_dev as u64 || source.ino() != target.st_ino as u64
                 });
         drop(file);
         return if conflict {
-            if fs::remove_file(&stage).is_ok() {
+            if rfs::unlinkat(&parent, &stage_name, AtFlags::empty()).is_ok() {
                 Outcome::Refused
             } else {
                 Outcome::StagingNeedsInspection
@@ -174,10 +198,8 @@ fn write_one(
         };
     }
     drop(file);
-    let removed = fs::remove_file(&stage).is_ok();
-    let synced = fs::File::open(parent)
-        .and_then(|dir| dir.sync_all())
-        .is_ok();
+    let removed = rfs::unlinkat(&parent, &stage_name, AtFlags::empty()).is_ok();
+    let synced = parent.sync_all().is_ok();
     if removed && synced {
         Outcome::Published
     } else {
