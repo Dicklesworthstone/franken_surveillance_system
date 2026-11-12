@@ -34,7 +34,7 @@ pub enum IngressError {
     Authority,
     /// The canonical byte allowances cannot admit even one byte.
     BudgetExhausted,
-    /// The explicit Asupersync context refused its cancellation checkpoint.
+    /// The runtime context was cancelled or canonical task admission was closed.
     Cancelled,
     /// The caller must move the prior source chunk before another read.
     PendingChunk,
@@ -224,7 +224,11 @@ impl TcpIngress {
     /// domain and supervise any idle timeout. At most one pending chunk exists.
     /// A dropped pending read retains its prepaid capacity for a retry; bytes
     /// returned by the underlying TCP poll are committed to this owner before
-    /// the future yields `Ready`. A completed read does not establish custody.
+    /// the future yields `Ready`. Canonical cancellation or drain is checked again
+    /// before every socket poll; it does not consume new bytes or discard prepaid
+    /// capacity. This check does not install a canonical cancellation wakeup; the
+    /// enclosing supervisor still owns idle/deadline cancellation and repolling.
+    /// A completed read does not establish custody.
     pub async fn receive(
         &mut self,
         owner: &TaskCx<'_>,
@@ -298,6 +302,15 @@ impl TcpIngress {
         poll_fn(|task| {
             if runtime_cx.checkpoint().is_err() {
                 return Poll::Ready(Err(IngressError::Cancelled));
+            }
+            // The executing runtime context and canonical authority have distinct
+            // cancellation signals. Admission can close while this read is parked;
+            // recheck the live owner before every socket poll, including a ready one.
+            // Keep the prepaid capacity and any previously transferred bytes intact.
+            match owner.is_cancel_requested() {
+                Ok(false) => {}
+                Ok(true) => return Poll::Ready(Err(IngressError::Cancelled)),
+                Err(_) => return Poll::Ready(Err(IngressError::Authority)),
             }
             let mut buffer = ReadBuf::new(&mut self.buffer[..capacity]);
             match Pin::new(&mut self.stream).poll_read(task, &mut buffer) {

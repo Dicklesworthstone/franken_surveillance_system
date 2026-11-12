@@ -580,3 +580,135 @@ fn tcp_ingress_retirement_returns_original_untransferred_bytes() -> TestResult {
     run.receipt?;
     Ok(())
 }
+
+#[test]
+fn tcp_ingress_canonical_cancellation_stops_an_already_pending_read() -> TestResult {
+    stopped_pending_ingress(false)
+}
+
+#[test]
+fn tcp_ingress_canonical_drain_stops_an_already_pending_read() -> TestResult {
+    stopped_pending_ingress(true)
+}
+
+fn stopped_pending_ingress(drain: bool) -> TestResult {
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let runtime_cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            task("task:stopped-ingress")?,
+            &runtime_cx,
+            async |owner, cx| {
+                let output: Result<(), String> = async {
+                    owner
+                        .checkpoint_for(
+                            RuntimeGrant::AdapterNet,
+                            "fixture:stopped-ingress",
+                            TimestampNs(3),
+                            &BudgetVector::ZERO,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let listener = TcpListener::bind("127.0.0.1:0")
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let address = listener.local_addr().map_err(|error| error.to_string())?;
+                    // Keep the peer open and silent until the read has demonstrably
+                    // parked. No timing delay or detached worker drives this race.
+                    let mut sender =
+                        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(3))
+                            .map_err(|error| error.to_string())?;
+                    let (stream, _) = timeout(cx.now(), Duration::from_secs(5), listener.accept())
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())?;
+                    let mut source = TcpIngress::new(stream, "fixture:stopped-ingress", 4, 8)
+                        .map_err(|error| error.to_string())?;
+                    source.bind_task(owner).map_err(|error| error.to_string())?;
+                    let mut read = Box::pin(source.receive(owner, cx, TimestampNs(4)));
+                    let parked = poll_fn(|task| {
+                        Poll::Ready(matches!(read.as_mut().poll(task), Poll::Pending))
+                    })
+                    .await;
+                    if !parked {
+                        return Err("silent peer did not leave the receive pending".into());
+                    }
+                    let reserved = owner
+                        .remaining_budget()
+                        .map_err(|error| error.to_string())?;
+                    if reserved.bytes != 1020 || reserved.network_bytes != 1020 {
+                        return Err("pending read did not reserve its exact capacity".into());
+                    }
+                    if drain {
+                        owner.begin_drain(TimestampNs(5))
+                    } else {
+                        owner.request_cancellation(TimestampNs(5))
+                    }
+                    .map_err(|error| error.to_string())?;
+                    // This is the critical distinction: stopping the canonical owner
+                    // must work even while the executing Asupersync task remains live.
+                    cx.checkpoint()
+                        .map_err(|_| "fixture unexpectedly cancelled the runtime context")?;
+                    sender
+                        .write_all(b"LATE")
+                        .map_err(|error| error.to_string())?;
+                    let stopped = poll_fn(|task| Poll::Ready(read.as_mut().poll(task))).await;
+                    drop(read);
+                    if stopped != Poll::Ready(Err(IngressError::Cancelled)) {
+                        return Err(format!(
+                            "stopped canonical owner allowed socket polling: {stopped:?}"
+                        ));
+                    }
+                    let remaining = owner
+                        .remaining_budget()
+                        .map_err(|error| error.to_string())?;
+                    if remaining.bytes != reserved.bytes
+                        || remaining.network_bytes != reserved.network_bytes
+                    {
+                        return Err("cancelled pending read was charged again".into());
+                    }
+                    let retirement = source.retire();
+                    if retirement.state != EndState::Open
+                        || retirement.received != 0
+                        || retirement.pending.is_some()
+                        || retirement.reserved_bytes != 4
+                    {
+                        return Err("cancelled receive consumed bytes or erased reservation".into());
+                    }
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_err() {
+                    TaskOutcome::Failed("pending ingress stop test failed".into())
+                } else if drain {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Cancelled
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(6),
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    run.output?;
+    let receipt = run.receipt?;
+    assert_eq!(
+        receipt.outcome,
+        if drain {
+            TaskOutcome::Success
+        } else {
+            TaskOutcome::Cancelled
+        }
+    );
+    assert!(tree.get(authority.region())?.active_tasks.is_empty());
+    assert_eq!(authority.budget().remaining().bytes, 1020);
+    assert_eq!(authority.budget().remaining().network_bytes, 1020);
+    Ok(())
+}
