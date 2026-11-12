@@ -1664,6 +1664,7 @@ fn run_discovered_setup_with_listener(
                                 assert!(matches!(retried, setup::Outcome::Observed { .. }));
                                 assert_eq!(fleet.operation(0), Some(&fresh));
                                 assert!(fleet.route_ready(0));
+                                assert!(fleet.reported_video(0).is_none(), "an unconfigured preflight must not invent a profile");
                                 assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
                                 drop(retry_http);
                                 retry_peer.join().map_err(|_| "retry fixture panic")??;

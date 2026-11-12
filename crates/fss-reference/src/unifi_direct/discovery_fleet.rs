@@ -8,7 +8,9 @@
 //! flight and are never automatically retried.
 
 use super::{Report, SelectionError};
-use crate::unifi_direct::{camera_http, controller_listener, handoff, setup};
+use crate::unifi_direct::{
+    VideoChannel, camera_api, camera_http, controller_listener, handoff, setup,
+};
 use asupersync::{
     Cx,
     io::{AsyncRead, AsyncWrite},
@@ -220,6 +222,7 @@ struct Record {
     retry_before_effect: Cell<bool>,
     retry_automatically: Cell<bool>,
     route_ready: Cell<bool>,
+    reported_video: Cell<Option<(VideoChannel, camera_api::VideoProfile)>>,
     route_source: Cell<Option<Ipv4Addr>>,
     active: Rc<Cell<bool>>,
     setup_live: Cell<bool>,
@@ -675,6 +678,7 @@ impl<'a> Fleet<'a> {
                 retry_before_effect: Cell::new(false),
                 retry_automatically: Cell::new(false),
                 route_ready: Cell::new(false),
+                reported_video: Cell::new(None),
                 route_source: Cell::new(None),
                 active: Rc::new(Cell::new(false)),
                 setup_live: Cell::new(false),
@@ -841,6 +845,7 @@ impl<'a> Fleet<'a> {
             retry_before_effect: Cell::new(false),
             retry_automatically: Cell::new(false),
             route_ready: Cell::new(false),
+            reported_video: Cell::new(None),
             route_source: Cell::new(None),
             active: Rc::new(Cell::new(false)),
             setup_live: Cell::new(false),
@@ -981,6 +986,7 @@ impl<'a> Fleet<'a> {
         record.state.set(state);
         record.retry_before_effect.set(false);
         record.retry_automatically.set(false);
+        record.reported_video.set(None);
         record.route_source.set(None);
         record.changed.notify_waiters();
         Ok(state)
@@ -1024,6 +1030,21 @@ impl<'a> Fleet<'a> {
         self.records
             .get(index)
             .is_some_and(|record| record.route_ready.get())
+    }
+
+    /// The selected setup-time camera-reported profile for a route. This is
+    /// present only if the caller required profile preflight and setup kept
+    /// the same selection through readback. It can become stale and is not
+    /// identity, actual video properties, or permission to request a stream.
+    pub fn reported_video(
+        &self,
+        index: usize,
+    ) -> Option<(VideoChannel, camera_api::VideoProfile)> {
+        let record = self.records.get(index)?;
+        if !record.route_ready.get() {
+            return None;
+        }
+        record.reported_video.get()
     }
 
     /// Whether this fleet instance holds an early socket for this entry.
@@ -1156,6 +1177,7 @@ impl<'a> Fleet<'a> {
         record.reserve_operation(operation)?;
         record.retry_before_effect.set(false);
         record.retry_automatically.set(false);
+        record.reported_video.set(None);
         record.state.set(State::InFlight { candidate });
         record.setup_live.set(true);
         let mut lease = SetupLease {
@@ -1301,6 +1323,13 @@ impl<'a> Fleet<'a> {
         } && result
             .as_ref()
             .is_ok_and(|outcome| trace.reported_video_matches(outcome));
+        self.records[index]
+            .reported_video
+            .set(if route_ready {
+                trace.preflight_video().and_then(|selection| selection.selected)
+            } else {
+                None
+            });
         self.records[index].route_ready.set(route_ready);
         let latest = self.latest.borrow();
         self.records[index].route_source.set(if route_ready {
