@@ -15596,6 +15596,28 @@ source records, and an unknown capture-time bound. It did not prove live G4
 rollover, storage independence, long-term retention, or cancellation through
 the outer owner.
 
+The same binary's broader fleet test subsequently failed (0 passed, 3
+filtered) in the synthetic full-resolution scenario with an unexpected event
+while driving a third camera's setup. It did not identify the event; the
+fixture now reports handshake, route, and unexpected lease events explicitly.
+The diagnostic no-run build `j-30107138793668614` used base
+`3ebf3a3f5ad3428f8ee3e93b95cf58e279783493`, a lab-test overlay and patched TLS
+vendor; its Linux artifact was rejected on macOS with exit 102 and terminal
+release acknowledged. Its exact binary, SHA-256
+`80cac902db2e9062199040188c4f5e7302f8cf59953f2a60a0ee28e3a735b79e`,
+failed the separate high-resolution synthetic case (0 passed, 3 filtered) at
+a later automatic-stream admission with an unmatched listener deadline. This
+does not identify the earlier third-setup event. The router installs another
+accept on the next poll; the fixture now permits one such exact unmatched
+deadline while still requiring actual stream admission and completion. That
+adjustment was compiled by strict-remote no-run job `j-30107138793668619` on
+the same base with a revised lab-test overlay; its wrapper returned 102 at
+Linux-to-macOS transfer and acknowledged release. The exact Linux binary,
+SHA-256 `b417139f66557ce5c60964ec4cb784600581e5222f612276ae5f81979e3a58fa`,
+matched on the worker and isolated host. Its dedicated high-resolution
+synthetic test passed (1 passed, 3 filtered); a subsequent broad run is still
+pending. The earlier passes do not erase either failure.
+
 For cancellation, strict-remote no-run build `j-30107138793668610` compiled
 base `12fbd7e3c95f8601335c5694225eecaa0e938e2d` with the patched TLS-vendor
 overlay. Its wrapper returned 102 at Linux-to-macOS artifact transfer and
