@@ -52,6 +52,10 @@ pub struct Configuration<'a> {
     pub source_deployment_limits: DeploymentLimits,
     /// Explicit A/V archive capacity; reopening requires the same values.
     pub av_deployment_limits: DeploymentLimits,
+    /// Explicit source intent and keeper journal limits, reused on recovery.
+    pub source_history_limits: EffectJournalLimits,
+    /// Explicit A/V intent and keeper journal limits, reused on recovery.
+    pub av_history_limits: EffectJournalLimits,
     /// Bounds for both archive owners.
     pub limits: archive::Limits,
     /// Bound on one separately archived source record.
@@ -347,12 +351,12 @@ fn create_inner<'task>(
         ),
         None => (None, None, None, None),
     };
-    let store = create_store(&cfg.root.join("source-intent"), source_journal)?;
+    let store = create_store(&cfg.root.join("source-intent"), source_journal, cfg.source_history_limits)?;
     let source_journal =
         archive::journal::UnknownTimeJournal::create(store, cfg.source_scope, &source_replay)
             .map_err(|_| Error::Storage)?;
     admit(task, cx, clock, resource, &source_replay)?;
-    let store = create_store(&cfg.root.join("source-anchor"), source_keeper)?;
+    let store = create_store(&cfg.root.join("source-anchor"), source_keeper, cfg.source_history_limits)?;
     let source_keeper =
         archive::journal::UnknownTimeAnchorKeeper::create(store, &source_journal, &source_replay)
             .map_err(|_| Error::Storage)?;
@@ -379,11 +383,11 @@ fn create_inner<'task>(
     )
     .map_err(|_| Error::Storage)?;
     admit(task, cx, clock, resource, &av_replay)?;
-    let store = create_store(&cfg.root.join("av-intent"), av_journal)?;
+    let store = create_store(&cfg.root.join("av-intent"), av_journal, cfg.av_history_limits)?;
     let av_journal = archive::journal::UnknownTimeJournal::create(store, cfg.av_scope, &av_replay)
         .map_err(|_| Error::Storage)?;
     admit(task, cx, clock, resource, &av_replay)?;
-    let store = create_store(&cfg.root.join("av-anchor"), av_keeper)?;
+    let store = create_store(&cfg.root.join("av-anchor"), av_keeper, cfg.av_history_limits)?;
     let av_keeper =
         archive::journal::UnknownTimeAnchorKeeper::create(store, &av_journal, &av_replay)
             .map_err(|_| Error::Storage)?;
@@ -404,9 +408,10 @@ fn create_inner<'task>(
 fn create_store(
     path: &Path,
     retainer: Option<Box<dyn EffectPinRetainer>>,
+    limits: EffectJournalLimits,
 ) -> Result<Box<dyn EffectJournalStore>, Error> {
     let store =
-        FileEffectJournal::create(path, EffectJournalLimits::default(), Arc::new(HostSpoolIo))
+        FileEffectJournal::create(path, limits, Arc::new(HostSpoolIo))
             .map_err(|_| Error::Storage)?;
     match retainer {
         Some(retainer) => Ok(Box::new(
@@ -516,6 +521,7 @@ fn recover_histories_inner<'task>(
         cfg.root,
         "source",
         cfg.source_scope,
+        cfg.source_history_limits,
         source_minimum,
         source_replay,
         source_journal,
@@ -528,6 +534,7 @@ fn recover_histories_inner<'task>(
         cfg.root,
         "av",
         cfg.av_scope,
+        cfg.av_history_limits,
         av_minimum,
         av_replay,
         av_journal,
@@ -853,6 +860,7 @@ fn recover_one<'task>(
     root: &Path,
     name: &str,
     scope: ContentDigest,
+    limits: EffectJournalLimits,
     minimum: HistoryMinimum,
     replay: ReplayCx,
     journal_retainer: Option<Box<dyn EffectPinRetainer>>,
@@ -862,7 +870,7 @@ fn recover_one<'task>(
     admit(task, cx, clock, resource, &replay)?;
     let store = FileEffectJournal::open(
         root.join(format!("{name}-intent")),
-        EffectJournalLimits::default(),
+        limits,
         Arc::new(HostSpoolIo),
         minimum.journal,
     )
@@ -874,7 +882,7 @@ fn recover_one<'task>(
     admit(task, cx, clock, resource, &replay)?;
     let store = FileEffectJournal::open(
         root.join(format!("{name}-anchor")),
-        EffectJournalLimits::default(),
+        limits,
         Arc::new(HostSpoolIo),
         minimum.keeper,
     )
@@ -942,6 +950,12 @@ fn valid_configuration(cfg: &Configuration<'_>, source: &ReplayCx, av: &ReplayCx
         && (1..=262_144).contains(&cfg.limits.maximum_ledger_deltas)
         && (1..=64 * 1024 * 1024).contains(&cfg.max_source_bytes)
         && (1..=100_000_000_000).contains(&cfg.work_limit)
+        && [cfg.source_history_limits,cfg.av_history_limits].into_iter().all(|limits| {
+            (1..=65_536).contains(&limits.max_records)
+                && (1..=512 * 1024).contains(&limits.max_record_bytes)
+                && (1..=1024 * 1024 * 1024).contains(&limits.max_total_bytes)
+                && limits.max_read_bytes > 0
+        })
         && [cfg.source_deployment_limits, cfg.av_deployment_limits]
             .into_iter()
             .all(|limits| {

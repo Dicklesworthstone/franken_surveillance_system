@@ -107,6 +107,10 @@ pub struct Pipeline {
     stopped: bool,
 }
 impl Pipeline {
+    pub(crate) fn source_key(&self) -> fss_container::flv_avc::SourceKey {
+        self.recorder.source_key()
+    }
+
     /// Attach a recorder to a caller-owned ingress without performing I/O.
     /// The caller must bind both to the same authorized connection and generation.
     pub fn new(ingress: ingress::DirectIngress, recorder: recording::Recorder) -> Self {

@@ -8,11 +8,12 @@
 use std::sync::{Arc, Mutex, TryLockError};
 
 use asupersync::{Cx, runtime::JoinError};
-use fss_core::{BudgetVector, CaptureInterval, RuntimeGrant};
+use fss_core::{BudgetVector, CaptureInterval, ContentDigest, RuntimeGrant};
 use fss_geometry::WorkBudget;
 use fss_publication::RootLedgerReceipt;
 use fss_runtime::{
     drained_blocking::{self, Drained, StartFailure, WorkOutcome},
+    effect_journal::EffectJournalPin,
     execution::{ExecutionError, TaskCx},
 };
 
@@ -611,6 +612,18 @@ pub enum UnknownTimeFailureStage {
     AfterPublication,
 }
 
+/// Exact settled predecessor reported by a capacity preflight. This is a
+/// scheduling hint, not authority to create or activate successor stores.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RolloverNeed {
+    /// Last confirmed archive root.
+    pub confirmed: archive::UnknownTimePin,
+    /// Current publication history head.
+    pub journal: EffectJournalPin,
+    /// Current anchor-keeper head.
+    pub keeper: EffectJournalPin,
+}
+
 /// Actual publication outcome, independent of runtime task classification.
 pub enum UnknownTimePublication {
     /// The archive and journal both returned receipts.
@@ -625,6 +638,9 @@ pub enum UnknownTimePublication {
         pending: Option<archive::UnknownTimePin>,
         /// Actual archive receipt, if failure occurred after publication.
         receipt: Option<Box<RootLedgerReceipt>>,
+        /// Present only for the settled, pre-candidate capacity preflight.
+        /// The caller must still validate, stage and replay a successor.
+        rollover: Option<RolloverNeed>,
     },
     /// No segment was available to flush.
     Empty,
@@ -657,11 +673,431 @@ pub struct UnknownTimeRetirement {
     pub parts: UnknownTimeParts,
     /// A panic or uncertain coordinator outcome requires reconciliation.
     pub fenced: bool,
+    /// Retained predecessor and switch for an attached rollover.
+    pub rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
 }
 
 struct UnknownTimeState {
     parts: UnknownTimeParts,
     report: Option<UnknownTimePublication>,
+    rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
+}
+
+/// A/V sink, pending segment, archive, and policy held during rollover.
+#[must_use = "restore the predecessor or attach a verified successor"]
+pub struct UnknownTimeRolloverResources {
+    sink: av_owned_sink::UnknownTimeOwnedSink,
+    deployment: ReferenceDeployment,
+    replay: ReplayCx,
+    authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
+    limits: archive::Limits,
+    work_limit: u64,
+    original_scope: ContentDigest,
+    original_journal: EffectJournalPin,
+    original_keeper: EffectJournalPin,
+    prior_custody: Option<archive::journal::rollover::WorkerCustody>,
+}
+
+/// Failed A/V attachment preserves the sink and active transition.
+#[must_use = "reconcile or restore both owners"]
+pub struct UnknownTimeRolloverAttachRefusal {
+    /// A/V resources and pending segment.
+    pub resources: UnknownTimeRolloverResources,
+    /// Transition which could not be attached.
+    pub active: archive::journal::rollover::Active,
+}
+
+/// Failed restoration preserves both owners.
+#[must_use = "inspect the predecessor and resources"]
+pub struct UnknownTimeRolloverRestoreRefusal {
+    /// A/V resources and pending segment.
+    pub resources: UnknownTimeRolloverResources,
+    /// Nonmatching predecessor.
+    pub previous: archive::journal::rollover::Previous,
+}
+
+/// Opaque successor and lineage whose storage checks have completed on the
+/// rollover worker. It is an observation, not a durable reservation.
+#[must_use = "attach to its original resources or retain for reconciliation"]
+pub struct PreparedUnknownTimeAttachment {
+    binding: archive::journal::rollover::Binding,
+    journal: archive::journal::UnknownTimeJournal,
+    keeper: archive::journal::UnknownTimeAnchorKeeper,
+    custody: archive::journal::rollover::WorkerCustody,
+}
+
+impl PreparedUnknownTimeAttachment {
+    /// The checked transition identity; this does not authenticate a camera.
+    pub fn binding(&self) -> archive::journal::rollover::Binding {
+        self.binding
+    }
+}
+
+/// Failed attachment preserves both the original pending media and the
+/// already checked successor.
+#[must_use = "retain or reconcile both returned owners"]
+pub struct PreparedUnknownTimeAttachRefusal {
+    /// Original pending media and archive resources.
+    pub resources: UnknownTimeRolloverResources,
+    /// Prepared successor and custody.
+    pub attachment: PreparedUnknownTimeAttachment,
+}
+
+/// Private, single-use observation that the exact retired predecessor and its
+/// retained lineage were checked. This is not a durable storage reservation.
+pub(crate) struct VerifiedRolloverPause {
+    scope: ContentDigest,
+    confirmed: archive::UnknownTimePin,
+    journal: EffectJournalPin,
+    keeper: EffectJournalPin,
+    transitions: usize,
+}
+
+/// Why a retired worker cannot be prepared for rollover.
+#[derive(Debug)]
+pub enum RolloverPauseError {
+    /// The worker is fenced, unsettled, or has incompatible pending media.
+    NotReady,
+    /// Existing switch custody could not be verified.
+    Custody(archive::journal::Error),
+    /// The lineage cannot retain another transition.
+    Capacity,
+}
+
+impl UnknownTimeRetirement {
+    /// Detach an unfenced A/V worker while retaining its sink and any pending
+    /// segment and previous rollover custody. Unresolved muxer effects refuse.
+    pub fn into_rollover(
+        mut self,
+    ) -> Result<
+        (
+            UnknownTimeRolloverResources,
+            archive::journal::rollover::Previous,
+        ),
+        Self,
+    > {
+        let verified = match self.verify_rollover_pause() {
+            Ok(verified) => verified,
+            Err(_) => return Err(self),
+        };
+        self.into_rollover_verified(verified)
+    }
+
+    /// Verify custody while borrowing the original owner, so even a panic in
+    /// a storage implementation leaves the pending segment in that owner.
+    pub(crate) fn verify_rollover_pause(
+        &mut self,
+    ) -> Result<VerifiedRolloverPause, RolloverPauseError> {
+        let Some(confirmed) = self.parts.journal.confirmed() else {
+            return Err(RolloverPauseError::NotReady);
+        };
+        if self.fenced
+            || !(1..=100_000_000_000).contains(&self.parts.work_limit)
+            || self.parts.sink.pending_publication().is_some()
+            || confirmed.retention != self.parts.sink.retention()
+        {
+            return Err(RolloverPauseError::NotReady);
+        }
+        if let Some(custody) = &mut self.rollover_custody {
+            custody
+                .check(&self.parts.journal, &self.parts.keeper, &self.parts.replay)
+                .map_err(RolloverPauseError::Custody)?;
+            if !custody.reserve_next() {
+                return Err(RolloverPauseError::Capacity);
+            }
+        }
+        Ok(VerifiedRolloverPause {
+            scope: self.parts.journal.scope(),
+            confirmed,
+            journal: self.parts.journal.anchor(),
+            keeper: self.parts.keeper.anchor(),
+            transitions: self
+                .rollover_custody
+                .as_ref()
+                .map_or(0, |c| c.transition_count()),
+        })
+    }
+
+    /// Transfer a verified predecessor without another storage read.
+    pub(crate) fn into_rollover_verified(
+        self,
+        verified: VerifiedRolloverPause,
+    ) -> Result<
+        (
+            UnknownTimeRolloverResources,
+            archive::journal::rollover::Previous,
+        ),
+        Self,
+    > {
+        if self.fenced
+            || !(1..=100_000_000_000).contains(&self.parts.work_limit)
+            || self.parts.sink.pending_publication().is_some()
+            || self.parts.journal.scope() != verified.scope
+            || self.parts.journal.confirmed() != Some(verified.confirmed)
+            || verified.confirmed.retention != self.parts.sink.retention()
+            || self.parts.journal.anchor() != verified.journal
+            || self.parts.keeper.anchor() != verified.keeper
+            || self
+                .rollover_custody
+                .as_ref()
+                .map_or(0, |c| c.transition_count())
+                != verified.transitions
+        {
+            return Err(self);
+        }
+        let UnknownTimeParts {
+            sink,
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+        } = self.parts;
+        let resources = UnknownTimeRolloverResources {
+            sink,
+            deployment,
+            replay,
+            authority,
+            limits,
+            work_limit,
+            original_scope: journal.scope(),
+            original_journal: journal.anchor(),
+            original_keeper: keeper.anchor(),
+            prior_custody: self.rollover_custody,
+        };
+        Ok((
+            resources,
+            archive::journal::rollover::Previous { journal, keeper },
+        ))
+    }
+}
+
+impl UnknownTimeRolloverResources {
+    /// Scoped authority for staging the successor.
+    pub fn replay(&self) -> &ReplayCx {
+        &self.replay
+    }
+    /// Check the predecessor before an asynchronous transition can touch
+    /// successor storage. This is an identity check, not authorization.
+    pub(crate) fn matches_previous(&self, previous: &archive::journal::rollover::Previous) -> bool {
+        previous.journal.scope() == self.original_scope
+            && previous.journal.anchor() == self.original_journal
+            && previous.keeper.anchor() == self.original_keeper
+    }
+
+    /// Whether the original sink still holds a source or fence.
+    pub fn has_pending(&self) -> bool {
+        self.sink.has_pending()
+    }
+
+    /// Perform all fallible custody reads before returning an opaque
+    /// attachment. Pending media remains in `self` throughout the checks.
+    pub(crate) fn prepare_attachment(
+        &mut self,
+        active: archive::journal::rollover::Active,
+    ) -> Result<PreparedUnknownTimeAttachment, archive::journal::rollover::Active> {
+        let binding = active.binding();
+        if binding.scope != self.original_scope
+            || binding.old_journal != self.original_journal
+            || binding.old_keeper != self.original_keeper
+            || binding.confirmed.retention != self.sink.retention()
+            || self.sink.pending_publication().is_some()
+            || !(1..=100_000_000_000).contains(&self.work_limit)
+        {
+            return Err(active);
+        }
+        if let Some(prior) = &mut self.prior_custody {
+            if active.check_prior(prior, &self.replay).is_err() {
+                return Err(active);
+            }
+        }
+        let (journal, keeper, custody) = match active.into_worker_parts(&self.replay) {
+            Ok(parts) => parts,
+            Err(active) => return Err(active),
+        };
+        let custody = match self.prior_custody.take() {
+            Some(mut prior) => {
+                prior.append(custody);
+                prior
+            }
+            None => custody,
+        };
+        Ok(PreparedUnknownTimeAttachment {
+            binding,
+            journal,
+            keeper,
+            custody,
+        })
+    }
+
+    /// Attach a previously checked successor without reading its storage.
+    /// A fresh in-memory cancellation checkpoint still applies.
+    pub(crate) fn attach_prepared(
+        self,
+        attachment: PreparedUnknownTimeAttachment,
+    ) -> Result<UnknownTimeWorker, PreparedUnknownTimeAttachRefusal> {
+        let binding = attachment.binding;
+        if binding.scope != self.original_scope
+            || binding.old_journal != self.original_journal
+            || binding.old_keeper != self.original_keeper
+            || binding.confirmed.retention != self.sink.retention()
+            || self.sink.pending_publication().is_some()
+            || self.prior_custody.is_some()
+            || !(1..=100_000_000_000).contains(&self.work_limit)
+            || self.replay.checkpoint("unifi-av-prepared-attach").is_err()
+        {
+            return Err(PreparedUnknownTimeAttachRefusal {
+                resources: self,
+                attachment,
+            });
+        }
+        let parts = UnknownTimeParts {
+            sink: self.sink,
+            deployment: self.deployment,
+            journal: attachment.journal,
+            keeper: attachment.keeper,
+            replay: self.replay,
+            authority: self.authority,
+            limits: self.limits,
+            work_limit: self.work_limit,
+        };
+        Ok(UnknownTimeWorker {
+            state: Arc::new(Mutex::new(UnknownTimeState {
+                parts,
+                report: None,
+                rollover_custody: Some(attachment.custody),
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
+
+    /// Verify and replay this worker's exact ledgered A/V root.
+    pub fn replay_confirmed_av(
+        &mut self,
+        active: &mut archive::journal::rollover::Active,
+        read: &dyn archive::ReadAuthority,
+        object_limits: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+    ) -> Result<RootLedgerReceipt, archive::journal::rollover::AvReplayError> {
+        if active.binding().scope != self.original_scope
+            || active.binding().old_journal != self.original_journal
+            || active.binding().old_keeper != self.original_keeper
+            || active.binding().confirmed.retention != self.sink.retention()
+        {
+            return Err(archive::journal::rollover::AvReplayError::History(
+                archive::journal::Error::Invalid,
+            ));
+        }
+        if let Some(prior) = &mut self.prior_custody {
+            active
+                .check_prior(prior, &self.replay)
+                .map_err(archive::journal::rollover::AvReplayError::History)?;
+        }
+        active.replay_confirmed_av(
+            &mut self.deployment,
+            read,
+            self.authority.as_ref(),
+            self.limits,
+            object_limits,
+            work,
+            &self.replay,
+        )
+    }
+
+    /// Restore the exact predecessor after an uncommitted transition.
+    pub fn restore(
+        self,
+        previous: archive::journal::rollover::Previous,
+    ) -> Result<UnknownTimeRetirement, UnknownTimeRolloverRestoreRefusal> {
+        if previous.journal.scope() != self.original_scope
+            || previous.journal.anchor() != self.original_journal
+            || previous.keeper.anchor() != self.original_keeper
+        {
+            return Err(UnknownTimeRolloverRestoreRefusal {
+                resources: self,
+                previous,
+            });
+        }
+        Ok(UnknownTimeRetirement {
+            parts: UnknownTimeParts {
+                sink: self.sink,
+                deployment: self.deployment,
+                journal: previous.journal,
+                keeper: previous.keeper,
+                replay: self.replay,
+                authority: self.authority,
+                limits: self.limits,
+                work_limit: self.work_limit,
+            },
+            fenced: false,
+            rollover_custody: self.prior_custody,
+        })
+    }
+
+    /// Attach a replayed successor and retain predecessor/switch custody.
+    pub fn attach(
+        mut self,
+        active: archive::journal::rollover::Active,
+    ) -> Result<UnknownTimeWorker, UnknownTimeRolloverAttachRefusal> {
+        if active.binding().scope != self.original_scope
+            || active.binding().old_journal != self.original_journal
+            || active.binding().old_keeper != self.original_keeper
+            || active.binding().confirmed.retention != self.sink.retention()
+            || self.sink.pending_publication().is_some()
+            || !(1..=100_000_000_000).contains(&self.work_limit)
+        {
+            return Err(UnknownTimeRolloverAttachRefusal {
+                resources: self,
+                active,
+            });
+        }
+        if let Some(prior) = &mut self.prior_custody {
+            if active.check_prior(prior, &self.replay).is_err() {
+                return Err(UnknownTimeRolloverAttachRefusal {
+                    resources: self,
+                    active,
+                });
+            }
+        }
+        let (journal, keeper, custody) = match active.into_worker_parts(&self.replay) {
+            Ok(parts) => parts,
+            Err(active) => {
+                return Err(UnknownTimeRolloverAttachRefusal {
+                    resources: self,
+                    active,
+                });
+            }
+        };
+        let custody = match self.prior_custody {
+            Some(mut prior) => {
+                prior.append(custody);
+                prior
+            }
+            None => custody,
+        };
+        let parts = UnknownTimeParts {
+            sink: self.sink,
+            deployment: self.deployment,
+            journal,
+            keeper,
+            replay: self.replay,
+            authority: self.authority,
+            limits: self.limits,
+            work_limit: self.work_limit,
+        };
+        Ok(UnknownTimeWorker {
+            state: Arc::new(Mutex::new(UnknownTimeState {
+                parts,
+                report: None,
+                rollover_custody: Some(custody),
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
 }
 
 /// One region-owned, cancellation-drained unknown-time archive attempt.
@@ -671,6 +1107,17 @@ pub struct UnknownTimeWorker {
     state: Arc<Mutex<UnknownTimeState>>,
     running: Option<Drained<Job, ()>>,
     fenced: bool,
+}
+
+/// Refusal to inspect or renew the worker's existing audio epoch.
+#[derive(Debug)]
+pub enum AudioAllowanceError {
+    /// An archive operation is still running or owns the state lock.
+    Busy,
+    /// An uncertain operation or poisoned state requires reconciliation.
+    Fenced,
+    /// The muxer refused renewal, including an unresolved publication.
+    Mux(super::av_recording::Error),
 }
 
 fn classify_unknown_time(
@@ -743,10 +1190,71 @@ fn classify_unknown_time(
         reason,
         pending,
         receipt,
+        rollover: None,
     }
 }
 
 impl UnknownTimeWorker {
+    /// Inspect the existing epoch allowance without blocking archive work.
+    pub fn remaining_audio_frames(&mut self) -> Result<u64, AudioAllowanceError> {
+        if self.fenced {
+            return Err(AudioAllowanceError::Fenced);
+        }
+        if self.running.is_some() {
+            return Err(AudioAllowanceError::Busy);
+        }
+        match self.state.try_lock() {
+            Ok(state) => Ok(state.parts.sink.remaining_audio_frames()),
+            Err(TryLockError::WouldBlock) => Err(AudioAllowanceError::Busy),
+            Err(TryLockError::Poisoned(_)) => {
+                self.fenced = true;
+                Err(AudioAllowanceError::Fenced)
+            }
+        }
+    }
+
+    /// Renew the existing AAC clock without consuming the queued source or
+    /// granting permission to retry a prior archive refusal.
+    pub fn extend_audio_limit(
+        &mut self,
+        additional_frames: u64,
+    ) -> Result<u64, AudioAllowanceError> {
+        if self.fenced {
+            return Err(AudioAllowanceError::Fenced);
+        }
+        if self.running.is_some() {
+            return Err(AudioAllowanceError::Busy);
+        }
+        match self.state.try_lock() {
+            Ok(mut state) => {
+                state
+                    .parts
+                    .sink
+                    .extend_audio_limit(additional_frames)
+                    .map_err(AudioAllowanceError::Mux)?;
+                Ok(state.parts.sink.remaining_audio_frames())
+            }
+            Err(TryLockError::WouldBlock) => Err(AudioAllowanceError::Busy),
+            Err(TryLockError::Poisoned(_)) => {
+                self.fenced = true;
+                Err(AudioAllowanceError::Fenced)
+            }
+        }
+    }
+
+    /// Reconstitute an exact in-process retirement without changing its fence
+    /// or granting retry authority. No task or I/O is started.
+    pub(crate) fn from_retirement(retirement: UnknownTimeRetirement) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(UnknownTimeState {
+                parts: retirement.parts,
+                report: None,
+                rollover_custody: retirement.rollover_custody,
+            })),
+            running: None,
+            fenced: retirement.fenced,
+        }
+    }
     /// Whether this owner has no running attempt, pending source or fence.
     pub(crate) fn is_idle(&self) -> bool {
         if self.fenced || self.running.is_some() {
@@ -766,6 +1274,36 @@ impl UnknownTimeWorker {
             state: Arc::new(Mutex::new(UnknownTimeState {
                 parts,
                 report: None,
+                rollover_custody: None,
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
+
+    /// Reattach a replayed cold-recovered lineage to an A/V worker.
+    /// The sink and all switch owners are returned if verification fails.
+    pub fn from_recovered(
+        parts: UnknownTimeParts,
+        mut custody: archive::journal::rollover::WorkerCustody,
+    ) -> Result<Self, (UnknownTimeParts, archive::journal::rollover::WorkerCustody)> {
+        if !(1..=100_000_000_000).contains(&parts.work_limit)
+            || parts.sink.pending_publication().is_some()
+            || parts
+                .journal
+                .confirmed()
+                .is_none_or(|pin| pin.retention != parts.sink.retention())
+            || custody
+                .check(&parts.journal, &parts.keeper, &parts.replay)
+                .is_err()
+        {
+            return Err((parts, custody));
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(UnknownTimeState {
+                parts,
+                report: None,
+                rollover_custody: Some(custody),
             })),
             running: None,
             fenced: false,
@@ -836,7 +1374,87 @@ impl UnknownTimeWorker {
             let Ok(mut state) = state.lock() else {
                 return;
             };
-            let UnknownTimeState { parts, report } = &mut *state;
+            let UnknownTimeState {
+                parts,
+                report,
+                rollover_custody,
+            } = &mut *state;
+            if child.is_cancel_requested() {
+                *report = Some(UnknownTimePublication::Refused {
+                    stage: UnknownTimeFailureStage::BeforePublication,
+                    reason: FailureReason::CancelledOrDenied,
+                    pending: parts.sink.pending_publication(),
+                    receipt: None,
+                    rollover: None,
+                });
+                return;
+            }
+            if let Some(custody) = rollover_custody {
+                if let Err(error) = custody.check(&parts.journal, &parts.keeper, &parts.replay) {
+                    *report = Some(UnknownTimePublication::Refused {
+                        stage: UnknownTimeFailureStage::BeforePublication,
+                        reason: journal_reason(error),
+                        pending: parts.sink.pending_publication(),
+                        receipt: None,
+                        rollover: None,
+                    });
+                    return;
+                }
+            }
+            if child.is_cancel_requested() {
+                *report = Some(UnknownTimePublication::Refused {
+                    stage: UnknownTimeFailureStage::BeforePublication,
+                    reason: FailureReason::CancelledOrDenied,
+                    pending: parts.sink.pending_publication(),
+                    receipt: None,
+                    rollover: None,
+                });
+                return;
+            }
+            // Capacity must be checked before flush installs a candidate fence.
+            // Once a settled predecessor is old enough to rotate, a definite
+            // refusal here preserves the pending segment and allows the caller
+            // to stage a successor without guessing whether publication ran.
+            if parts.sink.pending_publication().is_none()
+                && parts.journal.confirmed().is_some()
+                && parts.journal.pending().is_none()
+                && parts.journal.replay_pin().is_none()
+                && parts.journal.anchor().sequence > 3
+            {
+                if let Err(error) = parts
+                    .journal
+                    .preflight_next_publication(&mut parts.keeper, &parts.replay)
+                {
+                    let reason = journal_reason(error);
+                    let rollover = if reason == FailureReason::JournalCapacity {
+                        parts.journal.confirmed().map(|confirmed| RolloverNeed {
+                            confirmed,
+                            journal: parts.journal.anchor(),
+                            keeper: parts.keeper.anchor(),
+                        })
+                    } else {
+                        None
+                    };
+                    *report = Some(UnknownTimePublication::Refused {
+                        stage: UnknownTimeFailureStage::BeforePublication,
+                        reason,
+                        pending: None,
+                        receipt: None,
+                        rollover,
+                    });
+                    return;
+                }
+                if child.is_cancel_requested() {
+                    *report = Some(UnknownTimePublication::Refused {
+                        stage: UnknownTimeFailureStage::BeforePublication,
+                        reason: FailureReason::CancelledOrDenied,
+                        pending: None,
+                        receipt: None,
+                        rollover: None,
+                    });
+                    return;
+                }
+            }
             let access = CurrentRetention {
                 cx: &child,
                 inner: parts.authority.as_ref(),
@@ -937,13 +1555,16 @@ impl UnknownTimeWorker {
             });
         }
         match Arc::try_unwrap(state) {
-            Ok(state) => Ok(UnknownTimeRetirement {
-                parts: state
+            Ok(state) => {
+                let state = state
                     .into_inner()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .parts,
-                fenced,
-            }),
+                    .unwrap_or_else(|error| error.into_inner());
+                Ok(UnknownTimeRetirement {
+                    parts: state.parts,
+                    fenced,
+                    rollover_custody: state.rollover_custody,
+                })
+            }
             Err(state) => Err(Self {
                 state,
                 running: None,

@@ -17,11 +17,11 @@ use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 use super::{
     AudioCodec, VideoChannel, av_bootstrap, av_bootstrap_driver, av_recording,
     av_unknown_worker_guard::{self, Advance, Guard, SessionEvent},
-    conversation, events, intent, management,
+    av_worker, conversation, events, intent, management,
     metered::MeteredClock,
     motion, pipeline, receive,
     source_coordinator::{self, ArchiveAdmission, Coordinator},
-    supervisor,
+    source_worker, supervisor,
 };
 
 /// Exact phase owners returned for shutdown or recovery.
@@ -89,6 +89,77 @@ pub struct Session<'scope, 'task, IO> {
     phase: Option<Phase<'scope, 'task, IO>>,
 }
 
+/// A session cannot renew audio before or after its recording phase.
+#[derive(Debug)]
+pub enum AudioAllowanceError {
+    /// The session does not currently own a recording guard.
+    NotRecording,
+    /// The archive worker refused the requested renewal.
+    Worker(av_worker::AudioAllowanceError),
+}
+
+/// Explicit per-session authority for automatic AAC allowance renewal.
+/// `minimum` should cover the largest permitted segment's AAC frame count.
+/// This does not authorize retries, reconnection, publication, or retention.
+pub struct AudioAllowancePolicy {
+    minimum: u64,
+    chunk: u64,
+    remaining_budget: u64,
+}
+
+impl AudioAllowancePolicy {
+    /// Construct a bounded renewal plan. Each clock extension may add no more
+    /// than 16 million observations, and the total budget is caller supplied.
+    pub fn new(minimum: u64, chunk: u64, budget: u64) -> Option<Self> {
+        if minimum == 0 || chunk == 0 || chunk > 16_000_000 {
+            return None;
+        }
+        Some(Self {
+            minimum,
+            chunk,
+            remaining_budget: budget,
+        })
+    }
+
+    /// Unspent frame observations authorized by the caller.
+    pub fn remaining_budget(&self) -> u64 {
+        self.remaining_budget
+    }
+}
+
+/// Result of one policy-aware scheduling step. A renewal is reported before
+/// any subsequent source or archive work is started.
+#[must_use]
+pub enum AudioAllowanceStep {
+    /// The normal session returned its complete result.
+    Session(Step),
+    /// The existing epoch was extended; no session work was polled.
+    Renewed {
+        /// Allowance before renewal.
+        before: u64,
+        /// Allowance after renewal.
+        after: u64,
+        /// Unspent caller-authorized observations.
+        budget: u64,
+    },
+    /// The plan cannot reach its configured minimum without more authority.
+    Exhausted {
+        /// Current epoch allowance.
+        remaining: u64,
+        /// Unspent caller-authorized observations.
+        budget: u64,
+        /// Complete control outcome while media remained paused.
+        control: supervisor::Step,
+    },
+    /// The archive state refused inspection or renewal; media remained paused.
+    Refused {
+        /// Payload-free refusal.
+        error: AudioAllowanceError,
+        /// Complete control outcome while media remained paused.
+        control: supervisor::Step,
+    },
+}
+
 /// Exact phase owners after stopping further admission.
 #[must_use = "drain active workers and account for all returned owners"]
 pub enum Stop<'scope, 'task, IO> {
@@ -140,6 +211,12 @@ pub struct Control<'a, 'scope, 'task, IO> {
 }
 
 impl<IO: AsyncRead + AsyncWrite + Unpin> Control<'_, '_, '_, IO> {
+    pub(super) fn from_supervisor<'a, 'scope, 'task>(
+        supervisor: &'a mut supervisor::Supervisor<'scope, 'task, IO>,
+    ) -> Control<'a, 'scope, 'task, IO> {
+        Control { supervisor }
+    }
+
     /// Set the bounded time-sync reply allowance without polling the session.
     /// `None` uses the caller's poll wait; this grants no reply authority.
     pub fn set_time_sync_reply_wait(
@@ -317,6 +394,22 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         }
     }
 
+    /// Reassemble an already constructed recording guard and its separate
+    /// source owner. This grants no authority and does not start any work.
+    pub fn from_recording(coordinator: Coordinator, guard: Box<Guard<'scope, 'task, IO>>) -> Self {
+        Self {
+            coordinator,
+            phase: Some(Phase::Recording(guard)),
+        }
+    }
+
+    pub(super) fn from_parts(coordinator: Coordinator, phase: Phase<'scope, 'task, IO>) -> Self {
+        Self {
+            coordinator,
+            phase: Some(phase),
+        }
+    }
+
     /// Borrow only control operations while keeping all media and archive owners here.
     /// No control is available after a refused transition; recover the refusal instead.
     pub fn control(&mut self) -> Option<Control<'_, 'scope, 'task, IO>> {
@@ -326,6 +419,17 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             Phase::TransitionRefused(_) => return None,
         };
         Some(Control { supervisor })
+    }
+
+    /// Check both clocks against the existing controller without polling it.
+    pub(super) fn clocks_match(
+        &mut self,
+        owner: &MeteredClock<'_, '_>,
+        clock: &MeteredClock<'_, '_>,
+    ) -> bool {
+        self.control().is_some_and(|control| {
+            control.supervisor.matches_clock(owner) && control.supervisor.matches_clock(clock)
+        })
     }
 
     /// Authorize one retry of a definitely pending separate source.
@@ -339,6 +443,141 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             Some(Phase::Recording(guard)) => guard.authorize_retry(),
             _ => false,
         }
+    }
+
+    /// Return a settled A/V capacity boundary only when the separate source
+    /// worker is idle. This is a scheduling observation, not rollover authority.
+    pub(super) fn ready_rollover(
+        &mut self,
+        owner_clock: &MeteredClock<'_, '_>,
+        clock: &MeteredClock<'_, '_>,
+    ) -> Option<av_worker::RolloverNeed> {
+        if self.coordinator.source_status() != source_worker::Status::Idle {
+            return None;
+        }
+        match self.phase.as_mut()? {
+            Phase::Recording(guard) => {
+                if guard.control_supervisor().matches_clock(owner_clock)
+                    && guard.control_supervisor().matches_clock(clock)
+                {
+                    guard.rollover_need()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Service only the existing controller while media is paused at capacity.
+    pub(super) async fn rollover_control(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> Option<supervisor::Step> {
+        match self.phase.as_mut()? {
+            Phase::Recording(guard) => Some(guard.service_control(owner, operation, wait).await),
+            _ => None,
+        }
+    }
+
+    /// Explicitly extend the existing AAC epoch allowance without retrying a
+    /// failed archive attempt or resetting its timeline.
+    pub fn extend_audio_limit(
+        &mut self,
+        additional_frames: u64,
+    ) -> Result<u64, AudioAllowanceError> {
+        match self.phase.as_mut() {
+            Some(Phase::Recording(guard)) => guard
+                .extend_audio_limit(additional_frames)
+                .map_err(AudioAllowanceError::Worker),
+            _ => Err(AudioAllowanceError::NotRecording),
+        }
+    }
+
+    /// Apply a caller-bounded renewal policy before starting more work. Active
+    /// archive tasks are driven normally so control traffic and cancellation
+    /// can drain. No failed publication is automatically retried.
+    pub async fn step_with_audio_allowance(
+        &mut self,
+        policy: &mut AudioAllowancePolicy,
+        owner: &mut conversation::Owner<'_, 'scope, 'task>,
+        operation: &OperationId,
+        wait: Duration,
+        task: &'scope TaskCx<'task>,
+        cx: &'scope Cx,
+        clock: MeteredClock<'scope, 'task>,
+        av_archive: ArchiveAdmission<'_>,
+        source_archive: ArchiveAdmission<'_>,
+    ) -> AudioAllowanceStep {
+        let context_valid = owner.cx.checkpoint().is_ok()
+            && owner.clock.matches(owner.task, owner.cx)
+            && owner.clock.matches(task, cx)
+            && clock.matches(task, cx);
+        if context_valid && self.coordinator.source_status() == source_worker::Status::Idle {
+            if let Some(Phase::Recording(guard)) = self.phase.as_mut() {
+                if guard.control_supervisor().matches_clock(&owner.clock)
+                    && guard.control_supervisor().matches_clock(&clock)
+                {
+                    match guard.remaining_audio_frames() {
+                        Ok(Some(before)) if before < policy.minimum => {
+                            if policy.remaining_budget < policy.minimum - before {
+                                let control =
+                                    Box::pin(guard.service_control(owner, operation, wait)).await;
+                                return AudioAllowanceStep::Exhausted {
+                                    remaining: before,
+                                    budget: policy.remaining_budget,
+                                    control,
+                                };
+                            }
+                            let additional = policy.chunk.min(policy.remaining_budget);
+                            match guard.extend_audio_limit(additional) {
+                                Ok(after) => {
+                                    policy.remaining_budget -= additional;
+                                    return AudioAllowanceStep::Renewed {
+                                        before,
+                                        after,
+                                        budget: policy.remaining_budget,
+                                    };
+                                }
+                                Err(error) => {
+                                    let control =
+                                        Box::pin(guard.service_control(owner, operation, wait))
+                                            .await;
+                                    return AudioAllowanceStep::Refused {
+                                        error: AudioAllowanceError::Worker(error),
+                                        control,
+                                    };
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let control =
+                                Box::pin(guard.service_control(owner, operation, wait)).await;
+                            return AudioAllowanceStep::Refused {
+                                error: AudioAllowanceError::Worker(error),
+                                control,
+                            };
+                        }
+                        Ok(Some(_)) | Ok(None) => (),
+                    }
+                }
+            }
+        }
+        AudioAllowanceStep::Session(
+            self.step(
+                owner,
+                operation,
+                wait,
+                task,
+                cx,
+                clock,
+                av_archive,
+                source_archive,
+            )
+            .await,
+        )
     }
 
     /// Advance once, transferring every result to the caller.

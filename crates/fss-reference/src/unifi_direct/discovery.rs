@@ -20,6 +20,9 @@ use std::{
 #[path = "discovery_fleet.rs"]
 pub mod fleet;
 
+#[path = "discovery_scan.rs"]
+pub mod scan;
+
 const MAX_PACKETS: usize = 128;
 const MAX_TARGETS: usize = 64;
 const MAX_COMBINED_WINDOWS: usize = 4;
@@ -238,7 +241,7 @@ pub enum Stop {
 }
 
 /// Observed results and their explicit capture limit.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Report {
     /// Unauthenticated camera candidates; repeated matching replies are deduplicated.
     pub cameras: Vec<CameraCandidate>,

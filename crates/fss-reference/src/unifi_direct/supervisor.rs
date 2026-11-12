@@ -185,6 +185,10 @@ enum Ready {
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task, IO> {
+    pub(crate) fn source_key(&self) -> fss_container::flv_avc::SourceKey {
+        self.pipeline.source_key()
+    }
+
     /// Join an established controller and pipeline; caller binds them to the same camera.
     pub fn new(
         mut session: receive::Session<'scope, 'task, IO>,

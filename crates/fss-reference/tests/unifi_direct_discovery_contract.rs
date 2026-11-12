@@ -158,6 +158,585 @@ fn packet() -> Vec<u8> {
     packet_with(Some([0x10, 2, 3, 4, 5, 6]), b"UVC.v4.example", true)
 }
 
+#[test]
+fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestResult {
+    use asupersync::time::{sleep, timeout};
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::{Enrollment, Fleet, State},
+            scan::{Error as ScanError, Outcome, Phase, Scanner},
+        },
+        metered::MeteredClock,
+    };
+    use std::{
+        future::{Future, poll_fn},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::Poll,
+    };
+
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(8)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
+    let observed = Arc::new(AtomicUsize::new(0));
+    let worker_observed = Arc::clone(&observed);
+    let worker = std::thread::spawn(move || -> std::io::Result<()> {
+        for index in 0..3 {
+            let mut query = [0_u8; 32];
+            let (count, peer) = server.recv_from(&mut query)?;
+            if &query[..count] != fss_packet::unifi_discovery::V1_QUERY.as_slice() {
+                return Err(std::io::Error::other("unexpected discovery query"));
+            }
+            worker_observed.fetch_add(1, Ordering::Release);
+            if index == 1 {
+                server.send_to(&packet(), peer)?;
+            }
+        }
+        Ok(())
+    });
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:periodic-discovery",
+        Duration::from_millis(100),
+        8,
+    )?;
+    let enrollment = Enrollment::new(
+        [0x10, 2, 3, 4, 5, 6],
+        ContentDigest::sha256(b"periodic camera"),
+        ContentDigest::sha256(b"periodic admission"),
+        ContentDigest::sha256(b"periodic certificate"),
+        ContentDigest::sha256(b"periodic credential"),
+        1,
+    )?;
+    let initial = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
+    let fleet = Fleet::from_report(initial, &[enrollment])?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:periodic-discovery")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |owner, cx| {
+                let start = cx.now().as_nanos();
+                let output: TestResult = async {
+                    let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
+                    assert!(matches!(
+                        Scanner::new(cx, owner, clock, &fleet, config.clone(), Duration::ZERO),
+                        Err(ScanError::Configuration)
+                    ));
+                    let scanner = Scanner::new(
+                        cx,
+                        owner,
+                        clock,
+                        &fleet,
+                        config.clone(),
+                        Duration::from_secs(1),
+                    )?;
+                    let first = match scanner.next().await? {
+                        Outcome::Updated(snapshot) => snapshot,
+                        Outcome::Incomplete(_) => return Err("first scan incomplete".into()),
+                    };
+                    assert_eq!(fleet.state(0), Some(State::NotObserved));
+                    assert!(first.report().cameras.is_empty());
+                    assert_eq!(observed.load(Ordering::Acquire), 1);
+                    let mut waiting = Box::pin(scanner.next());
+                    poll_fn(|context| {
+                        assert!(matches!(waiting.as_mut().poll(context), Poll::Pending));
+                        Poll::Ready(())
+                    })
+                    .await;
+                    assert_eq!(scanner.phase(), Phase::Waiting);
+                    assert!(matches!(scanner.next().await, Err(ScanError::Busy)));
+                    drop(waiting);
+                    assert_eq!(scanner.phase(), Phase::Idle);
+                    assert_eq!(observed.load(Ordering::Acquire), 1);
+                    let second = match scanner.next().await? {
+                        Outcome::Updated(snapshot) => snapshot,
+                        Outcome::Incomplete(_) => return Err("second scan incomplete".into()),
+                    };
+                    assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+                    assert_eq!(second.report().cameras[0].mac(), Some(enrollment.mac()));
+                    assert!(first.report().cameras.is_empty());
+                    sleep(cx.now(), Duration::from_millis(1100)).await;
+                    let mut pending = Box::pin(scanner.next());
+                    timeout(
+                        cx.now(),
+                        Duration::from_secs(3),
+                        poll_fn(|context| match pending.as_mut().poll(context) {
+                            Poll::Pending
+                                if scanner.phase() == Phase::Probing
+                                    && observed.load(Ordering::Acquire) == 3 =>
+                            {
+                                Poll::Ready(())
+                            }
+                            Poll::Pending => {
+                                context.waker().wake_by_ref();
+                                Poll::Pending
+                            }
+                            Poll::Ready(_) => panic!("third scan unexpectedly completed"),
+                        }),
+                    )
+                    .await
+                    .map_err(|_| "third query not observed")?;
+                    drop(pending);
+                    assert_eq!(scanner.phase(), Phase::Interrupted);
+                    assert!(matches!(scanner.next().await, Err(ScanError::Interrupted)));
+                    scanner.acknowledge_interruption()?;
+                    assert_eq!(scanner.phase(), Phase::Idle);
+                    let mut rearmed = Box::pin(scanner.next());
+                    poll_fn(|context| {
+                        assert!(matches!(rearmed.as_mut().poll(context), Poll::Pending));
+                        Poll::Ready(())
+                    })
+                    .await;
+                    assert_eq!(scanner.phase(), Phase::Waiting);
+                    drop(rearmed);
+                    assert_eq!(scanner.phase(), Phase::Idle);
+                    assert_eq!(observed.load(Ordering::Acquire), 3);
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("periodic discovery fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(
+                        3 + i128::from(
+                            cx.now()
+                                .as_nanos()
+                                .checked_sub(start)
+                                .expect("runtime clock regressed"),
+                        ),
+                    ),
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    worker.join().map_err(|_| "fixture thread panicked")??;
+    run.output?;
+    run.receipt?;
+    Ok(())
+}
+
+#[test]
+fn periodic_scanner_keeps_partial_report_without_replacing_fleet() -> TestResult {
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::{Enrollment, Fleet, State},
+            scan::{Outcome, Scanner},
+        },
+        metered::MeteredClock,
+    };
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
+    let worker = std::thread::spawn(move || -> std::io::Result<()> {
+        let mut query = [0_u8; 32];
+        let (_, peer) = server.recv_from(&mut query)?;
+        server.send_to(&packet(), peer)?;
+        Ok(())
+    });
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:partial-discovery",
+        Duration::from_secs(1),
+        1,
+    )?;
+    let enrollment = Enrollment::new(
+        [0x10, 2, 3, 4, 5, 6],
+        ContentDigest::sha256(b"partial camera"),
+        ContentDigest::sha256(b"partial admission"),
+        ContentDigest::sha256(b"partial certificate"),
+        ContentDigest::sha256(b"partial credential"),
+        1,
+    )?;
+    let initial = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
+    let fleet = Fleet::from_report(initial, &[enrollment])?;
+    let before = fleet.latest_snapshot();
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:partial-discovery")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |owner, cx| {
+                let start = cx.now().as_nanos();
+                let output: TestResult = async {
+                    let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
+                    let scanner = Scanner::new(
+                        cx,
+                        owner,
+                        clock,
+                        &fleet,
+                        config.clone(),
+                        Duration::from_secs(1),
+                    )?;
+                    let partial = match scanner.next().await? {
+                        Outcome::Incomplete(report) => report,
+                        Outcome::Updated(_) => return Err("partial window was installed".into()),
+                    };
+                    assert_eq!(partial.stop, Stop::PacketLimit);
+                    assert_eq!(partial.datagrams, 1);
+                    assert_eq!(partial.cameras[0].mac(), Some(enrollment.mac()));
+                    assert!(std::rc::Rc::ptr_eq(&before, &fleet.latest_snapshot()));
+                    assert_eq!(fleet.state(0), Some(State::NotObserved));
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("partial discovery fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(
+                        3 + i128::from(
+                            cx.now()
+                                .as_nanos()
+                                .checked_sub(start)
+                                .expect("runtime clock regressed"),
+                        ),
+                    ),
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    worker.join().map_err(|_| "fixture thread panicked")??;
+    run.output?;
+    run.receipt?;
+    Ok(())
+}
+
+#[test]
+fn periodic_scanner_wakes_and_drains_when_waiting_task_is_cancelled() -> TestResult {
+    use asupersync::CancelKind;
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::Fleet,
+            scan::{Error as ScanError, Outcome, Phase, Scanner},
+        },
+        metered::MeteredClock,
+    };
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+        time::Instant,
+    };
+
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
+    let worker = std::thread::spawn(move || -> std::io::Result<()> {
+        let mut query = [0_u8; 32];
+        server.recv_from(&mut query)?;
+        server.set_read_timeout(Some(Duration::from_millis(700)))?;
+        match server.recv_from(&mut query) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+            Ok(_) => Err(std::io::Error::other("query sent after cancellation")),
+        }
+    });
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:cancelled-scanner",
+        Duration::from_millis(80),
+        8,
+    )?;
+    let initial = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
+    let fleet = Fleet::from_report(initial, &[])?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:cancelled-scanner")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |owner, cx| {
+                let start = cx.now().as_nanos();
+                let output: TestResult = async {
+                    let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
+                    let scanner = Scanner::new(
+                        cx,
+                        owner,
+                        clock,
+                        &fleet,
+                        config.clone(),
+                        Duration::from_secs(10),
+                    )?;
+                    if !matches!(scanner.next().await?, Outcome::Updated(_)) {
+                        return Err("initial scan incomplete".into());
+                    }
+                    let mut waiting = Box::pin(scanner.next());
+                    poll_fn(|context| {
+                        assert!(matches!(waiting.as_mut().poll(context), Poll::Pending));
+                        Poll::Ready(())
+                    })
+                    .await;
+                    assert_eq!(scanner.phase(), Phase::Waiting);
+                    let now = clock.now()?;
+                    owner.request_cancellation(now)?;
+                    let cancellation_started = Instant::now();
+                    let canceller = (*cx).clone();
+                    let cancellation = std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(100));
+                        canceller.cancel_with(CancelKind::User, None);
+                    });
+                    assert!(matches!(waiting.await, Err(ScanError::Authority)));
+                    cancellation
+                        .join()
+                        .map_err(|_| "cancellation thread panicked")?;
+                    assert!(cancellation_started.elapsed() < Duration::from_secs(2));
+                    assert_eq!(scanner.phase(), Phase::Idle);
+                    owner.begin_drain(now)?;
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Cancelled
+                } else {
+                    TaskOutcome::Failed("cancelled scanner fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(
+                        3 + i128::from(
+                            cx.now()
+                                .as_nanos()
+                                .checked_sub(start)
+                                .expect("runtime clock regressed"),
+                        ),
+                    ),
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    worker.join().map_err(|_| "fixture thread panicked")??;
+    run.output?;
+    run.receipt?;
+    Ok(())
+}
+
+#[test]
+fn periodic_scanner_cancellation_during_probe_preserves_uncertainty() -> TestResult {
+    use asupersync::CancelKind;
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::Fleet,
+            scan::{Error as ScanError, Outcome, Phase, Scanner},
+        },
+        metered::MeteredClock,
+    };
+    use std::{
+        future::{Future, poll_fn},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+        time::Instant,
+    };
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
+    let observed = Arc::new(AtomicBool::new(false));
+    let worker_observed = Arc::clone(&observed);
+    let worker = std::thread::spawn(move || -> std::io::Result<()> {
+        let mut query = [0_u8; 32];
+        server.recv_from(&mut query)?;
+        worker_observed.store(true, Ordering::Release);
+        server.set_read_timeout(Some(Duration::from_millis(700)))?;
+        match server.recv_from(&mut query) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+            Ok(_) => Err(std::io::Error::other("query repeated after cancellation")),
+        }
+    });
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:cancelled-probe",
+        Duration::from_secs(10),
+        8,
+    )?;
+    let initial = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
+    let fleet = Fleet::from_report(initial, &[])?;
+    let before = fleet.latest_snapshot();
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:cancelled-probe")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |owner, cx| {
+                let start = cx.now().as_nanos();
+                let output: TestResult = async {
+                    let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
+                    let scanner = Scanner::new(
+                        cx,
+                        owner,
+                        clock,
+                        &fleet,
+                        config.clone(),
+                        Duration::from_secs(1),
+                    )?;
+                    let mut pending = Box::pin(scanner.next());
+                    poll_fn(|context| match pending.as_mut().poll(context) {
+                        Poll::Pending if observed.load(Ordering::Acquire) => Poll::Ready(()),
+                        Poll::Pending => {
+                            context.waker().wake_by_ref();
+                            Poll::Pending
+                        }
+                        Poll::Ready(_) => panic!("probe unexpectedly completed"),
+                    })
+                    .await;
+                    assert_eq!(scanner.phase(), Phase::Probing);
+                    let now = clock.now()?;
+                    owner.request_cancellation(now)?;
+                    let cancellation_started = Instant::now();
+                    let canceller = (*cx).clone();
+                    let cancellation = std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(100));
+                        canceller.cancel_with(CancelKind::User, None);
+                    });
+                    match pending.await {
+                        Err(ScanError::Authority) => {
+                            assert_eq!(scanner.phase(), Phase::Interrupted)
+                        }
+                        Ok(Outcome::Incomplete(report)) => assert_eq!(report.stop, Stop::Cancelled),
+                        _ => return Err("cancelled probe reported a completed window".into()),
+                    }
+                    cancellation
+                        .join()
+                        .map_err(|_| "cancellation thread panicked")?;
+                    assert!(cancellation_started.elapsed() < Duration::from_secs(2));
+                    assert!(std::rc::Rc::ptr_eq(&before, &fleet.latest_snapshot()));
+                    owner.begin_drain(now)?;
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Cancelled
+                } else {
+                    TaskOutcome::Failed("cancelled probe fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(
+                        3 + i128::from(
+                            cx.now()
+                                .as_nanos()
+                                .checked_sub(start)
+                                .expect("runtime clock regressed"),
+                        ),
+                    ),
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    worker.join().map_err(|_| "fixture thread panicked")??;
+    run.output?;
+    run.receipt?;
+    Ok(())
+}
+
 fn execute(config: &Config) -> Result<Report, Box<dyn Error>> {
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
@@ -764,5 +1343,71 @@ fn owner_camera_live_discovery() -> TestResult {
     if report.cameras.is_empty() {
         return Err("no UniFi camera candidate observed".into());
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "owner-authorized live LAN probe; requires explicit interface and destination"]
+fn owner_camera_periodic_scanner_live() -> TestResult {
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::Fleet,
+            scan::{Outcome, Scanner},
+        },
+        metered::MeteredClock,
+    };
+    let bind: Ipv4Addr = std::env::var("FSS_UNIFI_TEST_BIND")?.parse()?;
+    let target: Ipv4Addr = std::env::var("FSS_UNIFI_TEST_TARGET")?.parse()?;
+    let prefix: u8 = std::env::var("FSS_UNIFI_TEST_PREFIX")?.parse()?;
+    let config = Config::new(
+        bind,
+        prefix,
+        SocketAddrV4::new(target, 10001),
+        "fixture:owner-periodic",
+        Duration::from_secs(3),
+        32,
+    )?;
+    let initial = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
+    let fleet = Fleet::from_report(initial, &[])?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut authority, mut tree) = root()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority, &mut tree,
+            TaskSpec { task_id: TaskId::new("task:owner-periodic")?, started_at: TimestampNs(2) },
+            &cx, async |owner, cx| {
+                let start = cx.now().as_nanos();
+                let output: TestResult = async {
+                    let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
+                    let scanner = Scanner::new(cx, owner, clock, &fleet, config.clone(), Duration::from_millis(200))?;
+                    for window in 1..=2 {
+                        let snapshot = match scanner.next().await? {
+                            Outcome::Updated(snapshot) => snapshot,
+                            Outcome::Incomplete(_) => return Err("owner discovery window incomplete".into()),
+                        };
+                        let cameras = &snapshot.report().cameras;
+                        let g4 = cameras.iter().filter(|candidate| candidate.platform() == "UVC G4 Instant").count();
+                        let issues = (0..cameras.len()).filter_map(|index| snapshot.report().assess_claims(index))
+                            .filter(|claims| *claims != Default::default()).count();
+                        println!("owner_periodic_window={window} candidates={} g4_claims={g4} claim_issues={issues}", cameras.len());
+                        if g4 == 0 { return Err("owner G4 claim was not observed".into()); }
+                    }
+                    Ok(())
+                }.await;
+                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("owner periodic discovery failed".into()) };
+                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos().checked_sub(start).expect("runtime clock regressed"))) }
+            },
+        ).await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    run.output?;
+    run.receipt?;
     Ok(())
 }

@@ -328,6 +328,10 @@ pub(super) fn encode_record(e: &mut CanonicalEncoder, record: &SourceRecord) {
     e.digest(ContentDigest::sha256(record.bytes()));
     match record.kind() {
         RecordKind::Header => e.u8(0),
+        RecordKind::Unframed { origin } => {
+            e.u8(3);
+            e.u8(origin.evidence_id());
+        }
         RecordKind::FirstTag {
             tag_kind,
             timestamp_ms,

@@ -49,6 +49,544 @@ impl archive::ReadAuthority for Access {
 }
 
 #[test]
+fn rollover_supply_worker_retains_partial_and_ready_owners() -> Test {
+    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer}};
+    use fss_reference::unifi_direct::av_rollover_supplies::{Inputs, Outcome, Stage, Worker};
+    use fss_runtime::effect_journal::{EffectJournalStore, PinRetainedEffectJournal};
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = std::env::temp_dir().join(format!("fss-supply-worker-{}", std::process::id()));
+    std::fs::create_dir(&parent)?;
+    let temp = Temp(std::fs::canonicalize(parent)?);
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = 64 * 1024 * 1024;
+    let spec = |name: &str, capabilities: Vec<String>| -> Result<RootAuthoritySpec, Box<dyn Error>> {
+        Ok(RootAuthoritySpec { trace_id: format!("trace:{name}"), operation_id: OperationId::parse(&format!("operation:{name}"))?, principal: "principal:fixture".into(), capabilities, deadline: None, priority: 1, budgets: budget, privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(), anchor_universe: ContentDigest::sha256(b"supply worker fixture"), generation: 1 })
+    };
+    let (mut authority, mut tree) = AuthorityCx::root(spec("supply-worker", vec![RuntimeGrant::ObjectStage.as_str().into()])?, RegionId::new("region:supply-worker")?, RegionKind::Process, budget, TimestampNs(1))?;
+    let replay_authority = fss_core::region::ContextAuthority::new_root(spec("supply-replay",vec!["ADP-REPLAY-001".into()])?)?;
+    let limits = EffectJournalLimits::default();
+    let runtime = RuntimeBuilder::current_thread().blocking_threads(1,1).build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:supply-worker")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let output: Test = async {
+                let clock = MeteredClock::new(task,cx,TimestampNs(4))?;
+                let make = |name: &str| -> Result<Inputs, Box<dyn Error>> {
+                    let retainer = FileTrustedRootPinRetainer::create(temp.0.join(format!("{name}-retainer")),limits,Arc::new(HostSpoolIo),ContentDigest::sha256(name.as_bytes()))?;
+                    let switch = FileEffectJournal::create(temp.0.join(format!("{name}-switch")),limits,Arc::new(HostSpoolIo))?;
+                    Ok(Inputs {root:temp.0.join(name), replay:Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?), io:Arc::new(HostSpoolIo), journal_limits:limits, switch:fss_reference::unifi_direct::av_rollover_supplies::SwitchInput::Prepared(PinRetainedEffectJournal::new(Box::new(switch),Box::new(retainer))?), read:Arc::new(Access(ContentDigest::sha256(b"retention"))), object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536},work_limit:100_000})
+                };
+
+                let mut invalid = make("invalid")?;
+                invalid.root=temp.0.join("outside").join("nested");
+                let invalid=match Worker::new(invalid) {Err(inputs)=>inputs,Ok(_)=>return Err("invalid parent accepted".into())};
+                assert!(!invalid.root.exists());
+                drop(invalid);
+
+                let collision=make("collision")?;
+                std::fs::create_dir(&collision.root)?;
+                std::fs::write(collision.root.join("sentinel"),b"unchanged")?;
+                let mut worker=Worker::new(collision).map_err(|_|"collision setup invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"collision admission refused")?;
+                let completion=worker.join().await.ok_or("collision not joined")?;
+                assert!(completion.runtime.is_ok());
+                assert_eq!(completion.outcome,Outcome::Refused(Stage::Root));
+                let mut retired=worker.retire().map_err(|_|"collision still running")?;
+                assert!(!retired.root_created && retired.journal.is_none() && retired.keeper.is_none());
+                assert!(retired.take_supplies().is_none());
+                assert_eq!(std::fs::read(retired.inputs.as_ref().ok_or("collision input lost")?.root.join("sentinel"))?,b"unchanged");
+                drop(retired);
+
+                let interrupted=make("interrupted")?;
+                interrupted.replay.set_cancel_at_checkpoint_occurrence("unifi-rollover-supplies-create",4);
+                let mut worker=Worker::new(interrupted).map_err(|_|"interrupt setup invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"interrupt admission refused")?;
+                let completion=worker.join().await.ok_or("interrupt not joined")?;
+                assert!(completion.runtime.is_ok());
+                assert_eq!(completion.outcome,Outcome::Refused(Stage::Checkpoint));
+                let mut retired=worker.retire().map_err(|_|"interrupt still running")?;
+                assert!(retired.root_created && retired.journal.is_some() && retired.keeper.is_none());
+                assert!(retired.inputs.is_some() && retired.take_supplies().is_none());
+                drop(retired);
+
+                let ready=make("ready")?;
+                let mut worker=Worker::new(ready).map_err(|_|"ready setup invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"ready admission refused")?;
+                assert!(matches!(worker.start(task,cx,clock,&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_supplies::StartError::Running)));
+                let mut worker=worker.retire().err().ok_or("running worker retired")?;
+                let completion=worker.join().await.ok_or("ready not joined")?;
+                assert!(completion.runtime.is_ok());
+                assert_eq!(completion.outcome,Outcome::Ready);
+                let mut retired=worker.retire().map_err(|_|"ready still running")?;
+                assert_eq!(std::fs::metadata(temp.0.join("ready"))?.permissions().mode() & 0o777,0o700);
+                let created=retired.take_supplies().ok_or("ready supplies lost")?;
+                assert_eq!(created.root,temp.0.join("ready"));
+                assert_eq!(created.journal_limits,limits);
+                let supplies=created.supplies;
+                assert!(supplies.next_journal.head().is_none() && supplies.next_keeper.head().is_none());
+                assert!(supplies.switch.head().is_none());
+                assert!(retired.take_supplies().is_none());
+
+                let make_auto = |name: &str| -> Result<Inputs, Box<dyn Error>> {
+                    Ok(Inputs { root:temp.0.join(name), replay:Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?), io:Arc::new(HostSpoolIo), journal_limits:limits, switch:fss_reference::unifi_direct::av_rollover_supplies::SwitchInput::Create(fss_reference::unifi_direct::av_rollover_supplies::SwitchCustody {root:temp.0.join(format!("{name}-pin")), replay:Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?), io:Arc::new(HostSpoolIo), limits, scope:ContentDigest::sha256(name.as_bytes())}), read:Arc::new(Access(ContentDigest::sha256(b"retention"))), object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536}, work_limit:100_000 })
+                };
+                let mut overlap=make_auto("overlap")?;
+                if let fss_reference::unifi_direct::av_rollover_supplies::SwitchInput::Create(custody)=&mut overlap.switch {custody.root=overlap.root.clone();}
+                let overlap=match Worker::new(overlap) {Err(inputs)=>inputs,Ok(_)=>return Err("overlapping custody accepted".into())};
+                assert!(!overlap.root.exists());
+                drop(overlap);
+
+                let collision=make_auto("pin-collision")?;
+                let pin_root=match &collision.switch {fss_reference::unifi_direct::av_rollover_supplies::SwitchInput::Create(custody)=>custody.root.clone(),_=>return Err("pin plan missing".into())};
+                std::fs::create_dir(&pin_root)?;
+                std::fs::write(pin_root.join("sentinel"),b"untouched")?;
+                let mut worker=Worker::new(collision).map_err(|_|"pin collision setup invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"pin collision admission refused")?;
+                let completion=worker.join().await.ok_or("pin collision not joined")?;
+                assert!(completion.runtime.is_ok());
+                assert_eq!(completion.outcome,Outcome::Refused(Stage::PinRoot));
+                let mut retired=worker.retire().map_err(|_|"pin collision still running")?;
+                assert!(retired.root_created && !retired.pin_root_created && retired.journal.is_some() && retired.keeper.is_some());
+                assert!(retired.take_supplies().is_none());
+                assert_eq!(std::fs::read(pin_root.join("sentinel"))?,b"untouched");
+                drop(retired);
+
+                let interrupted=make_auto("pin-interrupted")?;
+                interrupted.replay.set_cancel_at_checkpoint_occurrence("unifi-rollover-supplies-create",8);
+                let mut worker=Worker::new(interrupted).map_err(|_|"pin interruption setup invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"pin interruption admission refused")?;
+                let completion=worker.join().await.ok_or("pin interruption not joined")?;
+                assert!(completion.runtime.is_ok());
+                assert_eq!(completion.outcome,Outcome::Refused(Stage::Checkpoint));
+                let mut retired=worker.retire().map_err(|_|"pin interruption still running")?;
+                assert!(retired.root_created && retired.pin_root_created && retired.journal.is_some() && retired.keeper.is_some() && retired.pin_retainer.is_some() && retired.switch_journal.is_none() && retired.switch.is_none());
+                assert!(retired.inputs.is_some() && retired.take_supplies().is_none());
+                drop(retired);
+
+                let automatic=make_auto("automatic")?;
+                let mut worker=Worker::new(automatic).map_err(|_|"automatic switch setup invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"automatic switch admission refused")?;
+                let completion=worker.join().await.ok_or("automatic switch not joined")?;
+                assert!(completion.runtime.is_ok());
+                assert_eq!(completion.outcome,Outcome::Ready);
+                let mut retired=worker.retire().map_err(|_|"automatic switch still running")?;
+                assert!(retired.root_created && retired.pin_root_created && retired.switch.is_some());
+                let created=retired.take_supplies().ok_or("automatic switch supplies lost")?;
+                let custody=created.switch_custody.ok_or("automatic switch custody lost")?;
+                assert_eq!(custody.root,temp.0.join("automatic-pin"));
+                assert!(created.supplies.switch.head().is_none());
+                assert!(created.supplies.next_journal.head().is_none() && created.supplies.next_keeper.head().is_none());
+                assert!(retired.take_supplies().is_none());
+
+                let shared_journal=Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?);
+                let shared_pin=Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?);
+                let configuration=|namespace:&str,first:u64,count:u64| fss_reference::unifi_direct::av_rollover_generation::Configuration {namespace:namespace.into(),scope_seed:ContentDigest::sha256(b"generation seed"),first,count,journal_replay:shared_journal.clone(),pin_replay:shared_pin.clone(),journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),journal_limits:limits,pin_limits:limits,read:Arc::new(Access(ContentDigest::sha256(b"retention"))),object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536},work_limit:100_000};
+                assert!(fss_reference::unifi_direct::av_rollover_generation::Plan::new(configuration("../invalid",7,2)).is_err());
+                assert!(fss_reference::unifi_direct::av_rollover_generation::Plan::new(configuration("camera_a",u64::MAX,2)).is_err());
+                let mut plan=fss_reference::unifi_direct::av_rollover_generation::Plan::new(configuration("camera_a",7,2)).map_err(|_|"generation plan refused")?;
+                assert!(plan.extend(1).is_err());
+                let (first,worker)=plan.next_worker().map_err(|_|"first generation refused")?.ok_or("first generation absent")?;
+                let mut twin=fss_reference::unifi_direct::av_rollover_generation::Plan::new(configuration("camera_a",7,2)).map_err(|_|"matching plan refused")?;
+                let (same,twin_worker)=twin.next_worker().map_err(|_|"matching generation refused")?.ok_or("matching generation absent")?;
+                assert_eq!(same,first);
+                assert!(twin_worker.retire().map_err(|_|"matching worker unexpectedly running")?.inputs.is_some());
+                assert_eq!(first.generation,7);
+                assert!(!first.journal_root.exists() && !first.pin_root.exists());
+                let first_retired=worker.retire().map_err(|_|"first planned worker unexpectedly running")?;
+                let first_inputs=first_retired.inputs.ok_or("first planned inputs lost")?;
+                assert!(Arc::ptr_eq(&first_inputs.replay,&shared_journal));
+                shared_journal.request_cancellation();
+                let (second,mut worker)=plan.next_worker().map_err(|_|"second generation refused")?.ok_or("second generation absent")?;
+                assert_eq!(second.generation,8);
+                assert_ne!(first.journal_root,second.journal_root);
+                assert_ne!(first.pin_scope,second.pin_scope);
+                assert!(matches!(worker.start(task,cx,clock,&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_supplies::StartError::Replay)));
+                assert!(!second.journal_root.exists() && !second.pin_root.exists());
+                let second_retired=worker.retire().map_err(|_|"second planned worker unexpectedly running")?;
+                assert!(Arc::ptr_eq(&second_retired.inputs.ok_or("second planned inputs lost")?.replay,&shared_journal));
+                assert_eq!(plan.remaining(),0);
+                assert!(plan.next_worker().map_err(|_|"exhausted generation failed")?.is_none());
+                assert!(plan.extend(0).is_err());
+                assert!(plan.extend(1_000_001).is_err());
+                assert_eq!(plan.remaining(),0);
+                plan.extend(2).map_err(|_|"bounded plan extension refused")?;
+                let (third,worker)=plan.next_worker().map_err(|_|"extended generation refused")?.ok_or("extended generation missing")?;
+                assert_eq!(third.generation,9);
+                assert_ne!(second.pin_scope,third.pin_scope);
+                assert!(!third.journal_root.exists() && !third.pin_root.exists());
+                assert!(worker.retire().map_err(|_|"extended worker unexpectedly running")?.inputs.is_some());
+                assert!(plan.extend(1).is_err());
+                let (fourth,worker)=plan.next_worker().map_err(|_|"fourth generation refused")?.ok_or("fourth generation missing")?;
+                assert_eq!(fourth.generation,10);
+                assert!(worker.retire().map_err(|_|"fourth worker unexpectedly running")?.inputs.is_some());
+                let mut final_plan=fss_reference::unifi_direct::av_rollover_generation::Plan::new(configuration("last",u64::MAX,1)).map_err(|_|"last generation plan refused")?;
+                let (_,worker)=final_plan.next_worker().map_err(|_|"last generation refused")?.ok_or("last generation missing")?;
+                assert!(worker.retire().map_err(|_|"last worker unexpectedly running")?.inputs.is_some());
+                assert!(final_plan.extend(1).is_err());
+                assert_eq!(final_plan.remaining(),0);
+                Ok(())
+            }.await;
+            let outcome=if output.is_ok() {TaskOutcome::Success} else {TaskOutcome::Failed("supply worker fixture".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(60_000_000_000)}
+        }).await?;
+        result.receipt?;
+        result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn retained_generation_reservations_survive_reopen_and_refuse_mismatch() -> Test {
+    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer}};
+    use fss_reference::unifi_direct::av_rollover_generation::{Configuration, Plan, ReservedPlan, ReservationError};
+    use fss_runtime::effect_journal::PinRetainedEffectJournal;
+
+    let root=std::env::temp_dir().join(format!("fss-generation-reservation-{}",std::process::id()));
+    std::fs::create_dir(&root)?;
+    let temp=Temp(std::fs::canonicalize(root)?);
+    let authority=fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id:"trace:generation-reservation".into(),operation_id:OperationId::parse("operation:generation-reservation")?,principal:"principal:fixture".into(),
+        capabilities:vec!["ADP-REPLAY-001".into()],deadline:None,priority:1,budgets:BudgetVector::builder().bytes(64*1024*1024).build()?,
+        privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"generation reservation fixture"),generation:1,
+    })?;
+    let replay=Arc::new(ReplayCx::from_context_authority(&authority,temp.0.clone())?);
+    let limits=EffectJournalLimits::default();
+    let config=|namespace:&str,first:u64| Configuration {
+        namespace:namespace.into(),scope_seed:ContentDigest::sha256(b"reservation scope"),first,count:2,
+        journal_replay:replay.clone(),pin_replay:replay.clone(),journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),
+        journal_limits:limits,pin_limits:limits,read:Arc::new(Access(ContentDigest::sha256(b"retention"))),
+        object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536},work_limit:100_000,
+    };
+    let store=FileEffectJournal::create(temp.0.join("reservations"),limits,Arc::new(HostSpoolIo))?;
+    let pin_scope=ContentDigest::sha256(b"reservation independent pin fixture");
+    let retainer=FileTrustedRootPinRetainer::create(temp.0.join("reservation-pin"),limits,Arc::new(HostSpoolIo),pin_scope)?;
+    let journal=PinRetainedEffectJournal::new(Box::new(store),Box::new(retainer))?;
+    let plan=Plan::new(config("camera",20)).map_err(|_|"reservation plan invalid")?;
+    let mut reserved=ReservedPlan::create(plan,journal,&replay).map_err(|_|"reservation creation refused")?;
+    let (first,worker)=reserved.reserve_next(&replay).map_err(|_|"first reservation refused")?.ok_or("first reservation absent")?;
+    assert_eq!(first.generation,20);
+    assert!(!first.journal_root.exists() && !first.pin_root.exists());
+    assert!(worker.retire().map_err(|_|"reserved worker unexpectedly running")?.inputs.is_some());
+    let retained_head=reserved.head().ok_or("reservation head missing")?;
+    assert_eq!(retained_head.sequence,2);
+    let (_plan,journal)=reserved.into_parts();
+    drop(journal);
+    let reopened=FileEffectJournal::open(temp.0.join("reservations"),limits,Arc::new(HostSpoolIo),retained_head)?;
+    let retainer=FileTrustedRootPinRetainer::open_trusting_storage(temp.0.join("reservation-pin"),limits,Arc::new(HostSpoolIo),pin_scope)?;
+    let journal=PinRetainedEffectJournal::for_reconciliation(Box::new(reopened),Box::new(retainer))?;
+    let wrong=Plan::new(config("camera",20)).map_err(|_|"wrong plan invalid")?;
+    let refusal=match ReservedPlan::recover(wrong,journal,&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("reused generation admitted".into())};
+    assert!(matches!(refusal.reason,ReservationError::Invalid));
+    let wrong_scope=Plan::new(config("different-camera",21)).map_err(|_|"wrong scope plan invalid")?;
+    let refusal=match ReservedPlan::recover(wrong_scope,refusal.journal,&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("different configuration admitted".into())};
+    assert!(matches!(refusal.reason,ReservationError::Invalid));
+    let plan=Plan::new(config("camera",21)).map_err(|_|"recovery plan invalid")?;
+    let mut recovered=ReservedPlan::recover(plan,refusal.journal,&replay).map_err(|_|"reservation recovery refused")?;
+    assert_eq!(recovered.pending(),Some(&first));
+    let refusal=match recovered.reserve_next(&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("unreconciled reservation admitted".into())};
+    assert!(matches!(refusal.reason,ReservationError::ReconciliationRequired) && refusal.candidate.is_none());
+    let mut wrong_identity=first.clone(); wrong_identity.generation+=1;
+    assert!(matches!(recovered.record_reconciliation(&wrong_identity,ContentDigest::sha256(b"fixture evidence"),&replay),Err(ReservationError::Invalid)));
+    recovered.record_reconciliation(&first,ContentDigest::sha256(b"fixture evidence"),&replay).map_err(|_|"reconciliation record refused")?;
+    assert!(recovered.pending().is_none());
+    let (second,worker)=recovered.reserve_next(&replay).map_err(|_|"second reservation refused")?.ok_or("second reservation absent")?;
+    assert_eq!(second.generation,21);
+    assert_ne!(first.pin_scope,second.pin_scope);
+    assert_eq!(recovered.head().ok_or("second head missing")?.sequence,4);
+    assert!(worker.retire().map_err(|_|"second worker unexpectedly running")?.inputs.is_some());
+    assert!(!second.journal_root.exists() && !second.pin_root.exists());
+
+    let small=EffectJournalLimits {max_records:2,..limits};
+    let store=FileEffectJournal::create(temp.0.join("small-reservations"),small,Arc::new(HostSpoolIo))?;
+    let pin=FileTrustedRootPinRetainer::create(temp.0.join("small-reservation-pin"),limits,Arc::new(HostSpoolIo),ContentDigest::sha256(b"small pin"))?;
+    let journal=PinRetainedEffectJournal::new(Box::new(store),Box::new(pin))?;
+    let plan=Plan::new(config("small",40)).map_err(|_|"small plan invalid")?;
+    let mut limited=ReservedPlan::create(plan,journal,&replay).map_err(|_|"small reservation creation refused")?;
+    let (identity,worker)=limited.reserve_next(&replay).map_err(|_|"small reservation refused")?.ok_or("small reservation absent")?;
+    assert!(worker.retire().map_err(|_|"small worker unexpectedly running")?.inputs.is_some());
+    assert!(matches!(limited.record_reconciliation(&identity,ContentDigest::sha256(b"fixture evidence"),&replay),Err(ReservationError::Storage(_))));
+    assert_eq!(limited.pending(),Some(&identity));
+    let refusal=match limited.reserve_next(&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("fenced reservation admitted".into())};
+    assert!(matches!(refusal.reason,ReservationError::Fenced) && refusal.candidate.is_none());
+
+    let store=FileEffectJournal::create(temp.0.join("cancel-reservations"),limits,Arc::new(HostSpoolIo))?;
+    let cancel_scope=ContentDigest::sha256(b"cancel reservation pin");
+    let pin=FileTrustedRootPinRetainer::create(temp.0.join("cancel-reservation-pin"),limits,Arc::new(HostSpoolIo),cancel_scope)?;
+    let journal=PinRetainedEffectJournal::new(Box::new(store),Box::new(pin))?;
+    let plan=Plan::new(config("cancel",50)).map_err(|_|"cancel plan invalid")?;
+    let cancel=ReplayCx::from_context_authority(&authority,temp.0.clone())?;
+    let mut interrupted=ReservedPlan::create(plan,journal,&cancel).map_err(|_|"cancel reservation creation refused")?;
+    cancel.set_cancel_at_checkpoint_occurrence("unifi-generation-reservation",3);
+    let refusal=match interrupted.reserve_next(&cancel) {Err(refusal)=>refusal,Ok(_)=>return Err("post-append cancellation did not refuse".into())};
+    assert!(matches!(refusal.reason,ReservationError::Cancelled));
+    let (selected,worker)=refusal.candidate.ok_or("cancelled reservation candidate lost")?;
+    assert_eq!(selected.generation,50);
+    assert!(worker.retire().map_err(|_|"cancelled worker unexpectedly running")?.inputs.is_some());
+    let pin=interrupted.head().ok_or("cancelled retained head missing")?;
+    assert_eq!(pin.sequence,2);
+    let refusal=match interrupted.reserve_next(&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("cancelled owner resumed".into())};
+    assert!(matches!(refusal.reason,ReservationError::Fenced));
+    let (_,journal)=interrupted.into_parts();drop(journal);
+    let store=FileEffectJournal::open(temp.0.join("cancel-reservations"),limits,Arc::new(HostSpoolIo),pin)?;
+    let keeper=FileTrustedRootPinRetainer::open_trusting_storage(temp.0.join("cancel-reservation-pin"),limits,Arc::new(HostSpoolIo),cancel_scope)?;
+    let journal=PinRetainedEffectJournal::for_reconciliation(Box::new(store),Box::new(keeper))?;
+    let plan=Plan::new(config("cancel",51)).map_err(|_|"cancel recovery plan invalid")?;
+    let recovered=ReservedPlan::recover(plan,journal,&replay).map_err(|_|"cancelled reservation recovery refused")?;
+    assert_eq!(recovered.pending(),Some(&selected));
+    Ok(())
+}
+
+#[test]
+fn retained_generation_worker_drains_and_preserves_cancelled_reservations() -> Test {
+    use fss_object::{HostSpoolIo,effect_journal::{EffectJournalLimits,FileEffectJournal,FileTrustedRootPinRetainer}};
+    use fss_reference::unifi_direct::av_rollover_generation::{Configuration,Plan,ReservedPlan,ReservationInputs,ReservationRequest,ReservationOutcome,ReservationError,ReservationStartError,ReservationWorker};
+    use fss_runtime::effect_journal::{EffectJournalPin,EffectJournalStore,EffectPersistenceError,EffectPinRetainer,PinRetainedEffectJournal};
+    use std::sync::{atomic::{AtomicBool,Ordering},Condvar,Mutex};
+
+    #[derive(Debug,Default)]
+    struct Gate {armed:AtomicBool,entered:AtomicBool,released:Mutex<bool>,wake:Condvar}
+    #[derive(Debug)]
+    struct GatedRetainer {inner:Box<dyn EffectPinRetainer>,gate:Arc<Gate>}
+    impl EffectPinRetainer for GatedRetainer {
+        fn retained_pin(&mut self)->Result<Option<EffectJournalPin>,EffectPersistenceError> {
+            if self.gate.armed.load(Ordering::Acquire) && !self.gate.entered.swap(true,Ordering::AcqRel) {
+                let released=self.gate.released.lock().map_err(|_|EffectPersistenceError::Storage("fixture gate poisoned".into()))?;
+                let (released,_)=self.gate.wake.wait_timeout_while(released,std::time::Duration::from_secs(10),|released|!*released).map_err(|_|EffectPersistenceError::Storage("fixture gate poisoned".into()))?;
+                if !*released {return Err(EffectPersistenceError::Storage("fixture gate timed out".into()));}
+            }
+            self.inner.retained_pin()
+        }
+        fn reserve_capacity(&mut self,n:usize)->Result<(),EffectPersistenceError> {self.inner.reserve_capacity(n)}
+        fn verify_effect_history(&mut self,journal:&dyn EffectJournalStore)->Result<(),EffectPersistenceError> {self.inner.verify_effect_history(journal)}
+        fn retain(&mut self,expected:Option<EffectJournalPin>,next:EffectJournalPin)->Result<(),EffectPersistenceError> {self.inner.retain(expected,next)}
+    }
+    struct Release(Arc<Gate>);
+    impl Drop for Release {fn drop(&mut self) {if let Ok(mut released)=self.0.released.lock(){*released=true;self.0.wake.notify_all();}}}
+
+
+    let root=std::env::temp_dir().join(format!("fss-reservation-worker-{}",std::process::id()));
+    std::fs::create_dir(&root)?;
+    let temp=Temp(std::fs::canonicalize(root)?);
+    let budget=BudgetVector::builder().bytes(64*1024*1024).build()?;
+    let spec=|name:&str,capabilities:Vec<String>| -> Result<RootAuthoritySpec,Box<dyn Error>> {Ok(RootAuthoritySpec {
+        trace_id:format!("trace:{name}"),operation_id:OperationId::parse(&format!("operation:{name}"))?,principal:"principal:fixture".into(),capabilities,
+        deadline:None,priority:1,budgets:budget,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"reservation worker"),generation:1,
+    })};
+    let (mut authority,mut tree)=AuthorityCx::root(spec("reservation-worker",vec![RuntimeGrant::ObjectStage.as_str().into()])?,RegionId::new("region:reservation-worker")?,RegionKind::Process,budget,TimestampNs(1))?;
+    let replay_authority=fss_core::region::ContextAuthority::new_root(spec("reservation-replay",vec!["ADP-REPLAY-001".into()])?)?;
+    let limits=EffectJournalLimits::default();
+    let make=|name:&str,gate:Option<Arc<Gate>>| -> Result<ReservationInputs,Box<dyn Error>> {
+        let journal_replay=Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?);
+        let custody_replay=Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?);
+        let journal_resource=temp.0.join(format!("{name}-journal"));
+        let custody_resource=temp.0.join(format!("{name}-pin"));
+        let journal=FileEffectJournal::create(&journal_resource,limits,Arc::new(HostSpoolIo))?;
+        let pin=FileTrustedRootPinRetainer::create(&custody_resource,limits,Arc::new(HostSpoolIo),ContentDigest::sha256(name.as_bytes()))?;
+        let pin:Box<dyn EffectPinRetainer>=match gate {Some(gate)=>Box::new(GatedRetainer {inner:Box::new(pin),gate}),None=>Box::new(pin)};
+        let journal=PinRetainedEffectJournal::new(Box::new(journal),pin)?;
+        let plan=Plan::new(Configuration {namespace:name.into(),scope_seed:ContentDigest::sha256(name.as_bytes()),first:1,count:2,
+            journal_replay:journal_replay.clone(),pin_replay:custody_replay.clone(),journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),journal_limits:limits,pin_limits:limits,
+            read:Arc::new(Access(ContentDigest::sha256(b"retention"))),object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536},work_limit:100_000,
+        }).map_err(|_|"worker plan invalid")?;
+        let plan=ReservedPlan::create(plan,journal,&journal_replay).map_err(|_|"worker retained plan invalid")?;
+        Ok(ReservationInputs {plan,request:ReservationRequest::Reserve,journal_resource,custody_resource,journal_replay,custody_replay})
+    };
+    let ready=make("ready-worker",None)?;
+    let cancelled=make("cancel-worker",None)?;
+    let never=make("never-worker",None)?;
+    let gate=Arc::new(Gate::default());
+    let blocked=make("blocked-worker",Some(gate.clone()))?;
+    let runtime=RuntimeBuilder::current_thread().blocking_threads(1,1).build()?;
+    runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:reservation-worker")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let output:Test=async {
+                let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
+                let mut worker=ReservationWorker::new(never).map_err(|_|"never worker invalid")?;
+                worker.abort();
+                assert!(matches!(worker.start(task,cx,clock,&BudgetVector::ZERO),Err(ReservationStartError::Fenced)));
+                let mut retired=worker.retire().map_err(|_|"never worker still running")?;
+                assert!(retired.aborted && retired.fenced && retired.outcome.is_none() && retired.inputs.plan.pending().is_none());
+                let refusal=match retired.inputs.plan.reserve_next(&retired.inputs.journal_replay) {Err(refusal)=>refusal,Ok(_)=>return Err("aborted plan admitted work".into())};
+                assert!(matches!(refusal.reason,ReservationError::Fenced));
+
+                let mut worker=ReservationWorker::new(ready).map_err(|_|"ready worker invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"reservation admission refused")?;
+                assert!(matches!(worker.start(task,cx,clock,&BudgetVector::ZERO),Err(ReservationStartError::Running)));
+                let mut worker=worker.retire().err().ok_or("running worker retired")?;
+                let result=worker.join().await.ok_or("reservation not joined")?;
+                assert!(result.runtime.is_ok() && result.outcome_available && !result.indeterminate && !result.cancellation_requested);
+                let mut retired=worker.retire().map_err(|_|"reservation still running")?;
+                let (identity,creator)=match retired.outcome.take() {Some(ReservationOutcome::Reserved {identity,worker})=>(identity,worker),_=>return Err("reserved creator missing".into())};
+                assert_eq!(identity.generation,1);
+                assert_eq!(retired.inputs.plan.pending(),Some(&identity));
+                assert!(!identity.journal_root.exists() && !identity.pin_root.exists());
+                assert!(creator.retire().map_err(|_|"creator unexpectedly running")?.inputs.is_some());
+                retired.inputs.request=ReservationRequest::Reconcile {identity:identity.clone(),evidence:ContentDigest::sha256(b"fixture reconciliation")};
+                let mut worker=ReservationWorker::new(retired.inputs).map_err(|_|"reconciliation worker invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"reconciliation admission refused")?;
+                let result=worker.join().await.ok_or("reconciliation not joined")?;
+                assert!(result.runtime.is_ok() && result.outcome_available && !result.indeterminate);
+                let retired=worker.retire().map_err(|_|"reconciliation still running")?;
+                assert!(matches!(retired.outcome,Some(ReservationOutcome::Reconciled(_))));
+                assert!(retired.inputs.plan.pending().is_none());
+
+                cancelled.journal_replay.set_cancel_at_checkpoint_occurrence("unifi-generation-reservation",3);
+                let mut worker=ReservationWorker::new(cancelled).map_err(|_|"cancel worker invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"cancel admission refused")?;
+                let result=worker.join().await.ok_or("cancelled reservation not joined")?;
+                assert!(result.runtime.is_ok() && result.outcome_available && !result.indeterminate);
+                let mut retired=worker.retire().map_err(|_|"cancelled reservation still running")?;
+                let refusal=match retired.outcome.take() {Some(ReservationOutcome::ReservationRefused(refusal))=>refusal,_=>return Err("cancelled refusal missing".into())};
+                assert!(matches!(refusal.reason,ReservationError::Cancelled));
+                let (identity,creator)=refusal.candidate.ok_or("cancelled creator missing")?;
+                assert_eq!(identity.generation,1);
+                assert!(!identity.journal_root.exists() && !identity.pin_root.exists());
+                assert!(creator.retire().map_err(|_|"cancelled creator unexpectedly running")?.inputs.is_some());
+                assert_eq!(retired.inputs.plan.head().ok_or("cancelled journal head missing")?.sequence,2);
+
+                let _release=Release(gate.clone());
+                gate.armed.store(true,Ordering::Release);
+                let mut worker=ReservationWorker::new(blocked).map_err(|_|"blocked worker invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"blocked admission refused")?;
+                asupersync::time::timeout(cx.now(),std::time::Duration::from_secs(5),async {
+                    while !gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}
+                }).await.map_err(|_|"runtime did not progress while pin custody was blocked")?;
+                worker.abort();
+                {let mut released=gate.released.lock().map_err(|_|"fixture gate poisoned")?;*released=true;gate.wake.notify_all();}
+                let completion=worker.join().await.ok_or("blocked worker not joined")?;
+                assert!(completion.cancellation_requested && completion.outcome_available);
+                let mut retired=worker.retire().map_err(|_|"blocked worker still running")?;
+                assert!(retired.fenced && retired.aborted);
+                let refusal=match retired.outcome.take() {Some(ReservationOutcome::ReservationRefused(refusal))=>refusal,_=>return Err("blocked cancellation lost its refusal".into())};
+                assert!(matches!(refusal.reason,ReservationError::Cancelled));
+                let (identity,creator)=refusal.candidate.ok_or("blocked candidate missing")?;
+                assert!(!identity.journal_root.exists() && !identity.pin_root.exists());
+                assert!(creator.retire().map_err(|_|"blocked creator unexpectedly running")?.inputs.is_some());
+                Ok(())
+            }.await;
+            let outcome=if output.is_ok() {TaskOutcome::Success} else {TaskOutcome::Failed("reservation worker fixture".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(60_000_000_000)}
+        }).await?;
+        result.receipt?;result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> Test {
+    use fss_object::{HostSpoolIo,effect_journal::EffectJournalLimits};
+    use fss_reference::unifi_direct::av_rollover_generation::{BootstrapInputs,BootstrapMode,BootstrapOutcome,BootstrapStage,BootstrapStorage,BootstrapStartError,BootstrapWorker,Configuration,Plan,ReservationInputs,ReservationOutcome,ReservationRequest,ReservationWorker};
+    use fss_runtime::effect_journal::EffectJournalPin;
+    let root=std::env::temp_dir().join(format!("fss-reservation-bootstrap-{}",std::process::id()));
+    std::fs::create_dir(&root)?;
+    let temp=Temp(std::fs::canonicalize(root)?);
+    let budget=BudgetVector::builder().bytes(64*1024*1024).build()?;
+    let spec=|name:&str,capabilities:Vec<String>| -> Result<RootAuthoritySpec,Box<dyn Error>> {Ok(RootAuthoritySpec {
+        trace_id:format!("trace:{name}"),operation_id:OperationId::parse(&format!("operation:{name}"))?,principal:"principal:fixture".into(),capabilities,
+        deadline:None,priority:1,budgets:budget,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"bootstrap worker fixture"),generation:1,
+    })};
+    let (mut authority,mut tree)=AuthorityCx::root(spec("bootstrap-worker",vec![RuntimeGrant::ObjectStage.as_str().into()])?,RegionId::new("region:bootstrap-worker")?,RegionKind::Process,budget,TimestampNs(1))?;
+    let replay_authority=fss_core::region::ContextAuthority::new_root(spec("bootstrap-replay",vec!["ADP-REPLAY-001".into()])?)?;
+    let limits=EffectJournalLimits::default();
+    let storage=|name:&str,mode:BootstrapMode| -> Result<BootstrapStorage,Box<dyn Error>> {Ok(BootstrapStorage {
+        mode,journal_root:temp.0.join(format!("{name}-journal")),custody_root:temp.0.join(format!("{name}-pin")),
+        journal_replay:Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),custody_replay:Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),
+        journal_io:Arc::new(HostSpoolIo),custody_io:Arc::new(HostSpoolIo),journal_limits:limits,custody_limits:limits,custody_scope:ContentDigest::sha256(name.as_bytes()),
+    })};
+    let make_plan=|name:&str,first:u64,s:&BootstrapStorage| -> Result<Plan,Box<dyn Error>> {Plan::new(Configuration {
+        namespace:name.into(),scope_seed:ContentDigest::sha256(name.as_bytes()),first,count:2,journal_replay:s.journal_replay.clone(),pin_replay:s.custody_replay.clone(),
+        journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),journal_limits:limits,pin_limits:limits,read:Arc::new(Access(ContentDigest::sha256(b"retention"))),
+        object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536},work_limit:100_000,
+    }).map_err(|_|"bootstrap plan invalid".into())};
+    let mut invalid=storage("invalid-bootstrap",BootstrapMode::Create)?;
+    invalid.journal_limits.max_records=0;
+    let invalid_plan=make_plan("invalid-bootstrap",1,&invalid)?;
+    let invalid=match BootstrapWorker::new(BootstrapInputs {plan:invalid_plan,storage:invalid}) {Err(inputs)=>inputs,Ok(_)=>return Err("invalid bootstrap limit accepted".into())};
+    assert!(!invalid.storage.journal_root.exists() && !invalid.storage.custody_root.exists());
+    let mut overlap=storage("overlap-bootstrap",BootstrapMode::Create)?;
+    overlap.custody_root=overlap.journal_root.clone();
+    let overlap_plan=make_plan("overlap-bootstrap",1,&overlap)?;
+    let overlap=match BootstrapWorker::new(BootstrapInputs {plan:overlap_plan,storage:overlap}) {Err(inputs)=>inputs,Ok(_)=>return Err("overlapping bootstrap custody accepted".into())};
+    assert!(!overlap.storage.journal_root.exists());
+    let invalid_pin=EffectJournalPin {sequence:0,root:ContentDigest::sha256(b"invalid minimum")};
+    let invalid=storage("invalid-recovery",BootstrapMode::Recover {minimum:invalid_pin})?;
+    let plan=make_plan("invalid-recovery",1,&invalid)?;
+    let invalid=match BootstrapWorker::new(BootstrapInputs {plan,storage:invalid}) {Err(inputs)=>inputs,Ok(_)=>return Err("invalid recovery minimum accepted".into())};
+    assert!(!invalid.storage.journal_root.exists());
+    let first_storage=storage("ready-bootstrap",BootstrapMode::Create)?;
+    let first_plan=make_plan("ready-bootstrap",1,&first_storage)?;
+    let cancelled_storage=storage("cancel-bootstrap",BootstrapMode::Create)?;
+    let cancelled_plan=make_plan("cancel-bootstrap",1,&cancelled_storage)?;
+    cancelled_storage.journal_replay.set_cancel_at_checkpoint_occurrence("unifi-reservation-bootstrap-work",3);
+    let runtime=RuntimeBuilder::current_thread().blocking_threads(1,1).build()?;
+    runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:bootstrap-worker")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let output:Test=async {
+                let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
+                let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan:first_plan,storage:first_storage}).map_err(|_|"bootstrap inputs invalid")?;
+                bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"bootstrap admission refused")?;
+                assert!(matches!(bootstrap.start(task,cx,clock,&BudgetVector::ZERO),Err(BootstrapStartError::Running)));
+                let mut bootstrap=bootstrap.retire().err().ok_or("running bootstrap retired")?;
+                let completion=bootstrap.join().await.ok_or("bootstrap not joined")?;
+                assert!(completion.runtime.is_ok() && completion.outcome==BootstrapOutcome::Ready && !completion.cancellation_requested);
+                let mut retirement=bootstrap.retire().map_err(|_|"bootstrap still running")?;
+                assert!(retirement.journal_root_created && retirement.custody_root_created && !retirement.fenced);
+                let plan=retirement.take_ready().ok_or("created retained plan missing")?;
+                let mut reservation=ReservationWorker::new(ReservationInputs {plan,request:ReservationRequest::Reserve,journal_resource:retirement.storage.journal_root.clone(),custody_resource:retirement.storage.custody_root.clone(),journal_replay:retirement.storage.journal_replay.clone(),custody_replay:retirement.storage.custody_replay.clone()}).map_err(|_|"reservation inputs invalid")?;
+                reservation.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"reservation admission refused")?;
+                let completion=reservation.join().await.ok_or("reservation not joined")?;
+                assert!(completion.runtime.is_ok() && completion.outcome_available);
+                let mut retirement=reservation.retire().map_err(|_|"reservation still running")?;
+                let (identity,creator)=match retirement.outcome.take() {Some(ReservationOutcome::Reserved {identity,worker})=>(identity,worker),_=>return Err("reserved creator missing".into())};
+                assert!(creator.retire().map_err(|_|"creator unexpectedly running")?.inputs.is_some());
+                let head=retirement.inputs.plan.head().ok_or("reservation head missing")?;
+                let (_,journal)=retirement.inputs.plan.into_parts();drop(journal);
+
+                let wrong=EffectJournalPin {sequence:head.sequence,root:ContentDigest::sha256(b"wrong minimum")};
+                let s=storage("ready-bootstrap",BootstrapMode::Recover {minimum:wrong})?;
+                let plan=make_plan("ready-bootstrap",2,&s)?;
+                let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan,storage:s}).map_err(|_|"wrong bootstrap invalid")?;
+                bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"wrong bootstrap admission")?;
+                let completion=bootstrap.join().await.ok_or("wrong bootstrap not joined")?;
+                assert!(completion.runtime.is_ok() && completion.outcome==BootstrapOutcome::Refused(BootstrapStage::Journal));
+                let retirement=bootstrap.retire().map_err(|_|"wrong bootstrap still running")?;
+                assert!(retirement.plan.is_some() && retirement.error.is_some() && !retirement.journal_root_created && !retirement.custody_attempted);
+
+                let s=storage("ready-bootstrap",BootstrapMode::Recover {minimum:head})?;
+                let plan=make_plan("ready-bootstrap",2,&s)?;
+                let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan,storage:s}).map_err(|_|"recovery bootstrap invalid")?;
+                bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"recovery admission refused")?;
+                let completion=bootstrap.join().await.ok_or("recovery not joined")?;
+                assert!(completion.runtime.is_ok() && completion.outcome==BootstrapOutcome::Ready);
+                let mut retirement=bootstrap.retire().map_err(|_|"recovery still running")?;
+                assert!(!retirement.journal_root_created && !retirement.custody_root_created);
+                let plan=retirement.take_ready().ok_or("recovered plan missing")?;
+                assert_eq!(plan.pending(),Some(&identity));
+
+                let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan:cancelled_plan,storage:cancelled_storage}).map_err(|_|"cancel bootstrap invalid")?;
+                bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"cancel bootstrap admission refused")?;
+                let completion=bootstrap.join().await.ok_or("cancel bootstrap not joined")?;
+                assert!(completion.runtime.is_ok() && completion.outcome==BootstrapOutcome::Cancelled);
+                let mut retirement=bootstrap.retire().map_err(|_|"cancel bootstrap still running")?;
+                assert!(retirement.fenced && retirement.journal_root_created && retirement.journal.is_some() && !retirement.custody_attempted && retirement.plan.is_some());
+                assert!(retirement.take_ready().is_none());
+                Ok(())
+            }.await;
+            let outcome=if output.is_ok(){TaskOutcome::Success}else{TaskOutcome::Failed("bootstrap worker fixture".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(60_000_000_000)}
+        }).await?;
+        result.receipt?;result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn rollover_replays_real_source_root_before_next_publication() -> Test {
     use fss_object::{
         HostSpoolIo,
@@ -230,6 +768,314 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
         keeper,
     )?;
     assert_eq!(deployment.publisher().visible_roots().count(), 3);
+
+    // Create a second switch, then close every history before reopening the
+    // same intermediate owner exactly once for chained recovery.
+    let first_binding = active.binding();
+    let first_switch = active.switch_head();
+    let first_heads = {
+        let (journal, keeper) = active.successor();
+        archive::journal::rollover::SuccessorHeads {
+            journal: journal.anchor(),
+            keeper: keeper.anchor(),
+        }
+    };
+    let lineage = active
+        .into_recovered_lineage(&replay)
+        .map_err(|_| "first lineage refused")?;
+    let (previous, first_custody) = lineage.into_parts();
+    let stage = archive::journal::rollover::Staged::begin(
+        previous,
+        store("newer-journal")?,
+        store("newer-keeper")?,
+        &replay,
+    )
+    .map_err(|_| "second cold stage refused")?;
+    let second_scope = ContentDigest::sha256(b"rollover second switch custody");
+    let root = FileTrustedRootPinRetainer::create(
+        temp.0.join("second-retainer"),
+        storage_limits,
+        Arc::new(HostSpoolIo),
+        second_scope,
+    )?;
+    let switch = PinRetainedEffectJournal::new(store("second-switch")?, Box::new(root))?;
+    let mut second = stage
+        .commit(switch, &replay)
+        .map_err(|_| "second cold switch refused")?;
+    let second_binding = second.binding();
+    let second_switch = second.switch_head();
+    let second_heads = {
+        let (journal, keeper) = second.successor();
+        archive::journal::rollover::SuccessorHeads {
+            journal: journal.anchor(),
+            keeper: keeper.anchor(),
+        }
+    };
+    drop(second);
+    drop(first_custody);
+
+    let open = |name: &str, pin| -> Result<Box<dyn EffectJournalStore>, Box<dyn Error>> {
+        Ok(Box::new(FileEffectJournal::open(
+            temp.0.join(name),
+            storage_limits,
+            Arc::new(HostSpoolIo),
+            pin,
+        )?))
+    };
+    let pair = |journal_name: &str,
+                keeper_name: &str,
+                heads: archive::journal::rollover::SuccessorHeads|
+     -> Result<archive::journal::rollover::Previous, Box<dyn Error>> {
+        let journal = archive::journal::UnknownTimeJournal::reopen(
+            open(journal_name, heads.journal)?,
+            scope,
+            heads.journal,
+            &replay,
+        )?;
+        let keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+            open(keeper_name, heads.keeper)?,
+            &journal,
+            heads.keeper,
+            &replay,
+        )?;
+        Ok(archive::journal::rollover::Previous { journal, keeper })
+    };
+    let old = pair(
+        "old-journal",
+        "old-keeper",
+        archive::journal::rollover::SuccessorHeads {
+            journal: first_binding.old_journal,
+            keeper: first_binding.old_keeper,
+        },
+    )?;
+    let middle = pair("new-journal", "new-keeper", first_heads)?;
+    let newest = pair("newer-journal", "newer-keeper", second_heads)?;
+    let switch = |name: &str,
+                  root: &str,
+                  pin,
+                  custody_scope|
+     -> Result<PinRetainedEffectJournal, Box<dyn Error>> {
+        let retainer = FileTrustedRootPinRetainer::open_trusting_storage(
+            temp.0.join(root),
+            storage_limits,
+            Arc::new(HostSpoolIo),
+            custody_scope,
+        )?;
+        Ok(PinRetainedEffectJournal::for_reconciliation(
+            open(name, pin)?,
+            Box::new(retainer),
+        )?)
+    };
+    let mut first = archive::journal::rollover::recover(
+        old,
+        middle,
+        switch(
+            "switch",
+            "switch-retainer",
+            first_switch,
+            ContentDigest::sha256(b"rollover switch custody"),
+        )?,
+        first_heads,
+        &replay,
+    )
+    .map_err(|_| "first cold recovery refused")?;
+    first = match first.into_recovered_lineage(&replay) {
+        Err(first) => first,
+        Ok(_) => return Err("unreplayed first history admitted".into()),
+    };
+    first.replay_confirmed_source(
+        &mut deployment,
+        camera,
+        &access,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
+    let first = first
+        .into_recovered_lineage(&replay)
+        .map_err(|_| "first lineage replay refused")?;
+    let second_switch = switch(
+        "second-switch",
+        "second-retainer",
+        second_switch,
+        second_scope,
+    )?;
+    let stale = archive::journal::rollover::SuccessorHeads {
+        journal: second_binding.old_journal,
+        keeper: second_heads.keeper,
+    };
+    let refusal = match first.advance(newest, second_switch, stale, &replay) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("stale second head accepted".into()),
+    };
+    assert_eq!(refusal.lineage.transition_count(), 1);
+    let mut second = refusal
+        .lineage
+        .advance(refusal.successor, refusal.switch, second_heads, &replay)
+        .map_err(|_| "second cold recovery refused")?;
+    assert_eq!(second.binding(), second_binding);
+    second = match second.into_recovered_lineage(&replay) {
+        Err(second) => second,
+        Ok(_) => return Err("unreplayed second history admitted".into()),
+    };
+    assert!(
+        second
+            .replay_confirmed_source(
+                &mut deployment,
+                camera,
+                &Deny,
+                &access,
+                archive::Limits::default(),
+                &mut WorkBudget::new(4_000_000_000),
+                &replay
+            )
+            .is_err()
+    );
+    let receipt = second.replay_confirmed_source(
+        &mut deployment,
+        camera,
+        &access,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
+    assert_eq!(receipt.outcome, RootLedgerOutcome::AlreadyLedgered);
+    let lineage = second
+        .into_recovered_lineage(&replay)
+        .map_err(|_| "second lineage replay refused")?;
+    assert_eq!(lineage.transition_count(), 2);
+    let (current, custody) = lineage.into_parts();
+    let recovered = archive::read_unknown_time_source(
+        &mut deployment,
+        second_binding.confirmed,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
+    let recovered_hash = ContentDigest::sha256(recovered.bytes());
+    let mut worker = fss_reference::unifi_direct::source_worker::Worker::from_recovered(
+        fss_reference::unifi_direct::source_worker::Parts {
+            deployment,
+            journal: current.journal,
+            keeper: current.keeper,
+            replay,
+            authority: Arc::new(Access(retention)),
+            retention,
+            limits: archive::Limits::default(),
+            max_source_bytes: 1024,
+            work_limit: 4_000_000_000,
+        },
+        custody,
+    )
+    .map_err(|_| "recovered source worker refused")?;
+    worker
+        .offer(fss_reference::unifi_direct::source_worker::Input::Recovered(recovered))
+        .map_err(|_| "recovered input refused")?;
+    let budget = BudgetVector::builder().bytes(64 * 1024 * 1024).build()?;
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:chained-cold-worker".into(),
+            operation_id: OperationId::parse("operation:chained-cold-worker")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![
+                RuntimeGrant::ObjectStage.as_str().into(),
+                RuntimeGrant::ObjectPublish.as_str().into(),
+            ],
+            deadline: Some(TimestampNs(60_000_000_000)),
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"chained cold worker"),
+            generation: 1,
+        },
+        RegionId::new("region:chained-cold-worker")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:chained-cold-worker")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = async {
+                    let clock = MeteredClock::new(task, cx, TimestampNs(3))?;
+                    worker
+                        .start(
+                            task,
+                            cx,
+                            clock,
+                            "fixture:chained-cold-worker",
+                            &BudgetVector::ZERO,
+                        )
+                        .map_err(|e| format!("cold worker start: {e:?}"))?;
+                    let complete = worker
+                        .join()
+                        .await
+                        .ok_or("missing cold worker completion")?;
+                    if complete.runtime.is_err() {
+                        return Err("cold worker runtime failed".into());
+                    }
+                    let pin = match complete.outcome {
+                        fss_reference::unifi_direct::source_worker::Outcome::Publication(
+                            fss_reference::unifi_direct::source_worker::Publication::Published {
+                                pin,
+                                ..
+                            },
+                        ) => pin,
+                        _ => return Err("cold worker publication refused".into()),
+                    };
+                    let mut retired = worker.retire().map_err(|_| "recovered worker busy")?;
+                    assert_eq!(
+                        retired
+                            .rollover_custody
+                            .as_ref()
+                            .ok_or("cold lineage lost")?
+                            .transition_count(),
+                        2
+                    );
+                    let read = archive::read_unknown_time_source(
+                        &mut retired.parts.deployment,
+                        pin,
+                        &access,
+                        archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000),
+                        &retired.parts.replay,
+                    )?;
+                    assert_eq!(ContentDigest::sha256(read.bytes()), recovered_hash);
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("cold worker fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(59_000_000_000),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
     Ok(())
 }
 
@@ -298,6 +1144,8 @@ fn configured_source_archive_crosses_standard_root_limit_and_reopens() -> Test {
         av_scope: ContentDigest::sha256(b"capacity av"),
         source_deployment_limits: source_limits,
         av_deployment_limits: DeploymentLimits::standard(),
+        source_history_limits: fss_object::effect_journal::EffectJournalLimits::default(),
+        av_history_limits: fss_object::effect_journal::EffectJournalLimits::default(),
         limits: archive::Limits::default(),
         max_source_bytes: 1024 * 1024,
         work_limit: 4_000_000_000,
@@ -770,6 +1618,364 @@ fn worker_reports_keeper_capacity_and_retains_source() -> Test {
                     TaskOutcome::Success
                 } else {
                     TaskOutcome::Failed("worker capacity fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(59_000_000_000),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn worker_rollover_preserves_pending_source_and_switch_custody() -> Test {
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
+    };
+    use fss_publication::RootLedgerOutcome;
+    use fss_reference::unifi_direct::source_worker;
+    use fss_runtime::effect_journal::{EffectJournalStore, PinRetainedEffectJournal};
+
+    let parent = std::env::temp_dir().join(format!("fss-worker-rollover-{}", std::process::id()));
+    std::fs::create_dir(&parent)?;
+    let temp = Temp(std::fs::canonicalize(parent)?);
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = 64 * 1024 * 1024;
+    let spec =
+        |name: &str, capabilities: Vec<String>| -> Result<RootAuthoritySpec, Box<dyn Error>> {
+            Ok(RootAuthoritySpec {
+                trace_id: format!("trace:{name}"),
+                operation_id: OperationId::parse(&format!("operation:{name}"))?,
+                principal: "principal:fixture".into(),
+                capabilities,
+                deadline: None,
+                priority: 1,
+                budgets: budget,
+                privacy_scope: "privacy:test".into(),
+                retention_scope: "retention:test".into(),
+                anchor_universe: ContentDigest::sha256(b"worker rollover fixture"),
+                generation: 1,
+            })
+        };
+    let (mut authority, mut tree) = AuthorityCx::root(
+        spec(
+            "worker-rollover",
+            vec![
+                RuntimeGrant::ObjectPublish.as_str().into(),
+                RuntimeGrant::ObjectStage.as_str().into(),
+            ],
+        )?,
+        RegionId::new("region:worker-rollover")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let replay_authority = fss_core::region::ContextAuthority::new_root(spec(
+        "worker-rollover-replay",
+        vec!["ADP-REPLAY-001".into()],
+    )?)?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:worker-rollover")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = async {
+                    let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
+                    let replay =
+                        ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let mut deployment = ReferenceDeployment::open(
+                        &temp.0.join("archive"),
+                        "site:worker-rollover",
+                        &replay,
+                    )?;
+                    let storage_limits = EffectJournalLimits::default();
+                    let store =
+                        |name: &str| -> Result<Box<dyn EffectJournalStore>, Box<dyn Error>> {
+                            Ok(Box::new(FileEffectJournal::create(
+                                temp.0.join(name),
+                                storage_limits,
+                                Arc::new(HostSpoolIo),
+                            )?))
+                        };
+                    let scope = ContentDigest::sha256(b"worker rollover scope");
+                    let retention = ContentDigest::sha256(b"worker rollover retention");
+                    let camera = ContentDigest::sha256(b"worker rollover camera");
+                    let access = Arc::new(Access(retention));
+                    let key = SourceKey {
+                        connection: 1,
+                        generation: 1,
+                    };
+                    let mut journal = archive::journal::UnknownTimeJournal::create(
+                        store("old-journal")?,
+                        scope,
+                        &replay,
+                    )?;
+                    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+                        store("old-keeper")?,
+                        &journal,
+                        &replay,
+                    )?;
+                    let mut wire = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+                    for index in 0..2_u32 {
+                        wire.extend_from_slice(&[18, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0]);
+                        wire.extend_from_slice(&index.to_be_bytes());
+                        wire.extend_from_slice(&15_u32.to_be_bytes());
+                    }
+                    let mut framer = Framer::new(FlvLimits::default(), 64 * 1024)?;
+                    framer.append(0, &wire)?;
+                    for _ in 0..2 {
+                        let Next::Record(record) = framer.take()? else {
+                            return Err("missing initial record".into());
+                        };
+                        let disposition = if matches!(record.kind(), RecordKind::Header) {
+                            SourceDisposition::Header
+                        } else {
+                            SourceDisposition::PreRoll
+                        };
+                        let plan = source_evidence::Prepared::new(
+                            &record,
+                            key,
+                            disposition,
+                            camera,
+                            retention,
+                            1024,
+                        )?;
+                        archive::publish_unknown_time_source_anchored(
+                            &plan,
+                            &mut deployment,
+                            access.as_ref(),
+                            archive::Limits::default(),
+                            &mut WorkBudget::new(4_000_000_000),
+                            &replay,
+                            &mut journal,
+                            &mut keeper,
+                        )?;
+                    }
+                    let Next::Record(record) = framer.take()? else {
+                        return Err("missing pending record".into());
+                    };
+                    let pending_hash = ContentDigest::sha256(record.bytes());
+                    let mut worker = source_worker::Worker::new(source_worker::Parts {
+                        deployment,
+                        journal,
+                        keeper,
+                        replay,
+                        authority: access.clone(),
+                        retention,
+                        limits: archive::Limits::default(),
+                        max_source_bytes: 1024,
+                        work_limit: 4_000_000_000,
+                    })
+                    .map_err(|_| "worker initialization")?;
+                    worker
+                        .offer(source_worker::Input::Original {
+                            record,
+                            key,
+                            disposition: SourceDisposition::PreRoll,
+                            camera_claim: camera,
+                        })
+                        .map_err(|_| "pending offer refused")?;
+                    let mut retired = worker.retire().map_err(|_| "worker busy")?;
+                    retired.parts.retention = ContentDigest::sha256(b"wrong rollover retention");
+                    let mut retired = match retired.into_rollover() {
+                        Err(retired) => retired,
+                        Ok(_) => return Err("changed retention admitted before rollover".into()),
+                    };
+                    assert!(retired.pending.is_some());
+                    retired.parts.retention = retention;
+                    let (resources, previous) =
+                        retired.into_rollover().map_err(|_| "detach refused")?;
+                    assert!(resources.has_pending());
+                    let staged = archive::journal::rollover::Staged::begin(
+                        previous,
+                        store("aborted-journal")?,
+                        store("aborted-keeper")?,
+                        resources.replay(),
+                    )
+                    .map_err(|_| "abort stage refused")?;
+                    let retired = resources
+                        .restore(staged.abort())
+                        .map_err(|_| "restore refused")?;
+                    let (resources, previous) = retired
+                        .into_rollover()
+                        .map_err(|_| "second detach refused")?;
+                    assert!(resources.has_pending());
+                    let staged = archive::journal::rollover::Staged::begin(
+                        previous,
+                        store("next-journal")?,
+                        store("next-keeper")?,
+                        resources.replay(),
+                    )
+                    .map_err(|_| "stage refused")?;
+                    let retainer = FileTrustedRootPinRetainer::create(
+                        temp.0.join("switch-retainer"),
+                        storage_limits,
+                        Arc::new(HostSpoolIo),
+                        ContentDigest::sha256(b"worker switch custody"),
+                    )?;
+                    let switch =
+                        PinRetainedEffectJournal::new(store("switch")?, Box::new(retainer))?;
+                    let active = staged
+                        .commit(switch, resources.replay())
+                        .map_err(|_| "switch refused")?;
+                    let refusal = match resources.attach(active) {
+                        Err(refusal) => refusal,
+                        Ok(_) => return Err("unreplayed successor attached".into()),
+                    };
+                    let mut resources = refusal.resources;
+                    let mut active = refusal.active;
+                    assert!(resources.has_pending());
+                    let receipt = resources.replay_confirmed_source(
+                        &mut active,
+                        camera,
+                        access.as_ref(),
+                        &mut WorkBudget::new(4_000_000_000),
+                    )?;
+                    assert_eq!(receipt.outcome, RootLedgerOutcome::AlreadyLedgered);
+                    let mut worker = resources
+                        .attach(active)
+                        .map_err(|_| "replayed attach refused")?;
+                    assert_eq!(worker.status(), source_worker::Status::Pending);
+                    worker
+                        .start(
+                            task,
+                            cx,
+                            clock,
+                            "fixture:worker-rollover",
+                            &BudgetVector::ZERO,
+                        )
+                        .map_err(|error| format!("worker start refused: {error:?}"))?;
+                    let completed = worker.join().await.ok_or("worker missing completion")?;
+                    assert!(completed.runtime.is_ok());
+                    let pin = match completed.outcome {
+                        source_worker::Outcome::Publication(
+                            source_worker::Publication::Published { pin, .. },
+                        ) => pin,
+                        _ => return Err("pending source was not published".into()),
+                    };
+                    let mut retired = worker.retire().map_err(|_| "worker still running")?;
+                    assert!(
+                        !retired.fenced
+                            && retired.pending.is_none()
+                            && retired.rollover_custody.is_some()
+                    );
+                    assert_eq!(
+                        retired.parts.deployment.publisher().visible_roots().count(),
+                        3
+                    );
+                    let read = archive::read_unknown_time_source(
+                        &mut retired.parts.deployment,
+                        pin,
+                        access.as_ref(),
+                        archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000),
+                        &retired.parts.replay,
+                    )?;
+                    assert_eq!(ContentDigest::sha256(read.bytes()), pending_hash);
+                    let (resources, previous) = retired
+                        .into_rollover()
+                        .map_err(|_| "second transition detach refused")?;
+                    let stage = archive::journal::rollover::Staged::begin(
+                        previous,
+                        store("second-abort-journal")?,
+                        store("second-abort-keeper")?,
+                        resources.replay(),
+                    )
+                    .map_err(|_| "second abort stage refused")?;
+                    let retired = resources
+                        .restore(stage.abort())
+                        .map_err(|_| "second restore refused")?;
+                    assert_eq!(
+                        retired
+                            .rollover_custody
+                            .as_ref()
+                            .ok_or("lost first transition")?
+                            .transition_count(),
+                        1
+                    );
+                    let (mut resources, previous) = retired
+                        .into_rollover()
+                        .map_err(|_| "second transition redetach refused")?;
+                    let stage = archive::journal::rollover::Staged::begin(
+                        previous,
+                        store("second-journal")?,
+                        store("second-keeper")?,
+                        resources.replay(),
+                    )
+                    .map_err(|_| "second stage refused")?;
+                    let root = FileTrustedRootPinRetainer::create(
+                        temp.0.join("second-switch-retainer"),
+                        storage_limits,
+                        Arc::new(HostSpoolIo),
+                        ContentDigest::sha256(b"worker second switch custody"),
+                    )?;
+                    let switch =
+                        PinRetainedEffectJournal::new(store("second-switch")?, Box::new(root))?;
+                    let mut active = stage
+                        .commit(switch, resources.replay())
+                        .map_err(|_| "second switch refused")?;
+                    resources.replay_confirmed_source(
+                        &mut active,
+                        camera,
+                        access.as_ref(),
+                        &mut WorkBudget::new(4_000_000_000),
+                    )?;
+                    let mut worker = resources
+                        .attach(active)
+                        .map_err(|_| "second attach refused")?;
+                    worker
+                        .offer(source_worker::Input::Recovered(read))
+                        .map_err(|_| "recovered source refused")?;
+                    worker
+                        .start(
+                            task,
+                            cx,
+                            clock,
+                            "fixture:worker-rollover",
+                            &BudgetVector::ZERO,
+                        )
+                        .map_err(|e| format!("second start: {e:?}"))?;
+                    let result = worker.join().await.ok_or("second completion missing")?;
+                    assert!(result.runtime.is_ok());
+                    assert!(matches!(
+                        result.outcome,
+                        source_worker::Outcome::Publication(
+                            source_worker::Publication::Published { .. }
+                        )
+                    ));
+                    let retired = worker.retire().map_err(|_| "second worker busy")?;
+                    assert_eq!(
+                        retired
+                            .rollover_custody
+                            .as_ref()
+                            .ok_or("lost transition chain")?
+                            .transition_count(),
+                        2
+                    );
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("worker rollover fixture failed".into())
                 };
                 TaskCompletion {
                     output,

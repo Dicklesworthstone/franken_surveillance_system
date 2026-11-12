@@ -71,6 +71,8 @@ impl<'a> Prepared<'a> {
             SourceDisposition::Header => 0,
             SourceDisposition::Configuration => 1,
             SourceDisposition::PreRoll => 2,
+            SourceDisposition::Unclosed => 3,
+            SourceDisposition::Unframed => 4,
         });
         evidence::encode_record(&mut encoder, record);
         let metadata = encoder.finish_checked().map_err(|_| Error::Encoding)?;
@@ -144,6 +146,8 @@ pub(super) fn validate_input(
             .is_none()
         || matches!(record.kind(), RecordKind::Header)
             != matches!(disposition, SourceDisposition::Header)
+        || matches!(record.kind(), RecordKind::Unframed { .. })
+            != matches!(disposition, SourceDisposition::Unframed)
         || (matches!(record.kind(), RecordKind::Header) && record.offset() != 0)
     {
         return Err(Error::Configuration);

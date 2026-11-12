@@ -18,6 +18,7 @@ pub struct Initialization {
     audio_configuration: Range<usize>,
     key: flv_avc::SourceKey,
     video_configuration_sources: [Range<u64>; 2],
+    inband: bool,
 }
 impl Initialization {
     pub(crate) fn new(
@@ -25,12 +26,14 @@ impl Initialization {
         audio_configuration: Range<usize>,
         key: flv_avc::SourceKey,
         video_configuration_sources: [Range<u64>; 2],
+        inband: bool,
     ) -> Self {
         Self {
             inner,
             audio_configuration,
             key,
             video_configuration_sources,
+            inband,
         }
     }
     /// Encoded ftyp and moov containing AVC track 1 and AAC track 2.
@@ -41,6 +44,10 @@ impl Initialization {
     /// This is an identity claim, not authentication of the device.
     pub fn source_key(&self) -> flv_avc::SourceKey {
         self.key
+    }
+    /// Whether the video track uses the explicit `avc3` profile.
+    pub fn inband_parameter_sets(&self) -> bool {
+        self.inband
     }
     /// Original connection-relative video parameter-set ranges.
     pub fn video_configuration_sources(&self) -> [Range<u64>; 2] {
@@ -116,6 +123,7 @@ impl<'a> Fragment<'a> {
 #[derive(Clone)]
 pub struct Session {
     key: flv_avc::SourceKey,
+    inband: bool,
     video_configuration_sources: [Range<u64>; 2],
     audio_configuration: Vec<u8>,
     next_sequence: Option<u32>,
@@ -138,6 +146,7 @@ impl Session {
             .map_err(|_| Mp4Error::Layout)?;
         Ok(Self {
             key: initialization.key,
+            inband: initialization.inband,
             video_configuration_sources: initialization.video_configuration_sources.clone(),
             audio_configuration: bytes.to_vec(),
             next_sequence: None,
@@ -166,6 +175,7 @@ impl Session {
     ) -> Result<Fragment<'a>, Mp4Error> {
         if initialization.key != self.key
             || initialization.video_configuration_sources != self.video_configuration_sources
+            || initialization.inband != self.inband
         {
             return Err(Mp4Error::StreamMismatch);
         }
@@ -211,6 +221,7 @@ impl Session {
     ) -> Result<Fragment<'a>, Mp4Error> {
         if initialization.key != self.key
             || initialization.video_configuration_sources != self.video_configuration_sources
+            || initialization.inband != self.inband
         {
             return Err(Mp4Error::StreamMismatch);
         }
@@ -289,6 +300,7 @@ pub fn fragment_without_audio<'a>(
     limits.validate()?;
     if initialization.key != video.key()
         || initialization.video_configuration_sources != video.configuration_sources()
+        || initialization.inband != video.inband_parameter_sets()
     {
         return Err(Mp4Error::StreamMismatch);
     }
@@ -369,6 +381,7 @@ pub fn fragment<'a>(
     limits.validate()?;
     if initialization.key != video.key()
         || initialization.video_configuration_sources != video.configuration_sources()
+        || initialization.inband != video.inband_parameter_sets()
     {
         return Err(Mp4Error::StreamMismatch);
     }
@@ -566,8 +579,8 @@ pub fn verify_archived_initialization(
     if av_initialization.len() > limits.max_initialization_bytes {
         return Err(Mp4Error::Limit);
     }
-    let movie =
-        AvcMp4::parse(video_clip, None, DemuxLimits::default()).map_err(|_| Mp4Error::Layout)?;
+    let movie = AvcMp4::parse_inband(video_clip, None, DemuxLimits::default())
+        .map_err(|_| Mp4Error::Layout)?;
     if movie.codec() != VideoCodec::Avc
         || movie.timescale() != 1000
         || movie.parameter_sets().len() != 2
@@ -584,8 +597,12 @@ pub fn verify_archived_initialization(
         parse_sps(sps_bytes, AvcSyntaxLimits::default()).map_err(|_| Mp4Error::ParameterSet)?;
     let pps = parse_pps(pps_bytes, &sps, AvcSyntaxLimits::default())
         .map_err(|_| Mp4Error::ParameterSet)?;
-    let (expected, _) =
-        crate::init::build_av(&sps, &pps, 1000, limits.max_initialization_bytes, audio)?;
+    let builder = if movie.sample_entry() == *b"avc3" {
+        crate::init::build_av_inband
+    } else {
+        crate::init::build_av
+    };
+    let (expected, _) = builder(&sps, &pps, 1000, limits.max_initialization_bytes, audio)?;
     if expected.bytes() != av_initialization {
         return Err(Mp4Error::Layout);
     }

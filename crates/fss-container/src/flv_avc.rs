@@ -75,6 +75,7 @@ pub struct SampleMapping {
 #[derive(Eq, PartialEq)]
 pub struct Fragment {
     key: SourceKey,
+    inband: bool,
     configuration_sources: [Range<u64>; 2],
     sequence: u32,
     bytes: Vec<u8>,
@@ -86,6 +87,10 @@ impl Fragment {
     /// Explicit caller-supplied connection and generation identity.
     pub fn key(&self) -> SourceKey {
         self.key
+    }
+    /// Whether the fragment requires an `avc3` initialization.
+    pub fn inband_parameter_sets(&self) -> bool {
+        self.inband
     }
     /// Source ranges of the SPS and PPS for this fragment's video epoch.
     pub fn configuration_sources(&self) -> [Range<u64>; 2] {
@@ -132,6 +137,7 @@ pub struct Muxer {
     config_sources: [Range<u64>; 2],
     sps: AvcSps,
     pps: AvcPps,
+    inband: bool,
     initialization: InitializationSegment,
     limits: Mp4Limits,
     sequence: Option<u32>,
@@ -153,6 +159,16 @@ impl Muxer {
     /// Multiple parameter sets, unknown extension data and provisional records
     /// are refused rather than silently normalized.
     pub fn new(key: SourceKey, source: &SourceRecord, limits: Mp4Limits) -> Result<Self, Mp4Error> {
+        Self::new_with_inband(key, source, limits, false)
+    }
+
+    /// Construct an `avc3` writer allowing repeated, byte-identical in-band
+    /// SPS/PPS before pictures. Configuration changes remain refused.
+    pub fn new_inband(key: SourceKey, source: &SourceRecord, limits: Mp4Limits) -> Result<Self, Mp4Error> {
+        Self::new_with_inband(key, source, limits, true)
+    }
+
+    fn new_with_inband(key: SourceKey, source: &SourceRecord, limits: Mp4Limits, inband: bool) -> Result<Self, Mp4Error> {
         limits.validate()?;
         if key.connection == 0 || key.generation == 0 {
             return Err(Mp4Error::Configuration);
@@ -180,7 +196,11 @@ impl Muxer {
             absolute(start, sps_nal.range())?,
             absolute(start, pps_nal.range())?,
         ];
-        let initialization = init::build(&sps, &pps, 1000, limits.max_initialization_bytes)?;
+        let initialization = if inband {
+            init::build_inband(&sps, &pps, 1000, limits.max_initialization_bytes)?
+        } else {
+            init::build(&sps, &pps, 1000, limits.max_initialization_bytes)?
+        };
         let mut copy = Vec::new();
         copy.try_reserve_exact(tag.wire_bytes().len())
             .map_err(|_| Mp4Error::Allocation)?;
@@ -192,6 +212,7 @@ impl Muxer {
             config_sources,
             sps,
             pps,
+            inband,
             initialization,
             limits,
             sequence: Some(1),
@@ -211,7 +232,8 @@ impl Muxer {
         &self,
         audio: &fss_packet::extended_flv::aac::Configuration<'_>,
     ) -> Result<crate::flv_av::Initialization, Mp4Error> {
-        let (video, audio_range) = init::build_av(
+        let builder = if self.inband { init::build_av_inband } else { init::build_av };
+        let (video, audio_range) = builder(
             &self.sps,
             &self.pps,
             1000,
@@ -223,6 +245,7 @@ impl Muxer {
             audio_range,
             self.key,
             self.config_sources.clone(),
+            self.inband,
         ))
     }
     /// Original SPS and PPS ranges in the current connection, respectively.
@@ -443,6 +466,7 @@ impl Muxer {
             .map(|end| end..samples[0].decode_time_ms);
         let output = Fragment {
             key: self.key,
+            inband: self.inband,
             configuration_sources: self.config_sources.clone(),
             sequence,
             bytes: writer.data,
@@ -544,6 +568,8 @@ impl Muxer {
                     identity = Some(current);
                 }
                 6 | 9 if identity.is_none() => {}
+                7 if self.inband && identity.is_none() && nal.bytes() == self.sps.nal_bytes() => {}
+                8 if self.inband && identity.is_none() && nal.bytes() == self.pps.nal_bytes() => {}
                 12 => {}
                 _ => return Err(Mp4Error::UnsupportedFormat),
             }

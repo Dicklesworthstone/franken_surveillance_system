@@ -295,9 +295,9 @@ impl OwnedSink {
             {
                 return Err(BootstrapError::VideoBinding);
             }
-            let video =
-                flv_avc::Muxer::new(segment.fragment().key(), source, inputs.policy.media_limits)
-                    .map_err(BootstrapError::Video)?;
+            let constructor = if binding.inband { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+            let video = constructor(segment.fragment().key(), source, inputs.policy.media_limits)
+                .map_err(BootstrapError::Video)?;
             if *video.configuration_sources() != segment.fragment().configuration_sources() {
                 return Err(BootstrapError::VideoBinding);
             }
@@ -422,7 +422,8 @@ impl OwnedSink {
     /// Reconstruct video initialization from the exact owned source record.
     /// Publication later verifies it against the segment and A/V initialization.
     pub fn new(inputs: Inputs) -> Result<Self, ConstructionRefusal> {
-        let video = match flv_avc::Muxer::new(
+        let constructor = if inputs.av_initialization.inband_parameter_sets() { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+        let video = match constructor(
             inputs.av_initialization.source_key(),
             &inputs.video_configuration,
             inputs.video_limits,
@@ -440,7 +441,8 @@ impl OwnedSink {
     /// Restore an in-process retirement, preserving its pending source even if
     /// video-initialization reconstruction is refused.
     pub fn resume(retirement: Retirement) -> Result<Self, ResumeRefusal> {
-        let video = match flv_avc::Muxer::new(
+        let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+        let video = match constructor(
             retirement.inputs.av_initialization.source_key(),
             &retirement.inputs.video_configuration,
             retirement.inputs.video_limits,
@@ -566,9 +568,29 @@ impl OwnedSink {
 }
 
 impl UnknownTimeOwnedSink {
+    /// Remaining allowance in the current AAC timing epoch.
+    pub fn remaining_audio_frames(&self) -> u64 {
+        self.inputs.muxer.remaining_audio_frames()
+    }
+
+    /// Authorize more AAC frames without resetting the source clock. A queued
+    /// source remains owned; an indeterminate publication forbids renewal.
+    pub fn extend_audio_limit(
+        &mut self,
+        additional_frames: u64,
+    ) -> Result<(), av_recording::Error> {
+        self.inputs.muxer.extend_audio_limit(additional_frames)
+    }
+
+    /// Caller-selected retention identity, not an authorization.
+    pub fn retention(&self) -> ContentDigest {
+        self.inputs.retention
+    }
+
     /// Resume in-process ownership without discarding a pending source or fence.
     pub fn resume(retirement: UnknownTimeRetirement) -> Result<Self, UnknownTimeResumeRefusal> {
-        let video = match flv_avc::Muxer::new(
+        let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+        let video = match constructor(
             retirement.inputs.av_initialization.source_key(),
             &retirement.inputs.video_configuration,
             retirement.inputs.video_limits,

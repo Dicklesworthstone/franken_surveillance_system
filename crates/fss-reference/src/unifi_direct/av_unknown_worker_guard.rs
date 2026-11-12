@@ -18,13 +18,15 @@ use asupersync::{
     io::{AsyncRead, AsyncWrite},
 };
 use fss_core::{BudgetVector, OperationId};
+use fss_geometry::WorkBudget;
+use fss_publication::RootLedgerReceipt;
 use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 
 use super::{
-    AudioCodec, VideoChannel, archive, av_bootstrap_driver, av_owned_sink, av_recording, av_sink,
-    av_worker, av_worker_guard::ArchiveState, conversation, events, intent, management,
-    metered::MeteredClock, motion, pipeline, receive, recording, source_handoff, source_worker,
-    supervisor,
+    AudioCodec, VideoChannel, archive, av_bootstrap_driver, av_owned_sink, av_recording,
+    av_rollover_preflight, av_rollover_worker, av_sink, av_worker, av_worker_guard::ArchiveState,
+    conversation, events, intent, management, metered::MeteredClock, motion, pipeline, receive,
+    recording, source_handoff, source_worker, supervisor,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -172,6 +174,9 @@ pub enum Advance {
     Archive(Drive),
     /// A prior attempt failed; caller must explicitly authorize another attempt.
     RetryRequired,
+    /// A settled predecessor reached a preflight capacity limit. The caller
+    /// must still stage and verify an exact successor; this grants no authority.
+    RolloverRequired(av_worker::RolloverNeed),
     /// An uncertain attempt requires retirement and reconciliation.
     RecoveryRequired,
     /// Cancellation was requested and a running worker has drained.
@@ -272,6 +277,980 @@ pub struct Guard<'scope, 'task, IO> {
     archive: ArchiveState,
     audio_fenced: bool,
     retry_required: bool,
+    rollover_need: Option<av_worker::RolloverNeed>,
+}
+
+/// A guard paused for an explicit A/V journal rollover. The controller,
+/// held segment, retry state and worker resources remain exclusively owned.
+#[must_use = "resume the exact guard or explicitly account for all owners"]
+pub struct PausedRollover<'scope, 'task, IO> {
+    supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    held: Option<recording::Segment>,
+    archive: ArchiveState,
+    audio_fenced: bool,
+    retry_required: bool,
+    rollover_need: Option<av_worker::RolloverNeed>,
+    resources: av_worker::UnknownTimeRolloverResources,
+}
+
+/// A controller held while a region-owned worker validates prior custody.
+#[must_use = "drain preflight and account for the original archive owner"]
+pub struct DeferredPause<'scope, 'task, IO> {
+    supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    held: Option<recording::Segment>,
+    archive: ArchiveState,
+    audio_fenced: bool,
+    retry_required: bool,
+    rollover_need: Option<av_worker::RolloverNeed>,
+    worker: av_rollover_preflight::Worker,
+    completion: Option<av_rollover_preflight::Completion>,
+}
+
+/// Result after custody preflight has drained.
+#[must_use = "attach, restore, or reconcile every returned owner"]
+pub enum DeferredPauseFinish<'scope, 'task, IO> {
+    /// Verified predecessor detached without another storage read.
+    Ready {
+        /// Paused controller and pending A/V resources.
+        paused: PausedRollover<'scope, 'task, IO>,
+        /// Exact verified predecessor.
+        previous: archive::journal::rollover::Previous,
+    },
+    /// Preflight did not qualify for the transition.
+    Unresolved(DeferredPauseUnresolved<'scope, 'task, IO>),
+}
+
+/// Why a drained preflight could not be used.
+pub enum DeferredPauseReason {
+    /// No blocking closure ran.
+    NotStarted,
+    /// The runtime requested cancellation.
+    Cancelled,
+    /// The original lineage failed a custody or readiness check.
+    Refused(av_worker::RolloverPauseError),
+    /// The closure panicked; the source remains owned but needs reconciliation.
+    Panicked,
+    /// Ownership or verification state could not be classified.
+    Indeterminate,
+    /// A proof no longer matched the exact retired owner.
+    ProofMismatch,
+    /// The runtime failed after the closure returned a verification result.
+    RuntimeFailed,
+}
+
+/// An unresolved preflight retains the original controller and archive.
+#[must_use = "restore a definitely unstarted attempt or retire for reconciliation"]
+pub struct DeferredPauseUnresolved<'scope, 'task, IO> {
+    supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    held: Option<recording::Segment>,
+    archive: ArchiveState,
+    audio_fenced: bool,
+    retry_required: bool,
+    rollover_need: Option<av_worker::RolloverNeed>,
+    original: av_worker::UnknownTimeRetirement,
+    /// Why the transition could not proceed.
+    pub reason: DeferredPauseReason,
+    /// Independent runtime outcome.
+    pub runtime: Result<(), asupersync::runtime::JoinError>,
+    /// A panic or inconsistent worker state requires reconciliation.
+    pub fenced: bool,
+}
+
+/// Controller and original A/V owner after a failed preflight is retired.
+#[must_use]
+pub struct DeferredPauseRetirement {
+    /// Retired controller and unconsumed media.
+    pub supervisor: supervisor::Retirement,
+    /// Segment retained outside the archive worker.
+    pub held: Option<recording::Segment>,
+    /// Original archive owner, including its pending segment and lineage.
+    pub original: av_worker::UnknownTimeRetirement,
+    /// Why preflight could not be used.
+    pub reason: DeferredPauseReason,
+    /// Runtime classification.
+    pub runtime: Result<(), asupersync::runtime::JoinError>,
+    /// Whether the worker needs reconciliation.
+    pub fenced: bool,
+    /// Original archive phase.
+    pub archive: ArchiveState,
+    /// Original audio fence.
+    pub audio_fenced: bool,
+    /// Original retry state.
+    pub retry_required: bool,
+    /// Original capacity signal.
+    pub rollover_need: Option<av_worker::RolloverNeed>,
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> DeferredPauseUnresolved<'scope, 'task, IO> {
+    /// Restore only when work never started or cancellation was observed; the
+    /// original guard remains caller-owned and is not implicitly restarted.
+    pub fn restore(self) -> Result<Guard<'scope, 'task, IO>, Self> {
+        if self.fenced
+            || !matches!(
+                self.reason,
+                DeferredPauseReason::NotStarted | DeferredPauseReason::Cancelled
+            )
+        {
+            return Err(self);
+        }
+        Ok(Guard {
+            supervisor: self.supervisor,
+            worker: av_worker::UnknownTimeWorker::from_retirement(self.original),
+            held: self.held,
+            archive: self.archive,
+            audio_fenced: self.audio_fenced,
+            retry_required: self.retry_required,
+            rollover_need: self.rollover_need,
+        })
+    }
+    /// Close the controller and return the exact original archive owner.
+    pub fn retire(self) -> DeferredPauseRetirement {
+        DeferredPauseRetirement {
+            supervisor: self.supervisor.retire(),
+            held: self.held,
+            original: self.original,
+            reason: self.reason,
+            runtime: self.runtime,
+            fenced: self.fenced,
+            archive: self.archive,
+            audio_fenced: self.audio_fenced,
+            retry_required: self.retry_required,
+            rollover_need: self.rollover_need,
+        }
+    }
+}
+
+/// A paused controller and one region-owned rollover operation.
+#[must_use = "join the transition and finish or retire all owners"]
+pub struct BackgroundRollover<'scope, 'task, IO> {
+    supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    held: Option<recording::Segment>,
+    archive: ArchiveState,
+    audio_fenced: bool,
+    retry_required: bool,
+    rollover_need: Option<av_worker::RolloverNeed>,
+    worker: av_rollover_worker::Worker,
+    completion: Option<av_rollover_worker::Completion>,
+}
+
+/// A refused transfer retains the paused guard and untouched inputs.
+#[must_use]
+pub struct BackgroundRefusal<'scope, 'task, IO> {
+    /// Original paused controller and resources.
+    pub paused: PausedRollover<'scope, 'task, IO>,
+    /// Unconsumed transition inputs.
+    pub inputs: av_rollover_worker::Inputs,
+}
+
+/// One bounded control or worker-completion decision during rollover.
+#[must_use]
+pub enum BackgroundDrive {
+    /// No operation is running or completed.
+    NotRunning,
+    /// The worker has drained; its exact result remains owned by the guard.
+    Completed,
+    /// A controller result and whether the worker also drained.
+    Control {
+        /// Controller observation or effect result.
+        step: supervisor::Step,
+        /// Whether the worker result is now retained by the guard.
+        completed: bool,
+    },
+}
+
+/// A fully drained background transition.
+#[must_use = "retain the resumed guard or reconcile the unresolved transition"]
+pub enum BackgroundFinish<'scope, 'task, IO> {
+    /// Exact matching successor replayed and attached.
+    Resumed {
+        /// Session guard with its pending source still held.
+        guard: Guard<'scope, 'task, IO>,
+        /// Actual replay receipt.
+        receipt: RootLedgerReceipt,
+    },
+    /// Failure or uncertainty retains every recoverable owner.
+    Unresolved(BackgroundUnresolved<'scope, 'task, IO>),
+}
+
+/// A transition that cannot be automatically resumed.
+#[must_use = "reconcile or retire the controller and all transition owners"]
+pub struct BackgroundUnresolved<'scope, 'task, IO> {
+    paused: PausedRollover<'scope, 'task, IO>,
+    inputs: Option<av_rollover_worker::Inputs>,
+    completion: av_rollover_worker::Completion,
+    fenced: bool,
+}
+
+/// All remaining owners after an unresolved transition is explicitly retired.
+#[must_use]
+pub struct BackgroundRetirement {
+    /// Retired controller and media sources.
+    pub supervisor: supervisor::Retirement,
+    /// Segment held outside the archive worker, if any.
+    pub held: Option<recording::Segment>,
+    /// Pending media and storage resources.
+    pub resources: av_worker::UnknownTimeRolloverResources,
+    /// Unconsumed transition inputs, if the work did not start.
+    pub inputs: Option<av_rollover_worker::Inputs>,
+    /// Exact task and transition outcomes.
+    pub completion: av_rollover_worker::Completion,
+    /// Panic or inconsistent state requires reconciliation.
+    pub fenced: bool,
+    /// Original scheduler archive phase.
+    pub archive: ArchiveState,
+    /// Audio observations require reconciliation.
+    pub audio_fenced: bool,
+    /// Original retry latch.
+    pub retry_required: bool,
+    /// Original capacity signal.
+    pub rollover_need: Option<av_worker::RolloverNeed>,
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> BackgroundUnresolved<'scope, 'task, IO> {
+    /// Recover the paused owner only when the worker state was not fenced.
+    /// The caller must still inspect the outcome before any further operation.
+    pub fn into_paused(
+        self,
+    ) -> Result<
+        (
+            PausedRollover<'scope, 'task, IO>,
+            Option<av_rollover_worker::Inputs>,
+            av_rollover_worker::Completion,
+        ),
+        Self,
+    > {
+        if self.fenced {
+            return Err(self);
+        }
+        Ok((self.paused, self.inputs, self.completion))
+    }
+
+    /// Retire controller I/O and return all recoverable storage and sources.
+    pub fn retire(self) -> BackgroundRetirement {
+        let PausedRollover {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            resources,
+        } = self.paused;
+        BackgroundRetirement {
+            supervisor: supervisor.retire(),
+            held,
+            resources,
+            inputs: self.inputs,
+            completion: self.completion,
+            fenced: self.fenced,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+        }
+    }
+}
+
+/// Failed reattachment preserves the paused guard and active transition.
+#[must_use = "reconcile or resume both returned owners"]
+pub struct PausedAttachRefusal<'scope, 'task, IO> {
+    /// Paused original controller, source and archive resources.
+    pub paused: PausedRollover<'scope, 'task, IO>,
+    /// The transition which could not be attached.
+    pub active: archive::journal::rollover::Active,
+}
+
+struct PausedPreparedAttachRefusal<'scope, 'task, IO> {
+    paused: PausedRollover<'scope, 'task, IO>,
+    attachment: av_worker::PreparedUnknownTimeAttachment,
+}
+
+/// Failed restoration preserves the paused guard and supplied predecessor.
+#[must_use = "reconcile or restore both returned owners"]
+pub struct PausedRestoreRefusal<'scope, 'task, IO> {
+    /// Paused original controller, source and archive resources.
+    pub paused: PausedRollover<'scope, 'task, IO>,
+    /// The nonmatching predecessor.
+    pub previous: archive::journal::rollover::Previous,
+}
+
+impl<'scope, 'task, IO> PausedRollover<'scope, 'task, IO> {
+    /// Transfer a matching predecessor and fresh stores to a single bounded
+    /// rollover worker; no storage operation starts until `start` is called.
+    pub fn into_background(
+        self,
+        inputs: av_rollover_worker::Inputs,
+    ) -> Result<BackgroundRollover<'scope, 'task, IO>, BackgroundRefusal<'scope, 'task, IO>> {
+        let matches_need = self.rollover_need.is_none_or(|need| {
+            inputs.previous.journal.confirmed() == Some(need.confirmed)
+                && inputs.previous.journal.anchor() == need.journal
+                && inputs.previous.keeper.anchor() == need.keeper
+        });
+        if !matches_need || !self.resources.matches_previous(&inputs.previous) {
+            return Err(BackgroundRefusal {
+                paused: self,
+                inputs,
+            });
+        }
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            resources,
+        } = self;
+        Ok(BackgroundRollover {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            worker: av_rollover_worker::Worker::new(resources, inputs),
+            completion: None,
+        })
+    }
+
+    /// Scoped authority for staging or committing the new history.
+    pub fn replay(&self) -> &ReplayCx {
+        self.resources.replay()
+    }
+
+    /// The guard's pre-pause archive phase; this is not a completion receipt.
+    pub fn archive_state(&self) -> ArchiveState {
+        self.archive
+    }
+
+    /// A segment held outside the worker, if any.
+    pub fn held_segment(&self) -> Option<&recording::Segment> {
+        self.held.as_ref()
+    }
+
+    /// Whether the worker sink owns a pending segment or fence.
+    pub fn worker_has_pending(&self) -> bool {
+        self.resources.has_pending()
+    }
+
+    /// Capacity-triggered predecessor held across this pause, if any.
+    pub fn rollover_need(&self) -> Option<av_worker::RolloverNeed> {
+        self.rollover_need
+    }
+
+    /// Revalidate the exact confirmed A/V root using the held archive owner.
+    pub fn replay_confirmed_av(
+        &mut self,
+        active: &mut archive::journal::rollover::Active,
+        read: &dyn archive::ReadAuthority,
+        limits: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+    ) -> Result<RootLedgerReceipt, archive::journal::rollover::AvReplayError> {
+        self.resources
+            .replay_confirmed_av(active, read, limits, work)
+    }
+
+    /// Resume with an already replayed successor. A matching capacity request
+    /// is cleared only after attachment succeeds; other retry latches remain.
+    /// No archive operation starts until the scheduler is advanced again.
+    pub fn attach(
+        self,
+        active: archive::journal::rollover::Active,
+    ) -> Result<Guard<'scope, 'task, IO>, PausedAttachRefusal<'scope, 'task, IO>> {
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            resources,
+        } = self;
+        let binding = active.binding();
+        let satisfied = rollover_need.is_some_and(|need| rollover_matches(need, binding));
+        match resources.attach(active) {
+            Ok(worker) => Ok(Guard {
+                supervisor,
+                worker,
+                held,
+                archive,
+                audio_fenced,
+                retry_required: retry_required && !satisfied,
+                rollover_need: if satisfied { None } else { rollover_need },
+            }),
+            Err(refusal) => Err(PausedAttachRefusal {
+                paused: Self {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    resources: refusal.resources,
+                },
+                active: refusal.active,
+            }),
+        }
+    }
+
+    /// Finalize a successor whose custody was checked by the blocking worker.
+    fn attach_prepared(
+        self,
+        attachment: av_worker::PreparedUnknownTimeAttachment,
+    ) -> Result<Guard<'scope, 'task, IO>, PausedPreparedAttachRefusal<'scope, 'task, IO>> {
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            resources,
+        } = self;
+        let satisfied =
+            rollover_need.is_some_and(|need| rollover_matches(need, attachment.binding()));
+        match resources.attach_prepared(attachment) {
+            Ok(worker) => Ok(Guard {
+                supervisor,
+                worker,
+                held,
+                archive,
+                audio_fenced,
+                retry_required: retry_required && !satisfied,
+                rollover_need: if satisfied { None } else { rollover_need },
+            }),
+            Err(refusal) => Err(PausedPreparedAttachRefusal {
+                paused: Self {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    resources: refusal.resources,
+                },
+                attachment: refusal.attachment,
+            }),
+        }
+    }
+
+    /// Restore the unchanged predecessor after abandoning an uncommitted stage.
+    pub fn restore(
+        self,
+        previous: archive::journal::rollover::Previous,
+    ) -> Result<Guard<'scope, 'task, IO>, PausedRestoreRefusal<'scope, 'task, IO>> {
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            resources,
+        } = self;
+        match resources.restore(previous) {
+            Ok(retirement) => Ok(Guard {
+                supervisor,
+                worker: av_worker::UnknownTimeWorker::from_retirement(retirement),
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+            }),
+            Err(refusal) => Err(PausedRestoreRefusal {
+                paused: Self {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    resources: refusal.resources,
+                },
+                previous: refusal.previous,
+            }),
+        }
+    }
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> PausedRollover<'scope, 'task, IO> {
+    /// Service controller traffic while archive ownership is paused, without
+    /// polling or consuming camera media. Callers must retain the returned
+    /// step, including any interrupted effect or terminal controller state.
+    pub async fn service_control(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> supervisor::Step {
+        self.supervisor.step_control(owner, operation, wait).await
+    }
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> BackgroundRollover<'scope, 'task, IO> {
+    pub(super) fn control_supervisor(&mut self) -> &mut supervisor::Supervisor<'scope, 'task, IO> {
+        &mut self.supervisor
+    }
+
+    /// Start the single region-owned blocking transition.
+    pub fn start<'a, 'b>(
+        &mut self,
+        task: &'a TaskCx<'b>,
+        cx: &'a Cx,
+        clock: MeteredClock<'a, 'b>,
+        resource: &str,
+        cost: &BudgetVector,
+    ) -> Result<(), av_rollover_worker::StartError> {
+        if !self.supervisor.matches_clock(&clock) {
+            return Err(av_rollover_worker::StartError::Context);
+        }
+        if self.completion.is_some() {
+            return Err(av_rollover_worker::StartError::Fenced);
+        }
+        self.worker.start(task, cx, clock, resource, cost)
+    }
+    /// Recover the original paused guard and inputs after a pre-start refusal.
+    pub fn into_unstarted(
+        self,
+    ) -> Result<
+        (
+            PausedRollover<'scope, 'task, IO>,
+            av_rollover_worker::Inputs,
+        ),
+        Self,
+    > {
+        if self.completion.is_some() {
+            return Err(self);
+        }
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            worker,
+            completion,
+        } = self;
+        match worker.into_unstarted() {
+            Ok((resources, inputs)) => Ok((
+                PausedRollover {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    resources,
+                },
+                inputs,
+            )),
+            Err(worker) => Err(Self {
+                supervisor,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+                worker,
+                completion,
+            }),
+        }
+    }
+
+    /// Service controller traffic without polling media or waiting for storage.
+    pub async fn service_control(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> supervisor::Step {
+        self.supervisor.step_control(owner, operation, wait).await
+    }
+    /// Service control while periodically checking the exact worker. A
+    /// completed transition remains internally owned until `finish`.
+    pub async fn drive(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> BackgroundDrive {
+        if self.completion.is_some() {
+            return BackgroundDrive::Completed;
+        }
+        if !self.worker.is_running() {
+            return BackgroundDrive::NotRunning;
+        }
+        if self.poll_join_once().await {
+            return BackgroundDrive::Completed;
+        }
+        let step = self.service_control(owner, operation, wait).await;
+        let completed = self.poll_join_once().await;
+        BackgroundDrive::Control { step, completed }
+    }
+
+    async fn poll_join_once(&mut self) -> bool {
+        poll_fn(|context| {
+            let mut join = pin!(self.join());
+            Poll::Ready(matches!(join.as_mut().poll(context), Poll::Ready(true)))
+        })
+        .await
+    }
+
+    /// Request cancellation; the worker must still be joined.
+    pub fn abort(&self) {
+        self.worker.abort();
+    }
+    /// Whether the region coordinator has observed cancellation.
+    pub fn cancellation_observed(&self) -> bool {
+        self.worker.cancellation_observed()
+    }
+    /// Join the exact operation while retaining its outcome internally.
+    pub async fn join(&mut self) -> bool {
+        if self.completion.is_some() {
+            return true;
+        }
+        if let Some(completion) = self.worker.join().await {
+            self.completion = Some(completion);
+            true
+        } else {
+            false
+        }
+    }
+    /// Attach only a matching, successfully replayed transition. All other
+    /// outcomes retain the controller, pending segment and transition state.
+    pub fn finish(self) -> Result<BackgroundFinish<'scope, 'task, IO>, Self> {
+        if self.completion.is_none() {
+            return Err(self);
+        }
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            worker,
+            completion,
+        } = self;
+        let Some(completion) = completion else {
+            return Err(Self {
+                supervisor,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+                worker,
+                completion: None,
+            });
+        };
+        let retired = match worker.retire() {
+            Ok(retired) => retired,
+            Err(worker) => {
+                return Err(Self {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    worker,
+                    completion: Some(completion),
+                });
+            }
+        };
+        let paused = PausedRollover {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            resources: retired.resources,
+        };
+        if !retired.fenced && retired.inputs.is_none() {
+            match completion {
+                av_rollover_worker::Completion {
+                    runtime: Ok(()),
+                    outcome:
+                        av_rollover_worker::Outcome::Prepared {
+                            attachment,
+                            receipt,
+                        },
+                } if rollover_need
+                    .is_none_or(|need| rollover_matches(need, attachment.binding())) =>
+                {
+                    return Ok(match paused.attach_prepared(attachment) {
+                        Ok(guard) => BackgroundFinish::Resumed { guard, receipt },
+                        Err(refusal) => BackgroundFinish::Unresolved(BackgroundUnresolved {
+                            paused: refusal.paused,
+                            inputs: None,
+                            completion: av_rollover_worker::Completion {
+                                runtime: Ok(()),
+                                outcome: av_rollover_worker::Outcome::Prepared {
+                                    attachment: refusal.attachment,
+                                    receipt,
+                                },
+                            },
+                            fenced: false,
+                        }),
+                    });
+                }
+                completion => {
+                    return Ok(BackgroundFinish::Unresolved(BackgroundUnresolved {
+                        paused,
+                        inputs: retired.inputs,
+                        completion,
+                        fenced: retired.fenced,
+                    }));
+                }
+            }
+        }
+        Ok(BackgroundFinish::Unresolved(BackgroundUnresolved {
+            paused,
+            inputs: retired.inputs,
+            completion,
+            fenced: retired.fenced,
+        }))
+    }
+}
+
+impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> DeferredPause<'scope, 'task, IO> {
+    pub(super) fn control_supervisor(&mut self) -> &mut supervisor::Supervisor<'scope, 'task, IO> {
+        &mut self.supervisor
+    }
+
+    /// Admit the custody check to the bounded runtime blocking pool.
+    pub fn start<'a, 'b>(
+        &mut self,
+        task: &'a TaskCx<'b>,
+        cx: &'a Cx,
+        clock: MeteredClock<'a, 'b>,
+        resource: &str,
+        cost: &BudgetVector,
+    ) -> Result<(), av_rollover_worker::StartError> {
+        if !self.supervisor.matches_clock(&clock) {
+            return Err(av_rollover_worker::StartError::Context);
+        }
+        if self.completion.is_some() {
+            return Err(av_rollover_worker::StartError::Fenced);
+        }
+        self.worker
+            .start(task, cx, clock, resource, cost)
+            .map_err(|error| match error {
+                av_rollover_preflight::StartError::Running => {
+                    av_rollover_worker::StartError::Running
+                }
+                av_rollover_preflight::StartError::Fenced => av_rollover_worker::StartError::Fenced,
+                av_rollover_preflight::StartError::Context => {
+                    av_rollover_worker::StartError::Context
+                }
+                av_rollover_preflight::StartError::Clock => av_rollover_worker::StartError::Clock,
+                av_rollover_preflight::StartError::Task(error) => {
+                    av_rollover_worker::StartError::Task(error)
+                }
+                av_rollover_preflight::StartError::Runtime(error) => {
+                    av_rollover_worker::StartError::Runtime(error)
+                }
+            })
+    }
+    /// Service control while the prior custody check is running.
+    pub async fn drive(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> BackgroundDrive {
+        if self.completion.is_some() {
+            return BackgroundDrive::Completed;
+        }
+        if !self.worker.is_running() {
+            return BackgroundDrive::NotRunning;
+        }
+        if self.poll_join_once().await {
+            return BackgroundDrive::Completed;
+        }
+        let step = self.supervisor.step_control(owner, operation, wait).await;
+        let completed = self.poll_join_once().await;
+        BackgroundDrive::Control { step, completed }
+    }
+    async fn poll_join_once(&mut self) -> bool {
+        poll_fn(|context| {
+            let mut join = pin!(self.join());
+            Poll::Ready(matches!(join.as_mut().poll(context), Poll::Ready(true)))
+        })
+        .await
+    }
+    /// Request cancellation; join remains required.
+    pub fn abort(&self) {
+        self.worker.abort();
+    }
+    /// Whether the runtime coordinator has observed cancellation.
+    pub fn cancellation_observed(&self) -> bool {
+        self.worker.cancellation_observed()
+    }
+    /// Join the exact preflight without releasing its original archive owner.
+    pub async fn join(&mut self) -> bool {
+        if self.completion.is_some() {
+            return true;
+        }
+        if let Some(completion) = self.worker.join().await {
+            self.completion = Some(completion);
+            true
+        } else {
+            false
+        }
+    }
+    /// Recover the untouched guard when admission never succeeded.
+    pub fn into_unstarted(self) -> Result<Guard<'scope, 'task, IO>, Self> {
+        if self.worker.is_running() || self.completion.is_some() {
+            return Err(self);
+        }
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            worker,
+            completion,
+        } = self;
+        match worker.retire() {
+            Ok(retired) if !retired.fenced => Ok(Guard {
+                supervisor,
+                worker: av_worker::UnknownTimeWorker::from_retirement(retired.original),
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+            }),
+            Ok(retired) => Err(Self {
+                supervisor,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+                worker: av_rollover_preflight::Worker::from_retirement(retired),
+                completion,
+            }),
+            Err(worker) => Err(Self {
+                supervisor,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+                worker,
+                completion,
+            }),
+        }
+    }
+    /// Complete the preflight and detach only after the exact verified proof.
+    pub fn finish(self) -> Result<DeferredPauseFinish<'scope, 'task, IO>, Self> {
+        if self.completion.is_none() {
+            return Err(self);
+        }
+        let Self {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            worker,
+            completion,
+        } = self;
+        let Some(completion) = completion else {
+            return Err(Self {
+                supervisor,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+                worker,
+                completion: None,
+            });
+        };
+        let retired = match worker.retire() {
+            Ok(retired) => retired,
+            Err(worker) => {
+                return Err(Self {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    worker,
+                    completion: Some(completion),
+                });
+            }
+        };
+        let (reason, original) = match (completion.runtime, completion.outcome) {
+            (Ok(()), av_rollover_preflight::Outcome::Verified(proof)) if !retired.fenced => {
+                match retired.original.into_rollover_verified(proof) {
+                    Ok((resources, previous)) => {
+                        return Ok(DeferredPauseFinish::Ready {
+                            paused: PausedRollover {
+                                supervisor,
+                                held,
+                                archive,
+                                audio_fenced,
+                                retry_required,
+                                rollover_need,
+                                resources,
+                            },
+                            previous,
+                        });
+                    }
+                    Err(original) => (DeferredPauseReason::ProofMismatch, (original, Ok(()))),
+                }
+            }
+            (runtime, outcome) => {
+                let reason = if runtime.is_err()
+                    && matches!(outcome, av_rollover_preflight::Outcome::Verified(_))
+                {
+                    DeferredPauseReason::RuntimeFailed
+                } else {
+                    match outcome {
+                        av_rollover_preflight::Outcome::Verified(_) => {
+                            DeferredPauseReason::Indeterminate
+                        }
+                        av_rollover_preflight::Outcome::Refused(error) => {
+                            DeferredPauseReason::Refused(error)
+                        }
+                        av_rollover_preflight::Outcome::Cancelled => DeferredPauseReason::Cancelled,
+                        av_rollover_preflight::Outcome::NotStarted => {
+                            DeferredPauseReason::NotStarted
+                        }
+                        av_rollover_preflight::Outcome::Panicked => DeferredPauseReason::Panicked,
+                        av_rollover_preflight::Outcome::Indeterminate => {
+                            DeferredPauseReason::Indeterminate
+                        }
+                    }
+                };
+                (reason, (retired.original, runtime))
+            }
+        };
+        Ok(DeferredPauseFinish::Unresolved(DeferredPauseUnresolved {
+            supervisor,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+            original: original.0,
+            reason,
+            runtime: original.1,
+            fenced: retired.fenced,
+        }))
+    }
 }
 
 /// Every owner returned after the archive has actually drained.
@@ -289,9 +1268,113 @@ pub struct Retirement {
     pub audio_fenced: bool,
     /// An archive attempt did not complete successfully.
     pub retry_required: bool,
+    /// Exact settled predecessor requesting rollover, if retained.
+    pub rollover_need: Option<av_worker::RolloverNeed>,
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO> {
+    /// Transfer the drained archive to a region-owned preflight worker without
+    /// reading storage on the camera-control task. The returned owner must be
+    /// started, driven, and drained before the guard can resume.
+    pub fn defer_rollover_pause(self) -> Result<DeferredPause<'scope, 'task, IO>, Self> {
+        if matches!(self.archive, ArchiveState::Running | ArchiveState::Recovery) {
+            return Err(self);
+        }
+        let Self {
+            supervisor,
+            worker,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+        } = self;
+        match worker.retire() {
+            Ok(retirement) => Ok(DeferredPause {
+                supervisor,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+                worker: av_rollover_preflight::Worker::new(retirement),
+                completion: None,
+            }),
+            Err(worker) => Err(Self {
+                supervisor,
+                worker,
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+            }),
+        }
+    }
+
+    /// Pause at an idle or drained-pending archive boundary. Running and
+    /// indeterminate archive operations are refused with the guard intact.
+    /// Later generations may synchronously revalidate retained switch custody.
+    /// This does not stop or restart the camera.
+    pub fn pause_rollover(
+        self,
+    ) -> Result<
+        (
+            PausedRollover<'scope, 'task, IO>,
+            archive::journal::rollover::Previous,
+        ),
+        Self,
+    > {
+        if matches!(self.archive, ArchiveState::Running | ArchiveState::Recovery) {
+            return Err(self);
+        }
+        let Self {
+            supervisor,
+            worker,
+            held,
+            archive,
+            audio_fenced,
+            retry_required,
+            rollover_need,
+        } = self;
+        let retired = match worker.retire() {
+            Ok(retired) => retired,
+            Err(worker) => {
+                return Err(Self {
+                    supervisor,
+                    worker,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                });
+            }
+        };
+        match retired.into_rollover() {
+            Ok((resources, previous)) => Ok((
+                PausedRollover {
+                    supervisor,
+                    held,
+                    archive,
+                    audio_fenced,
+                    retry_required,
+                    rollover_need,
+                    resources,
+                },
+                previous,
+            )),
+            Err(retired) => Err(Self {
+                supervisor,
+                worker: av_worker::UnknownTimeWorker::from_retirement(retired),
+                held,
+                archive,
+                audio_fenced,
+                retry_required,
+                rollover_need,
+            }),
+        }
+    }
     pub(super) fn control_supervisor(&mut self) -> &mut supervisor::Supervisor<'scope, 'task, IO> {
         &mut self.supervisor
     }
@@ -397,6 +1480,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 archive: ArchiveState::Idle,
                 audio_fenced: false,
                 retry_required: false,
+                rollover_need: None,
             },
             origin,
         }))
@@ -426,12 +1510,19 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             archive: ArchiveState::Idle,
             audio_fenced: false,
             retry_required: false,
+            rollover_need: None,
         })
     }
 
     /// Current archive phase.
     pub fn archive_state(&self) -> ArchiveState {
         self.archive
+    }
+
+    /// Exact settled predecessor requesting rollover, if any. The request is
+    /// retained until explicit retry or a matching verified successor attaches.
+    pub fn rollover_need(&self) -> Option<av_worker::RolloverNeed> {
+        self.rollover_need
     }
 
     /// Original source held outside the worker, if any.
@@ -576,6 +1667,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             .map_err(StartError::Worker)?;
         self.archive = ArchiveState::Running;
         self.retry_required = false;
+        self.rollover_need = None;
         Ok(())
     }
 
@@ -611,6 +1703,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             _ => ArchiveState::Recovery,
         };
         self.retry_required = self.archive != ArchiveState::Idle;
+        self.rollover_need = rollover_from_completion(&completion);
         Some(completion)
     }
 
@@ -619,9 +1712,37 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     pub fn authorize_retry(&mut self) -> bool {
         if self.archive == ArchiveState::Pending && self.retry_required {
             self.retry_required = false;
+            self.rollover_need = None;
             true
         } else {
             false
+        }
+    }
+
+    /// Authorize additional AAC observations without resetting the timing
+    /// epoch or automatically retrying a retained source. A running or
+    /// indeterminate archive must first drain or be reconciled.
+    pub fn extend_audio_limit(
+        &mut self,
+        additional_frames: u64,
+    ) -> Result<u64, av_worker::AudioAllowanceError> {
+        if self.archive == ArchiveState::Recovery {
+            return Err(av_worker::AudioAllowanceError::Fenced);
+        }
+        self.worker.extend_audio_limit(additional_frames)
+    }
+
+    /// `None` means an admitted archive task still owns the muxer. A caller
+    /// must keep driving that task; it must not treat this as free allowance.
+    pub fn remaining_audio_frames(
+        &mut self,
+    ) -> Result<Option<u64>, av_worker::AudioAllowanceError> {
+        match self.archive {
+            ArchiveState::Running => Ok(None),
+            ArchiveState::Recovery => Err(av_worker::AudioAllowanceError::Fenced),
+            ArchiveState::Idle | ArchiveState::Pending => {
+                self.worker.remaining_audio_frames().map(Some)
+            }
         }
     }
 
@@ -652,6 +1773,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             } else {
                 None
             });
+        }
+        if self.archive == ArchiveState::Pending {
+            if let Some(need) = self.rollover_need {
+                return Advance::RolloverRequired(need);
+            }
         }
         match self.archive {
             ArchiveState::Idle => {
@@ -965,6 +2091,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             archive,
             audio_fenced,
             retry_required,
+            rollover_need,
         } = self;
         match worker.retire() {
             Ok(worker) => Ok(Retirement {
@@ -974,6 +2101,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 archive,
                 audio_fenced,
                 retry_required,
+                rollover_need,
             }),
             Err(worker) => Err(Self {
                 supervisor,
@@ -982,8 +2110,38 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 archive,
                 audio_fenced,
                 retry_required,
+                rollover_need,
             }),
         }
+    }
+}
+
+fn rollover_matches(
+    need: av_worker::RolloverNeed,
+    binding: archive::journal::rollover::Binding,
+) -> bool {
+    need.confirmed == binding.confirmed
+        && need.journal == binding.old_journal
+        && need.keeper == binding.old_keeper
+}
+
+fn rollover_from_completion(
+    completion: &av_worker::UnknownTimeCompletion,
+) -> Option<av_worker::RolloverNeed> {
+    match (&completion.runtime, &completion.outcome) {
+        (
+            Ok(()),
+            av_worker::UnknownTimeOutcome::Publication(
+                av_worker::UnknownTimePublication::Refused {
+                    stage: av_worker::UnknownTimeFailureStage::BeforePublication,
+                    reason: av_worker::FailureReason::JournalCapacity,
+                    pending: None,
+                    receipt: None,
+                    rollover: Some(need),
+                },
+            ),
+        ) => Some(*need),
+        _ => None,
     }
 }
 
@@ -1008,6 +2166,7 @@ pub(super) fn advance_is_terminal(advance: &Advance) -> bool {
         Advance::Context
         | Advance::StartRefused(_)
         | Advance::RetryRequired
+        | Advance::RolloverRequired(_)
         | Advance::RecoveryRequired
         | Advance::Cancelled(_)
         | Advance::Source(
@@ -1020,5 +2179,144 @@ pub(super) fn advance_is_terminal(advance: &Advance) -> bool {
         Advance::Source(Step::SourceQueued)
         | Advance::ArchiveStarted
         | Advance::Archive(Drive::Archive(_)) => false,
+    }
+}
+
+#[cfg(test)]
+mod rollover_scheduler_tests {
+    use super::*;
+    use asupersync::runtime::JoinError;
+    use fss_core::ContentDigest;
+    use fss_runtime::effect_journal::EffectJournalPin;
+
+    fn pin(label: &[u8], sequence: u64) -> EffectJournalPin {
+        EffectJournalPin {
+            sequence,
+            root: ContentDigest::sha256(label),
+        }
+    }
+
+    fn need() -> av_worker::RolloverNeed {
+        av_worker::RolloverNeed {
+            confirmed: archive::UnknownTimePin {
+                root: ContentDigest::sha256(b"confirmed"),
+                retention: ContentDigest::sha256(b"retention"),
+            },
+            journal: pin(b"journal", 5),
+            keeper: pin(b"keeper", 5),
+        }
+    }
+
+    fn completion(
+        stage: av_worker::UnknownTimeFailureStage,
+        reason: av_worker::FailureReason,
+        pending: Option<archive::UnknownTimePin>,
+        marker: Option<av_worker::RolloverNeed>,
+    ) -> av_worker::UnknownTimeCompletion {
+        av_worker::UnknownTimeCompletion {
+            runtime: Ok(()),
+            outcome: av_worker::UnknownTimeOutcome::Publication(
+                av_worker::UnknownTimePublication::Refused {
+                    stage,
+                    reason,
+                    pending,
+                    receipt: None,
+                    rollover: marker,
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn rollover_signal_requires_a_successful_precandidate_capacity_refusal() {
+        use av_worker::{FailureReason as R, UnknownTimeFailureStage as S};
+        let expected = need();
+        let make = || {
+            completion(
+                S::BeforePublication,
+                R::JournalCapacity,
+                None,
+                Some(expected),
+            )
+        };
+        assert_eq!(rollover_from_completion(&make()), Some(expected));
+        assert!(advance_is_terminal(&Advance::RolloverRequired(expected)));
+        assert_eq!(
+            rollover_from_completion(&completion(
+                S::Archive,
+                R::JournalCapacity,
+                None,
+                Some(expected)
+            )),
+            None
+        );
+        assert_eq!(
+            rollover_from_completion(&completion(
+                S::BeforePublication,
+                R::Storage,
+                None,
+                Some(expected)
+            )),
+            None
+        );
+        assert_eq!(
+            rollover_from_completion(&completion(
+                S::BeforePublication,
+                R::JournalCapacity,
+                Some(expected.confirmed),
+                Some(expected)
+            )),
+            None
+        );
+        assert_eq!(
+            rollover_from_completion(&completion(
+                S::BeforePublication,
+                R::JournalCapacity,
+                None,
+                None
+            )),
+            None
+        );
+        let mut failed_runtime = make();
+        failed_runtime.runtime = Err(JoinError::PolledAfterCompletion);
+        assert_eq!(rollover_from_completion(&failed_runtime), None);
+    }
+
+    #[test]
+    fn only_the_exact_predecessor_satisfies_a_rollover_request() {
+        let expected = need();
+        let binding = archive::journal::rollover::Binding {
+            scope: ContentDigest::sha256(b"scope"),
+            confirmed: expected.confirmed,
+            old_journal: expected.journal,
+            old_keeper: expected.keeper,
+            new_journal: pin(b"next journal", 3),
+            new_keeper: pin(b"next keeper", 1),
+        };
+        assert!(rollover_matches(expected, binding));
+        assert!(!rollover_matches(
+            expected,
+            archive::journal::rollover::Binding {
+                old_journal: pin(b"other", 5),
+                ..binding
+            }
+        ));
+        assert!(!rollover_matches(
+            expected,
+            archive::journal::rollover::Binding {
+                old_keeper: pin(b"other", 5),
+                ..binding
+            }
+        ));
+        assert!(!rollover_matches(
+            expected,
+            archive::journal::rollover::Binding {
+                confirmed: archive::UnknownTimePin {
+                    root: ContentDigest::sha256(b"other"),
+                    ..binding.confirmed
+                },
+                ..binding
+            }
+        ));
     }
 }

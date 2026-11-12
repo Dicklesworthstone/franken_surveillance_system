@@ -415,6 +415,12 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Inspect whether the separate-source owner is idle, pending, running,
+    /// fenced, or unavailable. This is not a publication receipt.
+    pub fn source_status(&self) -> source_worker::Status {
+        self.worker.status()
+    }
+
     /// Return the exact worker and its retained work to the session owner.
     pub fn into_worker(self) -> source_worker::Worker {
         self.worker

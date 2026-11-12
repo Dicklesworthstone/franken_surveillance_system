@@ -63,6 +63,16 @@ fn fixture_with_audio_count(
     audio_body: &[u8],
     count: Option<usize>,
 ) -> Result<(Vec<u8>, Vec<SourceRecord>), Error> {
+    fixture_with_parameter_sets(audio_step, audio_body, count, false, false)
+}
+
+fn fixture_with_parameter_sets(
+    audio_step: u32,
+    audio_body: &[u8],
+    count: Option<usize>,
+    inband: bool,
+    changed: bool,
+) -> Result<(Vec<u8>, Vec<SourceRecord>), Error> {
     let pictures = groups(BASELINE, KEY, true, false)?;
     assert!(pictures.len() >= 4);
     let sps = pictures[0].sps().nal_bytes();
@@ -85,7 +95,7 @@ fn fixture_with_audio_count(
         audio.extend_from_slice(audio_body);
         wire.extend(tag(8, index as u32 * audio_step, &audio));
         wire.extend([0x77; 3]);
-        wire.extend(video(picture, index as u32 * 40));
+        wire.extend(video_with_parameter_sets(picture, index as u32 * 40, inband, changed));
     }
     let mut framer = Framer::new(Limits::default(), 1024 * 1024)?;
     framer.append(0, &wire)?;
@@ -96,8 +106,16 @@ fn fixture_with_audio_count(
     Ok((wire, records))
 }
 
-fn video(picture: &AvcPictureGroup, timestamp: u32) -> Vec<u8> {
+fn video_with_parameter_sets(picture: &AvcPictureGroup, timestamp: u32, inband: bool, changed: bool) -> Vec<u8> {
     let mut payload = vec![0x17, 1, 0, 0, 0];
+    if inband {
+        let mut sps = picture.sps().nal_bytes().to_vec();
+        if changed { let last = sps.len() - 1; sps[last] ^= 1; }
+        for nal in [sps.as_slice(), picture.pps().nal_bytes()] {
+            payload.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+            payload.extend_from_slice(nal);
+        }
+    }
     for nal in picture
         .nals()
         .iter()
@@ -107,6 +125,44 @@ fn video(picture: &AvcPictureGroup, timestamp: u32) -> Vec<u8> {
         payload.extend_from_slice(nal.bytes());
     }
     tag(9, timestamp, &payload)
+}
+
+#[test]
+fn inband_parameter_sets_are_preserved_and_changed_sets_refused() -> TestResult {
+    let (wire, records) = fixture_with_parameter_sets(40, &[2], None, true, false)?;
+    let samples = [
+        TimedSample { record: &records[3], decode_time_ms: 0, duration_ms: 40 },
+        TimedSample { record: &records[5], decode_time_ms: 40, duration_ms: 40 },
+        TimedSample { record: &records[7], decode_time_ms: 80, duration_ms: 40 },
+    ];
+    let coverage: Vec<_> = records[2..=9].iter().collect();
+    let mut legacy = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
+    assert_eq!(legacy.fragment(&samples, &records[9], &coverage).err(), Some(Mp4Error::UnsupportedFormat));
+    assert_eq!(legacy.next_sequence(), Some(1));
+    let mut mux = Muxer::new_inband(SOURCE, &records[1], Mp4Limits::default())?;
+    let fragment = mux.fragment(&samples, &records[9], &coverage)?;
+    for mapping in fragment.nals() {
+        assert_eq!(&wire[mapping.source.start as usize..mapping.source.end as usize], &fragment.bytes()[mapping.target.clone()]);
+    }
+    assert_eq!(fragment.nals().iter().filter(|m| wire[m.source.start as usize] & 31 == 7).count(), 3);
+    assert_eq!(fragment.nals().iter().filter(|m| wire[m.source.start as usize] & 31 == 8).count(), 3);
+    let mut file = mux.initialization().bytes().to_vec();
+    file.extend_from_slice(fragment.bytes());
+    let movie = AvcMp4::parse_inband(&file, None, DemuxLimits::default())?;
+    assert_eq!(movie.sample_entry(), *b"avc3");
+    assert_eq!(movie.samples().len(), 3);
+    let annex = movie.annex_b(0, 3)?;
+    let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+    let mut frames = decoder.decode_annex_b(annex.bytes())?;
+    frames.extend(decoder.finish()?);
+    assert_eq!(frames.len(), 3);
+    let (_, changed_records) = fixture_with_parameter_sets(40, &[2], None, true, true)?;
+    let changed_samples = [TimedSample { record: &changed_records[3], decode_time_ms: 0, duration_ms: 40 }];
+    let changed_coverage: Vec<_> = changed_records[2..=5].iter().collect();
+    let mut changed_mux = Muxer::new_inband(SOURCE, &changed_records[1], Mp4Limits::default())?;
+    assert_eq!(changed_mux.fragment(&changed_samples, &changed_records[5], &changed_coverage).err(), Some(Mp4Error::UnsupportedFormat));
+    assert_eq!(changed_mux.next_sequence(), Some(1));
+    Ok(())
 }
 
 #[test]

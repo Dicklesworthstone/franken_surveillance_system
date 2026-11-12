@@ -198,6 +198,120 @@ fn digest(value: &[u8]) -> ContentDigest {
     ContentDigest::sha256(value)
 }
 
+#[test]
+fn fresh_retained_binding_refusal_returns_both_owners() -> Test {
+    #[derive(Debug)]
+    struct FailOnce {
+        inner: MemoryPinRetainer,
+        fail: bool,
+    }
+    impl EffectPinRetainer for FailOnce {
+        fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> {
+            if std::mem::take(&mut self.fail) {
+                return Err(EffectPersistenceError::Storage(
+                    "injected read failure".into(),
+                ));
+            }
+            self.inner.retained_pin()
+        }
+        fn reserve_capacity(&mut self, n: usize) -> Result<(), EffectPersistenceError> {
+            self.inner.reserve_capacity(n)
+        }
+        fn verify_effect_history(
+            &mut self,
+            journal: &dyn EffectJournalStore,
+        ) -> Result<(), EffectPersistenceError> {
+            self.inner.verify_effect_history(journal)
+        }
+        fn retain(
+            &mut self,
+            expected: Option<EffectJournalPin>,
+            next: EffectJournalPin,
+        ) -> Result<(), EffectPersistenceError> {
+            self.inner.retain(expected, next)
+        }
+    }
+    let disk = Arc::new(Mutex::new(Disk::default()));
+    let mut populated = MemoryStore::open(&disk);
+    let pin = populated.append(None, b"existing")?;
+    let pins = Arc::new(Mutex::new(RetainedPins::default()));
+    let refusal = PinRetainedEffectJournal::try_new(
+        Box::new(populated),
+        Box::new(MemoryPinRetainer(pins.clone())),
+    )
+    .expect_err("existing journal accepted");
+    assert_eq!(refusal.journal.head(), Some(pin));
+    let mut retained = refusal.retainer;
+    assert_eq!(retained.retained_pin()?, None);
+
+    let empty_disk = Arc::new(Mutex::new(Disk::default()));
+    pins.lock().expect("retainer lock").pin = Some(pin);
+    let refusal =
+        PinRetainedEffectJournal::try_new(Box::new(MemoryStore::open(&empty_disk)), retained)
+            .expect_err("existing pin accepted");
+    assert!(refusal.journal.head().is_none());
+    let mut retained = refusal.retainer;
+    assert_eq!(retained.retained_pin()?, Some(pin));
+    pins.lock().expect("retainer lock").pin = None;
+    let bound =
+        PinRetainedEffectJournal::try_new(refusal.journal, retained).map_err(|r| r.error)?;
+    assert!(bound.head().is_none());
+    let fault_disk = Arc::new(Mutex::new(Disk::default()));
+    let fault_pins = Arc::new(Mutex::new(RetainedPins::default()));
+    let retainer = FailOnce {
+        inner: MemoryPinRetainer(fault_pins),
+        fail: true,
+    };
+    let refusal = PinRetainedEffectJournal::try_new(
+        Box::new(MemoryStore::open(&fault_disk)),
+        Box::new(retainer),
+    )
+    .expect_err("injected pin read succeeded");
+    assert!(matches!(refusal.error, EffectPersistenceError::Storage(_)));
+    let recovered = PinRetainedEffectJournal::try_new(refusal.journal, refusal.retainer)
+        .map_err(|r| r.error)?;
+    assert!(recovered.head().is_none());
+    Ok(())
+}
+
+#[test]
+fn reconciliation_binding_refusal_returns_both_owners() -> Test {
+    #[derive(Debug)]
+    struct FailVerificationOnce { inner: MemoryPinRetainer, fail: bool }
+    impl EffectPinRetainer for FailVerificationOnce {
+        fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> { self.inner.retained_pin() }
+        fn reserve_capacity(&mut self, n: usize) -> Result<(), EffectPersistenceError> { self.inner.reserve_capacity(n) }
+        fn verify_effect_history(&mut self, journal: &dyn EffectJournalStore) -> Result<(), EffectPersistenceError> {
+            if std::mem::take(&mut self.fail) { return Err(EffectPersistenceError::Storage("injected history read failure".into())); }
+            self.inner.verify_effect_history(journal)
+        }
+        fn retain(&mut self, expected: Option<EffectJournalPin>, next: EffectJournalPin) -> Result<(), EffectPersistenceError> { self.inner.retain(expected, next) }
+    }
+    let disk=Arc::new(Mutex::new(Disk::default()));
+    let mut store=MemoryStore::open(&disk);
+    let pin=store.append(None,b"retained history")?;
+    let pins=Arc::new(Mutex::new(RetainedPins::default()));
+    let refusal=PinRetainedEffectJournal::try_for_reconciliation(Box::new(store),Box::new(MemoryPinRetainer(pins.clone())))
+        .expect_err("missing pin accepted");
+    assert_eq!(refusal.error,EffectPersistenceError::PinMismatch);
+    assert_eq!(refusal.journal.head(),Some(pin));
+    assert_eq!(refusal.journal.records(),&[b"retained history".to_vec()]);
+    pins.lock().expect("pin lock").pin=Some(pin);
+    let mut rebound=PinRetainedEffectJournal::try_for_reconciliation(refusal.journal,refusal.retainer).map_err(|r|r.error)?;
+    assert_eq!(rebound.verify_retained_head()?,pin);
+    drop(rebound);
+
+    let retainer=FailVerificationOnce {inner:MemoryPinRetainer(pins),fail:true};
+    let refusal=PinRetainedEffectJournal::try_for_reconciliation(Box::new(MemoryStore::open(&disk)),Box::new(retainer))
+        .expect_err("injected verification failure accepted");
+    assert!(matches!(refusal.error,EffectPersistenceError::Storage(_)));
+    assert_eq!(refusal.journal.head(),Some(pin));
+    let mut rebound=PinRetainedEffectJournal::try_for_reconciliation(refusal.journal,refusal.retainer).map_err(|r|r.error)?;
+    assert_eq!(rebound.verify_retained_head()?,pin);
+    assert_eq!(disk.lock().expect("disk lock").records.len(),1);
+    Ok(())
+}
+
 fn scope(principal: &str, grants: &[RuntimeGrant]) -> Test<(AuthorityCx, RegionTree)> {
     let budgets = BudgetVector::builder()
         .tokens(128)

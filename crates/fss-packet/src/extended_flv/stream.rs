@@ -128,9 +128,57 @@ pub enum RecordKind {
         /// Explicit local policy that selected this candidate; not an authenticity proof.
         policy: SearchMode,
     },
+    /// Unparsed bytes recovered at shutdown; this makes no tag-boundary claim.
+    Unframed {
+        /// Caller-supplied local owner from which these bytes were recovered.
+        origin: UnframedOrigin,
+    },
 }
 
-/// Exact original stream bytes for one emitted header or candidate segment.
+/// Local origin of an unparsed byte range; this is not device authentication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnframedOrigin {
+    /// Bytes remaining in the FLV framer.
+    Framer,
+    /// The not-yet-appended suffix of a partially transferred TCP chunk.
+    BufferedSuffix,
+    /// A TCP chunk not yet transferred to the framer.
+    SocketPending,
+}
+
+impl UnframedOrigin {
+    /// Stable source-evidence identifier.
+    pub const fn evidence_id(self) -> u8 {
+        match self {
+            Self::Framer => 0,
+            Self::BufferedSuffix => 1,
+            Self::SocketPending => 2,
+        }
+    }
+
+    /// Decode a known source-evidence identifier.
+    pub const fn from_evidence_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::Framer),
+            1 => Some(Self::BufferedSuffix),
+            2 => Some(Self::SocketPending),
+            _ => None,
+        }
+    }
+}
+
+/// Invalid unframed source; the input bytes remain owned by the caller.
+#[must_use]
+pub struct UnframedRefusal {
+    /// Original connection-relative offset claim.
+    pub offset: u64,
+    /// Unconsumed original bytes.
+    pub bytes: Vec<u8>,
+    /// Original local-origin claim.
+    pub origin: UnframedOrigin,
+}
+
+/// Exact bytes for one framed range or an explicitly caller-bound unframed range.
 ///
 /// Ownership transfer does not prove persistence. The caller must bind this
 /// segment to its exact connection, stream generation and retained source.
@@ -142,6 +190,32 @@ pub struct SourceRecord {
     bytes: Vec<u8>,
 }
 impl SourceRecord {
+    /// Wrap nonempty unparsed bytes without asserting an FLV tag boundary.
+    /// The caller must bind the offset and origin to the actual source owner.
+    pub fn unframed(
+        offset: u64,
+        bytes: Vec<u8>,
+        origin: UnframedOrigin,
+    ) -> Result<Self, UnframedRefusal> {
+        if bytes.is_empty()
+            || u64::try_from(bytes.len())
+                .ok()
+                .and_then(|len| offset.checked_add(len))
+                .is_none()
+        {
+            return Err(UnframedRefusal {
+                offset,
+                bytes,
+                origin,
+            });
+        }
+        Ok(Self {
+            offset,
+            kind: RecordKind::Unframed { origin },
+            bytes,
+        })
+    }
+
     /// Stream-relative byte offset of the beginning of this record.
     pub fn offset(&self) -> u64 {
         self.offset
@@ -171,7 +245,7 @@ impl SourceRecord {
     /// Tag range relative to this record, including its header and back-reference.
     pub fn tag_range(&self) -> Option<Range<usize>> {
         match self.kind {
-            RecordKind::Header => None,
+            RecordKind::Header | RecordKind::Unframed { .. } => None,
             RecordKind::FirstTag { .. } => Some(0..self.bytes.len()),
             RecordKind::Candidate { trailer_bytes, .. } => Some(trailer_bytes..self.bytes.len()),
         }
@@ -410,7 +484,7 @@ impl Framer {
             RecordKind::FirstTag { tag_kind, .. } | RecordKind::Candidate { tag_kind, .. } => {
                 self.last_tag_kind = Some(tag_kind);
             }
-            RecordKind::Header => {}
+            RecordKind::Header | RecordKind::Unframed { .. } => {}
         }
         if let RecordKind::Candidate {
             provisional: true, ..

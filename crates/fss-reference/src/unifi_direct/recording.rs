@@ -68,11 +68,17 @@ pub enum SourceDisposition {
     Configuration,
     /// Source preceding the first IDR was explicitly returned as unrecorded pre-roll.
     PreRoll,
+    /// A framed record was still held in an unfinished fragment at shutdown.
+    Unclosed,
+    /// Unparsed bytes returned by a framer or socket owner at shutdown.
+    Unframed,
 }
 
 /// Exact source configuration and derived initialization binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigurationBinding {
+    /// Whether this epoch uses an explicit `avc3` in-band sample entry.
+    pub inband: bool,
     /// Original configuration-record offset within the connection.
     pub source_offset: u64,
     /// Byte length of the original record, including any trailer.
@@ -212,6 +218,7 @@ struct Video {
 /// One caller-bound connection and configuration epoch.
 pub struct Recorder {
     key: SourceKey,
+    inband: bool,
     limits: Limits,
     track: Track,
     mux: Option<Muxer>,
@@ -234,14 +241,28 @@ impl fmt::Debug for Recorder {
     }
 }
 impl Recorder {
+    pub(crate) fn source_key(&self) -> SourceKey {
+        self.key
+    }
+
     /// Start a bounded owner for a caller-selected connection and generation.
     pub fn new(key: SourceKey, limits: Limits) -> Result<Self, Error> {
+        Self::new_with_inband(key, limits, false)
+    }
+
+    /// Allow repeated identical source parameter sets under an `avc3` entry.
+    pub fn new_inband(key: SourceKey, limits: Limits) -> Result<Self, Error> {
+        Self::new_with_inband(key, limits, true)
+    }
+
+    fn new_with_inband(key: SourceKey, limits: Limits, inband: bool) -> Result<Self, Error> {
         limits.validate()?;
         if key.connection == 0 || key.generation == 0 {
             return Err(Error::Configuration);
         }
         Ok(Self {
             key,
+            inband,
             limits,
             track: Track::new(extended_flv::Limits::default(), avc::Limits::default()),
             mux: None,
@@ -321,9 +342,15 @@ impl Recorder {
                 if self.mux.is_some() {
                     return Err(self.refuse(Error::ConfigurationChange, Some(record)));
                 }
-                match Muxer::new(self.key, &record, self.limits.mp4) {
+                let constructor = if self.inband {
+                    Muxer::new_inband
+                } else {
+                    Muxer::new
+                };
+                match constructor(self.key, &record, self.limits.mp4) {
                     Ok(mux) => {
                         self.configuration = Some(ConfigurationBinding {
+                            inband: self.inband,
                             source_offset: record.offset(),
                             source_bytes: record.bytes().len(),
                             source_digest: ContentDigest::sha256(record.bytes()),

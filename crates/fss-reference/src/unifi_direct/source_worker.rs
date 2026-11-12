@@ -14,6 +14,7 @@ use fss_packet::extended_flv::stream::SourceRecord;
 use fss_publication::RootLedgerReceipt;
 use fss_runtime::{
     drained_blocking::{self, Drained, WorkOutcome},
+    effect_journal::EffectJournalPin,
     execution::TaskCx,
 };
 
@@ -167,12 +168,288 @@ pub struct Retirement {
     pub pending: Option<Input>,
     /// Panic or uncertainty requires explicit reconciliation.
     pub fenced: bool,
+    /// Custody for every attached rollover transition.
+    pub rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
 }
 
 struct State {
     parts: Parts,
     pending: Option<Input>,
     report: Option<Publication>,
+    rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
+}
+
+/// Source resources and the exact pending input held during rollover.
+#[must_use = "restore the predecessor or attach a verified successor"]
+pub struct RolloverResources {
+    deployment: ReferenceDeployment,
+    replay: ReplayCx,
+    authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
+    retention: ContentDigest,
+    limits: archive::Limits,
+    max_source_bytes: usize,
+    work_limit: u64,
+    pending: Option<Input>,
+    original_scope: ContentDigest,
+    original_journal: EffectJournalPin,
+    original_keeper: EffectJournalPin,
+    prior_custody: Option<archive::journal::rollover::WorkerCustody>,
+}
+
+/// Refusal preserves the resources and active successor.
+#[must_use = "reconcile or restore the returned owners"]
+pub struct RolloverAttachRefusal {
+    /// Resources, including any pending original input.
+    pub resources: RolloverResources,
+    /// The transition which could not be attached.
+    pub active: archive::journal::rollover::Active,
+}
+
+/// Refusal to restore a different predecessor preserves both owners.
+#[must_use = "inspect the returned predecessor and resources"]
+pub struct RolloverRestoreRefusal {
+    /// Resources, including any pending original input.
+    pub resources: RolloverResources,
+    /// Predecessor that did not match the original heads.
+    pub previous: archive::journal::rollover::Previous,
+}
+
+fn valid_configuration(work_limit: u64, max_source_bytes: usize, retention: ContentDigest) -> bool {
+    (1..=100_000_000_000).contains(&work_limit)
+        && (1..=64 * 1024 * 1024).contains(&max_source_bytes)
+        && retention.algorithm() == DigestAlgorithm::Sha256
+        && !retention.is_laboratory()
+        && retention.bytes() != [0; 32]
+}
+
+fn valid_input(input: &Input, parts: &Parts) -> bool {
+    match input {
+        Input::Original {
+            record,
+            key,
+            disposition,
+            camera_claim,
+        } => source_evidence::validate_input(
+            record,
+            *key,
+            *disposition,
+            *camera_claim,
+            parts.retention,
+            parts.max_source_bytes,
+        )
+        .is_ok(),
+        Input::Recovered(source) => {
+            source.retention == parts.retention
+                && !source.bytes().is_empty()
+                && source.bytes().len() <= parts.max_source_bytes
+        }
+    }
+}
+
+impl Retirement {
+    /// Detach an unfenced worker's resources and predecessor; a pending input
+    /// remains owned, as does any earlier verified transition custody.
+    pub fn into_rollover(
+        mut self,
+    ) -> Result<(RolloverResources, archive::journal::rollover::Previous), Self> {
+        if self.fenced
+            || !valid_configuration(
+                self.parts.work_limit,
+                self.parts.max_source_bytes,
+                self.parts.retention,
+            )
+            || self
+                .parts
+                .journal
+                .confirmed()
+                .is_none_or(|pin| pin.retention != self.parts.retention)
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|input| !valid_input(input, &self.parts))
+        {
+            return Err(self);
+        }
+        if let Some(custody) = &mut self.rollover_custody {
+            if custody
+                .check(&self.parts.journal, &self.parts.keeper, &self.parts.replay)
+                .is_err()
+                || !custody.reserve_next()
+            {
+                return Err(self);
+            }
+        }
+        let Parts {
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            retention,
+            limits,
+            max_source_bytes,
+            work_limit,
+        } = self.parts;
+        let resources = RolloverResources {
+            deployment,
+            replay,
+            authority,
+            retention,
+            limits,
+            max_source_bytes,
+            work_limit,
+            pending: self.pending,
+            original_scope: journal.scope(),
+            original_journal: journal.anchor(),
+            original_keeper: keeper.anchor(),
+            prior_custody: self.rollover_custody,
+        };
+        Ok((
+            resources,
+            archive::journal::rollover::Previous { journal, keeper },
+        ))
+    }
+}
+
+impl RolloverResources {
+    /// Existing scoped replay authority for staging and committing the successor.
+    pub fn replay(&self) -> &ReplayCx {
+        &self.replay
+    }
+
+    /// Whether a source is held during the transition.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Revalidate and replay the rolled source against this worker's archive.
+    pub fn replay_confirmed_source(
+        &mut self,
+        active: &mut archive::journal::rollover::Active,
+        camera_claim: ContentDigest,
+        read: &dyn archive::ReadAuthority,
+        work: &mut WorkBudget<'_>,
+    ) -> Result<RootLedgerReceipt, archive::journal::rollover::SourceReplayError> {
+        if active.binding().scope != self.original_scope
+            || active.binding().old_journal != self.original_journal
+            || active.binding().old_keeper != self.original_keeper
+            || active.binding().confirmed.retention != self.retention
+        {
+            return Err(archive::journal::rollover::SourceReplayError::History(
+                archive::journal::Error::Invalid,
+            ));
+        }
+        if let Some(prior) = &mut self.prior_custody {
+            active
+                .check_prior(prior, &self.replay)
+                .map_err(archive::journal::rollover::SourceReplayError::History)?;
+        }
+        active.replay_confirmed_source(
+            &mut self.deployment,
+            camera_claim,
+            read,
+            self.authority.as_ref(),
+            self.limits,
+            work,
+            &self.replay,
+        )
+    }
+
+    /// Restore the exact original predecessor after an uncommitted transition.
+    pub fn restore(
+        self,
+        previous: archive::journal::rollover::Previous,
+    ) -> Result<Retirement, RolloverRestoreRefusal> {
+        if previous.journal.scope() != self.original_scope
+            || previous.journal.anchor() != self.original_journal
+            || previous.keeper.anchor() != self.original_keeper
+        {
+            return Err(RolloverRestoreRefusal {
+                resources: self,
+                previous,
+            });
+        }
+        Ok(Retirement {
+            parts: Parts {
+                deployment: self.deployment,
+                journal: previous.journal,
+                keeper: previous.keeper,
+                replay: self.replay,
+                authority: self.authority,
+                retention: self.retention,
+                limits: self.limits,
+                max_source_bytes: self.max_source_bytes,
+                work_limit: self.work_limit,
+            },
+            pending: self.pending,
+            fenced: false,
+            rollover_custody: self.prior_custody,
+        })
+    }
+
+    /// Attach a replayed successor, retaining rollover custody in the worker.
+    /// On refusal both resources and transition remain available.
+    pub fn attach(
+        mut self,
+        active: archive::journal::rollover::Active,
+    ) -> Result<Worker, RolloverAttachRefusal> {
+        if active.binding().scope != self.original_scope
+            || active.binding().old_journal != self.original_journal
+            || active.binding().old_keeper != self.original_keeper
+            || active.binding().confirmed.retention != self.retention
+            || !valid_configuration(self.work_limit, self.max_source_bytes, self.retention)
+        {
+            return Err(RolloverAttachRefusal {
+                resources: self,
+                active,
+            });
+        }
+        if let Some(prior) = &mut self.prior_custody {
+            if active.check_prior(prior, &self.replay).is_err() {
+                return Err(RolloverAttachRefusal {
+                    resources: self,
+                    active,
+                });
+            }
+        }
+        let (journal, keeper, custody) = match active.into_worker_parts(&self.replay) {
+            Ok(parts) => parts,
+            Err(active) => {
+                return Err(RolloverAttachRefusal {
+                    resources: self,
+                    active,
+                });
+            }
+        };
+        let custody = match self.prior_custody {
+            Some(mut prior) => {
+                prior.append(custody);
+                prior
+            }
+            None => custody,
+        };
+        let parts = Parts {
+            deployment: self.deployment,
+            journal,
+            keeper,
+            replay: self.replay,
+            authority: self.authority,
+            retention: self.retention,
+            limits: self.limits,
+            max_source_bytes: self.max_source_bytes,
+            work_limit: self.work_limit,
+        };
+        Ok(Worker {
+            state: Arc::new(Mutex::new(State {
+                parts,
+                pending: self.pending,
+                report: None,
+                rollover_custody: Some(custody),
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
 }
 type Job = Box<dyn FnOnce(Cx) + Send + 'static>;
 
@@ -219,12 +496,7 @@ impl Worker {
 
     /// Construct without I/O; invalid limits return all owners unchanged.
     pub fn new(parts: Parts) -> Result<Self, Parts> {
-        if !(1..=100_000_000_000).contains(&parts.work_limit)
-            || !(1..=64 * 1024 * 1024).contains(&parts.max_source_bytes)
-            || parts.retention.algorithm() != DigestAlgorithm::Sha256
-            || parts.retention.is_laboratory()
-            || parts.retention.bytes() == [0; 32]
-        {
+        if !valid_configuration(parts.work_limit, parts.max_source_bytes, parts.retention) {
             return Err(parts);
         }
         Ok(Self {
@@ -232,6 +504,36 @@ impl Worker {
                 parts,
                 pending: None,
                 report: None,
+                rollover_custody: None,
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
+
+    /// Reattach a replayed cold-recovered lineage to a new source worker.
+    /// Refusal returns both the supplied resources and all switch owners.
+    pub fn from_recovered(
+        parts: Parts,
+        mut custody: archive::journal::rollover::WorkerCustody,
+    ) -> Result<Self, (Parts, archive::journal::rollover::WorkerCustody)> {
+        if !valid_configuration(parts.work_limit, parts.max_source_bytes, parts.retention)
+            || parts
+                .journal
+                .confirmed()
+                .is_none_or(|pin| pin.retention != parts.retention)
+            || custody
+                .check(&parts.journal, &parts.keeper, &parts.replay)
+                .is_err()
+        {
+            return Err((parts, custody));
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(State {
+                parts,
+                pending: None,
+                report: None,
+                rollover_custody: Some(custody),
             })),
             running: None,
             fenced: false,
@@ -257,27 +559,7 @@ impl Worker {
         if state.pending.is_some() {
             return Err(OfferRefusal::Busy(input));
         }
-        let valid = match &input {
-            Input::Original {
-                record,
-                key,
-                disposition,
-                camera_claim,
-            } => source_evidence::validate_input(
-                record,
-                *key,
-                *disposition,
-                *camera_claim,
-                state.parts.retention,
-                state.parts.max_source_bytes,
-            )
-            .is_ok(),
-            Input::Recovered(source) => {
-                source.retention == state.parts.retention
-                    && !source.bytes().is_empty()
-                    && source.bytes().len() <= state.parts.max_source_bytes
-            }
-        };
+        let valid = valid_input(&input, &state.parts);
         if !valid {
             return Err(OfferRefusal::Invalid(input));
         }
@@ -330,10 +612,34 @@ impl Worker {
                 parts,
                 pending,
                 report,
+                rollover_custody,
             } = &mut *state;
             let Some(input) = pending.as_ref() else {
                 return;
             };
+            if child.is_cancel_requested() {
+                *report = Some(Publication::Refused {
+                    pin: None,
+                    reason: Refusal::BeforePublication(av_worker::FailureReason::CancelledOrDenied),
+                });
+                return;
+            }
+            if let Some(custody) = rollover_custody {
+                if let Err(error) = custody.check(&parts.journal, &parts.keeper, &parts.replay) {
+                    *report = Some(Publication::Refused {
+                        pin: None,
+                        reason: Refusal::BeforePublication(av_worker::journal_reason(error)),
+                    });
+                    return;
+                }
+            }
+            if child.is_cancel_requested() {
+                *report = Some(Publication::Refused {
+                    pin: None,
+                    reason: Refusal::BeforePublication(av_worker::FailureReason::CancelledOrDenied),
+                });
+                return;
+            }
             let cancel = || child.is_cancel_requested();
             let mut budget = WorkBudget::with_cancellation_probe(parts.work_limit, &cancel);
             let Some(preparation_cost) = (input.bytes().len() as u64).checked_mul(2) else {
@@ -510,6 +816,7 @@ impl Worker {
                     parts: state.parts,
                     pending: state.pending,
                     fenced,
+                    rollover_custody: state.rollover_custody,
                 })
             }
             Err(state) => Err(Self {

@@ -114,6 +114,92 @@ pub struct Active {
     switch_head: EffectJournalPin,
 }
 
+/// Retained predecessors and switches while an archive worker owns the successor.
+/// This is an in-memory lineage, not a compacted or independently stored chain.
+#[must_use = "retain or explicitly reconcile this rollover custody"]
+pub struct WorkerCustody {
+    transitions: Vec<WorkerTransition>,
+}
+
+struct WorkerTransition {
+    previous: Previous,
+    switch: PinRetainedEffectJournal,
+    binding: Binding,
+    switch_head: EffectJournalPin,
+}
+
+impl WorkerCustody {
+    /// Identity of the newest transition; this is not camera authentication.
+    pub fn binding(&self) -> Binding {
+        self.transitions
+            .last()
+            .expect("custody is nonempty")
+            .binding
+    }
+
+    /// Number of retained transitions, without implying restart recovery.
+    pub fn transition_count(&self) -> usize {
+        self.transitions.len()
+    }
+
+    pub(crate) fn reserve_next(&mut self) -> bool {
+        self.transitions.try_reserve(1).is_ok()
+    }
+
+    pub(crate) fn append(&mut self, mut newer: Self) {
+        self.transitions.append(&mut newer.transitions);
+    }
+
+    pub(crate) fn check(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+        cx: &ReplayCx,
+    ) -> Result<(), Error> {
+        let (newest, older) = self.transitions.split_last_mut().ok_or(Error::Invalid)?;
+        newest.check(journal, keeper, cx)?;
+        let mut successor = &newest.previous;
+        for transition in older.iter_mut().rev() {
+            transition.check(&successor.journal, &successor.keeper, cx)?;
+            successor = &transition.previous;
+        }
+        Ok(())
+    }
+}
+
+impl WorkerTransition {
+    fn check(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+        cx: &ReplayCx,
+    ) -> Result<(), Error> {
+        checkpoint(cx)?;
+        if self.switch.verify_retained_head().map_err(Error::Storage)? != self.switch_head
+            || self.switch.records().len() != 1
+            || self.switch.records()[0] != encode(self.binding)?
+            || self.previous.journal.inner.is_fenced()
+            || self.previous.keeper.is_fenced()
+            || self.previous.journal.anchor() != self.binding.old_journal
+            || self.previous.keeper.anchor() != self.binding.old_keeper
+            || self.previous.keeper.target() != self.binding.old_journal
+            || journal.inner.is_fenced()
+            || keeper.is_fenced()
+            || journal.scope() != self.binding.scope
+            || journal.pending().is_some()
+            || journal.replay_pin().is_some()
+            || journal.confirmed().is_none()
+            || keeper.target() != journal.anchor()
+            || !journal.inner.store.contains(self.binding.new_journal)
+            || !keeper.inner.store.contains(self.binding.new_keeper)
+        {
+            return Err(Error::Invalid);
+        }
+        checkpoint(cx)?;
+        Ok(())
+    }
+}
+
 /// A failed cold recovery retains all supplied owners for explicit inspection.
 /// It does not authorize using either history or retrying a switch write.
 #[must_use = "inspect the exact retained histories and switch"]
@@ -123,6 +209,43 @@ pub struct RecoveryRefusal {
     previous: Previous,
     successor: Previous,
     switch: PinRetainedEffectJournal,
+}
+
+/// A replayed current history and the verified chain that leads to it.
+/// This owns the reopened histories; it does not discover or pin them.
+#[must_use = "retain the current histories and all prior switch custody"]
+pub struct RecoveredLineage {
+    current: Previous,
+    custody: WorkerCustody,
+}
+
+/// An independently reopened next transition awaiting exact-root replay.
+#[must_use = "replay or reconcile the retained transition and its prior lineage"]
+pub struct ChainedActive {
+    prior: WorkerCustody,
+    active: Active,
+}
+
+/// Why a recovered lineage could not admit another transition.
+#[derive(Debug)]
+pub enum ChainRecoveryError {
+    /// Existing or next history, retained switch, or authority was invalid.
+    History(Error),
+    /// The process could not reserve space for another custody transition.
+    Capacity,
+}
+
+/// Refusal retains both the established lineage and the unadmitted owners.
+#[must_use = "retain or reconcile every returned history and switch"]
+pub struct ChainRecoveryRefusal {
+    /// Payload-free failure classification.
+    pub reason: ChainRecoveryError,
+    /// Current history and prior switch custody.
+    pub lineage: RecoveredLineage,
+    /// Candidate successor history pair.
+    pub successor: Previous,
+    /// Candidate switch, which may require reopening after an I/O failure.
+    pub switch: PinRetainedEffectJournal,
 }
 
 /// Failure to revalidate and replay a rolled standalone source root.
@@ -152,6 +275,30 @@ impl std::fmt::Display for SourceReplayError {
     }
 }
 impl std::error::Error for SourceReplayError {}
+
+/// Failure to verify and replay a rolled A/V root.
+#[derive(Debug)]
+pub enum AvReplayError {
+    /// The retained switch or runtime authority could not be verified.
+    History(Error),
+    /// A/V readback or exact-root replay requires reconciliation.
+    Replay(archive::ConfirmedAvReplayError),
+    /// The root was not already ledgered; preserve the actual receipt.
+    UnexpectedReceipt(Box<RootLedgerReceipt>),
+}
+
+/// Failure to verify and replay a rolled video-only root.
+pub type VideoReplayError = AvReplayError;
+impl std::fmt::Display for AvReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::History(_) => "rollover history requires reconciliation",
+            Self::Replay(_) => "rollover A/V replay requires reconciliation",
+            Self::UnexpectedReceipt(_) => "rollover A/V root was not already ledgered",
+        })
+    }
+}
+impl std::error::Error for AvReplayError {}
 
 struct SourceReplayGate<'a> {
     read: &'a dyn archive::ReadAuthority,
@@ -257,9 +404,20 @@ fn decode(bytes: &[u8]) -> Result<Binding, Error> {
 pub fn recover(
     previous: Previous,
     successor: Previous,
+    switch: PinRetainedEffectJournal,
+    heads: SuccessorHeads,
+    cx: &ReplayCx,
+) -> Result<Active, RecoveryRefusal> {
+    recover_inner(previous, successor, switch, heads, cx, false)
+}
+
+fn recover_inner(
+    previous: Previous,
+    successor: Previous,
     mut switch: PinRetainedEffectJournal,
     heads: SuccessorHeads,
     cx: &ReplayCx,
+    previous_replayed: bool,
 ) -> Result<Active, RecoveryRefusal> {
     let checked = (|| {
         checkpoint(cx)?;
@@ -283,7 +441,12 @@ pub fn recover(
             || old_keeper.target() != binding.old_journal
             || old.pending().is_some()
             || old.confirmed() != Some(binding.confirmed)
-            || old.replay_pin() != Some(binding.confirmed)
+            || old.replay_pin()
+                != if previous_replayed {
+                    None
+                } else {
+                    Some(binding.confirmed)
+                }
             || new.pending().is_some()
             || new.confirmed().is_none()
             || new.replay_pin() != new.confirmed()
@@ -341,6 +504,156 @@ pub fn recover(
             successor,
             switch,
         }),
+    }
+}
+
+impl RecoveredLineage {
+    /// Count transitions actually retained in this in-memory lineage.
+    pub fn transition_count(&self) -> usize {
+        self.custody.transition_count()
+    }
+
+    /// Return the current history and every prior switch owner for a worker.
+    pub fn into_parts(self) -> (Previous, WorkerCustody) {
+        (self.current, self.custody)
+    }
+
+    /// Admit the next independently reopened switch without duplicating the
+    /// intermediate history. The current exact root must already be replayed.
+    pub fn advance(
+        mut self,
+        successor: Previous,
+        switch: PinRetainedEffectJournal,
+        heads: SuccessorHeads,
+        cx: &ReplayCx,
+    ) -> Result<ChainedActive, ChainRecoveryRefusal> {
+        if let Err(error) = self
+            .custody
+            .check(&self.current.journal, &self.current.keeper, cx)
+        {
+            return Err(ChainRecoveryRefusal {
+                reason: ChainRecoveryError::History(error),
+                lineage: self,
+                successor,
+                switch,
+            });
+        }
+        if !self.custody.reserve_next() {
+            return Err(ChainRecoveryRefusal {
+                reason: ChainRecoveryError::Capacity,
+                lineage: self,
+                successor,
+                switch,
+            });
+        }
+        let Self { current, custody } = self;
+        match recover_inner(current, successor, switch, heads, cx, true) {
+            Ok(active) => Ok(ChainedActive {
+                prior: custody,
+                active,
+            }),
+            Err(refusal) => Err(ChainRecoveryRefusal {
+                reason: ChainRecoveryError::History(refusal.reason),
+                lineage: Self {
+                    current: refusal.previous,
+                    custody,
+                },
+                successor: refusal.successor,
+                switch: refusal.switch,
+            }),
+        }
+    }
+}
+
+impl ChainedActive {
+    /// Transition identity, which does not authenticate a physical camera.
+    pub fn binding(&self) -> Binding {
+        self.active.binding()
+    }
+
+    /// Recheck the older lineage, then replay the exact successor source root.
+    pub fn replay_confirmed_source(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        camera_claim: ContentDigest,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<RootLedgerReceipt, SourceReplayError> {
+        self.active
+            .check_prior(&mut self.prior, cx)
+            .map_err(SourceReplayError::History)?;
+        self.active.replay_confirmed_source(
+            deployment,
+            camera_claim,
+            read,
+            retain,
+            limits,
+            work,
+            cx,
+        )
+    }
+
+    /// Recheck the older lineage, then replay the exact successor A/V root.
+    pub fn replay_confirmed_av(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        object_limits: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<RootLedgerReceipt, AvReplayError> {
+        self.active
+            .check_prior(&mut self.prior, cx)
+            .map_err(AvReplayError::History)?;
+        self.active
+            .replay_confirmed_av(deployment, read, retain, limits, object_limits, work, cx)
+    }
+
+    /// Recheck the older lineage, then replay the exact successor video root.
+    pub fn replay_confirmed_video(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        object_limits: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<RootLedgerReceipt, VideoReplayError> {
+        self.active
+            .check_prior(&mut self.prior, cx)
+            .map_err(AvReplayError::History)?;
+        self.active.replay_confirmed_video(
+            deployment,
+            read,
+            retain,
+            limits,
+            object_limits,
+            work,
+            cx,
+        )
+    }
+
+    /// Finish only after replay and a fresh verification of every older switch.
+    pub fn into_recovered_lineage(mut self, cx: &ReplayCx) -> Result<RecoveredLineage, Self> {
+        if self.active.check_prior(&mut self.prior, cx).is_err() {
+            return Err(self);
+        }
+        let Self { mut prior, active } = self;
+        let (journal, keeper, custody) = match active.into_worker_parts(cx) {
+            Ok(parts) => parts,
+            Err(active) => return Err(Self { prior, active }),
+        };
+        prior.append(custody);
+        Ok(RecoveredLineage {
+            current: Previous { journal, keeper },
+            custody: prior,
+        })
     }
 }
 
@@ -404,6 +717,12 @@ impl Staged {
     /// Binding to retain with the caller's store locations and independent pins.
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+
+    /// Abandon an uncommitted candidate and return the unchanged predecessor.
+    /// Candidate stores may remain on disk and must be inspected by the caller.
+    pub fn abort(self) -> Previous {
+        self.previous
     }
 
     /// Append and independently retain one exact switch before exposing a successor.
@@ -492,6 +811,156 @@ impl Active {
     /// Switch head which the supplied retainer acknowledged.
     pub fn switch_head(&self) -> EffectJournalPin {
         self.switch_head
+    }
+
+    /// Verify and replay the exact ledgered A/V root after rollover.
+    /// Success clears only the in-memory replay fence; it does not rebuild
+    /// muxer state, authenticate the camera, or establish coverage or time.
+    pub fn replay_confirmed_av(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        object_limits: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<RootLedgerReceipt, AvReplayError> {
+        checkpoint(cx).map_err(AvReplayError::History)?;
+        let head = self
+            .switch
+            .verify_retained_head()
+            .map_err(|e| AvReplayError::History(Error::Storage(e)))?;
+        if head != self.switch_head
+            || self.switch.records().len() != 1
+            || self.switch.records()[0] != encode(self.binding).map_err(AvReplayError::History)?
+        {
+            return Err(AvReplayError::History(Error::Invalid));
+        }
+        let pin = self
+            .next_journal
+            .confirmed()
+            .ok_or(AvReplayError::History(Error::Invalid))?;
+        let receipt = archive::replay_confirmed_unknown_time_av_anchored(
+            deployment,
+            read,
+            retain,
+            limits,
+            object_limits,
+            work,
+            cx,
+            &mut self.next_journal,
+            &mut self.next_keeper,
+        )
+        .map_err(AvReplayError::Replay)?;
+        if receipt.outcome != RootLedgerOutcome::AlreadyLedgered {
+            self.next_journal.inner.replay_pin = Some(pin.access_pin());
+            return Err(AvReplayError::UnexpectedReceipt(Box::new(receipt)));
+        }
+        Ok(receipt)
+    }
+
+    /// Verify and replay the exact ledgered video-only root after rollover.
+    /// This clears only the in-memory replay fence and proves no camera or
+    /// capture-time claim.
+    pub fn replay_confirmed_video(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        object_limits: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<RootLedgerReceipt, VideoReplayError> {
+        checkpoint(cx).map_err(AvReplayError::History)?;
+        let head = self
+            .switch
+            .verify_retained_head()
+            .map_err(|e| AvReplayError::History(Error::Storage(e)))?;
+        if head != self.switch_head
+            || self.switch.records().len() != 1
+            || self.switch.records()[0] != encode(self.binding).map_err(AvReplayError::History)?
+        {
+            return Err(AvReplayError::History(Error::Invalid));
+        }
+        let pin = self
+            .next_journal
+            .confirmed()
+            .ok_or(AvReplayError::History(Error::Invalid))?;
+        let receipt = archive::replay_confirmed_unknown_time_video_anchored(
+            deployment,
+            read,
+            retain,
+            limits,
+            object_limits,
+            work,
+            cx,
+            &mut self.next_journal,
+            &mut self.next_keeper,
+        )
+        .map_err(AvReplayError::Replay)?;
+        if receipt.outcome != RootLedgerOutcome::AlreadyLedgered {
+            self.next_journal.inner.replay_pin = Some(pin.access_pin());
+            return Err(AvReplayError::UnexpectedReceipt(Box::new(receipt)));
+        }
+        Ok(receipt)
+    }
+
+    /// Transfer the successor only after verified replay, retaining its prior
+    /// histories and switch in a guard which must accompany the worker.
+    pub(crate) fn into_worker_parts(
+        self,
+        cx: &ReplayCx,
+    ) -> Result<(UnknownTimeJournal, UnknownTimeAnchorKeeper, WorkerCustody), Self> {
+        let mut transitions = Vec::new();
+        if transitions.try_reserve_exact(1).is_err() {
+            return Err(self);
+        }
+        let Self {
+            previous,
+            next_journal,
+            next_keeper,
+            switch,
+            binding,
+            switch_head,
+        } = self;
+        let mut transition = WorkerTransition {
+            previous,
+            switch,
+            binding,
+            switch_head,
+        };
+        if transition.check(&next_journal, &next_keeper, cx).is_err() {
+            return Err(Self {
+                previous: transition.previous,
+                next_journal,
+                next_keeper,
+                switch: transition.switch,
+                binding,
+                switch_head,
+            });
+        }
+        transitions.push(transition);
+        Ok((next_journal, next_keeper, WorkerCustody { transitions }))
+    }
+
+    /// Start a recovered lineage after the exact successor root was replayed.
+    /// A refused conversion returns the complete active transition unchanged.
+    pub fn into_recovered_lineage(self, cx: &ReplayCx) -> Result<RecoveredLineage, Self> {
+        let (journal, keeper, custody) = self.into_worker_parts(cx)?;
+        Ok(RecoveredLineage {
+            current: Previous { journal, keeper },
+            custody,
+        })
+    }
+
+    pub(crate) fn check_prior(
+        &self,
+        prior: &mut WorkerCustody,
+        cx: &ReplayCx,
+    ) -> Result<(), Error> {
+        prior.check(&self.previous.journal, &self.previous.keeper, cx)
     }
 
     /// Verify and replay the exact ledgered standalone-source root after rollover.

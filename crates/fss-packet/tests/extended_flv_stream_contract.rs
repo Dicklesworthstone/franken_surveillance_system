@@ -156,6 +156,109 @@ fn earlier_incomplete_candidate_is_not_skipped_when_chunked() -> TestResult {
 }
 
 #[test]
+fn complete_candidate_capacity_handles_maximum_tag_after_maximum_trailer() -> TestResult {
+    let limits = Limits {
+        max_payload: 2 * 1024 * 1024,
+        max_trailer: 16,
+        max_header: 4096,
+    };
+    let capacity = limits.complete_candidate_buffer()?;
+    assert_eq!(capacity, 16 + 11 + limits.max_payload + 4);
+    assert!(capacity <= fss_packet::extended_flv::stream::MAX_BUFFER_BYTES);
+    let mut framer = Framer::new(limits, capacity)?;
+    let mut prefix = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    prefix.extend(tag(9, 0, b"first"));
+    framer.append(0, &prefix)?;
+    framer.take()?;
+    framer.take()?;
+    let mut successor = vec![0x77; limits.max_trailer];
+    successor.extend(tag(9, 1, &vec![0x55; limits.max_payload]));
+    assert_eq!(successor.len(), capacity);
+    framer.append(framer.next_offset(), &successor[..capacity - 1])?;
+    assert_eq!(framer.take()?, Next::NeedMore);
+    framer.append(framer.next_offset(), &successor[capacity - 1..])?;
+    let Next::Record(record) = framer.take()? else {
+        return Err("maximum candidate missing".into());
+    };
+    assert_eq!(record.bytes(), successor);
+    assert!(matches!(
+        record.kind(),
+        RecordKind::Candidate {
+            trailer_bytes: 16,
+            provisional: false,
+            ..
+        }
+    ));
+
+    let header_bound = Limits {
+        max_payload: 0,
+        max_trailer: 0,
+        max_header: 4096,
+    };
+    assert_eq!(header_bound.complete_candidate_buffer()?, 4100);
+    let invalid = Limits {
+        max_payload: 4 * 1024 * 1024 + 1,
+        ..Limits::default()
+    };
+    assert!(invalid.complete_candidate_buffer().is_err());
+    Ok(())
+}
+
+#[test]
+fn complete_candidate_capacity_resolves_large_earlier_ambiguity() -> TestResult {
+    let limits = Limits {
+        max_payload: 2 * 1024 * 1024,
+        max_trailer: 16,
+        max_header: 4096,
+    };
+    let mut prefix = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    prefix.extend(tag(9, 0, b"first"));
+    // A trailer begins like an allowed 2 MiB tag. The true next tag follows
+    // at byte 16; the earlier candidate remains plausible until its suffix is
+    // available. All bytes are synthetic.
+    let mut wire = vec![0x77; 16];
+    wire[..4].copy_from_slice(&[9, 0x20, 0, 0]);
+    let actual = tag(9, 40, b"actual");
+    wire.extend(&actual);
+    let actual_end = wire.len();
+    wire.resize(11 + limits.max_payload + 4, 0x77);
+
+    let mut small = Framer::new(limits, 1024 * 1024)?;
+    small.append(0, &prefix)?;
+    small.take()?;
+    small.take()?;
+    small.append(small.next_offset(), &wire[..1024 * 1024])?;
+    assert_eq!(small.take()?, Next::NeedMore);
+    assert_eq!(
+        small.append(small.next_offset(), &wire[1024 * 1024..1024 * 1024 + 1]),
+        Err(Error::BufferLimit)
+    );
+    assert_eq!(small.retire().bytes(), &wire[..1024 * 1024]);
+
+    let mut sufficient = Framer::new(limits, limits.complete_candidate_buffer()?)?;
+    sufficient.append(0, &prefix)?;
+    sufficient.take()?;
+    sufficient.take()?;
+    sufficient.append(sufficient.next_offset(), &wire[..1024 * 1024])?;
+    assert_eq!(sufficient.take()?, Next::NeedMore);
+    sufficient.append(sufficient.next_offset(), &wire[1024 * 1024..])?;
+    let Next::Record(record) = sufficient.take()? else {
+        return Err("resolved candidate missing".into());
+    };
+    assert_eq!(record.bytes(), &wire[..actual_end]);
+    assert!(matches!(
+        record.kind(),
+        RecordKind::Candidate {
+            trailer_bytes: 16,
+            provisional: false,
+            ..
+        }
+    ));
+    assert_eq!(sufficient.retire().bytes(), &wire[actual_end..]);
+    Ok(())
+}
+
+#[test]
 fn long_incomplete_trailer_candidate_waits_until_it_can_be_disproved() -> TestResult {
     // Synthetic reconstruction of the observed ambiguity: the last byte of a
     // trailer looks like an audio tag, and the next real audio header makes
@@ -577,4 +680,39 @@ fn framing_policy_evidence_ids_remain_stable_and_reject_unknown() {
     }
     assert_eq!(SearchMode::from_evidence_id(5), None);
     assert_eq!(SearchMode::from_evidence_id(u8::MAX), None);
+}
+
+#[test]
+fn unframed_source_has_no_tag_boundary_and_refusal_returns_bytes() {
+    use fss_packet::extended_flv::stream::{SourceRecord, UnframedOrigin};
+    for (id, origin) in [
+        UnframedOrigin::Framer,
+        UnframedOrigin::BufferedSuffix,
+        UnframedOrigin::SocketPending,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(origin.evidence_id(), id as u8);
+        assert_eq!(UnframedOrigin::from_evidence_id(id as u8), Some(origin));
+    }
+    assert_eq!(UnframedOrigin::from_evidence_id(3), None);
+    let source = SourceRecord::unframed(42, vec![1, 2, 3], UnframedOrigin::Framer)
+        .unwrap_or_else(|_| panic!("valid unframed source refused"));
+    assert_eq!(source.offset(), 42);
+    assert_eq!(
+        source.kind(),
+        RecordKind::Unframed {
+            origin: UnframedOrigin::Framer
+        }
+    );
+    assert!(source.tag_range().is_none());
+    assert_eq!(source.bytes(), &[1, 2, 3]);
+    let refusal = match SourceRecord::unframed(u64::MAX, vec![4], UnframedOrigin::SocketPending) {
+        Err(refusal) => refusal,
+        Ok(_) => panic!("overflowing source range accepted"),
+    };
+    assert_eq!(refusal.offset, u64::MAX);
+    assert_eq!(refusal.bytes, [4]);
+    assert_eq!(refusal.origin, UnframedOrigin::SocketPending);
 }

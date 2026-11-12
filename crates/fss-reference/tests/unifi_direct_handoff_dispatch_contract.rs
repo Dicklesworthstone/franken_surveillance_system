@@ -2454,9 +2454,15 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                                 Poll::Pending => Poll::Pending,
                                 Poll::Ready(_) => panic!("early connection unexpectedly completed"),
                             }).await;
+                            // Refresh while setup and the router's pending next
+                            // future both still own the early socket. Report
+                            // order changes must not reassign that connection.
+                            let mut live_window = report.clone();
+                            live_window.cameras.reverse();
+                            fleet.refresh(live_window)?;
+                            assert!(fleet.route_pending(1));
                             drop(next);
                             assert_eq!(router.pending_len(), 1);
-                            assert!(fleet.route_pending(1));
                             let duplicate = connect_from(cx, peers[1], control.local_addr()).await?;
                             assert!(matches!(router.next().await,
                                 RouterEvent::Refused { reason: RouteError::AlreadyPending, .. }));
@@ -2506,6 +2512,12 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                         drop(http);
                         peer.join().map_err(|_| "HTTP fixture panic")??;
                     }
+                    // A later discovery window can reorder claims. Already
+                    // entered setups must retain their original report indexes
+                    // so subsequent sockets still route to the right owner.
+                    let mut rediscovery = report.clone();
+                    rediscovery.cameras.reverse();
+                    fleet.refresh(rediscovery)?;
                     assert!(fleet.next_ready().is_none());
                     assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_millis(50)).await,
                         Err(RouteError::Listener(fss_reference::unifi_direct::listener::Error::Deadline))));

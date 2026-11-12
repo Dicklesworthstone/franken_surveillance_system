@@ -28,6 +28,13 @@ pub mod av_evidence;
 pub mod av_owned_sink;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
+mod av_rollover_preflight;
+/// Bounded, deterministic planning of future rollover generations.
+pub mod av_rollover_generation;
+/// Region-owned creation of fresh successor journal stores.
+pub mod av_rollover_supplies;
+/// Region-owned storage work for an explicit A/V journal transition.
+pub mod av_rollover_worker;
 /// Bounded ownership handoff from the session loop to its caller.
 pub mod av_session_inbox;
 /// Bounded ownership and backpressure for A/V archive handoff.
@@ -80,8 +87,14 @@ pub mod pipeline;
 pub mod receive;
 /// Bounded source-preserving FLV-to-MP4 segment owner.
 pub mod recording;
+/// Source-aware bridge for a bounded A/V journal rollover.
+pub mod recording_rollover;
+/// Region-owned provisioning alongside a managed recording session.
+pub mod recording_provision;
 /// Owns direct-camera bootstrap and recording as one task-scoped session.
 pub mod recording_session;
+/// Source custody for unfinished recorder and ingress tails.
+pub mod retirement_source;
 /// Fresh, task-authorized storage for a direct recording session.
 pub mod recording_storage;
 /// Task-owned discovery-candidate handoff orchestration.
@@ -97,6 +110,23 @@ pub mod source_worker;
 pub mod supervisor;
 /// Bounded, untrusted camera WebSocket upgrade preparation.
 pub mod upgrade;
+/// Owned video-only archival without an AAC clock assumption.
+pub mod video_owned_sink;
+/// Bootstrap a video-only session from the connection's configuration.
+pub mod video_bootstrap;
+/// Source-preserving video-only camera session.
+pub mod video_session;
+/// Task-admitted, cancellation-drained video-only archival worker.
+pub mod video_worker;
+pub mod video_rollover_worker;
+pub mod video_rollover_preflight;
+pub mod video_provision;
+/// Retained-generation reservation handoff for managed video sessions.
+pub mod video_retained_provision;
+/// Bounded full-resolution JPEG derivatives from decoded camera video.
+pub mod video_still;
+/// Region-owned, cancellation-drained archive-to-still work.
+pub mod video_still_worker;
 
 /// Maximum incoming management message size before JSON parsing.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;

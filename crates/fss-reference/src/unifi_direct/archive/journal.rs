@@ -418,6 +418,46 @@ impl UnknownTimeJournal {
         self.inner.replay_pin().map(unknown_pin)
     }
 
+    /// Preflight a new publication while a settled predecessor can still be
+    /// rolled over. This reserves no durable space and appends no history.
+    /// Both stores must be checked again during the actual publication.
+    pub(crate) fn preflight_next_publication(
+        &mut self,
+        keeper: &mut UnknownTimeAnchorKeeper,
+        cx: &ReplayCx,
+    ) -> Result<(), Error> {
+        checkpoint(cx)?;
+        if self.inner.is_fenced() || keeper.is_fenced() {
+            return Err(Error::Fenced);
+        }
+        if self.confirmed().is_none()
+            || self.pending().is_some()
+            || self.replay_pin().is_some()
+            || self.anchor().sequence <= 3
+            || keeper.target() != self.anchor()
+            || self.inner.store.head() != Some(self.anchor())
+            || !self.inner.store.contains(self.anchor())
+        {
+            return Err(Error::Invalid);
+        }
+        keeper.inner.preflight(&self.inner, 2, cx)?;
+        if self
+            .inner
+            .store
+            .records()
+            .len()
+            .checked_add(2)
+            .is_none_or(|n| n > MAX_RECORDS)
+        {
+            return Err(Error::Storage(EffectPersistenceError::Capacity));
+        }
+        self.inner
+            .store
+            .reserve_capacity(2, MAX_RECORD_BYTES)
+            .map_err(Error::Storage)?;
+        checkpoint(cx)
+    }
+
     pub(super) fn prepare(&mut self, pin: UnknownTimePin, cx: &ReplayCx) -> Result<(), Error> {
         self.inner.prepare(pin.access_pin(), cx)
     }

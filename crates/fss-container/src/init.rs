@@ -9,7 +9,16 @@ pub(crate) fn build(
     scale: u32,
     limit: usize,
 ) -> Result<InitializationSegment, Mp4Error> {
-    Ok(build_inner(sps, pps, scale, limit, None)?.0)
+    Ok(build_inner(sps, pps, scale, limit, None, false)?.0)
+}
+
+pub(crate) fn build_inband(
+    sps: &AvcSps,
+    pps: &AvcPps,
+    scale: u32,
+    limit: usize,
+) -> Result<InitializationSegment, Mp4Error> {
+    Ok(build_inner(sps, pps, scale, limit, None, true)?.0)
 }
 
 pub(crate) fn build_av(
@@ -19,7 +28,18 @@ pub(crate) fn build_av(
     limit: usize,
     audio: &AacConfiguration<'_>,
 ) -> Result<(InitializationSegment, Range<usize>), Mp4Error> {
-    let (video, range) = build_inner(sps, pps, scale, limit, Some(audio))?;
+    let (video, range) = build_inner(sps, pps, scale, limit, Some(audio), false)?;
+    Ok((video, range.ok_or(Mp4Error::Layout)?))
+}
+
+pub(crate) fn build_av_inband(
+    sps: &AvcSps,
+    pps: &AvcPps,
+    scale: u32,
+    limit: usize,
+    audio: &AacConfiguration<'_>,
+) -> Result<(InitializationSegment, Range<usize>), Mp4Error> {
+    let (video, range) = build_inner(sps, pps, scale, limit, Some(audio), true)?;
     Ok((video, range.ok_or(Mp4Error::Layout)?))
 }
 
@@ -29,12 +49,13 @@ fn build_inner(
     scale: u32,
     limit: usize,
     audio: Option<&AacConfiguration<'_>>,
+    inband: bool,
 ) -> Result<(InitializationSegment, Option<Range<usize>>), Mp4Error> {
     let mut w = Writer::new(limit, 1024.min(limit))?;
     let ftyp = w.start(b"ftyp")?;
     w.put(b"iso6")?;
     w.u32(1)?;
-    w.put(b"iso6avc1mp41")?;
+    w.put(if inband { b"iso6avc3mp41" } else { b"iso6avc1mp41" })?;
     w.end(ftyp)?;
     let moov = w.start(b"moov")?;
     let mvhd = w.full(b"mvhd", 0)?;
@@ -87,7 +108,7 @@ fn build_inner(
     let stbl = w.start(b"stbl")?;
     let stsd = w.full(b"stsd", 0)?;
     w.u32(1)?;
-    let avc1 = w.start(b"avc1")?;
+    let avc1 = w.start(if inband { b"avc3" } else { b"avc1" })?;
     w.zeros(6)?;
     w.u16(1)?;
     w.zeros(16)?;

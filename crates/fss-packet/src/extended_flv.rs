@@ -53,6 +53,19 @@ impl Default for Limits {
 }
 
 impl Limits {
+    /// Minimum buffer size that can hold any allowed header or successor tag.
+    ///
+    /// A conservative successor search may have to retain the longest allowed
+    /// trailer plus a complete maximum-size candidate before it can either
+    /// emit or reject that candidate. Smaller buffers are valid caller choices,
+    /// but can stop at a buffer limit on otherwise admissible source bytes.
+    /// This bound does not prove the sender, a boundary, or continued progress.
+    pub fn complete_candidate_buffer(self) -> Result<usize, Error> {
+        self.validate()?;
+        Ok((self.max_header + TAG_SUFFIX)
+            .max(self.max_trailer + TAG_HEADER + self.max_payload + TAG_SUFFIX))
+    }
+
     fn validate(self) -> Result<(), Error> {
         if self.max_payload > ABSOLUTE_MAX_PAYLOAD
             || self.max_trailer > ABSOLUTE_MAX_TRAILER

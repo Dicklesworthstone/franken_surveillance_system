@@ -130,22 +130,61 @@ pub struct PinRetainedEffectJournal {
     poisoned: bool,
 }
 
+/// Refusal to bind a journal to pin custody, retaining both owners.
+#[derive(Debug)]
+#[must_use = "inspect or reconcile the returned journal and pin custodian"]
+pub struct NewRetainedJournalRefusal {
+    /// Original journal, which may contain existing history.
+    pub journal: Box<dyn EffectJournalStore>,
+    /// Original pin custodian after its read attempt.
+    pub retainer: Box<dyn EffectPinRetainer>,
+    /// Exact binding refusal.
+    pub error: EffectPersistenceError,
+}
+
 impl PinRetainedEffectJournal {
     /// Bind two empty, exclusively owned custody domains for a new history.
     /// Existing history must be handled by the explicit recovery path.
     pub fn new(
         journal: Box<dyn EffectJournalStore>,
-        mut retainer: Box<dyn EffectPinRetainer>,
+        retainer: Box<dyn EffectPinRetainer>,
     ) -> Result<Self, EffectPersistenceError> {
+        Self::try_new(journal, retainer).map_err(|refusal| refusal.error)
+    }
+
+    /// Bind fresh custody or return both original owners on every refusal.
+    /// A failed retainer read may still require external reconciliation.
+    pub fn try_new(
+        journal: Box<dyn EffectJournalStore>,
+        mut retainer: Box<dyn EffectPinRetainer>,
+    ) -> Result<Self, NewRetainedJournalRefusal> {
         if journal.head().is_some() || !journal.records().is_empty() {
-            return Err(EffectPersistenceError::InvalidHistory(
-                "new retained journal requires empty effect history",
-            ));
+            return Err(NewRetainedJournalRefusal {
+                journal,
+                retainer,
+                error: EffectPersistenceError::InvalidHistory(
+                    "new retained journal requires empty effect history",
+                ),
+            });
         }
-        if retainer.retained_pin()?.is_some() {
-            return Err(EffectPersistenceError::InvalidHistory(
-                "new retained journal requires empty pin custody",
-            ));
+        match retainer.retained_pin() {
+            Ok(None) => (),
+            Ok(Some(_)) => {
+                return Err(NewRetainedJournalRefusal {
+                    journal,
+                    retainer,
+                    error: EffectPersistenceError::InvalidHistory(
+                        "new retained journal requires empty pin custody",
+                    ),
+                });
+            }
+            Err(error) => {
+                return Err(NewRetainedJournalRefusal {
+                    journal,
+                    retainer,
+                    error,
+                });
+            }
         }
         Ok(Self {
             journal,
@@ -165,20 +204,53 @@ impl PinRetainedEffectJournal {
     /// lease, or permit and does not admit new dispatches.
     pub fn for_reconciliation(
         journal: Box<dyn EffectJournalStore>,
-        mut retainer: Box<dyn EffectPinRetainer>,
+        retainer: Box<dyn EffectPinRetainer>,
     ) -> Result<Self, EffectPersistenceError> {
-        let retained = retainer
-            .retained_pin()?
-            .ok_or(EffectPersistenceError::PinMismatch)?;
+        Self::try_for_reconciliation(journal, retainer).map_err(|refusal| refusal.error)
+    }
+
+    /// Bind matching custody for reconciliation, returning both original owners
+    /// if any read or verification fails. No journal or pin is advanced.
+    pub fn try_for_reconciliation(
+        journal: Box<dyn EffectJournalStore>,
+        mut retainer: Box<dyn EffectPinRetainer>,
+    ) -> Result<Self, NewRetainedJournalRefusal> {
+        let retained = match retainer.retained_pin() {
+            Ok(Some(pin)) => pin,
+            Ok(None) => {
+                return Err(NewRetainedJournalRefusal {
+                    journal,
+                    retainer,
+                    error: EffectPersistenceError::PinMismatch,
+                });
+            }
+            Err(error) => {
+                return Err(NewRetainedJournalRefusal {
+                    journal,
+                    retainer,
+                    error,
+                });
+            }
+        };
         if retained.sequence == 0
             || retained.root.is_laboratory()
             || journal.head() != Some(retained)
             || !journal.contains(retained)
             || retained.sequence as u128 != journal.records().len() as u128
         {
-            return Err(EffectPersistenceError::PinMismatch);
+            return Err(NewRetainedJournalRefusal {
+                journal,
+                retainer,
+                error: EffectPersistenceError::PinMismatch,
+            });
         }
-        retainer.verify_effect_history(journal.as_ref())?;
+        if let Err(error) = retainer.verify_effect_history(journal.as_ref()) {
+            return Err(NewRetainedJournalRefusal {
+                journal,
+                retainer,
+                error,
+            });
+        }
         Ok(Self {
             journal,
             retainer,

@@ -50,10 +50,101 @@ use std::{
 };
 
 type Test = Result<(), Box<dyn Error>>;
+
+#[derive(Debug)]
+struct SupplyIoGate {
+    entered: std::sync::atomic::AtomicBool,
+    release: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug)]
+struct BlockingSupplyIo(Arc<SupplyIoGate>);
+
+impl fss_object::SpoolIo for BlockingSupplyIo {
+    fn create_dir_all(&self, p:&std::path::Path)->io::Result<()> { fss_object::SpoolIo::create_dir_all(&HostSpoolIo,p) }
+    fn metadata(&self, p:&std::path::Path)->io::Result<std::fs::Metadata> { fss_object::SpoolIo::metadata(&HostSpoolIo,p) }
+    fn symlink_metadata(&self, p:&std::path::Path)->io::Result<std::fs::Metadata> { fss_object::SpoolIo::symlink_metadata(&HostSpoolIo,p) }
+    fn open_lock(&self, p:&std::path::Path)->io::Result<std::fs::File> { fss_object::SpoolIo::open_lock(&HostSpoolIo,p) }
+    fn try_lock(&self, f:&std::fs::File)->Result<(),std::fs::TryLockError> { fss_object::SpoolIo::try_lock(&HostSpoolIo,f) }
+    fn try_lock_shared(&self, f:&std::fs::File)->Result<(),std::fs::TryLockError> { fss_object::SpoolIo::try_lock_shared(&HostSpoolIo,f) }
+    fn unlock(&self, f:&std::fs::File)->io::Result<()> { fss_object::SpoolIo::unlock(&HostSpoolIo,f) }
+    fn create_dir(&self, p:&std::path::Path)->io::Result<()> { fss_object::SpoolIo::create_dir(&HostSpoolIo,p) }
+    fn read_dir(&self, p:&std::path::Path)->io::Result<std::fs::ReadDir> { fss_object::SpoolIo::read_dir(&HostSpoolIo,p) }
+    fn next_dir_entry(&self, d:&mut std::fs::ReadDir)->Option<io::Result<std::fs::DirEntry>> { fss_object::SpoolIo::next_dir_entry(&HostSpoolIo,d) }
+    fn entry_file_type(&self, e:&std::fs::DirEntry)->io::Result<std::fs::FileType> { fss_object::SpoolIo::entry_file_type(&HostSpoolIo,e) }
+    fn create_new(&self, p:&std::path::Path)->io::Result<std::fs::File> { fss_object::SpoolIo::create_new(&HostSpoolIo,p) }
+    fn write(&self, f:&mut std::fs::File, b:&[u8])->io::Result<usize> { fss_object::SpoolIo::write(&HostSpoolIo,f,b) }
+    fn sync_file(&self, f:&std::fs::File)->io::Result<()> { fss_object::SpoolIo::sync_file(&HostSpoolIo,f) }
+    fn open_read(&self, p:&std::path::Path)->io::Result<std::fs::File> { fss_object::SpoolIo::open_read(&HostSpoolIo,p) }
+    fn read_bounded(&self, f:&mut std::fs::File, n:u64)->io::Result<Vec<u8>> { fss_object::SpoolIo::read_bounded(&HostSpoolIo,f,n) }
+    fn rename(&self, a:&std::path::Path, b:&std::path::Path)->io::Result<()> { fss_object::SpoolIo::rename(&HostSpoolIo,a,b) }
+    fn remove_file(&self, p:&std::path::Path)->io::Result<()> { fss_object::SpoolIo::remove_file(&HostSpoolIo,p) }
+    fn sync_directory(&self, p:&std::path::Path)->io::Result<()> {
+        use std::sync::atomic::Ordering;
+        if !self.0.entered.swap(true,Ordering::AcqRel) {
+            for _ in 0..10_000 {
+                if self.0.release.load(Ordering::Acquire) { return fss_object::SpoolIo::sync_directory(&HostSpoolIo,p); }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return Err(io::Error::new(io::ErrorKind::TimedOut,"supply gate timed out"));
+        }
+        fss_object::SpoolIo::sync_directory(&HostSpoolIo,p)
+    }
+    fn hard_link(&self, a:&std::path::Path,b:&std::path::Path)->io::Result<()> { fss_object::SpoolIo::hard_link(&HostSpoolIo,a,b) }
+}
+
+#[inline(never)]
+fn refuse_guard_pause<'scope, 'task, IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+    guard: Box<fss_reference::unifi_direct::av_unknown_worker_guard::Guard<'scope, 'task, IO>>,
+) -> Result<Box<fss_reference::unifi_direct::av_unknown_worker_guard::Guard<'scope, 'task, IO>>, Box<dyn Error>> {
+    match (*guard).pause_rollover() {
+        Err(guard) => Ok(Box::new(guard)),
+        Ok(_) => Err("guard unexpectedly allowed rollover".into()),
+    }
+}
+
+#[inline(never)]
+fn exercise_guard_rollover<'scope, 'task, IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+    guard: Box<fss_reference::unifi_direct::av_unknown_worker_guard::Guard<'scope, 'task, IO>>,
+    directory: &std::path::Path,
+    access: &dyn fss_reference::unifi_direct::archive::ReadAuthority,
+    expected: Option<fss_reference::unifi_direct::av_worker::RolloverNeed>,
+) -> Result<Box<fss_reference::unifi_direct::av_unknown_worker_guard::Guard<'scope, 'task, IO>>, Box<dyn Error>> {
+    use fss_reference::unifi_direct::{archive, av_worker_guard::ArchiveState};
+    let (paused, previous) = (*guard).pause_rollover().map_err(|_| "settled guard did not pause")?;
+    assert_eq!(paused.archive_state(), if expected.is_some() {ArchiveState::Pending} else {ArchiveState::Idle});
+    assert_eq!(paused.rollover_need(), expected);
+    assert_eq!(paused.worker_has_pending(), expected.is_some());
+    let limits = EffectJournalLimits::default();
+    let create = |name: &str| -> Result<Box<dyn fss_runtime::effect_journal::EffectJournalStore>, Box<dyn Error>> {
+        Ok(Box::new(FileEffectJournal::create(directory.join(name), limits, Arc::new(HostSpoolIo))?))
+    };
+    let staged = archive::journal::rollover::Staged::begin(previous, create("guard-abort-journal")?, create("guard-abort-keeper")?, paused.replay()).map_err(|_| "guard abort stage refused")?;
+    let guard = paused.restore(staged.abort()).map_err(|_| "guard restore refused")?;
+    assert_eq!(guard.rollover_need(), expected);
+    let (paused, previous) = guard.pause_rollover().map_err(|_| "restored guard did not pause")?;
+    assert_eq!(paused.rollover_need(), expected);
+    let staged = archive::journal::rollover::Staged::begin(previous, create("guard-next-journal")?, create("guard-next-keeper")?, paused.replay()).map_err(|_| "guard stage refused")?;
+    let root = fss_object::effect_journal::FileTrustedRootPinRetainer::create(directory.join("guard-switch-root"), limits, Arc::new(HostSpoolIo), ContentDigest::sha256(b"guard switch root"))?;
+    let switch = fss_runtime::effect_journal::PinRetainedEffectJournal::new(create("guard-switch")?, Box::new(root))?;
+    let active = staged.commit(switch, paused.replay()).map_err(|_| "guard switch refused")?;
+    let refusal = match paused.attach(active) {Err(refusal) => refusal, Ok(_) => return Err("guard accepted unreplayed successor".into())};
+    let mut paused = refusal.paused;
+    let mut active = refusal.active;
+    let objects = archive::StagedAvLimits {max_objects: 8192, max_object_bytes: 1024 * 1024, max_total_bytes: 8 * 1024 * 1024};
+    let receipt = paused.replay_confirmed_av(&mut active, access, objects, &mut fss_geometry::WorkBudget::new(100_000_000_000))?;
+    assert_eq!(receipt.outcome, fss_publication::RootLedgerOutcome::AlreadyLedgered);
+    let mut guard = paused.attach(active).map_err(|_| "guard attach refused")?;
+    assert_eq!(guard.archive_state(), if expected.is_some() {ArchiveState::Pending} else {ArchiveState::Idle});
+    assert_eq!(guard.rollover_need(), None);
+    if expected.is_some() && guard.authorize_retry() {return Err("matching rollover left retry latched".into());}
+    Ok(Box::new(guard))
+}
 const HEAD: &str = "GET / HTTP/1.1\r\nHost: camera.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCamera-Mac: 001122aabbcc\r\nSec-WebSocket-Protocol: secure_transfer\r\n\r\n";
 const HELLO:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_hello","messageId":7,"payload":{}}"#;
 const EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventSmartDetect","messageId":20,"payload":{"edgeType":"enter","descriptors":[{"objectType":"person","trackerID":1,"confidenceLevel":80,"coord":[0,1,500,1000]}]}}"#;
 const REPLY_EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventExample","messageId":20,"responseExpected":true,"payload":{"private":"fixture"}}"#;
+const ROLLOVER_REPLY_EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventExample","messageId":50,"responseExpected":true,"payload":{"private":"fixture"}}"#;
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
@@ -1202,7 +1293,32 @@ fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     media_fixture_with_pictures(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3)
 }
 
+fn video_only_media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
+    video_only_media_fixture_from(media_fixture()?)
+}
+
+fn video_only_media_fixture_from(wire: Vec<u8>) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut result = wire[..13].to_vec();
+    result[4] = 1;
+    let mut offset = 13;
+    while offset < wire.len() {
+        if offset + 15 > wire.len() { return Err("fixture tag truncated".into()); }
+        let size = (usize::from(wire[offset + 1]) << 16) | (usize::from(wire[offset + 2]) << 8) | usize::from(wire[offset + 3]);
+        let end = offset.checked_add(11 + size + 4).ok_or("fixture size overflow")?;
+        if end > wire.len() { return Err("fixture tag length".into()); }
+        if wire[offset] != 8 { result.extend_from_slice(&wire[offset..end]); }
+        offset = end;
+    }
+    // An incomplete non-tag suffix must remain unframed when the source stops.
+    result.extend_from_slice(&[0x7f, 0x01, 0x02]);
+    Ok(result)
+}
+
 fn media_fixture_with_pictures(input: &[u8], picture_cycle: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    media_fixture_with_count(input, picture_cycle, 7)
+}
+
+fn media_fixture_with_count(input: &[u8], picture_cycle: usize, count: usize) -> Result<Vec<u8>, Box<dyn Error>> {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(input).collect();
     let sps = nals
         .iter()
@@ -1229,7 +1345,7 @@ fn media_fixture_with_pictures(input: &[u8], picture_cycle: usize) -> Result<Vec
     config.extend_from_slice(pps);
     let mut result = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
     result.extend(flv_tag(0, &config));
-    for index in 0..7 {
+    for index in 0..count {
         // Synthetic AAC bodies exercise source custody and muxing only; they
         // are not claimed to be decodable audio or synchronized with video.
         let mut audio=flv_tag(index as u32 * 64,&[0xaf,1,2]);
@@ -1760,6 +1876,14 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
         OperationId::parse("operation:guard-capture-time-sync")?,
         OperationId::parse("operation:guard-archive-time-sync")?,
         OperationId::parse("operation:owned-event-reply")?,
+        OperationId::parse("operation:rollover-background-time-sync")?,
+        OperationId::parse("operation:rollover-attachment-time-sync")?,
+        OperationId::parse("operation:rollover-prior-custody-time-sync")?,
+        OperationId::parse("operation:audio-budget-time-sync")?,
+        OperationId::parse("operation:rollover-supplies-time-sync")?,
+        OperationId::parse("operation:provisioning-time-sync")?,
+        OperationId::parse("operation:third-rollover-time-sync")?,
+        OperationId::parse("operation:rollover-event-reply")?,
     ];
     let blocking_workers=if late_audio_change==11 {2} else {1};
     let runtime = RuntimeBuilder::current_thread().blocking_threads(blocking_workers, blocking_workers).build()?;
@@ -1852,7 +1976,13 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 policy.listen.set(true);
                 let controller_listener=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
                 let address=SocketAddr::V4(controller_listener.local_addr());
-                let mut wire=match replay_wire {Some(wire)=>wire,None=>media_fixture()?};
+                let mut wire=match replay_wire {
+                    Some(wire)=>wire,
+                    None if late_audio_change==31=>media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,25)?,
+                    None if matches!(late_audio_change,29|30|32|33)=>media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,16)?,
+                    None if matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28)=>media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?,
+                    None=>media_fixture()?,
+                };
                 if revoke_audio_pending {
                     let mut audio=flv_tag(0,&[0xaf,0,0x14,0x08]);
                     audio[0]=8;
@@ -1883,6 +2013,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 let (media_seen_tx,media_seen_rx)=std::sync::mpsc::channel();
                 let (ready_to_cancel_tx,ready_to_cancel_rx)=std::sync::mpsc::channel();
                 let (control_probe_tx,control_probe_rx)=std::sync::mpsc::channel();
+                let (control_sent_tx,control_sent_rx)=std::sync::mpsc::channel();
                 let peer=std::thread::spawn(move || -> io::Result<()> {
                     let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;
                     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -1966,13 +2097,22 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                         if fields.get("functionName").and_then(|v|v.text())!=Some("EventExample") || fields.get("inResponseTo").and_then(|v|v.integer())!=Some(20) {return Err(io::Error::other("wrong event response"));}
                     }
                     if archive_guard && !audio_change {
-                        for id in [14_u32,15] {
-                            if matches!(late_audio_change,10|11|12|13|14) || (late_audio_change==5 && id==15) {break;}
-                            control_probe_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+                        for id in [14_u32,15,16,17,18,19,20,21,22] {
+                            if matches!(late_audio_change,10|11|12|13|14) || (late_audio_change==5 && id==15) || (id>=16 && !matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33)) || (id==18 && !matches!(late_audio_change,15|18|19|20|21|22|23|24|25|27|28|29|30|31|32|33)) || (id==19 && !matches!(late_audio_change,20|21|22|23|24|29|30|31|32|33)) || (id>=20 && !matches!(late_audio_change,29|30|31|32|33)) || (id>=21 && late_audio_change==30) || (id>=20 && matches!(late_audio_change,32|33)) || (id>=23 && late_audio_change!=31) {break;}
+                            control_probe_rx.recv_timeout(Duration::from_secs(if matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33) {30} else {5})).map_err(io::Error::other)?;
                             let message=format!(r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":{id}}}"#);
                             socket.write_all(&frame(message.as_bytes()))?;
+                            if matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33) && id==15 {control_sent_tx.send(()).map_err(io::Error::other)?;}
                             if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") {
                                 return Err(io::Error::other("missing guarded time-sync reply"));
+                            }
+                            if late_audio_change==31 && id==21 {
+                                control_probe_rx.recv_timeout(Duration::from_secs(30)).map_err(io::Error::other)?;
+                                socket.write_all(&frame(ROLLOVER_REPLY_EVENT))?;
+                                let response=receive_binary(&mut socket)?;
+                                let parsed=fss_core::json_input::parse(std::str::from_utf8(&response).map_err(io::Error::other)?).map_err(io::Error::other)?;
+                                let fields=parsed.object().ok_or_else(||io::Error::other("rollover event response object"))?;
+                                if fields.get("functionName").and_then(|v|v.text())!=Some("EventExample") || fields.get("inResponseTo").and_then(|v|v.integer())!=Some(50) {return Err(io::Error::other("wrong rollover event response"));}
                             }
                         }
                     }
@@ -2000,7 +2140,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 let other_clock=MeteredClock::new(task,cx,TimestampNs(5))?;
                 let mut wrong_owner=conversation::Owner { cx, task, clock:other_clock, effects:&mut effects, leases:&leases, approval:&approval, management_authority:&guard, stream_authority:&guard, wall:&FixtureClock };
                 assert_eq!(wrong_owner.start(&mut session,&config).await,Err(conversation::Error::Configuration));
-                let management_authority:&dyn ManagementAuthority=if late_audio_change==13 {&event_guard} else {&guard};
+                let management_authority:&dyn ManagementAuthority=if matches!(late_audio_change,13|31) {&event_guard} else {&guard};
                 let mut owner=conversation::Owner { cx, task, clock, effects:&mut effects, leases:&leases, approval:&approval, management_authority, stream_authority:&guard, wall:&FixtureClock };
                 let duplicate=conversation::Config { agreement:&operations[0], ..config };
                 assert_eq!(owner.start(&mut session,&duplicate).await,Err(conversation::Error::Configuration));
@@ -2476,9 +2616,10 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         use fss_reference::unifi_direct::av_unknown_worker_guard as unknown;
                                         let store=FileEffectJournal::create(temp.0.join("unknown-guard-intent"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
                                         let journal=archive::journal::UnknownTimeJournal::create(Box::new(store),ContentDigest::sha256(b"unknown worker guard scope"),&replay)?;
-                                        let store=FileEffectJournal::create(temp.0.join("unknown-guard-anchor"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+                                        let keeper_limits=if matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33) {EffectJournalLimits {max_records:5,..EffectJournalLimits::default()}} else {EffectJournalLimits::default()};
+                                        let store=FileEffectJournal::create(temp.0.join("unknown-guard-anchor"),keeper_limits,Arc::new(HostSpoolIo))?;
                                         let keeper=archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store),&journal,&replay)?;
-                                        let access=Arc::new(Retention {block:AtomicBool::new(true), entered:AtomicBool::new(false), allow:AtomicBool::new(false)});
+                                        let access=Arc::new(Retention {block:AtomicBool::new(!matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33)), entered:AtomicBool::new(false), allow:AtomicBool::new(matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33))});
                                         let _unblock=Unblock(Arc::clone(&access));
                                         let authority:Arc<dyn archive::RetainAuthority + Send + Sync>=access.clone();
                                         let resources=unknown::BootstrapResources {deployment,journal,keeper,replay,authority,limits:archive::Limits::default(),work_limit:if cancel_archive {0} else {4_000_000_000}};
@@ -2499,6 +2640,9 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             if !camera_replay {assert_eq!(started.origin.audio_ticks,1024);}
                                             started.guard
                                         };
+                                        // A fresh empty archive cannot roll over; refusal must
+                                        // preserve the live guard and its held first segment.
+                                        guard=*refuse_guard_pause(Box::new(guard))?;
                                         let segment=guard.held_segment().ok_or("missing unknown held source")?;
                                         assert_eq!(ContentDigest::sha256(segment.fragment().bytes()),first_digest);
                                         for source in segment.source() { originals.extend_from_slice(source.bytes()); }
@@ -2790,6 +2934,840 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             if camera_replay {println!("unknown_session_camera_replay=passed published_segments=2 capture_bounds=unknown controller=simulated");}
                                             return Ok(());
                                         }
+                                        if matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33) {
+                                            use unknown::{Advance, Drive};
+                                            let mut published=0;
+                                            let mut originals=Vec::new();
+                                            let mut needed=None;
+                                            for _ in 0..8192 {
+                                                match guard.advance(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await {
+                                                    Advance::Source(unknown::Step::Supervisor(supervisor::Step::AudioPending))=>{
+                                                        let event=guard.take_audio_event(&owner).ok_or("rollover audio withheld")?;
+                                                        if matches!(event,pipeline::AudioEvent::Fenced(_)|pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Configuration {..})) {return Err("rollover audio fenced".into());}
+                                                    },
+                                                    Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))))=>originals.push(record),
+                                                    Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)|pipeline::Step::Progress {..})|supervisor::Step::TimeSyncWritten { .. }|supervisor::Step::Idle)) | Advance::Source(unknown::Step::SourceQueued) | Advance::ArchiveStarted | Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:None})=>(),
+                                                    Advance::Archive(Drive::Archive(done)) | Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:Some(done)})=>{
+                                                        if done.runtime.is_err(){return Err("rollover archive task failed".into());}
+                                                        match done.outcome {
+                                                            av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))=>published+=1,
+                                                            av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {rollover:Some(need),..})=>{needed=Some(need);break;},
+                                                            _=>return Err("rollover archive outcome unexpected".into()),
+                                                        }
+                                                    },
+                                                    _=>return Err("rollover scheduler stopped early".into()),
+                                                }
+                                            }
+                                            let need=needed.ok_or("rollover signal missing")?;
+                                            assert_eq!(published,2);
+                                            assert_eq!(guard.rollover_need(),Some(need));
+                                            assert!(matches!(guard.advance(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await,Advance::RolloverRequired(observed) if observed==need));
+                                            let (mut paused,previous)=guard.pause_rollover().map_err(|_|"capacity pause refused")?;
+                                            assert_eq!(paused.rollover_need(),Some(need));
+                                            control_probe_tx.send(()).map_err(io::Error::other)?;
+                                            control_sent_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+                                            match paused.service_control(&mut owner,&operations[8],Duration::from_secs(5)).await {
+                                                supervisor::Step::TimeSyncWritten {..}=>(),
+                                                other=>return Err(format!("paused control failed: {other:?}").into()),
+                                            }
+                                            // Force a pending poll before the peer writes its next
+                                            // frame; this exercises wakeup as well as prebuffered input.
+                                            let mut control=Box::pin(paused.service_control(&mut owner,&operations[9],Duration::from_secs(5)));
+                                            let mut signalled=false;
+                                            let delayed=poll_fn(|cx| {
+                                                if !signalled {
+                                                    if control.as_mut().poll(cx).is_ready() {return Poll::Ready(Err("control read did not wait"));}
+                                                    if control_probe_tx.send(()).is_err() {return Poll::Ready(Err("control probe closed"));}
+                                                    signalled=true;
+                                                    return Poll::Pending;
+                                                }
+                                                control.as_mut().poll(cx).map(Ok)
+                                            }).await?;
+                                            if !matches!(delayed,supervisor::Step::TimeSyncWritten {..}) {return Err(format!("delayed paused control failed: {delayed:?}").into());}
+                                            drop(control);
+                                            guard=paused.restore(previous).map_err(|_|"capacity restore refused")?;
+                                            assert_eq!(guard.rollover_need(),Some(need));
+                                            let (paused,previous)=guard.pause_rollover().map_err(|_|"background pause refused")?;
+                                            let limits=EffectJournalLimits::default();
+                                            let create=|name:&str| -> Result<Box<dyn fss_runtime::effect_journal::EffectJournalStore>,Box<dyn Error>> {
+                                                Ok(Box::new(FileEffectJournal::create(temp.0.join(name),limits,Arc::new(HostSpoolIo))?))
+                                            };
+                                            let staged=archive::journal::rollover::Staged::begin(previous,create("background-abort-journal")?,create("background-abort-keeper")?,paused.replay()).map_err(|_|"background abort stage refused")?;
+                                            if late_audio_change==18 {paused.replay().set_cancel_at_checkpoint("unifi-av-prepared-attach");}
+                                            guard=paused.restore(staged.abort()).map_err(|_|"background abort restore refused")?;
+                                            let source_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?;
+                                            let source_deployment=fss_reference::ReferenceDeployment::open(&temp.0.join("rollover-session-source"),"site:worker-guard",&source_replay)?;
+                                            let source_journal=archive::journal::UnknownTimeJournal::create(create("rollover-session-intent")?,ContentDigest::sha256(b"rollover session source scope"),&source_replay)?;
+                                            let source_keeper=archive::journal::UnknownTimeAnchorKeeper::create(create("rollover-session-keeper")?,&source_journal,&source_replay)?;
+                                            let mut source=fss_reference::unifi_direct::source_worker::Worker::new(fss_reference::unifi_direct::source_worker::Parts {deployment:source_deployment,journal:source_journal,keeper:source_keeper,replay:source_replay,authority:access.clone(),retention:ContentDigest::sha256(b"rollover session source retention"),limits:archive::Limits::default(),max_source_bytes:1024*1024,work_limit:4_000_000_000}).map_err(|_|"rollover source worker refused")?;
+                                            let mut source_framer=Framer::new(FlvLimits::default(),1024)?;
+                                            source_framer.append(0,b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00")?;
+                                            let source_record=match source_framer.take()? {fss_packet::extended_flv::stream::Next::Record(record)=>record,_=>return Err("separate source header missing".into())};
+                                            let source_key=SourceKey {connection:1,generation:1};
+                                            let source_claim=ContentDigest::sha256(b"fixture camera");
+                                            if source.offer(fss_reference::unifi_direct::source_worker::Input::Original {record:source_record,key:source_key,disposition:recording::SourceDisposition::Header,camera_claim:source_claim}).is_err() {return Err("separate source offer refused".into());}
+                                            let coordinator=fss_reference::unifi_direct::source_coordinator::Coordinator::new(source,source_key,source_claim);
+                                            let session=fss_reference::unifi_direct::recording_session::Session::from_recording(coordinator,Box::new(guard));
+                                            #[derive(Debug)]
+                                            struct PinGate {armed:AtomicBool,entered:AtomicBool,release:AtomicBool,fail_after_release:AtomicBool,panic_after_release:AtomicBool,reads:std::sync::atomic::AtomicUsize}
+                                            #[derive(Debug)]
+                                            struct GatedRetainer {inner:Box<dyn fss_runtime::effect_journal::EffectPinRetainer>,gate:Arc<PinGate>}
+                                            impl fss_runtime::effect_journal::EffectPinRetainer for GatedRetainer {
+                                                fn retained_pin(&mut self)->Result<Option<fss_runtime::effect_journal::EffectJournalPin>,fss_runtime::effect_journal::EffectPersistenceError> {
+                                                    self.gate.reads.fetch_add(1,Ordering::AcqRel);
+                                                    if self.gate.armed.load(Ordering::Acquire) {
+                                                        self.gate.entered.store(true,Ordering::Release);
+                                                        for _ in 0..2500 {if self.gate.release.load(Ordering::Acquire) {assert!(!self.gate.panic_after_release.load(Ordering::Acquire),"synthetic prior custody panic"); if self.gate.fail_after_release.load(Ordering::Acquire) {return Err(fss_runtime::effect_journal::EffectPersistenceError::PinMismatch);} return self.inner.retained_pin();} std::thread::sleep(Duration::from_millis(2));}
+                                                        return Err(fss_runtime::effect_journal::EffectPersistenceError::Storage("synthetic custody gate timed out".into()));
+                                                    }
+                                                    self.inner.retained_pin()
+                                                }
+                                                fn reserve_capacity(&mut self,n:usize)->Result<(),fss_runtime::effect_journal::EffectPersistenceError>{self.inner.reserve_capacity(n)}
+                                                fn verify_effect_history(&mut self,journal:&dyn fss_runtime::effect_journal::EffectJournalStore)->Result<(),fss_runtime::effect_journal::EffectPersistenceError>{self.inner.verify_effect_history(journal)}
+                                                fn retain(&mut self,expected:Option<fss_runtime::effect_journal::EffectJournalPin>,next:fss_runtime::effect_journal::EffectJournalPin)->Result<(),fss_runtime::effect_journal::EffectPersistenceError>{self.inner.retain(expected,next)}
+                                            }
+                                            struct ReleasePin(Arc<PinGate>);
+                                            impl Drop for ReleasePin {fn drop(&mut self){self.0.release.store(true,Ordering::Release);}}
+                                            let pin_gate=Arc::new(PinGate {armed:AtomicBool::new(false),entered:AtomicBool::new(false),release:AtomicBool::new(false),fail_after_release:AtomicBool::new(matches!(late_audio_change,19|27)),panic_after_release:AtomicBool::new(false),reads:std::sync::atomic::AtomicUsize::new(0)});
+                                            let _release_pin=ReleasePin(pin_gate.clone());
+                                            let retainer=fss_object::effect_journal::FileTrustedRootPinRetainer::create(temp.0.join("background-root"),limits,Arc::new(HostSpoolIo),ContentDigest::sha256(b"background switch root"))?;
+                                            let switch=fss_runtime::effect_journal::PinRetainedEffectJournal::new(create("background-switch")?,Box::new(GatedRetainer {inner:Box::new(retainer),gate:pin_gate.clone()}))?;
+                                            struct DelayedRead {entered:AtomicBool, release:AtomicBool, panic_after_release:bool}
+                                            impl archive::ReadAuthority for DelayedRead {
+                                                fn permits(&self,_:ContentDigest,_:ContentDigest)->bool {
+                                                    self.entered.store(true,Ordering::Release);
+                                                    for _ in 0..2500 {
+                                                        if self.release.load(Ordering::Acquire) {assert!(!self.panic_after_release,"synthetic replay panic");return true;}
+                                                        std::thread::sleep(Duration::from_millis(2));
+                                                    }
+                                                    false
+                                                }
+                                            }
+                                            struct ReleaseRead(Arc<DelayedRead>);
+                                            impl Drop for ReleaseRead {fn drop(&mut self){self.0.release.store(true,Ordering::Release);}}
+                                            let read=Arc::new(DelayedRead {entered:AtomicBool::new(false),release:AtomicBool::new(false),panic_after_release:late_audio_change==17});
+                                            let _release=ReleaseRead(read.clone());
+                                            let supplies=fss_reference::unifi_direct::av_rollover_worker::Supplies {
+                                                next_journal:create("background-next-journal")?,next_keeper:if matches!(late_audio_change,29|30|31|32|33) {Box::new(FileEffectJournal::create(temp.0.join("background-next-keeper"),EffectJournalLimits {max_records:5,..limits},Arc::new(HostSpoolIo))?)} else {create("background-next-keeper")?},switch,read:read.clone(),
+                                                object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:1024*1024,max_total_bytes:8*1024*1024},work_limit:100_000_000_000,
+                                            };
+                                            let (session,supplies)=match fss_reference::unifi_direct::recording_rollover::RecordingRollover::prepare(session,supplies) {
+                                                Err(fss_reference::unifi_direct::recording_rollover::PrepareRefusal::NotReady {session,supplies})=>(session,supplies),
+                                                _=>return Err("rollover did not preserve pending separate source".into()),
+                                            };
+                                            let (coordinator,phase)=session.into_parts();
+                                            let source_boundary_guard=match phase {fss_reference::unifi_direct::recording_session::Phase::Recording(guard)=>guard,_=>return Err("not-ready session lost recording phase".into())};
+                                            let mut source=coordinator.into_worker();
+                                            assert_eq!(source.status(),fss_reference::unifi_direct::source_worker::Status::Pending);
+                                            source.start(task,cx,clock,"fixture:source",&BudgetVector::ZERO).map_err(|_|"separate source start refused")?;
+                                            let source_done=source.join().await.ok_or("separate source completion missing")?;
+                                            if source_done.runtime.is_err() || !matches!(source_done.outcome,fss_reference::unifi_direct::source_worker::Outcome::Publication(fss_reference::unifi_direct::source_worker::Publication::Published {..})) {return Err("separate source not published".into());}
+                                            let coordinator=fss_reference::unifi_direct::source_coordinator::Coordinator::new(source,source_key,source_claim);
+                                            let session=fss_reference::unifi_direct::recording_session::Session::from_recording(coordinator,source_boundary_guard);
+                                            if matches!(late_audio_change,25|26|27|28|29|30|31|32|33) {
+                                                use fss_reference::unifi_direct::recording_rollover::{AutomaticRollover,AutomaticOwners,AutomaticStep,Finished};
+                                                let mut auto=AutomaticRollover::prepare(session,supplies).map_err(|_|"automatic rollover preparation refused")?;
+                                                assert!(matches!(auto.start(task,cx,other_clock,"fixture:archive",&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_worker::StartError::Context)));
+                                                let (session,supplies)=auto.into_unstarted().map_err(|_|"automatic unstarted owners lost")?;
+                                                let mut auto=AutomaticRollover::prepare(session,supplies).map_err(|_|"automatic recovery refused")?;
+                                                auto.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("automatic preflight refused: {e:?}"))?;
+                                                let mut started=false;
+                                                for _ in 0..100 {
+                                                    let transition_clock=if late_audio_change==28 {other_clock} else {clock};
+                                                    match auto.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,transition_clock,"fixture:archive",&BudgetVector::ZERO).await {
+                                                        AutomaticStep::RolloverStarted=>{started=true;break;},
+                                                        AutomaticStep::StartRefused(fss_reference::unifi_direct::av_rollover_worker::StartError::Context) if late_audio_change==28=>{
+                                                            if !matches!(auto.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await,AutomaticStep::NotRunning) {return Err("automatic refusal was silently retried".into());}
+                                                            auto.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|_|"explicit automatic retry refused")?;
+                                                            started=true;break;
+                                                        },
+                                                        AutomaticStep::Control(supervisor::Step::Idle)=>(),
+                                                        _=>return Err("automatic preflight stopped".into()),
+                                                    }
+                                                }
+                                                if !started {return Err("automatic transition did not start".into());}
+                                                assert!(matches!(auto.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_worker::StartError::Running)));
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !read.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"automatic replay did not enter")?;
+                                                control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                if !matches!(auto.step(&mut owner,&operations[10],Duration::from_secs(5),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await,AutomaticStep::Control(supervisor::Step::TimeSyncWritten {..})) {return Err("automatic replay control failed".into());}
+                                                if late_audio_change==26 {
+                                                    auto.abort();
+                                                    timeout(cx.now(),Duration::from_secs(5),async {while !auto.cancellation_observed() {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"automatic cancellation not observed")?;
+                                                    read.release.store(true,Ordering::Release);
+                                                    if !auto.join().await {return Err("automatic cancellation did not join".into());}
+                                                    if !matches!(auto.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await,AutomaticStep::Finished) {return Err("automatic cancellation not finalized".into());}
+                                                    let (coordinator,rollover)=match auto.into_owners() {
+                                                        Some(AutomaticOwners::Finished(Finished::Unresolved {coordinator,rollover}))=>(coordinator,rollover),
+                                                        _=>return Err("automatic cancelled owners lost".into()),
+                                                    };
+                                                    let source=coordinator.into_worker().retire().map_err(|_|"automatic cancelled source retirement refused")?;
+                                                    assert!(source.pending.is_none());
+                                                    let retired=rollover.retire();
+                                                    assert!(retired.resources.has_pending());
+                                                    assert_eq!(retired.rollover_need,Some(need));
+                                                    drop(retired);drop(originals);
+                                                    peer.join().map_err(|_|"automatic cancellation peer panic")??;
+                                                    return Ok(());
+                                                }
+                                                pin_gate.armed.store(true,Ordering::Release);
+                                                read.release.store(true,Ordering::Release);
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !pin_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"automatic custody did not enter")?;
+                                                control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                if !matches!(auto.step(&mut owner,&operations[11],Duration::from_secs(5),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await,AutomaticStep::Control(supervisor::Step::TimeSyncWritten {..})) {return Err("automatic custody control failed".into());}
+                                                pin_gate.release.store(true,Ordering::Release);
+                                                if !auto.join().await {return Err("automatic transition did not join".into());}
+                                                let before=pin_gate.reads.load(Ordering::Acquire);
+                                                if !matches!(auto.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await,AutomaticStep::Finished) {return Err("automatic transition did not finish".into());}
+                                                assert_eq!(pin_gate.reads.load(Ordering::Acquire),before,"automatic finish reread custody");
+                                                if late_audio_change==27 {
+                                                    let (coordinator,rollover)=match auto.into_owners() {
+                                                        Some(AutomaticOwners::Finished(Finished::Unresolved {coordinator,rollover}))=>(coordinator,rollover),
+                                                        _=>return Err("automatic custody refusal owners lost".into()),
+                                                    };
+                                                    let source=coordinator.into_worker().retire().map_err(|_|"automatic refused source retirement failed")?;
+                                                    assert!(source.pending.is_none());
+                                                    let retired=rollover.retire();
+                                                    assert!(retired.resources.has_pending());
+                                                    assert_eq!(retired.rollover_need,Some(need));
+                                                    assert!(matches!(retired.completion.outcome,fss_reference::unifi_direct::av_rollover_worker::Outcome::AttachRefused {..}));
+                                                    drop(retired);drop(originals);
+                                                    peer.join().map_err(|_|"automatic refusal peer panic")??;
+                                                    return Ok(());
+                                                }
+                                                let mut session=match auto.into_owners() {
+                                                    Some(AutomaticOwners::Finished(Finished::Resumed {session,receipt}))=>{assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);session},
+                                                    _=>return Err("automatic session not resumed".into()),
+                                                };
+                                                let av=fss_reference::unifi_direct::source_coordinator::ArchiveAdmission {resource:"fixture:archive",cost:&BudgetVector::ZERO};
+                                                let source=fss_reference::unifi_direct::source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&BudgetVector::ZERO};
+                                                if !matches!(session.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Session(unknown::SessionEvent::Advance(Advance::ArchiveStarted)))) {return Err("automatic session did not start pending segment".into());}
+                                                let (coordinator,phase)=session.into_parts();
+                                                let mut guard=match phase {fss_reference::unifi_direct::recording_session::Phase::Recording(guard)=>*guard,_=>return Err("automatic session phase lost".into())};
+                                                let mut coordinator=Some(coordinator);
+                                                let mut published=false;
+                                                for _ in 0..100 {
+                                                    match guard.advance(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await {
+                                                        Advance::Archive(Drive::Archive(done)) | Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:Some(done)})=>{
+                                                            if done.runtime.is_err() || !matches!(done.outcome,av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))) {return Err("automatic pending segment failed".into());}
+                                                            published=true;break;
+                                                        },
+                                                        Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:None})=>(),
+                                                        _=>return Err("automatic session stopped".into()),
+                                                    }
+                                                }
+                                                if !published {return Err("automatic pending segment timed out".into());}
+                                                if matches!(late_audio_change,29|30|31|32|33) {
+                                                    let mut visible=3;
+                                                    let mut second_need=None;
+                                                    let mut renewed_audio=false;
+                                                    timeout(cx.now(),Duration::from_secs(15),async {
+                                                        for _ in 0..8192 {
+                                                            match guard.advance(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await {
+                                                                Advance::Source(unknown::Step::Supervisor(supervisor::Step::AudioPending))=>{
+                                                                    let event=guard.take_audio_event(&owner).ok_or("second rollover audio withheld")?;
+                                                                    if matches!(event,pipeline::AudioEvent::Fenced(_)|pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Configuration {..})) {return Err("second rollover audio fenced");}
+                                                                },
+                                                                Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))))=>originals.push(record),
+                                                                Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)|pipeline::Step::Progress {..})|supervisor::Step::TimeSyncWritten {..}|supervisor::Step::Idle))|Advance::Source(unknown::Step::SourceQueued)|Advance::ArchiveStarted|Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:None})=>(),
+                                                                Advance::Archive(Drive::Archive(done))|Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:Some(done)})=>{
+                                                                    if done.runtime.is_err(){return Err("second rollover archive task failed");}
+                                                                    match done.outcome {
+                                                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))=>visible+=1,
+                                                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {rollover:Some(need),..})=>{second_need=Some(need);return Ok(());},
+                                                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {stage:av_worker::UnknownTimeFailureStage::Preparation,reason:av_worker::FailureReason::Media(fss_reference::unifi_direct::av_recording::Error::Clock(fss_packet::extended_flv::aac_clock::Error::Limit)),pending:None,receipt:None,rollover:None}) if !renewed_audio=>{
+                                                                            assert!(matches!(guard.extend_audio_limit(0),Err(av_worker::AudioAllowanceError::Mux(fss_reference::unifi_direct::av_recording::Error::Clock(fss_packet::extended_flv::aac_clock::Error::Configuration)))));
+                                                                            assert!(guard.extend_audio_limit(16).is_ok());
+                                                                            assert!(guard.authorize_retry());
+                                                                            renewed_audio=true;
+                                                                        },
+                                                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {stage,reason,pending,receipt,rollover})=>{eprintln!("second_rollover_refused stage={stage:?} reason={reason:?} pending={} receipt={} rollover={}",pending.is_some(),receipt.is_some(),rollover.is_some());return Err("second rollover archive outcome unexpected");},
+                                                                        other=>{eprintln!("second_rollover_other={:?}",std::mem::discriminant(&other));return Err("second rollover archive outcome unexpected");},
+                                                                    }
+                                                                },
+                                                                _=>return Err("second rollover scheduler stopped"),
+                                                            }
+                                                        }
+                                                        Err("second rollover signal missing")
+                                                    }).await.map_err(|_|"second rollover signal timed out")??;
+                                                    let second_need=second_need.ok_or("second rollover need missing")?;
+                                                    assert!(renewed_audio,"fixture did not exercise audio-clock exhaustion");
+                                                    assert_eq!(visible,4);
+                                                    assert_eq!(guard.rollover_need(),Some(second_need));
+                                                    let supply_gate=Arc::new(SupplyIoGate {entered:AtomicBool::new(false),release:AtomicBool::new(false)});
+                                                    let supply_root=temp.0.join("automatic-second-supplies");
+                                                    let pin_root=temp.0.join("automatic-second-pin");
+                                                    let switch_custody=fss_reference::unifi_direct::av_rollover_supplies::SwitchCustody {root:pin_root.clone(),replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),io:Arc::new(HostSpoolIo),limits,scope:ContentDigest::sha256(b"automatic second switch root")};
+                                                    let second_limits=if late_audio_change==31 {EffectJournalLimits {max_records:5,..limits}} else {limits};
+                                                    let supply_worker=fss_reference::unifi_direct::av_rollover_supplies::Worker::new(fss_reference::unifi_direct::av_rollover_supplies::Inputs {root:supply_root.clone(),replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),io:Arc::new(BlockingSupplyIo(supply_gate.clone())),journal_limits:second_limits,switch:fss_reference::unifi_direct::av_rollover_supplies::SwitchInput::Create(switch_custody),read:access.clone(),object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:1024*1024,max_total_bytes:8*1024*1024},work_limit:100_000_000_000}).map_err(|_|"managed supply worker refused")?;
+                                                    let source_coordinator=coordinator.take().ok_or("automatic coordinator missing")?;
+                                                    let second_session=fss_reference::unifi_direct::recording_session::Session::from_recording(source_coordinator,Box::new(guard));
+                                                    pin_gate.entered.store(false,Ordering::Release);
+                                                    pin_gate.release.store(false,Ordering::Release);
+                                                    let before=pin_gate.reads.load(Ordering::Acquire);
+                                                    assert!(fss_reference::unifi_direct::recording_session::AudioAllowancePolicy::new(0,128,128).is_none());
+                                                    let policy=fss_reference::unifi_direct::recording_session::AudioAllowancePolicy::new(100,128,128).ok_or("automatic audio policy refused")?;
+                                                    let mut second=fss_reference::unifi_direct::recording_rollover::ManagedSession::new(second_session,policy);
+                                                    if !matches!(second.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,other_clock,av,source).await,fss_reference::unifi_direct::recording_rollover::ManagedStep::Recording(fss_reference::unifi_direct::recording_session::AudioAllowanceStep::Session(fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Context)))) {return Err("managed wrong clock did not preserve session".into());}
+                                                    owner.clock=other_clock;
+                                                    let wrong_owner_result=second.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await;
+                                                    owner.clock=clock;
+                                                    if !matches!(wrong_owner_result,fss_reference::unifi_direct::recording_rollover::ManagedStep::Recording(fss_reference::unifi_direct::recording_session::AudioAllowanceStep::Session(fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Context)))) {return Err("managed wrong owner clock did not preserve session".into());}
+                                                    control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                    if !matches!(second.step(&mut owner,&operations[14],Duration::from_secs(5),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_rollover::ManagedStep::SuppliesRequired {need,control:supervisor::Step::TimeSyncWritten {..}} if need==second_need) {return Err("managed supplies wait lost control or boundary".into());}
+                                                    let mut provisioning=fss_reference::unifi_direct::recording_provision::ProvisioningSession::new(second,supply_worker);
+                                                    if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,other_clock,av,source,&BudgetVector::ZERO).await,fss_reference::unifi_direct::recording_provision::Step::Managed(fss_reference::unifi_direct::recording_rollover::ManagedStep::Recording(fss_reference::unifi_direct::recording_session::AudioAllowanceStep::Session(fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Context))))) {return Err("provisioning admitted wrong clock".into());}
+                                                    owner.clock=other_clock;
+                                                    let wrong_owner_result=provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await;
+                                                    owner.clock=clock;
+                                                    if !matches!(wrong_owner_result,fss_reference::unifi_direct::recording_provision::Step::Managed(fss_reference::unifi_direct::recording_rollover::ManagedStep::Recording(fss_reference::unifi_direct::recording_session::AudioAllowanceStep::Session(fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Context))))) {return Err("provisioning admitted wrong owner clock".into());}
+                                                    assert!(!supply_root.exists() && !supply_gate.entered.load(Ordering::Acquire));
+                                                    if late_audio_change==32 {
+                                                        use fss_reference::unifi_direct::{recording_provision as provision, recording_rollover as managed, recording_session as session_mod};
+                                                        provisioning.abort();
+                                                        assert!(provisioning.control().is_none());
+                                                        let after_abort=provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await;
+                                                        if matches!(after_abort,provision::Step::SupplyStarted|provision::Step::SupplyPlanned(_)) {
+                                                            supply_gate.release.store(true,Ordering::Release);
+                                                            provisioning.abort();
+                                                            let _=provisioning.join_supply().await;
+                                                            return Err("aborted provisioning started a new creator".into());
+                                                        }
+                                                        if !matches!(after_abort,provision::Step::Aborted) {return Err("aborted provisioning did not report cancellation".into());}
+                                                        assert!(!provisioning.authorize_start_retry());
+                                                        assert!(!supply_root.exists() && !pin_root.exists());
+                                                        let owners=provisioning.into_parts();
+                                                        assert!(owners.aborted);
+                                                        assert!(!owners.started && owners.completion.is_none() && owners.ready.is_none() && owners.failed.is_none() && owners.custody.is_none());
+                                                        let unstarted=owners.worker.ok_or("aborted creator lost")?.retire().map_err(|_|"aborted creator unexpectedly running")?;
+                                                        assert!(unstarted.inputs.is_some() && unstarted.outcome.is_none());
+                                                        let (managed_owner,_policy,unused)=owners.managed.into_parts();
+                                                        assert!(unused.is_none());
+                                                        let session=match managed_owner {Some(managed::ManagedOwners::Session(session))=>*session,_=>return Err("aborted managed session lost".into())};
+                                                        let (source_coordinator,phase)=session.into_parts();
+                                                        let guard=match phase {session_mod::Phase::Recording(guard)=>guard,_=>return Err("aborted recording guard lost".into())};
+                                                        let source=source_coordinator.into_worker().retire().map_err(|_|"aborted source retirement refused")?;
+                                                        assert!(source.pending.is_none());
+                                                        let retired=(*guard).retire().map_err(|_|"aborted guard retirement refused")?;
+                                                        assert!(retired.worker.parts.sink.retire().pending.is_some());
+                                                        drop(retired.supervisor);drop(unstarted);drop(originals);
+                                                        peer.join().map_err(|_|"aborted creator peer panic")??;
+                                                        return Ok(());
+                                                    }
+                                                    if late_audio_change==30 {
+                                                        let mut excessive=BudgetVector::ZERO; excessive.bytes=u64::MAX;
+                                                        if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&excessive).await,fss_reference::unifi_direct::recording_provision::Step::SupplyStartRefused(fss_reference::unifi_direct::av_rollover_supplies::StartError::Task(_))) {return Err("supply budget refusal lost".into());}
+                                                        if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await,fss_reference::unifi_direct::recording_provision::Step::Managed(fss_reference::unifi_direct::recording_rollover::ManagedStep::SuppliesRequired {control:supervisor::Step::Idle,..})) {return Err("supply admission silently retried".into());}
+                                                        assert!(!supply_root.exists());
+                                                        assert!(provisioning.authorize_start_retry());
+                                                        assert!(!provisioning.authorize_start_retry());
+                                                    }
+                                                    if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await,fss_reference::unifi_direct::recording_provision::Step::SupplyStarted) {return Err("supply worker did not start".into());}
+                                                    timeout(cx.now(),Duration::from_secs(5),async {while !supply_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"supply storage did not block")?;
+                                                    if late_audio_change==33 {
+                                                        use fss_reference::unifi_direct::{recording_provision as provision, recording_rollover as managed, recording_session as session_mod};
+                                                        supply_gate.release.store(true,Ordering::Release);
+                                                        if !provisioning.join_supply().await {return Err("completed supply did not join".into());}
+                                                        provisioning.abort();
+                                                        assert!(provisioning.control().is_none());
+                                                        if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await,provision::Step::Aborted) {return Err("completed supplies installed after abort".into());}
+                                                        let owners=provisioning.into_parts();
+                                                        assert!(owners.aborted && !owners.started && owners.worker.is_none() && owners.failed.is_none() && owners.custody.is_none());
+                                                        assert!(owners.completion.as_ref().is_some_and(|completion|completion.runtime.is_ok() && completion.outcome==fss_reference::unifi_direct::av_rollover_supplies::Outcome::Ready));
+                                                        let ready=owners.ready.ok_or("completed supplies lost after abort")?;
+                                                        assert_eq!(ready.root,supply_root);
+                                                        let (managed_owner,_policy,unused)=owners.managed.into_parts();
+                                                        assert!(unused.is_none());
+                                                        let session=match managed_owner {Some(managed::ManagedOwners::Session(session))=>*session,_=>return Err("late-abort managed session lost".into())};
+                                                        let (source_coordinator,phase)=session.into_parts();
+                                                        let guard=match phase {session_mod::Phase::Recording(guard)=>guard,_=>return Err("late-abort guard lost".into())};
+                                                        let source=source_coordinator.into_worker().retire().map_err(|_|"late-abort source retirement refused")?;
+                                                        assert!(source.pending.is_none());
+                                                        let retired=(*guard).retire().map_err(|_|"late-abort guard retirement refused")?;
+                                                        assert!(retired.worker.parts.sink.retire().pending.is_some());
+                                                        drop(retired.supervisor);drop(ready);drop(originals);
+                                                        peer.join().map_err(|_|"late-abort peer panic")??;
+                                                        return Ok(());
+                                                    }
+                                                    control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                    if !matches!(provisioning.step(&mut owner,&operations[15],Duration::from_secs(5),task,cx,clock,av,source,&BudgetVector::ZERO).await,fss_reference::unifi_direct::recording_provision::Step::Managed(fss_reference::unifi_direct::recording_rollover::ManagedStep::SuppliesRequired {need,control:supervisor::Step::TimeSyncWritten {..}}) if need==second_need) {return Err("blocked supply storage lost control".into());}
+                                                    if late_audio_change==30 {
+                                                        let plan=fss_reference::unifi_direct::av_rollover_generation::Plan::new(fss_reference::unifi_direct::av_rollover_generation::Configuration {namespace:"abort_fixture".into(),scope_seed:ContentDigest::sha256(b"cancelled fixture plan"),first:3,count:1,journal_replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),pin_replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),journal_limits:limits,pin_limits:limits,read:access.clone(),object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:1024*1024,max_total_bytes:8*1024*1024},work_limit:100_000_000_000}).map_err(|_|"cancel fixture plan refused")?;
+                                                        provisioning.set_plan(plan).map_err(|_|"cancel fixture plan not installed")?;
+                                                        provisioning.abort();
+                                                        supply_gate.release.store(true,Ordering::Release);
+                                                        if !provisioning.join_supply().await {return Err("cancelled supply worker did not join".into());}
+                                                        if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await,fss_reference::unifi_direct::recording_provision::Step::SupplyFailed(completion) if completion.outcome==fss_reference::unifi_direct::av_rollover_supplies::Outcome::Cancelled) {return Err("cancelled supply outcome lost".into());}
+                                                        let failed=provisioning.take_failed().ok_or("cancelled supply owners lost")?;
+                                                        if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await,fss_reference::unifi_direct::recording_provision::Step::Aborted) {return Err("cancelled provisioning did not remain stopped".into());}
+                                                        let owners=provisioning.into_parts();
+                                                        assert!(owners.aborted);
+                                                        assert!(owners.failed.is_none() && owners.plan.as_ref().is_some_and(|plan|plan.remaining()==1));
+                                                        assert!(!temp.0.join("fss-av-abort_fixture-0000000000000003").exists());
+                                                        assert!(failed.root_created && !failed.pin_root_created && failed.inputs.is_some() && failed.journal.is_none() && failed.keeper.is_none());
+                                                        assert!(owners.worker.is_none() && owners.ready.is_none() && owners.custody.is_none());
+                                                        let (managed_owner,_policy,unused)=owners.managed.into_parts();
+                                                        assert!(unused.is_none());
+                                                        let session=match managed_owner {Some(fss_reference::unifi_direct::recording_rollover::ManagedOwners::Session(session))=>*session,_=>return Err("cancelled managed session lost".into())};
+                                                        let (source_coordinator,phase)=session.into_parts();
+                                                        let guard=match phase {fss_reference::unifi_direct::recording_session::Phase::Recording(guard)=>guard,_=>return Err("cancelled recording guard lost".into())};
+                                                        let source=source_coordinator.into_worker().retire().map_err(|_|"cancelled source retirement refused")?;
+                                                        assert!(source.pending.is_none());
+                                                        let retired=(*guard).retire().map_err(|_|"cancelled guard retirement refused")?;
+                                                        assert!(retired.worker.parts.sink.retire().pending.is_some());
+                                                        drop(retired.supervisor);drop(failed);drop(originals);
+                                                        peer.join().map_err(|_|"cancelled supply peer panic")??;
+                                                        return Ok(());
+                                                    }
+                                                    supply_gate.release.store(true,Ordering::Release);
+                                                    let mut installed=false;
+                                                    for _ in 0..100 {
+                                                        match provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await {
+                                                            fss_reference::unifi_direct::recording_provision::Step::SupplyInstalled(completion)=>{if completion.runtime.is_err() || completion.outcome!=fss_reference::unifi_direct::av_rollover_supplies::Outcome::Ready {return Err("supply completion not ready".into());} installed=true;break;},
+                                                            fss_reference::unifi_direct::recording_provision::Step::Managed(fss_reference::unifi_direct::recording_rollover::ManagedStep::SuppliesRequired {control:supervisor::Step::Idle,..})=>(),
+                                                            _=>return Err("supply provisioning stopped".into()),
+                                                        }
+                                                    }
+                                                    if !installed {return Err("supply provisioning timed out".into());}
+                                                    let custody=provisioning.take_custody().ok_or("supply custody lost")?;
+                                                    assert_eq!(custody.root,supply_root);
+                                                    assert_eq!(custody.switch_custody.as_ref().ok_or("pin custody plan lost")?.root,pin_root);
+                                                    let make_next=|name:&str| -> Result<fss_reference::unifi_direct::av_rollover_supplies::Worker,Box<dyn Error>> {
+                                                        let pin=fss_reference::unifi_direct::av_rollover_supplies::SwitchCustody {root:temp.0.join(format!("{name}-pin")),replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),io:Arc::new(HostSpoolIo),limits,scope:ContentDigest::sha256(name.as_bytes())};
+                                                        let inputs=fss_reference::unifi_direct::av_rollover_supplies::Inputs {root:temp.0.join(name),replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),io:Arc::new(HostSpoolIo),journal_limits:limits,switch:fss_reference::unifi_direct::av_rollover_supplies::SwitchInput::Create(pin),read:access.clone(),object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:1024*1024,max_total_bytes:8*1024*1024},work_limit:100_000_000_000};
+                                                        fss_reference::unifi_direct::av_rollover_supplies::Worker::new(inputs).map_err(|_|"future supply configuration refused".into())
+                                                    };
+                                                    if late_audio_change!=31 {
+                                                        provisioning.offer_worker(make_next("automatic-third-supplies")?).map_err(|_|"future supply worker refused")?;
+                                                        let rejected=match provisioning.offer_worker(make_next("automatic-rejected-supplies")?) {Err(worker)=>worker,Ok(())=>return Err("staged creator overwritten".into())};
+                                                        let rejected=rejected.retire().map_err(|_|"rejected creator unexpectedly running")?;
+                                                        assert!(rejected.outcome.is_none() && rejected.inputs.is_some());
+                                                    }
+                                                    if late_audio_change==31 {
+                                                        use fss_reference::unifi_direct::{recording_provision as provision, recording_rollover as managed, recording_session as session_mod, source_coordinator as source_mod, source_handoff, source_worker};
+                                                        {
+                                                            let mut control=provisioning.control().ok_or("recording control unavailable")?;
+                                                            assert!(control.set_time_sync_reply_wait(Some(Duration::ZERO)).is_err());
+                                                            control.set_time_sync_reply_wait(Some(Duration::from_secs(2)))?;
+                                                            control.set_time_sync_reply_wait(None)?;
+                                                        }
+                                                        let plan=fss_reference::unifi_direct::av_rollover_generation::Plan::new(fss_reference::unifi_direct::av_rollover_generation::Configuration {namespace:"fixture_camera".into(),scope_seed:ContentDigest::sha256(b"automatic fixture plan"),first:3,count:2,journal_replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),pin_replay:Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?),journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),journal_limits:limits,pin_limits:limits,read:access.clone(),object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:1024*1024,max_total_bytes:8*1024*1024},work_limit:100_000_000_000}).map_err(|_|"automatic plan refused")?;
+                                                        provisioning.set_plan(plan).map_err(|_|"automatic plan not installed")?;
+                                                        assert!(provisioning.extend_plan(1).is_err());
+                                                        let planned=match provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await {provision::Step::SupplyPlanned(identity)=>identity,_=>return Err("third generation was not planned".into())};
+                                                        assert_eq!(planned.generation,3);
+                                                        assert!(!planned.journal_root.exists() && !planned.pin_root.exists());
+                                                        if !matches!(provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await,provision::Step::SupplyStarted) {return Err("third creator did not start".into());}
+                                                        let mut preflight_started=false;
+                                                        let mut third_installed=false;
+                                                        for _ in 0..512 {
+                                                            match provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await {
+                                                                provision::Step::Managed(managed::ManagedStep::PreflightStarted)=>preflight_started=true,
+                                                                provision::Step::SupplyInstalled(completion)=>{if completion.runtime.is_err() || completion.outcome!=fss_reference::unifi_direct::av_rollover_supplies::Outcome::Ready {return Err("third creator completion failed".into());} third_installed=true;},
+                                                                provision::Step::Managed(managed::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::Idle)))=>(),
+                                                                _=>return Err("second transition or next creator stopped".into()),
+                                                            }
+                                                            if preflight_started && third_installed {break;}
+                                                        }
+                                                        if !preflight_started || !third_installed {return Err("third creator was not installed while second rollover ran".into());}
+                                                        let third_custody=provisioning.take_custody().ok_or("third creator custody lost")?;
+                                                        assert_eq!(third_custody.root,planned.journal_root);
+                                                        assert_eq!(third_custody.switch_custody.as_ref().ok_or("planned pin custody lost")?.root,planned.pin_root);
+                                                        timeout(cx.now(),Duration::from_secs(5),async {while !pin_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"second preflight did not block")?;
+                                                        {
+                                                            let mut control=provisioning.control().ok_or("preflight control unavailable")?;
+                                                            control.set_time_sync_reply_wait(Some(Duration::from_secs(2)))?;
+                                                            control.set_time_sync_reply_wait(None)?;
+                                                        }
+                                                        control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                        if !matches!(provisioning.step(&mut owner,&operations[12],Duration::from_secs(5),task,cx,clock,av,source,&BudgetVector::ZERO).await,provision::Step::Managed(managed::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::TimeSyncWritten {..})))) {return Err("second managed preflight lost control".into());}
+                                                        control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                        let event=match provisioning.step(&mut owner,&operations[6],Duration::from_secs(5),task,cx,clock,av,source,&BudgetVector::ZERO).await {
+                                                            provision::Step::Managed(managed::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::CameraEvent(frame))))=>frame,
+                                                            _=>return Err("preflight event was not delivered".into()),
+                                                        };
+                                                        if event.source()!=ROLLOVER_REPLY_EVENT || !event.response_expected() {return Err("wrong preflight event".into());}
+                                                        let mut event_trace=provisioning.control().ok_or("preflight event control unavailable")?.prepare_journaled_event_reply(&mut owner,&event,"2026-11-05T10:00:00.000Z",&operations[17]).map_err(|_|"preflight event preparation refused")?;
+                                                        let mut event_control=provisioning.control().ok_or("preflight event control disappeared")?;
+                                                        Box::pin(event_control.dispatch_event_reply_tracked(&owner,conditions,Duration::from_secs(5),&mut event_trace)).await.map_err(|_|"preflight event dispatch unavailable")?;
+                                                        match event_trace.take_outcome() {
+                                                            Some(Ok(ManagementWrite::Written {permit})) if permit.journal_backed()=>(),
+                                                            Some(Err(refusal))=>return Err(format!("preflight event reply refused: {:?}",refusal.reason).into()),
+                                                            _=>return Err("preflight event reply did not complete".into()),
+                                                        }
+                                                        pin_gate.release.store(true,Ordering::Release);
+                                                        let mut resumed=0usize;
+                                                        let mut visible=4usize;
+                                                        let mut between_transitions=0usize;
+                                                        let mut source_offered=0usize;
+                                                        let mut source_published=0usize;
+                                                        let mut published_pins=Vec::new();
+                                                        let mut saw_third_need=false;
+                                                        let mut third_control=false;
+                                                        let mut third_started=false;
+                                                        let mut plan_exhausted=false;
+                                                        let mut fourth_planned=None;
+                                                        let mut fourth_started=false;
+                                                        let mut fourth_custody=None;
+                                                        let mut rollover_control_seen=false;
+                                                        let mut finished=false;
+                                                        for _ in 0..1024 {
+                                                            let step=provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await;
+                                                            let mut av_completion=None;
+                                                            match step {
+                                                                provision::Step::SupplyPlanned(identity)=>{
+                                                                    if identity.generation!=4 || fourth_planned.is_some() || identity.journal_root.exists() || identity.pin_root.exists() {return Err("fourth generation identity invalid".into());}
+                                                                    fourth_planned=Some(identity);
+                                                                },
+                                                                provision::Step::SupplyStarted=>{if fourth_started || fourth_planned.is_none(){return Err("fourth creator started unexpectedly".into());}fourth_started=true;},
+                                                                provision::Step::SupplyInstalled(completion)=>{
+                                                                    if completion.runtime.is_err() || completion.outcome!=fss_reference::unifi_direct::av_rollover_supplies::Outcome::Ready || fourth_custody.is_some(){return Err("fourth supply installation invalid".into());}
+                                                                    fourth_custody=Some(provisioning.take_custody().ok_or("fourth custody lost")?);
+                                                                },
+                                                                provision::Step::PlanExhausted=>{if plan_exhausted {return Err("plan exhaustion was repeated".into());}plan_exhausted=true;},
+                                                                provision::Step::Managed(managed::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::Idle)))=>(),
+                                                                provision::Step::Managed(managed::ManagedStep::Rollover(AutomaticStep::RolloverStarted))=>{
+                                                                    let mut control=provisioning.control().ok_or("rollover control unavailable")?;
+                                                                    control.set_time_sync_reply_wait(Some(Duration::from_secs(2)))?;
+                                                                    control.set_time_sync_reply_wait(None)?;
+                                                                    rollover_control_seen=true;
+                                                                },
+                                                                provision::Step::Managed(managed::ManagedStep::Resumed(receipt))=>{assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);resumed+=1;},
+                                                                provision::Step::Managed(managed::ManagedStep::PreflightStarted) if resumed==1 && saw_third_need=>{
+                                                                    third_started=true;
+                                                                    timeout(cx.now(),Duration::from_secs(5),async {while !pin_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"third preflight did not block")?;
+                                                                    control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                                    let mut replied=false;
+                                                                    for _ in 0..8 {
+                                                                        match provisioning.step(&mut owner,&operations[16],Duration::from_secs(5),task,cx,clock,av,source,&BudgetVector::ZERO).await {
+                                                                            provision::Step::Managed(managed::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::TimeSyncWritten {..})))=>{replied=true;break;},
+                                                                            provision::Step::SupplyInstalled(completion)=>{
+                                                                                if completion.runtime.is_err() || completion.outcome!=fss_reference::unifi_direct::av_rollover_supplies::Outcome::Ready || fourth_custody.is_some(){return Err("fourth supply installation invalid".into());}
+                                                                                fourth_custody=Some(provisioning.take_custody().ok_or("fourth custody lost")?);
+                                                                            },
+                                                                            _=>return Err("third preflight lost control".into()),
+                                                                        }
+                                                                    }
+                                                                    if !replied {return Err("third preflight reply missing".into());}
+                                                                    third_control=true;pin_gate.release.store(true,Ordering::Release);
+                                                                },
+                                                                provision::Step::Managed(managed::ManagedStep::Recording(session_mod::AudioAllowanceStep::Renewed {..}))=>(),
+                                                                provision::Step::Managed(managed::ManagedStep::Recording(session_mod::AudioAllowanceStep::Session(session_mod::Step::Recording(event))))=>match event {
+                                                                    source_mod::Step::Session(unknown::SessionEvent::Audio(event))=>if matches!(event,pipeline::AudioEvent::Fenced(_)|pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Configuration {..})){return Err("third session audio fenced".into());},
+                                                                    source_mod::Step::SourceOffered(source_handoff::Result::Accepted {origin:source_handoff::Origin::Source,..})=>source_offered+=1,
+                                                                    source_mod::Step::SourceStarted=>(),
+                                                                    source_mod::Step::SourceOffered(source_handoff::Result::Accepted {origin:source_handoff::Origin::Control {completion},..})=>{source_offered+=1;av_completion=completion;},
+                                                                    source_mod::Step::SourceArchive(source_handoff::Drive::Completed(completion))=>{if completion.runtime.is_err() || !matches!(completion.outcome,source_worker::Outcome::Publication(source_worker::Publication::Published {..})){return Err("third source publication failed".into());}source_published+=1;},
+                                                                    source_mod::Step::SourceArchive(source_handoff::Drive::Control {step,completion})=>{
+                                                                        if !matches!(step,supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..}) {return Err("third source control stopped".into());}
+                                                                        if let Some(completion)=completion {if completion.runtime.is_err() || !matches!(completion.outcome,source_worker::Outcome::Publication(source_worker::Publication::Published {..})){return Err("third source publication failed".into());}source_published+=1;}
+                                                                    },
+                                                                    source_mod::Step::Session(unknown::SessionEvent::Advance(Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)|pipeline::Step::Progress {..})|supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..}))|Advance::Source(unknown::Step::SourceQueued)|Advance::ArchiveStarted))=>(),
+                                                                    source_mod::Step::Session(unknown::SessionEvent::Advance(Advance::Archive(Drive::Archive(completion))))=>av_completion=Some(completion),
+                                                                    source_mod::Step::Session(unknown::SessionEvent::Advance(Advance::Archive(Drive::Control {step,completion})))=>{if !matches!(step,supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..}){return Err("third archive control stopped".into());}av_completion=completion;},
+                                                                    _=>return Err("third session source outcome unexpected".into()),
+                                                                },
+                                                                _=>return Err("managed three-generation driver stopped".into()),
+                                                            }
+                                                            if let Some(completion)=av_completion {
+                                                                if completion.runtime.is_err(){return Err("third session archive runtime failed".into());}
+                                                                match completion.outcome {
+                                                                    av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(published))=>{visible+=1;published_pins.push((resumed,published.pin));if resumed==1 {between_transitions+=1;}if resumed==2 {finished=true;}},
+                                                                    av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused {rollover:Some(_),..}) if resumed==1 && !saw_third_need=>{saw_third_need=true;pin_gate.entered.store(false,Ordering::Release);pin_gate.release.store(false,Ordering::Release);},
+                                                                    _=>return Err("third session archive outcome unexpected".into()),
+                                                                }
+                                                            }
+                                                            if finished && source_published==source_offered && fourth_custody.is_some() && plan_exhausted {break;}
+                                                        }
+                                                        // After configuration, this fixture's source records belong to A/V
+                                                        // segments rather than the separately archived pre-roll lane.
+                                                        if !finished || resumed!=2 || !saw_third_need || !third_started || !third_control || !rollover_control_seen || !plan_exhausted || !fourth_started || fourth_custody.is_none() || between_transitions==0 || source_offered!=0 || !published_pins.iter().any(|(generation,_)|*generation==1) || !published_pins.iter().any(|(generation,_)|*generation==2) {
+                                                            eprintln!("three_generation_accounting finished={finished} resumed={resumed} need={saw_third_need} started={third_started} control={third_control} between={between_transitions} source_offered={source_offered} source_published={source_published} visible={visible}");
+                                                            return Err("three-generation session did not complete its media obligations".into());
+                                                        }
+                                                        assert!(provisioning.extend_plan(0).is_err());
+                                                        provisioning.extend_plan(1).map_err(|_|"exhausted A/V plan did not renew")?;
+                                                        let renewed=match provisioning.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source,&BudgetVector::ZERO).await {provision::Step::SupplyPlanned(identity)=>identity,_=>return Err("renewed A/V generation not planned".into())};
+                                                        assert_eq!(renewed.generation,5);
+                                                        assert!(provisioning.extend_plan(1).is_err());
+                                                        let mut owners=provisioning.into_parts();
+                                                        let planned_worker=owners.worker.take().ok_or("renewed A/V worker lost")?;
+                                                        assert!(planned_worker.retire().map_err(|_|"renewed A/V worker unexpectedly running")?.inputs.is_some());
+                                                        assert!(owners.ready.is_none() && owners.failed.is_none() && owners.custody.is_none());
+                                                        assert!(!owners.plan_stopped && owners.plan.as_ref().is_some_and(|plan|plan.remaining()==0));
+                                                        let (managed_owner,_policy,unused)=owners.managed.into_parts();
+                                                        let unused=unused.ok_or("fourth staged supplies lost")?;
+                                                        assert!(unused.next_journal.head().is_none() && unused.next_keeper.head().is_none() && fss_runtime::effect_journal::EffectJournalStore::head(&unused.switch).is_none());
+                                                        let fourth_custody=fourth_custody.ok_or("fourth custody missing")?;
+                                                        let fourth_planned=fourth_planned.ok_or("fourth identity missing")?;
+                                                        assert_eq!(fourth_custody.root,fourth_planned.journal_root);
+                                                        assert_eq!(fourth_custody.switch_custody.as_ref().ok_or("fourth pin custody missing")?.root,fourth_planned.pin_root);
+                                                        let session=match managed_owner {Some(managed::ManagedOwners::Session(session))=>*session,_=>return Err("three-generation session owner lost".into())};
+                                                        let mut shutdown=match session.stop(){session_mod::Stop::Recording(shutdown)=>shutdown,_=>return Err("three-generation stop phase lost".into())};
+                                                        if let Some(completion)=shutdown.join_source().await {if completion.runtime.is_err() || !matches!(completion.outcome,source_worker::Outcome::Publication(source_worker::Publication::Published {..})){return Err("three-generation source drain failed".into());}source_published+=1;}
+                                                        assert_eq!(source_published,source_offered,"source publication outcomes were not all accounted for");
+                                                        if shutdown.join_av().await.is_some(){return Err("unexpected final A/V worker".into());}
+                                                        let (source_coordinator,guard)=shutdown.finish().map_err(|_|"three-generation shutdown refused")?;
+                                                        let source=source_coordinator.into_worker().retire().map_err(|_|"three-generation source retirement refused")?;
+                                                        assert!(!source.fenced && source.pending.is_none());
+                                                        let retired=(*guard).retire().map_err(|_|"three-generation guard retirement refused")?;
+                                                        assert_eq!(retired.worker.parts.deployment.publisher().visible_roots().count(),visible);
+                                                        assert_eq!(retired.worker.rollover_custody.as_ref().map(|c|c.transition_count()),Some(3));
+                                                        let mut parts=retired.worker.parts;
+                                                        assert!(parts.sink.retire().pending.is_none());
+                                                        for (_,pin) in published_pins {
+                                                            match archive::read_unknown_time_av_any(&mut parts.deployment,pin,access.as_ref(),archive::Limits::default(),&mut fss_geometry::WorkBudget::new(4_000_000_000),&parts.replay)? {
+                                                                archive::RecoveredUnknownTimeAv::AudioVideo(clip) if clip.video_samples()>0 && clip.audio().frames>0=>(),
+                                                                _=>return Err("three-generation source-linked A/V readback refused".into()),
+                                                            }
+                                                        }
+                                                        drop(retired.supervisor);drop(originals);drop(third_custody);drop(fourth_custody);drop(unused);drop(custody);
+                                                        peer.join().map_err(|_|"three-generation peer panic")??;
+                                                        return Ok(());
+                                                    }
+                                                    let provisioned=provisioning.into_parts();
+                                                    let staged=provisioned.worker.ok_or("future supply worker lost")?.retire().map_err(|_|"future creator unexpectedly running")?;
+                                                    assert!(staged.outcome.is_none() && staged.inputs.is_some());
+                                                    assert!(!temp.0.join("automatic-third-supplies").exists());
+                                                    assert!(provisioned.ready.is_none() && provisioned.failed.is_none() && provisioned.custody.is_none());
+                                                    let mut second=provisioned.managed;
+                                                    assert_eq!(pin_gate.reads.load(Ordering::Acquire),before,"managed staging read custody");
+                                                    if !matches!(second.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_rollover::ManagedStep::PreflightStarted) {return Err("managed preflight refused".into());}
+                                                    timeout(cx.now(),Duration::from_secs(5),async {while !pin_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"second automatic prior custody did not enter")?;
+                                                    control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                    if !matches!(second.step(&mut owner,&operations[12],Duration::from_secs(5),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_rollover::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::TimeSyncWritten {..}))) {return Err("second automatic preflight control failed".into());}
+                                                    pin_gate.release.store(true,Ordering::Release);
+                                                    let mut second_started=false;
+                                                    for _ in 0..100 {
+                                                        match second.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await {
+                                                            fss_reference::unifi_direct::recording_rollover::ManagedStep::Rollover(AutomaticStep::RolloverStarted)=>{second_started=true;break;},
+                                                            fss_reference::unifi_direct::recording_rollover::ManagedStep::Rollover(AutomaticStep::Control(supervisor::Step::Idle))=>(),
+                                                            _=>return Err("second automatic preflight stopped".into()),
+                                                        }
+                                                    }
+                                                    if !second_started {return Err("second automatic worker did not start".into());}
+                                                    if !second.join().await {return Err("second automatic worker did not join".into());}
+                                                    match second.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await {
+                                                        fss_reference::unifi_direct::recording_rollover::ManagedStep::Resumed(receipt)=>assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered),
+                                                        _=>return Err("managed transition did not resume".into()),
+                                                    }
+                                                    match second.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await {
+                                                        fss_reference::unifi_direct::recording_rollover::ManagedStep::Recording(fss_reference::unifi_direct::recording_session::AudioAllowanceStep::Renewed {before,after,budget})=>{assert_eq!(after-before,128);assert_eq!(budget,0);},
+                                                        _=>return Err("automatic audio renewal did not precede media".into()),
+                                                    }
+                                                    let (managed_owner,policy,unused_supplies)=second.into_parts();
+                                                    assert_eq!(policy.remaining_budget(),0);
+                                                    assert!(unused_supplies.is_none());
+                                                    let mut second_session=match managed_owner {Some(fss_reference::unifi_direct::recording_rollover::ManagedOwners::Session(session))=>*session,_=>return Err("managed session owner lost".into())};
+                                                    let mut exhausted=fss_reference::unifi_direct::recording_session::AudioAllowancePolicy::new(1_000,128,0).ok_or("empty audio policy refused")?;
+                                                    control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                    if !matches!(second_session.step_with_audio_allowance(&mut exhausted,&mut owner,&operations[13],Duration::from_secs(5),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_session::AudioAllowanceStep::Exhausted {budget:0,control:supervisor::Step::TimeSyncWritten {..},..}) {return Err("audio policy exhaustion lost control traffic".into());}
+                                                    if !matches!(second_session.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Session(unknown::SessionEvent::Advance(Advance::ArchiveStarted)))) {return Err("second automatic pending segment did not start".into());}
+                                                    let (source_coordinator,phase)=second_session.into_parts();
+                                                    let mut second_guard=match phase {fss_reference::unifi_direct::recording_session::Phase::Recording(guard)=>*guard,_=>return Err("second automatic session phase lost".into())};
+                                                    assert!(matches!(second_guard.remaining_audio_frames(),Ok(None)),"active archive must keep mux ownership");
+                                                    let source=source_coordinator.into_worker().retire().map_err(|_|"second automatic source retirement refused")?;
+                                                    assert!(source.pending.is_none());
+                                                    let mut last_published=false;
+                                                    for _ in 0..100 {
+                                                        match second_guard.advance(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await {
+                                                            Advance::Archive(Drive::Archive(done))|Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:Some(done)})=>{
+                                                                if done.runtime.is_err() || !matches!(done.outcome,av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))) {return Err("second automatic pending publication failed".into());}
+                                                                last_published=true;break;
+                                                            },
+                                                            Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:None})=>(),
+                                                            _=>return Err("second automatic session stopped".into()),
+                                                        }
+                                                    }
+                                                    if !last_published {return Err("second automatic publication timed out".into());}
+                                                    let retired=second_guard.retire().map_err(|_|"second automatic guard retirement refused")?;
+                                                    assert_eq!(retired.worker.parts.deployment.publisher().visible_roots().count(),5);
+                                                    assert_eq!(retired.worker.rollover_custody.as_ref().map(|c|c.transition_count()),Some(2));
+                                                    assert!(retired.worker.parts.sink.retire().pending.is_none());
+                                                    drop(retired.supervisor);drop(originals);
+                                                    peer.join().map_err(|_|"second automatic peer panic")??;
+                                                    return Ok(());
+                                                }
+                                                let source=coordinator.take().ok_or("automatic coordinator lost")?.into_worker().retire().map_err(|_|"automatic source retirement refused")?;
+                                                assert!(source.pending.is_none());
+                                                let retired=guard.retire().map_err(|_|"automatic guard retirement refused")?;
+                                                assert_eq!(retired.worker.parts.deployment.publisher().visible_roots().count(),3);
+                                                assert!(retired.worker.parts.sink.retire().pending.is_none());
+                                                drop(retired.supervisor);drop(originals);
+                                                peer.join().map_err(|_|"automatic rollover peer panic")??;
+                                                return Ok(());
+                                            }
+                                            let mut preflight=fss_reference::unifi_direct::recording_rollover::RecordingRolloverPreflight::prepare(session,supplies).map_err(|_|"session preflight preparation refused")?;
+                                            assert!(matches!(preflight.start(task,cx,other_clock,"fixture:archive",&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_worker::StartError::Context)));
+                                            let (session,supplies)=preflight.into_unstarted().map_err(|_|"unstarted session owners were lost")?;
+                                            let mut preflight=fss_reference::unifi_direct::recording_rollover::RecordingRolloverPreflight::prepare(session,supplies).map_err(|_|"recovered session supplies were refused")?;
+                                            preflight.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("session preflight start refused: {e:?}"))?;
+                                            if !preflight.join().await {return Err("session preflight completion missing".into());}
+                                            let mut background=match preflight.finish().map_err(|_|"session preflight did not retire")? {
+                                                fss_reference::unifi_direct::recording_rollover::PreflightFinished::Ready(background)=>background,
+                                                _=>return Err("session preflight unresolved".into()),
+                                            };
+                                            background.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("background start refused: {e:?}"))?;
+                                            assert!(matches!(background.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_worker::StartError::Running)));
+                                            timeout(cx.now(),Duration::from_secs(5),async {while !read.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"background replay did not enter")?;
+                                            control_probe_tx.send(()).map_err(io::Error::other)?;
+                                            if !matches!(background.drive(&mut owner,&operations[10],Duration::from_secs(5)).await,unknown::BackgroundDrive::Control {step:supervisor::Step::TimeSyncWritten {..},completed:false}) {return Err("background control failed".into());}
+                                            if late_audio_change==17 {
+                                                read.release.store(true,Ordering::Release);
+                                                if !background.join().await {return Err("panicked background completion missing".into());}
+                                                let unresolved=match background.finish().map_err(|_|"panicked background did not retire")? {
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Unresolved {coordinator,rollover}=>{let source=coordinator.into_worker().retire().map_err(|_|"panic source retirement refused")?;assert!(source.pending.is_none());rollover},
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Resumed {..}=>return Err("panicked transition resumed automatically".into()),
+                                                };
+                                                let retired=unresolved.retire();
+                                                assert!(retired.fenced && retired.resources.has_pending());
+                                                assert_eq!(retired.rollover_need,Some(need));
+                                                assert!(matches!(retired.completion.outcome,fss_reference::unifi_direct::av_rollover_worker::Outcome::Panicked));
+                                                drop(retired);
+                                                drop(originals);
+                                                peer.join().map_err(|_|"panicked rollover peer panic")??;
+                                                return Ok(());
+                                            }
+                                            if late_audio_change==16 {
+                                                background.abort();
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !background.cancellation_observed() {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"background cancellation was not observed")?;
+                                                read.release.store(true,Ordering::Release);
+                                                if !background.join().await {return Err("cancelled background completion missing".into());}
+                                                let unresolved=match background.finish().map_err(|_|"cancelled background did not retire")? {
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Unresolved {coordinator,rollover}=>{let source=coordinator.into_worker().retire().map_err(|_|"cancel source retirement refused")?;assert!(source.pending.is_none());rollover},
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Resumed {..}=>return Err("cancelled transition resumed automatically".into()),
+                                                };
+                                                let retired=unresolved.retire();
+                                                assert!(retired.resources.has_pending());
+                                                assert_eq!(retired.rollover_need,Some(need));
+                                                assert!(matches!(retired.completion.outcome,fss_reference::unifi_direct::av_rollover_worker::Outcome::ReplayRefused {..}|fss_reference::unifi_direct::av_rollover_worker::Outcome::Replayed {..}));
+                                                drop(retired);
+                                                drop(originals);
+                                                peer.join().map_err(|_|"cancelled rollover peer panic")??;
+                                                return Ok(());
+                                            }
+                                            pin_gate.armed.store(true,Ordering::Release);
+                                            read.release.store(true,Ordering::Release);
+                                            timeout(cx.now(),Duration::from_secs(5),async {while !pin_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"attachment custody check did not enter")?;
+                                            control_probe_tx.send(()).map_err(io::Error::other)?;
+                                            if !matches!(background.drive(&mut owner,&operations[11],Duration::from_secs(5)).await,unknown::BackgroundDrive::Control {step:supervisor::Step::TimeSyncWritten {..},completed:false}) {return Err("attachment control failed".into());}
+                                            pin_gate.release.store(true,Ordering::Release);
+                                            if !background.join().await {return Err("background completion missing".into());}
+                                            if late_audio_change==19 {
+                                                let (coordinator,unresolved)=match background.finish().map_err(|_|"refused attachment did not retire")? {
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Unresolved {coordinator,rollover}=>(coordinator,rollover),
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Resumed {..}=>return Err("refused attachment resumed".into()),
+                                                };
+                                                let source=coordinator.into_worker().retire().map_err(|_|"refused attachment source retirement failed")?;
+                                                assert!(source.pending.is_none());
+                                                let retired=unresolved.retire();
+                                                assert!(!retired.fenced && retired.resources.has_pending());
+                                                assert_eq!(retired.rollover_need,Some(need));
+                                                assert!(matches!(retired.completion.outcome,fss_reference::unifi_direct::av_rollover_worker::Outcome::AttachRefused {..}));
+                                                drop(retired);
+                                                drop(originals);
+                                                peer.join().map_err(|_|"refused attachment peer panic")??;
+                                                return Ok(());
+                                            }
+                                            if late_audio_change==18 {
+                                                let (coordinator,unresolved)=match background.finish().map_err(|_|"cancelled attachment did not retire")? {
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Unresolved {coordinator,rollover}=>(coordinator,rollover),
+                                                    fss_reference::unifi_direct::recording_rollover::Finished::Resumed {..}=>return Err("cancelled attachment resumed".into()),
+                                                };
+                                                let source=coordinator.into_worker().retire().map_err(|_|"attachment source retirement refused")?;
+                                                assert!(source.pending.is_none());
+                                                let retired=unresolved.retire();
+                                                assert!(!retired.fenced && retired.resources.has_pending());
+                                                assert_eq!(retired.rollover_need,Some(need));
+                                                assert!(matches!(retired.completion.outcome,fss_reference::unifi_direct::av_rollover_worker::Outcome::Prepared {..}));
+                                                drop(retired);
+                                                drop(originals);
+                                                peer.join().map_err(|_|"cancelled attachment peer panic")??;
+                                                return Ok(());
+                                            }
+                                            let reads_before_finish=pin_gate.reads.load(Ordering::Acquire);
+                                            let mut session=match background.finish().map_err(|_|"background did not retire")? {
+                                                fss_reference::unifi_direct::recording_rollover::Finished::Resumed {session,receipt}=>{assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);session},
+                                                fss_reference::unifi_direct::recording_rollover::Finished::Unresolved {..}=>return Err("background transition unresolved".into()),
+                                            };
+                                            assert_eq!(pin_gate.reads.load(Ordering::Acquire),reads_before_finish,"final attachment reread custody on the session task");
+                                            if matches!(late_audio_change,20|21|22|23|24|29|30|31|32|33) {
+                                                let (coordinator,phase)=session.into_parts();
+                                                let rolled_guard=match phase {fss_reference::unifi_direct::recording_session::Phase::Recording(guard)=>guard,_=>return Err("first rollover lost session".into())};
+                                                pin_gate.entered.store(false,Ordering::Release);
+                                                pin_gate.release.store(false,Ordering::Release);
+                                                pin_gate.fail_after_release.store(matches!(late_audio_change,22|24),Ordering::Release);
+                                                pin_gate.panic_after_release.store(late_audio_change==23,Ordering::Release);
+                                                let before=pin_gate.reads.load(Ordering::Acquire);
+                                                let mut deferred=(*rolled_guard).defer_rollover_pause().map_err(|_|"deferred pause refused")?;
+                                                assert_eq!(pin_gate.reads.load(Ordering::Acquire),before,"deferred pause read custody on session task");
+                                                assert!(matches!(deferred.start(task,cx,other_clock,"fixture:archive",&BudgetVector::ZERO),Err(fss_reference::unifi_direct::av_rollover_worker::StartError::Context)));
+                                                let restored=deferred.into_unstarted().map_err(|_|"unstarted deferred pause lost owner")?;
+                                                let mut deferred=restored.defer_rollover_pause().map_err(|_|"deferred retry refused")?;
+                                                deferred.start(task,cx,clock,"fixture:archive",&BudgetVector::ZERO).map_err(|e|format!("deferred start refused: {e:?}"))?;
+                                                timeout(cx.now(),Duration::from_secs(5),async {while !pin_gate.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"prior custody check did not enter")?;
+                                                control_probe_tx.send(()).map_err(io::Error::other)?;
+                                                if !matches!(deferred.drive(&mut owner,&operations[12],Duration::from_secs(5)).await,unknown::BackgroundDrive::Control {step:supervisor::Step::TimeSyncWritten {..},completed:false}) {return Err("deferred pause control failed".into());}
+                                                if matches!(late_audio_change,21|24) {
+                                                    deferred.abort();
+                                                    timeout(cx.now(),Duration::from_secs(5),async {while !deferred.cancellation_observed() {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"deferred cancellation not observed")?;
+                                                }
+                                                pin_gate.release.store(true,Ordering::Release);
+                                                if !deferred.join().await {return Err("deferred pause completion missing".into());}
+                                                if matches!(late_audio_change,21|22|23|24) {
+                                                    let unresolved=match deferred.finish().map_err(|_|"deferred failure did not drain")? {unknown::DeferredPauseFinish::Unresolved(unresolved)=>unresolved,unknown::DeferredPauseFinish::Ready {..}=>return Err("failed preflight became ready".into())};
+                                                    if late_audio_change==21 {
+                                                        if !matches!(&unresolved.reason,unknown::DeferredPauseReason::Cancelled) {return Err("cancelled preflight misclassified".into());}
+                                                        let restored=unresolved.restore().map_err(|_|"cancelled preflight lost guard")?;
+                                                        session=fss_reference::unifi_direct::recording_session::Session::from_recording(coordinator,Box::new(restored));
+                                                    } else {
+                                                        let unresolved=unresolved.restore().err().ok_or("failed preflight restored without reconciliation")?;
+                                                        let retired=unresolved.retire();
+                                                        if matches!(late_audio_change,22|24) && !matches!(&retired.reason,unknown::DeferredPauseReason::Refused(_)) {return Err("custody refusal misclassified".into());}
+                                                        if late_audio_change==23 && (!retired.fenced || !matches!(&retired.reason,unknown::DeferredPauseReason::Panicked)) {return Err("custody panic misclassified".into());}
+                                                        assert!(retired.original.parts.sink.has_pending());
+                                                        assert!(retired.original.rollover_custody.is_some());
+                                                        let source=coordinator.into_worker().retire().map_err(|_|"deferred failed source retirement refused")?;
+                                                        assert!(source.pending.is_none());
+                                                        drop(retired);drop(originals);
+                                                        peer.join().map_err(|_|"deferred failed peer panic")??;
+                                                        return Ok(());
+                                                    }
+                                                } else {
+                                                let (paused,previous)=match deferred.finish().map_err(|_|"deferred pause did not drain")? {unknown::DeferredPauseFinish::Ready {paused,previous}=>(paused,previous),unknown::DeferredPauseFinish::Unresolved(_)=>return Err("deferred pause unresolved".into())};
+                                                assert!(paused.worker_has_pending());
+                                                let restored=paused.restore(previous).map_err(|_|"deferred pause restore refused")?;
+                                                session=fss_reference::unifi_direct::recording_session::Session::from_recording(coordinator,Box::new(restored));
+                                                }
+                                            }
+                                            let av=fss_reference::unifi_direct::source_coordinator::ArchiveAdmission {resource:"fixture:archive",cost:&BudgetVector::ZERO};
+                                            let source=fss_reference::unifi_direct::source_coordinator::ArchiveAdmission {resource:"fixture:source",cost:&BudgetVector::ZERO};
+                                            assert!(matches!(session.step(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,av,source).await,fss_reference::unifi_direct::recording_session::Step::Recording(fss_reference::unifi_direct::source_coordinator::Step::Session(unknown::SessionEvent::Advance(Advance::ArchiveStarted)))));
+                                            let (coordinator,phase)=session.into_parts();
+                                            guard=match phase {fss_reference::unifi_direct::recording_session::Phase::Recording(guard)=>*guard,_=>return Err("rollover did not restore recording phase".into())};
+                                            let source=coordinator.into_worker().retire().map_err(|_|"resumed source retirement refused")?;
+                                            assert!(source.pending.is_none());
+                                            let mut completed=false;
+                                            for _ in 0..100 {
+                                                match guard.advance(&mut owner,&operations[6],Duration::from_millis(50),task,cx,clock,"fixture:archive",&BudgetVector::ZERO).await {
+                                                    Advance::Archive(Drive::Archive(done)) | Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:Some(done)})=>{
+                                                        if done.runtime.is_err() || !matches!(done.outcome,av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))) {return Err("rollover resumed publication failed".into());}
+                                                        completed=true;break;
+                                                    },
+                                                    Advance::Archive(Drive::Control {step:supervisor::Step::Idle|supervisor::Step::TimeSyncWritten {..},completion:None})=>(),
+                                                    _=>return Err("rollover resumed scheduler stopped".into()),
+                                                }
+                                            }
+                                            if !completed {return Err("rollover resumed publication timed out".into());}
+                                            let retired=guard.retire().map_err(|_|"rollover guard did not retire")?;
+                                            assert_eq!(retired.worker.parts.deployment.publisher().visible_roots().count(),3);
+                                            assert!(retired.worker.rollover_custody.is_some());
+                                            assert!(retired.worker.parts.sink.retire().pending.is_none());
+                                            assert!(!retired.retry_required && retired.rollover_need.is_none());
+                                            drop(originals);
+                                            drop(retired.supervisor);
+                                            peer.join().map_err(|_|"rollover peer panic")??;
+                                            return Ok(());
+                                        }
                                         if late_audio_change==3 {
                                             use unknown::{Advance, Drive};
                                             let cost=BudgetVector::ZERO;
@@ -2840,8 +3818,11 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             let second=scheduled_completion!();
                                             assert!(second.runtime.is_ok());
                                             assert!(matches!(second.outcome,av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(_))));
+                                            guard=*exercise_guard_rollover(Box::new(guard),&temp.0,access.as_ref(),None)?;
+                                            assert_eq!(guard.archive_state(),av_worker_guard::ArchiveState::Idle);
                                             let retired=guard.retire().map_err(|_|"scheduler retirement refused")?;
                                             assert!(!retired.retry_required && !retired.audio_fenced);
+                                            assert!(retired.worker.rollover_custody.is_some());
                                             assert!(retired.worker.parts.sink.retire().pending.is_none());
                                             peer.join().map_err(|_|"scheduler peer panic")??;
                                             if camera_replay {println!("unknown_scheduler_camera_replay=passed published_segments=2 capture_bounds=unknown controller=simulated");}
@@ -2856,6 +3837,8 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                             assert_eq!(guard.archive_state(),av_worker_guard::ArchiveState::Running);
                                         }
                                         timeout(cx.now(),Duration::from_secs(5),async {while !access.entered.load(Ordering::Acquire) {asupersync::runtime::yield_now().await;}}).await.map_err(|_|"unknown worker did not enter")?;
+                                        guard=*refuse_guard_pause(Box::new(guard))?;
+                                        assert_eq!(guard.archive_state(),av_worker_guard::ArchiveState::Running);
                                         assert!(matches!(guard.step(&mut owner,&operations[6],Duration::from_secs(5)).await,unknown::Step::ArchivePending));
                                         control_probe_tx.send(()).map_err(io::Error::other)?;
                                         assert!(matches!(guard.drive_archive(&mut owner,&operations[8],Duration::from_secs(5)).await,unknown::Drive::Control {step:supervisor::Step::TimeSyncWritten { .. },completion:None}));
@@ -3230,7 +4213,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
         if index == 4 && !reply_after_media { continue; }
         if index == 5 && !early_reply { continue; }
         if index == 6 && (revoke_stream || revoke_after_start || revoke_audio_pending || stop_mode != 0 || matches!(late_audio_change,12|13)) { continue; }
-        if index >= 7 && (!archive_guard || audio_change || (matches!(late_audio_change,10|11|12|13|14) && !(late_audio_change==13 && index==9)) || (matches!(late_audio_change,5|7) && index>=8) || (index>=9 && late_audio_change!=13)) { continue; }
+        if index >= 7 && (!archive_guard || audio_change || (matches!(late_audio_change,10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33) && !(late_audio_change==13 && index==9)) || (matches!(late_audio_change,5|7) && index>=8) || (index>=9 && late_audio_change!=13)) { continue; }
         assert_eq!(
             effects
                 .journal()
@@ -3239,6 +4222,9 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                 .state,
             fss_core::EffectState::Committed
         );
+    }
+    if late_audio_change==31 {
+        assert_eq!(effects.journal().operation(&operations[17]).ok_or("rollover event effect missing")?.state,fss_core::EffectState::Committed);
     }
     assert!(!authority.finalize_report(&tree)?.is_empty());
     Ok(())
@@ -3320,6 +4306,160 @@ fn unknown_time_scheduler_starts_two_segments_and_latches_refusal() -> Test {
 }
 
 #[test]
+fn unknown_time_background_rollover_resumes_after_capacity() -> Test {
+    // The shared conversation fixture already exceeds a normal test-thread
+    // stack; this explicitly bounded diagnostic does not qualify that stack.
+    let task=std::thread::Builder::new().name("rollover-fixture".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,15).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"rollover fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_cancellation_retains_source() -> Test {
+    let task=std::thread::Builder::new().name("rollover-cancel-fixture".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,16).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"rollover cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_panic_fences_source() -> Test {
+    let task=std::thread::Builder::new().name("rollover-panic-fixture".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,17).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"rollover panic fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_cancelled_attachment_retains_owners() -> Test {
+    let task=std::thread::Builder::new().name("rollover-attach-cancel-fixture".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,18).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"rollover attachment cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_custody_refusal_retains_owners() -> Test {
+    let task=std::thread::Builder::new().name("rollover-custody-refusal-fixture".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,19).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"rollover custody refusal fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_deferred_second_pause_services_control() -> Test {
+    let task=std::thread::Builder::new().name("rollover-deferred-pause-fixture".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,20).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"deferred pause fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_deferred_pause_cancellation_retains_media() -> Test {
+    let task=std::thread::Builder::new().name("rollover-deferred-cancel".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,21).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"deferred cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_deferred_pause_refusal_retains_media() -> Test {
+    let task=std::thread::Builder::new().name("rollover-deferred-refusal".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,22).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"deferred refusal fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_deferred_pause_panic_retains_media() -> Test {
+    let task=std::thread::Builder::new().name("rollover-deferred-panic".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,23).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"deferred panic fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_deferred_pause_cancelled_error_retains_media() -> Test {
+    let task=std::thread::Builder::new().name("rollover-deferred-cancelled-error".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,24).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"deferred cancelled error fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_session_resumes() -> Test {
+    let task=std::thread::Builder::new().name("rollover-automatic-session".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,25).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic rollover fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_cancellation_retains_media() -> Test {
+    let task=std::thread::Builder::new().name("rollover-automatic-cancel".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,26).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_custody_refusal_retains_media() -> Test {
+    let task=std::thread::Builder::new().name("rollover-automatic-refusal".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,27).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic refusal fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_start_refusal_requires_retry() -> Test {
+    let task=std::thread::Builder::new().name("rollover-automatic-start-refusal".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,28).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic start refusal fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_two_generations_resume() -> Test {
+    let task=std::thread::Builder::new().name("rollover-automatic-two-generations".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,29).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic two-generation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_provisioning_cancel_preserves_owners() -> Test {
+    let task=std::thread::Builder::new().name("rollover-provision-cancel".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,30).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"provision cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_abort_before_creator_start() -> Test {
+    let task=std::thread::Builder::new().name("rollover-provision-abort-before-start".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,32).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"pre-start cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_abort_after_creator_completion() -> Test {
+    let task=std::thread::Builder::new().name("rollover-provision-abort-after-completion".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,33).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"post-completion cancellation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn unknown_time_background_rollover_automatic_three_generations_resume() -> Test {
+    let task=std::thread::Builder::new().name("rollover-three-generations".into()).stack_size(16*1024*1024).spawn(|| {
+        conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,31).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"three-generation fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
 fn unknown_time_session_slice_drives_two_segments() -> Test {
     conversation_scenario_with_worker_guard_mode(false,false,false,false,false,false,0,false,true,true,false,false,true,None,4)
 }
@@ -3381,25 +4521,230 @@ fn owned_session_camera_replay_from_stdin() -> Test {
     let mut wire=Vec::new();
     std::io::stdin().lock().take((8*1024*1024+1) as u64).read_to_end(&mut wire)?;
     if wire.is_empty() || wire.len()>8*1024*1024 {return Err("bounded replay input refused".into());}
-    lean_owned_session_replay(wire,false,false,false)?;
+    lean_owned_session_replay(wire,false,false,false,0)?;
     println!("owned_session_camera_replay=passed");
     Ok(())
 }
 
 #[test]
 fn owned_session_camera_fixture_stack_control() -> Test {
-    lean_owned_session_replay(media_fixture()?,false,true,false)
+    lean_owned_session_replay(media_fixture()?,false,true,false,0)
 }
 
 #[test]
 fn owned_session_begin_refusal_returns_all_owners() -> Test {
-    lean_owned_session_replay(media_fixture()?,true,true,false)
+    lean_owned_session_replay(media_fixture()?,true,true,false,0)
+}
+
+#[test]
+fn video_session_archives_sources_and_video_without_audio() -> Test {
+    let task = std::thread::Builder::new().name("video-session".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture()?, false, true, false, 1))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video session fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_rolls_over_and_services_controller() -> Test {
+    let task = std::thread::Builder::new().name("video-session-rollover".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 5))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video rollover fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_cancelled_rollover_retains_pending_source() -> Test {
+    let task = std::thread::Builder::new().name("video-session-cancel-rollover".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 6))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video rollover cancellation fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_cancelled_ready_rollover_cannot_resume() -> Test {
+    let task = std::thread::Builder::new().name("video-session-cancel-ready".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 7))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video rollover ready cancellation fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_automatic_rollover_requires_explicit_admission_retry() -> Test {
+    let task = std::thread::Builder::new().name("video-session-auto".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 8))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "automatic video rollover fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_managed_rollover_waits_for_supplies_and_resumes() -> Test {
+    let task = std::thread::Builder::new().name("video-session-managed".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 9))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "managed video rollover fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_managed_detects_capacity_and_resumes() -> Test {
+    let task = std::thread::Builder::new().name("video-session-managed-detect".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 10))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "managed video capacity fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_provisions_rollover_and_resumes() -> Test {
+    let task = std::thread::Builder::new().name("video-session-provision".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 11))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video provisioning fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_retained_reservation_precedes_rollover_creator() -> Test {
+    let task = std::thread::Builder::new().name("video-session-retained-provision".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 13))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "retained video provisioning fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_cancelled_reservation_never_starts_creator() -> Test {
+    let task = std::thread::Builder::new().name("video-session-retained-cancel".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 14))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "cancelled retained provisioning fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+#[ignore = "requires bounded private camera-derived video-only FLV on stdin"]
+fn video_session_retained_replays_private_camera() -> Test {
+    let mut wire=Vec::new();
+    std::io::stdin().lock().take(8*1024*1024+1).read_to_end(&mut wire)?;
+    if wire.len()<13 || wire.len()>8*1024*1024 || !wire.starts_with(b"FLV\x01") {return Err("bounded private video input refused".into());}
+    let task=std::thread::Builder::new().name("video-session-retained-private".into()).stack_size(16*1024*1024).spawn(move || {
+        lean_owned_session_replay(wire,false,true,false,15).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"retained private video fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+#[ignore = "requires bounded private camera-derived video-only FLV on stdin"]
+fn video_session_bootstrap_retained_replays_private_camera() -> Test {
+    let mut wire=Vec::new();
+    std::io::stdin().lock().take(8*1024*1024+1).read_to_end(&mut wire)?;
+    if wire.len()<13 || wire.len()>8*1024*1024 || !wire.starts_with(b"FLV\x01") {return Err("bounded private video input refused".into());}
+    let task=std::thread::Builder::new().name("video-session-bootstrap-private".into()).stack_size(16*1024*1024).spawn(move || {
+        lean_owned_session_replay(wire,false,true,false,18).map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"bootstrap private video fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_bootstraps_retained_reservation_before_creator() -> Test {
+    let task=std::thread::Builder::new().name("video-session-bootstrap-retained".into()).stack_size(16*1024*1024).spawn(|| {
+        let result:Test=(|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?)?,false,true,false,16))();
+        result.map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"retained bootstrap fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_automatically_records_creator_and_reserves_next() -> Test {
+    let task=std::thread::Builder::new().name("video-session-automatic-retained".into()).stack_size(16*1024*1024).spawn(|| {
+        let result:Test=(|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?)?,false,true,false,19))();
+        result.map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic retained bootstrap fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_cancelled_creator_observation_preserves_reservation() -> Test {
+    let task=std::thread::Builder::new().name("video-session-automatic-cancel".into()).stack_size(16*1024*1024).spawn(|| {
+        let result:Test=(|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?)?,false,true,false,20))();
+        result.map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic retained cancellation fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_renews_automatic_allowance_only_after_custody_handoff() -> Test {
+    let task=std::thread::Builder::new().name("video-session-automatic-renew".into()).stack_size(16*1024*1024).spawn(|| {
+        let result:Test=(|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?)?,false,true,false,21))();
+        result.map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"automatic renewal fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_cancelled_bootstrap_never_starts_reservation() -> Test {
+    let task=std::thread::Builder::new().name("video-session-bootstrap-cancel".into()).stack_size(16*1024*1024).spawn(|| {
+        let result:Test=(|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?)?,false,true,false,17))();
+        result.map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"cancelled bootstrap fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_session_cancelled_rollover_join_preserves_outcome() -> Test {
+    let task = std::thread::Builder::new().name("video-session-cancel-join".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture_from(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"), 3, 10)?)?, false, true, false, 12))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video rollover cancellation join fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_bootstrap_uses_connection_configuration() -> Test {
+    let task = std::thread::Builder::new().name("video-bootstrap".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture()?, false, true, false, 2))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video bootstrap fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn video_bootstrap_requires_explicit_source_retry() -> Test {
+    let task = std::thread::Builder::new().name("video-bootstrap-retry".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture()?, false, true, false, 3))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video bootstrap retry fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+#[ignore = "requires bounded private camera-derived video-only FLV on stdin"]
+fn video_bootstrap_replays_private_camera_video() -> Test {
+    let mut wire = Vec::new();
+    std::io::stdin().lock().take(8 * 1024 * 1024 + 1).read_to_end(&mut wire)?;
+    if wire.len() < 13 || wire.len() > 8 * 1024 * 1024 { return Err("private video input bound refused".into()); }
+    let task = std::thread::Builder::new().name("video-bootstrap-private".into()).stack_size(16 * 1024 * 1024).spawn(move || {
+        let result: Test = lean_owned_session_replay(wire, false, true, false, 4);
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "private video bootstrap fixture panicked")?.map_err(Into::into)
 }
 
 #[test]
 fn owned_video_only_restart_archives_new_connection() -> Test {
-    let wire=media_fixture_with_pictures(include_bytes!("../../../experiments/unifi_tls_05_server_lab/tests/fixtures/synthetic_g4_resolution.264"),4)?;
-    lean_owned_session_replay(wire,false,true,true)
+    let task=std::thread::Builder::new().name("owned-video-restart".into()).stack_size(16*1024*1024).spawn(|| {
+        let result:Test=(|| {
+            let wire=media_fixture_with_pictures(include_bytes!("../../../experiments/unifi_tls_05_server_lab/tests/fixtures/synthetic_g4_resolution.264"),4)?;
+            lean_owned_session_replay(wire,false,true,true,0)
+        })();
+        result.map_err(|error|error.to_string())
+    })?;
+    task.join().map_err(|_|"owned video restart fixture thread panicked")?.map_err(Into::into)
 }
 
 fn owned_source_limits() -> fss_reference::DeploymentLimits {
@@ -3408,6 +4753,887 @@ fn owned_source_limits() -> fss_reference::DeploymentLimits {
 
 fn owned_av_limits() -> fss_reference::DeploymentLimits {
     fss_reference::DeploymentLimits {max_roots:384,spool_total_max_bytes:1536*1024*1024,..fss_reference::DeploymentLimits::standard()}
+}
+
+async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+    supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    coordinator: fss_reference::unifi_direct::source_coordinator::Coordinator,
+    resources: Box<fss_reference::unifi_direct::av_unknown_worker_guard::BootstrapResources>,
+    expected: &[u8],
+    owner: &mut conversation::Owner<'_, 'scope, 'task>,
+    operation: &OperationId,
+    access: &dyn fss_reference::unifi_direct::archive::ReadAuthority,
+    rollover_read: Arc<dyn fss_reference::unifi_direct::archive::ReadAuthority + Send + Sync>,
+    rollover_root: &std::path::Path,
+    rollover_replay: Arc<fss_reference::ReplayCx>,
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    bootstrap_mode: u8,
+) -> Test {
+    use fss_reference::unifi_direct::{archive, evidence, retirement_source, source_coordinator::ArchiveAdmission, source_worker, video_bootstrap, video_owned_sink, video_session, video_worker};
+    use fss_packet::extended_flv::stream::{Next, SearchMode};
+    let key = SourceKey { connection: 1, generation: 1 };
+    let admission = ArchiveAdmission { resource: "fixture:video-session", cost: &BudgetVector::ZERO };
+    let mut source_pins = Vec::new();
+    let mut offered_sources = 0usize;
+    let mut syncs = 0usize;
+    let mut session = if bootstrap_mode != 0 {
+        let policy = video_bootstrap::Policy { inband: bootstrap_mode == 4, retention: ContentDigest::sha256(b"worker guard retention"), media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default() };
+        let wrong_key = SourceKey { connection: key.connection, generation: key.generation + 1 };
+        let refused = match video_bootstrap::Bootstrap::begin(supervisor, coordinator.into_worker(), resources, wrong_key, ContentDigest::sha256(b"fixture camera"), policy) {
+            Err(parts) => parts,
+            Ok(_) => return Err("bootstrap accepted a different recorder key".into()),
+        };
+        let mut bootstrap = video_bootstrap::Bootstrap::begin(refused.supervisor, refused.source, refused.resources.ok_or("bootstrap resources lost")?, key, refused.camera_claim, refused.policy)
+            .map_err(|_| "bootstrap refused matching owners")?;
+        bootstrap = match bootstrap.into_session() {
+            Err(video_bootstrap::HandoffRefusal::NotReady(bootstrap)) => bootstrap,
+            _ => return Err("bootstrap allowed premature handoff".into()),
+        };
+        bootstrap.control().ok_or("bootstrap control missing")?.set_time_sync_reply_wait(Some(Duration::from_secs(5)))?;
+        if bootstrap.authorize_source_retry() { return Err("bootstrap retry without pending source".into()); }
+        if !matches!(Box::pin(bootstrap.step(owner, operation, Duration::ZERO, task, cx, clock, admission)).await, video_bootstrap::Step::Configuration) { return Err("bootstrap invalid wait accepted".into()); }
+        let mut bad_cost = BudgetVector::ZERO;
+        bad_cost.bytes = 33_000_000;
+        let bad_admission = ArchiveAdmission { resource: "fixture:video-session", cost: &bad_cost };
+        let mut force_refusal = false;
+        let mut await_retry = false;
+        let mut did_retry = false;
+        timeout(cx.now(), Duration::from_secs(30), async {
+            for index in 0..4096u64 {
+                let op = OperationId::parse(format!("{}:bootstrap-{index:016x}", operation.as_str()))?;
+                let mut control = None;
+                let mut completion = None;
+                let current_admission = if force_refusal { bad_admission } else { admission };
+                match Box::pin(bootstrap.step(owner, &op, Duration::from_millis(100), task, cx, clock, current_admission)).await {
+                    video_bootstrap::Step::SourceOffered(_) | video_bootstrap::Step::Configured => {
+                        offered_sources += 1;
+                        if bootstrap_mode == 3 && !did_retry { force_refusal = true; }
+                    },
+                    video_bootstrap::Step::SourceStarted => (),
+                    video_bootstrap::Step::SourceStartRefused(fss_reference::unifi_direct::av_worker::StartError::Task(_)) if force_refusal => {
+                        force_refusal = false;
+                        await_retry = true;
+                    },
+                    video_bootstrap::Step::SourceRetryRequired(step) if await_retry => {
+                        if !bootstrap.authorize_source_retry() || bootstrap.authorize_source_retry() { return Err("bootstrap retry authorization failed".into()); }
+                        await_retry = false;
+                        did_retry = true;
+                        control = Some(step);
+                    },
+                    video_bootstrap::Step::Supervisor(step) => control = Some(step),
+                    video_bootstrap::Step::SourceArchive { control: step, completion: result } => { control = step; completion = result; },
+                    video_bootstrap::Step::Ready => return Ok::<(), Box<dyn Error>>(()),
+                    _ => return Err("video bootstrap refused or halted".into()),
+                }
+                if let Some(step) = control {
+                    match step {
+                        supervisor::Step::Idle | supervisor::Step::Media(pipeline::Step::Progress { .. }) | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)) => (),
+                        supervisor::Step::Observation(Observation::StreamSettingsReply { success, .. }) if success != Some(false) => (),
+                        supervisor::Step::TimeSyncWritten { mut trace } => {
+                            let op = trace.operation().ok_or("bootstrap clock operation missing")?;
+                            if owner.effects.journal().operation(op).map(|entry| entry.state) != Some(fss_core::EffectState::Committed) { return Err("bootstrap clock effect not committed".into()); }
+                            if !matches!(trace.take_written(), Some(ManagementWrite::Written { permit }) if permit.journal_backed()) { return Err("bootstrap clock receipt missing".into()); }
+                            syncs += 1;
+                        },
+                        _ => return Err("video bootstrap control stopped".into()),
+                    }
+                }
+                if let Some(completion) = completion {
+                    if completion.runtime.is_err() { return Err("bootstrap source runtime failed".into()); }
+                    match completion.outcome {
+                        source_worker::Outcome::Publication(source_worker::Publication::Published { pin, .. }) => source_pins.push(pin),
+                        _ => return Err("bootstrap source publication failed".into()),
+                    }
+                }
+            }
+            Err("bootstrap step limit".into())
+        }).await??;
+        if offered_sources != source_pins.len() || (bootstrap_mode == 3 && !did_retry) { return Err("bootstrap source custody or retry incomplete".into()); }
+        bootstrap.into_session().map_err(|_| "bootstrap handoff refused")?
+    } else {
+    let mut framer = Framer::with_mode(FlvLimits::default(), fss_packet::extended_flv::stream::MAX_BUFFER_BYTES, SearchMode::ZeroStreamId)?;
+    framer.append(0, expected)?;
+    let mut probe = recording::Recorder::new(key, recording::Limits::default())?;
+    let configuration = loop {
+        match framer.take()? {
+            Next::Record(record) => match probe.push(record).map_err(|refusal| refusal.reason)? {
+                recording::Push::Source { record, disposition: recording::SourceDisposition::Configuration } => break record,
+                _ => (),
+            },
+            _ => return Err("fixture configuration missing".into()),
+        }
+    };
+    let wrong_key = SourceKey { connection: key.connection, generation: key.generation + 1 };
+    let sink = video_owned_sink::Sink::new(video_owned_sink::Inputs {
+        configuration, source: wrong_key, inband: false, retention: ContentDigest::sha256(b"worker guard retention"),
+        media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
+    }).map_err(|_| "video sink construction failed")?;
+    let fss_reference::unifi_direct::av_unknown_worker_guard::BootstrapResources { deployment, journal, keeper, replay, authority, limits, work_limit } = *resources;
+    let video = video_worker::Worker::new(video_worker::Parts { sink, deployment, journal, keeper, replay, authority, limits, work_limit })
+        .map_err(|_| "video worker construction failed")?;
+    let refused = match video_session::Session::attach(supervisor, video, coordinator.into_worker(), wrong_key, ContentDigest::sha256(b"fixture camera")) {
+        Err(parts) => parts,
+        Ok(_) => return Err("wrong recorder source binding accepted".into()),
+    };
+    let retired = refused.video.retire().map_err(|_| "wrong-key worker did not retire")?;
+    if retired.fenced || retired.report.is_some() { return Err("wrong-key worker not intact".into()); }
+    let video_worker::Parts { sink, deployment, journal, keeper, replay, authority, limits, work_limit } = retired.parts;
+    let retired_sink = sink.retire();
+    if retired_sink.pending.is_some() || retired_sink.pending_pin.is_some() { return Err("wrong-key sink not intact".into()); }
+    let mut inputs = retired_sink.inputs;
+    inputs.source = key;
+    let sink = video_owned_sink::Sink::new(inputs).map_err(|_| "recovered video sink refused")?;
+    let video = video_worker::Worker::new(video_worker::Parts { sink, deployment, journal, keeper, replay, authority, limits, work_limit })
+        .map_err(|_| "recovered video worker refused")?;
+    let refused = match video_session::Session::attach(refused.supervisor, video, refused.source, wrong_key, refused.camera_claim) {
+        Err(parts) => parts,
+        Ok(_) => return Err("wrong sink source binding accepted".into()),
+    };
+    video_session::Session::attach(refused.supervisor, refused.video, refused.source, key, refused.camera_claim)
+        .map_err(|_| "video session attachment refused")?
+    };
+    if session.authorize_video_retry() || session.authorize_source_retry() { return Err("retry accepted without pending work".into()); }
+    session.control().ok_or("video session control missing")?.set_time_sync_reply_wait(Some(Duration::from_secs(5)))?;
+    let mut video_pins = Vec::new();
+    let mut rollover_count = 0usize;
+    let mut rollover_candidate = None;
+    if !matches!(Box::pin(session.step(owner, operation, Duration::ZERO, task, cx, clock, admission, admission)).await, video_session::Step::Configuration) {
+        return Err("invalid wait was not refused".into());
+    }
+    let mut session = Some(session);
+    let mut managed_session = if bootstrap_mode == 10 { Some(video_session::ManagedSession::new(session.take().ok_or("managed initial session missing")?)) } else { None };
+    let cancelled = timeout(cx.now(), Duration::from_secs(30), async {
+        for index in 0..4096u64 {
+            let op = OperationId::parse(format!("{}:video-{index:016x}", operation.as_str()))?;
+            let mut control = None;
+            let mut source_completion = None;
+            let mut video_completion = None;
+            let next = if let Some(managed) = managed_session.as_mut() {
+                match Box::pin(managed.step(owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission)).await {
+                    video_session::ManagedStep::Session(step) => step,
+                    video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle)) => {
+                        use fss_runtime::effect_journal::PinRetainedEffectJournal;
+                        task.checkpoint_for(RuntimeGrant::ObjectStage, rollover_root.to_str().ok_or("rollover path")?, clock.now()?, &BudgetVector::ZERO)?;
+                        let create = |name: &str| -> Result<Box<dyn fss_runtime::effect_journal::EffectJournalStore>, Box<dyn Error>> { Ok(Box::new(FileEffectJournal::create(rollover_root.join(name), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?)) };
+                        let retainer = fss_object::effect_journal::FileTrustedRootPinRetainer::create(rollover_root.join("managed-video-retainer"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(b"managed-video-session-switch"))?;
+                        let supplies = fss_reference::unifi_direct::av_rollover_worker::Supplies {
+                            next_journal: create("managed-video-journal")?, next_keeper: create("managed-video-keeper")?,
+                            switch: PinRetainedEffectJournal::new(create("managed-video-switch")?, Box::new(retainer))?, read: rollover_read.clone(),
+                            object_limits: archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:128*1024*1024}, work_limit:4_000_000_000,
+                        };
+                        managed.provide(supplies).map_err(|_| "managed automatic supplies refused")?;
+                        continue;
+                    }
+                    video_session::ManagedStep::RolloverBeginning | video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started) | video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady)) => continue,
+                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(step))) => video_session::Step::Supervisor(step),
+                    video_session::ManagedStep::Resumed(receipt) => {
+                        if receipt.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered { return Err("managed automatic replay receipt changed".into()); }
+                        rollover_count += 1;
+                        continue;
+                    }
+                    _ => return Err("managed automatic session stopped".into()),
+                }
+            } else { Box::pin(session.as_mut().ok_or("video session owner missing")?.step(owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission)).await };
+            match next {
+                video_session::Step::SourceOffered(_) => offered_sources += 1,
+                video_session::Step::VideoOffered | video_session::Step::SourceStarted | video_session::Step::VideoStarted => (),
+                video_session::Step::Supervisor(step) => control = Some(step),
+                video_session::Step::SourceArchive { control: step, completion } => { control = step; source_completion = completion; },
+                video_session::Step::VideoArchive { control: step, completion } => { control = step; video_completion = completion; },
+                _ => return Err("video session refused or halted".into()),
+            }
+            if let Some(step) = control {
+                match step {
+                    supervisor::Step::Idle | supervisor::Step::Media(pipeline::Step::Progress { .. }) | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)) => (),
+                    supervisor::Step::Observation(Observation::StreamSettingsReply { success, .. }) if success != Some(false) => (),
+                    supervisor::Step::TimeSyncWritten { mut trace } => {
+                        let op = trace.operation().ok_or("clock operation missing")?;
+                        if owner.effects.journal().operation(op).map(|entry| entry.state) != Some(fss_core::EffectState::Committed) { return Err("clock effect not committed".into()); }
+                        if !matches!(trace.take_written(), Some(ManagementWrite::Written { permit }) if permit.journal_backed()) { return Err("clock receipt missing".into()); }
+                        syncs += 1;
+                    }
+                    supervisor::Step::TimeSyncStopped { error, .. } => { eprintln!("video_session_clock_stop={error:?}"); return Err("video session clock stopped".into()); },
+                    other => { eprintln!("video_session_control_kind={:?}", std::mem::discriminant(&other)); return Err("video session control stopped".into()); },
+                }
+            }
+            if let Some(completion) = source_completion {
+                if completion.runtime.is_err() { return Err("source runtime failed".into()); }
+                match completion.outcome {
+                    source_worker::Outcome::Publication(source_worker::Publication::Published { pin, .. }) => source_pins.push(pin),
+                    _ => return Err("source publication failed".into()),
+                }
+            }
+            if let Some(completion) = video_completion {
+                if completion.runtime.is_err() { return Err("video runtime failed".into()); }
+                match completion.outcome {
+                    video_worker::Outcome::Publication(video_worker::Publication::Published(published)) => {
+                        if rollover_candidate.take().is_some_and(|candidate| candidate != published.pin) { return Err("rollover changed pending video candidate".into()); }
+                        video_pins.push(published.pin);
+                    },
+                    video_worker::Outcome::Publication(video_worker::Publication::Refused { pending: Some(candidate), reason: video_worker::Refusal::BeforePublication(fss_reference::unifi_direct::av_worker::FailureReason::JournalCapacity) }) if bootstrap_mode == 10 && rollover_count == 0 => { rollover_candidate = Some(candidate); },
+                    video_worker::Outcome::Publication(video_worker::Publication::Refused { pending: Some(candidate), reason: video_worker::Refusal::BeforePublication(fss_reference::unifi_direct::av_worker::FailureReason::JournalCapacity) }) if matches!(bootstrap_mode,13|14|15|16|17|18|19|20|21) && rollover_count == 0 => {
+                        use fss_reference::unifi_direct::{av_rollover_generation as generation, av_rollover_supplies, video_provision, video_retained_provision as retained};
+                        use fss_runtime::effect_journal::PinRetainedEffectJournal;
+                        let current = session.take().ok_or("session missing for retained provisioning")?;
+                        let managed = video_session::ManagedSession::at_capacity(current, candidate).map_err(|_| "retained capacity refused")?;
+                        let plan = generation::Plan::new(generation::Configuration {
+                            namespace: "retained-video".into(), scope_seed: ContentDigest::sha256(b"retained video fixture"), first: 1, count: 1,
+                            journal_replay: rollover_replay.clone(), pin_replay: rollover_replay.clone(),
+                            journal_io: Arc::new(HostSpoolIo), pin_io: Arc::new(HostSpoolIo), journal_limits: EffectJournalLimits::default(), pin_limits: EffectJournalLimits::default(),
+                            read: rollover_read.clone(), object_limits: archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:128*1024*1024}, work_limit: if matches!(bootstrap_mode,15|18) {100_000_000_000} else {4_000_000_000},
+                        }).map_err(|_| "retained plan invalid")?;
+                        let journal_path=rollover_root.join("generation-journal");
+                        let pin_path=rollover_root.join("generation-pin");
+                        task.checkpoint_for(RuntimeGrant::ObjectStage, journal_path.to_str().ok_or("journal path")?, clock.now()?, &BudgetVector::ZERO)?;
+                        task.checkpoint_for(RuntimeGrant::ObjectStage, pin_path.to_str().ok_or("pin path")?, clock.now()?, &BudgetVector::ZERO)?;
+                        let mut driver=if matches!(bootstrap_mode,16|17|18|19|20|21) {
+                            let bootstrap=generation::BootstrapWorker::new(generation::BootstrapInputs {plan,storage:generation::BootstrapStorage {
+                                mode:generation::BootstrapMode::Create,journal_root:journal_path,custody_root:pin_path,
+                                journal_replay:rollover_replay.clone(),custody_replay:rollover_replay.clone(),
+                                journal_io:Arc::new(HostSpoolIo),custody_io:Arc::new(HostSpoolIo),journal_limits:EffectJournalLimits::default(),custody_limits:EffectJournalLimits::default(),
+                                custody_scope:ContentDigest::sha256(b"retained generation pin"),
+                            }}).map_err(|_|"bootstrap worker invalid")?;
+                            retained::RetainedSession::with_bootstrap(managed,bootstrap).map_err(|_|"retained bootstrap session refused")?
+                        } else {
+                            let store=FileEffectJournal::create(&journal_path, EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+                            let pin=fss_object::effect_journal::FileTrustedRootPinRetainer::create(&pin_path, EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(b"retained generation pin"))?;
+                            let journal=PinRetainedEffectJournal::new(Box::new(store),Box::new(pin))?;
+                            let plan=generation::ReservedPlan::create(plan,journal,&rollover_replay).map_err(|_| "retained plan bind refused")?;
+                            let reservation=generation::ReservationWorker::new(generation::ReservationInputs {plan,request:generation::ReservationRequest::Reserve,journal_resource:journal_path,custody_resource:pin_path,journal_replay:rollover_replay.clone(),custody_replay:rollover_replay.clone()}).map_err(|_| "reservation worker invalid")?;
+                            retained::RetainedSession::new(managed,reservation).map_err(|_| "retained session refused")?
+                        };
+                        if matches!(bootstrap_mode,19|20|21) {
+                            if !driver.enable_creator_observation(if bootstrap_mode==21 {0} else {1}) || driver.enable_creator_observation(1) {return Err("automatic policy admission failed".into());}
+                            let mut bootstrap_started=false; let mut ready=false; let mut first=false;
+                            let mut creator_started=false; let mut installed=false; let mut reconciled=false; let mut second=None;
+                            let mut released_custody=None;
+                            for round in 0..2048u64 {
+                                let op=OperationId::parse(format!("{}:automatic-retained-{round:016x}",operation.as_str()))?;
+                                match Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await {
+                                    retained::Step::BootstrapStarted=>bootstrap_started=true,
+                                    retained::Step::BootstrapReady if bootstrap_started=>ready=true,
+                                    retained::Step::ReservationStarted if ready=>(),
+                                    retained::Step::Reserved(identity) if identity.generation==1 && !first=>first=true,
+                                    retained::Step::Session(video_provision::Step::SupplyStarted) if first && !creator_started=>creator_started=true,
+                                    retained::Step::Session(video_provision::Step::SupplyInstalled(completion)) if creator_started && completion.runtime.is_ok() && completion.outcome==av_rollover_supplies::Outcome::Ready=>{installed=true;if bootstrap_mode==21 && driver.renew_creator_observation(1) {return Err("renewed before observation was recorded".into());} if bootstrap_mode==20 {break;}},
+                                    retained::Step::Reconciled(pin) if installed && pin.sequence==3=>{
+                                        reconciled=true;
+                                        if bootstrap_mode==21 {
+                                            if driver.renew_creator_observation(0) || driver.renew_creator_observation(9) || driver.renew_creator_observation(1) {return Err("renewed before custody handoff or with invalid allowance".into());}
+                                            released_custody=driver.take_custody();
+                                            if released_custody.is_none() || !driver.renew_creator_observation(1) || driver.renew_creator_observation(1) {return Err("automatic renewal admission failed".into());}
+                                        }
+                                    },
+                                    retained::Step::Reserved(identity) if reconciled && identity.generation==2=>{second=Some(identity);break;},
+                                    retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Session(video_session::Step::Supervisor(supervisor::Step::Idle))))=>(),
+                                    retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle))))=>(),
+                                    retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::RolloverBeginning))=>(),
+                                    retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started | video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady))))=>(),
+                                    retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle)))))=>(),
+                                    retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Resumed(_)))=>(),
+                                    other=>{eprintln!("automatic_retained_step_class={:?}",std::mem::discriminant(&other));return Err("automatic retained session stopped".into());},
+                                }
+                            }
+                            if bootstrap_mode==20 {
+                                if !bootstrap_started || !ready || !first || !creator_started || !installed || reconciled || second.is_some() {return Err("automatic cancellation branch incomplete".into());}
+                                driver.abort();
+                                if driver.join_reservation().await {return Err("unstarted observation unexpectedly joined".into());}
+                                let op=OperationId::parse(format!("{}:automatic-cancel",operation.as_str()))?;
+                                if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::Aborted) {return Err("automatic cancellation was advanced".into());}
+                                let _=driver.join_rollover().await; let _=driver.join_supply().await;
+                                let owners=driver.into_parts();
+                                let worker=owners.reservation.ok_or("cancelled observation worker missing")?;
+                                let retirement=worker.retire().map_err(|_|"cancelled observation still running")?;
+                                if !retirement.fenced || !retirement.aborted || retirement.outcome.is_some()
+                                    || retirement.inputs.plan.head().map(|pin|pin.sequence)!=Some(2)
+                                    || retirement.inputs.plan.pending().map(|id|id.generation)!=Some(1)
+                                    || !matches!(&retirement.inputs.request,generation::ReservationRequest::ObservedCreator(_)) {return Err("cancelled observation changed reservation".into());}
+                                let auto=owners.automatic.ok_or("cancelled automatic custody missing")?;
+                                if auto.remaining!=1 || auto.custody.len()!=1 {return Err("cancelled automatic custody changed".into());}
+                                let inner=owners.inner.into_parts();
+                                if inner.worker.is_some() || inner.started {return Err("cancelled automatic session started another creator".into());}
+                                let managed=inner.managed.into_parts();
+                                match managed.owner {
+                                    Some(video_session::ManagedOwner::Recording(mut session))=>{
+                                        let _=session.join_source().await; let _=session.join_video().await;
+                                        let _parts=session.into_parts().map_err(|_|"cancelled automatic recording did not drain")?;
+                                    },
+                                    Some(video_session::ManagedOwner::Rollover(rollover))=>{
+                                        let _parts=rollover.into_rollover().into_parts().map_err(|_|"cancelled automatic rollover did not drain")?;
+                                    },
+                                    _=>return Err("cancelled automatic managed owner missing".into()),
+                                }
+                                drop((retirement,auto,owners.bootstrap_retirement));
+                                println!("automatic_creator_observation=cancelled pending_generation=1 journal_sequence=2");
+                                return Ok::<bool, Box<dyn Error>>(true);
+                            }
+                            let second=second.ok_or("automatic second reservation missing")?;
+                            if !bootstrap_started || !ready || !first || !creator_started || !installed || !reconciled || second.journal_root.exists() || second.pin_root.exists() {return Err("automatic generation ordering invalid".into());}
+                            driver.abort(); let _=driver.join_rollover().await; let _=driver.join_supply().await;
+                            let owners=driver.into_parts();
+                            if owners.started || owners.reservation.is_some() || owners.retirement.as_ref().and_then(|r|r.inputs.plan.pending()).map(|id|id.generation)!=Some(2) {return Err("automatic reservation custody lost".into());}
+                            let auto=owners.automatic.ok_or("automatic custody missing")?;
+                            if auto.remaining!=0 || auto.stopped || auto.custody.len()!=if bootstrap_mode==21 {0} else {1} || (bootstrap_mode==21 && released_custody.is_none()) {return Err("automatic custody state invalid".into());}
+                            let mut inner=owners.inner.into_parts();
+                            let worker=inner.worker.take().ok_or("unstarted second creator missing")?;
+                            let retired=worker.retire().map_err(|_|"second creator unexpectedly running")?;
+                            if retired.root_created || retired.pin_root_created || retired.outcome.is_some() {return Err("second creator unexpectedly performed I/O".into());}
+                            let managed=inner.managed.into_parts();
+                            match managed.owner {
+                                Some(video_session::ManagedOwner::Recording(mut session))=>{
+                                    let _=session.join_source().await; let _=session.join_video().await;
+                                    let _parts=session.into_parts().map_err(|_|"automatic recording did not drain")?;
+                                },
+                                Some(video_session::ManagedOwner::Rollover(rollover))=>{
+                                    let _parts=rollover.into_rollover().into_parts().map_err(|_|"automatic rollover did not drain")?;
+                                },
+                                _=>return Err("automatic managed owner missing".into()),
+                            }
+                            let retirement=owners.retirement.ok_or("automatic reservation retirement missing")?;
+                            let minimum=retirement.inputs.plan.head().ok_or("automatic journal head missing")?;
+                            if minimum.sequence!=4 {return Err("automatic journal sequence invalid".into());}
+                            let journal_path=retirement.inputs.journal_resource.clone();
+                            let pin_path=retirement.inputs.custody_resource.clone();
+                            let (old_plan,journal)=retirement.inputs.plan.into_parts();
+                            drop((old_plan,journal));
+                            let plan=generation::Plan::new(generation::Configuration {
+                                namespace:"retained-video".into(),scope_seed:ContentDigest::sha256(b"retained video fixture"),first:3,count:1,
+                                journal_replay:rollover_replay.clone(),pin_replay:rollover_replay.clone(),
+                                journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),journal_limits:EffectJournalLimits::default(),pin_limits:EffectJournalLimits::default(),
+                                read:rollover_read.clone(),object_limits:archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:128*1024*1024},work_limit:4_000_000_000,
+                            }).map_err(|_|"automatic recovery plan invalid")?;
+                            let mut reopen=generation::BootstrapWorker::new(generation::BootstrapInputs {plan,storage:generation::BootstrapStorage {
+                                mode:generation::BootstrapMode::Recover {minimum},journal_root:journal_path,custody_root:pin_path,
+                                journal_replay:rollover_replay.clone(),custody_replay:rollover_replay.clone(),
+                                journal_io:Arc::new(HostSpoolIo),custody_io:Arc::new(HostSpoolIo),journal_limits:EffectJournalLimits::default(),custody_limits:EffectJournalLimits::default(),
+                                custody_scope:ContentDigest::sha256(b"retained generation pin"),
+                            }}).map_err(|_|"automatic recovery bootstrap invalid")?;
+                            reopen.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"automatic recovery admission refused")?;
+                            let completion=reopen.join().await.ok_or("automatic recovery did not join")?;
+                            if completion.runtime.is_err() || completion.outcome!=generation::BootstrapOutcome::Ready {return Err("automatic journal recovery refused".into());}
+                            let mut reopened=reopen.retire().map_err(|_|"automatic recovery still running")?;
+                            let plan=reopened.take_ready().ok_or("automatic recovered plan missing")?;
+                            if plan.head()!=Some(minimum) || plan.pending()!=Some(&second) {return Err("automatic recovery changed pending generation".into());}
+                            drop((auto,owners.bootstrap_retirement,retired,plan,reopened));
+                            println!("automatic_creator_observation=recorded next_generation=2 second_creator_started=false same_process_reopen=verified");
+                            return Ok::<bool, Box<dyn Error>>(true);
+                        }
+                        if bootstrap_mode == 17 {
+                            let op=OperationId::parse(format!("{}:bootstrap-video-cancel",operation.as_str()))?;
+                            if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::BootstrapStarted) {return Err("bootstrap did not start".into());}
+                            driver.abort();
+                            if driver.control().is_some() || !driver.join_bootstrap().await {return Err("cancelled bootstrap did not drain".into());}
+                            if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::BootstrapStopped(_)) {return Err("cancelled bootstrap was advanced".into());}
+                            let retirement=driver.take_bootstrap().ok_or("cancelled bootstrap retirement missing")?;
+                            if !retirement.fenced {return Err("cancelled bootstrap plan not fenced".into());}
+                            let owners=driver.into_parts();
+                            if !owners.aborted || owners.bootstrap.is_some() || owners.bootstrap_started || owners.reservation.is_some() || owners.started {return Err("cancelled bootstrap ownership unresolved".into());}
+                            let inner=owners.inner.into_parts();
+                            if inner.worker.is_some() || inner.started || inner.ready.is_some() || inner.custody.is_some() {return Err("cancelled bootstrap started a creator".into());}
+                            let parts=inner.managed.into_parts();
+                            if parts.capacity != Some(candidate) {return Err("cancelled bootstrap lost pending video".into());}
+                            drop((parts,retirement));
+                            println!("retained_video_bootstrap_cancelled reservation_started=false");
+                            return Ok::<bool, Box<dyn Error>>(true);
+                        }
+                        if bootstrap_mode == 14 {
+                            let op=OperationId::parse(format!("{}:retained-video-cancel",operation.as_str()))?;
+                            if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::ReservationStarted) {return Err("reservation did not start".into());}
+                            driver.abort();
+                            if driver.control().is_some() || !driver.join_reservation().await {return Err("cancelled reservation did not drain".into());}
+                            if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::ReservationStopped(_)) {return Err("cancelled reservation was advanced".into());}
+                            let mut retirement=driver.take_reservation().ok_or("cancelled reservation retirement missing")?;
+                            if !retirement.fenced || !retirement.aborted {return Err("cancelled reservation did not fence plan".into());}
+                            let unstarted=match retirement.outcome.take() {
+                                Some(generation::ReservationOutcome::Reserved {identity,worker})=>Some((identity,worker)),
+                                Some(generation::ReservationOutcome::ReservationRefused(refusal))=>refusal.candidate,
+                                None=>None,
+                                _=>return Err("unexpected cancelled reservation outcome".into()),
+                            };
+                            if let Some((identity,creator))=unstarted {
+                                if identity.journal_root.exists() || identity.pin_root.exists() {return Err("cancelled reservation started creator".into());}
+                                assert!(creator.retire().map_err(|_|"cancelled creator unexpectedly running")?.inputs.is_some());
+                            }
+                            let owners=driver.into_parts();
+                            if !owners.aborted || owners.started || owners.reservation.is_some() || owners.retirement.is_some() {return Err("cancelled reservation ownership unresolved".into());}
+                            let inner=owners.inner.into_parts();
+                            if inner.worker.is_some() || inner.started || inner.ready.is_some() || inner.custody.is_some() {return Err("cancelled session started a creator".into());}
+                            let parts=inner.managed.into_parts();
+                            if parts.capacity != Some(candidate) {return Err("cancelled reservation lost pending video".into());}
+                            drop((parts,retirement));
+                            println!("retained_video_reservation_cancelled creator_started=false");
+                            return Ok::<bool, Box<dyn Error>>(true);
+                        }
+                        let mut reserved=None; let mut started=false; let mut custody=None; let mut resumed=false;
+                        let mut bootstrap_started=false; let mut bootstrap_ready=false;
+                        for round in 0..2048u64 {
+                            let op=OperationId::parse(format!("{}:retained-video-{round:016x}",operation.as_str()))?;
+                            match Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await {
+                                retained::Step::BootstrapStarted=>{if bootstrap_started {return Err("bootstrap started twice".into());}bootstrap_started=true;},
+                                retained::Step::BootstrapReady=>{if !bootstrap_started || bootstrap_ready {return Err("bootstrap readiness ordering invalid".into());}bootstrap_ready=true;println!("retained_video_bootstrap=ready");},
+                                retained::Step::ReservationStarted=>{if matches!(bootstrap_mode,16|18) && !bootstrap_ready {return Err("reservation started before bootstrap".into());}},
+                                retained::Step::Reserved(identity)=>{if started || reserved.is_some(){return Err("reservation ordering invalid".into());} assert_eq!(identity.generation,1); reserved=Some(identity);},
+                                retained::Step::Session(video_provision::Step::SupplyStarted)=>{if reserved.is_none(){return Err("creator started before durable reservation".into());} started=true;},
+                                retained::Step::Session(video_provision::Step::SupplyInstalled(completion)) if completion.runtime.is_ok() && completion.outcome==av_rollover_supplies::Outcome::Ready => {custody=driver.take_custody();},
+                                retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle))))=>(),
+                                retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::RolloverBeginning))=>(),
+                                retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started | video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady))))=>(),
+                                retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle)))))=>(),
+                                retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Resumed(receipt))) if receipt.outcome==fss_publication::RootLedgerOutcome::AlreadyLedgered => {resumed=true;break;},
+                                other=>{
+                                    eprintln!("retained_step_class={:?}",std::mem::discriminant(&other));
+                                    if let retained::Step::Session(step)=&other {
+                                        eprintln!("retained_session_class={:?}",std::mem::discriminant(step));
+                                        if let video_provision::Step::Managed(managed)=step {
+                                            eprintln!("retained_managed_class={:?}",std::mem::discriminant(managed));
+                                            if let video_session::ManagedStep::Rollover(automatic)=managed {
+                                                eprintln!("retained_automatic_class={:?}",std::mem::discriminant(automatic));
+                                                if let video_session::AutomaticRolloverStep::Rollover(rollover)=automatic {
+                                                    eprintln!("retained_rollover_class={:?}",std::mem::discriminant(rollover));
+                                                    if let video_session::RolloverStep::Control(control)=rollover {
+                                                        eprintln!("retained_control_class={:?}",std::mem::discriminant(control));
+                                                    }
+                                                }
+                                            }
+                                            if let video_session::ManagedStep::Session(video)|video_session::ManagedStep::SuppliesRequired(video)=managed {
+                                                eprintln!("retained_video_class={:?}",std::mem::discriminant(video));
+                                                if let video_session::Step::VideoRetryRequired(control)|video_session::Step::Supervisor(control)=video {
+                                                    eprintln!("retained_control_class={:?}",std::mem::discriminant(control));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if matches!(&other,retained::Step::Session(video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Stopped))))) {
+                                        let owners=driver.into_parts();
+                                        let inner=owners.inner.into_parts();
+                                        let managed=inner.managed.into_parts();
+                                        if let Some(video_session::ManagedOwner::Rollover(automatic))=managed.owner {
+                                            if let Ok(parts)=automatic.into_rollover().into_parts() {
+                                                match &parts.state {
+                                                    video_session::RolloverState::PreflightStopped {completion,..} => eprintln!("retained_stopped_stage=preflight outcome={:?}",std::mem::discriminant(&completion.outcome)),
+                                                    video_session::RolloverState::TransitionStopped {completion,..} => {
+                                                        eprintln!("retained_stopped_stage=transition outcome={:?}",std::mem::discriminant(&completion.outcome));
+                                                        if let fss_reference::unifi_direct::video_rollover_worker::Outcome::ReplayRefused {error,..}=&completion.outcome {
+                                                            eprintln!("retained_replay_class={:?}",std::mem::discriminant(error));
+                                                            if let fss_reference::unifi_direct::av_rollover_worker::ReplayFailure::Readback(failure)|fss_reference::unifi_direct::av_rollover_worker::ReplayFailure::Archive(failure)=error {
+                                                                eprintln!("retained_archive_failure={failure:?}");
+                                                            }
+                                                        }
+                                                    },
+                                                    other=>eprintln!("retained_stopped_stage=other outcome={:?}",std::mem::discriminant(other)),
+                                                }
+                                            }
+                                        }
+                                        return Err("retained video provisioning stopped".into());
+                                    }
+                                    return Err("retained video provisioning stopped".into());
+                                },
+                            }
+                        }
+                        let identity=reserved.ok_or("retained reservation missing")?;
+                        if !started || !resumed || custody.is_none() || (matches!(bootstrap_mode,16|18) && (!bootstrap_started || !bootstrap_ready)){return Err("retained provisioning incomplete".into());}
+                        let retirement=driver.take_reservation().ok_or("retained reservation custody missing")?;
+                        assert_eq!(retirement.inputs.plan.pending(),Some(&identity));
+                        assert_eq!(retirement.inputs.plan.head().ok_or("retained journal head missing")?.sequence,2);
+                        assert!(retirement.outcome.is_none() && !retirement.fenced);
+                        let bootstrap=if matches!(bootstrap_mode,16|18) {Some(driver.take_bootstrap().ok_or("bootstrap custody missing")?)} else {None};
+                        if bootstrap.as_ref().is_some_and(|value| value.fenced || value.ready.is_some() || value.outcome!=Some(generation::BootstrapOutcome::Ready)) {return Err("bootstrap custody state invalid".into());}
+                        let mut first_retirement=Some(retirement);
+                        if bootstrap_mode==16 {
+                            let prior=first_retirement.take().ok_or("first retirement missing")?;
+                            let inputs=prior.inputs;
+                            let mut wrong_identity=identity.clone(); wrong_identity.generation=2;
+                            let wrong=generation::ReservationWorker::new(generation::ReservationInputs {
+                                plan:inputs.plan,request:generation::ReservationRequest::Reconcile {identity:wrong_identity,evidence:ContentDigest::sha256(b"synthetic caller assessed creator evidence")},
+                                journal_resource:inputs.journal_resource,custody_resource:inputs.custody_resource,
+                                journal_replay:inputs.journal_replay,custody_replay:inputs.custody_replay,
+                            }).map_err(|_|"wrong reconciliation worker invalid")?;
+                            if wrong.is_unstarted_reconciliation() {return Err("wrong generation classified as reconcilable".into());}
+                            let wrong=driver.offer_reconciliation(wrong).err().ok_or("wrong generation reconciliation accepted")?;
+                            let refused=wrong.retire().map_err(|_|"refused reconciliation unexpectedly running")?;
+                            if refused.outcome.is_some() || refused.inputs.plan.head().map(|pin|pin.sequence)!=Some(2) || refused.inputs.plan.pending()!=Some(&identity) {return Err("refused reconciliation changed journal".into());}
+                            let inputs=refused.inputs;
+                            let reconcile=generation::ReservationWorker::new(generation::ReservationInputs {
+                                plan:inputs.plan,request:generation::ReservationRequest::Reconcile {identity:identity.clone(),evidence:ContentDigest::sha256(b"synthetic caller assessed creator evidence")},
+                                journal_resource:inputs.journal_resource,custody_resource:inputs.custody_resource,
+                                journal_replay:inputs.journal_replay,custody_replay:inputs.custody_replay,
+                            }).map_err(|_|"reconciliation worker invalid")?;
+                            let reconcile=driver.offer_reservation(reconcile).err().ok_or("reconciliation accepted as a reservation")?;
+                            driver.offer_reconciliation(reconcile).map_err(|_|"reconciliation offer refused")?;
+                            let op=OperationId::parse(format!("{}:retained-reconcile",operation.as_str()))?;
+                            if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::ReservationStarted) {return Err("reconciliation did not start".into());}
+                            if !driver.join_reservation().await {return Err("reconciliation did not drain".into());}
+                            let pin=match Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await {
+                                retained::Step::Reconciled(pin)=>pin,_=>return Err("reconciliation did not complete".into()),
+                            };
+                            if pin.sequence!=3 {return Err("reconciliation head changed".into());}
+                            let reconciled=driver.take_reservation().ok_or("reconciliation custody missing")?;
+                            if reconciled.inputs.plan.pending().is_some() || reconciled.inputs.plan.head()!=Some(pin) || reconciled.fenced {return Err("reconciliation custody invalid".into());}
+                            let inputs=reconciled.inputs;
+                            let mut plan=inputs.plan; plan.extend(1).map_err(|_|"second plan extension refused")?;
+                            let reserve=generation::ReservationWorker::new(generation::ReservationInputs {
+                                plan,request:generation::ReservationRequest::Reserve,journal_resource:inputs.journal_resource,custody_resource:inputs.custody_resource,
+                                journal_replay:inputs.journal_replay,custody_replay:inputs.custody_replay,
+                            }).map_err(|_|"second reservation worker invalid")?;
+                            let reserve=driver.offer_reconciliation(reserve).err().ok_or("reservation accepted as reconciliation")?;
+                            driver.offer_reservation(reserve).map_err(|_|"second reservation offer refused")?;
+                            if !matches!(Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await,retained::Step::ReservationStarted) {return Err("second reservation did not start".into());}
+                            if !driver.join_reservation().await {return Err("second reservation did not drain".into());}
+                            let second=match Box::pin(driver.step(owner,&op,Duration::from_millis(10),task,cx,clock,admission,admission,&BudgetVector::ZERO)).await {
+                                retained::Step::Reserved(identity)=>identity,_=>return Err("second reservation did not complete".into()),
+                            };
+                            if second.generation!=2 || second.journal_root.exists() || second.pin_root.exists() {return Err("second creator unexpectedly started".into());}
+                            println!("retained_video_reconciliation=recorded next_generation=2 creator_started=false evidence=synthetic_caller_claim");
+                        }
+                        let owners=driver.into_parts();
+                        if owners.reservation.is_some() || owners.started || (bootstrap_mode!=16 && owners.retirement.is_some()) {return Err("retained owner state unresolved".into());}
+                        let mut parts=owners.inner.into_parts();
+                        if bootstrap_mode==16 {
+                            let retirement=owners.retirement.as_ref().ok_or("second retirement missing")?;
+                            if retirement.inputs.plan.pending().map(|value|value.generation)!=Some(2) {return Err("second reservation custody invalid".into());}
+                            let worker=parts.worker.take().ok_or("second creator missing")?;
+                            let stopped=worker.retire().map_err(|_|"second creator unexpectedly running")?;
+                            if stopped.root_created || stopped.pin_root_created || stopped.outcome.is_some() {return Err("second creator performed I/O".into());}
+                        }
+                        let parts=parts.managed.into_parts();
+                        session=Some(match parts.owner {Some(video_session::ManagedOwner::Recording(session))=>*session,_=>return Err("retained session lost".into())});
+                        drop((first_retirement,owners.retirement,custody,bootstrap));
+                        rollover_count+=1; rollover_candidate=Some(candidate);
+                        println!("retained_video_provisioning=verified reservation_pending=true");
+                        continue;
+                    },
+                    video_worker::Outcome::Publication(video_worker::Publication::Refused { pending: Some(candidate), reason: video_worker::Refusal::BeforePublication(fss_reference::unifi_direct::av_worker::FailureReason::JournalCapacity) }) if bootstrap_mode == 11 && rollover_count == 0 => {
+                        use fss_reference::unifi_direct::{av_rollover_generation, av_rollover_supplies, video_provision};
+                        let current = session.take().ok_or("session missing for provisioning")?;
+                        let managed = video_session::ManagedSession::at_capacity(current, candidate).map_err(|_| "provisioning capacity refused")?;
+                        let mut plan = av_rollover_generation::Plan::new(av_rollover_generation::Configuration {
+                            namespace: "video-fixture".into(), scope_seed: ContentDigest::sha256(b"video fixture scope"), first: 1, count: 1,
+                            journal_replay: rollover_replay.clone(), pin_replay: rollover_replay.clone(),
+                            journal_io: Arc::new(HostSpoolIo), pin_io: Arc::new(HostSpoolIo), journal_limits: EffectJournalLimits::default(), pin_limits: EffectJournalLimits::default(),
+                            read: rollover_read.clone(), object_limits: archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:128*1024*1024}, work_limit: 4_000_000_000,
+                        }).map_err(|_| "video provisioning plan refused")?;
+                        let (_, creator) = plan.next_worker().map_err(|_| "video provisioning generation refused")?.ok_or("video provisioning worker missing")?;
+                        let mut driver = video_provision::ProvisioningSession::new(managed, creator);
+                        let mut custody = None; let mut supply_started = false; let mut began = false; let mut resumed = false;
+                        for round in 0..2048u64 {
+                            let op = OperationId::parse(format!("{}:provision-video-{round:016x}", operation.as_str()))?;
+                            match Box::pin(driver.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission, &BudgetVector::ZERO)).await {
+                                video_provision::Step::SupplyStarted => supply_started = true,
+                                video_provision::Step::SupplyInstalled(completion) if completion.runtime.is_ok() && completion.outcome == av_rollover_supplies::Outcome::Ready => { custody = driver.take_custody(); },
+                                video_provision::Step::Managed(video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle))) => (),
+                                video_provision::Step::Managed(video_session::ManagedStep::RolloverBeginning) => began = true,
+                                video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started | video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady))) => (),
+                                video_provision::Step::Managed(video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle)))) => (),
+                                video_provision::Step::Managed(video_session::ManagedStep::Resumed(receipt)) if receipt.outcome == fss_publication::RootLedgerOutcome::AlreadyLedgered => { resumed = true; break; },
+                                _ => return Err("video provisioning stopped".into()),
+                            }
+                        }
+                        if !supply_started || !began || !resumed || custody.is_none() { return Err("video provisioning did not complete".into()); }
+                        driver.set_plan(plan).map_err(|_| "video exhausted plan not installed")?;
+                        let op = OperationId::parse(format!("{}:video-plan-exhausted", operation.as_str()))?;
+                        if !matches!(Box::pin(driver.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission, &BudgetVector::ZERO)).await, video_provision::Step::PlanExhausted) { return Err("video plan exhaustion not reported".into()); }
+                        assert!(driver.extend_plan(0).is_err());
+                        driver.extend_plan(1).map_err(|_| "video plan renewal refused")?;
+                        let renewed = match Box::pin(driver.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission, &BudgetVector::ZERO)).await {
+                            video_provision::Step::SupplyPlanned(identity) => identity,
+                            _ => return Err("renewed video generation not planned".into()),
+                        };
+                        assert_eq!(renewed.generation, 2);
+                        assert!(driver.extend_plan(1).is_err());
+                        let mut owners = driver.into_parts();
+                        let planned_worker = owners.worker.take().ok_or("renewed video worker lost")?;
+                        assert!(planned_worker.retire().map_err(|_| "renewed video worker unexpectedly running")?.inputs.is_some());
+                        if owners.started || owners.failed.is_some() || owners.custody.is_some() || owners.ready.is_some() { return Err("video provisioning owners unresolved".into()); }
+                        let parts = owners.managed.into_parts();
+                        if parts.halted || parts.capacity.is_some() || parts.supplies.is_some() { return Err("provisioned session state unresolved".into()); }
+                        session = Some(match parts.owner { Some(video_session::ManagedOwner::Recording(session)) => *session, _ => return Err("provisioned session missing".into()) });
+                        drop(custody);
+                        rollover_count += 1; rollover_candidate = Some(candidate);
+                        println!("video_session_provisioned_rollover=verified");
+                        continue;
+                    },
+                    video_worker::Outcome::Publication(video_worker::Publication::Refused { pending: Some(candidate), reason: video_worker::Refusal::BeforePublication(fss_reference::unifi_direct::av_worker::FailureReason::JournalCapacity) }) if matches!(bootstrap_mode, 5 | 6 | 7 | 8 | 9 | 12) && rollover_count == 0 => {
+                        use fss_runtime::effect_journal::PinRetainedEffectJournal;
+                        task.checkpoint_for(RuntimeGrant::ObjectStage, rollover_root.to_str().ok_or("rollover path")?, clock.now()?, &BudgetVector::ZERO)?;
+                        let create = |name: &str| -> Result<Box<dyn fss_runtime::effect_journal::EffectJournalStore>, Box<dyn Error>> {
+                            Ok(Box::new(FileEffectJournal::create(rollover_root.join(name), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?))
+                        };
+                        let retainer = fss_object::effect_journal::FileTrustedRootPinRetainer::create(rollover_root.join("video-rollover-retainer"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(b"video-session-switch"))?;
+                        let supplies = fss_reference::unifi_direct::av_rollover_worker::Supplies {
+                            next_journal: create("video-rollover-journal")?, next_keeper: create("video-rollover-keeper")?,
+                            switch: PinRetainedEffectJournal::new(create("video-rollover-switch")?, Box::new(retainer))?,
+                            read: rollover_read.clone(), object_limits: archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:128*1024*1024}, work_limit:4_000_000_000,
+                        };
+                        let current = session.take().ok_or("session missing for rollover")?;
+                        if bootstrap_mode == 9 {
+                            let wrong = archive::UnknownTimePin { root: ContentDigest::sha256(b"wrong candidate"), ..candidate };
+                            let current = match video_session::ManagedSession::at_capacity(current, wrong) {
+                                Err(current) => current,
+                                Ok(_) => return Err("managed session accepted wrong capacity candidate".into()),
+                            };
+                            let mut managed = video_session::ManagedSession::at_capacity(current, candidate).map_err(|_| "managed capacity refused")?;
+                            if managed.control().is_none() { return Err("managed session lost controller".into()); }
+                            match Box::pin(managed.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission)).await {
+                                video_session::ManagedStep::SuppliesRequired(video_session::Step::VideoRetryRequired(supervisor::Step::Idle)) => (),
+                                _ => return Err("managed session did not wait for supplies".into()),
+                            }
+                            managed.provide(supplies).map_err(|_| "managed supplies refused")?;
+                            let mut began = false; let mut starts = 0usize; let mut receipt = None;
+                            for round in 0..2048u64 {
+                                let op = OperationId::parse(format!("{}:managed-video-{round:016x}", operation.as_str()))?;
+                                match Box::pin(managed.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission, admission)).await {
+                                    video_session::ManagedStep::RolloverBeginning => began = true,
+                                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Started) => starts += 1,
+                                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady)) => (),
+                                    video_session::ManagedStep::Rollover(video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle))) => (),
+                                    video_session::ManagedStep::Resumed(value) => { receipt = Some(value); break; },
+                                    _ => return Err("managed video rollover stopped".into()),
+                                }
+                            }
+                            if !began || starts != 2 || receipt.as_ref().is_none_or(|value| value.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered) { return Err("managed rollover did not resume".into()); }
+                            let parts = managed.into_parts();
+                            if parts.halted || parts.capacity.is_some() || parts.supplies.is_some() { return Err("managed rollover left pending state".into()); }
+                            let resumed = match parts.owner { Some(video_session::ManagedOwner::Recording(session)) => *session, _ => return Err("managed session not returned".into()) };
+                            session = Some(resumed); rollover_count += 1; rollover_candidate = Some(candidate);
+                            println!("video_session_managed_rollover=verified supplies_waited=true");
+                            continue;
+                        }
+                        let mut rollover = current.begin_rollover(supplies).map_err(|_| "session rollover refused")?;
+                        if rollover.control().is_none() { return Err("rollover lost controller".into()); }
+                        if bootstrap_mode == 8 {
+                            let mut auto = video_session::AutomaticRollover::new(rollover).map_err(|_| "automatic rollover refused")?;
+                            if auto.authorize_retry() { return Err("automatic retry armed before refusal".into()); }
+                            if !matches!(Box::pin(auto.step(owner, &op, Duration::ZERO, task, cx, clock, admission)).await, video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Context)) { return Err("automatic rollover accepted invalid wait".into()); }
+                            let mut bad_cost = BudgetVector::ZERO; bad_cost.bytes = 33_000_000;
+                            let bad = ArchiveAdmission { resource: admission.resource, cost: &bad_cost };
+                            if !matches!(Box::pin(auto.step(owner, &op, Duration::from_millis(10), task, cx, clock, bad)).await, video_session::AutomaticRolloverStep::StartRefused(_)) { return Err("automatic rollover did not report admission refusal".into()); }
+                            if !matches!(Box::pin(auto.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission)).await, video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle))) { return Err("automatic rollover silently retried admission".into()); }
+                            if !auto.authorize_retry() || auto.authorize_retry() { return Err("automatic admission retry was not single use".into()); }
+                            let mut starts = 0usize;
+                            let mut ready = false;
+                            for round in 0..2048u64 {
+                                let op = OperationId::parse(format!("{}:automatic-rollover-{round:016x}", operation.as_str()))?;
+                                match Box::pin(auto.step(owner, &op, Duration::from_millis(10), task, cx, clock, admission)).await {
+                                    video_session::AutomaticRolloverStep::Started => starts += 1,
+                                    video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::PreflightReady) => (),
+                                    video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Control(supervisor::Step::Idle)) => (),
+                                    video_session::AutomaticRolloverStep::Rollover(video_session::RolloverStep::Ready) => { ready = true; break; },
+                                    _ => return Err("automatic rollover stopped".into()),
+                                }
+                            }
+                            if !ready || starts != 2 { return Err("automatic rollover did not start both stages".into()); }
+                            let (mut resumed, receipt) = auto.into_rollover().resume().map_err(|_| "automatic rollover not ready")?;
+                            if receipt.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered || !resumed.authorize_video_retry() { return Err("automatic video retry refused".into()); }
+                            session = Some(resumed); rollover_count += 1; rollover_candidate = Some(candidate);
+                            println!("video_session_automatic_rollover=verified retry_explicit=true");
+                            continue;
+                        }
+                        match Box::pin(rollover.step(owner, &op, Duration::from_millis(10), task, cx, clock)).await {
+                            video_session::RolloverStep::Control(supervisor::Step::Idle) => (),
+                            _ => return Err("rollover did not service idle control".into()),
+                        }
+                        rollover.start(task, cx, clock, admission.resource, admission.cost).map_err(|e|format!("preflight start: {e:?}"))?;
+                        if matches!(bootstrap_mode, 6 | 12) {
+                            rollover.abort();
+                            if rollover.control().is_some() || !matches!(rollover.start(task, cx, clock, admission.resource, admission.cost), Err(video_session::RolloverStartError::Cancelled)) { return Err("cancelled rollover accepted work".into()); }
+                            let mut stopped = if bootstrap_mode == 12 { rollover.join_cancelled().await } else { false };
+                            for round in 0..if stopped { 0 } else { 2048u64 } {
+                                let op = OperationId::parse(format!("{}:rollover-cancel-{round:016x}", operation.as_str()))?;
+                                match Box::pin(rollover.step(owner, &op, Duration::from_millis(10), task, cx, clock)).await {
+                                    video_session::RolloverStep::Draining => asupersync::runtime::yield_now().await,
+                                    video_session::RolloverStep::Stopped => { stopped = true; break; },
+                                    _ => return Err("cancelled rollover advanced".into()),
+                                }
+                            }
+                            if !stopped { return Err("cancelled rollover did not drain".into()); }
+                            let parts = rollover.into_parts().map_err(|_| "cancelled rollover still running")?;
+                            if !parts.cancelled || parts.supplies.is_none() { return Err("cancelled rollover lost policy or supplies".into()); }
+                            let retirement = match parts.state {
+                                video_session::RolloverState::PreflightStopped { retirement, .. } => retirement,
+                                _ => return Err("cancelled preflight outcome lost".into()),
+                            };
+                            if !retirement.original.parts.sink.has_pending() { return Err("cancelled rollover lost pending source".into()); }
+                            drop((parts.supervisor, parts.source, parts.supplies, retirement));
+                            println!("video_session_cancelled_rollover=pending_source_retained joined_directly={}", bootstrap_mode == 12);
+                            return Ok::<bool, Box<dyn Error>>(true);
+                        }
+                        let mut started_transition = false;
+                        for round in 0..2048u64 {
+                            let op = OperationId::parse(format!("{}:rollover-{round:016x}", operation.as_str()))?;
+                            match Box::pin(rollover.step(owner, &op, Duration::from_millis(10), task, cx, clock)).await {
+                                video_session::RolloverStep::Control(supervisor::Step::Idle) => (),
+                                video_session::RolloverStep::PreflightReady if !started_transition => {
+                                    rollover.start(task, cx, clock, admission.resource, admission.cost).map_err(|e|format!("rollover start: {e:?}"))?;
+                                    started_transition = true;
+                                }
+                                video_session::RolloverStep::Ready if started_transition => break,
+                                video_session::RolloverStep::Stopped => {
+                                    let parts = rollover.into_parts().map_err(|_| "rollover stopped before draining")?;
+                                    let why = match &parts.state {
+                                        video_session::RolloverState::PreflightStopped { .. } => "preflight stopped".to_owned(),
+                                        video_session::RolloverState::PreflightTransferRefused(_) => "preflight transfer refused".to_owned(),
+                                        video_session::RolloverState::TransitionStopped { completion, .. } => match &completion.outcome {
+                                            fss_reference::unifi_direct::video_rollover_worker::Outcome::ReplayRefused { error, .. } => format!("replay refused: {error:?}"),
+                                            fss_reference::unifi_direct::video_rollover_worker::Outcome::BeginRefused(_) => "transition begin refused".to_owned(),
+                                            fss_reference::unifi_direct::video_rollover_worker::Outcome::CommitRefused(_) => "transition commit refused".to_owned(),
+                                            fss_reference::unifi_direct::video_rollover_worker::Outcome::AttachRefused { .. } => "transition prepare refused".to_owned(),
+                                            _ => "other transition outcome".to_owned(),
+                                        },
+                                        video_session::RolloverState::AttachRefused { .. } => "attachment refused".to_owned(),
+                                        _ => "other stopped state".to_owned(),
+                                    };
+                                    return Err(format!("rollover stopped: {why}").into());
+                                },
+                                video_session::RolloverStep::Control(step) => return Err(format!("rollover unexpected control: {:?}", std::mem::discriminant(&step)).into()),
+                                _ => return Err("rollover driver unexpected step".into()),
+                            }
+                        }
+                        if bootstrap_mode == 7 {
+                            rollover.abort();
+                            if !matches!(Box::pin(rollover.step(owner, &op, Duration::from_millis(10), task, cx, clock)).await, video_session::RolloverStep::Stopped) { return Err("cancelled ready rollover reported ready".into()); }
+                            let rollover = match rollover.resume() { Err(rollover) => rollover, Ok(_) => return Err("cancelled ready rollover resumed".into()) };
+                            let parts = rollover.into_parts().map_err(|_| "cancelled ready rollover still running")?;
+                            if !parts.cancelled { return Err("ready cancellation flag lost".into()); }
+                            match parts.state {
+                                video_session::RolloverState::Ready { video, .. } if video.status() == video_worker::Status::Pending => (),
+                                _ => return Err("ready cancellation lost pending video".into()),
+                            }
+                            drop((parts.supervisor, parts.source, parts.supplies));
+                            println!("video_session_cancelled_ready=resume_refused");
+                            return Ok::<bool, Box<dyn Error>>(true);
+                        }
+                        let (mut resumed, receipt) = rollover.resume().map_err(|_| "rollover not ready")?;
+                        if receipt.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered || !resumed.authorize_video_retry() { return Err("rollover retry refused".into()); }
+                        session = Some(resumed);
+                        rollover_count += 1;
+                        rollover_candidate = Some(candidate);
+                        if video_pins.contains(&candidate) { return Err("pending candidate already published".into()); }
+                    }
+                    _ => return Err("video publication failed".into()),
+                }
+            }
+            if video_pins.len() == if bootstrap_mode == 4 { 1 } else if matches!(bootstrap_mode, 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21) { 3 } else { 2 } {
+                if matches!(bootstrap_mode,14|17|19|20|21) { return Err("cancelled retained branch was not reached".into()); }
+                return Ok::<bool, Box<dyn Error>>(false);
+            }
+        }
+        Err("video session step limit".into())
+    }).await??;
+    if cancelled { return Ok(()); }
+    if let Some(managed) = managed_session {
+        let parts = managed.into_parts();
+        if parts.halted || parts.capacity.is_some() || parts.supplies.is_some() { return Err("managed automatic ownership incomplete".into()); }
+        session = Some(match parts.owner { Some(video_session::ManagedOwner::Recording(session)) => *session, _ => return Err("managed automatic session missing".into()) });
+    }
+    let mut session = session.ok_or("video session not returned")?;
+    if offered_sources < 2 || source_pins.len() != offered_sources || syncs == 0 || (matches!(bootstrap_mode, 5 | 8 | 9 | 10 | 11 | 13 | 15 | 16 | 18) && (rollover_count != 1 || rollover_candidate.is_some())) { return Err("source, rollover, or control accounting incomplete".into()); }
+    session.abort();
+    if session.control().is_some() { return Err("control available after stop".into()); }
+    if session.join_source().await.is_some() || session.join_video().await.is_some() { return Err("unexpected running publication on stop".into()); }
+    let parts = session.into_parts().map_err(|_| "video session did not drain")?;
+    let retired = parts.supervisor.retire();
+    if retired.time_sync.is_some() { return Err("clock attempt remained pending".into()); }
+    let held_framing = retired.media.ingress.framing.bytes().len();
+    let held_recorder = retired.media.recorder.source_bytes;
+    let tail = retirement_source::Plan::new(retired.media).map_err(|refusal| format!("tail plan refused: {:?}", refusal.reason))?;
+    if tail.pending_audio.is_some() || tail.recorder_fenced || tail.is_empty() { return Err("unexpected tail ownership state".into()); }
+    let tail_start = tail.start.ok_or("tail start missing")?;
+    let tail_end = tail.end.ok_or("tail end missing")?;
+    if tail_end != tail.received { return Err("tail did not reach received offset".into()); }
+    let mut tail_pins = Vec::new();
+    let mut driver = retirement_source::Driver::begin(parts.source, tail, key, parts.camera_claim).map_err(|_| "tail driver refused")?;
+    if driver.authorize_retry() { return Err("tail retry without pending source".into()); }
+    let mut pending = None;
+    let mut force_refusal = false;
+    let mut awaiting_retry = false;
+    let mut tail_retried = false;
+    let mut unframed_count = 0usize;
+    let mut bad_cost = BudgetVector::ZERO;
+    bad_cost.bytes = 33_000_000;
+    let bad_admission = ArchiveAdmission { resource: admission.resource, cost: &bad_cost };
+    loop {
+        let attempt = if force_refusal { bad_admission } else { admission };
+        match Box::pin(driver.step(task, cx, clock, attempt)).await {
+            retirement_source::DriverStep::Offered { offset, len, disposition } => {
+                if disposition == recording::SourceDisposition::Unframed { unframed_count += 1; }
+                let start = usize::try_from(offset)?;
+                let bytes = expected.get(start..start.checked_add(len).ok_or("tail range overflow")?).ok_or("tail range missing")?;
+                pending = Some((offset, len, ContentDigest::sha256(bytes), disposition));
+                if bootstrap_mode == 3 && !tail_retried { force_refusal = true; }
+            },
+            retirement_source::DriverStep::StartRefused(fss_reference::unifi_direct::av_worker::StartError::Task(_)) if force_refusal => {
+                force_refusal = false;
+                awaiting_retry = true;
+            },
+            retirement_source::DriverStep::RetryRequired if awaiting_retry => {
+                if !driver.authorize_retry() || driver.authorize_retry() { return Err("tail retry authorization failed".into()); }
+                awaiting_retry = false;
+                tail_retried = true;
+            },
+            retirement_source::DriverStep::Started => (),
+            retirement_source::DriverStep::Completed(completion) => {
+                if completion.runtime.is_err() { return Err("tail source runtime failed".into()); }
+                let pin = match completion.outcome {
+                    source_worker::Outcome::Publication(source_worker::Publication::Published { pin, .. }) => pin,
+                    _ => return Err("tail source publication failed".into()),
+                };
+                let (offset, length, digest, disposition) = pending.take().ok_or("tail completion without source")?;
+                tail_pins.push((pin, offset, length, digest, disposition));
+            },
+            retirement_source::DriverStep::Finished => break,
+            _ => return Err("tail driver stopped unexpectedly".into()),
+        }
+    }
+    if pending.is_some() || (bootstrap_mode == 3 && !tail_retried) || (bootstrap_mode != 4 && unframed_count == 0) { return Err("tail driver did not preserve the unframed suffix or finish its retry".into()); }
+    let tail_count = tail_pins.len();
+    let tail_parts = driver.into_parts().map_err(|_| "tail driver did not drain")?;
+    if !tail_parts.plan.is_empty() { return Err("tail driver left unoffered source".into()); }
+    let source = tail_parts.worker.retire().map_err(|_| "source worker did not retire")?;
+    if source.fenced || source.pending.is_some() { return Err("source custody unresolved".into()); }
+    let mut source = source.parts;
+    for pin in source_pins {
+        let record = archive::read_unknown_time_source(&mut source.deployment, pin, access, archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &source.replay)?;
+        let start = usize::try_from(record.offset())?;
+        let end = start.checked_add(record.bytes().len()).ok_or("source offset overflow")?;
+        if expected.get(start..end) != Some(record.bytes()) { return Err("source bytes changed".into()); }
+    }
+    for (pin, offset, length, digest, disposition) in tail_pins {
+        let record = archive::read_unknown_time_source(&mut source.deployment, pin, access, archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &source.replay)?;
+        if record.offset() != offset || record.bytes().len() != length || ContentDigest::sha256(record.bytes()) != digest || record.disposition() != disposition { return Err("tail source readback changed".into()); }
+    }
+    let video = parts.video.retire().map_err(|_| "video worker did not retire")?;
+    if video.fenced || video.report.is_some() { return Err("video worker fenced".into()); }
+    let mut video = video.parts;
+    for pin in video_pins {
+        let clip = archive::read_unknown_time_video_clip(&mut video.deployment, pin, access, archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.replay)?;
+        if clip.claimed_source() != key || clip.samples() == 0 { return Err("video source readback failed".into()); }
+        if bootstrap_mode == 4 {
+            let movie = AvcMp4::parse_inband(clip.bytes(), None, DemuxLimits::default())?;
+            let annex = movie.annex_b(0, movie.samples().len().min(3))?;
+            let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+            let mut frames = decoder.decode_annex_b(annex.bytes())?;
+            frames.extend(decoder.finish()?);
+            let frame = frames.first().ok_or("private session video decode missing")?;
+            if (frame.width(), frame.height()) != (2688, 1512) { return Err("private session video resolution mismatch".into()); }
+            println!("private_bootstrap_replay=passed width={} height={} frames={} held_framing_bytes={held_framing} held_recorder_bytes={held_recorder} capture_bounds=unknown full_coverage=unproven", frame.width(), frame.height(), frames.len());
+        }
+        if matches!(bootstrap_mode,15|18) {
+            let movie=AvcMp4::parse_inband(clip.bytes(),None,DemuxLimits::default())?;
+            let annex=movie.annex_b(0,1)?;
+            let mut decoder=fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+            let mut frames=decoder.decode_annex_b(annex.bytes())?;
+            frames.extend(decoder.finish()?);
+            let frame=frames.first().ok_or("private retained video decode missing")?;
+            if (frame.width(),frame.height())!=(1280,720) {return Err("private retained video resolution mismatch".into());}
+            println!("retained_private_decoded width={} height={} frames={} decode_scope=fragment_idr capture_bounds=unknown",frame.width(),frame.height(),frames.len());
+        }
+    }
+    let retired_sink = video.sink.retire();
+    if retired_sink.pending.is_some() || retired_sink.pending_pin.is_some() { return Err("video source left pending".into()); }
+    println!("video_session_loopback=passed sources={offered_sources} video_segments={} tail_records={tail_count} unframed_records={unframed_count} tail_start={tail_start} tail_end={tail_end} audio_samples=0 capture_bounds=unknown", if bootstrap_mode == 4 { 1 } else if matches!(bootstrap_mode, 5 | 8 | 9 | 10 | 11 | 13 | 15 | 16 | 18) { 3 } else { 2 });
+    Ok(())
 }
 
 #[test]
@@ -3482,8 +5708,10 @@ fn owned_boundary_survives_writer_process_exit() -> Test {
 
 /// Focused owned-session replay. The synthetic peer only supplies transport;
 /// the caller's bounded FLV bytes remain the source used for archive checks.
-fn lean_owned_session_replay(wire: Vec<u8>, test_refusal: bool, require_distinct: bool, initial_video_only: bool) -> Test {
-    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-owned-replay-{}",std::process::id()));
+fn lean_owned_session_replay(wire: Vec<u8>, test_refusal: bool, require_distinct: bool, initial_video_only: bool, video_session: u8) -> Test {
+    static NEXT_SCENARIO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let scenario=NEXT_SCENARIO.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-owned-replay-{}-{scenario}",std::process::id()));
     std::fs::create_dir(&path)?;let temp=Temp(path);
     let store=FileEffectJournal::create(temp.0.join("effects"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
     let mut effects=EffectCoordinator::with_journal(Box::new(store))?;
@@ -3502,7 +5730,7 @@ fn lean_owned_session_replay(wire: Vec<u8>, test_refusal: bool, require_distinct
     runtime.block_on(async {
         let cx=asupersync::Cx::current().ok_or("missing runtime")?;
         let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:owned-replay")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
-            let output=Box::pin(lean_owned_session_task(task,cx,&mut effects,&leases,management,stream,&operations,&temp.0,wire,test_refusal,require_distinct,initial_video_only)).await;
+            let output=Box::pin(lean_owned_session_task(task,cx,&mut effects,&leases,management,stream,&operations,&temp.0,wire,test_refusal,require_distinct,initial_video_only,video_session)).await;
             let outcome=if output.is_ok(){TaskOutcome::Indeterminate("fixture effects require reconciliation".into())}else{TaskOutcome::Failed("owned replay failed".into())};
             TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
         }).await?;
@@ -3519,7 +5747,7 @@ fn lean_owned_session_replay(wire: Vec<u8>, test_refusal: bool, require_distinct
 async fn lean_owned_session_task<'scope,'task>(
     task:&'scope fss_runtime::execution::TaskCx<'task>,cx:&'scope asupersync::Cx,
     effects:&mut EffectCoordinator,leases:&RefCell<LeaseRegistry>,management:Preconditions,
-    stream:intent::Preconditions,operations:&[OperationId],temp:&std::path::Path,wire:Vec<u8>,test_refusal:bool,require_distinct:bool,initial_video_only:bool,
+    stream:intent::Preconditions,operations:&[OperationId],temp:&std::path::Path,wire:Vec<u8>,test_refusal:bool,require_distinct:bool,initial_video_only:bool,video_session:u8,
 ) -> Test {
     use fss_reference::unifi_direct::{archive,av_bootstrap,av_bootstrap_driver,av_owned_sink,recording_storage};
     struct Retention;
@@ -3541,7 +5769,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
     let address=SocketAddr::V4(control.local_addr());let expected=wire.clone();
     let peer=std::thread::spawn(move || -> io::Result<()> {
-        let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(if video_session == 4 { 60 } else { 10 })))?;
         let mut request=HEAD.as_bytes().to_vec();request.extend(frame(HELLO));socket.write_all(&request)?;
         let mut header=Vec::new();let mut byte=[0u8;1];while !header.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte)?;header.push(byte[0]);if header.len()>4096{return Err(io::Error::other("upgrade limit"));}}
         if !header.starts_with(b"HTTP/1.1 101 "){return Err(io::Error::other("upgrade refused"));}
@@ -3572,7 +5800,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let mut owner=conversation::Owner {cx,task,clock,effects,leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
     let start=listener::Start {bind,resource:"fixture:camera",admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&operations[0],agreement:&operations[1],stream:&operations[2],time_sync:&operations[3..4],management,stream_conditions:stream,chunk_bytes:4096,max_bytes:u64::try_from(expected.len())?+1,bind_wait:Duration::from_secs(5),conversation_wait:Duration::from_secs(5),accept_wait:Duration::from_secs(5)};
     let framer=Framer::with_mode(FlvLimits::default(),fss_packet::extended_flv::stream::MAX_BUFFER_BYTES,fss_packet::extended_flv::stream::SearchMode::ZeroStreamId)?;
-    let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
+    let recorder=if video_session == 4 { recording::Recorder::new_inband(SourceKey {connection:1,generation:1},recording::Limits::default())? } else { recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())? };
     let mut trace=listener::StartTrace::default();
     let started=listener::start_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace).await?;
     let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,management);
@@ -3587,8 +5815,14 @@ async fn lean_owned_session_task<'scope,'task>(
         camera_claim:ContentDigest::sha256(b"fixture camera"),source_retention:ContentDigest::sha256(b"owned retention"),
         source_scope:ContentDigest::sha256(b"owned source scope"),av_scope:ContentDigest::sha256(b"owned av scope"),
         source_deployment_limits:owned_source_limits(),av_deployment_limits:owned_av_limits(),
+        source_history_limits:EffectJournalLimits {max_records:512,..EffectJournalLimits::default()},av_history_limits:EffectJournalLimits {max_records:if matches!(video_session, 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21) {5} else {256},..EffectJournalLimits::default()},
         limits:archive::Limits::default(),max_source_bytes:1024*1024,work_limit:4_000_000_000,
     };
+    let bad_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+    let bad_cfg=recording_storage::Configuration {av_history_limits:EffectJournalLimits {max_records:0,..storage_cfg.av_history_limits},..storage_cfg};
+    assert!(matches!(recording_storage::create(task,cx,clock,bad_cfg,bad_source,bad_av,access.clone()),Err(recording_storage::Error::Configuration)));
+    assert!(!root.exists());
     let bad_source=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
     let bad_av=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
     let bad_cfg=recording_storage::Configuration {av_scope:storage_cfg.source_scope,..storage_cfg};
@@ -3629,6 +5863,11 @@ async fn lean_owned_session_task<'scope,'task>(
     };
     let retainers=recording_storage::Retainers {source_journal:retainer("source-journal")?,source_keeper:retainer("source-keeper")?,av_journal:retainer("av-journal")?,av_keeper:retainer("av-keeper")?};
     let recording_storage::Created {coordinator,av:resources}=recording_storage::create_retained(task,cx,clock,storage_cfg,replay,av_replay,access.clone(),retainers)?;
+    if video_session != 0 {
+        Box::pin(drive_video_only_session(supervisor, coordinator, resources, &expected, &mut owner, &operations[4], access.as_ref(), access.clone(), temp, Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?), task, cx, clock, if video_session >= 2 { video_session } else { 0 })).await?;
+        peer.join().map_err(|_|"video session peer panicked")??;
+        return Ok(());
+    }
     assert_eq!(*resources.deployment.limits(),owned_av_limits());
     #[cfg(unix)]
     {

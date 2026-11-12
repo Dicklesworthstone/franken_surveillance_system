@@ -18,9 +18,10 @@ use asupersync::{
 };
 use fss_core::{ContentDigest, DigestAlgorithm, OperationId};
 use std::{
-    cell::{Cell, OnceCell},
+    cell::{Cell, OnceCell, RefCell},
     fmt,
     future::{Future, poll_fn},
+    marker::PhantomData,
     net::Ipv4Addr,
     pin::Pin,
     rc::Rc,
@@ -152,8 +153,31 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// A refused refresh returns the exact supplied discovery window.
+#[must_use = "retain or explicitly discard the refused discovery window"]
+pub struct RefreshRefusal {
+    /// Payload-free refusal category.
+    pub reason: Error,
+    /// Original report, which remains an unauthenticated observation.
+    pub report: Report,
+}
+impl fmt::Debug for RefreshRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshRefusal")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+impl fmt::Display for RefreshRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi discovery refresh refused: {:?}", self.reason)
+    }
+}
+impl std::error::Error for RefreshRefusal {}
+
 struct Record {
     enrollment: Enrollment,
+    report: RefCell<Rc<Report>>,
     state: Cell<State>,
     operation: OnceCell<OperationId>,
     route_ready: Cell<bool>,
@@ -454,13 +478,30 @@ impl<'fleet, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, 'policy: 'fleet>
     }
 }
 
-/// One completed discovery window matched against a bounded owner inventory.
-/// Holds no camera sockets or secrets. The report borrow prevents mutating the
-/// discovery claims while their indexes are in use.
+/// One immutable discovery window and its corresponding unregistered indexes.
+/// Retaining this snapshot keeps its indexes bound to the exact same report.
+pub struct DiscoverySnapshot {
+    report: Rc<Report>,
+    unknown: Rc<[usize]>,
+}
+impl DiscoverySnapshot {
+    /// Completed, unauthenticated discovery report.
+    pub fn report(&self) -> &Report {
+        &self.report
+    }
+    /// Indexes into this snapshot's report, not durable camera identities.
+    pub fn unknown_claims(&self) -> &[usize] {
+        &self.unknown
+    }
+}
+
+/// Completed discovery windows matched against a bounded owner inventory.
+/// Holds no camera sockets or secrets. Attempted entries keep their original
+/// owned report while unattempted entries can follow newer completed windows.
 pub struct Fleet<'a> {
-    report: &'a Report,
+    latest: RefCell<Rc<DiscoverySnapshot>>,
+    initial_report: PhantomData<&'a Report>,
     records: Vec<Record>,
-    unknown: Vec<usize>,
 }
 
 impl<'a> Fleet<'a> {
@@ -471,9 +512,17 @@ impl<'a> Fleet<'a> {
         if !report.valid_completed() {
             return Err(Error::IncompleteReport);
         }
+        Self::build(report.clone(), inventory)
+    }
+
+    fn build(report: Report, inventory: &[Enrollment]) -> Result<Self, Error> {
+        if !report.valid_completed() {
+            return Err(Error::IncompleteReport);
+        }
         if inventory.len() > MAX_INVENTORY {
             return Err(Error::Configuration);
         }
+        let report = Rc::new(report);
         for (i, entry) in inventory.iter().enumerate() {
             if inventory[..i]
                 .iter()
@@ -496,6 +545,7 @@ impl<'a> Fleet<'a> {
             };
             records.push(Record {
                 enrollment: *entry,
+                report: RefCell::new(Rc::clone(&report)),
                 state: Cell::new(state),
                 operation: OnceCell::new(),
                 route_ready: Cell::new(false),
@@ -518,10 +568,150 @@ impl<'a> Fleet<'a> {
             }
         }
         Ok(Self {
-            report,
+            latest: RefCell::new(Rc::new(DiscoverySnapshot {
+                report,
+                unknown: unknown.into(),
+            })),
+            initial_report: PhantomData,
             records,
-            unknown,
         })
+    }
+
+    /// Install a new completed window for entries without an entered setup.
+    /// Attempted entries retain their original report, operation and routing
+    /// state, including interrupted attempts. A refusal changes nothing.
+    /// The caller supplies and owns the bounded scan; this does not scan,
+    /// authenticate a peer, or authorize an automatic retry.
+    pub fn refresh(&self, report: Report) -> Result<(), RefreshRefusal> {
+        if !report.valid_completed() {
+            return Err(RefreshRefusal {
+                reason: Error::IncompleteReport,
+                report,
+            });
+        }
+        let mut states = Vec::new();
+        if states.try_reserve_exact(self.records.len()).is_err() {
+            return Err(RefreshRefusal {
+                reason: Error::Allocation,
+                report,
+            });
+        }
+        for record in &self.records {
+            let state = match record.state.get() {
+                State::InFlight { .. } | State::Finished { .. } => None,
+                _ => Some(match report.select_mac_claim(record.enrollment.mac) {
+                    Ok(candidate) => State::Ready { candidate },
+                    Err(SelectionError::NotObserved) => State::NotObserved,
+                    Err(SelectionError::Conflicted) => State::Conflicted,
+                    Err(SelectionError::IncompleteReport) => {
+                        return Err(RefreshRefusal {
+                            reason: Error::IncompleteReport,
+                            report,
+                        });
+                    }
+                    Err(SelectionError::InvalidMac) => {
+                        return Err(RefreshRefusal {
+                            reason: Error::Configuration,
+                            report,
+                        });
+                    }
+                }),
+            };
+            states.push(state);
+        }
+        let mut unknown = Vec::new();
+        if unknown.try_reserve_exact(report.cameras.len()).is_err() {
+            return Err(RefreshRefusal {
+                reason: Error::Allocation,
+                report,
+            });
+        }
+        for (index, candidate) in report.cameras.iter().enumerate() {
+            if !self
+                .records
+                .iter()
+                .any(|record| Some(record.enrollment.mac) == candidate.mac())
+            {
+                unknown.push(index);
+            }
+        }
+        let report = Rc::new(report);
+        for (record, state) in self.records.iter().zip(states) {
+            if let Some(state) = state {
+                *record.report.borrow_mut() = Rc::clone(&report);
+                record.state.set(state);
+            }
+        }
+        *self.latest.borrow_mut() = Rc::new(DiscoverySnapshot {
+            report,
+            unknown: unknown.into(),
+        });
+        Ok(())
+    }
+
+    /// Add an explicitly supplied owner binding without rebuilding the fleet.
+    /// An unknown discovery claim alone cannot create credentials or authority.
+    /// Existing attempted entries and their reservations are left unchanged.
+    pub fn add_enrollment(&mut self, enrollment: Enrollment) -> Result<usize, Error> {
+        if self.records.len() == MAX_INVENTORY
+            || self.records.iter().any(|record| {
+                record.enrollment.mac == enrollment.mac
+                    || record.enrollment.camera == enrollment.camera
+            })
+        {
+            return Err(Error::Configuration);
+        }
+        let report = Rc::clone(&self.latest.get_mut().report);
+        let state = match report.select_mac_claim(enrollment.mac) {
+            Ok(candidate) => State::Ready { candidate },
+            Err(SelectionError::NotObserved) => State::NotObserved,
+            Err(SelectionError::Conflicted) => State::Conflicted,
+            Err(SelectionError::IncompleteReport) => return Err(Error::IncompleteReport),
+            Err(SelectionError::InvalidMac) => return Err(Error::Configuration),
+        };
+        let mut unknown = Vec::new();
+        unknown
+            .try_reserve_exact(report.cameras.len())
+            .map_err(|_| Error::Allocation)?;
+        for (index, candidate) in report.cameras.iter().enumerate() {
+            if Some(enrollment.mac) != candidate.mac()
+                && !self
+                    .records
+                    .iter()
+                    .any(|record| Some(record.enrollment.mac) == candidate.mac())
+            {
+                unknown.push(index);
+            }
+        }
+        self.records.try_reserve(1).map_err(|_| Error::Allocation)?;
+        let index = self.records.len();
+        self.records.push(Record {
+            enrollment,
+            report: RefCell::new(Rc::clone(&report)),
+            state: Cell::new(state),
+            operation: OnceCell::new(),
+            route_ready: Cell::new(false),
+            active: Rc::new(Cell::new(false)),
+            setup_live: Cell::new(false),
+            waiting: Cell::new(false),
+            changed: Notify::new(),
+        });
+        *self.latest.get_mut() = Rc::new(DiscoverySnapshot {
+            report,
+            unknown: unknown.into(),
+        });
+        Ok(index)
+    }
+
+    /// A stable snapshot of the latest completed report and its claim indexes.
+    pub fn latest_snapshot(&self) -> Rc<DiscoverySnapshot> {
+        Rc::clone(&self.latest.borrow())
+    }
+
+    /// The latest completed report. Pair indexes with `latest_snapshot` when
+    /// they must remain tied to the same window across an async yield.
+    pub fn latest_report(&self) -> Rc<Report> {
+        Rc::clone(&self.latest.borrow().report)
     }
 
     /// Number of caller-supplied inventory entries, including missing entries.
@@ -548,8 +738,8 @@ impl<'a> Fleet<'a> {
     }
     /// Indexes of claims not matched to an inventory MAC, including claims
     /// without a usable MAC. These remain untrusted and are not setup targets.
-    pub fn unknown_claims(&self) -> &[usize] {
-        &self.unknown
+    pub fn unknown_claims(&self) -> Rc<[usize]> {
+        Rc::clone(&self.latest.borrow().unknown)
     }
     /// First ready inventory entry in caller-supplied order, if any.
     pub fn next_ready(&self) -> Option<usize> {
@@ -615,13 +805,15 @@ impl<'a> Fleet<'a> {
                 .iter()
                 .enumerate()
                 .filter(|(_, record)| match record.state.get() {
-                    State::InFlight { candidate } => self
+                    State::InFlight { candidate } => record
                         .report
+                        .borrow()
                         .cameras
                         .get(candidate)
                         .is_some_and(|camera| *camera.source().ip() == source),
-                    State::Finished { candidate } if record.route_ready.get() => self
+                    State::Finished { candidate } if record.route_ready.get() => record
                         .report
+                        .borrow()
                         .cameras
                         .get(candidate)
                         .is_some_and(|camera| *camera.source().ip() == source),
@@ -745,8 +937,9 @@ impl<'a> Fleet<'a> {
         if certificate != entry.certificate || credential_handle != entry.credential {
             return Err(Error::Binding);
         }
+        let report = Rc::clone(&record.report.borrow());
         let cfg = setup::Config {
-            report: self.report,
+            report: &report,
             index: candidate,
             camera: entry.camera,
             peer_admission: entry.peer_admission,
@@ -791,6 +984,14 @@ impl<'a> Fleet<'a> {
         });
         self.records[index].changed.notify_waiters();
         result.map_err(Error::Setup)
+    }
+}
+
+impl Fleet<'static> {
+    /// Create a fleet by taking ownership of its first completed window. This
+    /// lets a long-running owner release superseded windows once unreferenced.
+    pub fn from_report(report: Report, inventory: &[Enrollment]) -> Result<Self, Error> {
+        Self::build(report, inventory)
     }
 }
 
@@ -853,7 +1054,7 @@ mod tests {
         assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
         assert_eq!(fleet.state(1), Some(State::Conflicted));
         assert_eq!(fleet.state(2), Some(State::NotObserved));
-        assert_eq!(fleet.unknown_claims(), &[3, 4]);
+        assert_eq!(fleet.unknown_claims().as_ref(), &[3, 4]);
         assert!(!format!("{first:?}").contains("10.1.2"));
     }
 
@@ -943,5 +1144,131 @@ mod tests {
         assert_eq!(fleet.state(0), Some(State::InFlight { candidate: 0 }));
         assert_eq!(fleet.state(1), Some(State::Finished { candidate: 1 }));
         assert_eq!(fleet.next_ready(), None);
+    }
+
+    #[test]
+    fn refresh_discovers_later_camera_without_reopening_interrupted_attempt() {
+        let first = entry(1);
+        let second = entry(2);
+        let fleet = Fleet::from_report(
+            report(vec![candidate(10, Some(first.mac))]),
+            &[first, second],
+        )
+        .unwrap();
+        let old_report = Rc::downgrade(&fleet.records[0].report.borrow());
+        let first_op = OperationId::parse("operation:refresh-first").unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        let mut work = Box::pin(fleet.drive(0, &first_op, std::future::pending::<()>()));
+        assert!(matches!(work.as_mut().poll(&mut context), Poll::Pending));
+        let earlier = fleet.latest_snapshot();
+        fleet
+            .refresh(report(vec![
+                candidate(30, Some(entry(3).mac)),
+                candidate(20, Some(second.mac)),
+                candidate(11, Some(first.mac)),
+            ]))
+            .unwrap();
+        assert_eq!(fleet.state(0), Some(State::InFlight { candidate: 0 }));
+        assert_eq!(fleet.operation(0), Some(&first_op));
+        assert_eq!(
+            fleet.records[0].report.borrow().cameras[0].source().ip(),
+            &Ipv4Addr::new(192, 168, 7, 10)
+        );
+        assert!(old_report.upgrade().is_some());
+        assert_eq!(fleet.state(1), Some(State::Ready { candidate: 1 }));
+        assert_eq!(fleet.unknown_claims().as_ref(), &[0]);
+        assert_eq!(fleet.latest_report().cameras[1].mac(), Some(second.mac));
+        assert!(earlier.unknown_claims().is_empty());
+        assert_eq!(earlier.report().cameras[0].mac(), Some(first.mac));
+        let mut reused = Box::pin(fleet.drive(1, &first_op, std::future::ready(())));
+        assert!(matches!(
+            reused.as_mut().poll(&mut context),
+            Poll::Ready(Err(Error::DuplicateOperation))
+        ));
+        drop(reused);
+        drop(work);
+
+        let before = fleet.latest_snapshot();
+        let mut incomplete = report(vec![candidate(22, Some(second.mac))]);
+        incomplete.stop = Stop::PacketLimit;
+        let refusal = fleet.refresh(incomplete).unwrap_err();
+        assert_eq!(refusal.reason, Error::IncompleteReport);
+        assert_eq!(refusal.report.stop, Stop::PacketLimit);
+        assert_eq!(
+            refusal.report.cameras[0].source().ip(),
+            &Ipv4Addr::new(192, 168, 7, 22)
+        );
+        assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
+        assert_eq!(fleet.state(1), Some(State::Ready { candidate: 1 }));
+        assert_eq!(fleet.unknown_claims().as_ref(), &[0]);
+
+        fleet
+            .refresh(report(vec![
+                candidate(20, Some(second.mac)),
+                candidate(21, Some(second.mac)),
+            ]))
+            .unwrap();
+        assert_eq!(fleet.state(1), Some(State::Conflicted));
+        assert_eq!(fleet.state(0), Some(State::InFlight { candidate: 0 }));
+        fleet
+            .refresh(report(vec![candidate(22, Some(second.mac))]))
+            .unwrap();
+        assert_eq!(fleet.state(1), Some(State::Ready { candidate: 0 }));
+        assert_eq!(
+            fleet.records[0].report.borrow().cameras[0].source().ip(),
+            &Ipv4Addr::new(192, 168, 7, 10)
+        );
+    }
+
+    #[test]
+    fn refresh_releases_superseded_unattempted_window() {
+        let one = entry(1);
+        let fleet = Fleet::from_report(report(vec![candidate(10, Some(one.mac))]), &[one]).unwrap();
+        let old = Rc::downgrade(&fleet.latest.borrow().report);
+        fleet
+            .refresh(report(vec![candidate(11, Some(one.mac))]))
+            .unwrap();
+        assert!(old.upgrade().is_none());
+        assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+        assert_eq!(
+            fleet.latest_report().cameras[0].source().ip(),
+            &Ipv4Addr::new(192, 168, 7, 11)
+        );
+    }
+
+    #[test]
+    fn add_enrollment_preserves_attempts_and_matches_latest_window() {
+        let first = entry(1);
+        let second = entry(2);
+        let mut fleet = Fleet::from_report(
+            report(vec![
+                candidate(10, Some(first.mac)),
+                candidate(20, Some(second.mac)),
+                candidate(30, None),
+            ]),
+            &[first],
+        )
+        .unwrap();
+        let operation = OperationId::parse("operation:dynamic-first").unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        {
+            let mut work = Box::pin(fleet.drive(0, &operation, std::future::pending::<()>()));
+            assert!(matches!(work.as_mut().poll(&mut context), Poll::Pending));
+        }
+        assert_eq!(fleet.unknown_claims().as_ref(), &[1, 2]);
+        assert_eq!(fleet.add_enrollment(second), Ok(1));
+        assert_eq!(fleet.state(0), Some(State::InFlight { candidate: 0 }));
+        assert_eq!(fleet.operation(0), Some(&operation));
+        assert_eq!(fleet.state(1), Some(State::Ready { candidate: 1 }));
+        assert_eq!(fleet.unknown_claims().as_ref(), &[2]);
+        assert_eq!(fleet.add_enrollment(second), Err(Error::Configuration));
+        let mut duplicate_camera = entry(3);
+        duplicate_camera.camera = first.camera;
+        assert_eq!(
+            fleet.add_enrollment(duplicate_camera),
+            Err(Error::Configuration)
+        );
+        assert_eq!(fleet.len(), 2);
+        assert_eq!(fleet.unknown_claims().as_ref(), &[2]);
     }
 }
