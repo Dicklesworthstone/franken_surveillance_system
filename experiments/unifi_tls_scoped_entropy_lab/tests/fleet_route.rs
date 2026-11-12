@@ -385,6 +385,7 @@ fn parallel_fleet_upgrade_scenario(
     capacity: usize,
     full_resolution: bool,
     changed_readback: bool,
+    abort_source: bool,
 ) -> Test {
     eprintln!("fleet_fixture scenario capacity={capacity} full_resolution={full_resolution} changed_readback={changed_readback}");
     use asupersync::{io::AsyncReadExt, time::timeout};
@@ -540,6 +541,7 @@ fn parallel_fleet_upgrade_scenario(
         }
     }
     struct AutoMedia<'scope, 'task> {
+        index: usize,
         cx: &'scope asupersync::Cx,
         task: &'scope fss_runtime::execution::TaskCx<'task>,
         clock: MeteredClock<'scope, 'task>,
@@ -552,6 +554,9 @@ fn parallel_fleet_upgrade_scenario(
         admission: ContentDigest,
         fence: u64,
         full_resolution: bool,
+        archive_base: Option<PathBuf>,
+        archive_budget: BudgetVector,
+        abort_source: bool,
         candidate_hold: Arc<AtomicBool>,
         candidate_proceed: Arc<AtomicBool>,
     }
@@ -564,8 +569,8 @@ fn parallel_fleet_upgrade_scenario(
         fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy,
             RoutedTransport<'scope, 'task, 'policy>>) -> TrackedStreamWork<'scope, (Test, EffectCoordinator)> {
         move |index, enrollment, reported_video, mut session| {
-            assert_eq!(index, 1);
-            assert_eq!(enrollment.mac(), MACS[1]);
+            assert_eq!(index, state.index);
+            assert_eq!(enrollment.mac(), MACS[index]);
             assert_eq!(session.claimed_mac(), enrollment.mac());
             let (channel, profile) = reported_video.expect("setup-time profile must reach the stream factory");
             assert_eq!(channel, if state.full_resolution { VideoChannel::Video1 } else { VideoChannel::Video2 });
@@ -576,6 +581,9 @@ fn parallel_fleet_upgrade_scenario(
             let polled = polled.clone();
             let release = release.clone();
             let effects = state.effects.take().expect("one effect owner per fixture stream");
+            let archive_base = state.archive_base.take();
+            let archive_budget = state.archive_budget;
+            let abort_source = state.abort_source;
             let candidate_hold = state.candidate_hold.clone();
             let candidate_proceed = state.candidate_proceed.clone();
             let (cx, task, clock, leases, policy, resource, peer, camera, admission, fence, full_resolution) =
@@ -589,11 +597,11 @@ fn parallel_fleet_upgrade_scenario(
                     polled.set(polled.get() + 1);
                     if release.get() { Poll::Ready(()) } else { Poll::Pending }
                 }).await;
-                let guard = Guard { leases, clock, mac: MACS[1] };
+                let guard = Guard { leases, clock, mac: MACS[index] };
                 let mut owner = conversation::Owner { cx, task, clock, effects: &mut effects, leases, approval: &Approval, management_authority: &guard, stream_authority: &guard, wall: &Wall };
-                let hello = OperationId::parse("operation:auto-media-hello")?;
-                let agreement = OperationId::parse("operation:auto-media-agreement")?;
-                let stream = OperationId::parse("operation:auto-media-stream")?;
+                let hello = OperationId::parse(format!("operation:auto-media-{index}-hello"))?;
+                let agreement = OperationId::parse(format!("operation:auto-media-{index}-agreement"))?;
+                let stream = OperationId::parse(format!("operation:auto-media-{index}-stream"))?;
                 let management = management::Preconditions { camera, peer_admission: admission, session_generation: 1, previous_association: None, previous_clock: None, lease_fence: fence };
                 let stream_conditions = intent::Preconditions { camera, peer_admission: admission, stream_generation: 1, previous_settings: None, lease_fence: fence };
                 let request = listener::Start { bind: SocketAddrV4::new(peer, 0), resource, admission: policy, channel, video: VideoCodec::H264, audio: AudioCodec::Aac, stream_name: "0123456789abcdef", hello: &hello, agreement: &agreement, stream: &stream, time_sync: &[], management, stream_conditions, chunk_bytes: 4096, max_bytes: 1_000_000, bind_wait: Duration::from_secs(10), conversation_wait: Duration::from_secs(10), accept_wait: Duration::from_secs(10) };
@@ -638,6 +646,223 @@ fn parallel_fleet_upgrade_scenario(
                 let partial = held.next().ok_or("automatic partial source missing")?;
                 assert_eq!(partial.retire().ingress.framing.bytes(), b"F");
                 assert!(held.next().is_none());
+                if let Some(archive_base) = archive_base {
+                let retention = ContentDigest::sha256(b"scoped fleet fixture retention");
+                let source = SourceKey { connection: 5, generation: 1 };
+                let access = Arc::new(FixtureAccess(retention));
+                let gate_release = Arc::new(AtomicBool::new(false));
+                let gate_entered = Arc::new(AtomicBool::new(false));
+                let _gate_guard = ReleaseOnDrop(gate_release.clone());
+                let write_access: Arc<dyn archive::RetainAuthority + Send + Sync> = if abort_source {
+                    Arc::new(BlockingAccess { retention, release: gate_release.clone(), entered: gate_entered.clone() })
+                } else { access.clone() };
+                let replay_authority = fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
+                    trace_id: "trace:scoped-fleet-replay".into(),
+                    operation_id: OperationId::parse("operation:scoped-fleet-replay")?,
+                    principal: "principal:fixture".into(), capabilities: vec!["ADP-REPLAY-001".into()],
+                    deadline: None, priority: 1, budgets: archive_budget,
+                    privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
+                    anchor_universe: ContentDigest::sha256(b"scoped fleet replay"), generation: 1,
+                })?;
+                let source_replay = fss_reference::ReplayCx::from_context_authority(&replay_authority, archive_base.clone())?;
+                let video_replay = fss_reference::ReplayCx::from_context_authority(&replay_authority, archive_base.clone())?;
+                let storage_root = archive_base.join("auto-fleet-storage");
+                let created = recording_storage::create(task, cx, clock, recording_storage::Configuration {
+                    root: &storage_root, site_lineage: "site:scoped-fleet", source,
+                    camera_claim: camera, source_retention: retention,
+                    source_scope: ContentDigest::sha256(b"scoped fixture source"),
+                    av_scope: ContentDigest::sha256(b"scoped fixture video"),
+                    source_deployment_limits: fss_reference::DeploymentLimits::standard(),
+                    av_deployment_limits: fss_reference::DeploymentLimits::standard(),
+                    source_history_limits: EffectJournalLimits::default(),
+                    av_history_limits: EffectJournalLimits::default(),
+                    limits: archive::Limits::default(), max_source_bytes: 1024 * 1024,
+                    work_limit: 4_000_000_000,
+                }, source_replay, video_replay, write_access)?;
+                let wrong_management = management::Preconditions {
+                    camera: ContentDigest::sha256(b"wrong synthetic camera"), ..management
+                };
+                let selected = video_bootstrap::SelectedRecording {
+                    session, pipeline, management: wrong_management, storage: created,
+                    policy: video_bootstrap::Policy { inband: false, retention,
+                        media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default() },
+                };
+                let mut selected = match video_bootstrap::begin_selected(selected) {
+                    Err(video_bootstrap::SelectedRefusal::Binding(selected)) => selected,
+                    _ => return Err("mismatched camera archive was accepted".into()),
+                };
+                assert_eq!(selected.pipeline.source_key(), source);
+                selected.management = management;
+                let bootstrap = video_bootstrap::begin_selected(selected)
+                    .map_err(|_| "selected video bootstrap refused")?;
+                let mut recording = video_bootstrap::ManagedRecording::new(bootstrap);
+                assert!(!recording.authorize_video_retry());
+                let admission = source_coordinator::ArchiveAdmission { resource: resource, cost: &BudgetVector::ZERO };
+                let mut step_number = 0usize;
+                let mut source_count = 0usize;
+                let mut pins = Vec::new();
+                loop {
+                    if step_number >= 512 { return Err("scoped bootstrap step limit".into()); }
+                    let op = OperationId::parse(format!("operation:auto-archive-{index}-{step_number}"))?;
+                    step_number += 1;
+                    match recording.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission).await {
+                        video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::SourceOffered(_) | video_bootstrap::Step::Configured) => (),
+                        video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::SourceStarted) if abort_source => {
+                            timeout(cx.now(), Duration::from_secs(5), async {
+                                while !gate_entered.load(Ordering::Acquire) { asupersync::runtime::yield_now().await; }
+                            }).await.map_err(|_| "source worker did not enter retention gate")?;
+                            recording.abort();
+                            assert!(recording.control().is_none());
+                            assert!(!recording.authorize_source_retry() && !recording.authorize_video_retry());
+                            assert!(matches!(recording.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission).await,
+                                video_bootstrap::ManagedRecordingStep::Halted));
+                            let bootstrap = match recording.into_owner() {
+                                video_bootstrap::ManagedRecordingOwner::Bootstrap(bootstrap) => bootstrap,
+                                _ => return Err("aborted bootstrap owner missing".into()),
+                            };
+                            let mut bootstrap = match bootstrap.into_parts() {
+                                Err(bootstrap) => bootstrap,
+                                Ok(_) => return Err("aborted source released before join".into()),
+                            };
+                            let join_was_pending = poll_fn(|context| {
+                                let mut join = std::pin::pin!(bootstrap.join_source());
+                                Poll::Ready(join.as_mut().poll(context).is_pending())
+                            }).await;
+                            if !join_was_pending { return Err("blocked source joined before gate release".into()); }
+                            gate_release.store(true, Ordering::Release);
+                            let completion = timeout(cx.now(), Duration::from_secs(10), bootstrap.join_source()).await?
+                                .ok_or("cancelled source completion missing")?;
+                            if completion.runtime.is_err() || !matches!(completion.outcome,
+                                source_worker::Outcome::Publication(source_worker::Publication::Refused { .. })) {
+                                return Err("cancelled source completion was not retained".into());
+                            }
+                            assert!(bootstrap.join_source().await.is_none());
+                            let parts = bootstrap.into_parts().map_err(|_| "cancelled bootstrap not drained")?;
+                            if !parts.halted || parts.source_armed || parts.resources.is_none() { return Err("cancelled bootstrap owner state lost".into()); }
+                            let retired = parts.source.retire().map_err(|_| "cancelled source owner not retired")?;
+                            let Some(source_worker::Input::Original { record, key, camera_claim, .. }) = retired.pending else {
+                                return Err("cancelled original source missing".into());
+                            };
+                            let expected = stream_fixture::media_fixture(full_resolution)?;
+                            let start = usize::try_from(record.offset())?;
+                            let end = start.checked_add(record.bytes().len()).ok_or("cancelled source range overflow")?;
+                            if key != source || camera_claim != camera || expected.get(start..end) != Some(record.bytes()) {
+                                return Err("cancelled source custody mismatch".into());
+                            }
+                            return Ok(());
+                        }
+                        video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::SourceStarted) => (),
+                        video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::SourceArchive { control, completion }) => {
+                            if let Some(control) = control { if control_event(control)? { return Err("media ended during bootstrap".into()); } }
+                            if let Some(completion) = completion { source_confirmed(completion)?; source_count += 1; }
+                        }
+                        video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::Supervisor(control)) => if control_event(control)? { return Err("media ended during bootstrap".into()); },
+                        video_bootstrap::ManagedRecordingStep::Bootstrap(video_bootstrap::Step::Ready) => break,
+                        _ => return Err("scoped bootstrap requires reconciliation".into()),
+                    }
+                }
+                let transition = OperationId::parse(format!("operation:auto-archive-{index}-transition"))?;
+                assert!(matches!(recording.step(&mut owner, &transition, Duration::from_millis(100), task, cx, clock, admission, admission).await,
+                    video_bootstrap::ManagedRecordingStep::RecordingStarted));
+                loop {
+                    if step_number >= 512 { return Err("scoped recording step limit".into()); }
+                    let op = OperationId::parse(format!("operation:auto-archive-{index}-{step_number}"))?;
+                    step_number += 1;
+                    match recording.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission).await {
+                        video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Session(video_session::Step::SourceOffered(_) | video_session::Step::VideoOffered | video_session::Step::SourceStarted | video_session::Step::VideoStarted)) => (),
+                        video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Session(video_session::Step::SourceArchive { control, completion })) => {
+                            if let Some(control) = control { if control_event(control)? { return Err("media ended during source archive".into()); } }
+                            if let Some(completion) = completion { source_confirmed(completion)?; source_count += 1; }
+                        }
+                        video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Session(video_session::Step::VideoArchive { control, completion })) => {
+                            if let Some(control) = control { if control_event(control)? { return Err("media ended during video archive".into()); } }
+                            if let Some(completion) = completion {
+                                if completion.runtime.is_err() { return Err("video archive worker failed".into()); }
+                                let published = match completion.outcome {
+                                    video_worker::Outcome::Publication(video_worker::Publication::Published(value)) => value,
+                                    _ => return Err("video archive requires reconciliation".into()),
+                                };
+                                if pins.len() == 16 || pins.contains(&published.pin) { return Err("invalid video history".into()); }
+                                pins.push(published.pin);
+                            }
+                        }
+                        video_bootstrap::ManagedRecordingStep::Recording(video_session::ManagedStep::Session(video_session::Step::Supervisor(control))) => if control_event(control)? { break; },
+                        _ => return Err("scoped recording requires reconciliation".into()),
+                    }
+                }
+                if pins.is_empty() || source_count == 0 { return Err("missing video or source publication".into()); }
+                let managed = match recording.into_owner() {
+                    video_bootstrap::ManagedRecordingOwner::Recording(managed) => managed,
+                    _ => return Err("managed recording owner missing".into()),
+                };
+                let managed = managed.into_parts();
+                assert!(managed.supplies.is_none() && managed.capacity.is_none() && !managed.halted);
+                let session = match managed.owner {
+                    Some(video_session::ManagedOwner::Recording(session)) => session,
+                    _ => return Err("managed session did not retain recording".into()),
+                };
+                let parts = session.into_parts().map_err(|_| "scoped session not drained")?;
+                let retirement = parts.prepare_retirement().map_err(|_| "scoped retirement refused")?;
+                if retirement.time_sync.is_some() || retirement.controller.prepared.is_some()
+                    || retirement.controller.agreement_id.is_some() || retirement.controller.hello_request_id.is_some()
+                    || retirement.controller.time_sync_request_id.is_some() || retirement.controller.stream_request.is_some()
+                    || retirement.controller.motion_request.is_some() || retirement.controller.event_reply.is_some()
+                    || retirement.controller.rejected_message.is_some() { return Err("controller retirement requires reconciliation".into()); }
+                let mut tail = retirement.tail;
+                loop {
+                    if step_number >= 512 { return Err("scoped tail step limit".into()); }
+                    step_number += 1;
+                    match tail.step(task, cx, clock, admission).await {
+                        retirement_source::DriverStep::Offered { .. } | retirement_source::DriverStep::Started => (),
+                        retirement_source::DriverStep::Completed(completion) => { source_confirmed(completion)?; source_count += 1; },
+                        retirement_source::DriverStep::Finished => break,
+                        _ => return Err("scoped tail requires reconciliation".into()),
+                    }
+                }
+                let tail_parts = tail.into_parts().map_err(|_| "scoped tail worker not drained")?;
+                let mut video = retirement.video.retire().map_err(|_| "scoped video worker not retired")?;
+                let mut source_retired = tail_parts.worker.retire().map_err(|_| "scoped source worker not retired")?;
+                if video.fenced || video.report.is_some() || source_retired.fenced || source_retired.pending.is_some() { return Err("scoped archive requires reconciliation".into()); }
+                let video_page = video.parts.journal.confirmed_page(video.parts.journal.anchor(), 0, 128, &video.parts.replay)?;
+                let source_page = source_retired.parts.journal.confirmed_page(source_retired.parts.journal.anchor(), 0, 128, &source_retired.parts.replay)?;
+                if video_page.has_more || video_page.pending.is_some() || !pins.iter().copied().eq(video_page.entries.iter().map(|entry| entry.pin))
+                    || source_page.has_more || source_page.pending.is_some() || source_page.entries.len() != source_count { return Err("scoped archive history mismatch".into()); }
+                let expected = stream_fixture::media_fixture(full_resolution)?;
+                let mut ranges = Vec::new();
+                for entry in &source_page.entries {
+                    let recovered = archive::read_unknown_time_source(&mut source_retired.parts.deployment, entry.pin, access.as_ref(), archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &source_retired.parts.replay)?;
+                    let end = recovered.offset().checked_add(u64::try_from(recovered.bytes().len())?).ok_or("source overflow")?;
+                    if recovered.key() != source || recovered.camera_claim() != camera || expected.get(usize::try_from(recovered.offset())?..usize::try_from(end)?) != Some(recovered.bytes()) { return Err("source readback mismatch".into()); }
+                    ranges.push((recovered.offset(), end));
+                }
+                let mut frames = 0usize;
+                for pin in &pins {
+                    let clip = archive::read_unknown_time_video_clip(&mut video.parts.deployment, *pin, access.as_ref(), archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.parts.replay)?;
+                    if clip.claimed_source() != source || clip.samples() == 0 { return Err("video readback binding".into()); }
+                    for record in clip.source_records() {
+                        let end = record.offset.checked_add(u64::try_from(record.length)?).ok_or("video source overflow")?;
+                        let bytes = archive::read_unknown_time_object(&mut video.parts.deployment, *pin, record.digest, access.as_ref(), archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.parts.replay)?;
+                        if bytes.len() != record.length || expected.get(usize::try_from(record.offset)?..usize::try_from(end)?) != Some(bytes.as_slice()) { return Err("video source readback mismatch".into()); }
+                        ranges.push((record.offset, end));
+                    }
+                    if frames == 0 {
+                        let demux = AvcMp4::parse(clip.bytes(), None, DemuxLimits::default())?;
+                        let annex = demux.annex_b(0, 1)?;
+                        let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+                        let mut pictures = decoder.decode_annex_b(annex.bytes())?;
+                        pictures.extend(decoder.finish()?);
+                        if full_resolution { assert!(pictures.iter().all(|picture| picture.width() == 2688 && picture.height() == 1512)); }
+                        frames += pictures.len();
+                    }
+                }
+                assert!(frames > 0);
+                ranges.sort_unstable();
+                let mut covered = 0u64;
+                for (start, end) in ranges { if start != covered || end <= start { return Err("source coverage gap or overlap".into()); } covered = end; }
+                if covered != u64::try_from(expected.len())? { return Err("source coverage incomplete".into()); }
+
+                    return Ok(());
+                }
                 candidate_hold.store(true, Ordering::Release);
                 let mut frames = 0usize;
                 loop {
@@ -667,6 +892,17 @@ fn parallel_fleet_upgrade_scenario(
                 }.await;
                 (result, effects)
             })
+        }
+    }
+    struct BlockingAccess { retention: ContentDigest, release: Arc<AtomicBool>, entered: Arc<AtomicBool> }
+    impl archive::RetainAuthority for BlockingAccess {
+        fn permits(&self, retention: ContentDigest, _: ContentDigest) -> bool {
+            self.entered.store(true, Ordering::Release);
+            for _ in 0..5000 {
+                if self.release.load(Ordering::Acquire) { return retention == self.retention; }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
         }
     }
     struct FixtureAccess(ContentDigest);
@@ -752,6 +988,12 @@ fn parallel_fleet_upgrade_scenario(
         Arc::new(HostSpoolIo),
     )?;
     let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
+    let retry_store = FileEffectJournal::create(
+        temp.0.join("journal-preflight-retry"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut retry_effects = EffectCoordinator::with_journal(Box::new(retry_store))?;
     let third_store = FileEffectJournal::create(
         temp.0.join("journal-third"),
         EffectJournalLimits::default(),
@@ -770,6 +1012,12 @@ fn parallel_fleet_upgrade_scenario(
         Arc::new(HostSpoolIo),
     )?;
     let auto_effects = EffectCoordinator::with_journal(Box::new(auto_store))?;
+    let auto_third_store = FileEffectJournal::create(
+        temp.0.join("journal-auto-third-stream"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let auto_third_effects = EffectCoordinator::with_journal(Box::new(auto_third_store))?;
     let upgrade_store = FileEffectJournal::create(
         temp.0.join("journal-scoped-upgrade"),
         EffectJournalLimits::default(),
@@ -1567,7 +1815,7 @@ fn parallel_fleet_upgrade_scenario(
                         camera_reject_login(reject_socket.into(), reject_server, changed_readback)
                     })));
                     let mut retry_owner = setup::Owner {
-                        cx, task, clock, effects: &mut effects, leases: &leases,
+                        cx, task, clock, effects: &mut retry_effects, leases: &leases,
                         approval: &Approval, admission: &policy, handoff_authority: &Handoff,
                     };
                     let mut retry_trace = setup::Trace::default();
@@ -1603,11 +1851,6 @@ fn parallel_fleet_upgrade_scenario(
                         cx, task, clock, effects: &mut third_effects, leases: &leases,
                         approval: &Approval, admission: &policy, handoff_authority: &Handoff,
                     }));
-                    let mut third_acquisition = fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(
-                        task, cx, clock, &resources[2], 128,
-                    )?;
-                    let mut third_trace = setup::Trace::default();
-                    third_trace.require_reported_video(profile_limits(full_resolution))?;
                     let mut retry_offered = Some(retry_future);
                     let mut retry_factory = |_: usize, _: Enrollment| retry_offered.take().ok_or_else(|| io::ErrorKind::AlreadyExists.into());
                     let retry_policy = discovery::retry::Policy::new(Duration::from_millis(500), Duration::from_millis(500), 2)?;
@@ -1674,7 +1917,9 @@ fn parallel_fleet_upgrade_scenario(
                     drop(retry_offered);
                     reject_peer.finish()?;
                     let enrolled = fleet.enrollment(2).ok_or("missing enrollment")?;
-                    let mut setup_queue = fss_unifi_scoped_tls_entropy_lab::prepared_setup::Queue::new(&fleet, 2, 4)?;
+                    let setup_spool = Rc::new(RefCell::new(fss_object::StagingSpool::open(
+                        temp.0.join("deadline-evidence"), fss_object::SpoolLimits::new(4, 4096, 1024, 4),
+                    )?));
                     {
                         use fss_unifi_scoped_tls_entropy_lab::prepared_setup::{PreparedSetup, Queue, Refusal};
                         let mut bounded = Queue::new(&fleet, 1, 1)?;
@@ -1687,6 +1932,11 @@ fn parallel_fleet_upgrade_scenario(
                         });
                         bounded.enqueue(PreparedSetup::new(2, enrolled, operation.clone(), first))
                             .map_err(|(reason, _)| format!("bounded queue admission: {reason:?}"))?;
+                        let duplicate: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("duplicate future polled") });
+                        let (reason, duplicate) = bounded.enqueue(PreparedSetup::new(2, enrolled, operation.clone(), duplicate))
+                            .err().ok_or("duplicate operation accepted")?;
+                        assert_eq!(reason, Refusal::DuplicateOperation);
+                        drop(duplicate.into_parts());
                         let rejected: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("refused future polled") });
                         let (reason, rejected) = bounded.enqueue(PreparedSetup::new(
                             2, enrolled, OperationId::parse("operation:unpolled-queue-overflow")?, rejected,
@@ -1720,91 +1970,173 @@ fn parallel_fleet_upgrade_scenario(
                         assert!(eager.into_pending().is_empty());
                     }
 
-                    // Construct the next camera attempt before any deadline
-                    // occurs. It remains unpolled in the queue until the
-                    // retry coordinator makes this enrollment ready again.
+                    // Register an owner-enrolled camera once. The supervisor
+                    // constructs each fresh attempt only when it is selected.
                     let third_listener = std::net::TcpListener::bind((PEERS[2], 0))?;
                     let SocketAddr::V4(third_address) = third_listener.local_addr()? else {
                         return Err("IPv4 required".into());
                     };
-                    let operation_work = operations[2].clone();
-                    let owner_work = third_owner.clone();
-                    let provider_work = scoped_camera_provider.clone();
-                    let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
-                    let (acquisition_work, trace_work) = (&mut third_acquisition, &mut third_trace);
-                    let fresh_polled = Rc::new(Cell::new(false));
-                    let fresh_polled_work = fresh_polled.clone();
-                    let mut fresh_future: Option<CameraWork<'_, Result<setup::Outcome, camera_setup::Error>>> = Some(Box::pin(async move {
-                        fresh_polled_work.set(true);
-                        let mut owner = owner_work.borrow_mut();
-                        camera_setup::run_with_acquisition(
-                            fleet_work, 2, &mut owner, listener_work, policy_work, third_address, cert,
-                            handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
-                            resource_work, acquisition_work, provider_work, fences[2],
-                            peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(10), trace_work,
-                        ).await
-                    }));
+                    let has_deadline = capacity == 2 && !full_resolution && !changed_readback;
+                    let identity_lease = acquire(task, cx, clock, "trial:run-identity-entropy").await?;
+                    let run_id = fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::from_lease(identity_lease)?;
+                    let wrong_identity_lease = acquire(task, cx, clock, &resources[2]).await?;
+                    assert!(matches!(fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::from_lease(wrong_identity_lease), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
+                    assert!(fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::new([0; 16]).is_err());
+                    assert_ne!(run_id.operation(2, 0)?, run_id.operation(2, 1)?);
+                    assert_ne!(run_id.operation(1, 0)?, run_id.operation(2, 0)?);
+                    let mut camera_factory = fss_unifi_scoped_tls_entropy_lab::camera_factory::Factory::new(&fleet, run_id)?;
+                    let parameters = fss_unifi_scoped_tls_entropy_lab::prepared_camera::Parameters {
+                            fleet: &fleet, index: 2, enrollment: enrolled, listener: &listener,
+                            http_authority: &policy, peer: third_address, certificate_der: cert,
+                            credential_handle: handles[2], credential: br#"{"username":"fixture","password":"synthetic"}"#,
+                            resource: &resources[2], provider: scoped_camera_provider.clone(), fence: fences[2],
+                            destination: peer, framing: handoff::Framing::ContentLength, wait: Duration::from_secs(if has_deadline { 3 } else { 10 }),
+                            storage_resource: &resources[2],
+                    };
+                    // Let the supervisor encounter this enrollment before its
+                    // owner-supplied plan arrives. Only the same factory's
+                    // typed missing-plan result permits registration to rearm.
+                    let mut missing = |index: usize, enrollment: Enrollment| camera_factory.take(index, enrollment);
+                    assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut missing).await.map_err(|e| format!("missing plan selection: {e:?}"))?,
+                        RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::FactoryFailed { index: 2, kind: io::ErrorKind::NotFound }), retry: None }));
+                    drop(missing);
+                    assert!(retry_queue.is_empty());
+                    let plan = fss_unifi_scoped_tls_entropy_lab::camera_factory::Plan::new(
+                        parameters.clone(), third_owner.clone(), setup_spool.clone(), 2, Some(profile_limits(full_resolution)),
+                    );
+                    let mut wrong_auto = AutomaticWork::<()>::new(&other_fleet, 1).map_err(|_| "wrong supervisor capacity")?;
+                    let (reason, plan) = camera_factory.register_with_supervisor(plan, &mut wrong_auto)
+                        .err().ok_or("different fleet supervisor accepted")?;
+                    assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::camera_factory::CoordinatedRefusal::Supervisor(
+                        fss_unifi_scoped_tls_entropy_lab::fleet_leased::PlanRegistrationRefusal::FleetMismatch));
+                    wrong_auto.request_stop();
+                    assert!(wrong_auto.into_pending().is_empty());
+                    let mut stopped_auto = AutomaticWork::<()>::new(&fleet, 1).map_err(|_| "stopped supervisor capacity")?;
+                    stopped_auto.request_stop();
+                    let (reason, plan) = camera_factory.register_with_supervisor(plan, &mut stopped_auto)
+                        .err().ok_or("stopped supervisor accepted")?;
+                    assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::camera_factory::CoordinatedRefusal::Supervisor(
+                        fss_unifi_scoped_tls_entropy_lab::fleet_leased::PlanRegistrationRefusal::Stopped));
+                    assert!(stopped_auto.into_pending().is_empty());
+                    let mut other_factory = fss_unifi_scoped_tls_entropy_lab::camera_factory::Factory::new(
+                        &fleet, fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::new([0x44; 16])?,
+                    )?;
+                    let (reason, plan) = other_factory.register_with_supervisor(plan, &mut retry_auto)
+                        .err().ok_or("other factory rearmed missing selection")?;
+                    assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::camera_factory::CoordinatedRefusal::Supervisor(
+                        fss_unifi_scoped_tls_entropy_lab::fleet_leased::PlanRegistrationRefusal::NeedsReconciliation));
+                    assert_eq!(camera_factory.register_with_supervisor(plan, &mut retry_auto)
+                        .map_err(|(reason, _)| format!("camera plan admission: {reason:?}"))?,
+                        fss_unifi_scoped_tls_entropy_lab::camera_factory::Registration::Rearmed);
+                    assert!(other_factory.into_plans().is_empty());
+                    {
+                        use fss_unifi_scoped_tls_entropy_lab::camera_factory::{CoordinatedRefusal, Factory, Plan, Registration, RunId};
+                        use fss_unifi_scoped_tls_entropy_lab::fleet_leased::PlanRegistrationRefusal;
+                        let mut available = Factory::new(&fleet, RunId::new([0x45; 16])?)?;
+                        let mut unused_auto = AutomaticWork::<()>::new(&fleet, 1).map_err(|_| "unused supervisor capacity")?;
+                        let plan = Plan::new(parameters.clone(), third_owner.clone(), setup_spool.clone(), 1, None);
+                        assert_eq!(available.register_with_supervisor(plan, &mut unused_auto).map_err(|(reason, _)| format!("available registration: {reason:?}"))?, Registration::Available);
+                        unused_auto.request_stop();
+                        assert!(unused_auto.into_pending().is_empty());
+                        assert_eq!(available.into_plans().len(), 1);
+
+                        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::NotFound] {
+                            let mut denied_auto = AutomaticWork::<()>::new(&fleet, 1).map_err(|_| "denied supervisor capacity")?;
+                            let mut deny = move |_: usize, _: Enrollment| -> io::Result<CameraWork<'_, ()>> { Err(kind.into()) };
+                            assert!(matches!(supply.next_with_automatic_setup(&mut pump, &mut denied_auto, &mut deny).await?,
+                                AutomaticEvent::FactoryFailed { index: 2, kind: actual } if actual == kind));
+                            let mut denied = Factory::new(&fleet, RunId::new([0x46; 16])?)?;
+                            let plan = Plan::new(parameters.clone(), third_owner.clone(), setup_spool.clone(), 1, None);
+                            let (reason, plan) = denied.register_with_supervisor(plan, &mut denied_auto).err().ok_or("unrelated failure rearmed")?;
+                            assert_eq!(reason, CoordinatedRefusal::Supervisor(PlanRegistrationRefusal::NeedsReconciliation));
+                            drop(plan);
+                            denied_auto.request_stop();
+                            assert!(denied_auto.into_pending().is_empty());
+                            assert!(denied.into_plans().is_empty());
+                        }
+                    }
+                    let duplicate_plan = fss_unifi_scoped_tls_entropy_lab::camera_factory::Plan::new(
+                        parameters.clone(), third_owner.clone(), setup_spool.clone(), 2, Some(profile_limits(full_resolution)),
+                    );
+                    let (reason, duplicate_plan) = camera_factory.register(duplicate_plan).err().ok_or("duplicate plan accepted")?;
+                    assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::camera_factory::Refusal::Duplicate);
+                    drop(duplicate_plan);
+                    assert_eq!(camera_factory.attempt_count(2), Some(0));
+                    assert!(matches!(camera_factory.take(2, fleet.enrollment(0).ok_or("missing other enrollment")?), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
+                    assert_eq!(camera_factory.attempt_count(2), Some(0));
+                    {
+                        use fss_unifi_scoped_tls_entropy_lab::camera_factory::{Factory, Plan, RunId};
+                        let mut abandoned = Factory::new(&fleet, RunId::new([0x43; 16])?)?;
+                        abandoned.register(Plan::new(parameters, third_owner.clone(), setup_spool.clone(), 2, None))
+                            .map_err(|(reason, _)| format!("abandoned plan admission: {reason:?}"))?;
+                        let work = abandoned.take(2, enrolled)?;
+                        assert_eq!(abandoned.attempt_count(2), Some(1));
+                        assert!(!abandoned.attempt(2, 0).ok_or("missing attempt")?.borrow().started());
+                        assert!(matches!(abandoned.take(2, enrolled), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+                        drop(work);
+                        assert!(matches!(abandoned.take(2, enrolled), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+                        let plans = abandoned.into_plans();
+                        assert_eq!(plans.len(), 1);
+                        assert_eq!(plans[0].attempt_count(), 1);
+                        assert_eq!(plans[0].attempt(0).ok_or("lost attempt")?.borrow().worker_count(), 0);
+                        assert!(Rc::ptr_eq(&plans[0].owner(), &third_owner));
+                        assert!(Rc::ptr_eq(&plans[0].spool(), &setup_spool));
+                        drop(plans);
+                    }
 
                     // A witnessed deadline after preparation must retain its
                     // evidence before the existing scheduler admits a retry.
-                    if capacity == 2 && !full_resolution && !changed_readback {
-                        let timeout_listener = std::net::TcpListener::bind((PEERS[2], 0))?;
-                        let SocketAddr::V4(timeout_address) = timeout_listener.local_addr()? else {
+                    if has_deadline {
+                        // Unpolled work must not start entropy; a busy owner
+                        // refuses before I/O. A dropped in-flight wait retains
+                        // its worker and cannot reuse its operation identity.
+                        let cancel_listener = std::net::TcpListener::bind((PEERS[2], 0))?;
+                        let SocketAddr::V4(cancel_address) = cancel_listener.local_addr()? else {
                             return Err("IPv4 required".into());
                         };
+                        let cancel_attempt = Rc::new(RefCell::new(fss_unifi_scoped_tls_entropy_lab::prepared_camera::Attempt::new(
+                            OperationId::parse("operation:cancelled-prepared-camera")?,
+                        )));
+                        let make_cancel = || fss_unifi_scoped_tls_entropy_lab::prepared_camera::prepare(
+                            fss_unifi_scoped_tls_entropy_lab::prepared_camera::Parameters {
+                                fleet: &fleet, index: 2, enrollment: enrolled, listener: &listener,
+                                http_authority: &policy, peer: cancel_address, certificate_der: cert,
+                                credential_handle: handles[2], credential: br#"{"username":"fixture","password":"synthetic"}"#,
+                                resource: &resources[2], provider: scoped_camera_provider.clone(), fence: fences[2],
+                                destination: peer, framing: handoff::Framing::ContentLength, wait: Duration::from_secs(10),
+                                storage_resource: &resources[2],
+                            }, third_owner.clone(), setup_spool.clone(), cancel_attempt.clone(),
+                        );
+                        drop(make_cancel()?.into_parts());
+                        assert!(!cancel_attempt.borrow().started() && cancel_attempt.borrow().worker_count() == 0);
+                        let (_, _, _, busy_work) = make_cancel()?.into_parts();
+                        let busy_owner = third_owner.borrow_mut();
+                        assert!(matches!(busy_work.await, Err(camera_setup::Error::Busy)));
+                        drop(busy_owner);
+                        assert!(!cancel_attempt.borrow().started() && cancel_attempt.borrow().worker_count() == 0);
+                        let (_, _, _, mut cancelled_work) = make_cancel()?.into_parts();
+                        let parked = poll_fn(|context| Poll::Ready(cancelled_work.as_mut().poll(context).is_pending())).await;
+                        assert!(parked && third_owner.try_borrow().is_err());
+                        drop(cancelled_work);
+                        {
+                            let mut retained = cancel_attempt.borrow_mut();
+                            assert!(retained.started() && retained.worker_count() == 1);
+                            assert!(retained.trace().operation().is_none());
+                            retained.abort_and_drain().await?;
+                            assert!(retained.workers_drained());
+                        }
+                        let (_, _, _, replay) = make_cancel()?.into_parts();
+                        assert!(matches!(replay.await, Err(camera_setup::Error::RetryConfiguration)));
+                        drop(cancel_listener);
+                        let timeout_listener = third_listener.try_clone()?;
                         let timeout_server = server.clone();
                         let timeout_port = endpoint.port();
                         let timeout_peer = Joined(Some(std::thread::spawn(move || {
                             camera_fixture_with_gate(timeout_listener, timeout_port, peer, timeout_server, None, None, false, true)
                         })));
                         third_owner.borrow_mut().approval = &SLOW_APPROVAL;
-                        let timeout_operation = OperationId::parse("operation:synthetic-deadline-recovery")?;
-                        let deadline_trace = Rc::new(RefCell::new(setup::Trace::default()));
-                        let preflight_trace = Rc::new(camera_setup::PreflightRetryTrace::default());
-                        let preflight_policy = camera_setup::PreflightRetryPolicy::new(1, Duration::from_millis(10))?;
-                        let acquisitions = Rc::new(RefCell::new([fss_unifi_scoped_tls_entropy_lab::owned::offload::Acquisition::begin(task, cx, clock, &resources[2], 128)?]));
-                        let spool = Rc::new(RefCell::new(fss_object::StagingSpool::open(
-                            temp.0.join("deadline-evidence"), fss_object::SpoolLimits::new(4, 4096, 1024, 4),
-                        )?));
-                        let recovery = Rc::new(RefCell::new(None));
-                        let (owner_work, trace_work, acquisitions_work, spool_work, recovery_work, preflight_work) =
-                            (third_owner.clone(), deadline_trace.clone(), acquisitions.clone(), spool.clone(), recovery.clone(), preflight_trace.clone());
-                        let operation_work = timeout_operation.clone();
-                        let provider_work = scoped_camera_provider.clone();
-                        let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
-                        let future: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async move {
-                            let mut owner = owner_work.borrow_mut();
-                            let mut trace = trace_work.borrow_mut();
-                            let mut acquisitions = acquisitions_work.borrow_mut();
-                            let mut spool = spool_work.borrow_mut();
-                            let output = camera_setup::run_with_preflight_retries_and_deadline_recovery(
-                                fleet_work, 2, &mut owner, listener_work, policy_work, timeout_address, cert,
-                                handles[2], br#"{"username":"fixture","password":"synthetic"}"#,
-                                resource_work, &mut *acquisitions, provider_work, fences[2],
-                                peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(3),
-                                &mut trace, &preflight_work, preflight_policy, &mut spool, resource_work,
-                            ).await;
-                            *recovery_work.borrow_mut() = output.deadline_recovery;
-                            output.outcome
-                        });
-                        setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
-                            2, enrolled, timeout_operation.clone(), future,
-                        )).map_err(|(reason, _)| format!("deadline queue admission: {reason:?}"))?;
-                        let duplicate: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("duplicate future polled") });
-                        let (reason, duplicate) = setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
-                            2, enrolled, timeout_operation.clone(), duplicate,
-                        )).err().ok_or("duplicate operation accepted")?;
-                        assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::prepared_setup::Refusal::DuplicateOperation);
-                        drop(duplicate.into_parts());
-                        assert_eq!(setup_queue.len(), 1);
-                        assert!(matches!(setup_queue.take(2, fleet.enrollment(0).ok_or("missing other enrollment")?), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
-                        assert_eq!(setup_queue.len(), 1);
-                        setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
-                            2, enrolled, operations[2].clone(), fresh_future.take().ok_or("missing prebuilt setup")?,
-                        )).map_err(|(reason, _)| format!("prebuilt setup admission: {reason:?}"))?;
-                        assert_eq!(setup_queue.len(), 2);
-                        assert!(!fresh_polled.get());
-                        let mut factory = |index: usize, enrollment: Enrollment| setup_queue.take(index, enrollment);
+                        let timeout_operation = run_id.operation(2, 0)?;
+                        let mut factory = |index: usize, enrollment: Enrollment| camera_factory.take(index, enrollment);
                         assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut factory).await.map_err(|e| format!("deadline admission: {e:?}"))?,
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Started { index: 2 }), .. }));
                         loop {
@@ -1825,17 +2157,12 @@ fn parallel_fleet_upgrade_scenario(
                             }
                         }
                         drop(factory);
-                        assert_eq!(setup_queue.len(), 1);
-                        assert!(!fresh_polled.get());
-                        let reused: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("used operation future polled") });
-                        let (reason, reused) = setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
-                            2, enrolled, timeout_operation.clone(), reused,
-                        )).err().ok_or("consumed operation accepted again")?;
-                        assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::prepared_setup::Refusal::DuplicateOperation);
-                        drop(reused.into_parts());
-                        let evidence = recovery.borrow_mut().take().ok_or("deadline recovery skipped")??;
-                        assert_eq!(spool.borrow().state(evidence), Some(fss_object::SpoolObjectState::Verified));
-                        assert!(deadline_trace.borrow().preparation_cancelled());
+                        assert_eq!(camera_factory.attempt_count(2), Some(1));
+                        let deadline_attempt = camera_factory.attempt(2, 0).ok_or("deadline attempt not retained")?;
+                        let evidence = deadline_attempt.borrow_mut().take_recovery().ok_or("deadline recovery skipped")??;
+                        assert_eq!(setup_spool.borrow().state(evidence), Some(fss_object::SpoolObjectState::Verified));
+                        assert!(deadline_attempt.borrow().trace().preparation_cancelled());
+                        assert!(deadline_attempt.borrow().workers_drained());
                         assert_eq!(third_owner.borrow().effects.journal().operation(&timeout_operation).ok_or("lost preparation")?.state, fss_core::EffectState::Cancelled);
                         third_owner.borrow_mut().approval = &Approval;
                         timeout_peer.finish()?;
@@ -1926,12 +2253,9 @@ fn parallel_fleet_upgrade_scenario(
                     assert!(wrong_acquisition.is_drained());
                     assert!(refused_trace.operation().is_none());
                     assert!(matches!(probe.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
-                    if let Some(future) = fresh_future.take() {
-                        setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
-                            2, enrolled, operations[2].clone(), future,
-                        )).map_err(|(reason, _)| format!("fresh queue admission: {reason:?}"))?;
-                    }
-                    drop(fresh_future);
+                    let fresh_ordinal = usize::from(has_deadline);
+                    assert_eq!(camera_factory.attempt_count(2), Some(fresh_ordinal));
+                    let fresh_operation = run_id.operation(2, fresh_ordinal)?;
                     let factory_calls = Rc::new(Cell::new(0usize));
                     let setup_calls = factory_calls.clone();
                     let mut setup_factory = |index: usize, enrollment: Enrollment| {
@@ -1939,7 +2263,7 @@ fn parallel_fleet_upgrade_scenario(
                         if index != 2 || enrollment.camera() != cameras[2] {
                             return Err(io::ErrorKind::InvalidInput.into());
                         }
-                        setup_queue.take(index, enrollment)
+                        camera_factory.take(index, enrollment)
                     };
                     assert!(matches!(
                         supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut setup_factory).await.map_err(|e| format!("retry success admission: {e:?}"))?,
@@ -2066,7 +2390,6 @@ fn parallel_fleet_upgrade_scenario(
                             _ => return Err("unexpected event while driving third setup".into()),
                         }
                     };
-                    assert!(fresh_polled.get());
                     assert_eq!(parallel_finished, capacity == 2);
                     assert!(matches!(&outcome, setup::Outcome::Observed { readback: handoff::Readback::Requested, .. }));
                     let selected = outcome.select_reported_video(profile_limits(full_resolution))?.ok_or("setup had no profile observation")?;
@@ -2076,8 +2399,6 @@ fn parallel_fleet_upgrade_scenario(
                     assert!(matches!(fleet.state(2), Some(discovery::fleet::State::Finished { .. })));
                     assert_eq!(retry_auto.rearm(2), Err(RearmRefusal::NotReady));
                     assert!(retry_queue.is_empty());
-                    retry_auto.request_stop();
-                    assert!(retry_auto.into_pending().is_empty());
                     let _unresolved_retry_owner = match retry_streams.into_pending() {
                         Err(owner) if parallel_finished => {
                             assert_eq!(owner.len(), 1);
@@ -2088,8 +2409,11 @@ fn parallel_fleet_upgrade_scenario(
                         _ => return Err("unexpected stream completion disposition".into()),
                     };
                     drop(setup_factory);
-                    assert!(setup_queue.is_empty());
-                    assert!(setup_queue.into_pending().is_empty());
+                    assert_eq!(camera_factory.attempt_count(2), Some(fresh_ordinal + 1));
+                    let fresh_attempt = camera_factory.attempt(2, fresh_ordinal).ok_or("fresh attempt not retained")?;
+                    let retained_attempt = fresh_attempt.borrow();
+                    assert!(retained_attempt.started());
+                    let third_trace = retained_attempt.trace();
                     let preflight = third_trace.preflight_video().and_then(|selection| selection.selected);
                     if changed_readback {
                         assert_ne!(preflight, selected.selected);
@@ -2102,14 +2426,12 @@ fn parallel_fleet_upgrade_scenario(
                         assert!(fleet.route_ready(2));
                         assert_eq!(fleet.reported_video(2), selected.selected);
                     }
-                    assert!(retry_acquisitions.iter().all(|a| a.is_drained()));
                     assert_eq!(preflight_progress.attempts(), 2);
                     assert_eq!(preflight_progress.retries(), 1);
-                    assert!(retry_trace.operation().is_none());
-                    drop(retry_owner);
-                    assert!(third_acquisition.is_drained());
-                    assert_eq!(third_trace.operation(), Some(&operations[2]));
-                    drop(third_owner);
+                    assert_eq!(retained_attempt.worker_count(), 1);
+                    assert!(retained_attempt.workers_drained());
+                    assert_eq!(third_trace.operation(), Some(&fresh_operation));
+                    drop(retained_attempt);
                     third_fixture.finish()?;
                     assert_eq!(pump.driver().handshake_len(), 1);
                     if parallel_finished {
@@ -2373,6 +2695,78 @@ fn parallel_fleet_upgrade_scenario(
                                 _ => return Err("camera lease did not replenish".into()),
                             }
                         }
+                        // Route the same newly set-up camera through the
+                        // camera factory and automatic stream owner, after its
+                        // separate archive/readback check above.
+                        let third_seen = Arc::new(AtomicBool::new(false));
+                        let third_peer_seen = third_seen.clone();
+                        let third_hold = Arc::new(AtomicBool::new(false));
+                        let third_proceed = Arc::new(AtomicBool::new(false));
+                        let peer_hold = third_hold.clone();
+                        let peer_proceed = third_proceed.clone();
+                        let third_client = client.clone();
+                        let third_peer = Joined(Some(std::thread::spawn(move || {
+                            stream_fixture::camera_with_candidates(endpoint, PEERS[2], third_client, "001122aabbee", third_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution, peer_hold, peer_proceed)
+                        })));
+                        let made_third = Rc::new(Cell::new(0usize));
+                        let polled_third = Rc::new(Cell::new(0usize));
+                        let release_third = Rc::new(Cell::new(true));
+                        let media = AutoMedia { index: 2, cx, task, clock, effects: Some(auto_third_effects), leases: &leases,
+                            policy: &policy, resource: &resources[2], peer, camera: cameras[2],
+                            admission: admissions[2], fence: fences[2], full_resolution,
+                            archive_base: Some(temp.0.clone()), archive_budget: budget, abort_source,
+                            candidate_hold: third_hold, candidate_proceed: third_proceed };
+                        let mut make_third = auto_media_factory(media, made_third.clone(), polled_third.clone(), release_third);
+                        let mut third_streams = ActiveStreams::new(&fleet, 1).map_err(|_| "third automatic stream capacity")?;
+                        let mut wrong_factory = fss_unifi_scoped_tls_entropy_lab::camera_factory::Factory::new(
+                            &other_fleet, fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::new([0x47; 16])?,
+                        )?;
+                        assert!(matches!(supply.next_with_camera_factory_and_automatic_streams(
+                            &mut pump, &mut retry_auto, &mut third_streams, &mut retry_queue, &mut wrong_factory, &mut make_third,
+                        ).await, Err(RetryLoopError::Binding)));
+                        assert_eq!(made_third.get(), 0);
+                        assert!(wrong_factory.into_plans().is_empty());
+                        let mut started_third = false;
+                        let mut renewed_stall = false;
+                        let (completion, returned_effects) = loop {
+                            match timeout(cx.now(), Duration::from_secs(60), supply.next_with_camera_factory_and_automatic_streams(
+                                &mut pump, &mut retry_auto, &mut third_streams, &mut retry_queue, &mut camera_factory, &mut make_third,
+                            )).await?.map_err(|e| format!("third automatic stream: {e:?}"))? {
+                                AutoRoutedFleetEvent::StreamStarted { index: 2 } => { assert!(!started_third); started_third = true; },
+                                AutoRoutedFleetEvent::StreamFinished { index: 2, output: (result, effects), completion } => {
+                                    result?; assert!(started_third); break (completion, effects);
+                                }
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_) | SupplyEvent::Installed(_)))))), .. }) => (),
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused {
+                                    index: None, reason: discovery::fleet::RouteError::Listener(listener::Error::Deadline),
+                                }))))), .. }) if started_third => (),
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed {
+                                    index: 0, reason: fss_reference::unifi_direct::controller_upgrade::Error::Deadline,
+                                }))))), .. }) if !renewed_stall => {
+                                    let mut byte = [0_u8; 1];
+                                    assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));
+                                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                                    socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[0], 0)))?;
+                                    stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
+                                    renewed_stall = true;
+                                }
+                                _ => return Err("unexpected third automatic stream event".into()),
+                            }
+                        };
+                        third_peer.finish()?;
+                        assert!(third_seen.load(Ordering::Acquire));
+                        assert_eq!(made_third.get(), 1);
+                        assert!(polled_third.get() > 0);
+                        assert_eq!(completion.index(), 2);
+                        assert_eq!(third_streams.release_after_reconciliation(&completion, &returned_effects), Err(StreamCompletionRefusal::UnsettledEffects));
+                        let third_streams = match third_streams.into_pending() {
+                            Err(owner) => owner,
+                            Ok(_) => return Err("unresolved third stream owner was discarded".into()),
+                        };
+                        assert_eq!(third_streams.pending_completion(2).map(|value| value.generation()), Some(1));
+                        drop(third_streams);
+                        drop(returned_effects);
+                        drop(make_third);
                         let tls_client = client.clone();
                         let auto_stream_seen = Arc::new(AtomicBool::new(false));
                         let auto_peer_seen = auto_stream_seen.clone();
@@ -2392,16 +2786,30 @@ fn parallel_fleet_upgrade_scenario(
                         let made = Rc::new(Cell::new(0usize));
                         let polled = Rc::new(Cell::new(0usize));
                         let release = Rc::new(Cell::new(false));
-                        let media = AutoMedia { cx, task, clock, effects: Some(auto_effects), leases: &leases,
+                        let media = AutoMedia { index: 1, cx, task, clock, effects: Some(auto_effects), leases: &leases,
                             policy: &policy, resource: &resources[1], peer, camera: cameras[1],
-                            admission: admissions[1], fence: fences[1], full_resolution, candidate_hold, candidate_proceed };
+                            admission: admissions[1], fence: fences[1], full_resolution,
+                            archive_base: None, archive_budget: budget, abort_source: false, candidate_hold, candidate_proceed };
                         let mut make_stream = auto_media_factory(media, made.clone(), polled.clone(), release.clone());
                         let mut auto_lease_installed = false;
+                        let mut renewed_auto_stall = false;
                         loop {
                             match timeout(cx.now(), Duration::from_secs(5), supply.next_with_automatic_streams(&mut pump, &mut auto_setup, &mut auto_streams, &mut auto_retries, &mut no_setup, &mut make_stream)).await?.map_err(|e| format!("automatic stream admission: {e:?}"))? {
                                 AutoRoutedFleetEvent::StreamStarted { index: 1 } => break,
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))), .. }) => (),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))), .. }) => { if i == 1 { auto_lease_installed = true; } },
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed {
+                                    index: 0, reason: fss_reference::unifi_direct::controller_upgrade::Error::Deadline,
+                                }))))), .. }) if !renewed_auto_stall => {
+                                    let mut byte = [0_u8; 1];
+                                    assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));
+                                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                                    socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[0], 0)))?;
+                                    stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
+                                    renewed_auto_stall = true;
+                                }
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))), .. }) => return Err(format!("automatic stream admission handshake failed: index={index} reason={reason:?}").into()),
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. }) => return Err(format!("automatic stream admission route refused: index={index:?} reason={reason:?}").into()),
                                 _ => return Err("automatic stream was not admitted".into()),
                             }
                         }
@@ -2425,6 +2833,16 @@ fn parallel_fleet_upgrade_scenario(
                                 Poll::Pending => (),
                                 Poll::Ready(Ok(AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))), .. }))) => (),
                                 Poll::Ready(Ok(AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))), .. }))) => { if i == 1 { auto_lease_installed = true; } },
+                                Poll::Ready(Ok(AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed {
+                                    index: 0, reason: fss_reference::unifi_direct::controller_upgrade::Error::Deadline,
+                                }))))), .. }))) if !renewed_auto_stall => {
+                                    let mut byte = [0_u8; 1];
+                                    assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));
+                                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                                    socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[0], 0)))?;
+                                    stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
+                                    renewed_auto_stall = true;
+                                }
                                 _ => return Err("automatic stream did not park safely".into()),
                             }
                         }
@@ -2436,6 +2854,18 @@ fn parallel_fleet_upgrade_scenario(
                                 AutoRoutedFleetEvent::StreamFinished { index: 1, output: (result, returned_effects), completion } => { result?; break (completion, returned_effects); }
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))), .. }) => (),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))), .. }) => { if i == 1 { auto_lease_installed = true; } },
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed {
+                                    index: 0, reason: fss_reference::unifi_direct::controller_upgrade::Error::Deadline,
+                                }))))), .. }) if !renewed_auto_stall => {
+                                    let mut byte = [0_u8; 1];
+                                    assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));
+                                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                                    socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[0], 0)))?;
+                                    stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
+                                    renewed_auto_stall = true;
+                                }
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))), .. }) => return Err(format!("automatic stream completion handshake failed: index={index} reason={reason:?}").into()),
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. }) => return Err(format!("automatic stream completion route refused: index={index:?} reason={reason:?}").into()),
                                 _ => return Err("automatic stream did not finish".into()),
                             }
                         };
@@ -2586,6 +3016,13 @@ fn parallel_fleet_upgrade_scenario(
                         replacement.finish()?;
                         drop(session);
                     }
+                    retry_auto.request_stop();
+                    assert!(retry_auto.into_pending().is_empty());
+                    assert_eq!(camera_factory.into_plans().len(), 1);
+                    assert!(retry_acquisitions.iter().all(|a| a.is_drained()));
+                    assert!(retry_trace.operation().is_none());
+                    drop(retry_owner);
+                    drop(third_owner);
                     supply.request_stop();
                     loop {
                         match timeout(
@@ -2686,11 +3123,41 @@ fn deadline_recovery_schedules_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
         .map_err(|_| "deadline fixture thread panicked")?
+        .map_err(Into::into)
+}
+
+#[test]
+fn full_resolution_factory_stream_over_synthetic_tls() -> Test {
+    std::thread::Builder::new()
+        .name("scoped-full-resolution-fleet-fixture".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false)
+                .map_err(|error| error.to_string())
+        })?
+        .join()
+        .map_err(|_| "full-resolution fixture thread panicked")?
+        .map_err(Into::into)
+}
+
+#[test]
+fn managed_recording_cancellation_retains_blocked_source() -> Test {
+    std::thread::Builder::new()
+        .name("scoped-managed-cancellation-fixture".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, true)
+                .map_err(|error| error.to_string())
+        })?
+        .join()
+        .map_err(|_| "managed cancellation fixture thread panicked")?
         .map_err(Into::into)
 }
 
@@ -2725,10 +3192,10 @@ fn fleet_fixture_inputs() -> Result<(Ipv4Addr, Vec<u8>, Vec<u8>), Box<dyn Error>
 
 fn run_fleet_scenarios() -> Test {
     let (peer, cert, key) = fleet_fixture_inputs()?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, true)
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, true, false)
 }
 
 #[derive(Debug)]
