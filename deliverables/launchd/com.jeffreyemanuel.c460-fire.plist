@@ -5,7 +5,7 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>ADDR</key>
-		<string>0xbee80000</string>
+		<string>0xbef00000</string>
 		<key>FORCE</key>
 		<string>1</string>
 		<key>MAC</key>
