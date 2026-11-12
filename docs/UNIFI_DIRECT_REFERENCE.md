@@ -15239,3 +15239,40 @@ handling; it does not establish physical-camera concurrency, production
 readiness, or a gap-free recording. The shared head advanced while these
 jobs ran; they used base `ea5dacbd0ffbcfde721868e6acefbfa7f79704e9` plus
 the explicitly supplied TLS lab and fleet source overlays.
+
+### Same-supervisor retry and fresh setup (2026-11-12 UTC)
+
+The synthetic TLS fixture now runs the pre-commit deadline, verified evidence
+retention, cancellation, retry timer and subsequent successful setup through
+the same `AutomaticWork` and `RetryCoordinator`. The second attempt uses a
+fresh operation ID, and both attempts use the same retained effect
+coordinator. The fixture supplies the second future and its credentials; this
+does not yet constitute an unattended setup factory or physical-camera proof.
+The fixture uses local `Rc<RefCell<_>>` ownership to retain the setup owner,
+trace and spool across its borrowing futures; this is not a production
+concurrency or cancellation qualification.
+
+Strict-remote trj build `j-30106308287922603` compiled on base
+`b2727d4d227eeb061f7965d1882c3903a83aac6c` with the fixture and patched
+TLS-vendor overlays, but its wrapper exited 102 on the Linux-to-macOS artifact
+check. The exact Linux binary, SHA-256
+`959907c680810e52fb8deec1319d3174879e5767635aab6b1b006eb5e80194ec`,
+passed the standalone recovery scenario directly on omarchy in an isolated
+user/network namespace (1 passed, 1 filtered). The broad test failed twice
+in its full-resolution scenario. Diagnostic build `j-30106308287922609`
+identified the unexpected event as `HandshakeFailed` for the intentionally
+stalled camera 0, whose 30-second deadline had elapsed. This was separate
+from the stream-fencing result; the broad test remained failed.
+
+The fixture now verifies closure and renews that deliberately silent camera-0
+connection if its exact deadline occurs during the unresolved-stream check;
+it preserves the handshake deadline and still requires the camera-1 fence and
+subsequent pending-handshake assertions. Build `j-30106308287922612` compiled
+on the same base with the updated fixture overlay, but again exited 102 at
+artifact transfer. Its Linux binary, SHA-256
+`60b277c2456a0ed819cb29e7eb27dd27b16961c5888568bb8421c926233e7dff`,
+matched before and after an isolated direct run of the broad fleet test
+(1 passed, 1 filtered), covering all four synthetic scenarios including the
+fresh setup and the high-resolution archive case. The run did not separately
+report whether the stall-renewal branch executed. No physical camera was
+contacted and none of these results establish native continuous recording.
