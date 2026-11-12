@@ -373,6 +373,24 @@ impl Framer {
         self.base + self.buffered_len() as u64
     }
 
+    /// Inspect the buffered initial header without consuming any source bytes.
+    /// A complete header is structural evidence only, not authentication or
+    /// proof that a subsequent media tag will be valid.
+    pub fn initial_header_complete(&self) -> Result<bool, Error> {
+        if self.phase != Phase::Header || self.base != 0 {
+            return Err(Error::OffsetMismatch);
+        }
+        let input = &self.buffer[self.head..];
+        let prefix_len = input.len().min(3);
+        if input[..prefix_len] != b"FLV"[..prefix_len] || (input.len() >= 4 && input[3] != 1) {
+            return Err(Error::Parse(super::Error::InvalidHeader));
+        }
+        match Header::parse(input, self.limits).map_err(Error::Parse)? {
+            Parse::NeedMore => Ok(false),
+            Parse::Complete(_) => Ok(true),
+        }
+    }
+
     /// Copy one entire contiguous input slice. On refusal no input is accepted.
     /// The caller retains the input and may retry a smaller prefix after draining.
     pub fn append(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {

@@ -716,3 +716,37 @@ fn unframed_source_has_no_tag_boundary_and_refusal_returns_bytes() {
     assert_eq!(refusal.bytes, [4]);
     assert_eq!(refusal.origin, UnframedOrigin::SocketPending);
 }
+
+#[test]
+fn header_preview_is_incremental_non_consuming_and_preserves_refused_bytes() -> TestResult {
+    let header = b"FLV\x01\x01\x00\x00\x00\x0b\xaa\xbb\x00\x00\x00\x00";
+    let mut framer = Framer::new(Limits::default(), 64)?;
+    for (index, byte) in header.iter().enumerate() {
+        framer.append(index as u64, &[*byte])?;
+        assert_eq!(framer.initial_header_complete()?, index + 1 == header.len());
+        assert_eq!(framer.next_offset(), (index + 1) as u64);
+    }
+    let Next::Record(record) = framer.take()? else {
+        return Err("header missing".into());
+    };
+    assert_eq!(record.bytes(), header);
+    assert!(matches!(
+        framer.initial_header_complete(),
+        Err(Error::OffsetMismatch)
+    ));
+
+    for invalid in [
+        &b"X"[..],
+        &b"FLV\x02"[..],
+        &b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x01"[..],
+    ] {
+        let mut framer = Framer::new(Limits::default(), 64)?;
+        framer.append(0, invalid)?;
+        assert!(matches!(
+            framer.initial_header_complete(),
+            Err(Error::Parse(_))
+        ));
+        assert_eq!(framer.retire().bytes(), invalid);
+    }
+    Ok(())
+}
