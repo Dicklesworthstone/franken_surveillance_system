@@ -239,35 +239,45 @@ fn management_revoked_after_partial_write_fences_session() -> Test {
 
 #[test]
 fn clock_reply_deadline_retains_committed_unwritten_permit() -> Test {
-    clock_reply_deadline_scenario(false,false,false,false,false)
+    clock_reply_deadline_scenario(false,false,false,false,false,false)
 }
 
 #[test]
 fn supervisor_clock_deadline_returns_committed_unwritten_permit() -> Test {
-    clock_reply_deadline_scenario(true,false,false,false,false)
+    clock_reply_deadline_scenario(true,false,false,false,false,false)
 }
 
 #[test]
 fn supervisor_clock_poll_budget_refuses_slow_storage_without_reply_override() -> Test {
-    clock_reply_deadline_scenario(true,false,false,true,false)
+    clock_reply_deadline_scenario(true,false,false,true,false,false)
 }
 
 #[test]
 fn supervisor_separates_clock_reply_budget_from_idle_poll_under_slow_storage() -> Test {
-    clock_reply_deadline_scenario(true,false,false,true,true)
+    clock_reply_deadline_scenario(true,false,false,true,true,false)
 }
 
 #[test]
 fn startup_hello_deadline_retains_committed_unwritten_permit() -> Test {
-    clock_reply_deadline_scenario(false,true,false,false,false)
+    clock_reply_deadline_scenario(false,true,false,false,false,false)
 }
 
 #[test]
 fn startup_retains_original_retirement_if_peer_closes_before_hello() -> Test {
-    clock_reply_deadline_scenario(false,true,true,false,false)
+    clock_reply_deadline_scenario(false,true,true,false,false,false)
 }
 
-fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_hello: bool, slow_storage: bool, reply_override: bool) -> Test {
+#[test]
+fn clock_reply_deadline_before_journaling_leaves_no_effect() -> Test {
+    clock_reply_deadline_scenario(false,false,false,false,false,true)
+}
+
+#[test]
+fn startup_hello_deadline_before_journaling_leaves_no_effect() -> Test {
+    clock_reply_deadline_scenario(false,true,false,false,false,true)
+}
+
+fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_hello: bool, slow_storage: bool, reply_override: bool, slow_wall: bool) -> Test {
     use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
     #[derive(Debug)]
     struct SlowStore(FileEffectJournal, Arc<std::sync::atomic::AtomicUsize>);
@@ -293,8 +303,16 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
             Some(CommitApproval { prepared_digest: prepared.digest(), current_precondition_digest: prepared.precondition_digest() })
         }
     }
+    struct SlowWall;
+    impl conversation::WallClock for SlowWall {
+        fn observe(&self) -> Option<conversation::WallTime> {
+            // Deliberate fault: violate the clock provider's nonblocking contract.
+            std::thread::sleep(Duration::from_millis(175));
+            Some(conversation::WallTime {unix_ms:1_700_000_000_000,timestamp:"2026-11-05T10:00:00.000Z".into()})
+        }
+    }
     const SYNC: &[u8] = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":42,"inResponseTo":0}"#;
-    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-sync-deadline-{}-{supervised}-{startup}-{close_before_hello}-{slow_storage}-{reply_override}",std::process::id()));
+    let path=std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-sync-deadline-{}-{supervised}-{startup}-{close_before_hello}-{slow_storage}-{reply_override}-{slow_wall}",std::process::id()));
     std::fs::create_dir(&path)?;
     let temp=Temp(path);
     let store=FileEffectJournal::create(temp.0.join("journal"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
@@ -343,7 +361,8 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
                 let mut session=owner::accept(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,controller,Duration::from_secs(5)).await?;
                 let guard=Guard {leases:&leases,clock}; let normal_approval=FixtureApproval {revoke_stream:None};
                 let approval: &dyn conversation::Approval=if slow_storage {&normal_approval} else {&SlowApproval};
-                let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
+                let wall: &dyn conversation::WallClock=if slow_wall {&SlowWall} else {&FixtureClock};
+                let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval,management_authority:&guard,stream_authority:&guard,wall};
                 let (mut trace,retirement)=if supervised {
                     let media_listener=TcpListener::bind("127.0.0.1:0").await?;
                     let media_peer=std::net::TcpStream::connect_timeout(&media_listener.local_addr()?,Duration::from_secs(5))?;
@@ -395,7 +414,12 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
                     (trace,session.retire())
                 };
                 assert_eq!(trace.operation(),Some(&operation));
-                if reply_override {
+                if slow_wall {
+                    assert!(!trace.dispatch_started());
+                    assert!(trace.intent().is_none());
+                    assert!(trace.take_pending_permit().is_none());
+                    assert!(trace.take_written().is_none() && trace.take_refusal().is_none());
+                } else if reply_override {
                     assert!(trace.dispatch_started());
                     assert!(trace.take_pending_permit().is_none());
                     match trace.take_written() {Some(ManagementWrite::Written {permit}) if permit.journal_backed()=>(),_=>return Err("written clock permit lost".into())}
@@ -410,12 +434,13 @@ fn clock_reply_deadline_scenario(supervised: bool, startup: bool, close_before_h
                 else {assert_eq!(retirement.time_sync_request_id,Some(42));}
                 Ok(())
             }.await;
-            let outcome=if output.is_err(){TaskOutcome::Failed("sync deadline fixture failed".into())}else if close_before_hello {TaskOutcome::Success}else{TaskOutcome::Indeterminate("clock reply effect requires reconciliation".into())};
+            let outcome=if output.is_err(){TaskOutcome::Failed("sync deadline fixture failed".into())}else if close_before_hello || slow_wall {TaskOutcome::Success}else{TaskOutcome::Indeterminate("clock reply effect requires reconciliation".into())};
             TaskCompletion {output,outcome,completed_at:TimestampNs(59_000_000_000)}
         }).await?;
         result.receipt?;result.output
     })?;
     if slow_storage {assert!(slow_appends.load(std::sync::atomic::Ordering::Relaxed)>=2);}
+    if slow_wall {assert!(effects.journal().operation(&operation).is_none());}
     Ok(())
 }
 

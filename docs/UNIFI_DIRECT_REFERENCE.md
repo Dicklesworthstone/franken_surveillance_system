@@ -14912,3 +14912,79 @@ replace the earlier 17-case process run at its earlier source revision.
 No physical camera command was issued; the earlier unresolved handoff and
 clock effects, production TLS boundary, continuous recording, and retention
 remain unresolved.
+
+### Caller-owned validated startup selection (2026-11-12 UTC)
+
+`ValidatedMediaSelection` wraps a completed retained-listener startup with a
+bounded validating selector while retaining the startup dispatch, clock and
+controller observations. A constructor refusal returns the entire original
+startup owner. A dropped borrowing selection wait leaves this owner with the
+caller; the controller session, startup trace and effect journal remain
+separately caller-owned, and interrupted writes still require reconciliation.
+The owner exposes the selected pipeline and returns its startup observations
+and all other candidate owners for explicit disposition. It does not make the
+preceding startup future cancellation-safe, authenticate a camera, or create
+an unattended recorder.
+
+The automatic synthetic fleet fixture now tests constructor refusal and
+recovery, cancels one pending borrowing selection wait, then resumes it while
+its simulated camera supplies malformed, partial and valid candidates. Its
+controller and media session decoded the selected stream; no physical device
+was contacted. Strict-remote ts1 job `j-30106308287922494` was refused before
+Cargo by the worker's disk reservation budget. Strict-remote hz4 job
+`j-30106308287922495` compiled but failed the fleet test (0/1) before the new
+selection path, with `Setup(Setup(ControllerUnavailable))`. The same compiled
+fleet-test binary was copied to a private hz4 directory with the same disposable
+fixture certificates and passed 1/1 across four synthetic scenarios in a
+separate direct invocation. The compiled and copied binary hashes matched after
+the rerun: `148ca400d2a8755f74b8a73b33177f6e2afed7ceee57e7dfbcec2fea0e9ba69e`.
+The first failure remains unexplained; the successful direct rerun is not an
+RCH test-job pass or production qualification.
+
+The controller regression now drops a pending validated selection wait before
+allowing the simulated camera to continue. Strict-remote jobs
+`j-30106308287922488` and `j-30106308287922489` failed 0/2 because their
+initial startup timed out before a selection was attempted. Job
+`j-30106308287922490` failed 1/2 and passed 1/2; its failure trace retained a
+committed but undispatched agreement permit at the five-second startup
+deadline. This identifies the phase, not the cause. A separately instrumented
+single-case strict-remote run passed 1/1 (`j-30106308287922491`). The later
+exact test binary from job 22490, SHA-256
+`90e3c5fcc65505ad8bce4e6f48f7a616ecbe200f049c7ff873b8ea6868df8c76`,
+then passed three direct ts1 reruns of the two selected cases (6/6 total,
+111 filtered per run) with a 16 MiB test-thread stack; its hash was unchanged.
+These later passes do not erase or explain the earlier failures. Current source
+SHA-256 values for the listener, controller test, fleet test and synthetic
+peer are respectively
+`913fea8fc5724c28dc352572d13b1460dedd489dac2323512c804e7db5bd1539`,
+`5ec5066eb1253e5550ca453db65427cb43d7daa8c874991ccc6199432e3de734`,
+`e1f979004112f41c8060de9e3bd5ad2705d535736777a8fd3b37a2d35be50666`, and
+`a2624b9875d4d732b05549ed9955024243581f5685e35a6bcfa6be30fe44b858`.
+Live direct G4 capture, unattended operation, effect reconciliation and
+30-day retention remain unverified.
+
+
+### Startup deadline preflight and timing investigation (2026-11-12 UTC)
+
+The tracked management and startup paths now check their existing total
+deadline before preparing a message and again before beginning its durable
+effect. The post-commit deadline check remains: a permit committed while
+storage or approval blocks must still be retained for reconciliation. A
+preflight refusal does not explain a previous timeout and does not make the
+synchronous journal nonblocking. The strict-remote deadline regression request on ts1 timed out in the worker
+queue before Cargo (exit 103, `RCH-I001`); a retry on hz4 is pending. No test
+pass is claimed while it waits.
+
+Five additional strace runs of the exact previously compiled ts1 controller
+fixture passed both synthetic cases in each run. Across both complete tests
+per run, each trace counted 144 fsync calls, with aggregate traced fsync
+syscall durations between 1.208 and 1.462 seconds; thread durations can
+overlap and tracing perturbs timing. These timings are not restricted to the
+startup phase and do not establish the cause of the earlier deadline failures.
+No physical camera command was issued during this investigation.
+
+Strict-remote hz4 job `j-30106308287922509` failed before tests because the
+selected committed base could not convert a `HoldError` in retention policy
+preview. The source now routes that error through the existing typed
+`DeletionError::Hold` path, preserving the refusal. A new remote regression
+run includes that repair; it has not yet produced a terminal result.

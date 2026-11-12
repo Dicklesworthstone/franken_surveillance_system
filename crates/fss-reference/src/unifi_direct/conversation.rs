@@ -540,9 +540,11 @@ impl Owner<'_, '_, '_> {
         conditions: management::Preconditions,
         deadline: u64,
     ) -> Result<(), Error> {
+        self.remaining(deadline)?;
         let intent = session
             .management_intent(conditions)
             .map_err(Error::SessionDetail)?;
+        self.remaining(deadline)?;
         let permit = self.permit(
             operation,
             intent.request_digest(),
@@ -574,10 +576,12 @@ impl Owner<'_, '_, '_> {
         if trace.operation.as_ref() != Some(operation) || trace.intent.is_some() {
             return Err(Error::Configuration);
         }
+        self.remaining(deadline)?;
         let intent = session
             .management_intent(conditions)
             .map_err(Error::SessionDetail)?;
         trace.intent = Some(intent);
+        self.remaining(deadline)?;
         let permit = self.permit(
             operation,
             intent.request_digest(),
@@ -662,6 +666,7 @@ impl Owner<'_, '_, '_> {
         });
         let index = trace.attempts.len() - 1;
         let wall = self.wall.observe().ok_or(Error::Clock)?;
+        self.remaining(deadline)?;
         session
             .prepare_event_reply(&frame, &wall.timestamp)
             .map_err(Error::SessionDetail)?;
@@ -669,6 +674,7 @@ impl Owner<'_, '_, '_> {
             .management_intent(conditions)
             .map_err(Error::SessionDetail)?;
         trace.attempts[index].intent = Some(intent);
+        self.remaining(deadline)?;
         let permit = self.permit(
             operation,
             intent.request_digest(),
@@ -755,6 +761,7 @@ impl Owner<'_, '_, '_> {
                         None
                     };
                     let wall = self.wall.observe().ok_or(Error::Clock)?;
+                    self.remaining(deadline)?;
                     session
                         .prepare_time_sync(wall.unix_ms, &wall.timestamp)
                         .map_err(Error::SessionDetail)?;
@@ -804,6 +811,7 @@ impl Owner<'_, '_, '_> {
             .checked_add(nanos)
             .ok_or(Error::Configuration)?;
         let wall = self.wall.observe().ok_or(Error::Clock)?;
+        self.remaining(deadline)?;
         session
             .prepare_time_sync(wall.unix_ms, &wall.timestamp)
             .map_err(Error::SessionDetail)?;
@@ -839,6 +847,7 @@ impl Owner<'_, '_, '_> {
             .checked_add(nanos)
             .ok_or(Error::Configuration)?;
         let wall = self.wall.observe().ok_or(Error::Clock)?;
+        self.remaining(deadline)?;
         session
             .prepare_time_sync(wall.unix_ms, &wall.timestamp)
             .map_err(Error::SessionDetail)?;
@@ -1056,6 +1065,7 @@ impl Owner<'_, '_, '_> {
             trace.hello.operation = Some(cfg.hello.clone());
         }
         let wall = self.wall.observe().ok_or(Error::Clock)?;
+        self.remaining(deadline)?;
         session
             .prepare_hello(&wall.timestamp)
             .map_err(Error::SessionDetail)?;
@@ -1111,6 +1121,7 @@ impl Owner<'_, '_, '_> {
             trace.agreement.operation = Some(cfg.agreement.clone());
         }
         let wall = self.wall.observe().ok_or(Error::Clock)?;
+        self.remaining(deadline)?;
         session
             .prepare_agreement(&wall.timestamp, elapsed)
             .map_err(Error::SessionDetail)?;
@@ -1148,10 +1159,12 @@ impl Owner<'_, '_, '_> {
         }
         if let Some((motion, trace)) = startup_motion.as_mut() {
             let wall = self.wall.observe().ok_or(Error::Clock)?;
+            self.remaining(deadline)?;
             let intent = session
                 .prepare_motion(motion.enabled, &wall.timestamp, motion.conditions)
                 .map_err(Error::SessionDetail)?;
             trace.intent = Some(intent);
+            self.remaining(deadline)?;
             let permit = self.permit(
                 motion.operation,
                 intent.request_digest(),
@@ -1184,12 +1197,14 @@ impl Owner<'_, '_, '_> {
             trace.stream.operation = Some(cfg.stream.clone());
         }
         let wall = self.wall.observe().ok_or(Error::Clock)?;
+        self.remaining(deadline)?;
         let intent = session
             .prepare_stream_start(cfg.request, &wall.timestamp, cfg.stream_conditions)
             .map_err(Error::SessionDetail)?;
         if let Some(trace) = protocol_trace.as_mut() {
             trace.stream.intent = Some(intent);
         }
+        self.remaining(deadline)?;
         let permit = self.permit(
             cfg.stream,
             intent.request_digest(),

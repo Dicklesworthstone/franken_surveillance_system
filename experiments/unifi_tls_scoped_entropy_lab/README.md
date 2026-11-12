@@ -1420,3 +1420,14 @@ fleet test and the constructor refusal loopback test passed on ts1. A separate
 updated-trial process rerun passed the competing-prefix case. This is not a
 production fleet service, physical-camera enrollment, or a real handoff; see
 `docs/UNIFI_DIRECT_REFERENCE.md` for exact receipts and limitations.
+
+### Retained startup selection owner
+
+The fleet fixture now uses `ValidatedMediaSelection` to retain startup
+observations and all candidate owners across a canceled selection wait. A
+separate direct invocation of the hz4 fleet test binary passed all four
+synthetic scenarios after the initial strict-remote test failed before media
+selection with `ControllerUnavailable`. Separate controller test repetitions
+passed after earlier five-second startup deadline failures. The failures are
+not explained or erased by the later results. See
+`docs/UNIFI_DIRECT_REFERENCE.md` for exact scopes and receipts.
