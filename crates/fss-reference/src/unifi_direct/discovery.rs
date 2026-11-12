@@ -12,8 +12,11 @@ use fss_core::{BudgetVector, RuntimeGrant, TimestampNs};
 use fss_packet::unifi_discovery::{self, DeviceKind, Reply};
 use fss_runtime::execution::{ExecutionError, TaskCx};
 use std::{
-    fmt, io,
+    fmt,
+    future::{Future, poll_fn},
+    io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    task::Poll,
     time::Duration,
 };
 
@@ -425,6 +428,56 @@ impl Report {
     }
 }
 
+/// Revalidate the canonical owner immediately before each raw socket poll.
+///
+/// The caller prepays the operation's byte ceiling once. Repeated pending
+/// polls check live authority with zero additional byte cost. This guard does
+/// not register a cancellation waker or prove that the enclosing task is drained.
+async fn authorized_io<F: Future>(
+    owner: &TaskCx<'_>,
+    runtime_cx: &Cx,
+    clock: &MeteredClock<'_, '_>,
+    resource: &str,
+    operation: F,
+) -> Result<F::Output, Stop> {
+    let mut operation = std::pin::pin!(operation);
+    poll_fn(|task| {
+        if runtime_cx.checkpoint().is_err() {
+            return Poll::Ready(Err(Stop::Cancelled));
+        }
+        // Check metadata before sampling time: a canonical cancellation/drain
+        // may be newer than the last co-observed transport clock sample.
+        match owner.is_cancel_requested() {
+            Ok(false) => {}
+            Ok(true) | Err(_) => return Poll::Ready(Err(Stop::AuthorityStopped)),
+        }
+        let current = match clock.now() {
+            Ok(current) => current,
+            Err(_) => {
+                return Poll::Ready(Err(if runtime_cx.is_cancelled() {
+                    Stop::Cancelled
+                } else {
+                    Stop::AuthorityStopped
+                }));
+            }
+        };
+        if let Err(error) = owner.checkpoint_for(
+            RuntimeGrant::AdapterNet,
+            resource,
+            current,
+            &BudgetVector::ZERO,
+        ) {
+            return Poll::Ready(Err(match error {
+                ExecutionError::Budget(_) => Stop::BudgetExhausted,
+                ExecutionError::Deadline { .. } => Stop::AuthorityDeadline,
+                _ => Stop::AuthorityStopped,
+            }));
+        }
+        operation.as_mut().poll(task).map(Ok)
+    })
+    .await
+}
+
 /// Send scoped v1 queries and collect a finite set of untrusted camera claims.
 ///
 /// The supplied `now` is the current observation in the task's canonical clock
@@ -506,16 +559,24 @@ pub async fn discover(
         }
         let sent = match timeout_at(
             deadline,
-            socket.send_to(&unifi_discovery::V1_QUERY, *target),
+            authorized_io(
+                owner,
+                runtime_cx,
+                &clock,
+                &config.resource,
+                socket.send_to(&unifi_discovery::V1_QUERY, *target),
+            ),
         )
         .await
         {
-            Err(_) => return Err(Error::IndeterminateSend),
-            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted || index != 0 => {
+            // Once the socket future has been entered, preserve uncertainty
+            // if either the observation window or live authority stops it.
+            Err(_) | Ok(Err(_)) => return Err(Error::IndeterminateSend),
+            Ok(Ok(Err(error))) if error.kind() == io::ErrorKind::Interrupted || index != 0 => {
                 return Err(Error::IndeterminateSend);
             }
-            Ok(Err(error)) => return Err(Error::Io(error.kind())),
-            Ok(Ok(sent)) => sent,
+            Ok(Ok(Err(error))) => return Err(Error::Io(error.kind())),
+            Ok(Ok(Ok(sent))) => sent,
         };
         if sent != unifi_discovery::V1_QUERY.len() {
             return Err(if index == 0 {
@@ -578,21 +639,36 @@ pub async fn discover(
             };
             break;
         }
-        let (len, source) = match timeout_at(deadline, socket.recv_from(&mut buffer)).await {
+        let (len, source) = match timeout_at(
+            deadline,
+            authorized_io(
+                owner,
+                runtime_cx,
+                &clock,
+                &config.resource,
+                socket.recv_from(&mut buffer),
+            ),
+        )
+        .await
+        {
             Err(_) => {
                 if runtime_cx.is_cancelled() {
                     report.stop = Stop::Cancelled;
                 }
                 break;
             }
-            Ok(Err(error))
+            Ok(Err(stop)) => {
+                report.stop = stop;
+                break;
+            }
+            Ok(Ok(Err(error)))
                 if error.kind() == io::ErrorKind::Interrupted && runtime_cx.is_cancelled() =>
             {
                 report.stop = Stop::Cancelled;
                 break;
             }
-            Ok(Err(error)) => return Err(Error::Io(error.kind())),
-            Ok(Ok(value)) => value,
+            Ok(Ok(Err(error))) => return Err(Error::Io(error.kind())),
+            Ok(Ok(Ok(value))) => value,
         };
         report.datagrams += 1;
         // A receive can become ready at the same time as timeout, cancellation,

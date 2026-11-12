@@ -1572,3 +1572,186 @@ fn owner_camera_periodic_scanner_live() -> TestResult {
     run.receipt?;
     Ok(())
 }
+
+#[test]
+fn parked_discovery_rechecks_canonical_cancellation_and_drain() -> TestResult {
+    use asupersync::time::timeout_at;
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+    };
+
+    // The runtime Cx stays active in every case. Explicitly repoll the parked
+    // operation: this tests admission, not a cancellation wake or quiescence.
+    for cancel in [false, true] {
+        for retain_prior in [false, true] {
+            let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+            server.set_nonblocking(true)?;
+            let destination = match server.local_addr()? {
+                std::net::SocketAddr::V4(address) => address,
+                _ => return Err("not IPv4".into()),
+            };
+            let config = Config::new(
+                Ipv4Addr::LOCALHOST,
+                8,
+                destination,
+                "fixture:parked-discovery",
+                Duration::from_secs(5),
+                8,
+            )?;
+            let (mut authority, mut tree) = root()?;
+            let runtime = RuntimeBuilder::current_thread().build()?;
+            let run = runtime.block_on(async {
+                let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+                let run = run_owned_async(
+                    &mut authority,
+                    &mut tree,
+                    TaskSpec {
+                        task_id: TaskId::new("task:parked-discovery")?,
+                        started_at: TimestampNs(2),
+                    },
+                    &cx,
+                    async |owner, runtime_cx| {
+                        let start = runtime_cx.now().as_nanos();
+                        let output: Result<Report, Box<dyn Error>> = async {
+                            let mut pending = std::pin::pin!(discovery::discover(
+                                owner,
+                                runtime_cx,
+                                TimestampNs(3),
+                                &config,
+                            ));
+                            let setup_deadline = runtime_cx.now() + Duration::from_secs(2);
+                            let peer = timeout_at(
+                                setup_deadline,
+                                poll_fn(|context| {
+                                    if let Poll::Ready(result) = pending.as_mut().poll(context) {
+                                        panic!("discovery completed before receive parked: {result:?}");
+                                    }
+                                    let mut query = [0_u8; 32];
+                                    match server.recv_from(&mut query) {
+                                        Ok((length, peer)) => {
+                                            assert_eq!(
+                                                &query[..length],
+                                                fss_packet::unifi_discovery::V1_QUERY.as_slice(),
+                                            );
+                                            Poll::Ready(Ok(peer))
+                                        }
+                                        Err(error)
+                                            if error.kind() == std::io::ErrorKind::WouldBlock =>
+                                        {
+                                            context.waker().wake_by_ref();
+                                            Poll::Pending
+                                        }
+                                        Err(error) => Poll::Ready(Err(error)),
+                                    }
+                                }),
+                            )
+                            .await
+                            .map_err(|_| "discovery did not reach receive")??;
+                            let receive_cost =
+                                (fss_packet::unifi_discovery::MAX_DATAGRAM + 1) as u64;
+                            let first_remaining = owner.remaining_budget()?.network_bytes;
+                            assert_eq!(
+                                first_remaining,
+                                1_000_000
+                                    - fss_packet::unifi_discovery::V1_QUERY.len() as u64
+                                    - receive_cost,
+                            );
+                            if retain_prior {
+                                server.send_to(&packet(), peer)?;
+                                // The second receive reservation proves the first
+                                // candidate was admitted before the next read parked.
+                                timeout_at(
+                                    setup_deadline,
+                                    poll_fn(|context| {
+                                        if let Poll::Ready(result) = pending.as_mut().poll(context) {
+                                            panic!("discovery completed before second receive: {result:?}");
+                                        }
+                                        let remaining = owner
+                                            .remaining_budget()
+                                            .expect("live discovery budget")
+                                            .network_bytes;
+                                        if remaining == first_remaining - receive_cost {
+                                            Poll::Ready(())
+                                        } else {
+                                            assert_eq!(remaining, first_remaining);
+                                            context.waker().wake_by_ref();
+                                            Poll::Pending
+                                        }
+                                    }),
+                                )
+                                .await
+                                .map_err(|_| "discovery did not admit the first candidate")?;
+                            }
+                            let remaining = owner.remaining_budget()?.network_bytes;
+                            let now = TimestampNs(
+                                3 + i128::from(
+                                    runtime_cx
+                                        .now()
+                                        .as_nanos()
+                                        .checked_sub(start)
+                                        .ok_or("runtime clock regressed")?,
+                                ),
+                            );
+                            if cancel {
+                                owner.request_cancellation(now)?;
+                            } else {
+                                owner.begin_drain(now)?;
+                            }
+                            assert!(!runtime_cx.is_cancelled());
+
+                            // A new packet is available, but the resumed raw receive
+                            // must not consume it after canonical admission closes.
+                            server.send_to(
+                                &packet_with(Some([0x12, 2, 3, 4, 5, 6]), b"UVC.late", true),
+                                peer,
+                            )?;
+                            let polled =
+                                poll_fn(|context| Poll::Ready(pending.as_mut().poll(context))).await;
+                            let Poll::Ready(result) = polled else {
+                                return Err("closed canonical owner left discovery pending".into());
+                            };
+                            let report = result?;
+                            assert_eq!(report.stop, Stop::AuthorityStopped);
+                            assert_eq!(report.datagrams, usize::from(retain_prior));
+                            assert_eq!(report.cameras.len(), usize::from(retain_prior));
+                            assert_eq!(report.malformed, 0);
+                            assert_eq!(report.out_of_scope, 0);
+                            assert_eq!(owner.remaining_budget()?.network_bytes, remaining);
+                            if retain_prior {
+                                assert_eq!(report.cameras[0].mac(), Some([0x10, 2, 3, 4, 5, 6]));
+                            }
+                            Ok(report)
+                        }
+                        .await;
+                        let outcome = if cancel {
+                            TaskOutcome::Cancelled
+                        } else if output.is_ok() {
+                            TaskOutcome::Success
+                        } else {
+                            TaskOutcome::Failed("parked discovery fixture failed".into())
+                        };
+                        TaskCompletion {
+                            output,
+                            outcome,
+                            completed_at: TimestampNs(
+                                3 + i128::from(
+                                    runtime_cx
+                                        .now()
+                                        .as_nanos()
+                                        .checked_sub(start)
+                                        .expect("runtime clock regressed"),
+                                ),
+                            ),
+                        }
+                    },
+                )
+                .await?;
+                Ok::<_, Box<dyn Error>>(run)
+            })?;
+            run.output?;
+            run.receipt?;
+        }
+    }
+    Ok(())
+}
