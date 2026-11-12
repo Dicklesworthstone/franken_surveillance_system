@@ -197,37 +197,23 @@ if [ -s "$CAP_DIR/img.bin" ]; then
 fi
 
 sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null
-# stale listeners shadow new runs silently (EADDRINUSE). Another pane may hold the same ports and
-# respawn them, so each port is waited on (bounded) instead of assumed free after one kill.
+# A listener can belong to a different task or address. Report conflicts without
+# signalling it; an occupied port may require explicit operator reconciliation.
 free_port() {
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pids=$(port_pids "$1")
-    [ -z "$pids" ] && return 0
-    # don't kill a contract-complete forge — the launchd daemon owns it and KeepAlive
-    # would respawn it into a kill loop with this wrapper (the 2026-11-03 flap)
-    contract=""
-    for p in $pids; do
-      c=$(sudo ps -o command= -p $p 2>/dev/null)
-      echo "$c" | grep -q -- '--iot-cert' || continue
-      contract="$contract $p"
-    done
-    # keep only pids NOT in the contract list
-    keep=""
-    for p in $pids; do
-      echo "$contract" | grep -qw "$p" || keep="$keep $p"
-    done
-    pids=$keep
-    [ -z "$pids" ] && return 0
-    sudo kill $pids 2>/dev/null
-    sleep 0.5
-  done
+  # A port number alone is not ownership: another service may listen on a
+  # different local address. Preserve every existing listener and report the
+  # conflict rather than signalling a process we did not start and verify.
+  local pids
+  pids=$(port_pids "$1")
+  [ -z "$pids" ] && return 0
+  echo "preserving listeners on port $1 (pids:$pids); not replacing them" >&2
   return 1
 }
 # The launchd com.jeffreyemanuel.wyze-forge daemon also serves 443/8443 with the same contract
 # and KeepAlive=true, so killing a live holder here makes the two supervisors fight forever
 # (measured 2026-11-03: 219 launchd events in 3 min, planes flapping under every preflight run).
-# Rule: a holder whose command line already carries the iot-cert contract is adopted, not killed;
-# only a stale/bare forge (the liberation2-worktree failure mode) is replaced.
+# Contract-complete forges are adopted. Other holders are left intact for
+# explicit reconciliation rather than replaced based only on a port number.
 forge_ok() {
   # Contract-complete = OUR script, serving OUR live cert material, on this port.
   # Only :443 is spawned with --iot-cert, so demanding it here made every :8443
@@ -259,7 +245,7 @@ forge_ok() {
   fi
   return 0
 }
-for port in 443 8443 8883 8080 9101; do
+for port in 443 8443 8883 8080; do
   # same adoption rule as the TLS loop below: never kill a contract-complete forge — the
   # wyze-forge launchd daemon would just respawn it and the two supervisors would fight
   if { [ "$port" = 443 ] || [ "$port" = 8443 ]; } && forge_ok "$port"; then continue; fi
@@ -273,7 +259,7 @@ for port in 443 8443 8883 8080 9101; do
     pids=$(port_pids 8883)
     [ -n "$pids" ] && { echo "adopting running proxy (pids:$pids)"; continue; }
   fi
-  free_port "$port" || echo "WARN: port $port still held after 5 s"
+  free_port "$port" || echo "WARN: port $port already held; preserving listeners"
 done
 sudo pkill -f 'wyze_dns_redirect.py' 2>/dev/null
 sudo pkill -f 'wyze_arp_spoof.py' 2>/dev/null
@@ -330,7 +316,7 @@ done
 # /tmp/fss_beacons.log for loop_closer; the separate fss-fwserve launchd job is NOT loaded
 # alongside this wrapper — two supervisors on :8080 flap (same lesson as the :443 forge note).
 sudo "$PY" "$HERE/fwserve_with_beacon.py" > /tmp/img8080.log 2>&1 &
-sudo "$PY" -m http.server 9101 --directory "$CAP_DIR/img" > /tmp/img.log 2>&1 &
+sudo "$PY" -m http.server 9101 --bind "$UP" --directory "$CAP_DIR/img" > /tmp/img.log 2>&1 &
 # the capsule streams every partition back before it writes; without a receiver it dies at step 2
 # Backup ports must match the capsule's installer scheme: it streams partition backups to
 # $PORT+1+slot with PORT=443 baked into upgraderun.sh (444..449 for six MTD partitions).
