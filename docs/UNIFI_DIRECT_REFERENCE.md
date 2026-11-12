@@ -15615,8 +15615,10 @@ the same base with a revised lab-test overlay; its wrapper returned 102 at
 Linux-to-macOS transfer and acknowledged release. The exact Linux binary,
 SHA-256 `b417139f66557ce5c60964ec4cb784600581e5222f612276ae5f81979e3a58fa`,
 matched on the worker and isolated host. Its dedicated high-resolution
-synthetic test passed (1 passed, 3 filtered); a subsequent broad run is still
-pending. The earlier passes do not erase either failure.
+synthetic test passed (1 passed, 3 filtered), and the broader test passed
+(1 passed, 3 filtered) across four synthetic scenarios. The earlier
+third-setup failure was not reproduced or explained; neither new pass erases
+the earlier failures.
 
 For cancellation, strict-remote no-run build `j-30107138793668610` compiled
 base `12fbd7e3c95f8601335c5694225eecaa0e938e2d` with the patched TLS-vendor
