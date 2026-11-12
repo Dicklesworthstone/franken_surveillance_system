@@ -1673,6 +1673,33 @@ fn parallel_fleet_upgrade_scenario(
                     drop(retry_factory);
                     drop(retry_offered);
                     reject_peer.finish()?;
+                    let enrolled = fleet.enrollment(2).ok_or("missing enrollment")?;
+                    let mut setup_queue = fss_unifi_scoped_tls_entropy_lab::prepared_setup::Queue::new(&fleet, 2, 4)?;
+                    {
+                        use fss_unifi_scoped_tls_entropy_lab::prepared_setup::{PreparedSetup, Queue, Refusal};
+                        let mut bounded = Queue::new(&fleet, 1, 1)?;
+                        let polls = Rc::new(Cell::new(0));
+                        let touched = polls.clone();
+                        let operation = OperationId::parse("operation:unpolled-queue-check")?;
+                        let first: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async move {
+                            touched.set(touched.get() + 1);
+                            Err(camera_setup::Error::Binding)
+                        });
+                        bounded.enqueue(PreparedSetup::new(2, enrolled, operation.clone(), first))
+                            .map_err(|(reason, _)| format!("bounded queue admission: {reason:?}"))?;
+                        let rejected: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("refused future polled") });
+                        let (reason, rejected) = bounded.enqueue(PreparedSetup::new(
+                            2, enrolled, OperationId::parse("operation:unpolled-queue-overflow")?, rejected,
+                        )).err().ok_or("queue capacity was exceeded")?;
+                        assert_eq!(reason, Refusal::Capacity);
+                        drop(rejected.into_parts());
+                        assert!(matches!(bounded.take(2, fleet.enrollment(0).ok_or("missing other enrollment")?), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
+                        let retained = bounded.into_pending();
+                        assert_eq!(retained.len(), 1);
+                        assert_eq!(retained[0].operation(), &operation);
+                        assert_eq!(polls.get(), 0);
+                        drop(retained);
+                    }
 
                     // A witnessed deadline after preparation must retain its
                     // evidence before the existing scheduler admits a retry.
@@ -1688,7 +1715,6 @@ fn parallel_fleet_upgrade_scenario(
                         })));
                         third_owner.borrow_mut().approval = &SLOW_APPROVAL;
                         let timeout_operation = OperationId::parse("operation:synthetic-deadline-recovery")?;
-                        let completion_operation = timeout_operation.clone();
                         let deadline_trace = Rc::new(RefCell::new(setup::Trace::default()));
                         let preflight_trace = Rc::new(camera_setup::PreflightRetryTrace::default());
                         let preflight_policy = camera_setup::PreflightRetryPolicy::new(1, Duration::from_millis(10))?;
@@ -1702,7 +1728,7 @@ fn parallel_fleet_upgrade_scenario(
                         let operation_work = timeout_operation.clone();
                         let provider_work = scoped_camera_provider.clone();
                         let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
-                        let future: CameraWork<'_, RetryCompletion<Result<setup::Outcome, camera_setup::Error>>> = Box::pin(async move {
+                        let future: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async move {
                             let mut owner = owner_work.borrow_mut();
                             let mut trace = trace_work.borrow_mut();
                             let mut acquisitions = acquisitions_work.borrow_mut();
@@ -1715,10 +1741,21 @@ fn parallel_fleet_upgrade_scenario(
                                 &mut trace, &preflight_work, preflight_policy, &mut spool, resource_work,
                             ).await;
                             *recovery_work.borrow_mut() = output.deadline_recovery;
-                            RetryCompletion { operation: completion_operation, output: output.outcome }
+                            output.outcome
                         });
-                        let mut offered = Some(future);
-                        let mut factory = |_: usize, _: Enrollment| offered.take().ok_or_else(|| io::ErrorKind::AlreadyExists.into());
+                        setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
+                            2, enrolled, timeout_operation.clone(), future,
+                        )).map_err(|(reason, _)| format!("deadline queue admission: {reason:?}"))?;
+                        let duplicate: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("duplicate future polled") });
+                        let (reason, duplicate) = setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
+                            2, enrolled, timeout_operation.clone(), duplicate,
+                        )).err().ok_or("duplicate operation accepted")?;
+                        assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::prepared_setup::Refusal::DuplicateOperation);
+                        drop(duplicate.into_parts());
+                        assert_eq!(setup_queue.len(), 1);
+                        assert!(matches!(setup_queue.take(2, fleet.enrollment(0).ok_or("missing other enrollment")?), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
+                        assert_eq!(setup_queue.len(), 1);
+                        let mut factory = |index: usize, enrollment: Enrollment| setup_queue.take(index, enrollment);
                         assert!(matches!(supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut factory).await.map_err(|e| format!("deadline admission: {e:?}"))?,
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Started { index: 2 }), .. }));
                         loop {
@@ -1739,7 +1776,13 @@ fn parallel_fleet_upgrade_scenario(
                             }
                         }
                         drop(factory);
-                        drop(offered);
+                        assert!(setup_queue.is_empty());
+                        let reused: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async { panic!("used operation future polled") });
+                        let (reason, reused) = setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
+                            2, enrolled, timeout_operation.clone(), reused,
+                        )).err().ok_or("consumed operation accepted again")?;
+                        assert_eq!(reason, fss_unifi_scoped_tls_entropy_lab::prepared_setup::Refusal::DuplicateOperation);
+                        drop(reused.into_parts());
                         let evidence = recovery.borrow_mut().take().ok_or("deadline recovery skipped")??;
                         assert_eq!(spool.borrow().state(evidence), Some(fss_object::SpoolObjectState::Verified));
                         assert!(deadline_trace.borrow().preparation_cancelled());
@@ -1837,13 +1880,12 @@ fn parallel_fleet_upgrade_scenario(
                     assert!(wrong_acquisition.is_drained());
                     assert!(refused_trace.operation().is_none());
                     assert!(matches!(probe.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
-                    let setup_operation = operations[2].clone();
                     let operation_work = operations[2].clone();
                     let owner_work = third_owner.clone();
                     let provider_work = scoped_camera_provider.clone();
                     let (fleet_work, listener_work, policy_work, resource_work) = (&fleet, &listener, &policy, &resources[2]);
                     let (acquisition_work, trace_work) = (&mut third_acquisition, &mut third_trace);
-                    let setup_future: CameraWork<'_, RetryCompletion<Result<setup::Outcome, camera_setup::Error>>> = Box::pin(async move {
+                    let setup_future: CameraWork<'_, Result<setup::Outcome, camera_setup::Error>> = Box::pin(async move {
                         let mut owner = owner_work.borrow_mut();
                         let output = camera_setup::run_with_acquisition(
                             fleet_work, 2, &mut owner, listener_work, policy_work, third_address, cert,
@@ -1851,9 +1893,11 @@ fn parallel_fleet_upgrade_scenario(
                             resource_work, acquisition_work, provider_work, fences[2],
                             peer, &operation_work, handoff::Framing::ContentLength, Duration::from_secs(10), trace_work,
                         ).await;
-                        RetryCompletion { operation: setup_operation, output }
+                        output
                     });
-                    let mut offered = Some(setup_future);
+                    setup_queue.enqueue(fss_unifi_scoped_tls_entropy_lab::prepared_setup::PreparedSetup::new(
+                        2, enrolled, operations[2].clone(), setup_future,
+                    )).map_err(|(reason, _)| format!("fresh queue admission: {reason:?}"))?;
                     let factory_calls = Rc::new(Cell::new(0usize));
                     let setup_calls = factory_calls.clone();
                     let mut setup_factory = |index: usize, enrollment: Enrollment| {
@@ -1861,7 +1905,7 @@ fn parallel_fleet_upgrade_scenario(
                         if index != 2 || enrollment.camera() != cameras[2] {
                             return Err(io::ErrorKind::InvalidInput.into());
                         }
-                        offered.take().ok_or_else(|| io::ErrorKind::AlreadyExists.into())
+                        setup_queue.take(index, enrollment)
                     };
                     assert!(matches!(
                         supply.next_with_retries_and_streams(&mut pump, &mut retry_auto, &mut retry_streams, &mut retry_queue, &mut setup_factory).await.map_err(|e| format!("retry success admission: {e:?}"))?,
@@ -2009,8 +2053,8 @@ fn parallel_fleet_upgrade_scenario(
                         _ => return Err("unexpected stream completion disposition".into()),
                     };
                     drop(setup_factory);
-                    assert!(offered.is_none());
-                    drop(offered);
+                    assert!(setup_queue.is_empty());
+                    assert!(setup_queue.into_pending().is_empty());
                     let preflight = third_trace.preflight_video().and_then(|selection| selection.selected);
                     if changed_readback {
                         assert_ne!(preflight, selected.selected);
