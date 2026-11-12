@@ -208,15 +208,23 @@ fn current_plan(
     cx: &ReplayCx,
 ) -> Result<DeletionPlan, DeletionError> {
     let holds = super::holds::HoldIndex::read(deployment, cx)?;
-    let universe = Universe::scan(deployment, index, cx)?;
+    let mut universe = Universe::scan(deployment, index, cx)?;
     for scope in universe.scopes(deployment) {
-        let plan = match universe.plan(deployment, &scope) {
+        let plan = super::retry::derive(
+            &mut universe,
+            cx,
+            |digest, plan| plan.scope == scope && digest == plan_digest,
+            |universe| {
+                let plan = universe.plan(deployment, &scope)?;
+                let plan = holds.protect(universe, deployment, plan, cx)?;
+                admit_plan(deployment, plan, cx)
+            },
+        );
+        let plan = match plan {
             Ok(plan) => plan,
             Err(DeletionError::ScopeEmpty(_)) => continue,
             Err(error) => return Err(error),
         };
-        let plan = holds.protect(&universe, deployment, plan, cx)?;
-        let plan = admit_plan(deployment, plan, cx)?;
         if plan.digest()? == plan_digest {
             return Ok(plan);
         }

@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
 
 use super::{
-    DeletionError, DeletionIndex, DeletionPlan, DeletionScope, MAX_BLOCKER_TEXT_BYTES,
+    DeletionError, DeletionPlan, DeletionScope, MAX_BLOCKER_TEXT_BYTES,
     MAX_RETENTION_BLOCKERS, ReferenceDeployment, ReplayCx, RetentionAssessment, RetentionCandidate,
     RetentionDisposition, RetentionPlan, RetentionSelection, SelectionVersion, cohort_checkpoint,
 };
@@ -223,9 +223,37 @@ fn trial_selection(
     }
 }
 
+/// A budget already met, or without an age-eligible input, needs no source closure scan.
+pub(super) fn without_closure(
+    assessment: &RetentionAssessment,
+) -> Result<Option<RetentionPlan>, DeletionError> {
+    let mut selection = assessment.selection.clone();
+    let maximum = selection
+        .request
+        .source_byte_budget
+        .ok_or(DeletionError::RecordMismatch)?;
+    let order = age_order(&selection);
+    if source_bytes(&sources(&selection.candidates)?)? > maximum && !order.is_empty() {
+        return Ok(None);
+    }
+    for i in order {
+        selection.candidates[i].disposition = RetentionDisposition::BudgetRetained;
+    }
+    selection.byte_accounting = Some(accounting(&selection)?);
+    verify_selection(&selection)?;
+    let mut assessment = assessment.clone();
+    assessment.selection = selection;
+    Ok(Some(RetentionPlan {
+        assessment,
+        deletion: None,
+    }))
+}
+
 pub(super) fn plan(
     deployment: &ReferenceDeployment,
     mut assessment: RetentionAssessment,
+    holds: &super::super::holds::HoldIndex,
+    universe: &super::super::walk::Universe,
     cx: &ReplayCx,
 ) -> Result<RetentionPlan, DeletionError> {
     let mut selection = assessment.selection.clone();
@@ -250,10 +278,7 @@ pub(super) fn plan(
     }
 
     cohort_checkpoint(cx)?;
-    let index = DeletionIndex::read(deployment)?;
-    let holds = super::super::holds::HoldIndex::read(deployment, cx)?;
-    let universe = super::super::walk::Universe::scan(deployment, &index, cx)?;
-    let protection = holds.protection(&universe, deployment, cx)?;
+    let protection = holds.protection(universe, deployment, cx)?;
     assessment.held_closures = protection.len();
     let mut evaluate = |selection: &RetentionSelection| -> Result<DeletionPlan, DeletionError> {
         cohort_checkpoint(cx)?;

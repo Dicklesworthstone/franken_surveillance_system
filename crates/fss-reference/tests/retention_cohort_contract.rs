@@ -726,6 +726,15 @@ fn every_cleanup_cut_preserves_holds_and_resumes_the_exact_bound_cohort_after_re
         );
         let durable = DeletionIndex::read(&f.deployment)?.plan(digest).is_some();
         let mut f = f.reopen()?;
+        if !durable {
+            let before = snapshot(f.deployment.root())?;
+            assert_eq!(
+                plan_retention(&f.deployment, &request()?, &f.cx)?.deletion,
+                Some(plan.clone()),
+                "exact read-only age/cohort preview after {stage}"
+            );
+            assert_eq!(snapshot(f.deployment.root())?, before);
+        }
         let wrong = RetentionRequest::new(SensorId::parse(SENSOR)?, 101, interval(1000, 1010)?)?;
         assert!(matches!(
             commit_retention(
@@ -1286,6 +1295,15 @@ fn byte_budget_every_cleanup_cut_reopens_and_resumes_only_the_exact_bound_reques
         );
         let durable = DeletionIndex::read(&f.deployment)?.plan(digest).is_some();
         let mut f = f.reopen()?;
+        if !durable {
+            let before = snapshot(f.deployment.root())?;
+            assert_eq!(
+                plan_retention(&f.deployment, &request, &f.cx)?.deletion,
+                Some(plan.clone()),
+                "exact read-only byte-budget preview after {stage}"
+            );
+            assert_eq!(snapshot(f.deployment.root())?, before);
+        }
         let wrong = request.clone().with_source_byte_budget(1);
         let before = snapshot(f.deployment.root())?;
         assert!(matches!(

@@ -440,8 +440,24 @@ pub fn assess_review_expiry(
     }
     let index = DeletionIndex::read(deployment)?;
     let holds = super::holds::HoldIndex::read(deployment, cx)?;
-    let universe = super::walk::Universe::scan(deployment, &index, cx)?;
-    let protection = holds.protection(&universe, deployment, cx)?;
+    let mut universe = super::walk::Universe::scan(deployment, &index, cx)?;
+    super::retry::derive(
+        &mut universe,
+        cx,
+        |_, plan| matches!(&plan.scope, DeletionScope::ReviewExpiry(selection) if selection.request() == request),
+        |universe| assess_scanned(deployment, age_selection.clone(), &holds, universe, cx),
+    )
+}
+
+fn assess_scanned(
+    deployment: &ReferenceDeployment,
+    age_selection: ReviewExpirySelection,
+    holds: &super::holds::HoldIndex,
+    universe: &super::walk::Universe,
+    cx: &ReplayCx,
+) -> Result<ReviewExpiryAssessment, DeletionError> {
+    let request = age_selection.request.clone();
+    let protection = holds.protection(universe, deployment, cx)?;
     let evaluate = |selection: &ReviewExpirySelection| -> Result<DeletionPlan, DeletionError> {
         checkpoint(cx, STAGE_REVIEW_EXPIRY_COHORT)?;
         let plan = universe.plan(deployment, &DeletionScope::ReviewExpiry(selection.clone()))?;

@@ -168,14 +168,32 @@ the plan lists them as retained with reason `deletion_audit_metadata`. Their his
 provenance does not expand the new deletion closure, and their bytes remain available for
 subsequent audit replay.
 
-Interrupted operations still require their unowned staged proposals to survive exact retry.
-Those candidates now require complete canonical decoding, this site's identity and an exact
-retained ledger basis. A staged completion must also equal the expected completion of a
-verified committed plan. Malformed, foreign or unbound unowned candidates refuse planning
-and commit before writes. One limitation remains: an unowned, fully canonical local proposal
-is still recognized by this staging convention without proving which interrupted operation
-staged it. Exact caller-pinned staging context remains follow-up work across deletion,
-retention, review expiry and policy adoption.
+Unowned proposals remain ordinary accounted content until the exact requested operation
+independently rederives them. Canonical spelling and a valid local ledger basis are necessary
+but insufficient. The planner provisionally omits only an unheld candidate for the requested
+scope, recomputes the full closure, holds, exclusions, counts and publication bounds, and
+accepts the exemption only when the resulting canonical plan digest matches exactly.
+Unrelated and forged proposals stay visible; supplying or approving their digest cannot turn
+it into a general exclusion. Source-owned copies are never candidates.
+
+This applies to import, sensor and event deletion, age and byte-target retention, and review
+expiry. Policy adoption additionally binds the exact request, principal and next generation
+and verifies the rederived impact plan plus policy record as a pair. An interruption after
+only the impact was staged is handled separately. A staged completion has an independent
+identity only when it equals the deterministic completion of a verified committed plan.
+Malformed, foreign or unbound unowned audit candidates still refuse before writes.
+
+One custody scan and metadata inventory are reused. At most 64 unowned proposals and 64 MiB
+of candidate input bytes may be retained for retry validation, and each request admits at
+most 64 semantic candidate trials. Ownership and committed-history exemptions precede
+these cache bounds. Excess candidates/bytes, ambiguous matching results or cancellation
+refuse the whole operation. Trial omissions are restored on success or error; normal
+planning accounts for every proposal when none rederives exactly.
+
+The retention assessment's existing closure counters describe the accepted logical selector
+projection. Additional bounded retry validation is not a total CPU or I/O measurement and
+does not refill the metadata allowance. Exact plan, approval and selection identities remain
+stable across the supported interruption points.
 
 ## Adopt and use durable per-sensor settings
 

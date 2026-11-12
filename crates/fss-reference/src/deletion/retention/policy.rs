@@ -15,7 +15,7 @@ use fss_core::{
     PrincipalId, SensorId, TimestampNs,
 };
 
-use super::{RetentionPlan, RetentionRequest, plan_retention};
+use super::{RetentionPlan, RetentionRequest};
 use crate::deletion::holds::{CAP_HOLD_COMMIT, CAP_HOLD_PREPARE};
 use crate::deletion::{
     DeletionError, DeletionIndex, DeletionPlan, DeletionScope, MAX_DELETION_RECORD_BYTES,
@@ -663,20 +663,9 @@ pub fn preview_policy_change(
             .ok_or(PolicyError::Limit)?,
         None => 1,
     };
-    let affected = plan_retention(deployment, &request.inline_request()?, cx)?;
-    let record = RetentionPolicyRecord {
-        request: request.clone(),
-        generation,
-        principal: authority.principal.clone(),
-        site: deployment.site_lineage().to_owned(),
-        basis: deployment.current_anchor().clone(),
-        affected_selection: affected.assessment.selection.digest()?,
-        affected_plan: affected
-            .deletion
-            .as_ref()
-            .map(|plan| plan.digest())
-            .transpose()?,
-    };
+    let receipt = preview_affected(deployment, request, authority, generation, cx)?;
+    let record = &receipt.record;
+    let affected = receipt.affected.as_ref().ok_or(PolicyError::InvalidRecord)?;
     if record.to_bytes().len() as u64 > MAX_POLICY_RECORD_BYTES {
         return Err(PolicyError::Limit);
     }
@@ -694,11 +683,112 @@ pub fn preview_policy_change(
     {
         return Err(PolicyError::Limit);
     }
-    Ok(PolicyReceipt {
-        record,
-        outcome: PolicyOutcome::Proposed,
-        affected: Some(affected),
-    })
+    Ok(receipt)
+}
+
+/// Derive the impact and exact prospective record from one inventory and one custody scan.
+/// A staged policy and its staged impact may be omitted only as a verified pair. The standalone
+/// impact cut is handled separately. Every unrelated proposal remains in every trial universe.
+fn preview_affected(
+    deployment: &ReferenceDeployment,
+    request: &PolicyChangeRequest,
+    authority: &ContextAuthority,
+    generation: u64,
+    cx: &ReplayCx,
+) -> Result<PolicyReceipt, PolicyError> {
+    let inline = request.inline_request()?;
+    let assessment = super::assess_age_retention(deployment, &inline, cx)?;
+    let make_receipt = |affected: RetentionPlan| -> Result<PolicyReceipt, PolicyError> {
+        let record = RetentionPolicyRecord {
+            request: request.clone(),
+            generation,
+            principal: authority.principal.clone(),
+            site: deployment.site_lineage().to_owned(),
+            basis: deployment.current_anchor().clone(),
+            affected_selection: affected.assessment.selection.digest()?,
+            affected_plan: affected
+                .deletion
+                .as_ref()
+                .map(DeletionPlan::digest)
+                .transpose()?,
+        };
+        Ok(PolicyReceipt {
+            record,
+            outcome: PolicyOutcome::Proposed,
+            affected: Some(affected),
+        })
+    };
+    if let Some(affected) = super::without_closure(&assessment)? {
+        return make_receipt(affected);
+    }
+    let deletions = DeletionIndex::read(deployment)?;
+    let holds = crate::deletion::holds::HoldIndex::read(deployment, cx)?;
+    let mut universe = crate::deletion::walk::Universe::scan(deployment, &deletions, cx)?;
+    let matches = |plan: &DeletionPlan| {
+        matches!(&plan.scope, DeletionScope::Retention(selection) if selection.request() == &inline)
+    };
+    let plans: BTreeMap<_, _> = universe
+        .proposed_plans()
+        .filter(|(_, plan)| matches(plan))
+        .take(crate::deletion::retry::MAX_RETRY_CANDIDATES + 1)
+        .map(|(digest, _)| (digest, ()))
+        .collect();
+    let mut candidates: Vec<_> = plans.keys().map(|digest| (None, *digest)).collect();
+    for (digest, record) in universe.proposed_policies() {
+        if record.request() == request
+            && record.principal() == authority.principal
+            && record.generation() == generation
+            && let Some(impact) = record.affected_plan()
+            && plans.contains_key(&impact)
+        {
+            candidates.push((Some(digest), impact));
+        }
+        if candidates.len() > crate::deletion::retry::MAX_RETRY_CANDIDATES {
+            return Err(DeletionError::Bound {
+                limit: "audit_retry_candidates",
+            }
+            .into());
+        }
+    }
+    if candidates.len() > crate::deletion::retry::MAX_RETRY_CANDIDATES {
+        return Err(DeletionError::Bound {
+            limit: "audit_retry_candidates",
+        }
+        .into());
+    }
+    let evaluate = |universe: &crate::deletion::walk::Universe| {
+        make_receipt(super::plan_scanned(
+            deployment,
+            assessment.clone(),
+            &holds,
+            universe,
+            cx,
+        )?)
+    };
+    let mut verified = None;
+    for (policy, impact) in candidates {
+        checkpoint(cx, STAGE_POLICY_READ)?;
+        let mut omitted = vec![impact];
+        omitted.extend(policy);
+        let receipt = universe.with_proposals_omitted(&omitted, &evaluate)?;
+        if receipt.record.affected_plan() == Some(impact)
+            && policy.is_none_or(|digest| receipt.record.digest() == digest)
+        {
+            if verified.is_some() {
+                return Err(PolicyError::InvalidRecord);
+            }
+            verified = Some(receipt);
+        }
+    }
+    let receipt = match verified {
+        Some(receipt) => receipt,
+        None => {
+            checkpoint(cx, STAGE_POLICY_READ)?;
+            evaluate(&universe)?
+        }
+    };
+    checkpoint(cx, STAGE_POLICY_READ)?;
+    Ok(receipt)
 }
 
 /// Commit the exact prospective change; never delete bytes or grant later deletion approval.
@@ -746,7 +836,7 @@ pub fn commit_policy_change(
 }
 
 /// Detects policy framing and verifies its complete canonical grammar. This does not establish
-/// an audit role: the walker separately checks ownership, site and retained authority basis.
+/// an audit role: only verified authority history or exact requested semantic rederivation does.
 pub(crate) fn is_policy_record_bytes(
     bytes: &[u8],
     digest: ContentDigest,

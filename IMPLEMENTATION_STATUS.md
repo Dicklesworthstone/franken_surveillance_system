@@ -4,6 +4,40 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Exact interrupted deletion and retention recovery — 2026-11-12
+
+Uncommitted canonical audit-looking bytes no longer disappear from the deletion
+inventory merely because they name this site and a retained ledger anchor.
+Import/sensor/event deletion, age and byte-target retention, review expiry and
+policy adoption now independently rederive the exact requested plan before
+exempting its unowned staged identity. Policy retries additionally rederive the
+exact impact/record pair under the request, principal and generation. Forged or
+unrelated proposals remain ordinary accounted content; a caller-supplied digest
+is never an exclusion mask.
+
+The same ownership-first scan preserves source-owned audit copies and verified
+committed audit metadata. Shared scan/inventory state is restored between trials;
+candidate cache and trial work have explicit hard bounds, and ordinary-scope
+trials now check cancellation before further work and before returning a result.
+Tombstone-before-unlink, approval binding and exact durable resume remain in place.
+
+Adversarial regressions and existing interruption matrices cover forged/unrelated
+proposals, cached-candidate bounds, source ownership, cancellation and read-only
+re-preview across ordinary deletion, age/budget retention, review expiry and
+policy staging. These new changes are **source reviewed, not natively executed**.
+The local workspace disconnected; the restored environment lacked the pinned
+toolchain. The original eight-file implementation was parsed by pinned rustfmt
+before that loss, but subsequent final edits and tests have no formatting or
+compile pass. Existing CI supplied genuine earlier native failure diagnostics;
+the separate recorder regression repairs are recorded in
+[the validation note](docs/validation/2026-11-12-recorder-regression-repairs.json).
+Neither those earlier results nor this source checkpoint qualifies the new head.
+
+This supersedes the unowned-staging limitation in the earlier privacy/effect
+checkpoint below. Canonical immutable QSR and imported recorder source queries
+remain separate work; no broad bead is closed.
+See [retention cleanup](docs/retention_cleanup.md#audit-records-and-source-ownership).
+
 ## Discover native camera imports through canonical footage queries — 2026-11-12
 
 `fss query --target footage` and the MCP `query` tool now include completed

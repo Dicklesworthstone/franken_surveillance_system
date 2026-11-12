@@ -79,6 +79,8 @@ const IMPORT_BATCH_PREFIX: &str = "batch:file-import:";
 const IMPORT_SLOT_PREFIX: &str = "slot:fi-";
 const EVENT_OBJECT_PREFIX: &str = "object:event:";
 const HOLD_EXPANSION_LIMIT: usize = 1 << 20;
+const MAX_CACHED_AUDIT_PROPOSALS: usize = 64;
+const MAX_AUDIT_PROPOSAL_BYTES: u64 = 64 * 1024 * 1024;
 
 fn sha(bytes: [u8; 32]) -> ContentDigest {
     ContentDigest::new(DigestAlgorithm::Sha256, bytes)
@@ -206,6 +208,9 @@ pub(super) struct Universe {
     objects: BTreeMap<ContentDigest, ObjectInfo>,
     /// Verified deletion/expiry audit identities, protected even when content also holds them.
     protected_audit: BTreeSet<ContentDigest>,
+    /// Unowned canonical proposals are content until a requested operation rederives them.
+    proposed_plans: BTreeMap<ContentDigest, DeletionPlan>,
+    proposed_policies: BTreeMap<ContentDigest, super::retention::policy::RetentionPolicyRecord>,
     holders: BTreeMap<ContentDigest, Vec<usize>>,
     /// Units whose `refs` (embedded custody references) contain the digest.
     /// A digest a unit outside the closure merely references is shared
@@ -300,14 +305,20 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), DeletionError> {
         .map_err(|_| DeletionError::Cancelled { stage })
 }
 
-/// Validate an unowned staging candidate; a framing hint alone is never an exemption.
-/// Held objects bypass this helper and retain their source/derivative ownership.
+/// Framing and canonical decoding identify candidates, never their custody role.
+enum UnheldAudit {
+    Plan(DeletionPlan),
+    Completion,
+    Policy(super::retention::policy::RetentionPolicyRecord),
+    Other,
+}
+
 fn unheld_audit_record(
     deployment: &ReferenceDeployment,
     index: &DeletionIndex,
     bytes: &[u8],
     digest: ContentDigest,
-) -> Result<bool, DeletionError> {
+) -> Result<UnheldAudit, DeletionError> {
     let retained_basis = |basis: &LedgerAnchor| {
         basis == deployment.current_anchor()
             || deployment
@@ -321,27 +332,28 @@ fn unheld_audit_record(
         if plan.site_lineage != deployment.site_lineage() || !retained_basis(&plan.basis_anchor) {
             return Err(DeletionError::RecordMismatch);
         }
-        return Ok(true);
+        return Ok(UnheldAudit::Plan(plan));
     }
     if DeletionCompletion::is_completion_bytes(bytes) {
         let completion = DeletionCompletion::decode(bytes, digest)?;
-        // Completion staging occurs only after the exact deletion plan is authoritative.
+        // Completion staging has an independent identity: the exact deterministic completion
+        // of a fully verified, already authoritative deletion plan.
         let entry = index
             .plan(completion.plan_digest)
             .ok_or(DeletionError::RecordMismatch)?;
         if completion != DeletionCompletion::of(&entry.plan)? {
             return Err(DeletionError::RecordMismatch);
         }
-        return Ok(true);
+        return Ok(UnheldAudit::Completion);
     }
     if super::retention::policy::is_policy_record_bytes(bytes, digest)? {
         let record = super::retention::policy::RetentionPolicyRecord::from_bytes(bytes, digest)?;
         if record.site() != deployment.site_lineage() || !retained_basis(record.basis()) {
             return Err(DeletionError::RecordMismatch);
         }
-        return Ok(true);
+        return Ok(UnheldAudit::Policy(record));
     }
-    Ok(false)
+    Ok(UnheldAudit::Other)
 }
 
 impl Universe {
@@ -558,20 +570,19 @@ impl Universe {
                 );
             }
         }
-        let mut audit_candidates = BTreeSet::new();
+        let mut audit_candidates = BTreeMap::new();
         for digest in &spool_digests {
             checkpoint(cx, STAGE_DELETION_SCAN)?;
             // Unreadable bytes have unknown references, not an empty reference set. Even an
             // apparently unrelated object may hold the only edge into this closure. Refuse the
             // scan with its custody error rather than authorize a smaller, incomplete deletion.
             let bytes = spool.read(*digest)?;
-            if DeletionPlan::is_plan_bytes(&bytes)
-                || DeletionCompletion::is_completion_bytes(&bytes)
+            let proposal = DeletionPlan::is_plan_bytes(&bytes)
                 || CanonicalDecoder::new(&bytes)
                     .text()
-                    .is_ok_and(|domain| domain == super::retention::policy::POLICY_DOMAIN)
-            {
-                audit_candidates.insert(*digest);
+                    .is_ok_and(|domain| domain == super::retention::policy::POLICY_DOMAIN);
+            if proposal || DeletionCompletion::is_completion_bytes(&bytes) {
+                audit_candidates.insert(*digest, proposal);
             }
             let mut info = ObjectInfo {
                 bytes: bytes.len() as u64,
@@ -615,19 +626,46 @@ impl Universe {
             unit.members = members;
         }
 
-        // Preserve the existing retry convention for unowned staged audit proposals, with
-        // complete canonical decoding and a local retained basis. This is a staging exception,
-        // not authority: a caller-pinned retry identity is still needed to distinguish arbitrary
-        // canonical, unowned proposals from this process's own interrupted staging.
+        // Only verified history and independently derived completions have an audit role
+        // here. Canonical proposals remain in the object graph and byte accounting. Their
+        // requester may later prove one exact interrupted staging identity by recomputation.
         let mut records = protected_audit.clone();
-        for digest in audit_candidates {
+        let mut proposed_plans = BTreeMap::new();
+        let mut proposed_policies = BTreeMap::new();
+        let mut proposal_bytes = 0_u64;
+        for (digest, proposal) in audit_candidates {
             if holders.contains_key(&digest) || records.contains(&digest) {
                 continue;
             }
+            if proposal {
+                // Ownership is settled before these limits. A source containing canonical
+                // audit bytes consumes ordinary custody capacity, never the retry cache.
+                if proposed_plans.len() + proposed_policies.len() == MAX_CACHED_AUDIT_PROPOSALS {
+                    return Err(DeletionError::Bound {
+                        limit: "audit_retry_metadata_records",
+                    });
+                }
+                let bytes = objects.get(&digest).ok_or(DeletionError::RecordMismatch)?.bytes;
+                proposal_bytes = proposal_bytes
+                    .checked_add(bytes)
+                    .filter(|bytes| *bytes <= MAX_AUDIT_PROPOSAL_BYTES)
+                    .ok_or(DeletionError::Bound {
+                        limit: "audit_retry_metadata_bytes",
+                    })?;
+            }
             checkpoint(cx, STAGE_DELETION_SCAN)?;
-            let bytes = spool.read(digest)?;
-            if unheld_audit_record(deployment, index, &bytes, digest)? {
-                records.insert(digest);
+            let bytes = spool.read_bounded(digest, super::MAX_DELETION_RECORD_BYTES)?;
+            match unheld_audit_record(deployment, index, &bytes, digest)? {
+                UnheldAudit::Plan(plan) => {
+                    proposed_plans.insert(digest, plan);
+                }
+                UnheldAudit::Policy(record) => {
+                    proposed_policies.insert(digest, record);
+                }
+                UnheldAudit::Completion => {
+                    records.insert(digest);
+                }
+                UnheldAudit::Other => {}
             }
         }
         for digest in &records {
@@ -691,6 +729,8 @@ impl Universe {
             units,
             objects,
             protected_audit,
+            proposed_plans,
+            proposed_policies,
             holders,
             ref_holders,
             identity_holders,
@@ -715,6 +755,60 @@ impl Universe {
             sensors: OnceCell::new(),
             event_reach: OnceCell::new(),
         })
+    }
+
+    /// Current-basis candidates only. Historical proposals remain ordinary accounted content.
+    pub(super) fn proposed_plans(&self) -> impl Iterator<Item = (ContentDigest, &DeletionPlan)> {
+        self.proposed_plans.iter().filter_map(|(digest, plan)| {
+            (plan.basis_anchor == self.anchor && plan.effect_journal_root == self.effect_journal_root)
+                .then_some((*digest, plan))
+        })
+    }
+
+    pub(super) fn proposed_policies(
+        &self,
+    ) -> impl Iterator<Item = (ContentDigest, &super::retention::policy::RetentionPolicyRecord)> {
+        self.proposed_policies.iter().filter_map(|(digest, record)| {
+            (record.basis() == &self.anchor).then_some((*digest, record))
+        })
+    }
+
+    /// Provisional omission for independent semantic rederivation, never a caller exemption.
+    /// The owner must compare the complete derived plan/record identities before returning a
+    /// result. Nothing is written, source ownership cannot be omitted, and every trial restores
+    /// the same scanned graph even when evaluation returns an error or cancellation.
+    pub(super) fn with_proposals_omitted<T, E: From<DeletionError>>(
+        &mut self,
+        digests: &[ContentDigest],
+        evaluate: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let unique: BTreeSet<_> = digests.iter().copied().collect();
+        if unique.len() != digests.len()
+            || digests.iter().any(|digest| {
+                !self.unheld.contains(digest)
+                    || self.holders.contains_key(digest)
+                    || (!self.proposed_plans.contains_key(digest)
+                        && !self.proposed_policies.contains_key(digest))
+                    || !self.objects.contains_key(digest)
+            })
+        {
+            return Err(DeletionError::RecordMismatch.into());
+        }
+        let mut removed = Vec::with_capacity(digests.len());
+        for digest in digests {
+            if let Some(info) = self.objects.remove(digest) {
+                self.unheld.remove(digest);
+                removed.push((*digest, info));
+            }
+        }
+        self.event_reach.take();
+        let result = evaluate(self);
+        for (digest, info) in removed {
+            self.objects.insert(digest, info);
+            self.unheld.insert(digest);
+        }
+        self.event_reach.take();
+        result
     }
 
     /// Every scope the current head admits, in commit-lookup order: each retained import

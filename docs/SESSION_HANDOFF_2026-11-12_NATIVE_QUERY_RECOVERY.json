@@ -1,0 +1,126 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-12",
+  "timezone": "UTC",
+  "state": "source_implemented_native_validation_pending",
+  "mission": {
+    "goal": "Implement important remaining functionality and correctness gaps from the comprehensive plan and beads, with meaningful commits directly to main through GitHub and no PRs.",
+    "initial_source_head": "6d3381bb87fa43e183af5c7c37071df29a3f5dc5",
+    "requirement_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "VIT-015 / fss-vit-je36t.15",
+      "VIT-012 / fss-vit-je36t.12 (investigated; immutable owner still open)",
+      "FSS-037 / fss-x4a.9.7",
+      "VIT-022 / fss-vit022-recorder-retrieval-5js5o"
+    ],
+    "broad_beads_closed": false
+  },
+  "published_checkpoints": [
+    {
+      "commit": "15e1689050de634426cc378680f03ee1c1bc1eb4",
+      "change": "Canonical CLI/MCP footage metadata includes exact native HTTP/RTSP imports, explicit adapter/generation/origin declarations and v2 row/scope identities."
+    },
+    {
+      "commit": "9f5fb8d0fdd3bc075c2c8c34e9b90cae67ee89a4",
+      "change": "Repair actual native recorder/MCP test compilation and fixture failures without widening production authority or weakening custody/recovery assertions."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Exact request-specific staged audit rederivation across deletion, retention, review expiry and policy adoption; bounded candidate cache and cancellation; adversarial and interruption regressions."
+    }
+  ],
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "footage": "crates/fss-reference/src/agent_footage/read.rs",
+    "deletion_retry": "crates/fss-reference/src/deletion/retry.rs",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-12_PRIVACY_EFFECT_RECOVERY.json",
+    "recorder_repairs": "docs/validation/2026-11-12-recorder-regression-repairs.json",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "findings": [
+    "The canonical footage reader skipped native imports that already had verified completion/publication/capsule metadata.",
+    "File/native metadata can share the immutable DeploymentHistory reader without opening a publisher or reading original media/proof payloads; those proofs and payload availability remain explicitly unverified.",
+    "Unowned canonical proposals with a local ledger basis were excluded without verifying which requested operation they represented.",
+    "Recomputing the exact plan after provisional omission binds scope, holds, exclusions, counts and complete canonical identity; policy retries additionally bind request, principal, generation and both impact/record identities.",
+    "Independent review found missing ordinary-scope trial cancellation and an aggregate decoded-proposal memory bound; both were added before publication.",
+    "Existing hosted native logs exposed test setup/expectation defects and private API use; fixes preserve production behavior and still require post-change execution."
+  ],
+  "authority": {
+    "user": "Direct main commits via GitHub; no PRs.",
+    "scope": "Repository implementation and deterministic fixtures; no live camera/device changes or messages to others.",
+    "source": "Footage metadata grants no original-media read, origin-proof hydration, effect, deletion or acquisition authority.",
+    "deletion": "Existing plan-specific approvals, holds, tombstone-before-unlink and durable retry ownership remain authoritative.",
+    "release": "Repository-owned local qualification remains release authority; hosted results are supplementary."
+  },
+  "budgets": {
+    "footage": "Existing complete index/read/page limits unchanged; row.v2/scope.v2 invalidate file-only continuations.",
+    "audit_candidate_cache": "At most 64 unowned proposals and 64 MiB of input bytes, charged after ownership/history exemptions and before bounded decoding.",
+    "audit_retry": "At most 64 semantic trials with cancellation checkpoints; one scanned graph/inventory reused, omissions restored between trials.",
+    "cost_boundary": "Retention counters describe the accepted logical selector projection, not total retry CPU or I/O cost."
+  },
+  "validation": {
+    "passed": [
+      "Independent native metadata ownership/API review.",
+      "Independent deletion rederivation, policy-pair, alias ownership, bounds and cancellation source review.",
+      "GitHub compare/ref verification for published meaningful checkpoints.",
+      "Final deletion implementation/tests git diff --check.",
+      "Pinned rustfmt parsed the initial eight-file deletion core before the environment disconnect; later edits and final reconstructed bytes are not covered.",
+      "Separate full fss-core metadata-only compilation succeeded before the environment loss; no new feature execution is implied."
+    ],
+    "blocked": [
+      "Fresh locked offline workspace resolution lacked Asupersync cache.",
+      "Isolated native model test compilation received SIGKILL in unchanged fss-core before tests executed.",
+      "The execution environment disconnected; after recovery, the pinned toolchain was unavailable."
+    ],
+    "current_native_compile": false,
+    "current_native_test_pass": false,
+    "full_release_qualification": false,
+    "native_camera_interoperability": false,
+    "prior_native_evidence": "Exact pre-change hosted diagnostics and repair rationale are retained in docs/validation/2026-11-12-recorder-regression-repairs.json."
+  },
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Run the new native footage integration/unit and real CLI/MCP cases with the pinned toolchain and exact dependency closure."
+    },
+    {
+      "state": "waiting",
+      "action": "Run deletion_audit_role_contract, retention_cohort_contract, review_media_contract and deletion_scope_cli_contract including the expanded interruption matrices."
+    },
+    {
+      "state": "waiting",
+      "action": "Run the existing recording lifecycle and ONVIF metadata targets after the five source-reviewed regression repairs."
+    },
+    {
+      "state": "open",
+      "action": "Build a shared immutable retained-source owner before adding canonical QSR or imported recorder original-source query integration."
+    },
+    {
+      "state": "open",
+      "action": "Complete applicable local qualification and owned-device evidence before release claims."
+    }
+  ],
+  "supersedes": [
+    "The unowned canonical audit-staging limitation in docs/SESSION_HANDOFF_2026-11-12_PRIVACY_EFFECT_RECOVERY.json is resolved in source; native qualification is pending."
+  ],
+  "unknowns": [
+    "Post-change native compile/test results are not established.",
+    "Final reconstructed files have not had a complete pinned formatting pass.",
+    "QSR's operational owner still relies on the mutable deployment/publisher source stack.",
+    "Source-media availability, reconstructed origin validity, trusted UTC and physical coverage/absence are not established by metadata discovery."
+  ],
+  "next_affordances": [
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_footage::tests",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test agent_native_footage_contract --test http_wire_replay --test rtsp_jpeg_import_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test rtsp_replay_import_cli",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test deletion_audit_role_contract --test retention_cohort_contract --test review_media_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test deletion_scope_cli_contract",
+    "bash scripts/check_recording_lifecycle.sh all"
+  ],
+  "invalidations": [
+    "Changes to native import tuples, manifest/capsule/publication or deletion semantics.",
+    "Changes to staged audit encoding, plan identity, policy request/principal or omission ownership.",
+    "Changes to replay source permits, decoder discontinuity policy or cold effect reconciliation."
+  ]
+}

@@ -402,6 +402,7 @@
     "crates/fss-reference/src/deletion/retention.rs": "effect",
     "crates/fss-reference/src/deletion/retention/policy.rs": "effect",
     "crates/fss-reference/src/deletion/retention/budget.rs": "effect",
+    "crates/fss-reference/src/deletion/retry.rs": "effect",
     "crates/fss-reference/src/deletion/rtp.rs": "effect",
     "crates/fss-reference/src/deletion/scope.rs": "effect",
     "crates/fss-reference/src/deletion/tests.rs": "support",

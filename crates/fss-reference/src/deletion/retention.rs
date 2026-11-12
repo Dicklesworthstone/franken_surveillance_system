@@ -592,7 +592,9 @@ fn read_digest(d: &mut CanonicalDecoder<'_>) -> Result<ContentDigest, DeletionEr
     Ok(digest)
 }
 
-/// Actual selector and shared dependency-scan work, including all-blocked selections.
+/// Work for the accepted logical selector projection, including all-blocked selections.
+/// Audit-retry validation performs separately bounded semantic trials over the same custody
+/// scan and metadata inventory; these fields do not claim total request CPU or I/O cost.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionAssessment {
     /// Immutable selection, including each same-sensor exclusion.
@@ -607,13 +609,15 @@ pub struct RetentionAssessment {
     pub outside_sensor: usize,
     /// Incomplete imports were not age-classified and are never selected.
     pub incomplete_imports: usize,
-    /// Objects scanned once for the reusable dependency universe; zero with no age-eligible input.
+    /// Objects in the accepted dependency universe; zero with no age-eligible input.
+    /// Exact independently rederived staging identities are excluded from this projection.
     pub closure_scanned_objects: u64,
-    /// Bytes in that one dependency scan, separate from the metadata selector's allowance.
+    /// Bytes in that logical dependency projection, separate from the metadata allowance.
     pub closure_scanned_bytes: u64,
-    /// Prospective cohort plans evaluated, including the fast path and final exact selection.
+    /// Prospective cohort plans evaluated for this projection, including its fast path and
+    /// final exact selection. Additional bounded audit-retry trials are separate.
     pub closure_evaluations: usize,
-    /// Distinct held import closures evaluated once and reused across prospective cohorts.
+    /// Distinct held import closures reused across this projection's prospective cohorts.
     pub held_closures: usize,
 }
 
@@ -990,21 +994,53 @@ pub fn plan_retention(
     request: &RetentionRequest,
     cx: &ReplayCx,
 ) -> Result<RetentionPlan, DeletionError> {
-    let mut assessment = assess_age_retention(deployment, request, cx)?;
-    if request.source_byte_budget.is_some() {
-        return budget::plan(deployment, assessment, cx);
-    }
-    if assessment.selection.imports().is_empty() {
-        return Ok(RetentionPlan {
-            assessment,
-            deletion: None,
-        });
+    let assessment = assess_age_retention(deployment, request, cx)?;
+    if let Some(plan) = without_closure(&assessment)? {
+        return Ok(plan);
     }
     cohort_checkpoint(cx)?;
     let index = DeletionIndex::read(deployment)?;
     let holds = super::holds::HoldIndex::read(deployment, cx)?;
-    let universe = super::walk::Universe::scan(deployment, &index, cx)?;
-    let protection = holds.protection(&universe, deployment, cx)?;
+    let mut universe = super::walk::Universe::scan(deployment, &index, cx)?;
+    super::retry::derive(
+        &mut universe,
+        cx,
+        |_, plan| matches!(&plan.scope, DeletionScope::Retention(selection) if selection.request() == request),
+        |universe| plan_scanned(deployment, assessment.clone(), &holds, universe, cx),
+    )
+}
+
+/// Preserve the metadata-only fast path when no closure can be selected.
+fn without_closure(
+    assessment: &RetentionAssessment,
+) -> Result<Option<RetentionPlan>, DeletionError> {
+    if assessment.selection.request.source_byte_budget.is_some() {
+        return budget::without_closure(assessment);
+    }
+    Ok(assessment
+        .selection
+        .imports()
+        .is_empty()
+        .then(|| RetentionPlan {
+            assessment: assessment.clone(),
+            deletion: None,
+        }))
+}
+
+/// The exact selector and admission rules over one already scanned, provisional universe.
+/// Metadata inventory and hold records are read once by the owning request, not once per retry.
+fn plan_scanned(
+    deployment: &ReferenceDeployment,
+    mut assessment: RetentionAssessment,
+    holds: &super::holds::HoldIndex,
+    universe: &super::walk::Universe,
+    cx: &ReplayCx,
+) -> Result<RetentionPlan, DeletionError> {
+    if assessment.selection.request.source_byte_budget.is_some() {
+        return budget::plan(deployment, assessment, holds, universe, cx);
+    }
+    let request = assessment.selection.request.clone();
+    let protection = holds.protection(universe, deployment, cx)?;
     assessment.held_closures = protection.len();
     let mut evaluate = |selection: &RetentionSelection| -> Result<DeletionPlan, DeletionError> {
         cohort_checkpoint(cx)?;

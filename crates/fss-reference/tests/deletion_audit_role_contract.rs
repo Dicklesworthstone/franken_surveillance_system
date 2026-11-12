@@ -16,8 +16,9 @@ use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 use fss_reference::deletion::retention::policy::{POLICY_DOMAIN, RetentionPolicyRecord};
 use fss_reference::deletion::{
-    CommitOutcome, DeletionCompletion, DeletionError, DeletionIndex, DeletionPlan,
-    STAGE_DELETION_COMPLETION_STAGED, STAGE_DELETION_PLAN_STAGED, commit_deletion, plan_deletion,
+    CommitOutcome, DeletionCompletion, DeletionError, DeletionIndex, DeletionPlan, Finding,
+    STAGE_DELETION_COMPLETION_STAGED, STAGE_DELETION_PLAN_STAGED, STAGE_DELETION_SCAN,
+    commit_deletion, plan_deletion,
 };
 use fss_reference::{FileIngestAdapter, ReferenceDeployment, ReplayCx};
 
@@ -403,5 +404,163 @@ fn interrupted_plan_and_completion_staging_preserve_exact_retries() -> TestResul
                 .is_complete()
         );
     }
+    Ok(())
+}
+
+#[test]
+fn canonical_unowned_forged_proposals_stay_counted_and_cannot_mask_their_own_digest() -> TestResult {
+    for policy in [false, true] {
+        let mut harness = Harness::new(&format!("forged-proposal-{policy}"))?;
+        let baseline = harness.plan()?;
+        let mut forged = baseline.clone();
+        forged.unknown_copies.push(Finding {
+            kind: "forged_audit_payload".to_owned(),
+            subject: harness.import.to_text(),
+            detail: "Synthetic source data cannot acquire an audit role through canonical encoding"
+                .to_owned(),
+        });
+        let bytes = if policy {
+            copied_policy(&harness)?
+        } else {
+            let bytes = forged.canonical_bytes()?;
+            assert_eq!(DeletionPlan::decode(&bytes, forged.digest()?)?, forged);
+            bytes
+        };
+        let digest = harness.deployment.stage_payload(&bytes)?;
+        let before = snapshot(&harness.root)?;
+        let current = harness.plan()?;
+        assert_eq!(current.scanned_objects, baseline.scanned_objects + 1);
+        assert_eq!(current.scanned_bytes, baseline.scanned_bytes + bytes.len() as u64);
+        assert!(current.deletable.iter().any(|object| object.digest == digest));
+        assert_ne!(current.digest()?, baseline.digest()?);
+        assert!(matches!(
+            commit_deletion(
+                &mut harness.deployment,
+                baseline.digest()?,
+                baseline.approval_digest(PRINCIPAL)?,
+                PRINCIPAL,
+                &harness.context,
+            ),
+            Err(DeletionError::StalePlan(_))
+        ));
+        if !policy {
+            // Even approval of the supplied candidate cannot turn its digest into a mask.
+            assert!(matches!(
+                commit_deletion(
+                    &mut harness.deployment,
+                    forged.digest()?,
+                    forged.approval_digest(PRINCIPAL)?,
+                    PRINCIPAL,
+                    &harness.context,
+                ),
+                Err(DeletionError::StalePlan(_))
+            ));
+        }
+        assert_eq!(snapshot(&harness.root)?, before);
+        harness.commit(&current)?;
+        assert!(!harness.deployment.publisher().object_name_present(digest));
+        let harness = harness.reopen()?;
+        assert!(DeletionIndex::read(&harness.deployment)?
+            .entries()
+            .iter()
+            .all(|entry| entry.is_complete()));
+    }
+    Ok(())
+}
+
+#[test]
+fn an_exact_current_basis_proposal_for_another_scope_remains_in_accounting() -> TestResult {
+    let mut harness = Harness::new("unrelated-proposal")?;
+    let second = harness.second_import()?;
+    let baseline = harness.plan()?;
+    let other = plan_deletion(&harness.deployment, second, &harness.context)?;
+    assert_eq!(other.basis_anchor, *harness.deployment.current_anchor());
+    let bytes = other.canonical_bytes()?;
+    let digest = harness.deployment.stage_payload(&bytes)?;
+    assert_eq!(DeletionPlan::decode(&bytes, digest)?, other);
+    let before = snapshot(&harness.root)?;
+    let current = harness.plan()?;
+    assert_eq!(current.scanned_objects, baseline.scanned_objects + 1);
+    assert_eq!(current.scanned_bytes, baseline.scanned_bytes + bytes.len() as u64);
+    assert_ne!(current.digest()?, baseline.digest()?);
+    assert!(current.deletable.iter().any(|object| object.digest == digest)
+        || current.unattributed.objects > baseline.unattributed.objects);
+    assert_eq!(
+        plan_deletion(&harness.deployment, second, &harness.context)?,
+        other,
+        "only that exact requested scope can rederive its own staged proposal"
+    );
+    assert!(matches!(
+        commit_deletion(
+            &mut harness.deployment,
+            baseline.digest()?,
+            baseline.approval_digest(PRINCIPAL)?,
+            PRINCIPAL,
+            &harness.context,
+        ),
+        Err(DeletionError::StalePlan(_))
+    ));
+    assert_eq!(snapshot(&harness.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn audit_retry_metadata_capacity_refuses_unowned_candidates_but_never_source_owned_copies()
+-> TestResult {
+    for source_owned in [false, true] {
+        let mut harness = Harness::new(&format!("audit-metadata-bound-{source_owned}"))?;
+        let baseline = harness.plan()?;
+        let mut candidates = Vec::new();
+        for number in 0..65_u64 {
+            let mut proposal = baseline.clone();
+            proposal.scanned_bytes += number + 1;
+            let bytes = proposal.canonical_bytes()?;
+            let digest = harness.deployment.stage_payload(&bytes)?;
+            assert_eq!(DeletionPlan::decode(&bytes, digest)?, proposal);
+            candidates.push(digest);
+        }
+        if source_owned {
+            let manifest = ObjectManifest::new("ordinary-canonical-content", candidates.clone(), None)?;
+            harness.attach(&manifest.try_canonical_bytes()?, 2, "owned-proposals")?;
+        }
+        let before = snapshot(&harness.root)?;
+        if source_owned {
+            let plan = harness.plan()?;
+            assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+            for digest in candidates {
+                assert!(plan.deletable.iter().any(|object| object.digest == digest));
+            }
+        } else {
+            assert!(matches!(
+                plan_deletion(&harness.deployment, harness.import, &harness.context),
+                Err(DeletionError::Bound { limit: "audit_retry_metadata_records" })
+            ));
+        }
+        assert_eq!(snapshot(&harness.root)?, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn cancellation_after_staged_plan_rederivation_returns_no_plan_and_preserves_exact_retry()
+-> TestResult {
+    let mut harness = Harness::new("cancel-rederived-plan")?;
+    let plan = harness.plan()?;
+    let bytes = plan.canonical_bytes()?;
+    harness.deployment.stage_payload(&bytes)?;
+    let before = snapshot(&harness.root)?;
+    let stop = cx("deletion-rederive-stop")?;
+    // One scan checkpoint per spool object, one for its unowned audit candidate, then the
+    // retry trial and the final pre-return checkpoint. Interrupt after semantic rederivation.
+    let scanned = harness.deployment.publisher().spool().digests().count();
+    stop.set_cancel_at_checkpoint_occurrence(STAGE_DELETION_SCAN, scanned + 3);
+    assert!(matches!(
+        plan_deletion(&harness.deployment, harness.import, &stop),
+        Err(DeletionError::Cancelled { stage: STAGE_DELETION_SCAN })
+    ));
+    assert!(stop.is_drain_completed());
+    assert_eq!(snapshot(&harness.root)?, before);
+    assert_eq!(harness.plan()?, plan);
+    assert_eq!(snapshot(&harness.root)?, before);
     Ok(())
 }

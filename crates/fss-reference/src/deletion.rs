@@ -52,6 +52,7 @@ mod plan;
 pub mod retention;
 /// Owner-approved local expiry cleanup of retained review derivatives, preserving sources.
 pub mod review_expiry;
+mod retry;
 mod rtp;
 pub mod scope;
 mod walk;
@@ -304,10 +305,17 @@ pub fn plan_scope_deletion(
         });
     }
     let holds = holds::HoldIndex::read(deployment, cx)?;
-    let universe = walk::Universe::scan(deployment, &index, cx)?;
-    let plan = universe.plan(deployment, scope)?;
-    let plan = holds.protect(&universe, deployment, plan, cx)?;
-    commit::admit_plan(deployment, plan, cx)
+    let mut universe = walk::Universe::scan(deployment, &index, cx)?;
+    retry::derive(
+        &mut universe,
+        cx,
+        |_, plan| &plan.scope == scope,
+        |universe| {
+            let plan = universe.plan(deployment, scope)?;
+            let plan = holds.protect(universe, deployment, plan, cx)?;
+            commit::admit_plan(deployment, plan, cx)
+        },
+    )
 }
 
 /// Executes a sealed plan under its exact approval (`CAP-DELETE-COMMIT-001`); resumes an

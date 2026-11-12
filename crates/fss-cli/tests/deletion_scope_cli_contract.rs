@@ -1423,14 +1423,30 @@ fn a_plan_whose_scope_was_tampered_with_is_refused() -> TestResult {
 
 #[test]
 fn an_interrupted_scoped_commit_resumes_and_completes_exactly_once() -> TestResult {
-    let directory = OwnedDirectory::new("cuts")?;
+    for event_scope in [false, true] {
+        scoped_commit_cutpoints(event_scope)?;
+    }
+    Ok(())
+}
+
+fn scoped_commit_cutpoints(event_scope: bool) -> TestResult {
+    let directory = OwnedDirectory::new(if event_scope { "event-cuts" } else { "sensor-cuts" })?;
     let base = directory.root();
     let (first, _) = import_named(&directory, &scene(Scene::Right)?, "sensor:alpha", "a1")?;
     let (second, _) = import_named(&directory, &scene(Scene::Quiet(80))?, "sensor:alpha", "a2")?;
     let (_other, _) = import_named(&directory, &scene(Scene::Quiet(60))?, "sensor:beta", "b")?;
     decoded(&base, &first)?;
     decoded(&base, &second)?;
-    let plan = report(&delete_plan(&base, &["--sensor-id", "sensor:alpha"])?)?;
+    let event_id = if event_scope {
+        Some(published_event(&base, &first)?.0)
+    } else {
+        None
+    };
+    let scope = match &event_id {
+        Some(id) => ["--event-id", id.as_str()],
+        None => ["--sensor-id", "sensor:alpha"],
+    };
+    let plan = report(&delete_plan(&base, &scope)?)?;
     let plan_digest = plan.get("plan_digest")?.text()?.to_owned();
     let approval = plan.get("approval_digest")?.text()?.to_owned();
     assert!(
@@ -1466,9 +1482,16 @@ fn an_interrupted_scoped_commit_resumes_and_completes_exactly_once() -> TestResu
                 }
             }
         }
-        if index >= 2 {
-            // The record is durable: both members already read `deleted`.
-            for member in [&first, &second] {
+        if index < 2 {
+            let before = files(&copy)?;
+            let refreshed = report(&delete_plan(&copy, &scope)?)?;
+            assert_eq!(refreshed.get("plan_digest")?.text()?, plan_digest, "{stage}");
+            assert_eq!(refreshed.get("approval_digest")?.text()?, approval, "{stage}");
+            assert_eq!(files(&copy)?, before, "{stage}: preparation writes nothing");
+        } else {
+            // Durable records deny every selected source while completion remains resumable.
+            let members = if event_scope { vec![&first] } else { vec![&first, &second] };
+            for member in members {
                 assert_eq!(
                     refusal(&file(&copy, "verify", &["--import-id", member])?),
                     "ERR-EVIDENCE-DELETED-001",

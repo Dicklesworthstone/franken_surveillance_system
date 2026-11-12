@@ -890,6 +890,20 @@ fn every_deletion_cutpoint_resumes_exactly_and_keeps_source_bytes() -> TestResul
             );
         }
         f = f.cold_reopen()?;
+        if !committed {
+            let before = snapshot(&f.root)?;
+            assert_eq!(
+                assess_review_expiry(&f.deployment, &request, &f.cx)?.deletion,
+                Some(plan.clone()),
+                "exact read-only derivative preview after {stage}"
+            );
+            assert_eq!(
+                plan_scope_deletion(&f.deployment, &plan.scope, &f.cx)?,
+                plan,
+                "decoded selection is revalidated after {stage}"
+            );
+            assert_eq!(snapshot(&f.root)?, before);
+        }
         let complete =
             commit_review_expiry(&mut f.deployment, &request, digest, approval, OWNER, &f.cx)?;
         assert_eq!(

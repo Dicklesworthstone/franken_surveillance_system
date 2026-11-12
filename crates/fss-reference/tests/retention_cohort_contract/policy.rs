@@ -485,3 +485,72 @@ fn retained_policy_impact_plan_corruption_is_fail_closed() -> TestResult {
     f.readable(import)?;
     Ok(())
 }
+
+#[test]
+fn unrelated_or_forged_policy_pairs_cannot_remove_proposals_from_the_impact_scan() -> TestResult {
+    for forged in [false, true] {
+        let mut f = Fixture::new(&format!("policy-proposal-accounting-{forged}"))?;
+        let import = f.ingest("old", 40)?;
+        let request = change(None, true)?;
+        let preview = preview_policy_change(&f.deployment, &request, &f.authority, &f.cx)?;
+        let original_plan = preview
+            .affected
+            .as_ref()
+            .and_then(|affected| affected.deletion.as_ref())
+            .ok_or("original impact")?;
+        let impact_bytes = original_plan.canonical_bytes()?;
+        let mut record_bytes = preview.record.to_bytes();
+        let mut target = request.clone();
+        if forged {
+            let selection = preview.record.affected_selection().bytes();
+            let offsets: Vec<_> = record_bytes
+                .windows(selection.len())
+                .enumerate()
+                .filter_map(|(at, bytes)| (bytes == selection.as_slice()).then_some(at))
+                .collect();
+            assert_eq!(offsets.len(), 1);
+            let at = offsets[0];
+            record_bytes[at..at + selection.len()]
+                .copy_from_slice(&ContentDigest::sha256(b"forged policy selection").bytes());
+        } else {
+            // The other policy is entirely correct and has the same inline cleanup settings.
+            // Its independent request/approval still cannot exempt it for this operation.
+            target.reason.push_str("; a different policy decision");
+        }
+        let proposal = RetentionPolicyRecord::from_bytes(
+            &record_bytes,
+            ContentDigest::sha256(&record_bytes),
+        )?;
+        assert_eq!(proposal.basis(), f.deployment.current_anchor());
+        f.deployment.stage_payload(&impact_bytes)?;
+        f.deployment.stage_payload(&record_bytes)?;
+        let before = snapshot(f.deployment.root())?;
+        let current = preview_policy_change(&f.deployment, &target, &f.authority, &f.cx)?;
+        let current_plan = current
+            .affected
+            .as_ref()
+            .and_then(|affected| affected.deletion.as_ref())
+            .ok_or("accounted impact")?;
+        assert_eq!(current_plan.scanned_objects, original_plan.scanned_objects + 2);
+        assert_eq!(
+            current_plan.scanned_bytes,
+            original_plan.scanned_bytes + impact_bytes.len() as u64 + record_bytes.len() as u64
+        );
+        for approval in [preview.record.approval(), proposal.approval()] {
+            assert!(matches!(
+                commit_policy_change(
+                    &mut f.deployment,
+                    &target,
+                    approval,
+                    &f.authority,
+                    &f.cx,
+                ),
+                Err(PolicyError::StaleApproval)
+            ));
+        }
+        assert_eq!(snapshot(f.deployment.root())?, before);
+        assert!(list_policies(&f.deployment, &f.authority, &f.cx)?.is_empty());
+        f.readable(import)?;
+    }
+    Ok(())
+}
