@@ -26,6 +26,9 @@ pub mod scan;
 #[path = "discovery_pump.rs"]
 pub mod pump;
 
+#[path = "discovery_retry.rs"]
+pub mod retry;
+
 const MAX_PACKETS: usize = 128;
 const MAX_TARGETS: usize = 64;
 const MAX_COMBINED_WINDOWS: usize = 4;

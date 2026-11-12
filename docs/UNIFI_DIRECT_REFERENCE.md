@@ -13239,3 +13239,58 @@ credential resolution, authenticated direct-camera setup, production TLS,
 continuous native recording and retention remain open. No physical camera
 effect was attempted in this change. The existing trj recorder and two timers
 were active with zero reported service restarts at a later observation.
+
+### Bounded retry after a proven pre-effect setup failure (2026-11-12 UTC)
+
+A fleet setup failure that actually returned before entering effect preparation
+can now be explicitly rearmed against the latest completed discovery snapshot.
+The caller must still supply fresh transport and authority, a new operation ID,
+and a bounded retry schedule. Camera login may have created a session even when
+no management effect was prepared. An interrupted attempt, an outcome that
+reached preparation, or a live/pending route cannot be rearmed through this
+path. Up to 16 operation IDs per camera remain reserved for the fleet lifetime;
+exhaustion refuses rather than forgetting history. A missing or conflicted
+latest claim remains not-ready. This is a building block for automatic recovery,
+not a retry scheduler or durable operation-history rollover.
+
+Strict-remote ts1 job `30105869848936674` passed all 11 fleet tests on base
+`9b5bfd56e5cd441d44c02a0d3b516663ad14fb37`, overlay
+`40973850e8802401513bb1a2e509d340df7d99ce06b6c8b54eaf5d39d39c8b8f`.
+Job `30105869848936682` passed the selected, explicitly enabled synthetic
+camera HTTP/controller fixture (1 test, three scenarios) on the same base,
+overlay `9de4e3e4f8ca8ea1af241cd0d12608cdbb689d669a1715b17b3ee6e7a297b80c`.
+It verified a pre-effect failure, duplicate-operation refusal, and a fresh
+connection with a new operation; it also refused rearming cancelled and
+effect-bearing attempts. Both jobs reported remote success, acknowledged their
+terminal results and released source and pair custody. The earlier integration
+submission was refused before Cargo because worker capacity data had expired;
+no test ran there, and the worker capability refresh preceded job 36682.
+These synthetic results do not settle the earlier physical handoff or prove
+automatic enrollment, live native control, continuous recording, or retention.
+No physical camera effect was attempted here. The existing trj recorder and
+two timers remained active with zero reported service restarts at a later check.
+
+### Task-bound retry timers in the discovery pump (2026-11-12 UTC)
+
+An owner can schedule a completed, proven pre-effect setup failure in a bounded
+retry queue. It uses configurable exponential backoff with a finite retry count,
+binds each timer to the exact failed operation, and rechecks that marker before
+rearming. A pending route delays rearming; a stale timer cannot rearm a later
+attempt. The queue shares the discovery pump's fleet, task and clock mapping.
+Dropping a wait retains its timer, and the pump can keep driving discovery or
+controller routing while a retry waits. The owner still has to schedule a
+failure, resolve credentials, create fresh transport and start the new setup;
+the timer does not grant effect authority or provide an unattended service.
+
+Strict-remote ts1 job `30105869848936692` passed all 21 selected discovery,
+fleet, retry-policy and work-set unit tests. Job `30105869848936697` passed
+the selected synthetic camera HTTP/controller fixture (1 test, three scenarios),
+including backoff, dropped-wait retention, duplicate scheduling, pump-driven
+rearming and a fresh setup. Both used base
+`9b5bfd56e5cd441d44c02a0d3b516663ad14fb37` and overlay
+`9c87ff3292a869bf78d58132f19f1d9ed40fcf9776030ad8c9f1a7fdbb0599da`;
+both exited zero, acknowledged terminal results, and released source and pair
+custody. No physical camera effect was attempted. The existing trj recorder and
+two timers remained active with zero reported service restarts at a later check.
+Direct ownership, unattended onboarding, production TLS, continuous native
+recording and 30-day retention remain unverified.

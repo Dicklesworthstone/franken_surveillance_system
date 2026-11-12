@@ -6,7 +6,9 @@
 //! The caller must poll it, handle each outcome, authenticate routed peers,
 //! and supervise sessions. A discovery claim is not device identity.
 
-use super::{fleet, scan};
+use super::{fleet, retry, scan};
+use crate::unifi_direct::setup;
+use fss_core::OperationId;
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
@@ -277,6 +279,46 @@ pub enum Progress<T, W> {
     Work(W),
 }
 
+/// The exact operation and result returned by one caller-owned setup future.
+#[must_use = "retain the setup outcome and reconcile any committed effect"]
+pub struct SetupCompletion {
+    /// Operation identity supplied to that setup, not an authorization.
+    pub operation: OperationId,
+    /// Original result, including any caller-owned committed permit.
+    pub outcome: Result<setup::Outcome, fleet::Error>,
+}
+
+/// Whether an exact completed failure was admitted to the retry queue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryDisposition {
+    /// A timer was created for the proven pre-effect failure.
+    Scheduled,
+    /// The result did not identify an eligible pre-effect failure.
+    NotEligible,
+    /// This camera already had a timer; its existing timer remains owned.
+    AlreadyScheduled,
+    /// The timer could not be admitted; the completion remains caller-owned.
+    Refused(retry::Error),
+}
+
+/// A discovery, route, retry or completed camera setup from the shared loop.
+#[must_use = "handle every event and retain setup outcomes"]
+pub enum Coordinated<T> {
+    /// Existing discovery or connection event.
+    Event(Event<T>),
+    /// A timer completed; rearming does not itself launch a setup.
+    Retry(retry::Event),
+    /// Setup completed; its original result and scheduling disposition remain owned.
+    Setup {
+        /// Owner inventory index of this work item.
+        index: usize,
+        /// Original setup result and operation identity.
+        completion: SetupCompletion,
+        /// The automatic timer admission result.
+        retry: RetryDisposition,
+    },
+}
+
 /// Bounded composition of an existing scanner and router, both caller-owned.
 ///
 /// Dropping a `next` future leaves in-flight work here. Requesting scan stop
@@ -291,6 +333,7 @@ pub struct Pump<'pump, 'fleet, 'report, 'scope, 'task, D: Driver<'scope, 'task>>
     start_scans: bool,
     prefer_scan: bool,
     prefer_work: bool,
+    prefer_setup: bool,
 }
 
 impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Driver<'scope, 'task>>
@@ -314,6 +357,7 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
             start_scans: true,
             prefer_scan: true,
             prefer_work: true,
+            prefer_setup: true,
         })
     }
 
@@ -362,6 +406,98 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
         mut work: Pin<&mut F>,
     ) -> Progress<D::Event, F::Output> {
         poll_fn(|cx| self.poll_with(cx, work.as_mut())).await
+    }
+
+    /// Drive a retry timer alongside discovery and routing. A discovery or
+    /// route event drops only the timer wait, not the queue's retained entry.
+    /// Rearming does not itself start setup or grant camera authority.
+    pub async fn next_with_retries(
+        &mut self,
+        retries: &mut retry::Queue<'_, '_, 'scope, 'task>,
+    ) -> Result<Progress<D::Event, retry::Event>, retry::Error> {
+        if !retries.matches_scanner(self.scanner) {
+            return Err(retry::Error::Configuration);
+        }
+        let mut wait = std::pin::pin!(retries.next());
+        match self.next_with(wait.as_mut()).await {
+            Progress::Event(event) => Ok(Progress::Event(event)),
+            Progress::Work(result) => result.map(Progress::Work),
+        }
+    }
+
+    /// Drive setup work, retry timers, discovery and routing without detached
+    /// tasks. A returned pre-effect setup failure is scheduled automatically
+    /// only when its exact operation still matches the queue's fleet marker.
+    /// Every original completion is returned even if timer admission fails.
+    /// The caller still owns credentials, transport creation and starting the
+    /// next setup when a timer rearms an eligible camera.
+    pub async fn next_coordinated(
+        &mut self,
+        work: &mut CameraWorkSet<'_, SetupCompletion>,
+        retries: &mut retry::Queue<'_, '_, 'scope, 'task>,
+    ) -> Result<Coordinated<D::Event>, retry::Error> {
+        if !retries.matches_scanner(self.scanner) {
+            return Err(retry::Error::Configuration);
+        }
+        enum Selected<T> {
+            Event(Event<T>),
+            Retry(retry::Event),
+            Setup(usize, SetupCompletion),
+        }
+        let prefer_setup = self.prefer_setup;
+        let selected = {
+            let mut setup = std::pin::pin!(work.next());
+            if retries.is_empty() {
+                match self.next_with(setup.as_mut()).await {
+                    Progress::Event(event) => Selected::Event(event),
+                    Progress::Work((index, completion)) => Selected::Setup(index, completion),
+                }
+            } else {
+                let mut pump = std::pin::pin!(self.next_with_retries(retries));
+                poll_fn(|cx| {
+                    if prefer_setup {
+                        if let Poll::Ready((index, result)) = setup.as_mut().poll(cx) {
+                            return Poll::Ready(Ok(Selected::Setup(index, result)));
+                        }
+                    }
+                    if let Poll::Ready(result) = pump.as_mut().poll(cx) {
+                        return Poll::Ready(result.map(|progress| match progress {
+                            Progress::Event(event) => Selected::Event(event),
+                            Progress::Work(event) => Selected::Retry(event),
+                        }));
+                    }
+                    if !prefer_setup {
+                        if let Poll::Ready((index, result)) = setup.as_mut().poll(cx) {
+                            return Poll::Ready(Ok(Selected::Setup(index, result)));
+                        }
+                    }
+                    Poll::Pending
+                })
+                .await?
+            }
+        };
+        self.prefer_setup = !matches!(&selected, Selected::Setup(..));
+        Ok(match selected {
+            Selected::Event(event) => Coordinated::Event(event),
+            Selected::Retry(event) => Coordinated::Retry(event),
+            Selected::Setup(index, completion) => {
+                let disposition = if matches!(&completion.outcome, Err(fleet::Error::Setup(_))) {
+                    match retries.schedule_for(index, &completion.operation) {
+                        Ok(()) => RetryDisposition::Scheduled,
+                        Err(retry::Error::NotEligible) => RetryDisposition::NotEligible,
+                        Err(retry::Error::Duplicate) => RetryDisposition::AlreadyScheduled,
+                        Err(reason) => RetryDisposition::Refused(reason),
+                    }
+                } else {
+                    RetryDisposition::NotEligible
+                };
+                Coordinated::Setup {
+                    index,
+                    completion,
+                    retry: disposition,
+                }
+            }
+        })
     }
 
     /// Poll the operation and pump with alternating first preference after

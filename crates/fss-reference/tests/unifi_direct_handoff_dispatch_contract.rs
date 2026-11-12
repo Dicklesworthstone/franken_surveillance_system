@@ -1570,16 +1570,92 @@ fn run_discovered_setup_with_listener(
                                 assert!(trace.dispatch_started());
                                 assert_eq!(trace.take_permit().ok_or("fleet lost pending permit")?.operation(), &operation);
                                 assert_eq!(http.phase(), Phase::Fenced);
+                                assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
                             } else if integrated_mode == 12 {
-                                let outcome = fleet.setup_one(
+                                {
+                                    use discovery::{pump::{CameraWorkSet, Coordinated, Pump, RetryDisposition, SetupCompletion}, retry, scan::Scanner};
+                                    let scanner = Scanner::new(cx, task, clock, &fleet, config.clone(), Duration::from_secs(5))?;
+                                    let mut router = discovery::fleet::Router::new(&fleet, &control, 1, 4096, Duration::from_secs(5))?;
+                                    let mut pump = Pump::new(&scanner, &mut router)?;
+                                    pump.request_scan_stop();
+                                    let policy = retry::Policy::new(Duration::from_millis(250), Duration::from_secs(1), 3)?;
+                                    let mut retries = retry::Queue::new(&fleet, task, cx, clock, policy)?;
+                                    let mut work = CameraWorkSet::new(2).map_err(|_| "work capacity")?;
+                                    work.insert(1, Box::pin(std::future::pending())).map_err(|_| "pending work")?;
+                                    let setup = fleet.setup_one(
+                                        0, &mut owner, &control, port, &mut http,
+                                        certificate, credential_handle, credential, fence, destination,
+                                        &operation, framing, Duration::from_secs(5), &mut trace,
+                                    );
+                                    let setup_operation = operation.clone();
+                                    work.insert(0, Box::pin(async move {
+                                        SetupCompletion { operation: setup_operation, outcome: setup.await }
+                                    })).map_err(|_| "setup work")?;
+                                    match pump.next_coordinated(&mut work, &mut retries).await? {
+                                        Coordinated::Setup { index: 0, completion, retry: RetryDisposition::Scheduled } => {
+                                            assert!(matches!(completion.outcome, Err(FleetError::Setup(setup::Error::Denied))));
+                                            assert_eq!(completion.operation, operation);
+                                        }
+                                        _ => return Err("setup failure was not automatically scheduled".into()),
+                                    }
+                                    let pending = work.into_pending();
+                                    assert_eq!(pending.len(), 1);
+                                    assert_eq!(pending[0].0, 1);
+                                    drop(pending);
+                                    assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
+                                    assert!(trace.operation().is_none());
+                                    assert!(!fleet.route_ready(0));
+                                    let wrong_retry = OperationId::parse("operation:unrelated-retry")?;
+                                    assert_eq!(retries.schedule_for(0, &wrong_retry), Err(retry::Error::NotEligible));
+                                    assert_eq!(retries.schedule(0), Err(retry::Error::Duplicate));
+                                    let mut work = CameraWorkSet::new(1).map_err(|_| "retry work capacity")?;
+                                    let mut wait = Box::pin(pump.next_coordinated(&mut work, &mut retries));
+                                    poll_fn(|context| match wait.as_mut().poll(context) {
+                                        Poll::Pending => Poll::Ready(()),
+                                        Poll::Ready(_) => panic!("retry did not observe its backoff"),
+                                    }).await;
+                                    drop(wait);
+                                    assert_eq!(retries.len(), 1);
+                                    assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
+                                    assert!(matches!(pump.next_coordinated(&mut work, &mut retries).await?,
+                                        Coordinated::Retry(retry::Event::Rearmed { index: 0, state: State::Ready { candidate: 0 } })));
+                                    assert!(retries.is_empty());
+                                    assert_eq!(retries.schedule(0), Err(retry::Error::NotEligible));
+                                }
+                                assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
+                                let duplicate = fleet.setup_one(
                                     0, &mut owner, &control, port, &mut http,
                                     certificate, credential_handle, credential, fence, destination,
                                     &operation, framing, Duration::from_secs(5), &mut trace,
                                 ).await;
-                                assert!(matches!(outcome, Err(FleetError::Setup(setup::Error::Denied))));
-                                assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
-                                assert!(trace.operation().is_none());
-                                assert!(!fleet.route_ready(0));
+                                assert!(matches!(duplicate, Err(FleetError::DuplicateOperation)));
+                                assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+                                shared.store(true, std::sync::atomic::Ordering::Release);
+                                let retry_listener = TcpListener::bind("127.0.0.1:0").await?;
+                                let retry_address = retry_listener.local_addr()?;
+                                let retry_port = Arc::clone(&advertised_port);
+                                let retry_peer = std::thread::spawn(move || http_fixture(
+                                    retry_address, false, false, false, framing, false, false,
+                                    true, destination, None, Some((retry_port, 0)), true, 0,
+                                ));
+                                let (socket, _) = timeout(cx.now(), Duration::from_secs(5), retry_listener.accept()).await??;
+                                let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
+                                let mut retry_http = camera_http::Owner::new(
+                                    io, task, cx, clock, &SetupHttpAccess, Ipv4Addr::LOCALHOST, 1, &resource,
+                                )?;
+                                let fresh = OperationId::parse("operation:fleet-pre-effect-retry")?;
+                                let mut retry_trace = setup::Trace::default();
+                                let retried = fleet.setup_one(
+                                    0, &mut owner, &control, port, &mut retry_http,
+                                    certificate, credential_handle, credential, fence, destination,
+                                    &fresh, framing, Duration::from_secs(5), &mut retry_trace,
+                                ).await?;
+                                assert!(matches!(retried, setup::Outcome::Observed { .. }));
+                                assert_eq!(fleet.operation(0), Some(&fresh));
+                                assert!(fleet.route_ready(0));
+                                assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
+                                drop(retry_http);
+                                retry_peer.join().map_err(|_| "retry fixture panic")??;
                             } else {
                                 let outcome = fleet.setup_one(
                                     0, &mut owner, &control, port, &mut http,
@@ -1588,6 +1664,7 @@ fn run_discovered_setup_with_listener(
                                 ).await?;
                                 assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
                                 assert!(fleet.next_ready().is_none());
+                                assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
                                 assert!(!fleet.route_ready(0), "explicit camera refusal must not admit a route");
                                 match outcome {
                                     setup::Outcome::Observed { permit, readback, .. } => {

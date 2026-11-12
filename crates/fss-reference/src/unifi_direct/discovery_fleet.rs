@@ -30,7 +30,8 @@ use std::{
     time::Duration,
 };
 
-const MAX_INVENTORY: usize = 128;
+pub(super) const MAX_INVENTORY: usize = 128;
+const MAX_SETUP_ATTEMPTS: usize = 16;
 
 fn valid_digest(value: ContentDigest) -> bool {
     value.algorithm() == DigestAlgorithm::Sha256
@@ -148,6 +149,10 @@ pub enum Error {
     Binding,
     /// The operation identity has already been reserved in this fleet.
     DuplicateOperation,
+    /// This camera has exhausted its bounded retained operation history.
+    AttemptCapacity,
+    /// The previous attempt was not proven to have stopped before preparation.
+    RetryNotSafe,
     /// A bounded allocation could not be made.
     Allocation,
     /// The existing listener-bound setup owner refused or stopped.
@@ -187,13 +192,31 @@ struct Record {
     enrollment: Enrollment,
     report: RefCell<Rc<Report>>,
     state: Cell<State>,
-    operation: OnceCell<OperationId>,
+    operations: [OnceCell<OperationId>; MAX_SETUP_ATTEMPTS],
+    operation_count: Cell<usize>,
+    retry_before_effect: Cell<bool>,
     route_ready: Cell<bool>,
     route_source: Cell<Option<Ipv4Addr>>,
     active: Rc<Cell<bool>>,
     setup_live: Cell<bool>,
     waiting: Cell<bool>,
     changed: Notify,
+}
+
+impl Record {
+    fn operations(&self) -> impl Iterator<Item = &OperationId> {
+        self.operations[..self.operation_count.get()]
+            .iter()
+            .map(|slot| slot.get().expect("published setup operation"))
+    }
+
+    fn reserve_operation(&self, operation: &OperationId) -> Result<(), Error> {
+        let count = self.operation_count.get();
+        let slot = self.operations.get(count).ok_or(Error::AttemptCapacity)?;
+        slot.set(operation.clone()).map_err(|_| Error::NotReady)?;
+        self.operation_count.set(count + 1);
+        Ok(())
+    }
 }
 
 // All slots are allocated before the fleet is published. Once initialized, a
@@ -620,7 +643,9 @@ impl<'a> Fleet<'a> {
                 enrollment: *entry,
                 report: RefCell::new(Rc::clone(&report)),
                 state: Cell::new(state),
-                operation: OnceCell::new(),
+                operations: std::array::from_fn(|_| OnceCell::new()),
+                operation_count: Cell::new(0),
+                retry_before_effect: Cell::new(false),
                 route_ready: Cell::new(false),
                 route_source: Cell::new(None),
                 active: Rc::new(Cell::new(false)),
@@ -780,7 +805,9 @@ impl<'a> Fleet<'a> {
             enrollment,
             report: RefCell::new(Rc::clone(&report)),
             state: Cell::new(state),
-            operation: OnceCell::new(),
+            operations: std::array::from_fn(|_| OnceCell::new()),
+            operation_count: Cell::new(0),
+            retry_before_effect: Cell::new(false),
             route_ready: Cell::new(false),
             route_source: Cell::new(None),
             active: Rc::new(Cell::new(false)),
@@ -819,11 +846,74 @@ impl<'a> Fleet<'a> {
     pub fn state(&self, index: usize) -> Option<State> {
         self.records.get(index).map(|record| record.state.get())
     }
-    /// Reserved identity of an entered attempt, including after cancellation.
+    /// Most recent reserved identity, including after cancellation. Earlier
+    /// attempt identities remain reserved for the lifetime of this fleet.
     pub fn operation(&self, index: usize) -> Option<&OperationId> {
         self.records
             .get(index)
-            .and_then(|record| record.operation.get())
+            .and_then(|record| record.operations().last())
+    }
+
+    // A schedule can only refer to the exact returned pre-effect failure.
+    // The marker and operation are rechecked again when its timer expires.
+    pub(super) fn retry_candidate(&self, index: usize) -> Option<(&OperationId, usize)> {
+        let record = self.records.get(index)?;
+        if !record.retry_before_effect.get()
+            || !matches!(record.state.get(), State::Finished { .. })
+        {
+            return None;
+        }
+        Some((record.operations().last()?, record.operation_count.get()))
+    }
+
+    pub(super) fn rearm_matching(
+        &self,
+        index: usize,
+        operation: &OperationId,
+    ) -> Result<State, Error> {
+        if self
+            .retry_candidate(index)
+            .is_none_or(|(current, _)| current != operation)
+        {
+            return Err(Error::RetryNotSafe);
+        }
+        self.rearm_before_effect(index)
+    }
+
+    /// Make a completed setup failure eligible for a fresh attempt only when
+    /// that exact attempt returned before preparing a management effect.
+    /// Interrupted work, successful outcomes and any possibly prepared effect
+    /// remain fenced. The caller must arrange a bounded retry schedule, fresh
+    /// transport, live authority and a new operation identity; login sessions
+    /// from the earlier attempt may still exist. This method sends no I/O.
+    pub fn rearm_before_effect(&self, index: usize) -> Result<State, Error> {
+        let record = self.records.get(index).ok_or(Error::NotReady)?;
+        if !matches!(record.state.get(), State::Finished { .. })
+            || !record.retry_before_effect.get()
+            || record.setup_live.get()
+            || record.active.get()
+            || record.waiting.get()
+            || record.route_ready.get()
+        {
+            return Err(Error::RetryNotSafe);
+        }
+        if record.operation_count.get() == MAX_SETUP_ATTEMPTS {
+            return Err(Error::AttemptCapacity);
+        }
+        let report = self.latest_report();
+        let state = match report.select_mac_claim(record.enrollment.mac) {
+            Ok(candidate) => State::Ready { candidate },
+            Err(SelectionError::NotObserved) => State::NotObserved,
+            Err(SelectionError::Conflicted) => State::Conflicted,
+            Err(SelectionError::IncompleteReport) => return Err(Error::IncompleteReport),
+            Err(SelectionError::InvalidMac) => return Err(Error::Configuration),
+        };
+        *record.report.borrow_mut() = report;
+        record.state.set(state);
+        record.retry_before_effect.set(false);
+        record.route_source.set(None);
+        record.changed.notify_waiters();
+        Ok(state)
     }
     /// Indexes of claims not matched to an inventory MAC, including claims
     /// without a usable MAC. These remain untrusted and are not setup targets.
@@ -985,7 +1075,7 @@ impl<'a> Fleet<'a> {
         if self
             .records
             .iter()
-            .any(|record| record.operation.get() == Some(operation))
+            .any(|record| record.operations().any(|old| old == operation))
         {
             return Err(Error::DuplicateOperation);
         }
@@ -993,10 +1083,8 @@ impl<'a> Fleet<'a> {
         let State::Ready { candidate } = record.state.get() else {
             return Err(Error::NotReady);
         };
-        record
-            .operation
-            .set(operation.clone())
-            .map_err(|_| Error::NotReady)?;
+        record.reserve_operation(operation)?;
+        record.retry_before_effect.set(false);
         record.state.set(State::InFlight { candidate });
         record.setup_live.set(true);
         let mut lease = SetupLease {
@@ -1114,6 +1202,12 @@ impl<'a> Fleet<'a> {
                 ),
             )
             .await?;
+        // Only this returned attempt can set the marker. Cancellation leaves
+        // `InFlight`; a trace that entered preparation remains fenced even if
+        // preparation subsequently failed or a permit was later dropped.
+        record
+            .retry_before_effect
+            .set(result.is_err() && trace.operation().is_none());
         let route_ready = match &result {
             Ok(setup::Outcome::AlreadyAssociated { .. }) => true,
             Ok(setup::Outcome::Observed {
@@ -1339,6 +1433,59 @@ mod tests {
         assert!(Rc::ptr_eq(&snapshot, &fleet.latest_snapshot()));
         assert_eq!(fleet.enrollment(0), Some(entry(1)));
         assert_eq!(fleet.enrollment(MAX_INVENTORY - 1), Some(entry(128)));
+    }
+
+    #[test]
+    fn pre_effect_rearm_uses_latest_claim_and_retains_bounded_operation_history() {
+        let one = entry(1);
+        let fleet = Fleet::from_report(report(vec![candidate(10, Some(one.mac))]), &[one]).unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        let first = OperationId::parse("operation:pre-effect-first").unwrap();
+        let mut attempt = Box::pin(fleet.drive(0, &first, std::future::ready(())));
+        assert!(matches!(
+            attempt.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        drop(attempt);
+        // Synthetic stand-in for the proof set only by a returned pre-effect
+        // setup error; the integration fixture tests that boundary itself.
+        fleet.records[0].retry_before_effect.set(true);
+        fleet.refresh(report(vec![])).unwrap();
+        assert_eq!(fleet.rearm_before_effect(0), Ok(State::NotObserved));
+        assert_eq!(fleet.operation(0), Some(&first));
+        fleet
+            .refresh(report(vec![candidate(11, Some(one.mac))]))
+            .unwrap();
+        assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
+        let mut duplicate = Box::pin(fleet.drive(0, &first, std::future::ready(())));
+        assert!(matches!(
+            duplicate.as_mut().poll(&mut context),
+            Poll::Ready(Err(Error::DuplicateOperation))
+        ));
+        drop(duplicate);
+
+        for n in 1..MAX_SETUP_ATTEMPTS {
+            let operation = OperationId::parse(format!("operation:pre-effect-{n}")).unwrap();
+            let mut attempt = Box::pin(fleet.drive(0, &operation, std::future::ready(())));
+            assert!(matches!(
+                attempt.as_mut().poll(&mut context),
+                Poll::Ready(Ok(()))
+            ));
+            drop(attempt);
+            fleet.records[0].retry_before_effect.set(true);
+            assert_eq!(fleet.rearm_matching(0, &first), Err(Error::RetryNotSafe));
+            assert_eq!(fleet.operation(0), Some(&operation));
+            if n + 1 == MAX_SETUP_ATTEMPTS {
+                assert_eq!(fleet.rearm_before_effect(0), Err(Error::AttemptCapacity));
+            } else {
+                assert_eq!(
+                    fleet.rearm_before_effect(0),
+                    Ok(State::Ready { candidate: 0 })
+                );
+            }
+        }
+        assert_eq!(fleet.records[0].operations().count(), MAX_SETUP_ATTEMPTS);
+        assert!(fleet.records[0].operations().any(|old| old == &first));
     }
 
     #[test]
