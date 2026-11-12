@@ -15276,3 +15276,47 @@ matched before and after an isolated direct run of the broad fleet test
 fresh setup and the high-resolution archive case. The run did not separately
 report whether the stall-renewal branch executed. No physical camera was
 contacted and none of these results establish native continuous recording.
+
+### Bounded prepared setup queue (2026-11-12 UTC)
+
+The TLS lab now provides a fleet-bound queue of caller-prepared setup futures.
+It checks the exact enrollment, reserves each operation ID for the lifetime
+of the queue, selects the oldest work for a ready camera, and returns refused
+or still-pending futures to their caller. The existing automatic supervisor
+can use its `take` method as a setup factory, and only the existing retry
+scheduler decides whether an attempt is eligible. A queued future remains a
+caller claim: the queue cannot prove that it uses the supplied operation ID,
+authenticate a camera, create credentials, reconcile effects, or preserve its
+reservation across restart. Callers must retain and retire pending work.
+
+Strict-remote trj build `j-30106308287922627` compiled the queue and fixture
+on base `3cf3adc72bee44b26f96fd15b8092ddf28a3881d` with the lab and TLS
+vendor overlays. Its wrapper exited 102 because artifact transfer rejected a
+Linux executable on macOS. The exact Linux binary, SHA-256
+`2e38aabe2eecdb9c34c6a70f14c9467814c824e864142ba7f02bd380bd535d0c`,
+passed both direct isolated omarchy invocations: the focused deadline test
+(1 passed, 1 filtered) and broad fleet test (1 passed, 1 filtered; four
+scenarios including synthetic high-resolution readback). The fixture used the
+queue for a deadline attempt and a later fresh setup, checked duplicate and
+capacity refusals, and retained unpolled work. The second camera future was
+still supplied by the fixture after the timer; this is not unattended camera
+onboarding.
+
+Build `j-30106308287922634` compiled a two-preloaded-attempt ordering check
+on base `6bfc26e30c15bbfccca878aa9f45289356a8465a`, again with exit 102
+at artifact transfer. Its direct focused execution failed later with an
+archive-stream handshake deadline; that older message did not include the
+index. The fixture was updated to close and renew only the specifically
+identified deliberately stalled camera-0 connection when its own handshake
+deadline expires during the archive loop; other handshake failures still
+fail the test. Build `j-30107019859984385` compiled this update, but daemon
+release was initially unconfirmed. Same-wrapper recovery
+`rchw-b735f265-64f0-4e33-b9e4-decdbc122e01` later returned exit 102 with
+terminal acknowledgment; source and pair were released. The exact Linux
+binary, SHA-256
+`9c15c01e627731608405536c8bdbd183902c102d5ed045fbd876e51ba5c26f81`,
+matched before and after its direct isolated focused run (1 passed, 1 filtered).
+That run checked the preloaded ordering without polling either future early,
+as well as the retained-evidence and fresh-setup path. It did not separately
+report whether the new stall-renewal branch executed. No physical camera was
+contacted; direct unattended recording and restart recovery remain unproven.
