@@ -15320,3 +15320,260 @@ That run checked the preloaded ordering without polling either future early,
 as well as the retained-evidence and fresh-setup path. It did not separately
 report whether the new stall-renewal branch executed. No physical camera was
 contacted; direct unattended recording and restart recovery remain unproven.
+
+The synthetic deadline fixture was subsequently changed to enqueue both the
+deadline attempt and its fresh successor before either is selected. It checks
+that the successor is not polled before or during deadline settlement and
+timer rearming, and that the same supervisor later selects and completes it.
+The test still supplies both futures and their authorization; this does not
+generate setup work for arbitrary discoveries or recover state after restart.
+After one pre-admission refusal while the RCH daemon socket was unavailable,
+strict-remote trj build `j-30107025346134017` compiled the updated fixture on
+base `618051161ad66120ea3947c33dcb424cf631268c`, with the test and patched
+TLS-vendor overlays. Its wrapper exited 102 on the Linux-to-macOS artifact
+check. A later build, `j-30107029355888641`, compiled the additional explicit
+poll assertions on base `690222069fdec02dbe932e81e30d39f1071c43fb` with the
+same overlays and the same transfer refusal. Its Linux binary, SHA-256
+`353a20e5e277ab564cab478434abe893b54bb27eaea4fbbc5debc35bb655a1a3`,
+matched before and after direct runs on omarchy in isolated user/network
+namespaces. The focused test passed (1 passed, 1 filtered), and the broader
+fleet test passed (1 passed, 1 filtered; four synthetic scenarios including
+2688 x 1512 archive readback). Neither direct invocation is an RCH test pass
+or physical-camera evidence.
+
+### Camera-specific prepared setup (2026-11-12 UTC)
+
+The scoped TLS lab now constructs queued camera setup work from caller-supplied
+bindings and a retained one-shot `Attempt`. The constructor uses the same
+operation ID for the queue completion and the setup call. It creates one
+entropy acquisition only after the future is polled; its trace, worker and
+deadline-settlement result remain in the caller-owned attempt. Busy owner,
+spool or attempt borrows refuse before entropy acquisition. A started attempt
+cannot be polled again, and after an interrupted wait the caller can abort and
+join its retained worker. The caller must still retain the owners, reconcile
+effects, supply enrollment, credentials, certificate and authorities, and
+decide whether a new operation is authorized. Shared `Rc<RefCell<_>>` guards
+span the lab wait; this is not a production concurrency, restart or physical
+identity guarantee. The factory uses one acquisition per attempt; bounded
+fleet retries are separate attempts with fresh operation IDs.
+
+Strict-remote trj job `j-30107038784684033` compiled the integrated fixture on
+base `e25e71ec9ac4041c57e1e0148dd21271271d9a30` with lab source, test and
+TLS-vendor overlays. Its daemon release was initially unconfirmed; same-ID
+recovery `rchw-29651af0-ee9b-4c30-94aa-5a658e93d1fa` acknowledged terminal
+exit 102 after the Linux-to-macOS artifact transfer refusal, with source and
+pair released. Its exact Linux binary, SHA-256
+`d34560cac3066e1f7afcf83fcc309dc65d846d9aa6b05f92e0d064ef8e9b75ed`,
+passed a direct isolated focused TLS run (1 passed, 1 filtered).
+
+Job `j-30107042526003201` compiled added unpolled, busy and interrupted-worker
+checks on the same base and overlays; its wrapper exited 102 at the same
+artifact transfer check. The exact Linux binary, SHA-256
+`68fa3993afb0b79c19ae1fb784670ea847946988293332aff911ce83868437cb`,
+matched before and after two direct omarchy runs in isolated user/network
+namespaces. The focused test passed (1 passed, 1 filtered), and the broader
+fleet test passed (1 passed, 1 filtered; four scenarios including synthetic
+2688 x 1512 archive readback). The focused case checked that an unpolled
+attempt creates no worker, a busy owner refuses before I/O, a dropped
+pre-HTTP attempt retains a drainable worker and refuses operation reuse, and
+two preloaded setup attempts complete deadline recovery and fresh setup.
+The test source later removed a `drop` of a `Copy` closure to eliminate a
+warning; this was a no-op absent from the tested binary. A later build request
+was refused before admission when the shared daemon was unavailable. These
+are synthetic direct binary runs, not RCH test passes, live camera takeover,
+post-dispatch reconciliation or native continuous recording.
+
+### On-demand enrolled-camera factory (2026-11-12 UTC)
+
+The scoped TLS fleet lab now has a bounded camera-plan factory. A caller can
+register a plan after enrolling a camera; when the existing automatic
+supervisor selects that ready enrollment, the factory constructs an unpolled
+camera setup attempt and retains its trace and worker. It creates a fresh
+operation ID for each bounded attempt from a caller-owned run nonce. The
+`from_lease` path obtains that public nonce through the task-owned trial-run
+entropy lease and does not reuse those bytes for TLS. This provides
+probabilistic run uniqueness, not durable restart exclusion. The factory
+refuses a mismatched enrollment, duplicate plan, exhausted plan, or a prior
+unstarted, undrained or uncancelled prepared attempt; its returned plans
+expose the retained attempt records, setup owner and evidence spool.
+
+The synthetic TLS fleet fixture now registers the plan once and lets the same
+supervisor request the original attempt and, after verified deadline
+settlement and timer rearming, a newly generated retry. It no longer inserts
+the retry future between those selections. The fixture still supplies the
+enrollment, camera authority, certificate, credentials, effect owner, spool,
+and synthetic peer; it changes its approval stub between the two attempts.
+It checks operation separation by enrollment and ordinal, rejects a
+wrong-resource run-identity lease, and verifies an unpolled abandoned attempt
+blocks another selection while its owners remain accessible on retirement.
+
+Strict-remote trj build `j-30107058850234369` compiled this path on base
+`e25e71ec9ac4041c57e1e0148dd21271271d9a30` with the lab source, fixture and
+patched TLS-vendor overlays. Its wrapper exited 102 because artifact transfer
+rejected a Linux executable on macOS; terminal acknowledgment, source release
+and pair retirement were confirmed. The exact Linux binary, SHA-256
+`d7824af295cbb28b13ffab4d491524136d935b8c0b3098cbdf59f90adc805c49`,
+matched before and after two direct executions on omarchy in isolated
+user/network namespaces. The focused test passed (1 passed, 1 filtered) and
+the broad fleet test passed (1 passed, 1 filtered; four synthetic scenarios,
+including 2688 x 1512 archive readback). These direct runs are not RCH test
+passes or physical-camera evidence. Earlier no-run builds were refused before
+admission when the shared daemon socket was unavailable; no local fallback
+was used. The existing physical handoff obligations, production TLS admission,
+unattended credential provisioning, direct recording and 30-day retention
+remain open.
+
+### Late plan registration (2026-11-12 UTC)
+
+The lab factory and automatic setup owner can now coordinate a plan arriving
+after a ready enrollment was selected without one. The factory emits a
+process-local, factory-bound missing-plan receipt; registration rearms that
+specific selection only after verifying the same fleet, factory and index,
+with no in-flight work and a still-ready enrollment. Registration before any
+selection is also supported. A different factory, different fleet, stopped
+supervisor, ordinary permission failure or untagged `NotFound` does not gain
+an automatic rearm. Other effect outcomes still require their own explicit
+reconciliation. The receipt is process-local, and callers still supply and
+authorize the plan, credentials and physical identity.
+
+Strict-remote trj build `j-30107068279029761` compiled the coordinated path on
+base `e25e71ec9ac4041c57e1e0148dd21271271d9a30` with lab source, fixture and
+patched TLS-vendor overlays; its wrapper exited 102 at Linux-to-macOS artifact
+transfer. Its exact Linux binary, SHA-256
+`f8d0907da63661cdf426754c139aabde8cfac969936f462f498649a8c68261eb`,
+matched before and after isolated direct omarchy runs of the focused test
+(1 passed, 1 filtered) and broader fleet test (1 passed, 1 filtered; four
+synthetic scenarios including 2688 x 1512 archive readback). A follow-up
+`j-30107072372670465` compiled an explicit untagged-`NotFound` refusal test;
+its release was initially unconfirmed and same-wrapper recovery
+`rchw-46311bbe-9d55-4453-97e3-466d3d291601` acknowledged terminal exit 102
+with source and pair released. Its exact binary, SHA-256
+`28667541271b57291afcf5683e7673511850dc54f61028f41d8e4bb6693901de`,
+matched before and after an isolated direct focused run (1 passed, 1 filtered).
+The current fleet-owner source and the tested overlay matched after rustfmt
+normalization (SHA-256
+`b0eeef85013cfec67d58c8b8670bd7ab48387aebcca07dc702a98af5f8f1d37a`);
+the post-test differences were formatting only. These runs did not contact
+the physical camera or prove unattended enrollment, durable restart recovery,
+production TLS, direct continuous recording or 30-day retention.
+
+### Combined factory and automatic stream route (2026-11-12 UTC)
+
+The lab supervisor now accepts the enrolled camera factory and automatic
+stream factory together, and refuses a factory bound to another fleet before
+polling it. The fixture drives a newly set-up synthetic camera through this
+route and retains its unsettled stream completion. Its archive/readback check
+still uses a separate route: automatic recording is not yet joined to this
+factory. No physical-camera session was exercised.
+
+Strict-remote build `j-30107087891595265` compiled on base
+`e25e71ec9ac4041c57e1e0148dd21271271d9a30` with lab and patched TLS-vendor
+overlays. Its Linux-to-macOS artifact transfer returned 102; same-wrapper
+recovery acknowledged that result and released custody. The exact Linux test
+binary, SHA-256
+`743017f809bc48a7ca98bc4e66b435dd6f270cfca2c09872ac27977932562486`,
+matched on the worker and isolated omarchy test host. The focused scenario
+passed (1 passed, 1 filtered); the broader test failed (0 passed, 1 filtered)
+in its full-resolution scenario at the subsequent automatic stream-admission
+step, with an unexpected event. The test now reports handshake and route
+failures specifically, but that diagnostic revision has not yet been run.
+Build `j-30107092169785345` compiled the diagnostic revision; its wrapper
+reported release unconfirmed, then same-wrapper recovery acknowledged exit
+102. Its exact binary, SHA-256
+`53e3ab64270b844e3aa070a310b98af277dc4c0de3e01272ffa307ae9c47eeaa`,
+matched on the worker and isolated omarchy host. One broad run failed early
+with `ControllerUnavailable`; a second reached the full-resolution scenario
+and failed later with `automatic stream did not finish`. A dedicated
+full-resolution case and more event diagnostics were then added. Build
+`j-30107096481529857` compiled that revision and same-wrapper recovery
+acknowledged exit 102. Its exact binary, SHA-256
+`add13ea8e60829396a2ff04afd3cd4bd88dbaa844421d0438649da39047d4671`,
+matched on the worker and isolated host; the dedicated full-resolution test
+failed (0 passed, 2 filtered) with camera index 0's intentional handshake
+deadline during later automatic stream admission. The fixture was amended to
+verify that connection's closure and renew it at admission, parking, or
+completion, at most once in those phases. The revised source compiled in
+strict-remote job `j-30107100625502209`, whose wrapper returned 102 and
+acknowledged terminal release. Its exact Linux binary, SHA-256
+`b33bf7276018d78051abc6521ed71d1ac805c0f1e282ea5a7e3798546b0c9e73`,
+matched on the worker and isolated omarchy host. The dedicated full-resolution
+test passed (1 passed, 2 filtered), the focused deadline test passed (1 passed,
+2 filtered), and the broader test passed (1 passed, 2 filtered), exercising
+four synthetic scenarios including high resolution, constrained capacity and
+changed archive readback. These are direct isolated
+Linux runs, not an RCH test pass or physical-camera proof. None of the earlier
+failures is erased by these runs; the separate intermittent startup failure
+has not been explained.
+
+### Automatic route into archive fixture (2026-11-12 UTC)
+
+The automatically routed synthetic camera now passes its validated media
+pipeline to the existing video bootstrap and session within the same tracked
+stream future. The fixture checks source and video publication, drains the
+tail, verifies the archive's source-byte coverage and camera binding, reads
+back the video, and decodes at least one frame. It retains the stream's
+unsettled effect owner for reconciliation. This is a fixture composition, not
+yet a reusable unattended recording service or a physical camera takeover.
+
+Strict-remote build `j-30107108259135489` compiled the fixture against base
+`e25e71ec9ac4041c57e1e0148dd21271271d9a30` with lab and patched TLS-vendor
+overlays. Its Linux-to-macOS artifact transfer returned 102; same-wrapper
+recovery acknowledged the result. The exact binary, SHA-256
+`c8295d128b05708cfd8f73cc1c22c7ea3a693cc8dcbdb78992169c5d04b63cd4`,
+matched on the worker and isolated omarchy host. Direct runs of the focused
+deadline test and dedicated 2688 x 1512 synthetic test each passed (1 passed,
+2 filtered). The broader fleet test also passed (1 passed, 2 filtered), with
+four synthetic scenarios covering high resolution, constrained capacity, and
+changed readback. This supersedes the previous note that automatic-route
+archive integration was absent from the fixture. The fixture's source and
+video archives are temporary test data; this does not prove production recording,
+restart recovery, real-camera full-resolution streaming, or 30-day retention.
+
+### Reusable selected-stream handoff (2026-11-12 UTC)
+
+The reference video bootstrap now accepts a selected pipeline, controller,
+management preconditions and pre-created recording owners as a typed handoff.
+It validates the preconditions and checks the selected source and camera
+against the source coordinator before converting any owner. A binding refusal
+returns the original session, pipeline, storage, policy and claims; a later
+bootstrap refusal returns its complete assembled parts. Neither outcome
+authenticates the physical device, starts publication, or proves continuity.
+The automatic fleet fixture first supplies a wrong camera claim, recovers the
+owners from the refusal, and then drives the corrected handoff through source
+and video archive readback.
+
+Strict-remote job `j-30107115775328257` compiled this path on base
+`e25e71ec9ac4041c57e1e0148dd21271271d9a30` with the reference and lab
+overlays and patched TLS vendor. Its wrapper returned 102 because Linux
+artifacts were rejected on macOS, and terminal release was acknowledged.
+The exact Linux test binary, SHA-256
+`1c372cdc465f0ca8609f96127a2bbf663d6279787bffa9d2aadb0835213513ae`,
+matched on the worker and isolated omarchy host. The focused test passed
+(1 passed, 2 filtered) and the broad test passed (1 passed, 2 filtered), with
+four synthetic scenarios including 2688 x 1512 archive readback. This is not
+an RCH test pass, a physical camera session, or an unattended recorder.
+
+### Bootstrap to managed video recording (2026-11-12 UTC)
+
+The reference bootstrap now offers a caller-driven owner spanning initial
+source publication and `video_session::ManagedSession`. It returns each
+bootstrap outcome before a later call performs the managed-session handoff;
+managed recording and rollover outcomes remain visible. The owner exposes
+explicit retry authorization and caller-supplied rollover supplies, and
+returns the current bootstrap, managed session, or refused parts for drain and
+reconciliation. Managed sessions now also expose explicit source/video retry
+authorization during the recording phase. This adds no automatic enrollment,
+credential handling, retention deletion, or physical identity proof.
+
+Strict-remote job `j-30107124751138817` compiled the reference and lab
+overlays on base `9eafc26cefb77708f3a3183b73deb99e3d427283` with patched TLS
+vendor. The wrapper returned 102 at Linux-to-macOS artifact transfer and
+acknowledged terminal release. The exact Linux binary, SHA-256
+`0eb433759d00fdb5be47197f2d1f67189ec2a5f9a769d6c06dccfb64f38d6eb7`,
+matched on the worker and isolated omarchy host. The focused test passed
+(1 passed, 2 filtered) and the broader fleet test passed (1 passed, 2 filtered),
+including a synthetic 2688 x 1512 source and video archive readback through
+the new transition. These are direct Linux runs, not RCH test passes or a
+physical-camera result. Cancellation and actual rollover through this new
+outer owner still require direct tests; existing inner-owner tests do not prove
+those paths for the composition.
