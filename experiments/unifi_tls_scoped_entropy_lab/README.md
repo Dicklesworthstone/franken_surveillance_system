@@ -1131,3 +1131,90 @@ trace did not determine whether its correlated clock message referred to the
 preceding reply, and its earlier handoff and clock effects are still
 indeterminate. No live camera, independent physical identity, production TLS,
 continuous native recording or retention was established by these results.
+
+### Routed session admission (2026-11-12 UTC)
+
+`ActiveStreams::admit_routed_session` connects an accepted controller session
+to a caller-provided future factory after checking the fleet, enrollment,
+claimed MAC, route readiness, no overlapping setup, fresh controller phase,
+shutdown state, duplicate occupancy and bounded capacity. A refusal before
+the factory returns the original session; a later work-set refusal returns the
+unpolled future. This does not authenticate a camera, validate an independently
+supplied session/index pair, bind effects, drain work, or cover separate
+owners and the existing unrestricted `insert` method. The factory itself must
+construct a future without performing camera I/O.
+
+Strict-remote ts1 job `30106308287922360` passed the fleet integration test
+(1/1, four scenarios) for the initial method. Job `30106308287922361` passed
+the same target with additional stopped-owner and full-capacity refusals (1/1,
+four scenarios), base `c12328f7f730145adf09b5342e833afc5f8bd9f3` and overlay
+`25420821785e2f88132c1abc708ff8e4bf82321e4f1a2f43542b86884098cdbb`.
+The fixture retains the exact session through wrong-index, wrong-MAC, stopped
+and capacity checks, verifies that those checks never invoke the factory, and
+then completes a synthetic stream alongside another camera's setup. One
+scenario checks 2688 x 1512 video. The test uses a bounded 16 MiB fixture
+thread. This is finite synthetic evidence, not a production stack, automatic
+enrollment, independent device identity, native live G4 capture or retention.
+
+### Automatic routed-stream loop (2026-11-12 UTC)
+
+`LeaseSupply::next_with_automatic_streams` extends the combined fleet loop
+with direct admission of accepted controller sessions to the caller's stream
+factory. It reports the start separately from later stream completion and
+returns refused sessions or unpolled futures. It stops admission on shutdown.
+The factory must construct a future without doing I/O, bind its own effect and
+identity authority, and retain or reconcile all results. This is a cooperative
+caller-driven loop, not a durable service or fully automatic enrollment.
+
+Strict-remote ts1 job `30106308287922377` passed the fleet integration target
+(1/1, four scenarios), base `5152d7d21b5f9f92ab331292de8b1ae54f8f28df`,
+overlay `329b1c9caf373b0cf706aeaacad15b450a3dedce625a5cae8843e5b9c07b5963`.
+In both capacity-two scenarios a routed synthetic camera went through the
+automatic factory, waited unpolled until the start event was handled, stayed
+owned after a pending borrowing wait was dropped, then negotiated a stream and
+decoded video. The full-resolution scenario checked every decoded picture at
+2688 x 1512. A second routed session after shutdown was returned to the caller
+without invoking the factory. The same fixture also exercised its earlier
+concurrent setup, archive, retry and profile-refusal paths. It uses a bounded
+16 MiB test thread; it does not qualify production stack usage or cancellation
+under all schedules. The stream and test source SHA-256 values were
+`ac02142023e37d92fd103bcc93b2063a658ec7250042abe55c008a049a2edfd0` and
+`de26d98941a7837df310db25a266b3d0e8c929cd629512daeaa45c747b26784e`.
+
+Initial jobs `30106308287922365` and `30106308287922366` failed before tests
+with, respectively, fixture type-inference and lifetime errors. Corrected
+jobs `30106308287922368`, `30106308287922371`, `30106308287922373`, and
+`30106308287922375` passed earlier versions of the fixture; job 375 used the
+newer base but did not yet drive media through the automatic factory. The
+latest job above is the evidence for that additional path. No physical camera
+setting was changed; the existing recorder and both associated timers were
+active with zero reported restarts after the run. This does not establish
+gap-free coverage, a real G4 handoff, native live video, or 30-day retention.
+
+### Setup profile carried into automatic streaming (2026-11-12 UTC)
+
+The fleet record retains the selected camera-reported profile only after a
+successful route-ready setup whose opt-in profile preflight matches the later
+observation. The value is cleared on a new attempt or safe rearm, and absent
+for unconfigured or refused setup. `next_with_automatic_streams` passes that
+optional claim to the caller's factory; the caller still chooses whether to
+use it and binds its own media/effect authority. It may be stale and is not
+physical identity, actual decoded properties, or a camera permission.
+
+Strict-remote ts1 job `30106308287922385` passed the synthetic fleet test
+(1/1, four scenarios), base `5152d7d21b5f9f92ab331292de8b1ae54f8f28df`,
+overlay `ccb8c54e3ab453297496a23e6381158335e04ef0fd4689a083551377e49623e6`.
+The factory checked the selected channel and all three reported metrics,
+then used that channel in an actual synthetic stream request and decoded the
+resulting media. The high-profile case checked 2688 x 1512 decoded pictures.
+A post-handoff profile mismatch returned no fleet selection. Job
+`30106308287922383` passed seven standard setup cases, with three requiring
+a worker interface ignored; the retained binary ran those three separately
+on ts1 and passed 3/3, including the check that an unconfigured preflight
+does not invent a selection. The final main-tree fleet source has only
+formatting changes from the tested overlay, confirmed by rustfmt-normalized
+comparison. The test uses a bounded 16 MiB fixture thread. These results do
+not establish an unattended recorder, real-camera takeover or video, robust
+profile freshness, production TLS, uninterrupted recording or 30-day retention.
+The existing recorder and both associated timers were active with zero
+reported restarts after the tests; no physical-camera setting was changed.

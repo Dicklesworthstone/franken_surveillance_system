@@ -14451,3 +14451,67 @@ request, but did not establish whether the latter referred to our reply. This
 fixture tests one plausible explanation; it does not prove the physical cause
 or authorize another camera effect. The complete source and process receipts
 are in the lab README under “Pre-hello clock hypothesis through archive.”
+
+### Routed session admission (2026-11-12 UTC)
+
+The scoped fleet lab can now pass an accepted controller session directly
+to a caller-supplied stream factory after checking the matching fleet,
+enrollment and claimed MAC, finished setup, startup phase, shutdown state,
+and finite stream capacity. Refusal returns the original session or the
+unpolled future. The caller must supply the exact acceptor event and bind
+effect authority and independent identity; these checks do neither. Generic
+insertion remains available and is not covered by this admission method.
+
+Strict-remote ts1 job `30106308287922361` passed one fleet integration test
+with four synthetic scenarios. It checked a routed stream while another setup
+was pending, plus invalid-index, wrong-claim, stopped-owner and full-capacity
+refusals before the factory ran. The full-resolution scenario decoded
+synthetic 2688 x 1512 video. This is not yet an unattended recorder or a
+real-camera handoff; detailed source and fixture limits are in the lab README
+under “Routed session admission.”
+
+Separately, a read-only check of the existing fallback found two completed,
+recent H.264 recordings at 1280 x 720. The current fallback configuration
+explicitly requests the medium stream. One newer file was still being written
+and could not yet be probed. The recorder and its timers remained unchanged;
+these checks do not establish uninterrupted coverage or 30-day retention.
+
+### Automatic routed-stream loop (2026-11-12 UTC)
+
+The experimental fleet supervisor can now feed accepted controller sessions
+directly into the routed-stream admission method while also driving discovery,
+setup, retry timers, active streams and entropy supply. It reports each start
+or returns the refused session or unpolled future to the owner. A stopped
+owner refuses a new session. The caller still supplies inventory, credentials,
+stream construction, authority and effect reconciliation; this is not yet an
+unattended recorder or automatic enrollment of unknown cameras.
+
+On the newer committed base, one synthetic fleet test passed all four of its
+scenarios. In the two-capacity scenarios, the automatic route started a
+simulated stream, retained it across a dropped borrowing wait, and decoded
+video; the high-profile case decoded 2688 x 1512 frames. A separate accepted
+session after shutdown was returned without invoking the factory. The lab
+README records exact source and job identities, failed compile attempts, and
+limits. This does not establish a physical G4 takeover, direct live video,
+continuous recording, 30-day retention, or production TLS readiness.
+
+### Setup profile carried into automatic streaming (2026-11-12 UTC)
+
+Fleet setup now retains the selected camera-reported video profile when
+profile preflight was explicitly requested and setup's later observation
+still selects the same profile. The automatic stream factory receives that
+optional selection and can use its channel without independently guessing it.
+A changed or refused setup exposes no profile; an unconfigured preflight
+continues to expose none so an explicit channel policy can be used. Selection
+is an untrusted setup-time claim that may become stale, not proof of device
+identity, codec, video delivery or permission to stream.
+
+Strict-remote ts1 job `30106308287922385` passed the synthetic fleet target
+(1/1, four scenarios). The automatic factory received the complete selected
+width, height and rate, requested its selected channel and decoded video;
+the high-profile scenario decoded 2688 x 1512 frames. Changed readback
+withheld the selection. Job `30106308287922383` passed seven setup cases;
+the three ignored worker-interface cases passed separately on ts1, including
+the unconfigured-profile check. The lab README records source identities
+and scope. No physical camera or recorder setting was changed; this does not
+prove direct G4 video, an unattended service, or 30-day retention.

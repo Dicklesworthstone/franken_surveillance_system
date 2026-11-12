@@ -4,14 +4,18 @@ use crate::owned::{
     Session, admitted,
     offload::{Acquisition, Lease},
 };
-use asupersync::{Cx, io::{AsyncRead, AsyncWrite}};
+use asupersync::{
+    Cx,
+    io::{AsyncRead, AsyncWrite},
+};
 use fss_core::BudgetVector;
 use fss_reference::unifi_direct::{
-    controller_acceptor::{Acceptor, Transport},
+    VideoChannel, camera_api::VideoProfile,
+    controller_acceptor::{self, Acceptor, Transport},
     controller_listener::Routed,
     discovery::{
         fleet::{Enrollment, Fleet, State},
-        pump::{CameraWork, CameraWorkSet, Driver, Progress, Pump, RetryDisposition, WorkRefusal},
+        pump::{self, CameraWork, CameraWorkSet, Driver, Progress, Pump, RetryDisposition, WorkRefusal},
         retry,
     },
     metered::MeteredClock,
@@ -492,10 +496,16 @@ pub enum RoutedStreamRefusal {
     ClaimMismatch,
     /// Setup has not released the route or remains in flight.
     SetupNotReady,
+    /// Setup admission has been stopped for shutdown.
+    Stopped,
     /// The session has already progressed beyond the startup boundary.
     SessionNotFresh,
     /// This enrollment already has a stream.
     Duplicate,
+    /// The previous automatically admitted stream still needs disposition.
+    PreviousUnresolved,
+    /// This owner's bounded generation counter is exhausted.
+    GenerationExhausted,
     /// The bounded stream work set is full.
     Capacity,
     /// The work set refused a freshly constructed future.
@@ -510,7 +520,8 @@ pub enum RoutedStreamAdmission<'scope, 'task, 'policy, 'work, IO, S> {
         /// Why the unconsumed session was refused.
         reason: RoutedStreamRefusal,
         /// The original upgraded session.
-        session: fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>,
+        session:
+            fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>,
     },
     /// The factory was called, but the exact resulting future was refused.
     Work {
@@ -521,6 +532,31 @@ pub enum RoutedStreamAdmission<'scope, 'task, 'policy, 'work, IO, S> {
     },
 }
 
+/// Owner-bound identity of one completed automatically admitted stream.
+/// This is a reconciliation handle, not proof that effects are settled.
+#[derive(Clone, Debug)]
+#[must_use = "retain this completion until its effects are reconciled"]
+pub struct StreamCompletion {
+    owner: Rc<()>,
+    index: usize,
+    generation: u64,
+}
+impl StreamCompletion {
+    /// Enrollment associated with this exact completed stream.
+    pub fn index(&self) -> usize { self.index }
+    /// Monotone generation within this particular stream owner.
+    pub fn generation(&self) -> u64 { self.generation }
+}
+
+/// Why a completed stream's admission fence was not released.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamCompletionRefusal {
+    /// The completion belongs to a different owner.
+    WrongOwner,
+    /// The completion was already released or is no longer current.
+    Stale,
+}
+
 /// Fleet-bound stream futures with an explicit occupied-index inventory.
 /// The caller still binds each future's session, authority and effect trace.
 #[must_use = "retire pending stream work and reconcile its effect traces"]
@@ -529,6 +565,11 @@ pub struct ActiveStreams<'fleet, 'report, 'work, S> {
     work: CameraWorkSet<'work, S>,
     occupied: [bool; MAX_RESOURCES],
     capacity: usize,
+    identity: Rc<()>,
+    sequence: [u64; MAX_RESOURCES],
+    running_automatic: [Option<u64>; MAX_RESOURCES],
+    awaiting_disposition: [Option<u64>; MAX_RESOURCES],
+    emitted_completion: Option<StreamCompletion>,
 }
 impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
     /// Bind to the fleet and reserve finite work capacity.
@@ -538,6 +579,11 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
             work: CameraWorkSet::new(capacity)?,
             occupied: [false; MAX_RESOURCES],
             capacity,
+            identity: Rc::new(()),
+            sequence: [0; MAX_RESOURCES],
+            running_automatic: [None; MAX_RESOURCES],
+            awaiting_disposition: [None; MAX_RESOURCES],
+            emitted_completion: None,
         })
     }
     /// Retain a stream future or return it unchanged on refusal.
@@ -566,25 +612,39 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
         &mut self,
         automatic: &AutomaticWork<'fleet, 'report, '_, W>,
         index: usize,
-        session: fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>,
+        session:
+            fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>,
         factory: F,
     ) -> Result<(), RoutedStreamAdmission<'scope, 'task, 'policy, 'work, IO, S>>
     where
         IO: AsyncRead + AsyncWrite + Unpin,
-        F: FnOnce(Enrollment, fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>) -> CameraWork<'work, S>,
+        F: FnOnce(
+            Enrollment,
+            fss_reference::unifi_direct::controller_acceptor::Session<'scope, 'task, 'policy, IO>,
+        ) -> CameraWork<'work, S>,
     {
         let refusal = if !std::ptr::eq(self.fleet, automatic.fleet) {
             Some(RoutedStreamRefusal::FleetMismatch)
         } else if index >= MAX_RESOURCES || self.fleet.enrollment(index).is_none() {
             Some(RoutedStreamRefusal::UnknownEnrollment)
-        } else if self.fleet.enrollment(index).is_some_and(|enrollment| enrollment.mac() != session.claimed_mac()) {
+        } else if self
+            .fleet
+            .enrollment(index)
+            .is_some_and(|enrollment| enrollment.mac() != session.claimed_mac())
+        {
             Some(RoutedStreamRefusal::ClaimMismatch)
+        } else if automatic.stopped {
+            Some(RoutedStreamRefusal::Stopped)
         } else if automatic.in_flight[index] || !self.fleet.route_ready(index) {
             Some(RoutedStreamRefusal::SetupNotReady)
         } else if session.phase() != fss_reference::unifi_direct::Phase::AwaitHello {
             Some(RoutedStreamRefusal::SessionNotFresh)
         } else if self.occupied[index] {
             Some(RoutedStreamRefusal::Duplicate)
+        } else if self.awaiting_disposition[index].is_some() {
+            Some(RoutedStreamRefusal::PreviousUnresolved)
+        } else if self.sequence[index] == u64::MAX {
+            Some(RoutedStreamRefusal::GenerationExhausted)
         } else if self.work.len() >= self.capacity {
             Some(RoutedStreamRefusal::Capacity)
         } else {
@@ -595,13 +655,45 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
         }
         let enrollment = self.fleet.enrollment(index).expect("checked enrollment");
         let work = factory(enrollment, session);
-        self.insert(index, work).map_err(|(reason, work)| RoutedStreamAdmission::Work {
-            reason: match reason {
-                StreamRefusal::UnknownEnrollment => RoutedStreamRefusal::UnknownEnrollment,
-                StreamRefusal::Work(reason) => RoutedStreamRefusal::Work(reason),
-            },
-            work,
+        match self.insert(index, work) {
+            Ok(()) => {
+                let generation = self.sequence[index] + 1;
+                self.sequence[index] = generation;
+                self.running_automatic[index] = Some(generation);
+                Ok(())
+            }
+            Err((reason, work)) => Err(RoutedStreamAdmission::Work {
+                reason: match reason {
+                    StreamRefusal::UnknownEnrollment => RoutedStreamRefusal::UnknownEnrollment,
+                    StreamRefusal::Work(reason) => RoutedStreamRefusal::Work(reason),
+                },
+                work,
+            }),
+        }
+    }
+    /// Retrieve the exact outstanding completion for this owner and camera.
+    pub fn pending_completion(&self, index: usize) -> Option<StreamCompletion> {
+        Some(StreamCompletion {
+            owner: Rc::clone(&self.identity),
+            index,
+            generation: self.awaiting_disposition.get(index).copied().flatten()?,
         })
+    }
+    /// Release only this exact completion after the caller has reconciled all
+    /// effects and retained work from that stream. This method checks identity
+    /// and freshness, not the caller's evidence or permission for a new effect.
+    pub fn release_after_reconciliation(&mut self, completion: &StreamCompletion) -> Result<(), StreamCompletionRefusal> {
+        if !Rc::ptr_eq(&self.identity, &completion.owner) {
+            return Err(StreamCompletionRefusal::WrongOwner);
+        }
+        let Some(slot) = self.awaiting_disposition.get_mut(completion.index) else {
+            return Err(StreamCompletionRefusal::Stale);
+        };
+        if *slot != Some(completion.generation) {
+            return Err(StreamCompletionRefusal::Stale);
+        }
+        *slot = None;
+        Ok(())
     }
     /// Whether all retained stream futures have completed.
     pub fn is_empty(&self) -> bool {
@@ -611,14 +703,27 @@ impl<'fleet, 'report, 'work, S> ActiveStreams<'fleet, 'report, 'work, S> {
     pub fn len(&self) -> usize {
         self.work.len()
     }
-    /// Return all remaining futures for explicit retirement.
-    pub fn into_pending(self) -> Vec<(usize, CameraWork<'work, S>)> {
-        self.work.into_pending()
+    /// Return remaining futures for explicit retirement only when there are
+    /// no running or undisposed automatic streams; otherwise return this exact owner.
+    /// Dropping an owner remains an interruption, not reconciliation.
+    pub fn into_pending(self) -> Result<Vec<(usize, CameraWork<'work, S>)>, Self> {
+        if self.awaiting_disposition.iter().any(Option::is_some)
+            || self.running_automatic.iter().any(Option::is_some) {
+            return Err(self);
+        }
+        Ok(self.work.into_pending())
     }
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<(usize, S)> {
         match self.work.poll_next(cx) {
             Poll::Ready((index, output)) => {
                 self.occupied[index] = false;
+                self.emitted_completion = None;
+                if let Some(generation) = self.running_automatic[index].take() {
+                    self.awaiting_disposition[index] = Some(generation);
+                    self.emitted_completion = Some(StreamCompletion {
+                        owner: Rc::clone(&self.identity), index, generation,
+                    });
+                }
                 Poll::Ready((index, output))
             }
             Poll::Pending => Poll::Pending,
@@ -725,6 +830,38 @@ pub enum RetryingFleetEvent<'scope, 'task, 'work, E, W, S> {
     Retry {
         event: retry::Event,
         selection: RetrySelection,
+    },
+}
+
+/// Protected transport owned by a routed fleet controller session.
+pub type RoutedTransport<'scope, 'task, 'policy> =
+    Session<'scope, 'task, Routed<'scope, 'task, 'policy>>;
+
+/// Events from the combined setup, retry, route and stream admission loop.
+#[must_use = "handle progress and retain any refused session or work"]
+pub enum AutoRoutedFleetEvent<'scope, 'task, 'policy, 'setup, 'stream, W, S> {
+    /// Existing fleet, setup, retry or stream outcome.
+    Progress(RetryingFleetEvent<'scope, 'task, 'setup,
+        controller_acceptor::Event<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>,
+        W, S>),
+    /// An accepted session was converted into a retained, unpolled stream future.
+    StreamStarted { index: usize },
+    /// An automatically admitted stream finished; reconcile before rearming.
+    StreamFinished {
+        /// Enrollment whose stream finished.
+        index: usize,
+        /// Original caller-owned output and any effects it retains.
+        output: S,
+        /// Owner-bound identity for this completion.
+        completion: StreamCompletion,
+    },
+    /// Admission was refused; the original session or future remains caller-owned.
+    StreamRefused {
+        /// Enrollment selected by the router.
+        index: usize,
+        /// The refused session or work.
+        refusal: RoutedStreamAdmission<'scope, 'task, 'policy, 'stream,
+            RoutedTransport<'scope, 'task, 'policy>, S>,
     },
 }
 
@@ -1268,6 +1405,78 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
             }
         }
     }
+    /// Drive setup, retries, routes and streams, admitting each accepted route
+    /// to a caller-supplied factory without a separate event-routing step.
+    /// The factory receives the optional setup-time camera-reported profile;
+    /// an absent selection requires an explicit caller policy. That claim may
+    /// be stale and is not proof of media properties. The factory must only
+    /// construct a future and must independently bind
+    /// its session, credentials, media policy and effect authority. A refusal
+    /// returns the original session or unpolled future; shutdown never starts
+    /// a new stream. Dropping this wait retains existing owners, but dropping
+    /// the owners still requires the caller to retire or drain their work.
+    pub async fn next_with_automatic_streams<'pump, 'fleet, 'report, 'policy, 'work, 'stream, A, W, S, F, G>(
+        &mut self,
+        pump: &mut Pump<'pump, 'fleet, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work, RetryCompletion<W>>,
+        streams: &mut ActiveStreams<'fleet, 'report, 'stream, S>,
+        retries: &mut RetryCoordinator<'fleet, 'report, 'scope, 'task>,
+        setup_factory: &mut F,
+        stream_factory: &mut G,
+    ) -> Result<AutoRoutedFleetEvent<'scope, 'task, 'policy, 'work, 'stream, W, S>, RetryLoopError>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+        F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, RetryCompletion<W>>>,
+        G: FnMut(usize, Enrollment, Option<(VideoChannel, VideoProfile)>,
+            controller_acceptor::Session<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>)
+            -> CameraWork<'stream, S>,
+    {
+        let event = self.next_with_retries_and_streams(
+            pump, automatic, streams, retries, setup_factory,
+        ).await?;
+        match event {
+            RetryingFleetEvent::Fleet {
+                event: FleetStreamEvent::Stream { index, output }, retry: None,
+            } => match streams.emitted_completion.take() {
+                Some(completion) => Ok(AutoRoutedFleetEvent::StreamFinished { index, output, completion }),
+                None => Ok(AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet {
+                    event: FleetStreamEvent::Stream { index, output }, retry: None,
+                })),
+            },
+            RetryingFleetEvent::Fleet {
+                event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(
+                    Supervised::Fleet(Progress::Event(pump::Event::Route(
+                        controller_acceptor::Event::Session { index, session }
+                    )))
+                )),
+                retry: None,
+            } => {
+                if self.stopping {
+                    return Ok(AutoRoutedFleetEvent::StreamRefused {
+                        index,
+                        refusal: RoutedStreamAdmission::Session {
+                            reason: RoutedStreamRefusal::Stopped,
+                            session,
+                        },
+                    });
+                }
+                let reported_video = streams.fleet.reported_video(index);
+                match streams.admit_routed_session(automatic, index, session,
+                    |enrollment, session| stream_factory(index, enrollment, reported_video, session)) {
+                    Ok(()) => Ok(AutoRoutedFleetEvent::StreamStarted { index }),
+                    Err(refusal) => Ok(AutoRoutedFleetEvent::StreamRefused { index, refusal }),
+                }
+            }
+            other => Ok(AutoRoutedFleetEvent::Progress(other)),
+        }
+    }
+
     /// Drive workers and replenish empty slots without detached tasks.
     pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<SupplyEvent<'scope, 'task>>> {
         if self.finished {
@@ -1384,6 +1593,26 @@ impl Drop for LeaseSupply<'_, '_> {
 #[cfg(test)]
 mod waiting_tests {
     use super::*;
+
+    #[test]
+    fn stream_completion_release_is_owner_bound_and_rejects_stale_handles() {
+        use fss_reference::unifi_direct::discovery::{Report, Stop};
+        let fleet = Fleet::from_report(Report {
+            cameras: vec![], datagrams: 0, malformed: 0, out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        }, &[]).unwrap();
+        let mut first = ActiveStreams::<()>::new(&fleet, 1).unwrap();
+        let mut second = ActiveStreams::<()>::new(&fleet, 1).unwrap();
+        first.awaiting_disposition[0] = Some(1);
+        let old = first.pending_completion(0).unwrap();
+        assert_eq!(second.release_after_reconciliation(&old), Err(StreamCompletionRefusal::WrongOwner));
+        first.awaiting_disposition[0] = Some(2);
+        assert_eq!(first.release_after_reconciliation(&old), Err(StreamCompletionRefusal::Stale));
+        let current = first.pending_completion(0).unwrap();
+        assert_eq!(first.release_after_reconciliation(&current), Ok(()));
+        assert!(first.pending_completion(0).is_none());
+        assert_eq!(first.release_after_reconciliation(&current), Err(StreamCompletionRefusal::Stale));
+    }
 
     #[test]
     fn resource_inventory_is_bounded_and_rejects_duplicates() {
