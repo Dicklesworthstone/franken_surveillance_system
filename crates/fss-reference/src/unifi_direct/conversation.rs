@@ -465,6 +465,26 @@ pub struct Owner<'a, 'scope, 'task> {
 }
 
 impl Owner<'_, '_, '_> {
+    /// Cancel one preparation owned by this task using caller-retained evidence.
+    ///
+    /// This does not cancel or retry a committed effect, establish the
+    /// evidence's provenance, or change the camera session. The caller must
+    /// retain the evidence and retire or otherwise handle the session.
+    pub fn cancel_prepared_effect(
+        &mut self,
+        operation: &OperationId,
+        evidence: ContentDigest,
+    ) -> Result<(), Error> {
+        if !self.clock.matches(self.task, self.cx) {
+            return Err(Error::Configuration);
+        }
+        let prepared = self.effects.prepared(operation).ok_or(Error::Effect)?;
+        let now = self.clock.now().map_err(|_| Error::Clock)?;
+        self.task
+            .cancel_prepared_effect(self.cx, self.effects, prepared, evidence, now)
+            .map_err(|_| Error::Effect)
+    }
+
     /// Prepare and commit one source-bound event reply using this owner's
     /// existing task, approval, journal and lease. Errors may leave a prepared
     /// or indeterminate operation in the journal and never authorize retry.
@@ -484,6 +504,7 @@ impl Owner<'_, '_, '_> {
             intent.fence(),
             RuntimeGrant::CameraManagementPrepare,
             RuntimeGrant::CameraManagementCommit,
+            None,
         )
     }
 
@@ -496,6 +517,7 @@ impl Owner<'_, '_, '_> {
         fence: u64,
         prepare_grant: RuntimeGrant,
         commit_grant: RuntimeGrant,
+        deadline: Option<u64>,
     ) -> Result<CommittedEffect, Error> {
         let key = IdempotencyKey::parse(operation.as_str()).map_err(|_| Error::Configuration)?;
         let now = self.clock.now().map_err(|_| Error::Clock)?;
@@ -519,8 +541,19 @@ impl Owner<'_, '_, '_> {
                 now,
             )
             .map_err(|_| Error::Effect)?;
+        // Preparation is durable and remains in the coordinator if either
+        // check refuses; it must be reconciled rather than silently retried.
+        if let Some(deadline) = deadline {
+            self.remaining(deadline)?;
+        }
         let approval = self.approval.approve(&prepared).ok_or(Error::Effect)?;
+        if let Some(deadline) = deadline {
+            self.remaining(deadline)?;
+        }
         let now = self.clock.now().map_err(|_| Error::Clock)?;
+        if let Some(deadline) = deadline {
+            self.remaining(deadline)?;
+        }
         self.task
             .commit_effect(
                 self.cx,
@@ -553,6 +586,7 @@ impl Owner<'_, '_, '_> {
             intent.fence(),
             RuntimeGrant::CameraManagementPrepare,
             RuntimeGrant::CameraManagementCommit,
+            Some(deadline),
         )?;
         let wait = self.remaining(deadline)?;
         match session
@@ -590,6 +624,7 @@ impl Owner<'_, '_, '_> {
             intent.fence(),
             RuntimeGrant::CameraManagementPrepare,
             RuntimeGrant::CameraManagementCommit,
+            Some(deadline),
         )?;
         trace.pending_permit = Some(permit);
         let left = self.remaining(deadline)?;
@@ -683,6 +718,7 @@ impl Owner<'_, '_, '_> {
             intent.fence(),
             RuntimeGrant::CameraManagementPrepare,
             RuntimeGrant::CameraManagementCommit,
+            Some(deadline),
         )?;
         trace.attempts[index].pending_permit = Some(permit);
         let left = self.remaining(deadline)?;
@@ -1173,6 +1209,7 @@ impl Owner<'_, '_, '_> {
                 intent.fence(),
                 RuntimeGrant::CameraSettingPrepare,
                 RuntimeGrant::CameraSettingCommit,
+                Some(deadline),
             )?;
             trace.pending_permit = Some(permit);
             let wait = self.remaining(deadline)?;
@@ -1213,6 +1250,7 @@ impl Owner<'_, '_, '_> {
             intent.fence(),
             RuntimeGrant::CameraSettingPrepare,
             RuntimeGrant::CameraSettingCommit,
+            Some(deadline),
         )?;
         if let Some(trace) = protocol_trace.as_mut() {
             trace.stream.pending_permit = Some(permit);

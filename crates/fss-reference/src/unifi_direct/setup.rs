@@ -17,9 +17,14 @@ use asupersync::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
 };
-use fss_core::{ContentDigest, DigestAlgorithm, IdempotencyKey, OperationId, RuntimeGrant};
+use fss_core::{
+    BudgetVector, CanonicalEncoder, ContentDigest, DigestAlgorithm, IdempotencyKey, OperationId,
+    RuntimeGrant,
+};
+use fss_object::{SpoolObjectState, StagingSpool};
 use fss_runtime::{
-    effect::{CommittedEffect, EffectCoordinator, PrepareSpec},
+    effect::{CommittedEffect, EffectCoordinator, PrepareSpec, PreparedEffect},
+    effect_journal::EffectJournalPin,
     execution::TaskCx,
     lease::LeaseRegistry,
 };
@@ -31,6 +36,7 @@ use std::{
 };
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
+const DEADLINE_EVIDENCE_DOMAIN: &str = "fss.unifi-direct.setup-precommit-deadline.v1";
 
 /// Nonblocking independent policy binding this untrusted candidate to the
 /// operator-authorized camera, admitted transport, and live lease.
@@ -126,10 +132,52 @@ pub struct Trace {
     started: bool,
     operation: Option<OperationId>,
     dispatch_started: bool,
+    preparation_cancelled: bool,
+    deadline_witness: Option<DeadlineWitness>,
     permit: Option<CommittedEffect>,
     response: Option<camera_api::HandoffResponseObservation>,
     profile: Option<Box<ProfilePreflight>>,
 }
+
+#[derive(Clone, Debug)]
+struct DeadlineWitness {
+    task: fss_core::TaskId,
+    region: fss_core::RegionId,
+    preparation: ContentDigest,
+    journal: EffectJournalPin,
+    deadline: u64,
+    observed: u64,
+    stage: u8,
+}
+
+/// A refused evidence retention or cancellation. The digest identifies the
+/// attempted content when it may have been staged; it is not a success receipt.
+#[derive(Debug)]
+pub struct DeadlineCancellationError {
+    /// Exact payload-free failure category.
+    pub reason: DeadlineCancellationFailure,
+    /// Digest of bytes that may have been staged before refusal.
+    pub evidence: Option<ContentDigest>,
+}
+
+/// Failure before a verified setup cancellation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeadlineCancellationFailure {
+    /// The trace, prepared effect or journal head no longer matches.
+    Stale,
+    /// Task authority, clock or the storage capability refused the work.
+    Authority,
+    /// Encoding, staging, durable verification or byte comparison failed.
+    Storage,
+    /// The journal refused cancellation or its result is uncertain.
+    Cancellation,
+}
+impl fmt::Display for DeadlineCancellationError {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(out, "setup deadline cancellation: {:?}", self.reason)
+    }
+}
+impl std::error::Error for DeadlineCancellationError {}
 
 #[derive(Debug)]
 struct ProfilePreflight {
@@ -188,6 +236,14 @@ impl Trace {
     /// Whether handoff dispatch was entered; it does not prove any bytes were sent.
     pub fn dispatch_started(&self) -> bool {
         self.dispatch_started
+    }
+    /// Whether this owner durably cancelled the exact preparation.
+    pub fn preparation_cancelled(&self) -> bool {
+        self.preparation_cancelled
+    }
+    /// Whether this attempt retained a durable pre-commit deadline observation.
+    pub fn has_precommit_deadline(&self) -> bool {
+        self.deadline_witness.is_some()
     }
     /// Retained committed permit, if it has not moved into an in-flight write.
     pub fn take_permit(&mut self) -> Option<CommittedEffect> {
@@ -366,6 +422,145 @@ pub struct Owner<'a, 'scope, 'task> {
     pub admission: &'a dyn Admission,
     /// Live handoff authority, rechecked on every write poll.
     pub handoff_authority: &'a dyn camera_api::HandoffAuthority,
+}
+
+impl Owner<'_, '_, '_> {
+    fn precommit_remaining(
+        &self,
+        trace: &mut Trace,
+        prepared: &PreparedEffect,
+        deadline: u64,
+        stage: u8,
+    ) -> Result<(), Error> {
+        self.cx.checkpoint().map_err(|_| Error::Denied)?;
+        let observed = self.cx.now().as_nanos();
+        if observed < deadline {
+            return Ok(());
+        }
+        if !self.effects.persistence_needs_recovery()
+            && let Some(journal) = self.effects.durable_pin()
+        {
+            trace.deadline_witness = Some(DeadlineWitness {
+                task: self.task.task_id().clone(),
+                region: self.task.region().clone(),
+                preparation: prepared.digest(),
+                journal,
+                deadline,
+                observed,
+                stage,
+            });
+        }
+        Err(Error::Deadline)
+    }
+
+    /// Retain and verify a locally observed pre-commit deadline, then cancel
+    /// its exact prepared handoff. This does not prove independent custody or
+    /// authorize retry. Both storage and journal I/O may synchronously block.
+    pub fn retain_and_cancel_deadline(
+        &mut self,
+        trace: &mut Trace,
+        spool: &mut StagingSpool,
+        storage_resource: &str,
+    ) -> Result<ContentDigest, DeadlineCancellationError> {
+        let fail = |reason, evidence| DeadlineCancellationError { reason, evidence };
+        let witness = trace
+            .deadline_witness
+            .as_ref()
+            .ok_or_else(|| fail(DeadlineCancellationFailure::Stale, None))?;
+        let operation = trace
+            .operation
+            .as_ref()
+            .ok_or_else(|| fail(DeadlineCancellationFailure::Stale, None))?;
+        let prepared = self
+            .effects
+            .prepared(operation)
+            .ok_or_else(|| fail(DeadlineCancellationFailure::Stale, None))?;
+        if !trace.started
+            || !self.clock.matches(self.task, self.cx)
+            || &witness.task != self.task.task_id()
+            || &witness.region != self.task.region()
+            || trace.preparation_cancelled
+            || trace.dispatch_started
+            || trace.permit.is_some()
+            || self.effects.persistence_needs_recovery()
+            || self.effects.durable_pin() != Some(witness.journal)
+            || prepared.digest() != witness.preparation
+            || self.effects.state(&prepared).ok() != Some(fss_core::EffectState::Prepared)
+            || witness.observed < witness.deadline
+        {
+            return Err(fail(DeadlineCancellationFailure::Stale, None));
+        }
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(DEADLINE_EVIDENCE_DOMAIN);
+        encoder.text(operation.as_str());
+        encoder.text(witness.task.as_str());
+        encoder.text(witness.region.as_str());
+        encoder.digest(witness.preparation);
+        encoder.u64(witness.journal.sequence);
+        encoder.digest(witness.journal.root);
+        encoder.u64(witness.deadline);
+        encoder.u64(witness.observed);
+        encoder.u8(witness.stage);
+        let bytes = encoder
+            .finish_checked()
+            .map_err(|_| fail(DeadlineCancellationFailure::Storage, None))?;
+        let digest = ContentDigest::sha256(&bytes);
+        let now = self
+            .clock
+            .now()
+            .map_err(|_| fail(DeadlineCancellationFailure::Authority, None))?;
+        let mut cost = BudgetVector::ZERO;
+        cost.bytes = u64::try_from(bytes.len())
+            .map_err(|_| fail(DeadlineCancellationFailure::Storage, None))?;
+        self.task
+            .checkpoint_for(RuntimeGrant::ObjectStage, storage_resource, now, &cost)
+            .map_err(|_| fail(DeadlineCancellationFailure::Authority, None))?;
+        let receipt = spool
+            .stage(digest, &bytes)
+            .map_err(|_| fail(DeadlineCancellationFailure::Storage, Some(digest)))?;
+        if receipt.digest != digest {
+            return Err(fail(DeadlineCancellationFailure::Storage, Some(digest)));
+        }
+        let (state, readback) = spool
+            .verify_and_read(digest)
+            .map_err(|_| fail(DeadlineCancellationFailure::Storage, Some(digest)))?;
+        if state != SpoolObjectState::Verified || readback != bytes {
+            return Err(fail(DeadlineCancellationFailure::Storage, Some(digest)));
+        }
+        self.cancel_prepared_effect(trace, digest)
+            .map_err(|_| fail(DeadlineCancellationFailure::Cancellation, Some(digest)))?;
+        Ok(digest)
+    }
+
+    /// Cancel this task's undispatched setup preparation using retained evidence.
+    ///
+    /// A committed or dispatched handoff cannot be cancelled through this
+    /// method. The caller must retain and validate the evidence, dispose of
+    /// the camera session, and independently decide whether another attempt
+    /// is authorized. This operation may synchronously block on storage.
+    pub fn cancel_prepared_effect(
+        &mut self,
+        trace: &mut Trace,
+        evidence: ContentDigest,
+    ) -> Result<(), Error> {
+        if !trace.started
+            || trace.dispatch_started
+            || trace.preparation_cancelled
+            || trace.permit.is_some()
+            || trace.response.is_some()
+            || !self.clock.matches(self.task, self.cx)
+        {
+            return Err(Error::Configuration);
+        }
+        let operation = trace.operation.as_ref().ok_or(Error::Configuration)?;
+        let prepared = self.effects.prepared(operation).ok_or(Error::Effect)?;
+        let now = self.clock.now().map_err(|_| Error::Denied)?;
+        self.task
+            .cancel_prepared_effect(self.cx, self.effects, prepared, evidence, now)
+            .map_err(|_| Error::Effect)?;
+        trace.preparation_cancelled = true;
+        Ok(())
+    }
 }
 
 struct ReadyAdmission<'a, 'listener_scope, 'listener_task, 'policy, 'scope, 'task> {
@@ -900,12 +1095,14 @@ impl Owner<'_, '_, '_> {
                 now,
             )
             .map_err(|_| Error::Effect)?;
+        self.precommit_remaining(trace, &prepared, deadline, 1)?;
         let approval = self.approval.approve(&prepared).ok_or(Error::Effect)?;
         if !guard.current() {
             return Err(Error::Denied);
         }
-        remaining(self.cx, deadline)?;
+        self.precommit_remaining(trace, &prepared, deadline, 2)?;
         let now = self.clock.now().map_err(|_| Error::Denied)?;
+        self.precommit_remaining(trace, &prepared, deadline, 3)?;
         let permit = self
             .task
             .commit_effect(

@@ -711,6 +711,7 @@ fn http_fixture(
     reported_port: Option<(Arc<std::sync::atomic::AtomicU16>, u8)>,
     handoff_success: bool,
     readback_mode: u8,
+    stop_before_handoff: bool,
 ) -> std::io::Result<()> {
     let target_body = format!(r#"{{"controller":{{"addr":"{destination}"}}}}"#);
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
@@ -826,6 +827,14 @@ fn http_fixture(
         );
         socket.write_all(header.as_bytes())?;
         socket.write_all(body)?;
+        if index == 3 && double_read && stop_before_handoff {
+            let mut byte = [0u8; 1];
+            return if socket.read(&mut byte)? == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("expired setup sent a handoff"))
+            };
+        }
         if index == 1 && reported_port.as_ref().is_some_and(|(_, mode)| *mode != 0) {
             let mut byte = [0u8; 1];
             return if socket.read(&mut byte)? == 0 {
@@ -916,6 +925,7 @@ fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
                             None,
                             false,
                             0,
+                            false,
                         )
                     });
                     let (socket, _) =
@@ -1114,6 +1124,17 @@ impl fss_reference::unifi_direct::conversation::Approval for SetupApproval {
         })
     }
 }
+struct SlowSetupApproval(Arc<std::sync::atomic::AtomicBool>);
+impl fss_reference::unifi_direct::conversation::Approval for SlowSetupApproval {
+    fn approve(&self, prepared: &fss_runtime::effect::PreparedEffect) -> Option<CommitApproval> {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+        std::thread::sleep(Duration::from_millis(400));
+        Some(CommitApproval {
+            prepared_digest: prepared.digest(),
+            current_precondition_digest: prepared.precondition_digest(),
+        })
+    }
+}
 fn discovery_packet() -> Vec<u8> {
     discovery_packet_for([0x10, 2, 3, 4, 5, 6], Ipv4Addr::LOCALHOST)
 }
@@ -1200,6 +1221,7 @@ fn run_discovered_setup_with_listener(
     let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let advertised_port = Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let slow_approval_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}-{observe}-{changed}-{}",
         std::process::id(),
@@ -1227,6 +1249,7 @@ fn run_discovered_setup_with_listener(
                 RuntimeGrant::ObserveStatus.as_str().into(),
                 RuntimeGrant::CameraManagementPrepare.as_str().into(),
                 RuntimeGrant::CameraManagementCommit.as_str().into(),
+                RuntimeGrant::ObjectStage.as_str().into(),
             ],
             deadline: Some(TimestampNs(600_000_000_000)),
             priority: 1,
@@ -1308,6 +1331,7 @@ fn run_discovered_setup_with_listener(
                             port_claim,
                             matches!(integrated_mode, 5 | 6 | 8 | 9),
                             if integrated_mode == 8 { 1 } else if integrated_mode == 9 { 2 } else { 0 },
+                            matches!(integrated_mode, 13..=16),
                         )
                     });
                     let (socket, _) =
@@ -1329,13 +1353,14 @@ fn run_discovered_setup_with_listener(
                         admission: peer_admission,
                         fence,
                     };
+                    let slow_approval = SlowSetupApproval(Arc::clone(&slow_approval_called));
                     let mut owner = setup::Owner {
                         cx,
                         task,
                         clock,
                         effects: &mut effects,
                         leases: &leases,
-                        approval: &SetupApproval,
+                        approval: if matches!(integrated_mode, 13..=16) { &slow_approval } else { &SetupApproval },
                         admission: &admission,
                         handoff_authority: &Guard(true),
                     };
@@ -1351,7 +1376,7 @@ fn run_discovered_setup_with_listener(
                                 destination,
                                 operation: &operation,
                                 credential: br#"{"username":"fixture","password":"synthetic"}"#,
-                                wait: Duration::from_secs(5),
+                                wait: if matches!(integrated_mode, 13..=15) { Duration::from_millis(250) } else { Duration::from_secs(5) },
                             }
                         };
                     }
@@ -1394,6 +1419,77 @@ fn run_discovered_setup_with_listener(
                     }
                     assert_eq!(http.phase(), Phase::Login);
                     report.malformed = original_malformed;
+                    if matches!(integrated_mode, 13..=15) {
+                        let mut trace = setup::Trace::default();
+                        let manual_evidence = ContentDigest::sha256(b"fixture retained setup deadline evidence");
+                        assert!(matches!(owner.cancel_prepared_effect(&mut trace, manual_evidence), Err(setup::Error::Configuration)));
+                        let result = owner.run_with_framing_tracked(&mut http, &config!(&report), framing, &mut trace).await;
+                        assert!(matches!(result, Err(setup::Error::Deadline)));
+                        assert_eq!(trace.operation(), Some(&operation));
+                        assert!(!trace.dispatch_started());
+                        assert!(!trace.preparation_cancelled());
+                        assert!(trace.has_precommit_deadline());
+                        assert_eq!(owner.effects.journal().operation(&operation).ok_or("missing prepared setup")?.state, fss_core::EffectState::Prepared);
+                        let evidence = if integrated_mode == 13 {
+                            owner.cancel_prepared_effect(&mut trace, manual_evidence)?;
+                            manual_evidence
+                        } else {
+                            let prepared_digest = owner.effects.prepared(&operation).ok_or("missing exact preparation")?.digest();
+                            let prepared_pin = owner.effects.durable_pin().ok_or("missing preparation pin")?;
+                            let limits = if integrated_mode == 14 {
+                                fss_object::SpoolLimits::new(4, 4096, 1024, 4)
+                            } else {
+                                fss_object::SpoolLimits::new(4, 1, 1, 4)
+                            };
+                            let mut spool = fss_object::StagingSpool::open(path.join("deadline-evidence"), limits)?;
+                            match owner.retain_and_cancel_deadline(&mut trace, &mut spool, "fixture:setup-evidence") {
+                                Ok(digest) if integrated_mode == 14 => {
+                                    assert_eq!(spool.state(digest), Some(fss_object::SpoolObjectState::Verified));
+                                    let bytes=spool.read(digest)?;
+                                    assert_eq!(ContentDigest::sha256(&bytes), digest);
+                                    let mut decoder=fss_core::CanonicalDecoder::new(&bytes);
+                                    assert_eq!(decoder.text()?, "fss.unifi-direct.setup-precommit-deadline.v1");
+                                    assert_eq!(decoder.text()?, operation.as_str());
+                                    assert_eq!(decoder.text()?, task.task_id().as_str());
+                                    assert_eq!(decoder.text()?, task.region().as_str());
+                                    assert_eq!(decoder.digest()?, prepared_digest);
+                                    assert_eq!(decoder.u64()?, prepared_pin.sequence);
+                                    assert_eq!(decoder.digest()?, prepared_pin.root);
+                                    let deadline=decoder.u64()?;
+                                    let observed=decoder.u64()?;
+                                    assert!(observed>=deadline);
+                                    let stage=decoder.u8()?;
+                                    assert!((1..=3).contains(&stage));
+                                    assert_eq!(stage != 1, slow_approval_called.load(std::sync::atomic::Ordering::Acquire));
+                                    decoder.ensure_finished()?;
+                                    let retry=owner.retain_and_cancel_deadline(&mut trace, &mut spool, "fixture:setup-evidence").expect_err("cancelled trace must not be retried");
+                                    assert_eq!(retry.reason, setup::DeadlineCancellationFailure::Stale);
+                                    drop(spool);
+                                    let mut reopened=fss_object::StagingSpool::open(path.join("deadline-evidence"), limits)?;
+                                    let (reopened_state,reopened_bytes)=reopened.verify_and_read(digest)?;
+                                    assert_eq!(reopened_state, fss_object::SpoolObjectState::Verified);
+                                    assert_eq!(reopened_bytes, bytes);
+                                    digest
+                                }
+                                Err(error) if integrated_mode == 15 => {
+                                    assert_eq!(error.reason, setup::DeadlineCancellationFailure::Storage);
+                                    assert!(!trace.preparation_cancelled());
+                                    assert_eq!(owner.effects.journal().operation(&operation).ok_or("missing preparation after storage failure")?.state, fss_core::EffectState::Prepared);
+                                    owner.cancel_prepared_effect(&mut trace, manual_evidence)?;
+                                    manual_evidence
+                                }
+                                _ => return Err("unexpected evidence retention outcome".into()),
+                            }
+                        };
+                        assert!(trace.preparation_cancelled());
+                        assert!(matches!(owner.cancel_prepared_effect(&mut trace, evidence), Err(setup::Error::Configuration)));
+                        let receipt = owner.effects.journal().operation(&operation).ok_or("missing cancelled setup")?;
+                        assert_eq!(receipt.state, fss_core::EffectState::Cancelled);
+                        assert_eq!(receipt.result_digest, Some(owner.effects.journal().cancellation_proof(&operation, evidence)?));
+                        drop(http);
+                        peer.join().map_err(|_| "HTTP fixture panic")??;
+                        return Ok(());
+                    }
                     if drop_future {
                         let mut trace = setup::Trace::default();
                         let cfg = config!(&report);
@@ -1436,7 +1532,7 @@ fn run_discovered_setup_with_listener(
                         return Ok(());
                     }
                     let result = if ready.is_some() {
-                        let shared_mode = matches!(integrated_mode, 10 | 11 | 12);
+                        let shared_mode = matches!(integrated_mode, 10 | 11 | 12 | 16);
                         let policy = ReadyPolicy {
                             live: Arc::clone(&live),
                             shared: Arc::clone(&shared),
@@ -1533,7 +1629,7 @@ fn run_discovered_setup_with_listener(
                         ));
                         assert_eq!(http.phase(), Phase::Login);
                         live.store(true, std::sync::atomic::Ordering::Release);
-                        if matches!(integrated_mode, 10 | 11 | 12) {
+                        if matches!(integrated_mode, 10 | 11 | 12 | 16) {
                             use discovery::fleet::{Enrollment, Error as FleetError, Fleet, State};
                             let certificate = ContentDigest::sha256(b"fixture certificate binding");
                             let credential_handle = ContentDigest::sha256(b"fixture credential handle");
@@ -1554,7 +1650,63 @@ fn run_discovered_setup_with_listener(
                             assert!(matches!(wrong, Err(FleetError::Binding)));
                             assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
                             assert_eq!(http.phase(), Phase::Login);
-                            if integrated_mode == 11 {
+                            if integrated_mode == 16 {
+                                use discovery::retry;
+                                let result = fleet.setup_one(
+                                    0, &mut owner, &control, port, &mut http,
+                                    certificate, credential_handle, credential, fence, destination,
+                                    &operation, framing, Duration::from_millis(250), &mut trace,
+                                ).await;
+                                assert!(matches!(result, Err(FleetError::Setup(setup::Error::Deadline))));
+                                assert!(trace.has_precommit_deadline());
+                                assert!(!trace.dispatch_started());
+                                drop(http);
+                                peer.join().map_err(|_| "HTTP fixture panic")??;
+                                let policy=retry::Policy::new(Duration::from_millis(10),Duration::from_secs(1),3)?;
+                                let mut retries=retry::Queue::new(&fleet,task,cx,clock,policy)?;
+                                assert_eq!(retries.schedule_automatic_for(0,&operation), Err(retry::Error::NotEligible));
+                                let mut bad_spool=fss_object::StagingSpool::open(path.join("bad-deadline-evidence"),fss_object::SpoolLimits::new(4,1,1,4))?;
+                                let refused=fleet.settle_expired_setup(0,&mut owner,&mut trace,&mut bad_spool,"fixture:setup-evidence").expect_err("failed retention must not admit retry");
+                                assert!(matches!(refused, discovery::fleet::DeadlineSettlementError::Cancellation(_)));
+                                assert_eq!(retries.schedule_automatic_for(0,&operation), Err(retry::Error::NotEligible));
+                                assert_eq!(owner.effects.journal().operation(&operation).ok_or("lost preparation")?.state,fss_core::EffectState::Prepared);
+                                let mut spool=fss_object::StagingSpool::open(path.join("fleet-deadline-evidence"),fss_object::SpoolLimits::new(4,4096,1024,4))?;
+                                let evidence=fleet.settle_expired_setup(0,&mut owner,&mut trace,&mut spool,"fixture:setup-evidence")?;
+                                assert_eq!(spool.state(evidence),Some(fss_object::SpoolObjectState::Verified));
+                                assert!(trace.preparation_cancelled());
+                                assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
+                                retries.schedule_automatic_for(0,&operation)?;
+                                assert!(matches!(retries.next().await?,retry::Event::Rearmed {index:0,state:State::Ready {candidate:0}}));
+                                let retry_listener=TcpListener::bind("127.0.0.1:0").await?;
+                                let retry_address=retry_listener.local_addr()?;
+                                let retry_port=Arc::clone(&advertised_port);
+                                let retry_peer=std::thread::spawn(move || http_fixture(
+                                    retry_address,false,false,false,framing,false,false,true,
+                                    destination,None,Some((retry_port,0)),true,0,false,
+                                ));
+                                let (socket,_)=timeout(cx.now(),Duration::from_secs(5),retry_listener.accept()).await??;
+                                let io=MeteredIo::with_clock(socket,clock,&resource,4096)?;
+                                let mut retry_http=camera_http::Owner::new(io,task,cx,clock,&SetupHttpAccess,Ipv4Addr::LOCALHOST,1,&resource)?;
+                                let mut retry_trace=setup::Trace::default();
+                                let duplicate=fleet.setup_one(
+                                    0,&mut owner,&control,port,&mut retry_http,certificate,credential_handle,
+                                    credential,fence,destination,&operation,framing,Duration::from_secs(5),&mut retry_trace,
+                                ).await;
+                                assert!(matches!(duplicate,Err(FleetError::DuplicateOperation)));
+                                assert_eq!(retry_http.phase(),Phase::Login);
+                                owner.approval=&SetupApproval;
+                                let fresh=OperationId::parse("operation:fleet-after-cancel")?;
+                                let outcome=fleet.setup_one(
+                                    0,&mut owner,&control,port,&mut retry_http,certificate,credential_handle,
+                                    credential,fence,destination,&fresh,framing,Duration::from_secs(5),&mut retry_trace,
+                                ).await?;
+                                assert!(matches!(outcome,setup::Outcome::Observed {readback:fss_reference::unifi_direct::handoff::Readback::Requested,..}));
+                                assert_eq!(owner.effects.journal().operation(&fresh).ok_or("missing fresh effect")?.state,fss_core::EffectState::Committed);
+                                assert!(fleet.route_ready(0));
+                                drop(retry_http);
+                                retry_peer.join().map_err(|_| "retry HTTP fixture panic")??;
+                                return Ok(());
+                            } else if integrated_mode == 11 {
                                 let interrupted = timeout(
                                     cx.now(), Duration::from_secs(1),
                                     fleet.setup_available(
@@ -1647,7 +1799,7 @@ fn run_discovered_setup_with_listener(
                                 let retry_port = Arc::clone(&advertised_port);
                                 let retry_peer = std::thread::spawn(move || http_fixture(
                                     retry_address, false, false, false, framing, false, false,
-                                    true, destination, None, Some((retry_port, 0)), true, 0,
+                                    true, destination, None, Some((retry_port, 0)), true, 0, false,
                                 ));
                                 let (socket, _) = timeout(cx.now(), Duration::from_secs(5), retry_listener.accept()).await??;
                                 let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
@@ -1990,7 +2142,7 @@ fn run_discovered_setup_with_listener(
                 }
                 .await;
                 let outcome = if output.is_ok()
-                    && (already || observe || changed || revoked || port_mode != 0)
+                    && (already || observe || changed || revoked || port_mode != 0 || matches!(integrated_mode, 13..=15))
                 {
                     TaskOutcome::Success
                 } else if output.is_ok() {
@@ -2010,7 +2162,9 @@ fn run_discovered_setup_with_listener(
         run.output
     })?;
     let journal_entry = effects.journal().operation(&operation);
-    if already || observe || changed || revoked || port_mode != 0 {
+    if matches!(integrated_mode, 13..=16) {
+        assert_eq!(journal_entry.ok_or("missing cancelled setup")?.state, fss_core::EffectState::Cancelled);
+    } else if already || observe || changed || revoked || port_mode != 0 {
         assert!(journal_entry.is_none());
     } else {
         assert_eq!(
@@ -2019,6 +2173,43 @@ fn run_discovered_setup_with_listener(
         );
     }
     Ok(())
+}
+
+#[test]
+fn expired_setup_preparation_cancels_without_handoff() -> Test {
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        None,
+        0,
+        false,
+        13,
+    )
+}
+
+#[test]
+fn expired_setup_retains_deadline_evidence_before_cancellation() -> Test {
+    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, None, 0, false, 14)
+}
+
+#[test]
+fn failed_deadline_evidence_storage_does_not_cancel_setup() -> Test {
+    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, None, 0, false, 15)
+}
+
+/// Uses an isolated private interface for a synthetic camera and controller.
+#[test]
+#[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on an isolated test worker"]
+fn fleet_retries_only_after_retained_deadline_cancellation() -> Test {
+    let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(ip.is_private() || ip.is_link_local()) || ip == Ipv4Addr::new(192, 168, 1, 10) {
+        return Err("test controller interface is not suitable".into());
+    }
+    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 0, false, 16)
 }
 
 #[test]
@@ -2428,7 +2619,7 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             let port_claim = Arc::clone(&controller_port);
                             let peer = std::thread::spawn(move || http_fixture(
                                 address, false, false, false, Framing::ContentLength, false, false,
-                                true, destination, None, Some((port_claim, 0)), false, 0,
+                                true, destination, None, Some((port_claim, 0)), false, 0, false,
                             ));
                             let (socket, _) = timeout(cx.now(), Duration::from_secs(5), http_listener.accept()).await??;
                             let allowed = Rc::new(Cell::new(false));
@@ -2489,7 +2680,7 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                         let port_claim = Arc::clone(&controller_port);
                         let peer = std::thread::spawn(move || http_fixture(
                             addr, false, false, false, Framing::ContentLength, false, false,
-                            true, destination, None, Some((port_claim, 0)), true, 0,
+                            true, destination, None, Some((port_claim, 0)), true, 0, false,
                         ));
                         let (socket, _) = timeout(cx.now(), Duration::from_secs(5), http_listener.accept()).await??;
                         let allowed = Rc::new(Cell::new(index == 0));

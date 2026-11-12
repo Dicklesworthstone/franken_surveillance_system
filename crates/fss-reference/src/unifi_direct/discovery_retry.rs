@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Task-bound, bounded rearming of setup failures known to precede an effect.
+//! Task-bound, bounded rearming of setup failures known to be safe to retry.
 //!
 //! Rearming makes an enrolled camera eligible for a new owner-authorized
 //! setup; it does not acquire credentials, create a transport or send a write.
@@ -80,7 +80,7 @@ impl std::error::Error for Error {}
 #[must_use]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
-    /// A current pre-effect failure was rearmed against the latest scan.
+    /// A current retryable failure was rearmed against the latest scan.
     Rearmed { index: usize, state: fleet::State },
     /// The original failed operation is no longer the current retry candidate.
     Stale { index: usize },
@@ -160,8 +160,8 @@ impl<'fleet, 'report, 'scope, 'task> Queue<'fleet, 'report, 'scope, 'task> {
         self.pending.is_empty()
     }
 
-    /// Schedule the exact latest completed pre-effect failure. The operation
-    /// is checked again on expiry so a stale timer cannot rearm a later attempt.
+    /// Schedule the latest completed pre-effect or verified-cancelled failure.
+    /// The operation is checked again on expiry so a stale timer cannot rearm a later attempt.
     pub fn schedule(&mut self, index: usize) -> Result<(), Error> {
         self.check()?;
         if self.pending.iter().any(|entry| entry.index == index) {
@@ -190,7 +190,7 @@ impl<'fleet, 'report, 'scope, 'task> Queue<'fleet, 'report, 'scope, 'task> {
         Ok(())
     }
 
-    /// Schedule only if the current pre-effect failure belongs to this exact
+    /// Schedule only if the current retryable failure belongs to this exact
     /// completed operation. A different or stale completion is not eligible.
     pub fn schedule_for(&mut self, index: usize, operation: &OperationId) -> Result<(), Error> {
         if self
@@ -210,7 +210,7 @@ impl<'fleet, 'report, 'scope, 'task> Queue<'fleet, 'report, 'scope, 'task> {
         self.schedule(index)
     }
 
-    /// Automatically schedule only an exact pre-effect transient failure.
+    /// Automatically schedule only an exact eligible transient failure.
     /// Refusals remain available to an explicitly requested manual schedule;
     /// neither scheduling path authorizes or performs a camera effect.
     pub fn schedule_automatic_for(

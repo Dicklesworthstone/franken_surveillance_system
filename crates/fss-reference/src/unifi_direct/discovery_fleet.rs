@@ -176,7 +176,7 @@ pub enum Error {
     DuplicateOperation,
     /// This camera has exhausted its bounded retained operation history.
     AttemptCapacity,
-    /// The previous attempt was not proven to have stopped before preparation.
+    /// The previous attempt is not proven safe for a fresh setup.
     RetryNotSafe,
     /// A bounded allocation could not be made.
     Allocation,
@@ -190,6 +190,21 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+/// Refusal while retaining evidence and cancelling a completed setup attempt.
+#[derive(Debug)]
+pub enum DeadlineSettlementError {
+    /// This is not the current completed pre-commit deadline attempt.
+    NotEligible,
+    /// Evidence retention or effect cancellation did not complete.
+    Cancellation(setup::DeadlineCancellationError),
+}
+impl fmt::Display for DeadlineSettlementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi setup deadline settlement: {self:?}")
+    }
+}
+impl std::error::Error for DeadlineSettlementError {}
 
 /// A refused refresh returns the exact supplied discovery window.
 #[must_use = "retain or explicitly discard the refused discovery window"]
@@ -220,6 +235,8 @@ struct Record {
     operations: [OnceCell<OperationId>; MAX_SETUP_ATTEMPTS],
     operation_count: Cell<usize>,
     retry_before_effect: Cell<bool>,
+    retry_after_cancel: Cell<bool>,
+    deadline_cancel_candidate: Cell<bool>,
     retry_automatically: Cell<bool>,
     route_ready: Cell<bool>,
     reported_video: Cell<Option<(VideoChannel, camera_api::VideoProfile)>>,
@@ -676,6 +693,8 @@ impl<'a> Fleet<'a> {
                 operations: std::array::from_fn(|_| OnceCell::new()),
                 operation_count: Cell::new(0),
                 retry_before_effect: Cell::new(false),
+                retry_after_cancel: Cell::new(false),
+                deadline_cancel_candidate: Cell::new(false),
                 retry_automatically: Cell::new(false),
                 route_ready: Cell::new(false),
                 reported_video: Cell::new(None),
@@ -843,6 +862,8 @@ impl<'a> Fleet<'a> {
             operations: std::array::from_fn(|_| OnceCell::new()),
             operation_count: Cell::new(0),
             retry_before_effect: Cell::new(false),
+            retry_after_cancel: Cell::new(false),
+            deadline_cancel_candidate: Cell::new(false),
             retry_automatically: Cell::new(false),
             route_ready: Cell::new(false),
             reported_video: Cell::new(None),
@@ -921,11 +942,11 @@ impl<'a> Fleet<'a> {
             .and_then(|record| record.operations().last())
     }
 
-    // A schedule can only refer to the exact returned pre-effect failure.
+    // A schedule refers to the exact returned pre-effect or cancelled attempt.
     // The marker and operation are rechecked again when its timer expires.
     pub(super) fn retry_candidate(&self, index: usize) -> Option<(&OperationId, usize)> {
         let record = self.records.get(index)?;
-        if !record.retry_before_effect.get()
+        if !(record.retry_before_effect.get() || record.retry_after_cancel.get())
             || !matches!(record.state.get(), State::Finished { .. })
         {
             return None;
@@ -951,7 +972,7 @@ impl<'a> Fleet<'a> {
         {
             return Err(Error::RetryNotSafe);
         }
-        self.rearm_before_effect(index)
+        self.rearm_retryable(index)
     }
 
     /// Make a completed setup failure eligible for a fresh attempt only when
@@ -962,8 +983,16 @@ impl<'a> Fleet<'a> {
     /// from the earlier attempt may still exist. This method sends no I/O.
     pub fn rearm_before_effect(&self, index: usize) -> Result<State, Error> {
         let record = self.records.get(index).ok_or(Error::NotReady)?;
+        if !record.retry_before_effect.get() {
+            return Err(Error::RetryNotSafe);
+        }
+        self.rearm_retryable(index)
+    }
+
+    fn rearm_retryable(&self, index: usize) -> Result<State, Error> {
+        let record = self.records.get(index).ok_or(Error::NotReady)?;
         if !matches!(record.state.get(), State::Finished { .. })
-            || !record.retry_before_effect.get()
+            || !(record.retry_before_effect.get() || record.retry_after_cancel.get())
             || record.setup_live.get()
             || record.active.get()
             || record.waiting.get()
@@ -985,11 +1014,49 @@ impl<'a> Fleet<'a> {
         *record.report.borrow_mut() = report;
         record.state.set(state);
         record.retry_before_effect.set(false);
+        record.retry_after_cancel.set(false);
+        record.deadline_cancel_candidate.set(false);
         record.retry_automatically.set(false);
         record.reported_video.set(None);
         record.route_source.set(None);
         record.changed.notify_waiters();
         Ok(state)
+    }
+
+    /// Retain a completed pre-commit timeout and cancel its exact preparation.
+    /// A successful result makes this attempt eligible for the existing bounded
+    /// automatic retry queue; it does not create a transport or send a command.
+    /// The caller retains the spool and remains responsible for custody,
+    /// session retirement and authorization of any later setup.
+    pub fn settle_expired_setup(
+        &self,
+        index: usize,
+        owner: &mut setup::Owner<'_, '_, '_>,
+        trace: &mut setup::Trace,
+        spool: &mut fss_object::StagingSpool,
+        storage_resource: &str,
+    ) -> Result<ContentDigest, DeadlineSettlementError> {
+        let record = self
+            .records
+            .get(index)
+            .ok_or(DeadlineSettlementError::NotEligible)?;
+        if !matches!(record.state.get(), State::Finished { .. })
+            || record.setup_live.get()
+            || !record.deadline_cancel_candidate.get()
+            || record.operations().last() != trace.operation()
+            || trace.dispatch_started()
+            || !trace.has_precommit_deadline()
+        {
+            return Err(DeadlineSettlementError::NotEligible);
+        }
+        let digest = owner
+            .retain_and_cancel_deadline(trace, spool, storage_resource)
+            .map_err(DeadlineSettlementError::Cancellation)?;
+        record.deadline_cancel_candidate.set(false);
+        record.retry_after_cancel.set(true);
+        record.retry_automatically.set(true);
+        record.changed.notify_waiters();
+        Ok(digest)
     }
     /// Indexes of claims not matched to an inventory MAC, including claims
     /// without a usable MAC. These remain untrusted and are not setup targets.
@@ -1176,6 +1243,8 @@ impl<'a> Fleet<'a> {
         };
         record.reserve_operation(operation)?;
         record.retry_before_effect.set(false);
+        record.retry_after_cancel.set(false);
+        record.deadline_cancel_candidate.set(false);
         record.retry_automatically.set(false);
         record.reported_video.set(None);
         record.state.set(State::InFlight { candidate });
@@ -1299,6 +1368,12 @@ impl<'a> Fleet<'a> {
         // `InFlight`; a trace that entered preparation remains fenced even if
         // preparation subsequently failed or a permit was later dropped.
         let pre_effect_failure = result.is_err() && trace.operation().is_none();
+        record.deadline_cancel_candidate.set(
+            matches!(&result, Err(setup::Error::Deadline))
+                && trace.operation() == Some(operation)
+                && !trace.dispatch_started()
+                && trace.has_precommit_deadline(),
+        );
         record.retry_before_effect.set(pre_effect_failure);
         record.retry_automatically.set(
             pre_effect_failure && result.as_ref().err().is_some_and(transient_setup_error),
