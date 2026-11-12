@@ -13207,3 +13207,35 @@ because an automatic command guard rejected its cleanup; it must not be
 published. The retained result demonstrates native Rust processing of live
 full-resolution media through Scrypted, not native camera control, continuous
 high-resolution recording, restart recovery, or 30-day retention.
+
+### Live fleet enrollment without stopping existing owners (2026-11-12 UTC)
+
+Fleet inventory now allocates its bounded 128 stable record slots before the
+fleet is published. An explicitly supplied owner enrollment can be appended
+through a shared fleet reference while an existing scanner, router, setup or
+pending-route owner retains its borrow. Existing record addresses, operations,
+and snapshots remain stable; a new snapshot reflects the newly matched claim.
+Duplicate or full-capacity enrollment is refused before changing the snapshot.
+Discovery claims are still unauthenticated, and this does not create a
+credential, authenticate a transport, authorize setup, or start a supervisor.
+
+Strict-remote ts1 job `30105869848936669` passed 10 fleet unit tests,
+including the in-flight setup and 128-slot capacity cases. Job
+`30105869848936670` passed the loopback scanner/router test (1/1), including
+appending an enrollment while the pump holds both owners. Both used base
+`5d56f2cb6968c9c47f697ec26c804909e6f44d15` and overlay
+`acae58922c8ec38fb27fe0bf814c3d57814ae0a53ab8bb79ecdcf3572b29ebac`.
+The shared checkout advanced and incorporated the changes in `cc9a7fc1`.
+Job `30105869848936671` then passed the existing periodic-scanner
+park/resume and cancellation regression (1/1) on clean base
+`def6b3de6b2c8fa27ff954c20a3b1e3396f01b04`. A preceding test submission
+with the obsolete base and an empty overlay was refused before Cargo with
+`RCH-E504`; no test ran in that submission. All three completed test jobs
+reported remote success, acknowledged their terminal results, and released
+their source and pair custody.
+
+The tests use synthetic cameras and loopback transport. Automatic owner
+credential resolution, authenticated direct-camera setup, production TLS,
+continuous native recording and retention remain open. No physical camera
+effect was attempted in this change. The existing trj recorder and two timers
+were active with zero reported service restarts at a later observation.
