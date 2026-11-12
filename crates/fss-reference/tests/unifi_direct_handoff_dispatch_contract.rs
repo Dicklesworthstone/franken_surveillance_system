@@ -1598,6 +1598,14 @@ fn run_discovered_setup_with_listener(
                                         }
                                         _ => return Err("setup failure was not automatically scheduled".into()),
                                     }
+                                    let unrelated = OperationId::parse("operation:unrelated-completion")?;
+                                    work.insert(0, Box::pin(std::future::ready(SetupCompletion {
+                                        operation: unrelated,
+                                        outcome: Err(FleetError::Setup(setup::Error::Denied)),
+                                    }))).map_err(|_| "unrelated work")?;
+                                    assert!(matches!(pump.next_coordinated(&mut work, &mut retries).await?,
+                                        Coordinated::Setup { index: 0, retry: RetryDisposition::NotEligible, .. }));
+                                    assert_eq!(retries.len(), 1);
                                     let pending = work.into_pending();
                                     assert_eq!(pending.len(), 1);
                                     assert_eq!(pending[0].0, 1);

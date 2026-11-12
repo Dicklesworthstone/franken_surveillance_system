@@ -13294,3 +13294,35 @@ custody. No physical camera effect was attempted. The existing trj recorder and
 two timers remained active with zero reported service restarts at a later check.
 Direct ownership, unattended onboarding, production TLS, continuous native
 recording and 30-day retention remain unverified.
+
+### Coordinated setup completion and retry admission (2026-11-12 UTC)
+
+The discovery pump can now drive bounded camera setup futures, retry timers,
+discovery and controller routing together. When a setup returns a failure, it
+automatically schedules a retry only if the operation matches the fleet's
+current proven pre-effect failure. The event retains the original outcome and
+reports whether timer admission succeeded or was refused. An existing timer
+for a different operation is not silently replaced. Setup work, timer waits and
+scan/route owners remain caller-owned across a dropped wait; the loop alternates
+its preference so ready setup work cannot indefinitely starve pump events.
+
+Strict-remote ts1 job `30105869848936705` passed 21 selected discovery and
+fleet unit tests, and job `30105869848936711` passed the selected synthetic
+camera HTTP/controller fixture (1 test, three scenarios). The fixture observed
+automatic timer admission after an actual simulated pre-effect failure,
+retained another pending camera future, refused an unrelated completion,
+preserved a dropped timer wait, and completed a fresh simulated setup after
+rearming. The jobs used base `9b5bfd56e5cd441d44c02a0d3b516663ad14fb37`;
+their overlays were respectively
+`cbd8beba336d9e1e39ce36f4bf9ee821e399c353888b08cdb33490c0af79f05c` and
+`5a7b3b66459e0a3cbe0b9d7ae26c03426d71b1ba788d4a17a0de36bf06d6672c`.
+Both jobs exited zero, acknowledged their terminal results and released source
+and pair custody. The shared checkout incorporated the implementation in
+`0ca27034`; the final additional fixture assertion remains a working-tree edit.
+
+The caller still resolves owner credentials and creates a fresh transport and
+setup future when a retry becomes ready. These tests do not prove unattended
+setup, authenticated physical-camera control, production TLS or continuous
+native recording. No physical camera effect was attempted; the existing trj
+recorder and its two timers were active with zero reported service restarts at
+the later check.
