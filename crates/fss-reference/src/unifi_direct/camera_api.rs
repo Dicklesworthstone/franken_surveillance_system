@@ -7,7 +7,7 @@
 //! and account for I/O. A written request only proves local dispatch. An
 //! interrupted write is fenced; the caller must reconcile the remote session.
 
-use super::{handoff, metered::MeteredIo};
+use super::{VideoChannel, handoff, metered::MeteredIo};
 use asupersync::{
     Cx,
     http::h1::Response,
@@ -222,6 +222,113 @@ pub struct VideoProfile {
     pub height: VideoMetric,
     /// Reported maximum or configured frames per second.
     pub fps: VideoMetric,
+}
+
+/// Caller-supplied limits for selecting among camera-reported video profiles.
+/// These do not grant authority to change settings or prove codec support.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoProfileLimits {
+    /// Largest admitted reported width.
+    pub max_width: u32,
+    /// Largest admitted reported height.
+    pub max_height: u32,
+    /// Smallest admitted reported frame rate.
+    pub min_fps: u32,
+    /// Largest admitted reported frame rate.
+    pub max_fps: u32,
+    /// Largest admitted width × height × fps, before any decoder work.
+    pub max_pixels_per_second: u64,
+}
+
+/// Why one reported video profile did or did not meet the caller's limits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoProfileDisposition {
+    /// All required values were reported and satisfy the limits.
+    Eligible,
+    /// At least one required value was not reported.
+    Missing,
+    /// At least one required value was unsupported or invalid.
+    Unsupported,
+    /// Reported dimensions or rate fall outside the caller's limits.
+    OutsideLimits,
+}
+
+/// The best eligible camera claim and the disposition of each video track.
+/// Even an eligible claim does not establish codec, delivery, freshness,
+/// camera identity, capture time, or permission to start a stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoProfileSelection {
+    /// Selected channel and its untrusted profile claim, if any.
+    pub selected: Option<(VideoChannel, VideoProfile)>,
+    /// Classification in video1, video2, video3 order.
+    pub dispositions: [VideoProfileDisposition; 3],
+}
+
+/// Select the largest eligible reported image, breaking equal-area ties by
+/// frame rate and then by channel order. Unknown tracks stay visible in the
+/// result and may be better than the selected claim. This is a pure planning
+/// helper; the caller must separately validate stream behavior and authority.
+pub fn select_reported_video_profile(
+    profiles: [VideoProfile; 3],
+    limits: VideoProfileLimits,
+) -> Result<VideoProfileSelection, Error> {
+    use VideoMetric::{NotReported, Reported, Unsupported};
+    use VideoProfileDisposition::{Eligible, Missing, OutsideLimits};
+    if limits.max_width == 0
+        || limits.max_height == 0
+        || limits.min_fps == 0
+        || limits.max_fps < limits.min_fps
+        || limits.max_pixels_per_second == 0
+    {
+        return Err(Error::Configuration);
+    }
+    let channels = [
+        VideoChannel::Video1,
+        VideoChannel::Video2,
+        VideoChannel::Video3,
+    ];
+    let mut dispositions = [Missing; 3];
+    let mut selected = None;
+    let mut best = (0u64, 0u32);
+    for (index, profile) in profiles.into_iter().enumerate() {
+        let values = [profile.width, profile.height, profile.fps];
+        if values
+            .iter()
+            .any(|v| matches!(v, Unsupported | Reported(0)))
+        {
+            dispositions[index] = VideoProfileDisposition::Unsupported;
+            continue;
+        }
+        if values.contains(&NotReported) {
+            continue;
+        }
+        let [Reported(width), Reported(height), Reported(fps)] = values else {
+            dispositions[index] = VideoProfileDisposition::Unsupported;
+            continue;
+        };
+        let pixels = u64::from(width) * u64::from(height);
+        if width > limits.max_width
+            || height > limits.max_height
+            || fps < limits.min_fps
+            || fps > limits.max_fps
+            || pixels
+                .checked_mul(u64::from(fps))
+                .is_none_or(|rate| rate > limits.max_pixels_per_second)
+        {
+            dispositions[index] = OutsideLimits;
+            continue;
+        }
+        dispositions[index] = Eligible;
+        let rank = (pixels, fps);
+        if selected.is_none() || rank > best {
+            selected = Some((channels[index], profile));
+            best = rank;
+        }
+    }
+    Ok(VideoProfileSelection {
+        selected,
+        dispositions,
+    })
 }
 
 /// One sanitized settings observation and, when representable, its local binding.

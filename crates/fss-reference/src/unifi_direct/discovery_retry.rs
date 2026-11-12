@@ -210,6 +210,24 @@ impl<'fleet, 'report, 'scope, 'task> Queue<'fleet, 'report, 'scope, 'task> {
         self.schedule(index)
     }
 
+    /// Automatically schedule only an exact pre-effect transient failure.
+    /// Refusals remain available to an explicitly requested manual schedule;
+    /// neither scheduling path authorizes or performs a camera effect.
+    pub fn schedule_automatic_for(
+        &mut self,
+        index: usize,
+        operation: &OperationId,
+    ) -> Result<(), Error> {
+        if self
+            .fleet
+            .automatic_retry_candidate(index)
+            .is_none_or(|(current, _)| current != operation)
+        {
+            return Err(Error::NotEligible);
+        }
+        self.schedule_for(index, operation)
+    }
+
     /// Wait for and revalidate one retry. A pending route delays rearming;
     /// cancellation leaves all pending entries with this queue's owner.
     pub async fn next(&mut self) -> Result<Event, Error> {

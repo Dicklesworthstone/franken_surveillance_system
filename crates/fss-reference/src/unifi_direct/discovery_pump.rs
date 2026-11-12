@@ -366,6 +366,12 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
         self.driver
     }
 
+    /// Check that a retry queue uses this pump's exact fleet, runtime and clock.
+    /// This makes no retry eligible and does not poll either owner.
+    pub fn accepts_retries(&self, retries: &retry::Queue<'_, '_, 'scope, 'task>) -> bool {
+        retries.matches_scanner(self.scanner)
+    }
+
     /// Do not start another scan; an already started scan remains owned.
     pub fn request_scan_stop(&mut self) {
         self.start_scans = false;
@@ -482,7 +488,7 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
             Selected::Retry(event) => Coordinated::Retry(event),
             Selected::Setup(index, completion) => {
                 let disposition = if matches!(&completion.outcome, Err(fleet::Error::Setup(_))) {
-                    match retries.schedule_for(index, &completion.operation) {
+                    match retries.schedule_automatic_for(index, &completion.operation) {
                         Ok(()) => RetryDisposition::Scheduled,
                         Err(retry::Error::NotEligible) => RetryDisposition::NotEligible,
                         Err(retry::Error::Duplicate) => RetryDisposition::AlreadyScheduled,

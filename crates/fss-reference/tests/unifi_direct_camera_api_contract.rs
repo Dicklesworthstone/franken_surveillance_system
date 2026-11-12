@@ -2,14 +2,176 @@
 //! Camera-local request sequencing, bounded inputs and refusal contracts.
 use asupersync::http::h1::Response;
 use fss_core::ContentDigest;
+use fss_reference::unifi_direct::VideoChannel;
 use fss_reference::unifi_direct::camera_api::{
     ControllerAddress, ControllerPort, Error, Phase, Session, StatusShape, VideoDestinationShape,
-    VideoMetric, VideoProfile, WriteOutcome,
+    VideoMetric, VideoProfile, VideoProfileDisposition, VideoProfileLimits, WriteOutcome,
+    select_reported_video_profile,
 };
 use std::{error::Error as StdError, net::Ipv4Addr};
 
 type Test = Result<(), Box<dyn StdError>>;
 const CREDENTIAL: &[u8] = br#"{"username":"test-user-canary","password":"test-password-canary"}"#;
+
+#[test]
+fn setup_profile_preflight_configuration_is_single_use_and_bounded() -> Test {
+    use fss_reference::unifi_direct::setup::{AcceptTrace, Error as SetupError};
+    let valid = VideoProfileLimits {
+        max_width: 4096,
+        max_height: 2304,
+        min_fps: 1,
+        max_fps: 60,
+        max_pixels_per_second: 4096 * 2304 * 60,
+    };
+    let mut trace = AcceptTrace::default();
+    assert!(matches!(
+        trace.require_reported_video(VideoProfileLimits {
+            max_width: 0,
+            ..valid
+        }),
+        Err(SetupError::Configuration)
+    ));
+    assert!(trace.preflight_video().is_none());
+    trace.require_reported_video(valid)?;
+    assert!(matches!(
+        trace.require_reported_video(valid),
+        Err(SetupError::Configuration)
+    ));
+    assert!(trace.preflight_video().is_none());
+    assert!(!trace.accept_started());
+    assert!(!trace.setup_mut().dispatch_started());
+    let mut fleet_trace = fss_reference::unifi_direct::setup::Trace::default();
+    assert!(matches!(
+        fleet_trace.require_reported_video(VideoProfileLimits {
+            max_fps: 0,
+            ..valid
+        }),
+        Err(SetupError::Configuration)
+    ));
+    fleet_trace.require_reported_video(valid)?;
+    assert!(matches!(
+        fleet_trace.require_reported_video(valid),
+        Err(SetupError::Configuration)
+    ));
+    assert!(fleet_trace.preflight_video().is_none());
+    Ok(())
+}
+
+#[test]
+fn reported_video_selection_respects_bounds_and_preserves_uncertainty() -> Test {
+    use VideoMetric::{NotReported as N, Reported as R, Unsupported as U};
+    use VideoProfileDisposition::{Eligible, Missing, OutsideLimits, Unsupported};
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut session)?;
+    status(&mut session)?;
+    let request = session.prepare_settings()?;
+    session.finish_write(request, WriteOutcome::Written)?;
+    let observation = session.accept_settings(Response::new(200, "OK", br#"{"av":{"video":{"video1":{"width":2688,"height":1512,"fps":30},"video2":{"width":1280,"height":720,"fps":30},"video3":{"width":640,"height":360,"fps":15}}}}"#.to_vec()))?;
+    let limits = VideoProfileLimits {
+        max_width: 2688,
+        max_height: 1512,
+        min_fps: 1,
+        max_fps: 30,
+        max_pixels_per_second: 2688 * 1512 * 30,
+    };
+    let choice = select_reported_video_profile(observation.video_profiles, limits)?;
+    assert_eq!(
+        choice.selected,
+        Some((VideoChannel::Video1, observation.video_profiles[0]))
+    );
+    let setup_outcome = fss_reference::unifi_direct::setup::Outcome::AlreadyAssociated {
+        status: StatusShape {
+            board: true,
+            firmware: true,
+            controller: true,
+            controller_port: ControllerPort::Reported(7442),
+        },
+        observation,
+    };
+    assert_eq!(setup_outcome.select_reported_video(limits)?, Some(choice));
+    assert_eq!(choice.dispositions, [Eligible; 3]);
+    let choice = select_reported_video_profile(
+        observation.video_profiles,
+        VideoProfileLimits {
+            max_width: 1280,
+            ..limits
+        },
+    )?;
+    assert_eq!(choice.selected.unwrap().0, VideoChannel::Video2);
+    assert_eq!(choice.dispositions, [OutsideLimits, Eligible, Eligible]);
+    let choice = select_reported_video_profile(
+        observation.video_profiles,
+        VideoProfileLimits {
+            max_pixels_per_second: 640 * 360 * 15,
+            ..limits
+        },
+    )?;
+    assert_eq!(choice.selected.unwrap().0, VideoChannel::Video3);
+    assert_eq!(
+        choice.dispositions,
+        [OutsideLimits, OutsideLimits, Eligible]
+    );
+    let uncertain = [
+        VideoProfile {
+            width: N,
+            height: R(1512),
+            fps: R(30),
+        },
+        VideoProfile {
+            width: U,
+            height: N,
+            fps: R(30),
+        },
+        observation.video_profiles[2],
+    ];
+    let choice = select_reported_video_profile(uncertain, limits)?;
+    assert_eq!(choice.selected.unwrap().0, VideoChannel::Video3);
+    assert_eq!(choice.dispositions, [Missing, Unsupported, Eligible]);
+    let unknown = [VideoProfile {
+        width: N,
+        height: N,
+        fps: N,
+    }; 3];
+    assert_eq!(
+        select_reported_video_profile(unknown, limits)?.selected,
+        None
+    );
+    let tied = [observation.video_profiles[1]; 3];
+    assert_eq!(
+        select_reported_video_profile(tied, limits)?
+            .selected
+            .unwrap()
+            .0,
+        VideoChannel::Video1
+    );
+    let enormous = [VideoProfile {
+        width: R(u32::MAX),
+        height: R(u32::MAX),
+        fps: R(u32::MAX),
+    }; 3];
+    let unrestricted = VideoProfileLimits {
+        max_width: u32::MAX,
+        max_height: u32::MAX,
+        min_fps: 1,
+        max_fps: u32::MAX,
+        max_pixels_per_second: u64::MAX,
+    };
+    assert_eq!(
+        select_reported_video_profile(enormous, unrestricted)?.dispositions,
+        [OutsideLimits; 3]
+    );
+    assert_eq!(
+        select_reported_video_profile(
+            tied,
+            VideoProfileLimits {
+                min_fps: 0,
+                ..limits
+            }
+        ),
+        Err(Error::Configuration)
+    );
+    Ok(())
+}
 
 #[test]
 fn settings_report_video_profiles_without_inventing_missing_or_malformed_values() -> Test {

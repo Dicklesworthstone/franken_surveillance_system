@@ -10,6 +10,7 @@
 use super::{Report, SelectionError};
 use crate::unifi_direct::{camera_http, controller_listener, handoff, setup};
 use asupersync::{
+    Cx,
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::Notify,
@@ -30,6 +31,25 @@ use std::{
     time::Duration,
 };
 
+// A pre-effect outcome can be safe to retry without being useful or safe to
+// retry automatically. In particular, do not repeat rejected credentials,
+// denied authority, malformed responses or a missing video profile on a timer.
+fn transient_setup_error(error: &setup::Error) -> bool {
+    match error {
+        setup::Error::Deadline | setup::Error::Camera(camera_http::Error::Deadline) => true,
+        setup::Error::Camera(camera_http::Error::Io(kind)) => matches!(
+            kind,
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::NotConnected
+        ),
+        _ => false,
+    }
+}
+
 pub(super) const MAX_INVENTORY: usize = 128;
 const MAX_SETUP_ATTEMPTS: usize = 16;
 
@@ -43,7 +63,10 @@ fn valid_digest(value: ContentDigest) -> bool {
 // peer authentication or as a settlement of a prior setup effect.
 fn source_claim(report: &Report, mac: [u8; 6]) -> Option<Ipv4Addr> {
     let index = report.select_mac_claim(mac).ok()?;
-    report.cameras.get(index).map(|camera| *camera.source().ip())
+    report
+        .cameras
+        .get(index)
+        .map(|camera| *camera.source().ip())
 }
 
 /// One caller-supplied camera binding, with opaque credential and pin handles.
@@ -195,6 +218,7 @@ struct Record {
     operations: [OnceCell<OperationId>; MAX_SETUP_ATTEMPTS],
     operation_count: Cell<usize>,
     retry_before_effect: Cell<bool>,
+    retry_automatically: Cell<bool>,
     route_ready: Cell<bool>,
     route_source: Cell<Option<Ipv4Addr>>,
     active: Rc<Cell<bool>>,
@@ -504,12 +528,14 @@ impl<'fleet, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, 'policy: 'fleet>
         self.pending.len()
     }
 
+    /// The exact caller-supplied fleet retained by this router.
+    pub fn fleet(&self) -> &'fleet Fleet<'report> {
+        self.fleet
+    }
+
     /// Check the exact fleet and task clock of a periodic scanner. This
     /// proves only local owner binding, not authorization or peer identity.
-    pub fn matches_scanner(
-        &self,
-        scanner: &super::scan::Scanner<'_, '_, 'scope, 'task>,
-    ) -> bool {
+    pub fn matches_scanner(&self, scanner: &super::scan::Scanner<'_, '_, 'scope, 'task>) -> bool {
         Rc::ptr_eq(&self.fleet.identity, &scanner.fleet_identity())
             && self.listener.matches_clock(&scanner.clock())
     }
@@ -601,6 +627,7 @@ pub struct Fleet<'a> {
     latest: RefCell<Rc<DiscoverySnapshot>>,
     initial_report: PhantomData<&'a Report>,
     records: Records,
+    enrollment_changed: Notify,
 }
 
 impl<'a> Fleet<'a> {
@@ -646,6 +673,7 @@ impl<'a> Fleet<'a> {
                 operations: std::array::from_fn(|_| OnceCell::new()),
                 operation_count: Cell::new(0),
                 retry_before_effect: Cell::new(false),
+                retry_automatically: Cell::new(false),
                 route_ready: Cell::new(false),
                 route_source: Cell::new(None),
                 active: Rc::new(Cell::new(false)),
@@ -674,6 +702,7 @@ impl<'a> Fleet<'a> {
             })),
             initial_report: PhantomData,
             records,
+            enrollment_changed: Notify::new(),
         })
     }
 
@@ -750,7 +779,9 @@ impl<'a> Fleet<'a> {
             } else if matches!(record.state.get(), State::Finished { .. })
                 && record.route_ready.get()
             {
-                record.route_source.set(source_claim(&report, record.enrollment.mac));
+                record
+                    .route_source
+                    .set(source_claim(&report, record.enrollment.mac));
             }
         }
         *self.latest.borrow_mut() = Rc::new(DiscoverySnapshot {
@@ -808,6 +839,7 @@ impl<'a> Fleet<'a> {
             operations: std::array::from_fn(|_| OnceCell::new()),
             operation_count: Cell::new(0),
             retry_before_effect: Cell::new(false),
+            retry_automatically: Cell::new(false),
             route_ready: Cell::new(false),
             route_source: Cell::new(None),
             active: Rc::new(Cell::new(false)),
@@ -816,7 +848,37 @@ impl<'a> Fleet<'a> {
             changed: Notify::new(),
         })?;
         *self.latest.borrow_mut() = snapshot;
+        self.enrollment_changed.notify_waiters();
         Ok(index)
+    }
+
+    /// Wait until an owner has appended an enrollment after `observed_len`.
+    /// This notification conveys no device identity or setup authority.
+    pub async fn wait_for_enrollment_after(
+        &self,
+        cx: &Cx,
+        observed_len: usize,
+    ) -> std::io::Result<()> {
+        if observed_len > MAX_INVENTORY {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        let mut wait = std::pin::pin!(
+            self.enrollment_changed
+                .wait_until(|| self.len() > observed_len)
+        );
+        poll_fn(|context| {
+            if cx.checkpoint().is_err() {
+                return Poll::Ready(Err(std::io::ErrorKind::Interrupted.into()));
+            }
+            match wait.as_mut().poll(context) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(()) => Poll::Ready(
+                    cx.checkpoint()
+                        .map_err(|_| std::io::ErrorKind::Interrupted.into()),
+                ),
+            }
+        })
+        .await
     }
 
     /// A stable snapshot of the latest completed report and its claim indexes.
@@ -866,6 +928,13 @@ impl<'a> Fleet<'a> {
         Some((record.operations().last()?, record.operation_count.get()))
     }
 
+    // An automatic timer needs both the exact pre-effect attempt and an
+    // explicitly classified transient error. Manual rearm remains separate.
+    pub(super) fn automatic_retry_candidate(&self, index: usize) -> Option<(&OperationId, usize)> {
+        self.records.get(index)?.retry_automatically.get().then_some(())?;
+        self.retry_candidate(index)
+    }
+
     pub(super) fn rearm_matching(
         &self,
         index: usize,
@@ -911,6 +980,7 @@ impl<'a> Fleet<'a> {
         *record.report.borrow_mut() = report;
         record.state.set(state);
         record.retry_before_effect.set(false);
+        record.retry_automatically.set(false);
         record.route_source.set(None);
         record.changed.notify_waiters();
         Ok(state)
@@ -1085,6 +1155,7 @@ impl<'a> Fleet<'a> {
         };
         record.reserve_operation(operation)?;
         record.retry_before_effect.set(false);
+        record.retry_automatically.set(false);
         record.state.set(State::InFlight { candidate });
         record.setup_live.set(true);
         let mut lease = SetupLease {
@@ -1205,9 +1276,11 @@ impl<'a> Fleet<'a> {
         // Only this returned attempt can set the marker. Cancellation leaves
         // `InFlight`; a trace that entered preparation remains fenced even if
         // preparation subsequently failed or a permit was later dropped.
-        record
-            .retry_before_effect
-            .set(result.is_err() && trace.operation().is_none());
+        let pre_effect_failure = result.is_err() && trace.operation().is_none();
+        record.retry_before_effect.set(pre_effect_failure);
+        record.retry_automatically.set(
+            pre_effect_failure && result.as_ref().err().is_some_and(transient_setup_error),
+        );
         let route_ready = match &result {
             Ok(setup::Outcome::AlreadyAssociated { .. }) => true,
             Ok(setup::Outcome::Observed {
@@ -1225,7 +1298,9 @@ impl<'a> Fleet<'a> {
                 )
             }
             _ => false,
-        };
+        } && result
+            .as_ref()
+            .is_ok_and(|outcome| trace.reported_video_matches(outcome));
         self.records[index].route_ready.set(route_ready);
         let latest = self.latest.borrow();
         self.records[index].route_source.set(if route_ready {
@@ -1286,6 +1361,78 @@ mod tests {
             out_of_scope: 0,
             stop: Stop::WindowElapsed,
         }
+    }
+
+    #[test]
+    fn automatic_retry_classifies_only_bounded_transient_setup_failures() {
+        use crate::unifi_direct::camera_api;
+        use std::io::ErrorKind;
+        for error in [
+            setup::Error::Deadline,
+            setup::Error::Camera(camera_http::Error::Deadline),
+            setup::Error::Camera(camera_http::Error::Io(ErrorKind::UnexpectedEof)),
+            setup::Error::Camera(camera_http::Error::Io(ErrorKind::ConnectionReset)),
+        ] {
+            assert!(transient_setup_error(&error), "{error:?}");
+        }
+        for error in [
+            setup::Error::Denied,
+            setup::Error::VideoProfileUnavailable,
+            setup::Error::Camera(camera_http::Error::Denied),
+            setup::Error::Camera(camera_http::Error::Camera(camera_api::Error::HttpStatus)),
+            setup::Error::Camera(camera_http::Error::Io(ErrorKind::Interrupted)),
+            setup::Error::Camera(camera_http::Error::Protocol),
+            setup::Error::Effect,
+        ] {
+            assert!(!transient_setup_error(&error), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn enrollment_waiters_observe_append_and_ignore_refusals() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use std::task::Wake;
+        struct Count(AtomicUsize);
+        impl Wake for Count {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let runtime = asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+        let runtime_cx = Cx::current().unwrap();
+        let observed = report(vec![candidate(10, Some(entry(1).mac))]);
+        let fleet = Fleet::new(&observed, &[entry(1)]).unwrap();
+        let count = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut first = std::pin::pin!(fleet.wait_for_enrollment_after(&runtime_cx, 1));
+        let mut second = std::pin::pin!(fleet.wait_for_enrollment_after(&runtime_cx, 1));
+        let mut late = std::pin::pin!(fleet.wait_for_enrollment_after(&runtime_cx, 1));
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        assert_eq!(fleet.add_enrollment(entry(2)), Ok(1));
+        assert_eq!(count.0.load(Ordering::Relaxed), 2);
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        assert!(matches!(second.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        assert!(matches!(late.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        let mut refused = std::pin::pin!(fleet.wait_for_enrollment_after(&runtime_cx, 2));
+        assert!(refused.as_mut().poll(&mut context).is_pending());
+        assert_eq!(fleet.add_enrollment(entry(2)), Err(Error::Configuration));
+        assert_eq!(count.0.load(Ordering::Relaxed), 2);
+        assert!(refused.as_mut().poll(&mut context).is_pending());
+        runtime_cx.set_cancel_requested(true);
+        assert!(matches!(refused.as_mut().poll(&mut context), Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::Interrupted));
+        runtime_cx.set_cancel_requested(false);
+        });
     }
 
     #[test]
@@ -1450,8 +1597,12 @@ mod tests {
         // Synthetic stand-in for the proof set only by a returned pre-effect
         // setup error; the integration fixture tests that boundary itself.
         fleet.records[0].retry_before_effect.set(true);
+        assert!(fleet.automatic_retry_candidate(0).is_none());
+        fleet.records[0].retry_automatically.set(true);
+        assert_eq!(fleet.automatic_retry_candidate(0).map(|(op, _)| op), Some(&first));
         fleet.refresh(report(vec![])).unwrap();
         assert_eq!(fleet.rearm_before_effect(0), Ok(State::NotObserved));
+        assert!(fleet.automatic_retry_candidate(0).is_none());
         assert_eq!(fleet.operation(0), Some(&first));
         fleet
             .refresh(report(vec![candidate(11, Some(one.mac))]))
@@ -1635,31 +1786,57 @@ mod tests {
         let operation = OperationId::parse("operation:route-refresh").unwrap();
         let mut context = Context::from_waker(Waker::noop());
         let mut setup = Box::pin(fleet.drive(0, &operation, std::future::ready(())));
-        assert!(matches!(setup.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            setup.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
         drop(setup);
         let record = &fleet.records[0];
         record.route_ready.set(true);
-        record.route_source.set(source_claim(&record.report.borrow(), one.mac));
+        record
+            .route_source
+            .set(source_claim(&record.report.borrow(), one.mac));
         let initial = Rc::clone(&record.report.borrow());
 
-        fleet.refresh(report(vec![candidate(11, Some(one.mac))])).unwrap();
-        assert_eq!(record.route_source.get(), Some(Ipv4Addr::new(192, 168, 7, 11)));
+        fleet
+            .refresh(report(vec![candidate(11, Some(one.mac))]))
+            .unwrap();
+        assert_eq!(
+            record.route_source.get(),
+            Some(Ipv4Addr::new(192, 168, 7, 11))
+        );
         assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
         assert_eq!(fleet.operation(0), Some(&operation));
         assert!(Rc::ptr_eq(&initial, &record.report.borrow()));
 
         let mut partial = report(vec![candidate(12, Some(one.mac))]);
         partial.stop = Stop::PacketLimit;
-        assert_eq!(fleet.refresh(partial).unwrap_err().reason, Error::IncompleteReport);
-        assert_eq!(record.route_source.get(), Some(Ipv4Addr::new(192, 168, 7, 11)));
+        assert_eq!(
+            fleet.refresh(partial).unwrap_err().reason,
+            Error::IncompleteReport
+        );
+        assert_eq!(
+            record.route_source.get(),
+            Some(Ipv4Addr::new(192, 168, 7, 11))
+        );
 
         fleet.refresh(report(vec![])).unwrap();
         assert_eq!(record.route_source.get(), None);
         assert!(fleet.route_ready(0));
-        fleet.refresh(report(vec![candidate(12, Some(one.mac)), candidate(13, Some(one.mac))])).unwrap();
+        fleet
+            .refresh(report(vec![
+                candidate(12, Some(one.mac)),
+                candidate(13, Some(one.mac)),
+            ]))
+            .unwrap();
         assert_eq!(record.route_source.get(), None);
-        fleet.refresh(report(vec![candidate(14, Some(one.mac))])).unwrap();
-        assert_eq!(record.route_source.get(), Some(Ipv4Addr::new(192, 168, 7, 14)));
+        fleet
+            .refresh(report(vec![candidate(14, Some(one.mac))]))
+            .unwrap();
+        assert_eq!(
+            record.route_source.get(),
+            Some(Ipv4Addr::new(192, 168, 7, 14))
+        );
         assert!(Rc::ptr_eq(&initial, &record.report.borrow()));
         assert_eq!(fleet.operation(0), Some(&operation));
     }

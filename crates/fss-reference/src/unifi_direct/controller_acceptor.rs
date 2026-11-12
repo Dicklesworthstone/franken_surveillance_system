@@ -206,6 +206,17 @@ where
         self.handshakes.len()
     }
 
+    /// Inspect the exact protected transport retained by this acceptor.
+    /// This does not authenticate a peer or grant permission to start work.
+    pub fn transport(&self) -> &P {
+        &self.transport
+    }
+
+    /// The exact owner-supplied fleet routed by this acceptor.
+    pub fn fleet(&self) -> &'fleet super::discovery::fleet::Fleet<'report> {
+        self.router.fleet()
+    }
+
     /// Drop unfinished handshakes and return their router to the caller.
     pub fn into_router(self) -> Router<'fleet, 'report, 'scope, 'task, 'policy> {
         self.router

@@ -80,6 +80,8 @@ pub enum Error {
     Claims,
     /// The two camera settings observations did not agree.
     Changed,
+    /// No complete camera-reported video profile met the preflight limits.
+    VideoProfileUnavailable,
     /// The expected controller socket is absent, mismatched or no longer admitted.
     ControllerUnavailable,
     /// Camera status did not report the listener's nonzero controller port.
@@ -121,12 +123,64 @@ pub enum Indeterminate {
 #[derive(Default, Debug)]
 #[must_use = "reconcile any started setup effect and retain its journal"]
 pub struct Trace {
+    started: bool,
     operation: Option<OperationId>,
     dispatch_started: bool,
     permit: Option<CommittedEffect>,
     response: Option<camera_api::HandoffResponseObservation>,
+    profile: Option<Box<ProfilePreflight>>,
+}
+
+#[derive(Debug)]
+struct ProfilePreflight {
+    limits: camera_api::VideoProfileLimits,
+    selection: Option<camera_api::VideoProfileSelection>,
 }
 impl Trace {
+    /// Require a usable reported profile before preparing a handoff. The
+    /// selection is a camera claim, not authority or proof of video delivery.
+    /// Configure once, before a setup attempt starts; use a fresh trace for a
+    /// separately authorized retry.
+    pub fn require_reported_video(
+        &mut self,
+        limits: camera_api::VideoProfileLimits,
+    ) -> Result<(), Error> {
+        if self.started || self.profile.is_some() {
+            return Err(Error::Configuration);
+        }
+        let missing = camera_api::VideoProfile {
+            width: camera_api::VideoMetric::NotReported,
+            height: camera_api::VideoMetric::NotReported,
+            fps: camera_api::VideoMetric::NotReported,
+        };
+        camera_api::select_reported_video_profile([missing; 3], limits)
+            .map_err(|_| Error::Configuration)?;
+        self.profile = Some(Box::new(ProfilePreflight {
+            limits,
+            selection: None,
+        }));
+        Ok(())
+    }
+    /// Retained pre-effect ranking from the two consistent settings reads.
+    pub fn preflight_video(&self) -> Option<camera_api::VideoProfileSelection> {
+        self.profile.as_ref().and_then(|profile| profile.selection)
+    }
+    /// Whether a returned setup outcome still reports the same chosen profile.
+    /// An unconfigured trace preserves the caller's existing routing policy.
+    /// This comparison does not reconcile a handoff or establish identity.
+    pub fn reported_video_matches(&self, outcome: &Outcome) -> bool {
+        match &self.profile {
+            None => true,
+            Some(profile) => profile.selection.is_some_and(|before| {
+                before.selected.is_some()
+                    && outcome
+                        .select_reported_video(profile.limits)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|after| after.selected == before.selected)
+            }),
+        }
+    }
     /// The operation being prepared or committed, if setup reached that point.
     pub fn operation(&self) -> Option<&OperationId> {
         self.operation.as_ref()
@@ -188,6 +242,25 @@ pub enum Outcome {
     },
 }
 
+impl Outcome {
+    /// Rank the video profiles in this outcome's camera-reported settings.
+    /// Outcomes without a settings observation return `None`. A selection is
+    /// only an untrusted claim: it does not settle a handoff permit, establish
+    /// adoption, authenticate the camera, or authorize a stream request.
+    pub fn select_reported_video(
+        &self,
+        limits: camera_api::VideoProfileLimits,
+    ) -> Result<Option<camera_api::VideoProfileSelection>, camera_api::Error> {
+        let observation = match self {
+            Self::AlreadyAssociated { observation, .. } | Self::Observed { observation, .. } => {
+                observation
+            }
+            Self::Refused { .. } | Self::Indeterminate { .. } => return Ok(None),
+        };
+        camera_api::select_reported_video_profile(observation.video_profiles, limits).map(Some)
+    }
+}
+
 /// Caller-owned setup and accept state. A returned setup outcome remains here
 /// even if accepting the connection times out or its future is dropped.
 #[derive(Default, Debug)]
@@ -199,6 +272,24 @@ pub struct AcceptTrace {
     accept_started: bool,
 }
 impl AcceptTrace {
+    /// Require a complete in-bounds camera-reported video profile before any
+    /// handoff effect is prepared. This untrusted claim does not grant stream
+    /// authority or establish camera identity, codec support, or delivery.
+    /// Configure this once, before entering setup; a used trace cannot be rearmed.
+    pub fn require_reported_video(
+        &mut self,
+        limits: camera_api::VideoProfileLimits,
+    ) -> Result<(), Error> {
+        if self.started {
+            return Err(Error::Configuration);
+        }
+        self.setup.require_reported_video(limits)
+    }
+    /// The pre-effect ranking, if two consistent settings reads reached it.
+    /// A returned selection remains a camera claim, not proof of media.
+    pub fn preflight_video(&self) -> Option<camera_api::VideoProfileSelection> {
+        self.setup.preflight_video()
+    }
     /// The tracked setup attempt, including any retained permit.
     pub fn setup_mut(&mut self) -> &mut Trace {
         &mut self.setup
@@ -584,8 +675,13 @@ impl Owner<'_, '_, '_> {
     ) -> Result<Outcome, Error> {
         let resource = format!("camera:{}", cfg.camera.to_text());
         let endpoint = SocketAddrV4::new(cfg.destination, expected_port);
-        let peer = *cfg.report.cameras.get(cfg.index)
-            .ok_or(Error::Configuration)?.source().ip();
+        let peer = *cfg
+            .report
+            .cameras
+            .get(cfg.index)
+            .ok_or(Error::Configuration)?
+            .source()
+            .ip();
         if !listener.ready_for(self.task, self.cx, &self.clock, &resource, endpoint, peer) {
             return Err(Error::ControllerUnavailable);
         }
@@ -648,7 +744,8 @@ impl Owner<'_, '_, '_> {
         expected_port: Option<u16>,
         trace: &mut Trace,
     ) -> Result<Outcome, Error> {
-        if trace.operation.is_some()
+        if trace.started
+            || trace.operation.is_some()
             || cfg.wait.is_zero()
             || cfg.wait > MAX_WAIT
             || cfg.generation == 0
@@ -661,6 +758,7 @@ impl Owner<'_, '_, '_> {
         {
             return Err(Error::Configuration);
         }
+        trace.started = true;
         let candidate = cfg
             .report
             .cameras
@@ -733,6 +831,15 @@ impl Owner<'_, '_, '_> {
         }
         if fresh != before {
             return Err(Error::Changed);
+        }
+        if let Some(profile) = &mut trace.profile {
+            let selection =
+                camera_api::select_reported_video_profile(before.video_profiles, profile.limits)
+                    .map_err(|_| Error::Configuration)?;
+            profile.selection = Some(selection);
+            if selection.selected.is_none() {
+                return Err(Error::VideoProfileUnavailable);
+            }
         }
         if before.controller == camera_api::ControllerAddress::Reported(cfg.destination) {
             let expected = camera_api::controller_binding(
@@ -911,5 +1018,86 @@ impl Owner<'_, '_, '_> {
             observation,
             permit: trace.permit.take().ok_or(Error::Effect)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    use camera_api::{
+        ControllerAddress, ControllerPort, SettingsObservation, StatusShape, VideoDestinationShape,
+        VideoMetric, VideoProfile,
+    };
+
+    #[test]
+    fn preflight_match_fences_changed_or_missing_readback() {
+        let limits = camera_api::VideoProfileLimits {
+            max_width: 4096,
+            max_height: 2304,
+            min_fps: 1,
+            max_fps: 60,
+            max_pixels_per_second: 4096 * 2304 * 60,
+        };
+        let missing = VideoProfile {
+            width: VideoMetric::NotReported,
+            height: VideoMetric::NotReported,
+            fps: VideoMetric::NotReported,
+        };
+        let high = VideoProfile {
+            width: VideoMetric::Reported(2688),
+            height: VideoMetric::Reported(1512),
+            fps: VideoMetric::Reported(30),
+        };
+        let low = VideoProfile {
+            width: VideoMetric::Reported(1280),
+            height: VideoMetric::Reported(720),
+            fps: VideoMetric::Reported(30),
+        };
+        let observation = SettingsObservation {
+            controller: ControllerAddress::Missing,
+            binding: None,
+            video_destinations: [VideoDestinationShape::NotReported; 3],
+            video_profiles: [high, low, missing],
+            snapshot_profile: missing,
+        };
+        let status = StatusShape {
+            board: true,
+            firmware: true,
+            controller: true,
+            controller_port: ControllerPort::Reported(7442),
+        };
+        let outcome = Outcome::AlreadyAssociated {
+            status,
+            observation,
+        };
+        let mut trace = Trace::default();
+        assert!(trace.reported_video_matches(&outcome));
+        trace.require_reported_video(limits).unwrap();
+        assert!(!trace.reported_video_matches(&outcome));
+        trace.profile.as_mut().unwrap().selection = Some(
+            camera_api::select_reported_video_profile(observation.video_profiles, limits).unwrap(),
+        );
+        assert!(trace.reported_video_matches(&outcome));
+        let changed = Outcome::AlreadyAssociated {
+            status,
+            observation: SettingsObservation {
+                video_profiles: [low, low, missing],
+                ..observation
+            },
+        };
+        assert!(!trace.reported_video_matches(&changed));
+        let absent = Outcome::AlreadyAssociated {
+            status,
+            observation: SettingsObservation {
+                video_profiles: [missing; 3],
+                ..observation
+            },
+        };
+        assert!(!trace.reported_video_matches(&absent));
+        trace.started = true;
+        assert!(matches!(
+            trace.require_reported_video(limits),
+            Err(Error::Configuration)
+        ));
     }
 }

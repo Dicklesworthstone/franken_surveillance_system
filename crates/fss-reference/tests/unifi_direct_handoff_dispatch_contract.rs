@@ -1592,12 +1592,15 @@ fn run_discovered_setup_with_listener(
                                         SetupCompletion { operation: setup_operation, outcome: setup.await }
                                     })).map_err(|_| "setup work")?;
                                     match pump.next_coordinated(&mut work, &mut retries).await? {
-                                        Coordinated::Setup { index: 0, completion, retry: RetryDisposition::Scheduled } => {
+                                        Coordinated::Setup { index: 0, completion, retry: RetryDisposition::NotEligible } => {
                                             assert!(matches!(completion.outcome, Err(FleetError::Setup(setup::Error::Denied))));
                                             assert_eq!(completion.operation, operation);
                                         }
-                                        _ => return Err("setup failure was not automatically scheduled".into()),
+                                        _ => return Err("authorization denial was automatically scheduled".into()),
                                     }
+                                    assert!(retries.is_empty());
+                                    // Explicit owner-directed retry remains possible before an effect.
+                                    retries.schedule_for(0, &operation)?;
                                     let unrelated = OperationId::parse("operation:unrelated-completion")?;
                                     work.insert(0, Box::pin(std::future::ready(SetupCompletion {
                                         operation: unrelated,

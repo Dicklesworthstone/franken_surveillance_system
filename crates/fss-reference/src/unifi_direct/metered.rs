@@ -42,7 +42,9 @@ impl<'scope, 'task> MeteredClock<'scope, 'task> {
         std::ptr::eq(self.owner, owner) && std::ptr::eq(self.cx, cx)
     }
 
-    pub(crate) fn same_mapping(&self, other: &MeteredClock<'_, '_>) -> bool {
+    /// Check exact task, runtime and time-origin identity across owned I/O layers.
+    /// Matching only task and runtime does not prove the same clock mapping.
+    pub fn same_mapping(&self, other: &MeteredClock<'_, '_>) -> bool {
         std::ptr::eq(
             std::ptr::from_ref(self.owner).cast::<()>(),
             std::ptr::from_ref(other.owner).cast::<()>(),
