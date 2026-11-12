@@ -1,14 +1,15 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
-//! Actual storage/custody and AVC/HEVC recording modules under their native component closure.
+//! Actual storage/custody, AVC/HEVC recording and recorder-time component closure.
 //!
 //! These source inclusions execute the production contracts, filesystem spool, root-last
-//! publisher, exact-pin reader and source replay without compiling unrelated object uploaders.
+//! publisher, exact-pin reader and recorder-time replay without unrelated object uploaders.
 //! No storage, custody, codec or authority implementation is substituted. This is component
-//! evidence; ReferenceDeployment, asynchronous runtime and CLI integration are not exercised.
+//! evidence; ReferenceDeployment, asynchronous runtime, CLI and MCP are not exercised.
 
 extern crate self as fss_object;
 extern crate self as fss_publication;
+extern crate self as fss_reference;
 
 #[path = "../../fss-object/src/contracts.rs"]
 mod object_contracts;
@@ -52,8 +53,25 @@ pub use local::{
 pub use publication_error::PublicationError;
 pub use publisher::AuthorityPublisher;
 
-#[path = "../../fss-reference/src/rtsp/recording.rs"]
-mod recording;
+/// Complete production modules retaining the native RTSP and recording hierarchy.
+/// Replay, catalog and archive call the same owners as the full reference crate.
+#[path = "../../fss-reference/src/rtsp"]
+pub mod rtsp {
+    pub mod authentication;
+    pub mod client;
+    pub mod message;
+    pub mod recording;
+    pub mod recording_archive;
+    pub mod recording_catalog;
+    pub mod recording_replay;
+    pub mod sdp;
+    pub mod selection;
+    pub mod uri;
+
+    pub use message::*;
+    pub use sdp::*;
+}
+use rtsp::recording;
 mod rtsp_movie_support;
 
 #[path = "../../fss-publication/tests/pinned_closure_contract.rs"]
@@ -62,6 +80,10 @@ mod closure_contract;
 mod metadata_regression;
 #[path = "../../fss-publication/tests/pinned_namespace_contract.rs"]
 mod namespace_regression;
+#[path = "../../fss-reference/tests/rtsp_replay_time_pinned_contract/io.rs"]
+mod replay_read_io;
+#[path = "../../fss-reference/tests/rtsp_replay_time_pinned_contract.rs"]
+mod replay_time_regression;
 
 use std::fs;
 use std::path::PathBuf;
@@ -109,6 +131,9 @@ fn scope() -> Test<RecordingScope> {
     })
 }
 fn avc(ordinal: usize) -> Test<PreparedRecording> {
+    avc_at(ordinal, 0)
+}
+fn avc_at(ordinal: usize, decode_start: u64) -> Test<PreparedRecording> {
     let source = rtsp_movie_support::avc_window(ordinal)?;
     let packets: Vec<_> = source
         .packets
@@ -119,12 +144,11 @@ fn avc(ordinal: usize) -> Test<PreparedRecording> {
             bytes: &p.bytes,
         })
         .collect();
-    Ok(prepare_recording(
-        scope()?,
-        SCALE,
-        &rtsp_movie_support::avc_timing(&source.pictures),
-        &packets,
-    )?)
+    let mut timings = rtsp_movie_support::avc_timing(&source.pictures);
+    for timing in &mut timings {
+        timing.decode_time += decode_start;
+    }
+    Ok(prepare_recording(scope()?, SCALE, &timings, &packets)?)
 }
 fn hevc() -> Test<PreparedHevcRecording> {
     let source = rtsp_movie_support::hevc()?;
@@ -368,6 +392,140 @@ fn current_native_authority_refusal_prevents_all_selected_payload_io() -> Test {
         Err(RecordingIoError::Cancelled)
     ));
     assert_eq!(io.call_count(SpoolIoCall::OpenRead), 0);
+    Ok(())
+}
+
+#[test]
+fn complete_replay_receipt_is_admitted_once_before_any_original_is_opened() -> Test {
+    use rtsp::client::replay::{ReplayAcceptance, ReplayWindow};
+    use rtsp::recording_archive::ArchiveNamespace;
+    use rtsp::recording_catalog::CatalogScope;
+    use rtsp::recording_replay::time::pinned::{
+        ReplayTimeReadError, ReplayTimeReadLimits, query_replay_time_read_only_admitted,
+    };
+    use rtsp::recording_replay::time::{ReplayTimeLimits, ReplayTimeQuery};
+    use rtsp::recording_replay::{
+        ReplayReceipt, ReplayRequest, ReplayTermination, ReplayWindowProof, publish_replay_receipt,
+    };
+
+    let dir = Directory::new()?;
+    let first = avc(0)?;
+    let second = avc_at(1, first.summary().decode_interval.end)?;
+    let originals = [first, second];
+    let window = ReplayWindow::from_timestamps("20261105T010000Z", "20261105T010500Z")?;
+    let request = ReplayRequest::new(
+        scope()?,
+        ContentDigest::sha256(b"approved native admission fixture route"),
+        window,
+        ContentDigest::sha256(b"explicit fixture decode clock"),
+    )?;
+    let catalog = CatalogScope {
+        recording: scope()?,
+        decode_clock: request.decode_clock(),
+        time_scale: SCALE,
+    };
+    let namespace = ArchiveNamespace::new(catalog.clone())?;
+    let mut owner = publisher(&dir)?;
+    let mut proofs = Vec::new();
+    let mut original_paths = Vec::new();
+    let object = |digest: ContentDigest| {
+        dir.0
+            .join("spool/objects")
+            .join(digest.to_text().trim_start_matches("sha256:"))
+    };
+    for (ordinal, recording) in originals.iter().enumerate() {
+        let slot = namespace.window_slot(ordinal)?;
+        publish(&mut owner, recording, slot.as_str())?;
+        original_paths.push(
+            dir.0
+                .join(LOCAL_ROOTS_DIR)
+                .join(format!("{}{ROOT_RECORD_SUFFIX}", slot.as_str())),
+        );
+        original_paths.push(object(recording.manifest().root()));
+        original_paths.extend(recording.children().iter().map(|child| object(child.1)));
+        proofs.push(ReplayWindowProof::from_avc(slot, recording)?);
+    }
+    let receipt = ReplayReceipt::prepare(
+        request,
+        catalog,
+        ContentDigest::sha256(b"explicit fixture approval"),
+        ReplayAcceptance::new(7, window, window)?,
+        proofs,
+        ReplayTermination::RequestedStop,
+        true,
+    )?;
+    publish_replay_receipt(&receipt, &mut owner, &NeverCancel)?;
+    let query = ReplayTimeQuery {
+        codec: receipt.request().codec(),
+        scope: receipt.scope().clone(),
+        receipt_root: receipt.root(),
+        request: receipt.request().digest(),
+        ntp_era: 0,
+        start_ns: 0,
+        end_ns: 1,
+        limits: ReplayTimeLimits::default(),
+    };
+    let admissions = AtomicUsize::new(0);
+    let denied_io = replay_read_io::ReadOnlyIo::default();
+    let result = query_replay_time_read_only_admitted(
+        &denied_io,
+        &dir.0,
+        &query,
+        ReplayTimeReadLimits::default(),
+        &running,
+        |observed| {
+            admissions.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(observed.root(), receipt.root());
+            assert_eq!(observed.windows().len(), originals.len());
+            false
+        },
+    );
+    assert!(matches!(result, Err(ReplayTimeReadError::AdmissionDenied)));
+    assert_eq!(admissions.load(Ordering::SeqCst), 1);
+    assert_eq!(denied_io.forbidden.load(Ordering::SeqCst), 0);
+    for path in &original_paths {
+        assert_eq!(denied_io.opened_count(path), 0);
+    }
+
+    let allowed_io = replay_read_io::ReadOnlyIo::default();
+    let admitted = query_replay_time_read_only_admitted(
+        &allowed_io,
+        &dir.0,
+        &query,
+        ReplayTimeReadLimits::default(),
+        &running,
+        |_| {
+            admissions.fetch_add(1, Ordering::SeqCst);
+            true
+        },
+    )?;
+    assert_eq!(admissions.load(Ordering::SeqCst), 2);
+    assert_eq!(admitted.original_usage.completed_roots, originals.len());
+    assert_eq!(allowed_io.forbidden.load(Ordering::SeqCst), 0);
+
+    // Corrupt the exact receipt itself through a separate fixture capability.
+    // The owner must not be consulted about an unverified or incomplete receipt.
+    fs::write(object(receipt.root()), b"corrupt exact replay receipt")?;
+    let corrupt_io = replay_read_io::ReadOnlyIo::default();
+    assert!(
+        query_replay_time_read_only_admitted(
+            &corrupt_io,
+            &dir.0,
+            &query,
+            ReplayTimeReadLimits::default(),
+            &running,
+            |_| {
+                admissions.fetch_add(1, Ordering::SeqCst);
+                true
+            },
+        )
+        .is_err()
+    );
+    assert_eq!(admissions.load(Ordering::SeqCst), 2);
+    assert_eq!(corrupt_io.forbidden.load(Ordering::SeqCst), 0);
+    for path in &original_paths {
+        assert_eq!(corrupt_io.opened_count(path), 0);
+    }
     Ok(())
 }
 

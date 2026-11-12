@@ -5,7 +5,11 @@
 //! after the native archive query; neither read claims an atomic cross-owner snapshot. One
 //! non-replenishing deployment allowance and one non-replenishing archive allowance bound the
 //! entire operation. No writer, recovery handle, directory discovery or source-media read is
-//! admitted by the archive query.
+//! admitted by the metadata archive queries. The explicit [`replay`] route separately requires
+//! a current source-read capability for native recorder-time verification and returns no media.
+
+/// Source-verified recorder UTC with explicit media-read authority and protected context.
+pub mod replay;
 
 /// Conditional UTC metadata queries with the same protected deployment owner.
 pub mod utc;

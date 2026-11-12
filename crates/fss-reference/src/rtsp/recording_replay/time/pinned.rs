@@ -24,7 +24,7 @@ use fss_publication::custody_audit::{
 use fss_publication::{PublishCancellation, PublishCutPoint};
 
 use super::super::{
-    MAX_REPLAY_RECEIPT_BYTES, MAX_REPLAY_WINDOWS, ReplayCodec, ReplayReceiptError,
+    MAX_REPLAY_RECEIPT_BYTES, MAX_REPLAY_WINDOWS, ReplayCodec, ReplayReceipt, ReplayReceiptError,
     ReplayWindowProof, codec_replay_slot, storage::VerifiedOriginal, wire,
 };
 use super::{ReplayTimeError, ReplayTimeQuery, ReplayTimeReport, query_with_originals};
@@ -112,6 +112,8 @@ pub struct ReplayTimeReadReport {
 pub enum ReplayTimeReadError {
     /// The declared read capabilities exceed the public hard bounds.
     InvalidLimits,
+    /// An enclosing owner refused the complete receipt before any original was opened.
+    AdmissionDenied,
     /// Exact query, receipt, descriptor or source projection was refused.
     Query(ReplayTimeError),
     /// Exact receipt/original metadata custody was refused.
@@ -126,6 +128,7 @@ impl ReplayTimeReadError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidLimits => "ERR-REPLAY-TIME-LIMIT-001",
+            Self::AdmissionDenied => "ERR-AUTH-DENIED-001",
             Self::Query(error) => error.code(),
             Self::Metadata(error) => metadata_code(error),
             Self::Original(RecordingIoError::Pinned(PinnedClosureError::Observation(error))) => {
@@ -144,6 +147,7 @@ impl ReplayTimeReadError {
     pub fn reason(&self) -> &'static str {
         match self {
             Self::InvalidLimits => "invalid_replay_time_read_limits",
+            Self::AdmissionDenied => "replay_time_receipt_admission_denied",
             Self::Query(_) => "replay_time_query_refused",
             Self::Metadata(error) => error.reason(),
             Self::Original(RecordingIoError::Pinned(error)) => error.reason(),
@@ -219,6 +223,19 @@ pub fn query_replay_time_read_only(
     limits: ReplayTimeReadLimits,
     cancelled: &(impl Fn() -> bool + Sync),
 ) -> Result<ReplayTimeReadReport, ReplayTimeReadError> {
+    query_replay_time_read_only_admitted(io, root, query, limits, cancelled, |_| true)
+}
+
+/// An enclosing native owner may refuse the complete receipt after structural admission,
+/// before original root/index or payload I/O. This hook supplies no authority of its own.
+pub(crate) fn query_replay_time_read_only_admitted(
+    io: &dyn SpoolIo,
+    root: &Path,
+    query: &ReplayTimeQuery,
+    limits: ReplayTimeReadLimits,
+    cancelled: &(impl Fn() -> bool + Sync),
+    admit: impl FnOnce(&ReplayReceipt) -> bool,
+) -> Result<ReplayTimeReadReport, ReplayTimeReadError> {
     query.validate()?;
     limits.validate()?;
     let cancel = Cancellation(cancelled);
@@ -249,6 +266,9 @@ pub fn query_replay_time_read_only(
             return Err(ReplayReceiptError::Digest.into());
         }
         visitor.admit_receipt(&receipt)?;
+        if !admit(&receipt) {
+            return Err(ReplayTimeReadError::AdmissionDenied);
+        }
 
         // Retain all exact original root/index observations until the whole query ends.
         // Receipt role pins prevent a source object being selected as typed metadata.
