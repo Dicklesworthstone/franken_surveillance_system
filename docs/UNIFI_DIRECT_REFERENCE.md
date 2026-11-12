@@ -13326,3 +13326,1128 @@ setup, authenticated physical-camera control, production TLS or continuous
 native recording. No physical camera effect was attempted; the existing trj
 recorder and its two timers were active with zero reported service restarts at
 the later check.
+
+### Scoped TLS entropy API experiment (2026-11-12 UTC)
+
+An isolated rustls 0.23.46 patch passes an owned server random source into the
+TLS 1.3 key-exchange callback rather than forcing that callback to use a global
+provider source. Synthetic interleaved sessions, exhaustion/revocation controls,
+and an independent OpenSSL client passed in strict-remote ts1 jobs
+`30105869848936729` and `30105869848936730` (4/4 each). The second job used
+a workspace freshly generated from the checksum-pinned crate and the project
+patch. The first lab build failed one fixture because a CA certificate was used
+as a leaf; the later passes used a separately signed leaf. Terminal results were
+acknowledged and source and pair custody released.
+
+The [lab](../experiments/unifi_tls_scoped_entropy_lab/README.md) includes its
+patch and a non-overwriting preparation script, not a production TLS fork. It
+uses predictable fixture randomness and an experimental provider, does not bind
+randomness to an FSS task, and does not authenticate or contact a camera. A
+shared server configuration can also share its source; FSS must enforce
+per-connection ownership. Direct native control, the previous indeterminate
+handoff, dependency admission, continuous recording and retention remain open.
+No camera settings were changed; the existing recorder and both related timers
+were active with zero reported restarts at the later check.
+
+### Task-bound TLS entropy and fleet adapter research (2026-11-12 UTC)
+
+The [isolated TLS lab](../experiments/unifi_tls_scoped_entropy_lab/README.md)
+now contains a Linux per-session entropy owner and an adapter for the existing
+fleet transport interface. Strict-remote `hz2` job `30106308287922181` passed
+2/2 synthetic task-owned loopback tests, including failure without `AdapterAuth`,
+and checked adapter configuration refusals. It used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, overlay
+`3fed00a32d258a42912bc60c59503758fe20782376d5dd6d238089b7e04ea7a3`, and FSS
+base `d5995229b0b42fbcd5b9fa5956ac74626804b405`. The job exited zero,
+acknowledged its result and released source and pair custody. The initial build
+failed to compile due to an invariant task/clock lifetime mismatch; that was
+corrected before the successful run.
+
+The fleet adapter's actual routed handshake has not yet been exercised, and the
+lab provider and synchronous entropy source are not production-admitted. This is
+not a real-camera handoff, independent identity proof, native continuous recording,
+or a 30-day retention qualification. Previously indeterminate camera effects
+were not retried. The existing recorder and its two timers remained active with
+zero reported recorder restarts at a subsequent read-only check.
+
+A follow-up adapted the prior synthetic two-camera fleet scenario to this
+adapter. Strict-remote `hz2` job `30106308287922182` failed before TLS because
+its loopback controller destination violated setup's existing configuration
+rules. After the fixture selected an address assigned to the test worker, job
+`30106308287922186` passed the selected scenario: a routed TLS/WebSocket
+upgrade progressed for one camera while another handshake was stalled, and a
+separate capacity-one case refused the second route. The job used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, FSS base
+`d5995229b0b42fbcd5b9fa5956ac74626804b405`, and overlay
+`944c518b5a1616c0a28aebcdc928b86773221da4d7d1689ae8c7adc321850471`.
+Both jobs acknowledged their terminal outcomes and released source and pair
+custody. The fixture has since been reduced and included in the reproducible
+project lab; the reduced version passed again in job `30106308287922187`.
+All camera peers and TLS identities in this fixture are synthetic; it did not
+contact the G4.
+
+### Scoped camera-facing TLS client API research (2026-11-12 UTC)
+
+The isolated [TLS research harness](../experiments/unifi_tls_scoped_entropy_lab/README.md)
+now also contains a scoped-client Rustls patch. Strict-remote `ts1` job
+`30106308287922185` passed four synthetic client tests and four server tests:
+separate client entropy sources, exhaustion and incomplete-scope refusal, an
+unsupported key-exchange retry, and OpenSSL interoperability in both directions.
+It used scratch base `b5c668dc2ce70e2e2824d2ae27c13fdf11cdf2b1` and overlay
+`8b7a52c35b9d1da8e451eee2f9ac3185422a2cbdf80538a3ab97e091a1c44961`;
+the result was acknowledged and source and pair custody released. Scoped
+client mode rejects TLS 1.2, ECH, early data and QUIC, and neither scoped
+configuration claims FIPS status.
+
+These client sources are predictable fixtures, not a task-owned operating-system
+entropy lease. This result does not validate camera identity, client resumption,
+certificate or clock authority, the provider's complete entropy paths, actual
+camera onboarding, native recording or 30-day retention. No physical camera or
+recorder change was made.
+
+### Task-owned client and routed fleet loopback (2026-11-12 UTC)
+
+The isolated [TLS research harness](../experiments/unifi_tls_scoped_entropy_lab/README.md)
+now includes the task-bound Linux client, task-bound server and reduced fleet
+fixture. Strict-remote `hz2` job `30106308287922187` passed 5/5 tests: client
+and server metered loopback exchanges, denial without `AdapterAuth` on each,
+and a synthetic two-camera fleet scenario covering a routed TLS/WebSocket
+upgrade while another handshake was stalled and capacity-one refusal. Its
+scratch base was `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, FSS base
+`d5995229b0b42fbcd5b9fa5956ac74626804b405`, and overlay
+`39d7e1da86529a9d4d80f3cb998a773f457aa2196c67ebe7d44d32b19c9babea`;
+the terminal result was acknowledged and source and pair custody released.
+The client wrapper disables session resumption. A fresh prepared workspace
+matched the tested sources and resolved the lockfile offline, but did not
+rerun these tests.
+
+That run's setup helper used the older laboratory camera-facing TLS adapter;
+the task-bound client was tested separately. It did not establish end-to-end
+task-bound setup, authenticate a real camera, settle prior indeterminate effects,
+or prove unattended native recording and 30-day retention. The TLS provider and synchronous entropy acquisition remain
+unadmitted. No camera setting or recorder service was changed.
+
+### Task-owned TLS on both sides of synthetic setup (2026-11-12 UTC)
+
+The [research harness](../experiments/unifi_tls_scoped_entropy_lab/README.md)
+now uses a task-owned pinned TLS client for the camera-facing portion of its
+synthetic fleet setup and a task-owned TLS server for the routed controller
+connection. Strict-remote `hz2` job `30106308287922189` passed the two-camera
+fleet scenario and the four separate client/server authorization tests (5/5).
+The job used scratch base `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, FSS base
+`d5995229b0b42fbcd5b9fa5956ac74626804b405`, and overlay
+`ec5995d26cb7b2668f166c1737c7f869739e856807a03ffd29716c1916027c4b`;
+the terminal result was acknowledged and source and pair custody released.
+
+This is synthetic, not a physical-camera setup or a production TLS boundary.
+The laboratory client verifies an exact supplied certificate and handshake
+signature but does not independently establish the pin, validate its chain,
+hostname or validity dates. Prior indeterminate camera effects remain unsettled;
+they were not retried. Native continuous recording and 30-day retention remain
+unverified.
+
+### Task-owned TLS pin controls (2026-11-12 UTC)
+
+Strict-remote `ts1` job `30106308287922190` passed two synthetic tests of the
+scoped camera-facing client: the correct disposable pin permitted a TLS
+exchange and a different certificate pin was refused before application data.
+The job used scratch base `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, FSS base
+`d5995229b0b42fbcd5b9fa5956ac74626804b405`, and overlay
+`1b1a07f9fd862d253e7baebc6d23d1ab95d8b473ea1ebf29133e4d47d4c31495`;
+the terminal result was acknowledged and source and pair custody released.
+An earlier `hz2` submission was refused before Cargo under critical memory
+pressure. This does not independently establish a physical camera's pin,
+validate certificate chain or dates, or demonstrate native live capture.
+No camera setting or recorder service was changed.
+
+### Entropy lease shutdown under contention (2026-11-12 UTC)
+
+A synthetic regression in strict-remote `ts1` job `30106308287922194` exposed
+that the laboratory entropy lease could retain unused bytes when closed while
+its mutex was busy. An earlier submission, job `30106308287922192`, failed at
+compilation before this regression could run. The lease now uses bounded atomic
+slots and fences and clears them on close, cancellation or exhaustion; an
+already-overlapping fill can complete before close takes effect.
+
+Strict-remote `ts1` job `30106308287922197` passed 20/20 synthetic tests,
+including five lease cancellation, exhaustion and concurrency checks, the
+client/server entropy hooks, pin controls and the two-camera fleet setup. Its
+scratch base was `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, FSS base
+`d5995229b0b42fbcd5b9fa5956ac74626804b405`, and overlay
+`4b5620d8afe8b769a3a5a31ceabaae2a78ef45c25eb9968068ccf30258604ad9`;
+the terminal result was acknowledged and source and pair custody released.
+This finite synthetic campaign does not prove all schedules, production TLS
+admission, physical-camera identity or handoff, continuous recording, or
+30-day retention. No camera or recorder service was changed.
+
+### Drainable task-owned entropy acquisition (2026-11-12 UTC)
+
+The isolated [TLS lab](../experiments/unifi_tls_scoped_entropy_lab/README.md)
+now includes an owner for blocking-pool entropy acquisition using FSS's
+`drained_blocking` boundary. The client and server can consume a one-use lease
+only after the worker is released and task authority is rechecked. A missing
+pool is refused without an inline fallback. Strict-remote `ts1` job
+`30106308287922198` passed 26/26 synthetic tests, including offloaded client
+and server exchanges, missing-authority and missing-pool controls, and an
+explicit cancellation case that waits for the still-running worker to release.
+The job used scratch base `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, FSS
+base `d5995229b0b42fbcd5b9fa5956ac74626804b405`, and overlay
+`54f3aded5445d810d32fafc13980137505f3d23772594736d272a4716dd71c44`;
+its result was acknowledged and source and pair custody released.
+
+The caller must retain and join the acquisition after abort; its drop cannot
+synchronously drain an already-running system call. The current fleet and
+pinned-camera adapters still use the synchronous acquisition path. This does
+not establish production TLS admission, a real-camera handoff, unattended
+native recording or 30-day retention. No camera setting or recorder service
+was changed.
+
+### Pre-acquired TLS entropy leases in synthetic fleet setup (2026-11-12 UTC)
+
+The [TLS lab](../experiments/unifi_tls_scoped_entropy_lab/README.md) now offers
+lease-consuming fleet and pinned-camera transports. The caller acquires and
+drains each lease before use. The fleet transport takes leases only once and
+rejects unrelated resources, occupied slots, and mismatched task/runtime/clock
+bindings. `MeteredClock::same_mapping` is exposed for this check; its existing
+comparison is unchanged.
+
+Strict-remote `ts1` job `30106308287922200` passed 27/27 synthetic tests,
+including two-camera setup and routed TLS/WebSocket using pre-acquired leases
+on both sides, duplicate and unrelated lease refusals, clock mismatch, and
+prior cancellation and OpenSSL controls. It used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`47bda273e8fd189643d0357c5ffa283b9354b134` (base
+`d5995229b0b42fbcd5b9fa5956ac74626804b405` plus the clock visibility change),
+and overlay `77f11ab103eeab22ce34cb94397caaf15654010b1ceb2ed6ec4a9d9c83acb29e`.
+The terminal result was acknowledged and source and pair custody released.
+
+The fixture manually acquires and installs leases; no unattended lease
+supervisor, physical-camera identity, production TLS admission, real handoff,
+continuous recording or 30-day retention was established. Legacy synchronous
+entry points remain. No real camera or recorder service was changed.
+
+### Bounded TLS lease replenishment (2026-11-12 UTC)
+
+The [TLS lab](../experiments/unifi_tls_scoped_entropy_lab/README.md) now has a
+caller-polled lease supply for a fixed fleet inventory. It replenishes empty
+per-camera slots using a bounded number of offloaded acquisitions, rejects a
+second supply owner, and latches failed acquisitions until explicitly rearmed.
+On shutdown it retains admitted acquisitions until they report drained. The
+caller must keep polling through `Stopped`; dropping a supply cannot synchronously
+join a running worker.
+
+Strict-remote `ts1` job `30106308287922206` passed 27/27 synthetic tests,
+including two-camera replenishment, refusal of a duplicate supply, and shutdown
+immediately after worker admission. A separate acquisition test holds a running
+worker open after cancellation and checks that its join waits for release. The
+job used scratch base `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS
+commit `47bda273e8fd189643d0357c5ffa283b9354b134`, and overlay
+`714d0020ca1ede474ca87992e35e24722d13b813c8820dbf94ca03fd869377d6`.
+Its result was acknowledged and source and pair custody released.
+
+That version used a fixed inventory; it was not a running service or automatic
+enrollment. It did not establish a production TLS provider, independent device
+identity, physical-camera handoff, full-resolution capture, continuous recording,
+or 30-day retention. Earlier indeterminate camera effects were not retried.
+
+### Shared fleet pump and TLS lease supply (2026-11-12 UTC)
+
+The [TLS lab](../experiments/unifi_tls_scoped_entropy_lab/README.md) can now
+drive the discovery/route pump and the bounded TLS lease supply together,
+without creating a detached task. The acceptor exposes its retained transport
+so the supply can refuse a pump bound to different lease slots. The existing
+pump alternates polling preference; dropping the borrowing wait preserves the
+pending handshake and supply owner.
+
+Strict-remote `ts1` job `30106308287922209` passed 27/27 synthetic tests. The
+two-camera fixture exercised discovery and replenishment while one handshake
+was stalled, rejected an unrelated supply, dropped a pending combined wait,
+and drained the supply on shutdown. It used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`9a65f784739e9feb61b505168789a1ef239d6eb8`, and overlay
+`4b21a8d0dbaf18e12b2d444abf702b2035a0542f538ff482131074330184de81`.
+Its result was acknowledged and source and pair custody released.
+
+That fixture preloaded initial leases; the then-current transport refused a route
+arriving at an empty slot. Its caller had to poll and drain the supply and
+supervise the pump. The inventory remained fixed; it was not production TLS
+admission, automatic enrollment, physical-camera handoff, full-resolution
+capture or continuous recording.
+
+### Camera connections waiting for a lease (2026-11-12 UTC)
+
+The experimental fleet transport now retains an authorized route while its
+one-use TLS lease is being acquired. It registers at most one waiting handshake
+per resource, wakes it on installation, rechecks task and route authority on
+poll, and removes the registration when the handshake is dropped. The existing
+acceptor deadline bounds the wait. A stale registration caused by reentrant
+drop is reclaimable by a successor; a concurrently live competitor is refused.
+
+The old implementation failed the new synthetic reconnect regression in `ts1`
+job `30106308287922210` with an empty-slot refusal. Strict-remote job
+`30106308287922214` passed 29/29 synthetic tests: the reconnect waited before
+replenishment, completed TLS/WebSocket after installation, and a separate
+waiting socket closed on owner shutdown. Unit tests covered cancelled,
+competing and reentrant registrations. The passing job used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`9a65f784739e9feb61b505168789a1ef239d6eb8`, and overlay
+`4f620f0277f2496d758f924e4ecad6eeb5968ba68b56f1ed5fedf9eb8d2799c6`.
+Both jobs acknowledged their results and released source and pair custody.
+
+These are finite synthetic tests, not a production TLS review, complete
+cancellation proof, dynamic camera enrollment, physical-camera handoff,
+full-resolution capture, continuous recording, or 30-day retention. The caller
+must still poll and drain the supply; prior indeterminate effects were not retried.
+
+### Appending fleet TLS resources while running (2026-11-12 UTC)
+
+The experimental TLS transport now uses up to 128 append-only, stable resource
+slots. A caller can synchronize them from an existing owner-supplied fleet while
+the pump and handshakes are alive. Existing names must match the fleet prefix;
+a mismatch refuses before mutation. Appending wakes the parked supply, and an
+initially empty inventory is supported. A resource inventory has only one
+transport binding at a time.
+
+Strict-remote `ts1` job `30106308287922218` passed 30/30 synthetic tests. In the
+fleet fixture, an owner-supplied enrollment was appended while a handshake was
+active; the enrollment was not observed in that discovery window. The fixture
+also checked empty startup, supply wakeup, mismatched-prefix refusal, bounded
+inventory and existing two-camera connections. The passing job used scratch
+base `e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`9a65f784739e9feb61b505168789a1ef239d6eb8`, and overlay
+`39b76e05d442318abca8f85a949bd50bcb0909a1776e8d2651076fcb906e13dd`.
+It acknowledged its result and released source and pair custody. An earlier
+job `30106308287922215` failed to compile the fixture due to lifetime ordering.
+
+That version required the caller to invoke synchronization and supply enrollment;
+an untrusted discovery claim does not create credentials or setup authority.
+Automatic detected-camera setup, production TLS admission, physical-camera
+handoff, native continuous recording and retention remain unproven. No camera
+settings or recorder service were changed by this experiment.
+
+### Fleet enrollment notification and automatic resource synchronization (2026-11-12 UTC)
+
+The reference fleet now notifies waiters after an owner-supplied enrollment is
+published. Its wait uses an Asupersync context and checks cancellation when
+polled. The laboratory combined pump obtains the exact fleet from its acceptor,
+synchronizes resources from it, and waits for later enrollment additions while
+continuing discovery, routing and lease acquisition. A caller still supplies
+the enrollment, handles the resulting events, and supervises and drains owners.
+
+Strict-remote `ts1` job `30106308287922226` passed one reference-crate test,
+with 2,404 unrelated tests filtered. It covered two waiters, a wait first polled
+after the append, duplicate-enrollment refusal, and an interrupted result when
+repolling with a cancelled context. Job `30106308287922227` passed 30/30
+synthetic lab tests. Its three-camera discovery fixture explicitly enrolled a
+previously unknown simulated camera while the combined loop was parked; the
+loop woke and acquired its resource while an existing handshake stayed active.
+Both used isolated FSS commit `a9205759c3be92137c55c4dc8fe8ed688019cd2b`;
+the lab used scratch base `e5cb2f08fde252bd4697b56e2f8fd912b67beffc` and
+overlay `5dccada7bb441c932bf475b10360a82a5e0bd9abdbddbddb45bbba4c378c2426`.
+Both results were acknowledged and source and pair custody released.
+
+This does not automatically turn a discovery claim into an enrollment, resolve
+credentials, start the new camera's setup, or establish production TLS,
+physical identity, real-camera handoff, full-resolution native capture,
+continuous recording or 30-day retention. Cancellation wakeup for every
+runtime schedule is not proven by the direct repoll test. No camera setting or
+recorder service was changed.
+
+### Camera setup work driven with the fleet pump (2026-11-12 UTC)
+
+The experimental TLS fleet loop can now poll a bounded caller-owned camera
+work set alongside discovery, routing and lease replenishment. It alternates
+preference across returned work and fleet events and returns the camera index
+and original work result. It refuses a mismatched supply before polling camera
+work. Dropping a borrowing wait leaves camera work and fleet owners retained;
+the caller must handle and explicitly retire them and any effect traces.
+
+Strict-remote `ts1` job `30106308287922231` passed 30/30 synthetic lab tests.
+The fixture discovered and explicitly enrolled a third simulated camera, used
+the pinned HTTPS client and existing setup owner, retained its operation trace,
+and completed its TLS/WebSocket controller route. The third camera's login
+response was held until a second camera completed its controller connection,
+while the first camera's handshake remained stalled. It also checked refusal
+of a mismatched supply before camera work was polled and retention of a pending
+work item after dropping a borrowing wait. The job used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`a9205759c3be92137c55c4dc8fe8ed688019cd2b`, and overlay
+`80be5fdb0604d28dfe34f66416a789cb82d322f1664178ea2f8582ea6907fceb`.
+Its result was acknowledged and source and pair custody released.
+
+The caller still constructs and authorizes setup work, supplies credentials,
+handles the result and reconciles effects. The fixture does not establish a
+production TLS provider, independently identify a physical camera, settle a
+real handoff, automate the full detected-camera workflow, or demonstrate native
+continuous recording and retention. No camera settings or recorder service were
+changed by this test.
+
+### Selecting ready enrollments for setup (2026-11-12 UTC)
+
+The experimental fleet loop can now select an unattempted, ready owner-supplied
+enrollment and request a setup future from a caller-provided factory. Its
+bounded `AutomaticWork` owner is bound to the exact fleet and transport, latches
+admission attempts for its lifetime, returns factory failures and rejected
+futures, and retains in-flight work when admission is stopped. Its factory must
+avoid synchronous effects, but the type system does not enforce that contract.
+
+Strict-remote `ts1` job `30106308287922242` passed 30/30 synthetic tests. A
+selector was parked before a discovered simulated camera was explicitly
+enrolled; it woke and admitted work. A separate factory-supplied setup future
+completed the existing HTTPS setup and controller route while other camera
+activity continued. The fixture checked mismatched fleet/transport refusal,
+stopped admission, pending-work retention and a factory failure that was not
+silently retried. The job used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`a9205759c3be92137c55c4dc8fe8ed688019cd2b`, and overlay
+`e83dbb4fb18b9e41f17b4144ceae1481e906cb04fbe350b974beaf6c141153d8`.
+Its result was acknowledged and source and pair custody released.
+
+This remains a laboratory selector. The caller supplies and authorizes the
+enrollment, credentials and setup future, handles its trace, and reconciles
+effects. Its latch is not durable across restart. Automatic enrollment of
+unrecognized cameras, production TLS, physical-camera handoff, continuous
+recording and retention remain unproven. No camera setting or recorder service
+was changed by this experiment.
+
+### Certificate-bound enrolled-camera setup future (2026-11-12 UTC)
+
+The [TLS lab](../experiments/unifi_tls_scoped_entropy_lab/src/camera_setup.rs)
+now provides a concrete setup future that opens the pinned, task-metered camera
+connection itself, using a previously acquired and drained entropy lease. Before
+connecting it checks the enrollment's certificate digest against the supplied
+DER, the supplied credential handle, discovery source, resource and lease,
+listener address, and caller admission and login authority. It borrows the
+setup trace and invokes the existing tracked fleet setup owner. Dropping the
+future closes its connection and lease; any effect obligation remains in the
+caller-owned trace and journal for reconciliation.
+
+Strict-remote `ts1` job `30106308287922248` passed 30/30 synthetic tests. A
+discovered, explicitly enrolled simulated camera completed HTTPS setup and a
+controller route. The fixture checked six failures before connection: valid
+wrong certificate, wrong credential handle, wrong discovered address, wrong
+resource, denied login and denied admission. Both probe listeners remained
+unaccepted for each. The job used scratch base
+`e5cb2f08fde252bd4697b56e2f8fd912b67beffc`, isolated FSS commit
+`a9205759c3be92137c55c4dc8fe8ed688019cd2b`, and overlay
+`10bcc5106cb3e6737d5949a57468c53a8cb7340d66e2c6bcec210ebd30bf6787`.
+Its result was acknowledged and source and pair custody released.
+
+The certificate pin and camera identity are caller claims; the future does not
+independently establish them or verify that credential bytes correspond to the
+handle. The caller must resolve credentials, supply and drain the entropy lease,
+and reconcile effects. This is not production TLS, physical-camera setup,
+automatic unknown-camera enrollment, continuous recording or retention. No
+camera setting or recorder service was changed by this experiment.
+
+### Scheduled setup with retained entropy acquisition (2026-11-12 UTC)
+
+The experimental `camera_setup::run_with_acquisition` joins a caller-started,
+task-and-resource-bound entropy acquisition inside a scheduled camera setup
+future, then transfers the resulting lease to the existing certificate-bound
+setup. The caller retains the acquisition and effect trace. After cancellation,
+it can inspect `is_drained()` and must abort and join an undrained owner. The
+network wait does not bound entropy acquisition; the caller must impose its
+own deadline and perform that drain. No worker is spawned by this future.
+
+Strict-remote `ts1` job `30106308287922251` passed 30/30 synthetic tests
+(11+4+1+4+4+2+4). Its fleet fixture refused a wrong resource binding without
+opening the probe socket, then aborted and drained that retained acquisition;
+it also completed a simulated enrolled camera setup with acquisition inside
+the automatic work future, and checked the terminal drained state. The job
+finished with terminal acknowledgement and source/pair release. The overlay
+fingerprint was `13deddb09463ea440e2fa5a448782c9c2ed464b06f166e3a1fbfb2013b2c9941`.
+
+The caller still starts and bounds acquisition, supplies credentials and the
+identity/pin, owns admission and effect reconciliation, and handles all
+outcomes. This does not establish a credential-to-handle mapping, unattended
+enrollment, provider admission, physical identity, real-camera handoff, native
+recording, or retention. The prior physical handoff and time-sync effects remain
+indeterminate; no camera effect was attempted in this synthetic test.
+
+### Scoped P-256 client and live TLS-only observation (2026-11-12 UTC)
+
+The experimental client now implements task-scoped P-256 ECDH as well as
+X25519. It obtains a fixed-width scalar from the existing per-connection entropy
+source, bounds rejection sampling, emits an uncompressed SEC1 point and refuses
+invalid peer points. The camera TLS configuration permits one explicitly
+selected group; it does not automatically discover group compatibility. The
+new direct `p256` dependency is confined to this non-production laboratory.
+
+The first TLS-only G4 probe, configured for X25519, failed its handshake. An
+independent OpenSSL check also failed with only X25519, while P-256 succeeded
+and the observed certificate matched the previously retained network pin.
+After the scoped P-256 change, a TLS-only probe from ts1 to the observed G4
+completed TLS 1.3 with that pin and verified the server handshake signature.
+It sent no HTTP request or credentials and made no settings change. The same
+probe's independent disposable P-256 server fixture passed matching-pin and
+wrong-pin cases, observing zero application bytes. The first fixture version
+returned a server-side BrokenPipe while it attempted to issue TLS tickets; the
+reported fixture result uses a no-ticket server and successful completed runs.
+
+Strict-remote ts1 test job `30106308287922255` passed 33/33 tests
+(12+4+1+4+4+4+4), including P-256 agreement, malformed-point and invalid
+scalar refusals and pinned-client success and wrong-pin refusal. It exited
+zero, was acknowledged and released source and pair. Its source overlay
+fingerprint was `e8a719bdae713628684f4c633d81b0e121a7b07cea731a10aa662f95757bd087`.
+Build job `30106308287922256` completed remotely with exit zero; its wrapper
+returned 102 because RCH rejected installing a Linux binary on macOS. Its
+terminal result was acknowledged and source and pair were released. The Linux
+probe used for fixture and G4 checks had SHA-256
+`dc7a0f12aa48b6fc4a124aac0998e50ebe4d33e90ca730dd527051003c29aadb`,
+matched before and after the live check. The observed network certificate
+digest was `f266d3f9dbede6c30bc062c2d06d0b8091431d8347e5c6898de5ed09832bae36`.
+The recorder and both relevant timers were active with NRestarts=0 afterward.
+
+This is an actual-camera TLS handshake, not a login, video stream, physical
+identity authentication, production TLS admission, automatic setup or a
+recording. The pin was collected on the same network. No prior camera effect
+was retried or reconciled; the original trial sources used ordinary journals
+without the later independent pin-retention mechanism. No pin store was found
+in the retained original trial directories. The old handoff and time-sync
+outcomes remain indeterminate. The repository fleet gate also reported stale
+ARP data and unrelated launchd/plist findings during this investigation; it
+was not changed or treated as a UniFi qualification pass.
+
+### Live read-only snapshot with task-scoped P-256 TLS (2026-11-12 UTC)
+
+The experimental `live_snapshot_probe` composes the task-bound P-256 TLS
+client, the existing camera HTTP owner, and the first-party MJPEG luma
+decoder. It permits only login, status and one snapshot; it loads the existing
+private credential file only after the certificate pin and TLS handshake
+signature have succeeded. It decodes in memory and does not deliberately save
+the image or print credentials. The private-file lease code is a copy of the
+previous snapshot laboratory's implementation, not a general secret backend.
+Its file inspection and JPEG decoding remain synchronous, authority depends
+on caller claims, and library/OS copies are not fully zeroized.
+
+A disposable P-256 TLS fixture passed three process cases using synthetic
+credentials and a synthetic 16x16 JPEG: matching pin with the exact
+login/status/snapshot sequence, a wrong pin with a nonexistent credential
+path, and a truncated image response. It checked no synthetic credentials
+were printed. An initial fixture attempt failed due to a Python bytearray
+type error; the corrected fixture passed all three. The fixture, JPEG and
+stripped probe SHA-256 values were respectively
+`826d3828edfa333eb33ba427bdeba590d8d277d58707c3b3dd193b420fd6fb25`,
+`d9470ede0234592f82ef448f1a3f01d0691b1528ad000aad8011fa9e9685b448` and
+`6c39177d59e6b7666bf555b1f922d2263c0b9e61c7447706f3fc6b46e835e02a`.
+
+That SHA-matched stripped executable then ran once on trj against the
+owner's observed G4 endpoint and network-observed pin. It reported successful
+TLS, login and status and decoded one 640x360 JPEG in memory, with no image
+output and no management operation. The login may create a camera session
+whose expiry was not established. The pin does not independently authenticate
+physical device identity. The prior indeterminate handoff and clock effects
+were neither retried nor reconciled. The recorder and two relevant timers were
+active with NRestarts=0 afterward; this does not establish gap-free coverage.
+
+Strict-remote ts1 job `30106308287922260` completed its selected tests with
+exit zero, terminal acknowledgement and source/pair release, using overlay
+`a5f7b1b5d465e37d61e3440b9c24d68a5101f101e6d7598dc93952b57f6f8d27`.
+The output display truncated one test result, so the exact test binary was
+run again on ts1 and its one credential-rotation/permissions test passed.
+The retained visible results cover 33 other selected synthetic tests. The
+Linux probe build job `30106308287922259` exited zero remotely but returned
+102 from its macOS wrapper because it refused foreign artifact installation;
+it was acknowledged and source/pair released. The independent process fixture
+ran separately via SSH on ts1, not as part of that Cargo test job.
+
+This is real read-only still-image access via the newer experimental transport,
+not a live Rust video stream, autonomous enrollment, production provider
+admission, direct controller ownership, continuous recording, or 30-day
+retention. The G4's higher-resolution stream remains a separate path.
+
+### Scoped P-256 controller-side TLS (2026-11-12 UTC)
+
+The experimental task-owned controller TLS server now supports P-256 as well
+as X25519, using the same scoped key-exchange implementation as the client.
+It rejects malformed P-256 points before consuming server entropy; the
+successful exchange uses the task-owned one-use entropy pool. The caller
+still selects the server's supported group configuration. No claim is made
+about which groups the G4 offers when it acts as a TLS client.
+
+Strict-remote ts1 job `30106308287922266` passed the selected Cargo test run
+and exited zero with terminal acknowledgement and source/pair release. Its
+overlay fingerprint was
+`5deadd01091dd50a577bdaddb4c4912e1d72f2fd82653faa6ea3ab874ce83ce3`.
+The displayed output was truncated, so two retained test binaries were run
+again separately on ts1 using the same disposable test identity: the
+controller transport passed 7/7 tests, including a Python/OpenSSL P-256-only
+client verifying the test CA and hostname with its normal strict policy; the
+fleet route passed 1/1, exercising the P-256 configuration in its two-camera
+case. The binary SHA-256 values recorded after these reruns were
+`94279051f5c7b23085199a0675939adfb0aa8676c896694e70eb0c2cc352e12b`
+and `63a8362bd59bc389250f432f3256399d892bb6797ea32f508f82cdb91f72205f`.
+
+An earlier selected run, job `30106308287922264`, failed one independent
+peer test because the generated disposable leaf certificate lacked an
+authority-key identifier. The test certificate generator was corrected to
+include that identifier and an appropriate CA key usage; independent strict
+OpenSSL verification succeeded before the passing rerun. That earlier job
+exited 101 and was acknowledged with source/pair release.
+
+These are synthetic TLS and routed-controller tests, not evidence that the
+physical camera supports this exact inbound negotiation or that an earlier
+G4 handshake failed for this reason. No camera handoff or settings change
+was performed; prior indeterminate effects remain unresolved. The existing
+recorder and its two relevant timers were active with NRestarts=0 after the
+test. TLS provider admission, physical identity, direct native video and
+continuous recording remain open.
+
+### P-256 fleet setup through synthetic video decode (2026-11-12 UTC)
+
+The scoped TLS fleet integration test now continues past the routed
+WebSocket upgrade. For its explicitly enrolled third simulated camera, the
+two-capacity case uses P-256 camera and controller TLS, drives the existing
+journaled hello, parameter agreement and stream-start conversation, accepts
+the simulated camera's TCP video push, and feeds bounded synthetic H.264/FLV
+through the existing pipeline, MP4 demuxer and first-party H.264 decoder.
+The test requires at least one decoded frame. Other simulated work and a
+stalled handshake are retained during earlier portions of the scenario; the
+media path itself does not prove unattended parallel recording or durable
+source publication. The fixture uses its own fake credentials, synthetic
+media and test-only authority, and retains no physical camera data.
+
+Strict-remote ts1 job `30106308287922272` passed the selected fleet test
+(1/1), exited zero, was acknowledged, and released source and pair. Its
+overlay fingerprint was
+`c87c754f6f197ace8d45d782a5ebd5cd751a5b299cefa6d503a303e2bbd4f403`.
+The preceding job `30106308287922270` failed with `Conversation(Effect)`
+because the synthetic task had not been granted the stream-setting
+capabilities; those fixture grants were added before the passing run. The
+failed job exited 101 and was acknowledged with source/pair release. The
+fleet test, synthetic stream helper and synthetic H.264 source SHA-256 values
+were `264968697524f08bc345fcdcc1ee99de613fca736ae907c0593f905bb06a89f2`,
+`8059ba5c5763655ab26290f674020e13860b31bafa97a6ef73f8b28381fccc5a`,
+and `2a3e84de3a938a60ad254a69fa2fa7f38ada910cad72447b807f3d6266796d32`.
+A fresh workspace created by `prepare.py` has matching test source and
+passes locked offline Cargo metadata resolution.
+
+This is a synthetic composition test, not a production fleet supervisor,
+real-camera TLS inbound qualification, live physical video, independent
+identity or 30-day retention. It does not resolve or replay prior
+indeterminate G4 effects. The existing trj recorder and its two relevant
+timers were active with NRestarts=0 at the post-test check.
+
+### Cooperative fleet setup and active-stream work (2026-11-12 UTC)
+
+The experimental `LeaseSupply::next_with_setup_and_streams` drives the
+existing automatic setup selector and a caller-owned active-stream work set
+with discovery, controller routing and entropy supply. It validates the
+transport and fleet binding before polling either work set, alternates
+preference between completed stream and other events, and preserves both
+sets when its borrowing wait is dropped. The caller still binds stream index,
+session, authority and effect trace, prevents overlapping operations for the
+same camera, handles completions, and drains or retires pending work. A
+synchronous journal call, decoder or other blocking future poll can stall
+the whole loop despite its cooperative scheduling.
+
+Strict-remote ts1 job `30106308287922277` passed 38/38 selected synthetic
+tests (13+1+4+1+4+7+4+4), exited zero, was acknowledged and released
+source and pair. Its overlay fingerprint was
+`779a0d798a16985550800c87f730e518c9df2a219cf0f356edf75b41d8d3386d`.
+The fleet fixture checked refusal of an unrelated fleet or supply before a
+stream future was polled, a ready stream and admitted synthetic setup, and
+retention after a dropped wait. In a separate phase it held the third
+simulated camera's P-256 stream-start reply until a second simulated camera
+completed a controller upgrade; the first then pushed H.264 that Rust
+demuxed and decoded. Automatic setup admission was stopped during that
+stream phase; the test does not prove a real concurrent setup and media
+stream, long-running service, or physical camera behavior. A comment
+clarifying blocking-poll limitations was added after the passing run.
+
+This does not qualify production TLS, automatic identity enrollment, direct
+G4 video, effect reconciliation, native continuous recording or 30-day
+retention. No real camera setting was changed. The existing recorder and
+its two relevant timers remained active with NRestarts=0 at the later check.
+
+### Camera-index exclusion for combined setup and streams (2026-11-12 UTC)
+
+The experimental combined loop now takes a fleet-bound `ActiveStreams`
+owner that retains a bounded stream future per enrolled index. It excludes
+occupied indices from automatic setup selection, tracks setup futures while
+they are in flight, and refuses an existing same-index setup/stream overlap
+before polling either set. A refusal retains both owners and their futures.
+A setup completion clears the in-flight marker; it does not establish that
+the resulting effect has been reconciled. Unknown enrollment and duplicate
+stream insertions return the supplied future.
+
+Strict-remote ts1 job `30106308287922282` passed 38/38 selected synthetic
+tests (13+1+4+1+4+7+4+4), exited zero, was acknowledged and released
+source and pair. Its clean-overlay fingerprint was
+`4cf456e3207ee1ea11d4f1d0d3002d8703b3a6d04a9069d4e677477a8e1b9843`.
+The fleet fixture covered an occupied camera blocking setup selection,
+resumption after stream completion, refusal of an already-running overlap
+without polling the stream, post-setup stream admission, unknown/duplicate
+stream refusal, mismatched fleet/transport, and the earlier concurrent
+synthetic controller/video scenario.
+
+This exclusion is scoped to the exact owners passed to the combined loop;
+separately created work owners or the standalone setup API can still overlap.
+A caller must bind each future to the correct session and identity, retain
+and reconcile effects, and ensure poll operations do not block. This is not
+a production supervisor or physical-camera test. Prior uncertain G4 effects
+were not retried. The existing recorder and two relevant timers remained
+active with NRestarts=0 at the later check.
+
+
+### Synthetic full-resolution fleet route and passive reconnect watch (2026-11-12 UTC)
+
+The fleet-route laboratory fixture now runs a small `video2` case and a
+synthetic 2688 x 1512 `video1` case at handshake capacity two, plus a small
+capacity-one case. The simulated camera validates the requested channel in the
+management message. In the full-resolution case it sends synthetic H.264
+through the media pipeline; Rust demuxes fragments and decodes pictures,
+asserting that every decoded picture is 2688 x 1512 and at least one was
+decoded. A second camera upgrades while the third camera's stream-start reply
+is held. Automatic setup admission is stopped during this stream phase; this
+does not prove concurrent setup and streaming.
+
+Strict-remote ts1 job `30106308287922290` passed the single fleet-route test
+(1/1, comprising three scenarios), with overlay fingerprint
+`16a666acca120d92fac7630a98e3668a04b9a75ea8fd079ad3d47bbf04e4bc81`.
+The job exited zero, its terminal result was acknowledged, and both source and
+pair leases were released. Earlier jobs `30106308287922284` and
+`30106308287922288` failed with exit 101 because the fixture requested three
+samples when the final fragment contained fewer. It now uses up to the
+available sample count and refuses an empty fragment. This was a test-extraction
+error, not evidence of a product media defect. A fresh workspace prepared
+from the lab inputs passed locked offline metadata resolution; its test
+sources and synthetic video fixture matched the original hashes.
+
+A separate 50-second read-only SYN watch for the real G4 connecting to its
+existing controller captured no SYN packets; the kernel reported seven packets
+received by the filter and none dropped. No client TLS preference can be inferred
+from this watch. Neither the watch nor the synthetic tests changed camera
+settings. These results do not prove a physical G4 handoff, direct real-camera
+full-resolution capture, continuous recording, or 30-day retention. The
+earlier indeterminate physical handoff and clock effects were not retried.
+
+### Explicit setup retry admission (2026-11-12 UTC)
+
+Experimental `AutomaticWork::rearm` allows the supervisor to select an
+enrollment again after an attempted setup. It refuses unknown or unattempted
+indices, an in-flight setup, and a stopped owner; existing active-stream
+exclusion still applies on the combined scheduling path. Rearm does not
+perform or verify effect reconciliation, grant authority, provide backoff, or
+coordinate independent work owners. The caller must resolve the prior outcome
+and authorize a retry; it must not rearm an indeterminate effect merely because
+a future returned or a factory failed.
+
+Strict-remote ts1 job `30106308287922296` passed the fleet-route test (1/1;
+three scenarios), exited zero, was acknowledged and released source and pair.
+The overlay fingerprint was
+`68d7189a18978e45e457d49b730ffdf3a06efcec190301cc54c610e0f91ba1ec`.
+The fixture checked failed factory retry only after explicit rearm, refusal
+while in flight or stopped, repeated/unattempted and unknown refusal, and
+active-stream exclusion before the rearmed setup starts. A newly prepared lab
+workspace matched the modified source hashes and passed locked offline
+metadata resolution. This is experimental synthetic evidence, not automatic
+reconciliation, unattended recovery, production admission or a real-camera
+handoff. No camera effect was attempted; the recorder and its two timers were
+active with zero recorder restarts at the post-test check.
+
+The selector rearm now additionally requires the fleet state to be `Ready`.
+A completed real setup moves the fleet to `Finished`; resetting the selector
+alone cannot retry it. The separate fleet retry mechanism must first prove an
+eligible pre-effect failure and rearm the fleet. Strict-remote ts1 job
+`30106308287922298` passed the fleet-route test (1/1, three scenarios),
+including refusal after a completed synthetic HTTPS setup. It exited zero,
+was acknowledged, and released source and pair. Overlay fingerprint:
+`9244b2227b15b63b1a43e473586805f0fbee3f87f6e4082ea00a443b1619e70b`.
+The fresh lab workspace matched the test and source hashes and passed locked
+offline metadata resolution. The bounded retry queue is not yet integrated
+with this combined supervisor; these checks do not establish unattended
+recovery or physical-camera behavior.
+
+### Coordinated bounded pre-effect retry (2026-11-12 UTC)
+
+The experimental fleet loop now owns a bounded retry queue alongside automatic
+setup, active-stream futures, discovery, routing and TLS lease supply. The
+queue is required to match the pump's fleet, context and clock before any work
+is polled. Setup completions retain their original outputs and operation IDs;
+only an exact fleet-confirmed pre-effect failure can schedule a timer. On a
+valid timer event, the owner releases its selection latch even if the latest
+scan is absent or conflicted; the existing selector still requires a ready
+claim and excludes occupied streams. Stopping the setup owner or supply stops
+timer polling and retains the queue. The caller still owns traces, operation
+creation, credential/identity authority, event handling and shutdown.
+
+Strict-remote ts1 job `30106308287922304` passed the fleet-route test
+(1/1, comprising three scenarios), exited zero, was acknowledged and released
+source and pair. The lab overlay fingerprint was
+`01511ff4b3b92f7e4dc4e7eeae2c299804e2c2b9ac27ee257fe74d6b76563176`;
+the disposable dependency commit was
+`4fdba7851b7e8b4a5022967cdb28eb6b62c92813` and its changed pump file
+matched the project source. The synthetic HTTPS camera rejected login before
+any management effect; the exact failed operation was scheduled, a dropped
+wait preserved the timer and a separate pending stream, and expiry restored
+selection. The subsequent selected synthetic work was a deliberately
+ineligible completion, which did not schedule another timer. A queue from a
+different fleet was refused before polling the stream. This does not yet test
+a second actual HTTPS setup succeeding within the same retry owner, production
+supervision, a physical camera, direct live media, or durable retention.
+
+An initial remote request was rejected before admission because the dependency
+overlay was specified in the wrong root; it ran no test. A fresh lab workspace
+matched the modified lab source and test hashes and passed locked offline
+metadata resolution. The real G4 was not modified. Its existing recorder and
+both relevant timers were active with zero recorder restarts at the later check.
+
+### Synthetic HTTPS retry through successful setup (2026-11-12 UTC)
+
+The fleet fixture now continues the same retry owner from a synthetic HTTPS
+login rejection through the bounded timer and a fresh HTTPS setup operation.
+The timer directly releases selection, with no intervening manual latch reset;
+the subsequent operation returns an observed setup result and does not
+schedule another retry. A separate synthetic stream future remains owned while
+setup progresses. In the capacity-two scenarios another synthetic controller
+upgrades during setup; afterward the fixture routes and decodes synthetic
+video, including the 2688 x 1512 profile case. The factory explicitly supplies
+the next future, credentials, trace and fresh operation ID. The test uses
+separate fixture effect journals for the failed and successful owners; it does
+not prove journal continuity, restart recovery, or a production supervisor.
+
+Strict-remote ts1 job `30106308287922308` passed the fleet-route test (1/1,
+three scenarios), exited zero, was acknowledged and released source and pair.
+Its lab overlay fingerprint was
+`ae826f37d73ca2593a446d8b42c99616d1ce84113a275bd3d2d4551e938ab772`,
+with disposable dependency commit `4fdba7851b7e8b4a5022967cdb28eb6b62c92813`.
+An earlier attempt, job `30106308287922305`, failed to compile because a
+fixture policy's lifetime did not cover the retained work; correcting its
+ownership order fixed that error. A freshly prepared lab workspace matched the
+test source hash and passed locked offline metadata resolution. The G4 was not
+modified. The recorder and both related timers remained active with zero
+recorder restarts at the post-test check. This remains synthetic evidence, not
+a real-camera retry, direct live capture, uninterrupted recording, or 30-day
+retention.
+
+### Synthetic stream during camera setup (2026-11-12 UTC)
+
+In the capacity-two fleet scenarios the synthetic camera setup is now held
+at its HTTPS login response until another simulated camera completes
+controller TLS/WebSocket negotiation, receives a stream request, sends H.264,
+and Rust demuxes and decodes at least one picture. The setup then resumes and
+returns an observed result. The concurrent stream is selected as `video1` and
+all decoded pictures are checked for 2688 x 1512 in the full-resolution case;
+the small case uses `video2`. A separate deliberately pending stream remains
+owned. The capacity-one scenario continues to test the handshake-capacity
+refusal but does not run the concurrent media phase.
+
+Strict-remote ts1 job `30106308287922313` passed the fleet-route test (1/1,
+three scenarios), exited zero, was acknowledged and released source and pair.
+The lab overlay fingerprint was
+`611716f5ad15c04b44914d7c80b5b10f56c95c1531214620b0af80435edfe06b`
+with disposable dependency commit `4fdba7851b7e8b4a5022967cdb28eb6b62c92813`.
+Job `30106308287922312` initially failed with `Conversation(Effect)`
+because the fixture authorization guard was hard-coded to the other simulated
+camera; the corrected guard binds the intended camera MAC. A fresh lab
+workspace matched the test source hash and passed locked offline metadata
+resolution. These are simulated media and identities, with independent fixture
+effect journals and synchronous work inside cooperative polls. They do not
+establish an unattended service, nonblocking performance, real-camera setup,
+direct live recording or retention. The G4 was not modified; its recorder and
+both relevant timers remained active with zero recorder restarts afterward.
+
+### Scoped TLS fleet to managed archive (2026-11-12 UTC)
+
+The scoped-entropy laboratory fleet fixture now carries the third synthetic
+camera's received H.264 through the managed video and source archive owners,
+rather than stopping at in-memory demux. It reads back the published video,
+decodes at least one picture (checking 2688 x 1512 in the high-profile case),
+reads original source records and video-linked objects, and verifies exact,
+gap-free, non-overlapping coverage of the complete synthetic FLV bytes,
+including the retired tail. The controller fixture stays open until the archive
+owner retires; a drop guard releases it on early failure. The test also retains
+the earlier parallel setup and separate-camera video phase. The caller supplies
+all authority, archive configuration, credentials and operation IDs.
+
+Strict-remote ts1 job `30106308287922321` passed the fleet-route test (1/1,
+three scenarios), exited zero, was acknowledged and released source and pair.
+The lab overlay fingerprint was
+`785cd01dd7fd509dbd4bd30634a402e983eab681e156af756dacf8de09f1791c`;
+the disposable dependency commit was
+`4fdba7851b7e8b4a5022967cdb28eb6b62c92813`. Jobs
+`30106308287922316` and `30106308287922317` failed to compile due to
+fixture formatting and ownership mistakes, respectively. Jobs
+`30106308287922318` and `30106308287922319` failed after the intentionally
+stalled handshake hit its original 10-second deadline during the longer
+archive scenario. Job `30106308287922320` was rejected by the acceptor at
+runtime because a 120-second fixture deadline exceeds its 30-second maximum.
+The passing fixture uses that supported 30-second bound; this is not a
+production latency guarantee. An earlier request was rejected before admission
+for an incorrect dependency path and executed no test.
+
+A fresh workspace prepared from the lab inputs matched the test and support
+source hashes and passed locked offline metadata resolution. This is finite
+synthetic traffic and temporary storage; it does not prove real-camera direct
+video, uninterrupted recording, restart recovery, production TLS admission,
+or 30-day retention. No camera effect was attempted. The existing trj recorder
+and both related timers were active with zero recorder restarts afterward.
+
+### Bounded preflight connection retry (2026-11-12 UTC)
+
+The experimental camera setup owner now offers bounded, task-checked retry for
+selected transient TCP/TLS connection failures before the camera HTTP owner or
+fleet setup operation is entered. It accepts at most four caller-owned entropy
+acquisitions, uses a bounded fixed delay with cancellation checkpoints, and
+keeps the attempt/retry trace outside the borrowing future. A setup error,
+authorization refusal, certificate or protocol-handshake rejection, entropy failure,
+cancellation, protocol limit or prepared camera effect is not automatically
+retried. The caller must abort and join unused or interrupted acquisition
+owners, retain both traces, and reconcile any later setup effect. Dropping an
+outer supervisor wait preserves the retained setup future; dropping the setup
+future itself requires explicit cleanup and is not an automatic resumption.
+
+Strict-remote ts1 job `30106308287922325` passed 14/14 library tests and
+1/1 fleet integration test (three scenarios), exited zero, was acknowledged,
+and released source and pair. The lab overlay fingerprint was
+`6f1264f16e72010836340db60d0bd580096881da8f42a462762150300a4310a7`
+with disposable dependency commit `4fdba7851b7e8b4a5022967cdb28eb6b62c92813`.
+The synthetic fixture first bound a non-listening socket, observed a real
+connection refusal, then listened before the next attempt. It confirmed the
+retry reached the synthetic HTTPS camera, that a dropped supervisor wait
+retained pending setup, and that denied login authority caused no retry or
+connection and left its unused acquisition for explicit abort and join. The
+focused classification test refuses handshake, authority, entropy and limit
+failures. A fresh workspace matched source/test hashes and passed locked
+offline metadata resolution. This is not deployed service behavior, real-camera
+retry, provider admission or an effect-reconciliation proof.
+
+A read-only check found the trj fallback service's current archive script uses
+a 30-day age rule, 16 matching files had been modified within 15 minutes, and
+the recorder and two related timers were active with zero recorder restarts.
+This does not prove uninterrupted coverage or 30 days of retained video. No
+physical-camera setting was changed.
+
+### Live read-only profiles through scoped TLS (2026-11-12 UTC)
+
+The experimental task-scoped snapshot probe now optionally reads sanitized
+camera-reported video profiles before decoding the JPEG. The option permits
+only the existing read-only settings operation and reports each numeric field
+as reported, missing, or unsupported; it does not expose serializer
+destinations or credentials. The default request sequence remains unchanged.
+
+The Linux build ran on ts1 in strict-remote job `30106308287922326`: Cargo
+exited zero, while the macOS wrapper returned 102 because it refused to
+install a foreign Linux executable. The result was acknowledged and source
+and pair were released. The retained Linux executable SHA-256 was
+`f761ad981c4ca7fd5ba8156e7e7b752a57c4b625d4a6117631e2b526761e36ec`.
+Separately on ts1, an independent synthetic P-256 fixture passed five cases:
+default snapshot, wrong pin before credential access, truncated image, normal
+profiles, and missing/unsupported fields. Its first run passed the first four
+and failed the last because the fixture response had an extra JSON delimiter;
+the corrected fixture passed 5/5. This process fixture was not part of the
+Cargo build job. A freshly prepared workspace matched the probe and fixture
+hashes and passed locked offline metadata resolution.
+
+The SHA-matched binary then ran once on trj against the owner's observed G4
+with the previously network-observed certificate pin and private credential
+file. It completed TLS, login and status, read the current settings and decoded
+a 640 x 360 JPEG in memory without deliberately persisting it. The camera
+reported video1 as 2688 x 1512 at 30 fps, video2 as 1280 x 720 at 30 fps,
+video3 as 640 x 360 at 15 fps, and the JPEG profile as 640 x 360 at 2 fps.
+These are device-reported settings, not proof of full-resolution media
+delivery, independently established physical identity or capture time. The
+login may create a camera session whose expiry is unknown. No camera setting,
+prior indeterminate handoff or time-sync effect was changed or retried.
+Afterward the existing recorder and both related timers were active with zero
+recorder restarts; 16 matching fallback files had been modified in the prior
+15 minutes. This is not proof of uninterrupted recording.
+
+### Bounded selection of reported camera profiles (2026-11-12 UTC)
+
+The shared camera API now selects among three reported video profiles using
+caller-supplied width, height, frame-rate and pixel-rate limits. It ranks
+eligible reported profiles by pixel area, then frame rate, then channel order;
+missing, unsupported, zero and out-of-limit values remain explicitly
+classified. Overflowing pixel-rate calculations are outside limits. The
+result is an untrusted planning claim, not proof of codec support, stream
+delivery, camera identity, freshness, or authority to change settings.
+
+Strict-remote ts1 job `30106308287922327` passed the camera API contract
+(12/12 tests), exited zero, was acknowledged and released source and pair.
+Its overlay fingerprint was
+`183f152f0ead7d4875bbfc0ac33407cd6ce8be8d811cb25668e5a56a7ba08728`.
+The tests cover the G4-shaped report, dimension and pixel-rate restrictions,
+missing and unsupported values, no candidate, deterministic ties, overflow and
+invalid limits.
+
+The scoped read-only probe now reports the highest complete profile with
+resource limits explicitly marked as not applied. Linux build job
+`30106308287922328` had remote Cargo exit zero and wrapper exit 102 because
+the Mac rejected the foreign executable; it was acknowledged and released
+source and pair. Its disposable dependency commit
+`5e02059d9c52096512fd416b62a4685299707a7f` contained a camera API source
+matching the project source. Separately on ts1, the synthetic process fixture
+passed 5/5 cases, including incomplete profile claims. A fresh workspace
+matched the probe and fixture source hashes and passed locked offline metadata
+resolution.
+
+The SHA-matched Linux probe
+`e6bba1d7237728f8cd50cd2def48da22146eb3cb2e0097b9706b1701e80dbec6`
+then ran once against the owner's observed G4 on trj using the existing
+network-observed certificate pin. It completed read-only login, status,
+settings and an in-memory 640 x 360 snapshot; it selected the camera-reported
+video1 claim of 2688 x 1512 at 30 fps with no resource limits applied. No
+camera setting was changed. A login session may remain until an unknown expiry;
+the pin is not independent physical-identity proof. This is not real
+full-resolution media delivery, automatic stream setup, a production service,
+continuous native recording or retention. The fallback recorder and its two
+timers remained active with zero recorder restarts; 16 matching files were
+modified in the preceding 15 minutes.
+
+### Setup-observed profile drives synthetic capture (2026-11-12 UTC)
+
+A setup outcome that contains a settings observation can now apply the bounded
+reported-profile selector without another login. Outcomes without a settings
+observation return no selection. This is advisory: the outcome and any handoff
+permit remain caller-owned, and selection does not settle the effect, prove
+adoption, authenticate the camera or grant stream authority.
+
+The scoped fleet fixture now gives its simulated camera reported video1, video2
+and video3 profiles and verifies the requested controller-address readback.
+After setup, it selects video1 for the high-resolution limits and video2 for
+the constrained limits, passes that channel into the tracked stream startup,
+then archives and reads back the synthetic media with complete source-byte
+coverage. A separate simulated camera still sends and decodes video while setup
+is held open. The caller explicitly supplies limits, credentials, identities,
+operation IDs and effect authority; the fixture does not constitute an
+unattended deployment or settle the synthetic handoff.
+
+Strict-remote ts1 job `30106308287922329` passed the scoped fleet test (1/1,
+three scenarios), exited zero, was acknowledged and released source and pair.
+Its lab overlay fingerprint was
+`297b9babca98f02bfd36165a7dfbc203ac7416ddc16aaae32e9a2b175228bae9`
+and its disposable dependency commit was
+`c12328f7f730145adf09b5342e833afc5f8bd9f3`. Job
+`30106308287922330` passed the camera API contract (12/12), including
+selection from an already-associated setup outcome, on the same dependency
+commit with overlay
+`8c365c6cc23f0c4a6ab57b56834b4a18ef504776b117c78101df4f206adbc27c`.
+It exited zero, was acknowledged and released source and pair. The relevant
+dependency source hashes matched the project checkout; a freshly prepared lab
+workspace matched the fixture hash and passed locked offline metadata
+resolution.
+
+No physical-camera setting was changed. The fallback recorder and its two
+timers were active with zero recorder restarts afterward. This does not prove a
+real G4 handoff, direct full-resolution video, uninterrupted native recording,
+or 30-day retention.
+
+### Task-scoped setup-to-controller bridge (2026-11-12 UTC)
+
+The scoped TLS lab now exposes a reusable setup-to-controller upgrade path
+for an eventual executable. It runs the existing tracked setup and accept
+once, then uses one already-drained task-bound entropy lease per controller
+TLS attempt. Only an early TLS EOF may admit a fresh connection from the
+selected source claim; it never replays setup. The caller retains unused
+leases, the setup trace and the effect journal, including on failure or
+cancellation. Before setup, the bridge rejects invalid bounds, mismatched
+leases, an already-scoped TLS configuration and enabled TLS tickets.
+Neither the source/MAC claims nor a successful upgrade authenticate the
+physical camera or reconcile its handoff.
+
+Strict-remote ts1 job `30106308287922334` passed the scoped fleet integration
+test (1/1, three scenarios) and exited zero, was acknowledged, and released
+source and pair. The overlay fingerprint was
+`4b0ed133887be51b169bfae03e08a6eae72523f4d63b65120703efc55e5f8a7a`
+with disposable dependency commit
+`c12328f7f730145adf09b5342e833afc5f8bd9f3`. A synthetic camera performed
+one setup, dropped its first controller connection before TLS, then completed
+a TLS/WebSocket upgrade with a second lease. Invalid polling bounds, a
+different-camera lease and enabled tickets were refused before setup while
+leaving the trace and leases unconsumed. The same fixture subsequently ran
+the existing synthetic setup, stream and archive scenarios. The Cargo test
+output for the library target was truncated in the tool display; the retained
+library test binary was run separately on ts1 and passed 14/14 tests. A fresh
+lab workspace matched the new bridge and fixture hashes and passed locked
+offline metadata resolution.
+
+The bridge is experimental library code, not a standalone recorder. It has
+not been exercised against the physical G4 and does not admit the TLS provider
+for production, establish identity, reconcile the prior handoff or prove
+continuous recording. No real camera setting was changed; the existing
+recorder and both related timers remained active with zero restarts afterward.
+
+### Scoped direct trial and reported profile (2026-11-12 UTC)
+
+The bounded Linux trial now connects the scoped TLS bridge to setup, profile
+selection and capture. On ts1, five simulated-camera cases passed, including
+setup selecting video1 and independently decoding six synthetic frames at
+2688 x 1512. The detailed command outcomes, source identities, the failed
+all-keyframe fixture attempt, and remaining cancellation, entropy, identity,
+effect-reconciliation, archive and production limits are recorded in
+`experiments/unifi_tls_scoped_entropy_lab/README.md` under “Scoped direct
+trial with profile selection.” This is not a real-camera full-resolution
+capture or a replacement for the current recorder.
+
+The same scoped executable has now passed the synthetic setup-to-managed-
+archive path, including three 2688 x 1512 video segments across two journal
+generations, source-checked readback, and a five-frame Rust decode. A separate
+three-segment synthetic A/V case read back audio packets and decoded video;
+its synthetic audio was not decoded. The fixture and failure history are
+recorded in the scoped lab README under “Scoped setup through managed archive.”
+Neither case establishes physical-camera capture, continuous recording or
+30-day retention.
+
+The scoped trial's run identity subsequently moved from ambient randomness
+to a task-bound, single-use entropy lease. The targeted nonce and run-ID
+tests passed on ts1, and all seven synthetic process cases passed again
+against the updated executable. The scoped lab README records the exact build
+and test receipts. This does not qualify full enclosing-task cancellation or
+the experimental TLS provider for production.
+
+The scoped setup path now checks for an eligible camera-reported profile
+before preparing a handoff when automatic profile selection is requested.
+A simulated missing-profile case reproduced the prior unwanted handoff and
+then passed with no dispatch; stable and changed post-handoff cases also
+passed. The scoped lab README records all nine process cases and exact test
+receipts under “Video-profile preflight before handoff.” An explicit channel
+remains an override; neither profile claims nor synthetic tests establish
+physical identity, real-camera video or continuous recording.
+
+The fleet setup trace now supports the same opt-in preflight and withholds a
+route when the selected reported profile changes after setup. A synthetic
+multi-camera scenario exercised that refusal while retaining the handoff
+outcome. The scoped lab README records the four fleet scenarios, focused
+tests, default-stack failures and explicit 16 MiB fixture-thread limit under
+“Fleet profile preflight and route withholding.” This does not qualify a
+production stack, automatic enrollment or real-camera recording.
+
+### Bounded automatic retries for fleet setup (2026-11-12 UTC)
+
+The fleet now separates an explicitly requested retry before an effect from
+automatic retry. Only a returned, pre-effect timeout or selected transient
+connection error is automatically scheduled for the exact completed operation.
+Credential, authorization, malformed-response and unavailable-profile
+refusals are not automatically retried. A prepared or interrupted effect is
+not made retryable by this classification. Explicit retry retains the existing
+pre-effect, operation-identity and bounded-attempt checks.
+
+On ts1, the selected reference tests passed (one classification test, one
+rearm-state test, seven standard setup cases and three separately invoked
+worker-interface cases). A synthetic fleet test passed four scenarios,
+including an EOF automatically retried, a 403 refused automatic retry but
+explicitly scheduled, and synthetic full-resolution video. The detailed job
+and source receipts are in the lab README under “Automatic retry classification.”
+These are synthetic results, not proof of camera identity, direct G4 video,
+production TLS, uninterrupted recording or 30-day retention. A connection
+failure during login may leave a camera session whose expiry is unknown.
+
+### Pre-hello clock hypothesis through full-resolution archive (2026-11-12 UTC)
+
+The scoped process fixture now compares the conservative clock policy with
+the opt-in bounded continuing policy on a synthetic camera. Both first send
+an uncorrelated pre-hello time-sync request and then a request correlated to
+the controller's reply. The conservative policy does not answer the second
+request and retains an effect requiring reconciliation. With the continuing
+policy, a synthetic controller handoff, both clock replies, video1 selection,
+three full-resolution archived segments across two generations, and a
+five-frame Rust decode completed in one run. All 11 fixture cases passed.
+
+The earlier physical G4 observation included an uncorrelated and a correlated
+request, but did not establish whether the latter referred to our reply. This
+fixture tests one plausible explanation; it does not prove the physical cause
+or authorize another camera effect. The complete source and process receipts
+are in the lab README under “Pre-hello clock hypothesis through archive.”

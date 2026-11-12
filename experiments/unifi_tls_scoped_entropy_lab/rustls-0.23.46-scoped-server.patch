@@ -1,0 +1,114 @@
+diff --git a/vendor/rustls/src/crypto/mod.rs b/vendor/rustls/src/crypto/mod.rs
+index 1060d13..c7f79a8 100644
+--- a/vendor/rustls/src/crypto/mod.rs
++++ b/vendor/rustls/src/crypto/mod.rs
+@@ -327,6 +327,18 @@ pub trait SecureRandom: Send + Sync + Debug {
+     }
+ }
+ 
++/// Laboratory API: server key exchange that receives its connection-scoped
++/// randomness explicitly. This is not an upstream or production API.
++pub trait ScopedServerKx: Send + Sync + Debug {
++    /// Start and complete an exchange using only the supplied random source.
++    fn start_and_complete(
++        &self,
++        group: NamedGroup,
++        peer: &[u8],
++        random: &dyn SecureRandom,
++    ) -> Result<CompletedKeyExchange, Error>;
++}
++
+ /// A mechanism for loading private [`SigningKey`]s from [`PrivateKeyDer`].
+ ///
+ /// This trait is intended to be used with private key material that is sourced from DER,
+diff --git a/vendor/rustls/src/server/builder.rs b/vendor/rustls/src/server/builder.rs
+index 22b30ab..c8b58b6 100644
+--- a/vendor/rustls/src/server/builder.rs
++++ b/vendor/rustls/src/server/builder.rs
+@@ -105,6 +105,8 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
+ 
+         ServerConfig {
+             provider: self.provider,
++            scoped_random: None,
++            scoped_kx: None,
+             verifier: self.state.verifier,
+             cert_resolver,
+             ignore_client_order: false,
+diff --git a/vendor/rustls/src/server/hs.rs b/vendor/rustls/src/server/hs.rs
+index 98081ab..fd9429f 100644
+--- a/vendor/rustls/src/server/hs.rs
++++ b/vendor/rustls/src/server/hs.rs
+@@ -510,7 +510,7 @@ impl ExpectClientHello {
+         // Save their Random.
+         let randoms = ConnectionRandoms::new(
+             client_hello.random,
+-            Random::new(self.config.provider.secure_random)?,
++            Random::new(self.config.server_random())?,
+         );
+         match suite {
+             SupportedCipherSuite::Tls13(suite) => tls13::CompleteClientHelloHandling {
+diff --git a/vendor/rustls/src/server/server_conn.rs b/vendor/rustls/src/server/server_conn.rs
+index 2cfd8b8..a23e1be 100644
+--- a/vendor/rustls/src/server/server_conn.rs
++++ b/vendor/rustls/src/server/server_conn.rs
+@@ -298,6 +298,11 @@ pub struct ServerConfig {
+     /// Source of randomness and other crypto.
+     pub(super) provider: Arc<CryptoProvider>,
+ 
++    /// Laboratory-only per-configuration server randomness.
++    pub scoped_random: Option<Arc<dyn crate::crypto::SecureRandom>>,
++    /// Laboratory-only key exchange using that same random source.
++    pub scoped_kx: Option<Arc<dyn crate::crypto::ScopedServerKx>>,
++
+     /// Ignore the client's ciphersuite order. Instead,
+     /// choose the top ciphersuite in the server list
+     /// which is supported by the client.
+@@ -462,6 +467,9 @@ pub struct ServerConfig {
+ }
+ 
+ impl ServerConfig {
++    pub(crate) fn server_random(&self) -> &dyn crate::crypto::SecureRandom {
++        self.scoped_random.as_deref().unwrap_or(self.provider.secure_random)
++    }
+     /// Create a builder for a server configuration with
+     /// [the process-default `CryptoProvider`][CryptoProvider#using-the-per-process-default-cryptoprovider]
+     /// and safe protocol version defaults.
+@@ -1223,6 +1231,12 @@ impl ConnectionCore<ServerConnectionData> {
+         config: Arc<ServerConfig>,
+         extra_exts: ServerExtensionsInput<'static>,
+     ) -> Result<Self, Error> {
++        if config.scoped_random.is_some() != config.scoped_kx.is_some() {
++            return Err(Error::General("incomplete scoped entropy configuration".into()));
++        }
++        if config.scoped_random.is_some() && config.versions.contains(ProtocolVersion::TLSv1_2) {
++            return Err(Error::General("scoped entropy experiment admits TLS 1.3 only".into()));
++        }
+         let mut common = CommonState::new(Side::Server);
+         common.set_max_fragment_size(config.max_fragment_size)?;
+         common.enable_secret_extraction = config.enable_secret_extraction;
+diff --git a/vendor/rustls/src/server/tls13.rs b/vendor/rustls/src/server/tls13.rs
+index 55e32f1..ac01205 100644
+--- a/vendor/rustls/src/server/tls13.rs
++++ b/vendor/rustls/src/server/tls13.rs
+@@ -537,8 +537,10 @@ mod client_hello {
+         // Prepare key exchange; the caller already found the matching SupportedKxGroup
+         let (share, kxgroup) = share_and_kxgroup;
+         debug_assert_eq!(kxgroup.name(), share.group);
+-        let ckx = kxgroup
+-            .start_and_complete(&share.payload.0)
++        let ckx = match &config.scoped_kx {
++            Some(scoped) => scoped.start_and_complete(kxgroup.name(), &share.payload.0, config.server_random()),
++            None => kxgroup.start_and_complete(&share.payload.0),
++        }
+             .map_err(|err| {
+                 cx.common
+                     .send_fatal_alert(AlertDescription::IllegalParameter, err)
+@@ -1332,7 +1334,7 @@ impl ExpectFinished {
+         resumption: &KeyScheduleResumption,
+         config: &ServerConfig,
+     ) -> Result<(), Error> {
+-        let secure_random = config.provider.secure_random;
++        let secure_random = config.server_random();
+         let nonce = rand::random_vec(secure_random, 32)?;
+         let age_add = rand::random_u32(secure_random)?;
+ 

@@ -1,0 +1,172 @@
+diff --git a/vendor/rustls/src/client/builder.rs b/vendor/rustls/src/client/builder.rs
+index ccecde2..1c78ef7 100644
+--- a/vendor/rustls/src/client/builder.rs
++++ b/vendor/rustls/src/client/builder.rs
+@@ -166,6 +166,8 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
+         let require_ems = self.provider.fips();
+ 
+         ClientConfig {
++            scoped_random: None,
++            scoped_kx: None,
+             provider: self.provider,
+             alpn_protocols: Vec::new(),
+             check_selected_alpn: true,
+diff --git a/vendor/rustls/src/client/client_conn.rs b/vendor/rustls/src/client/client_conn.rs
+index 77b2dc5..2208521 100644
+--- a/vendor/rustls/src/client/client_conn.rs
++++ b/vendor/rustls/src/client/client_conn.rs
+@@ -245,6 +245,11 @@ pub struct ClientConfig {
+     /// Provides the current system time
+     pub time_provider: Arc<dyn TimeProvider>,
+ 
++    /// Experimental connection-scoped client random source.
++    pub scoped_random: Option<Arc<dyn crate::crypto::SecureRandom>>,
++    /// Experimental client key exchange using that same random source.
++    pub scoped_kx: Option<Arc<dyn crate::crypto::ScopedClientKx>>,
++
+     /// Source of randomness and other crypto.
+     pub(super) provider: Arc<CryptoProvider>,
+ 
+@@ -306,6 +311,17 @@ pub struct TicketRequest {
+ }
+ 
+ impl ClientConfig {
++    pub(super) fn secure_random(&self) -> &dyn crate::crypto::SecureRandom {
++        self.scoped_random.as_deref().unwrap_or(self.provider.secure_random)
++    }
++    pub(super) fn start_scoped_kx(&self, group: &'static dyn SupportedKxGroup)
++        -> Result<alloc::boxed::Box<dyn crate::crypto::ActiveKeyExchange>, Error> {
++        match &self.scoped_kx {
++            Some(kx) => kx.start(group.name(), self.secure_random()),
++            None => group.start(),
++        }
++    }
++
+     /// Create a builder for a client configuration with
+     /// [the process-default `CryptoProvider`][CryptoProvider#using-the-per-process-default-cryptoprovider]
+     /// and safe protocol version defaults.
+@@ -394,7 +410,7 @@ impl ClientConfig {
+     /// is concerned only with cryptography, whereas this _also_ covers TLS-level
+     /// configuration that NIST recommends, as well as ECH HPKE suites if applicable.
+     pub fn fips(&self) -> bool {
+-        let mut is_fips = self.provider.fips();
++        let mut is_fips = self.provider.fips() && self.scoped_random.is_none() && self.scoped_kx.is_none();
+ 
+         #[cfg(feature = "tls12")]
+         {
+@@ -874,6 +890,14 @@ impl ConnectionCore<ClientConnectionData> {
+         extra_exts: ClientExtensionsInput<'static>,
+         proto: Protocol,
+     ) -> Result<Self, Error> {
++        if config.scoped_random.is_some() != config.scoped_kx.is_some() {
++            return Err(Error::General("incomplete scoped client randomness".into()));
++        }
++        if config.scoped_random.is_some() &&
++            (config.versions.contains(ProtocolVersion::TLSv1_2) || config.ech_mode.is_some()
++                || config.enable_early_data || !matches!(proto, Protocol::Tcp)) {
++            return Err(Error::General("unsupported scoped client mode".into()));
++        }
+         let mut common_state = CommonState::new(Side::Client);
+         common_state.set_max_fragment_size(config.max_fragment_size)?;
+         common_state.protocol = proto;
+diff --git a/vendor/rustls/src/client/hs.rs b/vendor/rustls/src/client/hs.rs
+index 5e90b6a..be99d43 100644
+--- a/vendor/rustls/src/client/hs.rs
++++ b/vendor/rustls/src/client/hs.rs
+@@ -95,7 +95,7 @@ impl ClientHelloInput {
+                         // we're  doing an abbreviated handshake.  See section 3.4 in
+                         // RFC5077.
+                         if !inner.ticket().0.is_empty() {
+-                            inner.session_id = SessionId::random(config.provider.secure_random)?;
++                            inner.session_id = SessionId::random(config.secure_random())?;
+                         }
+                         Some(inner.session_id)
+                     }
+@@ -116,7 +116,7 @@ impl ClientHelloInput {
+             None if !config.supports_version(ProtocolVersion::TLSv1_3, cx.common.protocol) => {
+                 SessionId::empty()
+             }
+-            None => SessionId::random(config.provider.secure_random)?,
++            None => SessionId::random(config.secure_random())?,
+         };
+ 
+         let hello = ClientHelloDetails::new(
+@@ -124,12 +124,12 @@ impl ClientHelloInput {
+                 .protocols
+                 .clone()
+                 .unwrap_or_default(),
+-            crate::rand::random_u16(config.provider.secure_random)?,
++            crate::rand::random_u16(config.secure_random())?,
+         );
+ 
+         Ok(Self {
+             resuming,
+-            random: Random::new(config.provider.secure_random)?,
++            random: Random::new(config.secure_random())?,
+             sent_tls13_fake_ccs: false,
+             hello,
+             session_id,
+@@ -406,6 +406,7 @@ fn emit_client_hello_for_retry(
+         .ech_mode
+         .as_ref()
+         .and_then(|mode| match mode {
++            // Scoped client mode rejects ECH before handshake creation.
+             EchMode::Grease(cfg) => Some(cfg.grease_ext(
+                 config.provider.secure_random,
+                 input.server_name.clone(),
+@@ -1030,7 +1031,7 @@ impl ExpectServerHelloOrHelloRetryRequest {
+                 };
+ 
+                 cx.common.kx_state = KxState::Start(skxg);
+-                skxg.start()?
++                config.start_scoped_kx(skxg)?
+             }
+             _ => offered_key_share,
+         };
+diff --git a/vendor/rustls/src/client/tls13.rs b/vendor/rustls/src/client/tls13.rs
+index 8678c1d..55b9c52 100644
+--- a/vendor/rustls/src/client/tls13.rs
++++ b/vendor/rustls/src/client/tls13.rs
+@@ -324,7 +324,7 @@ pub(super) fn initial_key_share(
+         });
+ 
+     *kx_state = KxState::Start(group);
+-    group.start()
++    config.start_scoped_kx(group)
+ }
+ 
+ /// This implements the horrifying TLS1.3 hack where PSK binders have a
+diff --git a/vendor/rustls/src/crypto/mod.rs b/vendor/rustls/src/crypto/mod.rs
+index c7f79a8..e87ee60 100644
+--- a/vendor/rustls/src/crypto/mod.rs
++++ b/vendor/rustls/src/crypto/mod.rs
+@@ -339,6 +339,14 @@ pub trait ScopedServerKx: Send + Sync + Debug {
+     ) -> Result<CompletedKeyExchange, Error>;
+ }
+ 
++/// Laboratory API: start a client key exchange with connection-scoped randomness.
++/// This API is experimental and is not part of upstream Rustls.
++pub trait ScopedClientKx: Send + Sync + Debug {
++    /// Start the named key exchange using the supplied randomness.
++    fn start(&self, group: NamedGroup, random: &dyn SecureRandom)
++        -> Result<Box<dyn ActiveKeyExchange>, Error>;
++}
++
+ /// A mechanism for loading private [`SigningKey`]s from [`PrivateKeyDer`].
+ ///
+ /// This trait is intended to be used with private key material that is sourced from DER,
+diff --git a/vendor/rustls/src/server/server_conn.rs b/vendor/rustls/src/server/server_conn.rs
+index a23e1be..d448e7c 100644
+--- a/vendor/rustls/src/server/server_conn.rs
++++ b/vendor/rustls/src/server/server_conn.rs
+@@ -559,6 +559,10 @@ impl ServerConfig {
+     /// is concerned only with cryptography, whereas this _also_ covers TLS-level
+     /// configuration that NIST recommends.
+     pub fn fips(&self) -> bool {
++        // Laboratory hooks have not been certified as FIPS implementations.
++        if self.scoped_random.is_some() || self.scoped_kx.is_some() {
++            return false;
++        }
+         #[cfg(feature = "tls12")]
+         {
+             self.provider.fips() && self.require_ems
