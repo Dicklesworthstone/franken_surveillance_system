@@ -722,7 +722,8 @@ fn preview_affected(
         return make_receipt(affected);
     }
     let deletions = DeletionIndex::read(deployment)?;
-    let holds = crate::deletion::holds::HoldIndex::read(deployment, cx)?;
+    let holds =
+        crate::deletion::holds::HoldIndex::read(deployment, cx).map_err(DeletionError::from)?;
     let mut universe = crate::deletion::walk::Universe::scan(deployment, &deletions, cx)?;
     let matches = |plan: &DeletionPlan| {
         matches!(&plan.scope, DeletionScope::Retention(selection) if selection.request() == &inline)

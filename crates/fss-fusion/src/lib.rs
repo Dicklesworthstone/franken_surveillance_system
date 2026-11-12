@@ -39,6 +39,7 @@
 //! Nothing here reads a clock, the filesystem or the network; the caller supplies `now`. A
 //! decision is derived cognition: it grants no effect authority.
 
+pub mod ablation;
 pub mod calibration;
 pub mod eprocess;
 pub mod probability;
@@ -48,6 +49,10 @@ mod decide;
 mod log_table;
 mod model;
 
+pub use ablation::{
+    AblationTarget, AblationWork, FUSION_ABLATION_DOMAIN, FUSION_ABLATION_IMPLEMENTATION,
+    FUSION_ABLATION_SCHEMA, FusionAblation, MAX_ABLATION_TARGETS, ablate,
+};
 pub use calibration::{ScoreBin, ScoreCalibration};
 pub use decide::fuse;
 pub use eprocess::{
