@@ -2385,11 +2385,26 @@ fn parallel_fleet_upgrade_scenario(
                             camera_upgrade_peer(endpoint, PEERS[1], tls_client, "001122aabbdd")
                         })));
                         let mut after_unresolved_installed = false;
+                        let mut refreshed_stall = false;
                         loop {
                             match timeout(cx.now(), Duration::from_secs(5), supply.next_with_automatic_streams(&mut pump, &mut auto_setup, &mut auto_streams, &mut auto_retries, &mut no_setup, &mut make_stream)).await?.map_err(|e| format!("unresolved stream admission: {e:?}"))? {
                                 AutoRoutedFleetEvent::StreamRefused { index: 1, refusal: RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::PreviousUnresolved, session } } => { drop(session); break; }
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(_)))))), .. }) => (),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(i)))))), .. }) => { if i == 1 { after_unresolved_installed = true; } },
+                                // The intentionally silent camera-0 handshake has a
+                                // real 30-second deadline. A slow full-resolution
+                                // archive can outlive it; verify closure and renew
+                                // that test fixture without relaxing the deadline.
+                                AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed {
+                                    index: 0, reason: fss_reference::unifi_direct::controller_upgrade::Error::Deadline,
+                                }))))), .. }) if !refreshed_stall => {
+                                    let mut byte = [0_u8; 1];
+                                    assert!(matches!(timeout(cx.now(), Duration::from_secs(5), stalled.read(&mut byte)).await?, Ok(0)));
+                                    let socket = asupersync::net::TcpSocket::new_v4()?;
+                                    socket.bind(SocketAddr::V4(SocketAddrV4::new(PEERS[0], 0)))?;
+                                    stalled = socket.connect(SocketAddr::V4(endpoint)).await?;
+                                    refreshed_stall = true;
+                                }
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. }) => return Err(format!("unresolved stream route refused: index={index:?} reason={reason:?}").into()),
                                 AutoRoutedFleetEvent::Progress(RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::HandshakeFailed { index, reason }))))), .. }) => return Err(format!("unresolved stream handshake failed: index={index} reason={reason:?}").into()),
                                 _ => return Err("unresolved stream was not fenced".into()),
