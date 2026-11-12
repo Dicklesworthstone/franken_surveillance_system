@@ -1,8 +1,13 @@
 #![forbid(unsafe_code)]
-//! Pure deterministic JSON projection of sequential fusion receipts.
+//! Pure deterministic JSON projection of numerical fusion and sequential receipts.
 //!
 //! Shared by supervisor reports and offline checkpoint continuation so both adapters expose
 //! the same complete source admission and numerical transcript without loading runtime owners.
+
+mod ablation;
+pub use ablation::{
+    MAX_ABLATION_REPORT_BYTES, fusion_ablation_json, fusion_outcome_json, fusion_query_json,
+};
 
 use fss_fusion::{
     EPROCESS_TRANSCRIPT_SCHEMA, EProcessStepInput, EProcessTranscript, SourceDisposition,

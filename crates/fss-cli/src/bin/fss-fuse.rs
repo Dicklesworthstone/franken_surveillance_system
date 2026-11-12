@@ -17,14 +17,16 @@ use fss_cli::escape_json_str;
 use fss_cli::json_input::{Value, read_document};
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_fusion::{
-    Calibration, Coverage, Decision, EvidenceItem, FusionOutcome, FusionPolicy, FusionQuery,
-    LlrInterval, Observability, Opportunity, Probe, ScoreCalibration, Severity, fuse,
+    AblationTarget, Calibration, Coverage, Decision, EvidenceItem, FusionOutcome, FusionPolicy,
+    FusionQuery, LlrInterval, Observability, Opportunity, Probe, ScoreCalibration, Severity, fuse,
 };
 use fss_graph_algorithms::certified::Budget;
 use fss_graph_algorithms::temporal::{
     self, Reachability, TemporalNetworkBuilder, TemporalOutput, Transit,
 };
 
+#[path = "fss-fuse/ablation.rs"]
+mod ablation;
 #[path = "fss-fuse/sequence.rs"]
 mod sequence;
 
@@ -36,10 +38,17 @@ const TRANSIT_INTERVALS: u32 = 4_096;
 const MAX_CALIBRATIONS: usize = 16;
 
 const HELP: &str = "fss-fuse --query QUERY.json|- [--calibration EVALUATION.json]...\n\
+  [--without-sensor ID]... [--without-domain DOMAIN]...\n\
 fss-fuse --sequence STEPS.json|- --checkpoint-out NEW_FILE [--calibration EVALUATION.json]...\n\
   [--checkpoint-in PRIOR_FILE --checkpoint-digest sha256:HEX]\n\
 Use fss-fuse --sequence-help for bounded source-once continuation and checkpoint semantics.\n\n\
 --query is read-only and prints a fss.fusion_outcome.v1 JSON decision to stdout.\n\
+With --without-sensor or --without-domain it prints fss.fusion_ablation_report.v1 instead.\n\
+One to sixteen unique selectors form one simultaneous source-loss explanation, with full\n\
+original/projected replay queries, re-clustered decisions and calibration provenance.\n\
+Every selector must match a declared input or future choice. Coverage never improves;\n\
+missing evidence stays explicit. Policy, evidence-clock time and look count do not change.\n\
+Ablation options apply only to --query, never to checkpoint sequences.\n\
 --sequence writes one new derived checkpoint and a fss.fusion_sequence_report.v1 report.\n\
 Neither mode publishes events, activates thresholds or sends alerts; advice grants no effect authority.\n\n\
 Query (schema fss.fusion_query.v2; v1 remains readable): hypothesis, kind, prior ([lo, hi]\n\
@@ -836,7 +845,7 @@ fn run(args: Vec<OsString>) -> Result<String> {
     if sequence::selected(&args) {
         return sequence::run(args);
     }
-    if args.len() > 2 * (MAX_CALIBRATIONS + 1) {
+    if args.len() > 2 * (MAX_CALIBRATIONS + fss_fusion::MAX_ABLATION_TARGETS + 1) {
         return Err(fail("fusion.cli.arguments_limit", "too many arguments"));
     }
     if args.len() == 1 && args[0] == "--help" {
@@ -844,12 +853,16 @@ fn run(args: Vec<OsString>) -> Result<String> {
     }
     let mut query_path = None;
     let mut calibration_paths = Vec::new();
+    let mut targets = Vec::new();
     let mut iter = args.into_iter();
     while let Some(flag) = iter.next() {
         let flag = flag
             .into_string()
             .map_err(|_| fail("fusion.cli.invalid_unicode", "argument"))?;
-        if !matches!(flag.as_str(), "--query" | "--calibration") {
+        if !matches!(
+            flag.as_str(),
+            "--query" | "--calibration" | "--without-sensor" | "--without-domain"
+        ) {
             return Err(fail("fusion.cli.unknown_option", flag));
         }
         let value = iter
@@ -861,12 +874,24 @@ fn run(args: Vec<OsString>) -> Result<String> {
             if query_path.replace(value).is_some() {
                 return Err(fail("fusion.cli.duplicate_option", flag));
             }
-        } else {
+        } else if flag == "--calibration" {
             calibration_paths.push(value);
             if calibration_paths.len() > MAX_CALIBRATIONS {
                 return Err(fail(
                     "fusion.cli.arguments_limit",
                     "at most sixteen calibration artifacts are accepted",
+                ));
+            }
+        } else {
+            targets.push(if flag == "--without-sensor" {
+                AblationTarget::Sensor(value)
+            } else {
+                AblationTarget::FailureDomain(value)
+            });
+            if targets.len() > fss_fusion::MAX_ABLATION_TARGETS {
+                return Err(fail(
+                    "fusion.cli.arguments_limit",
+                    "at most sixteen simultaneous ablation targets are accepted",
                 ));
             }
         }
@@ -905,6 +930,9 @@ fn run(args: Vec<OsString>) -> Result<String> {
     let document =
         read_document(&query_path).map_err(|detail| fail("fusion.cli.query_unreadable", detail))?;
     let (query, transit, bindings) = parse_query(&document, &calibrations)?;
+    if !targets.is_empty() {
+        return ablation::run(&query, &targets, &calibrations, &bindings, transit.as_ref());
+    }
     let outcome = fuse(&query).map_err(|error| fail(error.stable_id(), error.to_string()))?;
     let input_binding_digest = bindings.digest(outcome.query_digest)?;
     Ok(outcome_json(
@@ -919,7 +947,7 @@ fn run(args: Vec<OsString>) -> Result<String> {
 fn main() -> ExitCode {
     let args = std::env::args_os()
         .skip(1)
-        .take(2 * (MAX_CALIBRATIONS + 5) + 1)
+        .take(2 * (MAX_CALIBRATIONS + fss_fusion::MAX_ABLATION_TARGETS + 5) + 1)
         .collect();
     match run(args) {
         Ok(output) => {

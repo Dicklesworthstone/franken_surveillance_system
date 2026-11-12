@@ -1,0 +1,749 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/fusion_ablation.v1.json",
+  "title": "fss.fusion_ablation.v1",
+  "description": "One simultaneous source-loss counterfactual. Remaining usable evidence is re-clustered; coverage never improves, uncertainty persists and policy/time/look count remain unchanged. Reproduction is not a source, independence, absence or effect certificate. Cross-field consistency, digest reproduction and byte limits are enforced by the owner.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "implementation",
+    "targets",
+    "baseline",
+    "counterfactual",
+    "unavailable_evidence",
+    "removed_opportunities",
+    "removed_probes",
+    "work",
+    "ablation_digest",
+    "event_policy_changed",
+    "effect_authority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.fusion_ablation.v1"
+    },
+    "implementation": {
+      "const": "fss-fusion:ablation:unavailable-evidence:recluster:coverage-gap:v1"
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "identity"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "sensor",
+              "failure_domain"
+            ]
+          },
+          "identity": {
+            "$ref": "#/$defs/text"
+          }
+        }
+      }
+    },
+    "baseline": {
+      "$ref": "#/$defs/side"
+    },
+    "counterfactual": {
+      "$ref": "#/$defs/side"
+    },
+    "unavailable_evidence": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "removed_opportunities": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "removed_probes": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selector_item_checks",
+        "fusion_evaluations"
+      ],
+      "properties": {
+        "selector_item_checks": {
+          "type": "string",
+          "pattern": "^(?:[0-9]|[1-9][0-9]{1,2}|[1-5][0-9]{3}|60[0-9]{2}|61[0-3][0-9]|614[0-4])$"
+        },
+        "fusion_evaluations": {
+          "const": 2
+        }
+      }
+    },
+    "ablation_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "event_policy_changed": {
+      "const": false
+    },
+    "effect_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+      "description": "The native reader additionally enforces a maximum of 256 UTF-8 bytes, rather than 256 Unicode code points."
+    },
+    "u64Text": {
+      "type": "string",
+      "pattern": "^(?:0|(?:[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]|1844674407370955161[0-4]|18446744073709551615))$"
+    },
+    "interval": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": -9223372036854775808,
+        "maximum": 9223372036854775807
+      },
+      "maxItems": 2,
+      "minItems": 2
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "alert",
+                "alert_degraded_coverage",
+                "alert_single_domain_unconfirmed",
+                "request_operator_confirmation",
+                "retain_silently",
+                "reject",
+                "hold_indeterminate"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "opportunity",
+            "deadline_ns",
+            "value_bound"
+          ],
+          "properties": {
+            "kind": {
+              "const": "wait_for_corroboration"
+            },
+            "opportunity": {
+              "$ref": "#/$defs/text"
+            },
+            "deadline_ns": {
+              "$ref": "#/$defs/u64Text"
+            },
+            "value_bound": {
+              "$ref": "#/$defs/u64Text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "probe",
+            "value_bound"
+          ],
+          "properties": {
+            "kind": {
+              "const": "request_observation"
+            },
+            "probe": {
+              "$ref": "#/$defs/text"
+            },
+            "value_bound": {
+              "$ref": "#/$defs/u64Text"
+            }
+          }
+        }
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "implementation",
+        "query_digest",
+        "decision_digest",
+        "policy_generation",
+        "decision",
+        "reasons",
+        "knowledge_state",
+        "provenance_class",
+        "posterior_log_odds_millibans",
+        "probability_ppm",
+        "sequential_alert_threshold",
+        "supporting_clusters",
+        "contradicting_clusters",
+        "support_to_alert",
+        "reduction_to_retain",
+        "clusters",
+        "excluded",
+        "uncalibrated",
+        "counterfactuals",
+        "effect_authority"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.fusion_outcome.v1"
+        },
+        "implementation": {
+          "const": "fss-fusion:reference:hull-cluster-interval-sum:sequential-v2"
+        },
+        "query_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "decision_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy_generation": {
+          "$ref": "#/$defs/text"
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "above_alert_threshold",
+              "insufficient_independent_support",
+              "coverage_not_complete",
+              "below_reject_threshold",
+              "absence_not_certified",
+              "below_retain_threshold",
+              "undecided",
+              "conflicting_evidence",
+              "missing_observations",
+              "uncalibrated_evidence_ignored",
+              "optional_stopping_correction",
+              "no_decision_relevant_observation"
+            ]
+          },
+          "maxItems": 12
+        },
+        "knowledge_state": {
+          "enum": [
+            "not_observable",
+            "unknown",
+            "conflicted",
+            "estimated"
+          ]
+        },
+        "provenance_class": {
+          "const": "derived"
+        },
+        "posterior_log_odds_millibans": {
+          "$ref": "#/$defs/interval"
+        },
+        "probability_ppm": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          },
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "sequential_alert_threshold": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "supporting_clusters": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "contradicting_clusters": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "support_to_alert": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reduction_to_retain": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "members",
+              "failure_domains",
+              "llr_millibans",
+              "direction"
+            ],
+            "properties": {
+              "label": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/text"
+                },
+                "maxItems": 256,
+                "minItems": 1
+              },
+              "failure_domains": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 263
+                },
+                "maxItems": 4352,
+                "minItems": 1
+              },
+              "llr_millibans": {
+                "$ref": "#/$defs/interval"
+              },
+              "direction": {
+                "enum": [
+                  "supports",
+                  "contradicts",
+                  "conflicted",
+                  "neutral"
+                ]
+              }
+            }
+          },
+          "maxItems": 256
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "reason"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/text"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "maxItems": 256
+        },
+        "uncalibrated": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "maxItems": 256
+        },
+        "counterfactuals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "removed_cluster",
+              "posterior_log_odds_millibans",
+              "decision"
+            ],
+            "properties": {
+              "removed_cluster": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "posterior_log_odds_millibans": {
+                "$ref": "#/$defs/interval"
+              },
+              "decision": {
+                "$ref": "#/$defs/decision"
+              }
+            }
+          },
+          "maxItems": 256
+        },
+        "effect_authority": {
+          "const": false
+        }
+      },
+      "description": "Complete pure numerical outcome. Raw-score calibration lineage and native source context remain in the enclosing owner report. Decision value bounds and times are full-width decimal strings."
+    },
+    "normalizedCalibration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation",
+            "llr"
+          ],
+          "properties": {
+            "generation": {
+              "$ref": "#/$defs/text"
+            },
+            "llr": {
+              "$ref": "fusion_sequence.v1.json#/$defs/interval"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "uncalibrated"
+          ],
+          "properties": {
+            "uncalibrated": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        }
+      ]
+    },
+    "normalizedEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sensor",
+        "failure_domains",
+        "observability",
+        "calibration"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "sensor": {
+          "$ref": "#/$defs/text"
+        },
+        "failure_domains": {
+          "$ref": "fusion_sequence.v1.json#/$defs/domains"
+        },
+        "observability": {
+          "$ref": "fusion_sequence.v1.json#/$defs/observability"
+        },
+        "calibration": {
+          "$ref": "#/$defs/normalizedCalibration"
+        }
+      }
+    },
+    "severity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_harm",
+        "false_alert_cost",
+        "delay_cost_per_second",
+        "reversible"
+      ],
+      "properties": {
+        "expected_harm": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "false_alert_cost": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "delay_cost_per_second": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "reversible": {
+          "type": "boolean"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "alert_threshold",
+        "retain_threshold",
+        "reject_threshold",
+        "min_independent_support",
+        "urgent_single_domain_threshold",
+        "max_wait_ns",
+        "look_penalty_per_doubling",
+        "operator_confirmation_available"
+      ],
+      "properties": {
+        "generation": {
+          "$ref": "fusion_sequence.v1.json#/$defs/text"
+        },
+        "alert_threshold": {
+          "$ref": "fusion_sequence.v1.json#/$defs/policyThreshold"
+        },
+        "retain_threshold": {
+          "$ref": "fusion_sequence.v1.json#/$defs/policyThreshold"
+        },
+        "reject_threshold": {
+          "$ref": "fusion_sequence.v1.json#/$defs/policyThreshold"
+        },
+        "min_independent_support": {
+          "$ref": "fusion_sequence.v1.json#/$defs/positiveU32"
+        },
+        "urgent_single_domain_threshold": {
+          "anyOf": [
+            {
+              "$ref": "fusion_sequence.v1.json#/$defs/policyThreshold"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_wait_ns": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "look_penalty_per_doubling": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:-?0|(?:[1-9][0-9]{0,4}|100000))$"
+            }
+          ]
+        },
+        "operator_confirmation_available": {
+          "type": "boolean"
+        }
+      },
+      "description": "Native validation requires reject_threshold < retain_threshold <= alert_threshold and an urgent threshold, when present, at least retain_threshold. This per-query decision policy is distinct from the sequence accumulator configuration."
+    },
+    "opportunity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sensor",
+        "failure_domains",
+        "window_start_ns",
+        "window_end_ns",
+        "positive",
+        "negative"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "fusion_sequence.v1.json#/$defs/text"
+        },
+        "sensor": {
+          "$ref": "fusion_sequence.v1.json#/$defs/text"
+        },
+        "failure_domains": {
+          "$ref": "fusion_sequence.v1.json#/$defs/domains"
+        },
+        "window_start_ns": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "window_end_ns": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "positive": {
+          "$ref": "fusion_sequence.v1.json#/$defs/interval"
+        },
+        "negative": {
+          "$ref": "fusion_sequence.v1.json#/$defs/interval"
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "failure_domains",
+        "cost",
+        "latency_ns",
+        "positive",
+        "negative"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "fusion_sequence.v1.json#/$defs/text"
+        },
+        "kind": {
+          "$ref": "fusion_sequence.v1.json#/$defs/text"
+        },
+        "failure_domains": {
+          "$ref": "fusion_sequence.v1.json#/$defs/domains"
+        },
+        "cost": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "latency_ns": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "positive": {
+          "$ref": "fusion_sequence.v1.json#/$defs/interval"
+        },
+        "negative": {
+          "$ref": "fusion_sequence.v1.json#/$defs/interval"
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "hypothesis",
+        "kind",
+        "prior",
+        "looks",
+        "now_ns",
+        "coverage",
+        "severity",
+        "policy",
+        "evidence",
+        "opportunities",
+        "probes"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.fusion_query.v2"
+        },
+        "hypothesis": {
+          "$ref": "#/$defs/text"
+        },
+        "kind": {
+          "$ref": "#/$defs/text"
+        },
+        "prior": {
+          "$ref": "fusion_sequence.v1.json#/$defs/interval"
+        },
+        "looks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "now_ns": {
+          "$ref": "#/$defs/u64Text"
+        },
+        "coverage": {
+          "$ref": "fusion_sequence.v1.json#/$defs/coverage"
+        },
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "policy": {
+          "$ref": "#/$defs/policy"
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/normalizedEvidence"
+          }
+        },
+        "opportunities": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/opportunity"
+          }
+        },
+        "probes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/probe"
+          }
+        }
+      },
+      "description": "Complete normalized replay query, at most one MiB in the actual emitted JSON. Observability and calibration are retained for every row; scores are already converted into numerical intervals, with raw-score provenance attached by the enclosing owner."
+    },
+    "side": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query",
+        "outcome"
+      ],
+      "properties": {
+        "query": {
+          "$ref": "#/$defs/query"
+        },
+        "outcome": {
+          "$ref": "#/$defs/outcome"
+        }
+      }
+    }
+  }
+}

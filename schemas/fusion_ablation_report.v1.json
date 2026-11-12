@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/fusion_ablation_report.v1.json",
+  "title": "fss.fusion_ablation_report.v1",
+  "description": "fss-fuse --query with explicit source-loss selectors. At most sixteen MiB including the final newline, checked before stdout. Preserves loaded calibration identities, exact raw scores and original-prior selection; the optional transit projection is original context, not a new opportunity after source loss.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_scope",
+    "ablation",
+    "calibration_provenance",
+    "baseline_transit",
+    "baseline_transit_digest",
+    "report_digest",
+    "native_source_verified",
+    "effect_authority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.fusion_ablation_report.v1"
+    },
+    "source_scope": {
+      "const": "caller_declared_query"
+    },
+    "ablation": {
+      "$ref": "fusion_ablation.v1.json"
+    },
+    "calibration_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score_calibrations",
+        "prior_calibration",
+        "score_calibration_bindings",
+        "baseline_input_binding_digest",
+        "counterfactual_input_binding_digest"
+      ],
+      "properties": {
+        "score_calibrations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/calibrationIdentity"
+          },
+          "maxItems": 16
+        },
+        "prior_calibration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/calibrationIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "score_calibration_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence_id",
+              "score_ppm",
+              "calibration"
+            ],
+            "properties": {
+              "evidence_id": {
+                "$ref": "#/$defs/text"
+              },
+              "score_ppm": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "calibration": {
+                "$ref": "#/$defs/calibrationIdentity"
+              }
+            }
+          },
+          "maxItems": 256
+        },
+        "baseline_input_binding_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "counterfactual_input_binding_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "baseline_transit": {
+      "anyOf": [
+        {
+          "$ref": "fusion_sequence_report.v1.json#/$defs/transit"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "baseline_transit_digest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "native_source_verified": {
+      "const": false
+    },
+    "effect_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+      "description": "The native reader additionally enforces a maximum of 256 UTF-8 bytes, rather than 256 Unicode code points."
+    },
+    "calibrationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "digest"
+      ],
+      "properties": {
+        "generation": {
+          "$ref": "#/$defs/text"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

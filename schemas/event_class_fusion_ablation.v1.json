@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/event_class_fusion_ablation.v1.json",
+  "title": "fss.event_class_fusion_ablation.v1",
+  "description": "Candidate-specific historical native fusion explanation. The sealed owner includes the complete original v1-v4 source report, raw-score/calibration links, original native proposal/provenance and authority basis. The exact source-report JSON is separately hashed. No source read or current-basis revalidation occurs. Complete output is at most sixteen MiB including a possible newline; both numerical replay queries fit one MiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_scope",
+    "candidate",
+    "candidate_binding_digest",
+    "native_proposal",
+    "native_provenance_root",
+    "source_report",
+    "source_projection_digest",
+    "ablation",
+    "explanation_digest",
+    "source_basis_revalidated",
+    "event_policy_changed",
+    "published",
+    "effect_authority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.event_class_fusion_ablation.v1"
+    },
+    "source_scope": {
+      "const": "historical_native_report_snapshot"
+    },
+    "candidate": {
+      "$ref": "#/$defs/digest"
+    },
+    "candidate_binding_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "native_proposal": {
+      "$ref": "#/$defs/digest"
+    },
+    "native_provenance_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_report": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema",
+        "profile_digest",
+        "source_context_digest",
+        "authority_sequence",
+        "authority_state_root",
+        "calibrations",
+        "candidates",
+        "report_digest",
+        "effect_authority"
+      ],
+      "properties": {
+        "schema": {
+          "enum": [
+            "fss.event_class_fusion_report.v1",
+            "fss.event_class_fusion_report.v2",
+            "fss.event_class_fusion_report.v3",
+            "fss.event_class_fusion_report.v4"
+          ]
+        },
+        "profile_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_context_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "authority_sequence": {
+          "$ref": "fusion_ablation.v1.json#/$defs/u64Text"
+        },
+        "authority_state_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "report_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "effect_authority": {
+          "const": false
+        }
+      },
+      "description": "Complete unchanged existing native report. The existing version-specific native owner validates its full contract; this envelope does not admit caller-supplied report JSON or replace that owner."
+    },
+    "source_projection_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "ablation": {
+      "$ref": "fusion_ablation.v1.json"
+    },
+    "explanation_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_basis_revalidated": {
+      "const": false
+    },
+    "event_policy_changed": {
+      "const": false
+    },
+    "published": {
+      "const": false
+    },
+    "effect_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

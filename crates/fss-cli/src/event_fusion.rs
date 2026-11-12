@@ -20,12 +20,14 @@ use fss_reference::ingest::recorded_corroboration::CorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchReport;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+mod ablation;
 mod corroboration;
 mod dwell;
 mod guarded;
 mod input;
 pub(crate) mod render;
 mod streaming;
+pub use ablation::{EVENT_FUSION_ABLATION_SCHEMA, EventFusionAblation};
 pub use corroboration::MAX_LONG_CORROBORATION_CANDIDATES;
 pub use dwell::MAX_LONG_DWELL_CANDIDATES;
 pub use input::MAX_PROFILE_BYTES;

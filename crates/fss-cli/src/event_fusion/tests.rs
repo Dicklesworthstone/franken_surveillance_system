@@ -404,3 +404,153 @@ fn exact_coverage_pins_are_required_unique_and_bounded() -> Test {
     assert!(EventFusionProfile::new(p).is_err());
     Ok(())
 }
+
+fn ablation_context() -> Test<ReplayCx> {
+    use fss_core::{BudgetVector, ContextAuthority, OperationId, RootAuthoritySpec};
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:event-ablation".to_owned(),
+        operation_id: OperationId::parse("operation:event-ablation")?,
+        principal: "operator:event-ablation".to_owned(),
+        capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_owned(),
+        retention_scope: "retention:ephemeral".to_owned(),
+        anchor_universe: d("event-ablation"),
+        generation: 1,
+    })?;
+    Ok(ReplayCx::from_context_authority_read_only(
+        &authority,
+        std::env::temp_dir().join("fss-event-ablation-no-source-read"),
+    )?)
+}
+
+/// A sealed-owner unit fixture: native evidence has already passed fuse_input's source/score
+/// checks. Production construction remains exclusively through the native report adapters.
+fn ablation_report() -> Test<EventFusionReport> {
+    let p = spec()?;
+    let candidate = run(p.clone(), &[record("a", 0.9)], &[record("b", 0.9)])?;
+    Ok(EventFusionReport {
+        profile: EventFusionProfile::new(p)?,
+        basis: LedgerAnchor::genesis("event-ablation-fixture"),
+        context: d("source-context"),
+        package: d("package"),
+        label: "person".to_owned(),
+        results: vec![candidate],
+        digest: d("native report fixture"),
+    })
+}
+
+#[test]
+fn ablation_keeps_the_exact_native_source_score_and_authority_snapshot_attached() -> Test {
+    use crate::json_input::{Value, parse};
+    use fss_fusion::AblationTarget;
+    let report = ablation_report()?;
+    let before = report.to_json()?;
+    let cx = ablation_context()?;
+    let explanation = report.explain_ablation(
+        d("candidate"),
+        &[AblationTarget::Sensor("sensor:a".into())],
+        &cx,
+    )?;
+    assert_eq!(explanation.source_report().digest(), report.digest());
+    assert_eq!(explanation.source_report().basis(), report.basis());
+    assert_eq!(explanation.candidate(), d("candidate"));
+    assert_eq!(explanation.explanation().unavailable_evidence().len(), 1);
+    assert_eq!(explanation.explanation().outcome().clusters.len(), 1);
+    assert_eq!(
+        explanation.explanation().outcome().clusters[0]
+            .members
+            .len(),
+        1
+    );
+    assert_eq!(
+        explanation.explanation().baseline().decision_digest,
+        report.candidates()[0].outcome.decision_digest
+    );
+    let output = parse(&explanation.to_json()?)?;
+    let fields = output.object().ok_or("missing explanation object")?;
+    assert_eq!(fields.get("source_report"), Some(&parse(&before)?));
+    assert_eq!(
+        fields.get("source_scope"),
+        Some(&Value::Text("historical_native_report_snapshot".into()))
+    );
+    for key in [
+        "source_basis_revalidated",
+        "event_policy_changed",
+        "published",
+        "effect_authority",
+    ] {
+        assert_eq!(fields.get(key), Some(&Value::Bool(false)));
+    }
+    assert_eq!(
+        fields.get("source_projection_digest"),
+        Some(&Value::Text(d(&before).to_text()))
+    );
+    assert_eq!(report.to_json()?, before);
+    let same = report.explain_ablation(
+        d("candidate"),
+        &[AblationTarget::Sensor("sensor:a".into())],
+        &cx,
+    )?;
+    assert_eq!(explanation.digest(), same.digest());
+    Ok(())
+}
+
+#[test]
+fn ablation_outer_receipt_binds_historical_basis_and_full_native_projection() -> Test {
+    use fss_fusion::AblationTarget;
+    let report = ablation_report()?;
+    let cx = ablation_context()?;
+    let targets = [AblationTarget::Sensor("sensor:a".into())];
+    let first = report.explain_ablation(d("candidate"), &targets, &cx)?;
+    let mut other = report.clone();
+    other.basis.commit_sequence = u64::MAX;
+    other.basis.state_root = d("different historical authority");
+    let changed = other.explain_ablation(d("candidate"), &targets, &cx)?;
+    assert_eq!(first.explanation().digest(), changed.explanation().digest());
+    assert_ne!(first.digest(), changed.digest());
+    assert!(
+        changed
+            .to_json()?
+            .contains("\"authority_sequence\":\"18446744073709551615\"")
+    );
+    assert_eq!(first.source_report().basis().commit_sequence, 0);
+    Ok(())
+}
+
+#[test]
+fn ablation_refuses_foreign_candidates_invalid_targets_changed_baselines_and_cancellation() -> Test
+{
+    use fss_fusion::AblationTarget;
+    let report = ablation_report()?;
+    let cx = ablation_context()?;
+    let targets = [AblationTarget::Sensor("sensor:a".into())];
+    let before = report.to_json()?;
+    assert_eq!(
+        report
+            .explain_ablation(d("other candidate"), &targets, &cx)
+            .err(),
+        Some(EventFusionError::Scope)
+    );
+    assert_eq!(
+        report.explain_ablation(d("candidate"), &[], &cx).err(),
+        Some(EventFusionError::Profile)
+    );
+    let mut changed = report.clone();
+    changed.results[0].outcome.decision_digest = d("inconsistent baseline");
+    assert_eq!(
+        changed
+            .explain_ablation(d("candidate"), &targets, &cx)
+            .err(),
+        Some(EventFusionError::Evidence)
+    );
+    cx.request_cancellation();
+    assert_eq!(
+        report.explain_ablation(d("candidate"), &targets, &cx).err(),
+        Some(EventFusionError::Cancelled)
+    );
+    assert_eq!(report.to_json()?, before);
+    Ok(())
+}

@@ -34,3 +34,47 @@ Existing query and decision digests bind the complete numerical inputs, uncertai
 ## Regression coverage
 
 `cargo +nightly-2026-08-31 test --locked --offline -p fss-fusion --test ablation_contract` exercises bridge removal and re-clustering, retained correlated members, intrinsic and explicit dependency selectors, unknown/negative evidence, unavailable future choices, simultaneous order invariance, repeated-look preservation, refusal atomicity and the maximum selector bound.
+
+
+## Offline command
+
+A query-only invocation keeps its existing output. Add exact source-loss selectors to request a complete explanation instead:
+
+~~~sh
+fss-fuse --query query.json \
+  --without-sensor camera-west \
+  --without-domain power:north > source-loss.json
+~~~
+
+The selectors form one simultaneous scenario. Repeat either option up to the shared 16-target limit. These options are incompatible with sequence/checkpoint mode: a hypothetical loss cannot consume sources or create another look.
+
+The output schema is `fss.fusion_ablation_report.v1`. Its `ablation` field contains `fss.fusion_ablation.v1`, including `baseline.query`, `baseline.outcome`, `counterfactual.query` and `counterfactual.outcome`. Each complete query can be saved and supplied to the ordinary `fss-fuse --query` command to reproduce its numerical query and decision digests. Every opportunity and probe is included in those replay inputs, including choices that exist only in the baseline.
+
+`calibration_provenance` retains loaded calibration identities, exact raw-score bindings and the selected prior calibration. Both the baseline and projected calibrated-input digests are included. The unchanged raw scores remain attached even when the hypothetical loss makes their observations unavailable. Two raw scores in the same calibration bin can yield the same numerical ablation while still producing distinct enclosing report receipts. A loaded artifact's identity alone does not establish calibration applicability.
+
+`baseline_transit` is the original temporal reachability projection, when supplied. Its exact JSON SHA-256 is included as `baseline_transit_digest` and bound into the report receipt. It describes how the original opportunities were derived; the counterfactual query separately removes future choices that depend on the selected losses.
+
+The CLI receipt domain `fss.fusion.cli_ablation.v1` encodes, in order: the domain text; core ablation digest; baseline and projected calibrated-input digests; loaded calibration count (`u32`) and each calibration's generation/digest in digest order; then a Boolean and, when present, the exact baseline transit JSON digest. The complete response, including its newline, is bounded to 16 MiB. Both replay queries must independently fit the ordinary one-MiB query parser bound. Refusal prints no partial stdout and writes no checkpoint or deployment file.
+
+## Native event report explanations
+
+Existing calibrated watch, corroboration and dwell reports continue to expose replayable numerical candidate queries. Those queries can be used with the offline command, where they remain caller-declared inputs and receive no new native-source claim.
+
+A caller holding the sealed native `EventFusionReport` can also retain the original native context:
+
+~~~rust
+let explanation = report.explain_ablation(
+    candidate,
+    &[fss_fusion::AblationTarget::Sensor(sensor_id.to_owned())],
+    cx,
+)?;
+let json = explanation.to_json()?;
+~~~
+
+This produces `fss.event_class_fusion_ablation.v1`. It includes the complete original report, all native source-record and raw-score/calibration links, the selected candidate's original proposal/provenance, its historical authority basis and the separate numerical ablation. The original approval and policy remain unchanged. The method checkpoints cancellation before and after the bounded computation and complete encoding.
+
+The explanation is explicitly a historical report snapshot: `source_basis_revalidated` is false. The method does not reopen a recording or claim that the original ledger basis remains current. Existing source owners must still perform their ordinary current-authority checks for any subsequent read or native operation.
+
+The native receipt domain `fss.event_class_fusion.ablation.v1` encodes the domain text, original report digest, exact original report JSON SHA-256, profile digest, source context digest, package digest, complete canonical historical ledger anchor, selected candidate, candidate binding, original native proposal, original native provenance and the core ablation digest. Its complete output is bounded to the same 16 MiB, with no successful prefix.
+
+The additional regressions are `cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test fusion_ablation_cli` and the library filter `event_fusion::tests::ablation`. They cover real CLI replay, future-choice removal, raw-score identity inside one calibration bin, incompatible sequence flags, complete native snapshot retention, historical-basis binding and cancellation/refusal.
