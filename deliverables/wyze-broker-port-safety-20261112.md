@@ -19,7 +19,8 @@ camera-facing image server. Do not treat that check as proof of service.
 During a point-in-time observation after the change, RCH remained on the same
 PID for several minutes and the G4 recorder and its local fallback timer were
 active. A privileged read-only scan observed 61 fallback MP4 files updated in
-the prior hour. The upload timer was active but its last service run failed;
-recent logs contained a timeout. These observations do not establish
+the prior hour. The upload timer was active but its last service run failed.
+An SSH timeout option in the log is configuration, not evidence that a timeout
+occurred; the failure cause has not been established. These observations do not establish
 continuous coverage, successful remote upload, or that every broker generation
 has loaded the revised script.
