@@ -24,7 +24,7 @@ use fss_reference::ingest::rgb_package::RgbDetectorPackage;
 use fss_reference::ingest::{
     CaptureHint, FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::{DeploymentLimits, ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 #[path = "../package_zone_support/mod.rs"]
 mod numeric;
@@ -137,13 +137,23 @@ impl Fixture {
     /// Three real JPEG frames are imported, decoded, inferred, and retained. The original
     /// loose source is removed before any evaluation. None of these pixels claims real quality.
     pub fn new(label: &str, values: [u8; 3], uncertainty: Option<u64>) -> Test<Self> {
+        Self::new_with_limits(label, values, uncertainty, DeploymentLimits::standard())
+    }
+
+    /// The same retained source fixture under an exact nonstandard deployment capacity identity.
+    pub fn new_with_limits(
+        label: &str,
+        values: [u8; 3],
+        uncertainty: Option<u64>,
+        limits: DeploymentLimits,
+    ) -> Test<Self> {
         let directory = Directory::new(label)?;
         let root = directory.0.join("deployment");
         let source = directory.0.join("source.mjpeg");
         let media: Vec<u8> = values.into_iter().flat_map(numeric::jpeg).collect();
         fs::write(&source, &media)?;
         let cx = context(&root)?;
-        let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
+        let mut deployment = ReferenceDeployment::open_with_limits(&root, SITE, limits, &cx)?;
         let mut request =
             FileIngestRequest::new(&source, SensorId::parse(SENSOR)?, StreamId::parse(STREAM)?)
                 .with_receive_time(TimestampNs(10_000_000_000));

@@ -91,7 +91,9 @@
     "crates/fss-reference/src/review_media/storage.rs",
     "crates/fss-reference/src/review_media/render.rs",
     "crates/fss-cli/src/bin/fss-export/review/execute.rs",
-    "crates/fss-cli/src/bin/fss-export/review/delivery.rs"
+    "crates/fss-cli/src/bin/fss-export/review/delivery.rs",
+    "crates/fss-reference/src/ingest/qsr_observations.rs",
+    "crates/fss-reference/src/ingest/qsr_observations/existing.rs"
   ],
   "module_declarations": {
     "crates/fss-reference/src/agent_recording_context/replay.rs": "cognition",
@@ -1009,7 +1011,17 @@
     "crates/fss-reference/src/review_media/render/timing.rs": "support",
     "crates/fss-reference/src/review_media/storage.rs": "effect",
     "crates/fss-cli/src/bin/fss-export/review/runtime_tests.rs": "support",
-    "crates/fss-cli/src/bin/fss-infer/onnx_cli/pyramid.rs": "support"
+    "crates/fss-cli/src/bin/fss-infer/onnx_cli/pyramid.rs": "support",
+    "crates/fss-reference/src/ingest/qsr_observations.rs": "cognition",
+    "crates/fss-reference/src/ingest/qsr_observations/derive.rs": "cognition",
+    "crates/fss-reference/src/ingest/qsr_observations/existing.rs": "cognition",
+    "crates/fss-reference/src/ingest/qsr_observations/tests.rs": "support",
+    "crates/fss-reference/src/ingest/qsr_observations/types.rs": "cognition",
+    "crates/fss-reference/src/ingest/qsr_observations/wire.rs": "support",
+    "crates/fss-cli/src/bin/fss-event/qsr.rs": "support",
+    "crates/fss-reference/tests/qsr_observations_existing_contract.rs": "support",
+    "crates/fss-reference/tests/qsr_observations_support/mod.rs": "support",
+    "crates/fss-cli/tests/qsr_cli_contract.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

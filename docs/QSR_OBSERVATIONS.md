@@ -14,10 +14,13 @@ lane journeys still require their own evidence and qualified interpretations.
 
 ## Read an existing report
 
-The command uses the deployment's normal exclusive startup and recovery. That
-startup may clean recovery metadata and mark interrupted committed effects
-`Indeterminate`. The QSR projection itself creates no reports or events and
-dispatches no effects; the command does not promise an unchanged filesystem.
+The command opens an established deployment without running effect reconciliation.
+Prepared, committed and indeterminate effects keep their exact journal state;
+reading a QSR report cannot stand in for recovery of an interrupted dispatch.
+Missing deployments, missing journals and foreign site identities are refused.
+The existing exclusive deployment lock and local publisher recovery still apply,
+so recovery metadata may change. This is not an immutable `fss/1` query surface or
+a promise of an unchanged filesystem.
 
 The input must be a retained `fss.package_zone_report.v2` created through the
 existing `fss-event package-zones analyze --require-health-screening yes` workflow.
@@ -88,8 +91,15 @@ completed customer journey.
 
 ## Source, policy and coverage bindings
 
-The only public constructor is `QsrObservationReport::open`. It selects an exact
-retained report through `PackageZoneReport::open`, which rechecks source custody,
+The command uses `QsrObservationReport::open_existing`, which keeps its deployment
+handle inside the reference owner. API callers with nonstandard deployment capacities
+use `open_existing_with_limits` and supply the exact original limits; layout v1 retains
+only their digest, so the values cannot be inferred. The CLI uses standard capacities
+and refuses a different persisted digest.
+
+Callers that already own a deployment may continue to use `QsrObservationReport::open`.
+All three constructors select an exact retained report through `PackageZoneReport::open`,
+which rechecks source custody,
 the source model/detection record, native tracking reconstruction, current privacy,
 historical diagnostic custody and deletion state. A changed privacy interpretation,
 withdrawn source, corrupt diagnostic or stale screened report refuses rather than
@@ -141,7 +151,16 @@ reconstruction. They also check cumulative historical-screening work, unchanged 
 canonical bytes and no new authority commits. These complement the existing native tests
 for diagnostic corruption, current privacy and original-source deletion.
 
+Existing-store regressions seed prepared, committed and indeterminate operations with
+pending obligations, then compare both journal files exactly across successful, refused
+and cancelled reads. Actual `fss-event` process cases check the same boundary and exact
+native JSON output. The API cases also cover custom capacity identities, foreign contexts,
+missing journals and continued local publisher recovery. These added cases are authored
+and source-reviewed; native execution is pending at this implementation checkpoint.
+
 ```sh
+cargo test -p fss-reference --test qsr_observations_existing_contract
+cargo test -p fss-cli --test qsr_cli_contract
 cargo test -p fss-reference --lib ingest::qsr_observations
 cargo test -p fss-reference --test package_zones_contract health::qsr
 cargo test -p fss-cli --bin fss-event qsr::tests

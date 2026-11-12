@@ -11,10 +11,10 @@ use std::process::ExitCode;
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, OperationId, PrincipalId};
+use fss_reference::ReplayCx;
 use fss_reference::ingest::qsr_observations::{
     QsrConfig, QsrObservationReport, QsrZoneBinding, QsrZoneRole,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type Run<T> = Result<T, Box<dyn Error>>;
 const HELP: &str = "fss-event qsr --root EXISTING_DIR --site SITE --report-digest sha256:ZONE_REPORT\n\
@@ -30,7 +30,9 @@ Unknown or masked samples have null counts. Zero observed tracks is never proof 
 Stage times bound observed endpoint separation; they are not service time or queue wait.\n\
 Missing, tentative, clipped, screening-excluded, clock-unreliable or discontinuous samples\n\
 interrupt lane sequences. Skipped, reversed and ambiguous stages never produce a completed trip.\n\
-No inference, source acquisition, QSR persistence, event publication or effect is performed.\n\
+No inference, source acquisition, QSR persistence, event publication or external effect is performed.\n\
+Existing effect states and obligations are preserved; local locked publisher recovery still runs.\n\
+This command requires the original standard deployment capacities and never creates a store.\n\
 At most 16 source zones and 64 sampled frames; output is complete JSON, at most 8 MiB.\n";
 
 struct Options {
@@ -190,11 +192,14 @@ fn run(options: Options) -> Run<String> {
     let root = super::replay::preflight(&options.root, &options.site, &authority)?;
     let cx = ReplayCx::from_context_authority_read_only(&authority, &root)?;
     let result = (|| -> Run<String> {
-        let deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
-        Ok(
-            QsrObservationReport::open(&deployment, options.report, options.config, &cx)?
-                .to_json()?,
-        )
+        Ok(QsrObservationReport::open_existing(
+            &root,
+            &options.site,
+            options.report,
+            options.config,
+            &cx,
+        )?
+        .to_json()?)
     })();
     cx.drain_and_finalize();
     result

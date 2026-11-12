@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 //! Observed QSR counts, sampled dwell and lane-stage endpoints from retained detector tracks.
 //!
-//! The sole public constructor cold-reopens the existing screened package-zone owner. This
-//! layer neither executes a model nor accepts loose tracks, renews rights, commits events or
-//! certifies absence. Every count is a count of actual confirmed model-track observations.
+//! Every constructor cold-reopens the existing screened package-zone owner. This layer neither
+//! executes a model nor accepts loose tracks, renews rights, commits events or certifies absence.
+//! Every count is a count of actual confirmed model-track observations. The existing-store
+//! constructors own the deployment handle and preserve effect states across inspection.
 
 use std::error::Error;
 use std::fmt;
@@ -14,6 +15,7 @@ use super::package_zones::{PackageZoneError, PackageZoneReport};
 use crate::{ReferenceDeployment, ReplayCx};
 
 mod derive;
+mod existing;
 mod types;
 mod wire;
 pub use types::*;
