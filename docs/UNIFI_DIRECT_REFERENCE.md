@@ -14988,3 +14988,162 @@ selected committed base could not convert a `HoldError` in retention policy
 preview. The source now routes that error through the existing typed
 `DeletionError::Hold` path, preserving the refusal. A new remote regression
 run includes that repair; it has not yet produced a terminal result.
+The pinned hz4 retry also exited 103 with `RCH-I001` queue timeout before
+Cargo. A subsequent request lets RCH choose an admissible remote worker; its
+result remains pending.
+
+Strict-remote job `j-30106308287922520` compiled dependencies on omarchy but
+stopped before the tests: the disk guardian reported `monitor_unavailable`
+and the wrapper returned 137. The daemon initially refused terminal
+acknowledgement. Same-wrapper recovery
+`rchw-8f87e6e0-b9cd-42ee-9707-81a61fa59400` acknowledged terminal delivery
+with exit 120, differing from the daemon's 137; recovery is not a Cargo or test
+pass. Neither new deadline regression has a verified result in this run.
+Meanwhile the repository head advanced and independently included the same
+retention error conversion. The stash-application conflict contained only two
+formatting variants of that one line and was resolved in favor of the current
+head's formatting. The UniFi change is retained in the worktree.
+
+A later strict-remote run on ts1, `j-30106308287922535`, used committed base
+`3abd2633ead9aa084f1ff77f2eb0a4718f841a81` plus only the controller and
+controller-test overlays (overlay fingerprint
+`533b4616957df2ce4baa3151979b0a3ceb648cd98e0049c6082ef33a285de409`).
+All five selected deadline tests passed, with 110 filtered out. This includes
+the two new deliberate slow-clock-provider cases and the existing cases that
+retain a permit committed after its deadline. The terminal result was
+acknowledged, and the source and pair were released.
+
+The exact compiled ts1 binary, SHA-256
+`2bbce618fc45a83344c1082d54befb1ebde66664b040a975d2b8146cc10148ff`,
+then passed the two synthetic `media_can_be_processed` cases and both
+`slow_storage` supervisor cases in separate direct invocations (2/2 each,
+113 filtered each), with a 16 MiB fixture-thread stack. Its hash matched after
+the second run. These direct invocations are not additional RCH job passes.
+No physical camera was contacted, and these checks do not establish
+nonblocking journal I/O, a root cause for the earlier intermittent startup
+timeouts, direct live capture, or unattended recording.
+A further direct invocation of the same binary passed the synthetic startup
+event-reply-while-awaiting-media case (1/1, 114 filtered). A separate read-only
+trj service check found the existing recorder and both timers active with zero
+recorder restarts at that moment; it does not prove uninterrupted coverage.
+
+### Deadline checks between effect preparation and commit (2026-11-12 UTC)
+
+The bounded startup and clock-reply paths now recheck their original deadline
+after durable preparation, after approval, and immediately before commit. If
+the deadline has expired, the prepared effect and obligation remain in the
+coordinator and must be reconciled; the controller issues no committed permit
+and makes no dispatch. If commit has already begun when the deadline expires,
+the prior post-commit check still retains the committed but unwritten permit.
+The separate event-reply permit API with no conversation deadline is unchanged.
+These checks do not make storage nonblocking or explain the prior timeouts.
+
+Strict-remote ts1 job `j-30106308287922547` passed all six deadline-filtered
+tests (110 filtered), including delayed approval without commit and delayed
+commit with permit retention; base was
+`3abd2633ead9aa084f1ff77f2eb0a4718f841a81`, overlay fingerprint
+`1203185f5961aea25bfa1dc9b18a940e052e2279ff97a1ad4befded0d1e58de2`.
+Its terminal result was acknowledged and source and pair were released. The
+fixture models delayed commit by slowing its second durable append, rather
+than delaying approval. A 100 ms test budget remains shorter than each
+deliberate 175 ms delay.
+
+The same ts1 binary, SHA-256
+`2302bdc85505d5dc9e8109a6ad443f98bf7218b62acd26045318745bdbff0a85`,
+passed two slow-storage supervisor tests, two synthetic media-startup tests,
+two startup-motion tests, and one startup event-reply test in separate direct
+invocations (2/2, 2/2, 2/2, 1/1). Its hash was unchanged after the runs.
+The synthetic tests used a 16 MiB test-thread stack and are not live-camera
+proof or additional RCH job passes. No physical camera was contacted.
+
+### Task-owned cancellation of an undispatched preparation (2026-11-12 UTC)
+
+`TaskCx::cancel_prepared_effect` now admits cancellation of an effect prepared
+by that same live task, using a caller-supplied evidence digest and the
+existing coordinator's proof-bound durable cancellation. The UniFi
+conversation owner exposes this for an exact operation. Refusal preserves
+the inert handle; a different task and an already committed effect cannot use
+this path. The caller remains responsible for retaining and independently
+checking the evidence, retiring the session, and deciding whether a new
+operation is authorized. This path does not perform automatic retry, resolve
+the earlier physical-camera effects, or move journal I/O off the reactor.
+
+Strict-remote ts1 job `j-30106308287922552` passed the complete task effect
+contract (3/3); job `j-30106308287922553` passed seven deadline-filtered
+UniFi effect tests (110 filtered). The latter uses a file-backed journal and
+checks that a synthetic slow-approval deadline can be cancelled with the
+expected proof and without a wire dispatch. Both used base
+`3abd2633ead9aa084f1ff77f2eb0a4718f841a81` and overlay fingerprint
+`f9fbf84297817879d7553255fbd0bbb8c48aac615d1b13760d88a98e3b0d5dd7`; both
+terminal results were acknowledged and source and pair released. The evidence
+in these tests is synthetic. No physical camera was contacted.
+The exact ts1 test binary from the latter job, SHA-256
+`8a65ee33d85552491ea893da90a70af280a1ffdf434b0bb23adae28d5f47ac06`,
+then passed the two slow-storage supervisor cases (115 filtered) in one
+separate direct invocation; its hash matched afterward. This invocation is not
+an additional RCH job pass.
+
+### Cancelling a prepared setup handoff (2026-11-12 UTC)
+
+The discovery-to-controller setup owner can now cancel its own exact prepared
+handoff using caller-retained evidence. Its trace must belong to a started
+attempt and show neither a dispatch nor a retained committed permit; the
+underlying task and effect coordinator independently refuse a foreign or
+committed effect. The trace records successful cancellation and rejects a
+second request. This is explicit reconciliation, not automatic retry: the
+caller must retain and validate the evidence, retire the camera session and
+independently authorize a subsequent operation. It does not reconcile the
+previous physical handoff or prove full-resolution live capture.
+
+Strict-remote ts1 job `j-30106308287922559` passed the new synthetic
+`expired_setup_preparation_cancels_without_handoff` fixture (1/1, 20
+filtered), at base `3abd2633ead9aa084f1ff77f2eb0a4718f841a81` and overlay
+fingerprint `8003646e42fedfe8869eef221581d4928fc903b057293f7818ae69581120e879`.
+The terminal result was acknowledged and source and pair released. A separate
+direct invocation of that job's hash-matched binary
+`b34962e1cea9467c9fede53446933f326f53c4d375dc6f0b2999eb4d3ed05e45`
+passed 17/21 contract tests with four ignored because they require an
+isolated worker's private interface. The test camera, journal and evidence
+were synthetic; no physical camera command was issued.
+
+### Retained deadline evidence and bounded fleet retry (2026-11-12 UTC)
+
+A setup trace now captures a pre-commit deadline observation tied to the exact
+operation, task, region, preparation digest and acknowledged journal head.
+The setup owner can stage and verify the canonical bytes in an explicitly
+supplied bounded spool before cancelling that exact preparation. A storage
+refusal leaves the effect prepared and retry-ineligible. The verified spool
+hold is local custody, not a publication or proof of independent rollback
+protection. These synchronous writes do not solve reactor blocking.
+
+`Fleet::settle_expired_setup` connects this path to the existing bounded retry
+queue only for the same returned deadline attempt, after successful evidence
+retention and cancellation. The caller must invoke settlement, retain the
+spool, close the old session, and supply a fresh operation and transport.
+The production fleet driver does not yet invoke this path automatically.
+It does not reconcile prior physical effects or authorize replay.
+
+Strict-remote ts1 job `j-30106308287922566` initially failed one of two tests:
+journal preparation itself exceeded the test deadline, while the fixture had
+assumed slow approval would always be reached. The other test passed. The
+fixture was corrected to verify the recorded checkpoint against whether
+approval ran. Subsequent jobs `j-30106308287922569` and
+`j-30106308287922573` passed 2/2 selected evidence tests, the latter adding
+task and region bindings and spool reopen/readback. Job `j-30106308287922579`
+passed 2/2 evidence tests with fleet retry changes, on base
+`3abd2633ead9aa084f1ff77f2eb0a4718f841a81` with overlay fingerprint
+`690714b5befd22f63bbcafb03143695d147503c5d717d8c907596cb7c6b3374f`; its
+terminal result was acknowledged and source and pair released.
+
+The exact compiled Linux handoff test binary, SHA-256
+`bb95d5e679fca41f7e2efe5b4b680b0e10978fa6ee4a770307477b96d166070c`,
+was copied and hash-checked on omarchy. In a newly created user/network
+namespace with only loopback and a synthetic private address, separate direct
+invocations passed the 19 ordinary tests and all 5 normally ignored interface
+tests. One of the five checked failed evidence retention, successful
+cancellation, bounded retry rearming, rejection of the old operation ID,
+and a fresh synthetic handoff. The binary hash matched afterward. These are
+direct runs of an RCH-built binary, not additional RCH job passes. The shared
+repository head advanced while they ran; the changed UniFi and runtime files
+matched the tested overlay afterward, but the tests used the stated earlier
+base. No physical camera was contacted.
