@@ -12309,3 +12309,73 @@ refused before Cargo when the RCH daemon was unavailable; it was not a test.
 At the later status check the existing Scrypted recorder and both archive timers
 were active and recorder restart count was zero. This does not prove continuous
 coverage or 30 days of retention.
+
+
+### Still worker capture-error drain (2026-11-11)
+
+The process fixture can now send a bounded synthetic video prefix, wait until
+the first confirmed-publication still starts, and inject an event requiring a
+reply that was not authorized. The trial stops for that exact event, requests
+still cancellation, joins and retires the worker, and reports that the original
+source was returned with a known outcome. The fixture verifies the first video
+publication occurred, the stop reason is explicit, no event reply was sent,
+and no successful capture was claimed. This supersedes the earlier statement
+that a process-level error-exit test was missing for this particular refusal;
+it does not establish every failure path, the timing of a running decoder at
+abort, parent-future cancellation, or live camera operation.
+
+Strict-remote `ts1` job `30105869848936483` passed this test (1/1), base
+`bc707fd1d628da9ef0dc811aa846fd6b16079285`, overlay
+`d4607279d1206ae7d3822c92ef39e0addb438fc931389411b9a9f1c691c62de2`.
+It exited zero, acknowledged the terminal result, and released source and pair.
+A prior admission was refused before Cargo with missing-runtime telemetry;
+`ts1` had the pinned toolchain, and a fleet capability refresh preceded the
+successful attempt. The existing immediate event-refusal and managed still
+process fixtures also passed separately (1/1 each) using the built test and
+trial binaries on `ts1`; their SHA-256 values before and after both runs were
+`1ad5dd386b6fc89d9c490af72d559575cd4884f0458f190b643e733e718d42ec` and
+`9510823e36da69e447015427d754e6483c9a9fbb83296dc731fa094f8e257b6c`.
+These process fixtures use a synthetic controller and synthetic video; no
+physical camera effect was issued.
+
+
+### Still readiness during capture (2026-11-11)
+
+The bounded video trial now polls the still worker's cancellation-safe borrowing
+join without blocking the recording loop. Once it has drained and its runtime,
+root, claimed source and confirmed-publication provenance match, the resulting
+in-memory JPEG is retained by the running trial and a payload-free readiness
+marker is emitted. This supersedes the earlier statement that completion is
+only collected after capture stops. The original publication remains in worker
+custody until retirement. The read policy is checked again before the final
+success report. Readiness is not permission to export, a freshness guarantee,
+a public snapshot API, or proof that the camera is controlled natively. A
+future delivery path must perform its own current authority and privacy checks.
+
+A synthetic managed fixture withholds later FLV tags until the still is ready,
+then sends the remainder; it verifies the first still became ready before the
+second segment was published, and the archive and sequence readback complete.
+Strict-remote `ts1` job `30105869848936489` passed this test (1/1), base
+`9a41f4a60c6910bd93856e487f6ab562cdcabb88`, overlay
+`6068a81c52dd88553efca0d0d535e0b456a729ce3f02342cac90acca4688ac3c`.
+A new process fault case waits until the still is ready before injecting an
+unanswered event; it verifies source return and a known completed-before-stop
+outcome. Job `30105869848936490` passed (1/1) on the same base, overlay
+`5958366f434fd8313c7968f33626bea5ef788bc9fa30393cdf721d41887533ea`.
+Both jobs exited zero, acknowledged terminal result, and released source and
+pair. On the final test binary, the ready-during-capture and earlier
+start-before-refusal cases were also rerun successfully (1/1 each). The final
+test executable and trial had unchanged before/after SHA-256 values
+`1fb5a2b9409fef24c039984a0d9f1d8622685d6b3bf9170c5f5c318dbfb489a2` and
+`a149b24bb769d26145d9e687a38969cedee097ab892179bf4f508d69be1d41d8`.
+
+The same trial executable also passed a single-segment 2688 x 1512 saved-G4
+replay and produced an in-memory checked still before the final test-only
+change. That replay used the earlier test executable SHA-256
+`d4d7e09ecb3362b010a3c9b591d838fafb5a70b82a92880063b152cf161397c9`.
+The clip originated through Scrypted; FFmpeg remuxed it and the test-only FLV
+normalizer changed one duplicate timestamp, while the controller was simulated.
+No media was exported or live camera setting changed. The existing recorder
+and both archive timers were active at the later check, with zero recorder
+restarts. Long-term continuity, native takeover, parent-future cancellation,
+and full Scrypted replacement remain unproven.

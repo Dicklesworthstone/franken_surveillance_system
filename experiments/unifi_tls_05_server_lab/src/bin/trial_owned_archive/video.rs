@@ -1,7 +1,14 @@
 #![forbid(unsafe_code)]
 //! Bounded video-only trial. This is not an unattended recording service.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    future::{Future, poll_fn},
+    path::Path,
+    pin::pin,
+    sync::Arc,
+    task::Poll,
+    time::Duration,
+};
 
 use asupersync::{
     Cx,
@@ -16,9 +23,48 @@ use fss_reference::unifi_direct::{
     video_bootstrap, video_owned_sink, video_provision, video_retained_provision, video_session,
     video_still, video_still_worker, video_worker,
 };
-use fss_runtime::execution::TaskCx;
+use fss_runtime::{
+    drained_blocking::{Receipt, WorkOutcome},
+    execution::TaskCx,
+};
 
-use super::{Renewal, Retention, control, source_completion, source_control};
+use super::{Renewal, Retention, control, source_completion, source_control, still_export};
+
+fn export_completion(
+    receipt: Receipt<still_export::Job, still_export::Outcome>,
+    stopping: bool,
+) -> Result<(), &'static str> {
+    let runtime_ok = receipt.runtime.is_ok();
+    match receipt.work {
+        WorkOutcome::Finished(still_export::Outcome::Published) => {
+            println!("trial_owned_still_export=published durable=true runtime_ok={runtime_ok}");
+            if runtime_ok || stopping {
+                Ok(())
+            } else {
+                Err("still export runtime requires reconciliation")
+            }
+        }
+        WorkOutcome::Finished(still_export::Outcome::PublishedNeedsInspection) => {
+            eprintln!("trial_owned_still_export=published cleanup_or_durability=unverified");
+            Err("still export publication requires reconciliation")
+        }
+        WorkOutcome::Finished(still_export::Outcome::Refused) | WorkOutcome::NotStarted(_) => {
+            eprintln!("trial_owned_still_export=not_published");
+            if stopping {
+                Ok(())
+            } else {
+                Err("still export refused")
+            }
+        }
+        WorkOutcome::Finished(still_export::Outcome::StagingNeedsInspection)
+        | WorkOutcome::Finished(still_export::Outcome::LinkNeedsInspection)
+        | WorkOutcome::Panicked
+        | WorkOutcome::Indeterminate => {
+            eprintln!("trial_owned_still_export=reconciliation_required");
+            Err("still export requires reconciliation")
+        }
+    }
+}
 
 enum Phase<'scope, 'task, IO> {
     Bootstrap(Box<video_bootstrap::Bootstrap<'scope, 'task, IO>>),
@@ -292,6 +338,7 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     reply_events: bool,
     decode_owned: bool,
     still_color: Option<video_still::Color>,
+    still_export_path: Option<&Path>,
     inband: bool,
     mut plan: Option<av_rollover_generation::Plan>,
     renewal_batch: Option<u64>,
@@ -329,6 +376,9 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     pins.try_reserve_exact(segment_limit)?;
     let resource = root.to_str().ok_or("archive path is not UTF-8")?;
     let mut live_still: Option<(video_still_worker::Worker, archive::UnknownTimePin)> = None;
+    let mut still_completion: Option<video_still_worker::Completion> = None;
+    let mut export_worker: Option<still_export::Worker> = None;
+    let mut export_published = false;
     println!("trial_owned_driver=video_only capture_bounds=unknown audio_coverage=unknown");
     let mut result: Result<(), &'static str> = loop {
         let remaining =
@@ -775,6 +825,82 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                 Err(_) => break Err("video bootstrap handoff requires reconciliation"),
             }
         }
+        if still_completion.is_none() {
+            if let Some((worker, pin)) = live_still.as_mut() {
+                let completion = poll_fn(|context| {
+                    let mut join = pin!(worker.join());
+                    Poll::Ready(match join.as_mut().poll(context) {
+                        Poll::Ready(completion) => completion,
+                        Poll::Pending => None,
+                    })
+                })
+                .await;
+                if let Some(completion) = completion {
+                    let dimensions = match &completion.outcome {
+                        video_still_worker::Outcome::Finished(Ok(still))
+                            if completion.runtime.is_ok()
+                                && still.pin() == *pin
+                                && still.claimed_source() == key
+                                && still.provenance()
+                                    == video_still::Provenance::ConfirmedPublication =>
+                        {
+                            Some(still.still().jpeg().receipt().dimensions)
+                        }
+                        _ => None,
+                    };
+                    let export = match (&completion.outcome, still_export_path) {
+                        (video_still_worker::Outcome::Finished(Ok(still)), Some(path))
+                            if dimensions.is_some() =>
+                        {
+                            Some(still_export::start(
+                                task,
+                                cx,
+                                clock,
+                                resource,
+                                path,
+                                still,
+                                access.clone(),
+                            ))
+                        }
+                        _ => None,
+                    };
+                    still_completion = Some(completion);
+                    let Some(dimensions) = dimensions else {
+                        break Err("live still worker requires reconciliation");
+                    };
+                    if let Some(export) = export {
+                        match export {
+                            Ok(worker) => {
+                                export_worker = Some(worker);
+                                println!("trial_owned_still_export=started");
+                            }
+                            Err(reason) => break Err(reason),
+                        }
+                    }
+                    println!(
+                        "trial_owned_live_still=ready width={} height={} source=confirmed_publication capture_bounds=unknown export=none",
+                        dimensions[0], dimensions[1]
+                    );
+                }
+            }
+        }
+        if let Some(worker) = export_worker.as_mut() {
+            let receipt = poll_fn(|context| {
+                let mut join = pin!(worker.join());
+                Poll::Ready(match join.as_mut().poll(context) {
+                    Poll::Ready(receipt) => receipt,
+                    Poll::Pending => None,
+                })
+            })
+            .await;
+            if let Some(receipt) = receipt {
+                export_worker.take();
+                if let Err(reason) = export_completion(receipt, false) {
+                    break Err(reason);
+                }
+                export_published = true;
+            }
+        }
         if pins.len() == segment_limit {
             break Ok(());
         }
@@ -782,10 +908,14 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     // The capture loop has a single exit. Drain the still before any of the
     // phase-specific shutdown paths can return or relinquish source custody.
     if let Some((mut worker, pin)) = live_still.take() {
-        if result.is_err() {
+        let completed_before_stop = still_completion.is_some();
+        if result.is_err() && !completed_before_stop {
             worker.abort();
         }
-        let completion = worker.join().await;
+        let completion = match still_completion.take() {
+            Some(completion) => Some(completion),
+            None => worker.join().await,
+        };
         let retirement = worker.retire();
         match (completion, retirement) {
             (Some(completion), Ok(retirement)) => {
@@ -800,15 +930,45 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                         match completion.outcome {
                             video_still_worker::Outcome::Finished(Ok(still))
                                 if !retirement.fenced
+                                    && archive::ReadAuthority::permits(
+                                        access.as_ref(),
+                                        pin.retention,
+                                        pin.root,
+                                    )
                                     && still.pin() == pin
                                     && still.claimed_source() == key
                                     && still.provenance()
                                         == video_still::Provenance::ConfirmedPublication =>
                             {
                                 let dimensions = still.still().jpeg().receipt().dimensions;
+                                if let Some(path) = still_export_path
+                                    .filter(|_| export_worker.is_none() && !export_published)
+                                {
+                                    match still_export::start(
+                                        task,
+                                        cx,
+                                        clock,
+                                        resource,
+                                        path,
+                                        &still,
+                                        access.clone(),
+                                    ) {
+                                        Ok(worker) => {
+                                            export_worker = Some(worker);
+                                            println!("trial_owned_still_export=started");
+                                        }
+                                        Err(reason) => result = Err(reason),
+                                    }
+                                }
                                 println!(
-                                    "trial_owned_live_still=complete width={} height={} source=confirmed_publication capture_bounds=unknown export=none",
-                                    dimensions[0], dimensions[1]
+                                    "trial_owned_live_still=complete width={} height={} source=confirmed_publication capture_bounds=unknown export={}",
+                                    dimensions[0],
+                                    dimensions[1],
+                                    if still_export_path.is_some() {
+                                        "requested"
+                                    } else {
+                                        "none"
+                                    }
                                 );
                             }
                             _ => result = Err("live still worker requires reconciliation"),
@@ -816,12 +976,16 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                     }
                 } else {
                     let known = matches!(
-                        completion.outcome,
+                        &completion.outcome,
                         video_still_worker::Outcome::NotStarted
                             | video_still_worker::Outcome::Finished(Err(_))
-                    );
+                    ) || (completed_before_stop
+                        && matches!(
+                            &completion.outcome,
+                            video_still_worker::Outcome::Finished(Ok(_))
+                        ));
                     println!(
-                        "trial_owned_live_still=drained_after_stop source_returned=true runtime_ok={} outcome_known={known}",
+                        "trial_owned_live_still=drained_after_stop source_returned=true runtime_ok={} completed_before_stop={completed_before_stop} outcome_known={known}",
                         completion.runtime.is_ok()
                     );
                     if !known {
@@ -831,6 +995,26 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             }
             _ => result = Err("live still worker did not drain"),
         }
+    }
+    if let Some(mut worker) = export_worker.take() {
+        let stopping = result.is_err();
+        if stopping {
+            worker.abort();
+        }
+        match worker.join().await {
+            Some(receipt) => match export_completion(receipt, stopping) {
+                Ok(()) => {
+                    if !stopping {
+                        export_published = true;
+                    }
+                }
+                Err(reason) => result = Err(reason),
+            },
+            None => result = Err("still export worker did not drain"),
+        }
+    }
+    if result.is_ok() && still_export_path.is_some() && !export_published {
+        result = Err("still export was not published");
     }
     if let Err(reason) = result {
         eprintln!("trial_owned_capture_stop reason={reason}");

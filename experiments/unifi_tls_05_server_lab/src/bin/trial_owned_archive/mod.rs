@@ -19,6 +19,7 @@ use fss_runtime::execution::TaskCx;
 use std::{path::Path, sync::Arc, time::Duration};
 
 mod video;
+mod still_export;
 
 // Explicit lifetime limit for this laboratory run; installed custody remains
 // held by the trial. This does not provide restart-safe generation planning.
@@ -517,6 +518,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     anchor_root: Option<&Path>,
     decode_owned: bool,
     video_still: Option<fss_reference::unifi_direct::video_still::Color>,
+    still_export_path: Option<&Path>,
     managed: bool,
     av_history_records: Option<usize>,
     video_only: bool,
@@ -531,6 +533,9 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     }
     if video_still.is_some() && (!video_only || !decode_owned) {
         return Err("video still requires video-only archive and owned decode".into());
+    }
+    if still_export_path.is_some() && (video_still.is_none() || !still_export_path.is_some_and(still_export::valid_path)) {
+        return Err("still export requires a still and an absolute normal path".into());
     }
     if renewal_batch.is_some_and(|batch| !managed || !(1..=8).contains(&batch)) {
         return Err("invalid managed renewal batch".into());
@@ -644,7 +649,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         } else { None };
         return Box::pin(video::run(supervisor, owner, run_id, task, cx, clock, root,
             source, camera_claim, retention, access, created, wait, segment_limit,
-            management, reply_events, decode_owned, video_still, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations)).await;
+            management, reply_events, decode_owned, video_still, still_export_path, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations)).await;
     }
     let collector = av_bootstrap::Collector::new(
         audio,

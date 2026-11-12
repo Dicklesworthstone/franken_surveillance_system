@@ -70,7 +70,7 @@ use trial_run_id::TrialRunId;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -113,6 +113,7 @@ struct Options {
     lab_renew_batch: Option<u64>,
     lab_decode_owned: bool,
     lab_video_still: Option<fss_reference::unifi_direct::video_still::Color>,
+    lab_save_still: Option<PathBuf>,
     lab_anchor_root: Option<PathBuf>,
     setup: Option<SetupOptions>,
 }
@@ -174,6 +175,9 @@ fn options() -> ResultBox<Options> {
         None
     };
     let lab_anchor_root=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-anchor-root=")) {
+        let path=PathBuf::from(value);args.pop();Some(path)
+    } else {None};
+    let lab_save_still=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-save-still=")) {
         let path=PathBuf::from(value);args.pop();Some(path)
     } else {None};
     let lab_video_still = if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-video-still=")) {
@@ -364,6 +368,7 @@ fn options() -> ResultBox<Options> {
     if lab_anchor_root.is_some() && !lab_owned_archive {return Err("anchor root requires owned archive mode".into());}
     if lab_decode_owned && !lab_owned_archive {return Err("owned decode requires owned archive mode".into());}
     if lab_video_still.is_some() && (!lab_video_only_archive || !lab_decode_owned) {return Err("video still requires video-only archive and owned decode".into());}
+    if lab_save_still.as_ref().is_some_and(|path| lab_video_still.is_none() || !path.is_absolute() || path.file_name().is_none() || !path.components().all(|part| matches!(part,std::path::Component::RootDir|std::path::Component::Normal(_)))) {return Err("still export requires a still and an absolute normal path".into());}
     let raw = args[2].as_bytes();
     if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
         return Err("MAC must be twelve hexadecimal digits".into());
@@ -453,6 +458,7 @@ fn options() -> ResultBox<Options> {
         lab_renew_batch,
         lab_decode_owned,
         lab_video_still,
+        lab_save_still,
         lab_anchor_root,
         setup,
     })
@@ -1035,7 +1041,7 @@ fn run(args: Options) -> ResultBox<()> {
                     if args.lab_inband_avc {println!("trial_owned_avc_profile=avc3");}
                     let source=SourceKey {connection:attempts as u64,generation:1};
                     let claim=ContentDigest::sha256(&args.mac);
-                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,args.lab_anchor_root.as_deref(),args.lab_decode_owned,args.lab_video_still,args.lab_managed_archive,args.lab_av_history_records,args.lab_video_only_archive,args.lab_inband_avc,args.lab_renew_batch,args.lab_retained_video_generations,args.lab_stop_after_retained_reservation,args.lab_auto_retained_generations)).await;
+                    let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,args.lab_anchor_root.as_deref(),args.lab_decode_owned,args.lab_video_still,args.lab_save_still.as_deref(),args.lab_managed_archive,args.lab_av_history_records,args.lab_video_only_archive,args.lab_inband_avc,args.lab_renew_batch,args.lab_retained_video_generations,args.lab_stop_after_retained_reservation,args.lab_auto_retained_generations)).await;
                     return match result {
                         Ok(segments)=>{println!("trial_complete archive=published segments={segments} continuous_recording=false identity=network_claim capture_bounds=unknown");Ok(())},
                         Err(error)=>Err(error),

@@ -655,6 +655,7 @@ dependencies = [
  "asupersync",
  "fss-codec-h264",
  "fss-codec-h265",
+ "fss-codec-jpeg-encode",
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",
