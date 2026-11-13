@@ -15948,9 +15948,22 @@ source and pair releases were observed. The fixture source SHA-256 was
 The A/V retained provisioning owner also has a direct selected-stream entry
 point. It checks bootstrap readiness before selection and returns the
 original selected or managed recording, audio allowance where applicable,
-and bootstrap on refusal. A synthetic TLS fleet fixture has been updated to
-exercise cancelled-bootstrap and wrong-camera refusals before successful
-selection; its current compile and end-to-end run are pending. No physical
-camera effect or recorder configuration change was made by these tests.
-The initial ts1 lab build request timed out in the queue before admission
-with exit 103; a separate request was then submitted to trj.
+and bootstrap on refusal. A synthetic TLS fleet fixture exercises a cancelled
+bootstrap and wrong-camera refusal before successful selection, then reserves
+storage and reads back A/V. The initial ts1 lab build request timed out in
+the queue before admission with exit 103. Strict-remote no-run job
+`j-30107138793668766` compiled the revised lab fixture and explicit source
+overlays on trj; its wrapper returned 102 when Linux artifacts were rejected
+by macOS transfer. Terminal acknowledgement and source and pair releases were
+observed. Its Linux executable, SHA-256
+`a98e1b5a47f28e549df2cfbadcf2d6aa98d4114945aad40df98e24f4fe806ea0`,
+matched on trj and isolated omarchy before execution and on omarchy afterward.
+Separate direct isolated ordinary and full-resolution tests each passed
+(1 passed, 5 filtered): the former read three video samples and two synthetic
+AAC frames; the latter read one 2688 x 1512 synthetic video frame and one
+synthetic AAC frame after an initial video-only fragment. The fixture source
+SHA-256 was `51f7093bac8e6fb3c5aacc152da43a4cc354629bb08c6be19528b5153aacb254`.
+These are synthetic lab results, not RCH test passes, physical capture,
+independent pin custody, recorder process recovery or 30-day retention.
+No physical camera effect or recorder configuration change was made; the
+existing recorder and fallback timer were active afterward.
