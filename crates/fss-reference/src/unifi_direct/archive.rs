@@ -1211,6 +1211,39 @@ enum ConfirmedGraphProfile {
     Video,
 }
 
+/// Recheck a settled A/V history and its complete bounded graph.
+///
+/// This performs no publication and returns no publication receipt. The caller
+/// must separately establish whether a replay occurred and validate any
+/// rollover lineage and independent pin custody. The returned pin is a checked
+/// claim, not camera identity or coverage proof.
+pub fn verify_settled_unknown_time_av_anchored(
+    deployment: &mut ReferenceDeployment,
+    read_authority: &dyn ReadAuthority,
+    retain_authority: &dyn RetainAuthority,
+    limits: Limits,
+    object_limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+) -> Result<UnknownTimePin, ConfirmedAvReplayError> {
+    let pin = journal.confirmed().ok_or(ConfirmedAvReplayError::History)?;
+    if !retain_authority.permits(pin.retention, pin.root) {
+        return Err(ConfirmedAvReplayError::Readback(Error::Denied));
+    }
+    let (checked, _graph) = read_confirmed_unknown_time_graph(
+        deployment, read_authority, limits, object_limits, work, cx,
+        journal, keeper, ConfirmedGraphProfile::AudioVideo, false,
+    )?;
+    if checked != pin || !retain_authority.permits(pin.retention, pin.root) {
+        return Err(ConfirmedAvReplayError::Readback(Error::Denied));
+    }
+    read_authorize(pin.access_pin(), read_authority, cx)
+        .map_err(ConfirmedAvReplayError::Readback)?;
+    Ok(pin)
+}
+
 fn replay_confirmed_unknown_time_graph_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1223,9 +1256,35 @@ fn replay_confirmed_unknown_time_graph_anchored(
     keeper: &mut journal::UnknownTimeAnchorKeeper,
     profile: ConfirmedGraphProfile,
 ) -> Result<RootLedgerReceipt, ConfirmedAvReplayError> {
+    let (pin, plan) = read_confirmed_unknown_time_graph(
+        deployment, read_authority, limits, object_limits, work, cx,
+        journal, keeper, profile, true,
+    )?;
+    let gate = ReplayRetainGate {
+        read: read_authority,
+        retain: retain_authority,
+    };
+    publish_unknown_time_anchored(
+        &plan, pin, deployment, &gate, limits, work, cx, journal, keeper,
+    )
+    .map_err(ConfirmedAvReplayError::Publication)
+}
+
+fn read_confirmed_unknown_time_graph(
+    deployment: &mut ReferenceDeployment,
+    read_authority: &dyn ReadAuthority,
+    limits: Limits,
+    object_limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+    profile: ConfirmedGraphProfile,
+    needs_replay: bool,
+) -> Result<(UnknownTimePin, RecoveredConfirmedAvGraph), ConfirmedAvReplayError> {
     let pin = journal.confirmed().ok_or(ConfirmedAvReplayError::History)?;
     if journal.pending().is_some()
-        || journal.replay_pin() != Some(pin)
+        || journal.replay_pin() != needs_replay.then_some(pin)
         || journal.inner.is_fenced()
         || keeper.is_fenced()
         || keeper.target() != journal.anchor()
@@ -1309,7 +1368,7 @@ fn replay_confirmed_unknown_time_graph_anchored(
     }
     if journal.pending().is_some()
         || journal.confirmed() != Some(pin)
-        || journal.replay_pin() != Some(pin)
+        || journal.replay_pin() != needs_replay.then_some(pin)
         || keeper.target() != journal.anchor()
     {
         return Err(ConfirmedAvReplayError::History);
@@ -1319,14 +1378,7 @@ fn replay_confirmed_unknown_time_graph_anchored(
         retention: pin.retention,
         children,
     };
-    let gate = ReplayRetainGate {
-        read: read_authority,
-        retain: retain_authority,
-    };
-    publish_unknown_time_anchored(
-        &plan, pin, deployment, &gate, limits, work, cx, journal, keeper,
-    )
-    .map_err(ConfirmedAvReplayError::Publication)
+    Ok((pin, plan))
 }
 
 fn publish_graph(
@@ -2195,6 +2247,17 @@ fn read_part_bounded(
     {
         return Err(Error::Tombstoned);
     }
+    // The spool's index was established by staging or recovery. Treat its
+    // length only as a tighter ceiling: the bounded read still checks the
+    // complete envelope and digest, including a trailing-byte probe.
+    work.charge(u64::from(usize::BITS) + 1)?;
+    let indexed = deployment
+        .publisher()
+        .spool()
+        .indexed_payload_len(digest)
+        .map_err(storage)?;
+    let maximum_payload_bytes = maximum_payload_bytes
+        .min(usize::try_from(indexed).map_err(|_| Error::Limit)?);
     let read_bound = (fss_object::SPOOL_OBJECT_HEADER_LEN as u64)
         .checked_add(u64::try_from(maximum_payload_bytes).map_err(|_| Error::Limit)?)
         .and_then(|n| n.checked_add(1))

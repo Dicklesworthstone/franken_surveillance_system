@@ -7,7 +7,7 @@
 //! is established by this module.
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest};
-use fss_geometry::WorkBudget;
+use fss_geometry::{GeometryError, WorkBudget};
 use fss_publication::{RootLedgerOutcome, RootLedgerReceipt};
 use fss_runtime::effect_journal::{
     EffectJournalPin, EffectJournalStore, EffectPersistenceError, PinRetainedEffectJournal,
@@ -47,6 +47,67 @@ pub struct Binding {
     pub new_journal: EffectJournalPin,
     /// Seeded successor keeper head.
     pub new_keeper: EffectJournalPin,
+}
+
+/// A switch record checked against its supplied retained journal head.
+/// The binding is a candidate transition, not proof of the active lineage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SwitchObservation {
+    /// Canonical transition named by the retained switch.
+    pub binding: Binding,
+    /// Exact retained switch head checked before and after inspection.
+    pub head: EffectJournalPin,
+}
+
+/// Failure to inspect one candidate switch without writing to it.
+#[derive(Debug)]
+pub enum SwitchInspectionError {
+    /// Storage, encoding, or replay authority refused the inspection.
+    History(Error),
+    /// The caller's explicit work allowance was insufficient or cancelled.
+    Work(GeometryError),
+    /// The switch belongs to a different caller-supplied publication scope.
+    ScopeMismatch,
+}
+
+/// Exact predecessor state used to match a candidate transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SwitchPredecessor {
+    /// Expected publication scope.
+    pub scope: ContentDigest,
+    /// Confirmed predecessor root.
+    pub confirmed: UnknownTimePin,
+    /// Current predecessor publication head.
+    pub journal: EffectJournalPin,
+    /// Current predecessor keeper head.
+    pub keeper: EffectJournalPin,
+}
+
+/// An index into the exact candidate slice supplied for this selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectedSwitch {
+    /// Position in the supplied slice, not a persistent identifier.
+    pub index: usize,
+    /// Checked retained switch and its claimed transition.
+    pub observation: SwitchObservation,
+}
+
+/// Candidate selection refuses incomplete inspection and competing switches.
+#[derive(Debug)]
+pub enum SwitchSelectionError {
+    /// More than 128 candidates were supplied.
+    Limit,
+    /// Predecessor identity or replay authority was invalid.
+    History(Error),
+    /// A candidate or replay authority could not be checked.
+    Candidate {
+        /// Candidate position in the supplied slice.
+        index: usize,
+        /// Inspection failure for that candidate.
+        reason: SwitchInspectionError,
+    },
+    /// More than one supplied candidate claims the exact predecessor.
+    Ambiguous,
 }
 
 /// Independently retained current heads of the successor histories.
@@ -327,6 +388,32 @@ impl WorkerCustody {
         }
         Ok(())
     }
+
+    pub(crate) fn verify_settled_av(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        objects: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<UnknownTimePin, SettledAvError> {
+        self.check(journal, keeper, cx).map_err(SettledAvError::History)?;
+        let pin = archive::verify_settled_unknown_time_av_anchored(
+            deployment, read, retain, limits, objects, work, cx, journal, keeper,
+        ).map_err(SettledAvError::Verification)?;
+        self.check(journal, keeper, cx).map_err(SettledAvError::History)?;
+        checkpoint(cx).map_err(SettledAvError::History)?;
+        if !read.permits(pin.retention, pin.root) || !retain.permits(pin.retention, pin.root) {
+            return Err(SettledAvError::Verification(
+                archive::ConfirmedAvReplayError::Readback(archive::Error::Denied),
+            ));
+        }
+        Ok(pin)
+    }
 }
 
 impl WorkerTransition {
@@ -380,6 +467,36 @@ pub struct RecoveredLineage {
     current: Previous,
     custody: WorkerCustody,
 }
+
+/// Refusal to reconstruct a lineage returns all original owners.
+#[must_use = "retain or reconcile both returned history and custody"]
+pub struct LineageAttachmentRefusal {
+    /// Why the current history and chain could not be checked.
+    pub reason: Error,
+    /// Original current journal and keeper.
+    pub current: Previous,
+    /// Original complete transition custody.
+    pub custody: WorkerCustody,
+}
+
+/// Failure to recheck a settled lineage and its confirmed A/V graph.
+#[derive(Debug)]
+pub enum SettledAvError {
+    /// Retained rollover history or replay authority could not be checked.
+    History(Error),
+    /// Current policy or bounded graph verification refused the root.
+    Verification(archive::ConfirmedAvReplayError),
+}
+
+impl std::fmt::Display for SettledAvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::History(_) => "rollover lineage requires reconciliation",
+            Self::Verification(_) => "settled A/V verification refused",
+        })
+    }
+}
+impl std::error::Error for SettledAvError {}
 
 /// An independently reopened next transition awaiting exact-root replay.
 #[must_use = "replay or reconcile the retained transition and its prior lineage"]
@@ -552,6 +669,107 @@ fn decode(bytes: &[u8]) -> Result<Binding, Error> {
     Ok(binding)
 }
 
+fn checked_switch(switch: &mut PinRetainedEffectJournal, cx: &ReplayCx) -> Result<SwitchObservation, Error> {
+    checkpoint(cx)?;
+    let head = switch.verify_retained_head().map_err(Error::Storage)?;
+    if switch.records().len() != 1 || head.sequence != 1 {
+        return Err(Error::Invalid);
+    }
+    let binding = decode(&switch.records()[0])?;
+    checkpoint(cx)?;
+    Ok(SwitchObservation { binding, head })
+}
+
+/// Inspect a caller-opened candidate switch under explicit scope and work bounds.
+///
+/// This performs retainer I/O and belongs on a drained blocking worker. The
+/// supplied switch must already be opened at a retained minimum and reconciled
+/// with its pin retainer. A successful observation does not establish that the
+/// supplied storage is independent, that no competing switch exists, or that
+/// either history is available: use `recover` or `RecoveredLineage::advance`
+/// to verify those histories and replay the exact root before recording.
+pub fn inspect_switch(
+    switch: &mut PinRetainedEffectJournal,
+    expected_scope: ContentDigest,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<SwitchObservation, SwitchInspectionError> {
+    checkpoint(cx).map_err(SwitchInspectionError::History)?;
+    if !valid_digest(expected_scope) || switch.records().len() != 1
+        || switch.records()[0].len() > MAX_SWITCH_BYTES
+    {
+        return Err(SwitchInspectionError::History(Error::Invalid));
+    }
+    let cost = u64::try_from(switch.records()[0].len())
+        .ok().and_then(|n| n.checked_mul(16)).and_then(|n| n.checked_add(130))
+        .ok_or(SwitchInspectionError::History(Error::Invalid))?;
+    work.charge(cost).map_err(SwitchInspectionError::Work)?;
+    let observation = checked_switch(switch, cx).map_err(SwitchInspectionError::History)?;
+    if observation.binding.scope != expected_scope {
+        return Err(SwitchInspectionError::ScopeMismatch);
+    }
+    checkpoint(cx).map_err(SwitchInspectionError::History)?;
+    if switch.verify_retained_head().map_err(|e| SwitchInspectionError::History(Error::Storage(e)))? != observation.head {
+        return Err(SwitchInspectionError::History(Error::Invalid));
+    }
+    checkpoint(cx).map_err(SwitchInspectionError::History)?;
+    Ok(observation)
+}
+
+/// Find a unique matching transition among the supplied retained switches.
+///
+/// Every candidate is checked, including those which do not match. The caller
+/// must establish that this bounded slice covers the relevant reservation
+/// inventory and retains its freshness; `None` does not prove no omitted
+/// switch exists. Matching remains a candidate claim until the histories are
+/// recovered and replayed. The caller must also exclude concurrent writers;
+/// these per-candidate checks do not form an atomic storage snapshot. This
+/// synchronous I/O belongs on a drained worker.
+pub fn select_successor_switch(
+    predecessor: SwitchPredecessor,
+    candidates: &mut [PinRetainedEffectJournal],
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Option<SelectedSwitch>, SwitchSelectionError> {
+    if candidates.len() > 128 {
+        return Err(SwitchSelectionError::Limit);
+    }
+    checkpoint(cx).map_err(SwitchSelectionError::History)?;
+    if !valid_digest(predecessor.scope) || !valid_digest(predecessor.confirmed.root)
+        || !valid_digest(predecessor.confirmed.retention) || predecessor.journal.sequence == 0
+        || predecessor.keeper.sequence == 0 || !valid_digest(predecessor.journal.root)
+        || !valid_digest(predecessor.keeper.root)
+    {
+        return Err(SwitchSelectionError::History(Error::Invalid));
+    }
+    let mut selected = None;
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        let observation = inspect_switch(candidate, predecessor.scope, work, cx)
+            .map_err(|reason| SwitchSelectionError::Candidate { index, reason })?;
+        let binding = observation.binding;
+        if binding.confirmed == predecessor.confirmed
+            && binding.old_journal == predecessor.journal
+            && binding.old_keeper == predecessor.keeper
+        {
+            if selected.is_some() {
+                return Err(SwitchSelectionError::Ambiguous);
+            }
+            selected = Some(SelectedSwitch { index, observation });
+        }
+    }
+    if let Some(chosen) = selected {
+        let observed = inspect_switch(&mut candidates[chosen.index], predecessor.scope, work, cx)
+            .map_err(|reason| SwitchSelectionError::Candidate { index: chosen.index, reason })?;
+        if observed != chosen.observation {
+            return Err(SwitchSelectionError::Candidate {
+                index: chosen.index, reason: SwitchInspectionError::History(Error::Invalid),
+            });
+        }
+    }
+    checkpoint(cx).map_err(SwitchSelectionError::History)?;
+    Ok(selected)
+}
+
 /// Verify an already retained switch against cold-reopened histories.
 ///
 /// The caller must find the switch independently, open it through
@@ -582,12 +800,7 @@ fn recover_inner(
     previous_replayed: bool,
 ) -> Result<Active, RecoveryRefusal> {
     let checked = (|| {
-        checkpoint(cx)?;
-        let switch_head = switch.verify_retained_head().map_err(Error::Storage)?;
-        if switch.records().len() != 1 || switch_head.sequence != 1 {
-            return Err(Error::Invalid);
-        }
-        let binding = decode(&switch.records()[0])?;
+        let SwitchObservation { binding, head: switch_head } = checked_switch(&mut switch, cx)?;
         let old = &previous.journal;
         let old_keeper = &previous.keeper;
         let new = &successor.journal;
@@ -670,9 +883,46 @@ fn recover_inner(
 }
 
 impl RecoveredLineage {
+    pub(crate) fn checked_scope(&mut self, cx: &ReplayCx) -> Result<ContentDigest, Error> {
+        self.custody.check(&self.current.journal, &self.current.keeper, cx)?;
+        Ok(self.current.journal.scope())
+    }
+
+    /// Reconstitute a settled lineage from an idle worker's exact owners.
+    /// This checks the chain but does not independently locate or authenticate it.
+    pub fn from_worker_parts(
+        current: Previous,
+        mut custody: WorkerCustody,
+        cx: &ReplayCx,
+    ) -> Result<Self, LineageAttachmentRefusal> {
+        if let Err(reason) = custody.check(&current.journal, &current.keeper, cx) {
+            return Err(LineageAttachmentRefusal { reason, current, custody });
+        }
+        Ok(Self { current, custody })
+    }
+
     /// Count transitions actually retained in this in-memory lineage.
     pub fn transition_count(&self) -> usize {
         self.custody.transition_count()
+    }
+
+    /// Recheck this complete lineage and its settled A/V graph without replay.
+    /// This does not locate the latest generation, authenticate the camera,
+    /// or create a publication receipt. All owners remain in this lineage.
+    pub fn verify_confirmed_av(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        objects: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<UnknownTimePin, SettledAvError> {
+        self.custody.verify_settled_av(
+            &self.current.journal, &self.current.keeper, deployment, read, retain,
+            limits, objects, work, cx,
+        )
     }
 
     /// Return the current history and every prior switch owner for a worker.
