@@ -16,9 +16,9 @@
 		<string>/bin/bash</string>
 		<string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_ota_announce.sh</string>
 		<string>80482c4bcf0b</string>
-		<string>https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.105.tar</string>
-		<string>4.52.17.105</string>
-		<string>78df62c7d00b458a090b268be12fd768</string>
+		<string>https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.106.tar</string>
+		<string>4.52.17.106</string>
+		<string>b26ce573e6782e9d2ae8151904143e2e</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

@@ -23,11 +23,12 @@ CHIP=16777216
 BB=/tmp/Upgrade/busybox
 
 # Stage telemetry: assis captures our stdout on a camera we cannot read, so every stage
-# and every distinct failure beacons to the operator's :8080. The STOCK /bin/busybox is
-# used (not $BB) because the beacons must work before the static one is proven.
+# and every distinct failure beacons to the operator's :8080. It uses $BB — the stock
+# /bin/busybox is not guaranteed to carry wget (its documented applets are base64, gunzip,
+# chmod, killall and tftp), and $BB has already passed its executability check by here.
 # `stage=` in /tmp/fss_beacons.log then names the exact line that died.
 BEACON_HOST=192.168.4.160
-beacon() { /bin/busybox wget -q -O /dev/null "http://$BEACON_HOST:8080/fss-ran?stage=$1&uid=$(/bin/busybox id -u 2>/dev/null)" 2>/dev/null || true; }
+beacon() { "$BB" wget -q -O /dev/null "http://$BEACON_HOST:8080/fss-ran?stage=$1&uid=$("$BB" id -u 2>/dev/null)" 2>/dev/null || true; }
 
 log() { echo "[fss-ota] $*"; }
 die() { log "FATAL: $*"; beacon "fail:$1"; exit 1; }
