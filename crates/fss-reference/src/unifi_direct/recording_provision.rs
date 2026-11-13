@@ -128,6 +128,40 @@ pub struct Owners<'scope, 'task, IO> {
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'scope, 'task, IO> {
+    pub(crate) fn waiting(managed: ManagedSession<'scope, 'task, IO>) -> Self {
+        Self {
+            managed,
+            worker: None,
+            started: false,
+            start_refused: false,
+            completion: None,
+            ready: None,
+            failed: None,
+            custody: None,
+            plan: None,
+            plan_stopped: false,
+            aborted: Cell::new(false),
+        }
+    }
+
+    pub(crate) fn creator_quiescent(&self) -> bool {
+        self.worker.is_none()
+            && !self.started
+            && self.completion.is_none()
+            && self.ready.is_none()
+            && self.failed.is_none()
+            && self.custody.is_none()
+            && self.plan.is_none()
+    }
+
+    pub(crate) fn clocks_match(
+        &mut self,
+        owner: &MeteredClock<'_, '_>,
+        worker: &MeteredClock<'_, '_>,
+    ) -> bool {
+        self.managed.clocks_match(owner, worker)
+    }
+
     /// Bind a managed recording to a finite generation plan without I/O.
     pub fn from_plan(
         managed: ManagedSession<'scope, 'task, IO>,
@@ -206,6 +240,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
     /// Transfer retained path and authority after installed supplies were observed.
     pub fn take_custody(&mut self) -> Option<SupplyCustody> {
         self.custody.take()
+    }
+
+    pub(crate) fn custody(&self) -> Option<&SupplyCustody> {
+        self.custody.as_ref()
     }
 
     /// Transfer failed creation state for explicit inspection or reconciliation.

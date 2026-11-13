@@ -95,6 +95,8 @@ pub mod recording;
 pub mod recording_rollover;
 /// Region-owned provisioning alongside a managed recording session.
 pub mod recording_provision;
+/// Durable generation reservation for managed audio/video recording.
+pub mod recording_retained_provision;
 /// Owns direct-camera bootstrap and recording as one task-scoped session.
 pub mod recording_session;
 /// Source custody for unfinished recorder and ingress tails.
