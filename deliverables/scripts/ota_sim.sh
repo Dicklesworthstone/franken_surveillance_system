@@ -15,7 +15,7 @@ R=/tmp/otasim
 SIZES="0x80000 0x280000 0x5C0000 0x5C0000 0x100000 0x80000"
 NAMES="uboot boot system back cfg provisioning"
 
-ssh -o BatchMode=yes "$H" 'rm -rf /tmp/otasim; mkdir -p /tmp/otasim/Upgrade /tmp/otasim/dev /tmp/otasim/http'
+ssh -o BatchMode=yes "$H" 'pkill -f "nc -l -p" 2>/dev/null; rm -rf /tmp/otasim; mkdir -p /tmp/otasim/Upgrade /tmp/otasim/dev /tmp/otasim/http'
 scp -q -o BatchMode=yes "$TAR" "$H:$R/capsule.tar"
 scp -q -o BatchMode=yes "$IMG" "$H:$R/http/img.bin"
 ssh -o BatchMode=yes "$H" "cd $R && tar xf capsule.tar && chmod +x Upgrade/*"
