@@ -386,6 +386,7 @@ fn parallel_fleet_upgrade_scenario(
     full_resolution: bool,
     changed_readback: bool,
     abort_source: bool,
+    audio: bool,
 ) -> Test {
     eprintln!("fleet_fixture scenario capacity={capacity} full_resolution={full_resolution} changed_readback={changed_readback}");
     use asupersync::{io::AsyncReadExt, time::timeout};
@@ -404,7 +405,8 @@ fn parallel_fleet_upgrade_scenario(
     };
     use fss_reference::unifi_direct::{
         AudioCodec, VideoChannel, VideoCodec, archive, conversation, evidence, intent, management,
-        pipeline, receive, recording, recording_storage, retirement_source, source_coordinator,
+        av_bootstrap, av_bootstrap_driver, av_owned_sink, av_rollover_generation, av_rollover_supplies, av_unknown_worker_guard, av_worker,
+        pipeline, receive, recording, recording_provision, recording_rollover, recording_session, recording_storage, retirement_source, source_coordinator, source_handoff,
         source_worker, supervisor, video_bootstrap, video_session, video_worker,
     };
     use fss_unifi_scoped_tls_entropy_lab::fleet_leased::{
@@ -557,6 +559,7 @@ fn parallel_fleet_upgrade_scenario(
         archive_base: Option<PathBuf>,
         archive_budget: BudgetVector,
         abort_source: bool,
+        audio: bool,
         candidate_hold: Arc<AtomicBool>,
         candidate_proceed: Arc<AtomicBool>,
     }
@@ -584,6 +587,7 @@ fn parallel_fleet_upgrade_scenario(
             let archive_base = state.archive_base.take();
             let archive_budget = state.archive_budget;
             let abort_source = state.abort_source;
+            let audio = state.audio;
             let candidate_hold = state.candidate_hold.clone();
             let candidate_proceed = state.candidate_proceed.clone();
             let (cx, task, clock, leases, policy, resource, peer, camera, admission, fence, full_resolution) =
@@ -679,6 +683,190 @@ fn parallel_fleet_upgrade_scenario(
                     limits: archive::Limits::default(), max_source_bytes: 1024 * 1024,
                     work_limit: 4_000_000_000,
                 }, source_replay, video_replay, write_access)?;
+                if audio {
+                    let collector = av_bootstrap::Collector::new(Some([0x14, 0x08]), retention,
+                        av_owned_sink::BootstrapPolicy { allow_initial_video_only: full_resolution, max_separation_ms: 5_000,
+                            jitter_ms: 5, max_epoch_frames: 1_000_000,
+                            max_audio_frames: fss_container::Mp4Limits::default().max_samples,
+                            media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default() });
+                    let plan_replay = Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority, archive_base.clone())?);
+                    let plan = av_rollover_generation::Plan::new(av_rollover_generation::Configuration {
+                        namespace: "fleet-av".into(), scope_seed: ContentDigest::sha256(b"scoped fleet A/V generation"), first: 1, count: 1,
+                        journal_replay: plan_replay.clone(), pin_replay: plan_replay,
+                        journal_io: Arc::new(HostSpoolIo), pin_io: Arc::new(HostSpoolIo),
+                        journal_limits: EffectJournalLimits::default(), pin_limits: EffectJournalLimits::default(),
+                        read: access.clone(), object_limits: archive::StagedAvLimits { max_objects: 8192, max_object_bytes: 64 * 1024 * 1024, max_total_bytes: 128 * 1024 * 1024 },
+                        work_limit: 4_000_000_000,
+                    }).map_err(|_| "automatic A/V plan invalid")?;
+                    let audio_policy = recording_session::AudioAllowancePolicy::new(64, 128, 256).ok_or("automatic A/V audio policy invalid")?;
+                    let selected = recording_session::SelectedRecording { session, pipeline,
+                        management: management::Preconditions { camera: ContentDigest::sha256(b"wrong A/V camera"), ..management }, storage: created, collector };
+                    let refusal = match recording_provision::ProvisioningSession::begin_selected(selected, audio_policy, plan) {
+                        Err(refusal) => refusal,
+                        Ok(_) => return Err("automatic A/V accepted wrong camera")?,
+                    };
+                    if refusal.plan.remaining() != 1 { return Err("refused A/V plan advanced")?; }
+                    let mut selected = match refusal.recording {
+                        recording_session::SelectedRefusal::Binding(selected) => selected,
+                        _ => return Err("automatic A/V refused at wrong stage")?,
+                    };
+                    selected.management = management;
+                    let mut provisioning = recording_provision::ProvisioningSession::begin_selected(selected, refusal.audio, refusal.plan)
+                        .map_err(|_| "automatic A/V selection refused")?;
+                    let admission = source_coordinator::ArchiveAdmission { resource, cost: &BudgetVector::ZERO };
+                    let plan_op = OperationId::parse(format!("operation:auto-av-{index}-plan"))?;
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::ZERO, task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_provision::Step::Configuration) { return Err("zero wait advanced A/V provisioning")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_secs(31), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_provision::Step::Configuration) { return Err("excessive wait advanced A/V provisioning")?; }
+                    let identity = match provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
+                        recording_provision::Step::SupplyPlanned(identity) => identity,
+                        _ => return Err("automatic A/V did not plan storage")?,
+                    };
+                    if identity.journal_root.exists() || identity.pin_root.exists() { return Err("A/V plan performed storage I/O")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::ZERO, task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_provision::Step::Configuration) { return Err("zero wait started planned A/V storage")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_provision::Step::SupplyStarted) { return Err("automatic A/V storage did not start")?; }
+                    if !timeout(cx.now(), Duration::from_secs(10), provisioning.join_supply()).await? { return Err("automatic A/V storage did not join")?; }
+                    match provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
+                        recording_provision::Step::SupplyInstalled(completion) if completion.runtime.is_ok() && completion.outcome == av_rollover_supplies::Outcome::Ready => (),
+                        _ => return Err("automatic A/V storage not installed")?,
+                    }
+                    let owners = provisioning.into_parts();
+                    if owners.started || owners.worker.is_some() || owners.failed.is_some() || owners.custody.is_none() || owners.plan.as_ref().is_none_or(|p| p.remaining() != 0) {
+                        return Err("automatic A/V provisioning custody incomplete")?;
+                    }
+                    let (managed, _audio_policy, supplies) = owners.managed.into_parts();
+                    if supplies.is_none() { return Err("automatic A/V supplies missing")?; }
+                    let _custody = owners.custody;
+                    let _supplies = supplies;
+                    let mut recording = match managed {
+                        Some(recording_rollover::ManagedOwners::Session(session)) => *session,
+                        _ => return Err("automatic A/V recording owner missing")?,
+                    };
+                    let mut started = false;
+                    let mut source_count = 0usize;
+                    let mut pins = Vec::new();
+                    for number in 0..512u64 {
+                        let op = OperationId::parse(format!("operation:auto-av-{index}-{number}"))?;
+                        match recording.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission).await {
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceOffered(source_handoff::BootstrapResult::Accepted { .. })
+                                | source_coordinator::BootstrapStep::SourceStarted
+                                | source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Retained)
+                                | source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Forward { push: recording::Push::Buffered, .. })) => (),
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Supervisor(control))) => {
+                                if control_event(control)? { return Err("A/V media ended during bootstrap".into()); }
+                            }
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Completed(completion))) => {
+                                source_confirmed(completion)?; source_count += 1;
+                            }
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Control { step, completion })) => {
+                                if control_event(step)? { return Err("A/V control ended during source archive".into()); }
+                                if let Some(completion) = completion { source_confirmed(completion)?; source_count += 1; }
+                            }
+                            recording_session::Step::RecordingStarted(_) => { if started { return Err("A/V started twice".into()); } started = true; }
+                            recording_session::Step::Recording(source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(
+                                av_unknown_worker_guard::Advance::Source(av_unknown_worker_guard::Step::SourceQueued)
+                                | av_unknown_worker_guard::Advance::ArchiveStarted))) => (),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(
+                                av_unknown_worker_guard::Advance::Source(av_unknown_worker_guard::Step::Supervisor(control))))) => {
+                                if control_event(control)? { return Err("A/V media ended before both archives".into()); }
+                            }
+                            recording_session::Step::Recording(source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Audio(
+                                pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::UnconfiguredSample { .. })))) => (),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(
+                                av_unknown_worker_guard::Advance::Archive(av_unknown_worker_guard::Drive::Archive(completion))))) => {
+                                if completion.runtime.is_err() { return Err("A/V archive worker failed".into()); }
+                                match completion.outcome {
+                                    av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value)) => pins.push(value.pin),
+                                    _ => return Err("A/V archive requires reconciliation".into()),
+                                }
+                                if pins.len() >= if full_resolution { 2 } else { 1 } { break; }
+                            }
+                            recording_session::Step::Recording(source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(
+                                av_unknown_worker_guard::Advance::Archive(av_unknown_worker_guard::Drive::Control { step, completion })))) => {
+                                if control_event(step)? { return Err("A/V control ended during archive".into()); }
+                                if let Some(completion) = completion {
+                                    if completion.runtime.is_err() { return Err("A/V archive worker failed".into()); }
+                                    match completion.outcome {
+                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value)) => pins.push(value.pin),
+                                        _ => return Err("A/V archive requires reconciliation".into()),
+                                    }
+                                    if pins.len() >= if full_resolution { 2 } else { 1 } { break; }
+                                }
+                            }
+                            recording_session::Step::TransitionRefused => {
+                                let (_, phase) = recording.into_parts();
+                                let recording_session::Phase::TransitionRefused(refusal) = phase else {
+                                    return Err("A/V transition refusal lost its owner".into());
+                                };
+                                let reason = match *refusal {
+                                    source_coordinator::TransitionRefusal::Source { status, .. } => format!("source: {status:?}"),
+                                    source_coordinator::TransitionRefusal::NotReady { .. } => "not ready".into(),
+                                    source_coordinator::TransitionRefusal::Bootstrap { refusal, .. } => match *refusal {
+                                        av_bootstrap_driver::HandoffRefusal::NotReady(_) => "bootstrap not ready".into(),
+                                        av_bootstrap_driver::HandoffRefusal::Bootstrap { refusal, .. } => format!("bootstrap: {:?}", refusal.reason),
+                                    },
+                                    source_coordinator::TransitionRefusal::Guard(refusal) => format!("guard: {:?}", std::mem::discriminant(&*refusal)),
+                                };
+                                return Err(format!("automatic A/V transition refused: {reason}").into());
+                            }
+                            recording_session::Step::Recording(event) => {
+                                let reason = match &event {
+                                    source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(av_unknown_worker_guard::Advance::Source(event))) => format!("source {:?}", std::mem::discriminant(event)),
+                                    source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(event)) => format!("advance {:?}", std::mem::discriminant(event)),
+                                    source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Audio(pipeline::AudioEvent::Observed(event))) => format!("audio observation {:?}", std::mem::discriminant(event)),
+                                    source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Audio(event)) => format!("audio {:?}", std::mem::discriminant(event)),
+                                    _ => format!("source coordinator {:?}", std::mem::discriminant(&event)),
+                                };
+                                return Err(format!("automatic A/V recording stopped: {reason}").into());
+                            }
+                            other => return Err(format!("automatic A/V stopped: {:?}", std::mem::discriminant(&other)).into()),
+                        }
+                    }
+                    if pins.len() < if full_resolution { 2 } else { 1 } { return Err("automatic A/V publication missing")?; }
+                    if !started || source_count == 0 { return Err("automatic A/V source not accounted")?; }
+                    let mut shutdown = match recording.stop() {
+                        recording_session::Stop::Recording(shutdown) => shutdown,
+                        _ => return Err("automatic A/V stop phase mismatch")?,
+                    };
+                    if shutdown.join_source().await.is_some() || shutdown.join_av().await.is_some() {
+                        return Err("automatic A/V had undrained archive work")?;
+                    }
+                    let (source_owner, guard) = shutdown.finish().map_err(|_| "automatic A/V shutdown did not finish")?;
+                    let source = source_owner.into_worker().retire().map_err(|_| "automatic A/V source did not retire")?;
+                    if source.fenced || source.pending.is_some() { return Err("automatic A/V source unresolved")?; }
+                    let retired = (*guard).retire().map_err(|_| "automatic A/V guard did not retire")?;
+                    let mut parts = retired.worker.parts;
+                    let mut av_clips = 0usize;
+                    let mut video_only = 0usize;
+                    for pin in pins {
+                        match archive::read_unknown_time_av_any(&mut parts.deployment, pin, access.as_ref(),
+                            archive::Limits::default(), &mut fss_geometry::WorkBudget::new(4_000_000_000), &parts.replay)? {
+                            archive::RecoveredUnknownTimeAv::VideoOnly(_) if full_resolution && av_clips == 0 => { video_only += 1; }
+                            archive::RecoveredUnknownTimeAv::AudioVideo(clip) => {
+                                if clip.video_samples() == 0 || clip.audio().frames == 0 { return Err("automatic A/V readback empty")?; }
+                                if clip.claimed_source() != (SourceKey { connection: 5, generation: 1 }) { return Err("automatic A/V source binding changed")?; }
+                                if full_resolution {
+                                    let demux = AvcMp4::parse(clip.bytes(), None, DemuxLimits::default())?;
+                                    let annex = demux.annex_b(0, 1)?;
+                                    let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+                                    let mut pictures = decoder.decode_annex_b(annex.bytes())?;
+                                    pictures.extend(decoder.finish()?);
+                                    if pictures.is_empty() || pictures.iter().any(|p| p.width() != 2688 || p.height() != 1512) {
+                                        return Err("automatic A/V resolution mismatch")?;
+                                    }
+                                }
+                                eprintln!("automatic_av_readback video_samples={} audio_frames={}", clip.video_samples(), clip.audio().frames);
+                                av_clips += 1;
+                            }
+                            _ => return Err("unexpected automatic A/V archive profile".into()),
+                        }
+                    }
+                    if av_clips == 0 || (full_resolution && video_only != 1) { return Err("automatic A/V coverage classification missing")?; }
+                    return Ok(());
+                }
                 let wrong_management = management::Preconditions {
                     camera: ContentDigest::sha256(b"wrong synthetic camera"), ..management
                 };
@@ -2715,7 +2903,7 @@ fn parallel_fleet_upgrade_scenario(
                         let peer_proceed = third_proceed.clone();
                         let third_client = client.clone();
                         let third_peer = Joined(Some(std::thread::spawn(move || {
-                            stream_fixture::camera_with_candidates(endpoint, PEERS[2], third_client, "001122aabbee", third_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution, peer_hold, peer_proceed)
+                            stream_fixture::camera_with_candidates(endpoint, PEERS[2], third_client, "001122aabbee", third_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution, peer_hold, peer_proceed, audio)
                         })));
                         let made_third = Rc::new(Cell::new(0usize));
                         let polled_third = Rc::new(Cell::new(0usize));
@@ -2723,7 +2911,7 @@ fn parallel_fleet_upgrade_scenario(
                         let media = AutoMedia { index: 2, cx, task, clock, effects: Some(auto_third_effects), leases: &leases,
                             policy: &policy, resource: &resources[2], peer, camera: cameras[2],
                             admission: admissions[2], fence: fences[2], full_resolution,
-                            archive_base: Some(temp.0.clone()), archive_budget: budget, abort_source,
+                            archive_base: Some(temp.0.clone()), archive_budget: budget, abort_source, audio,
                             candidate_hold: third_hold, candidate_proceed: third_proceed };
                         let mut make_third = auto_media_factory(media, made_third.clone(), polled_third.clone(), release_third);
                         let mut third_streams = ActiveStreams::new(&fleet, 1).map_err(|_| "third automatic stream capacity")?;
@@ -2784,7 +2972,7 @@ fn parallel_fleet_upgrade_scenario(
                         let peer_hold = candidate_hold.clone();
                         let peer_proceed = candidate_proceed.clone();
                         let other = Joined(Some(std::thread::spawn(move || {
-                            stream_fixture::camera_with_candidates(endpoint, PEERS[1], tls_client, "001122aabbdd", auto_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution, peer_hold, peer_proceed)
+                            stream_fixture::camera_with_candidates(endpoint, PEERS[1], tls_client, "001122aabbdd", auto_peer_seen, Arc::new(AtomicBool::new(true)), full_resolution, peer_hold, peer_proceed, false)
                         })));
                         let auto_policy = discovery::retry::Policy::new(Duration::from_millis(50), Duration::from_millis(100), 1)?;
                         let queue = discovery::retry::Queue::new(&fleet, task, cx, clock, auto_policy)?;
@@ -2798,7 +2986,7 @@ fn parallel_fleet_upgrade_scenario(
                         let media = AutoMedia { index: 1, cx, task, clock, effects: Some(auto_effects), leases: &leases,
                             policy: &policy, resource: &resources[1], peer, camera: cameras[1],
                             admission: admissions[1], fence: fences[1], full_resolution,
-                            archive_base: None, archive_budget: budget, abort_source: false, candidate_hold, candidate_proceed };
+                            archive_base: None, archive_budget: budget, abort_source: false, audio: false, candidate_hold, candidate_proceed };
                         let mut make_stream = auto_media_factory(media, made.clone(), polled.clone(), release.clone());
                         let mut auto_lease_installed = false;
                         let mut renewed_auto_stall = false;
@@ -3141,7 +3329,7 @@ fn deadline_recovery_schedules_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
@@ -3156,11 +3344,41 @@ fn full_resolution_factory_stream_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
         .map_err(|_| "full-resolution fixture thread panicked")?
+        .map_err(Into::into)
+}
+
+#[test]
+fn automatic_audio_video_stream_over_synthetic_tls() -> Test {
+    std::thread::Builder::new()
+        .name("scoped-automatic-av-fixture".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, true)
+                .map_err(|error| error.to_string())
+        })?
+        .join()
+        .map_err(|_| "automatic A/V fixture thread panicked")?
+        .map_err(Into::into)
+}
+
+#[test]
+fn automatic_full_resolution_audio_video_over_synthetic_tls() -> Test {
+    std::thread::Builder::new()
+        .name("scoped-automatic-full-av-fixture".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, true)
+                .map_err(|error| error.to_string())
+        })?
+        .join()
+        .map_err(|_| "automatic full A/V fixture thread panicked")?
         .map_err(Into::into)
 }
 
@@ -3171,7 +3389,7 @@ fn managed_recording_cancellation_retains_blocked_source() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, true)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, true, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
@@ -3210,10 +3428,10 @@ fn fleet_fixture_inputs() -> Result<(Ipv4Addr, Vec<u8>, Vec<u8>), Box<dyn Error>
 
 fn run_fleet_scenarios() -> Test {
     let (peer, cert, key) = fleet_fixture_inputs()?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, true, false)
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, true, false, false)
 }
 
 #[derive(Debug)]

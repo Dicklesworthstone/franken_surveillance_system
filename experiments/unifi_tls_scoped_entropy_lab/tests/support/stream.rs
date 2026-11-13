@@ -81,17 +81,25 @@ fn flv_tag(timestamp: u32, payload: &[u8]) -> Vec<u8> {
 
 pub fn media_fixture(full_resolution: bool) -> TestMedia {
     if full_resolution {
-        media_fixture_from_frames(include_bytes!("synthetic_g4_resolution.264"), 4, 13)
+        media_fixture_from_frames(include_bytes!("synthetic_g4_resolution.264"), 4, 13, false)
     } else {
         media_fixture_from(include_bytes!("baseline.264"), 3)
     }
 }
 
-fn media_fixture_from(source: &[u8], cycle: usize) -> TestMedia {
-    media_fixture_from_frames(source, cycle, 7)
+pub fn audio_video_fixture(full_resolution: bool) -> TestMedia {
+    if full_resolution {
+        media_fixture_from_frames(include_bytes!("synthetic_g4_resolution.264"), 4, 13, true)
+    } else {
+        media_fixture_from_frames(include_bytes!("baseline.264"), 3, 7, true)
+    }
 }
 
-fn media_fixture_from_frames(source: &[u8], cycle: usize, frames: usize) -> TestMedia {
+fn media_fixture_from(source: &[u8], cycle: usize) -> TestMedia {
+    media_fixture_from_frames(source, cycle, 7, false)
+}
+
+fn media_fixture_from_frames(source: &[u8], cycle: usize, frames: usize, audio: bool) -> TestMedia {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(source).collect();
     let sps = nals
         .iter()
@@ -117,8 +125,15 @@ fn media_fixture_from_frames(source: &[u8], cycle: usize, frames: usize) -> Test
     config.extend_from_slice(&u16::try_from(pps.len())?.to_be_bytes());
     config.extend_from_slice(pps);
     let mut wire = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    if audio { wire[4] = 5; }
     wire.extend(flv_tag(0, &config));
     for index in 0..frames {
+        if audio {
+            // Synthetic AAC bodies test muxing and source custody, not decoding.
+            let mut tag = flv_tag(index as u32 * 64, &[0xaf, 1, 2]);
+            tag[0] = 8;
+            wire.extend(tag);
+        }
         let nal = pictures[index % cycle];
         let mut payload = vec![0x17, 1, 0, 0, 0];
         payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
@@ -170,6 +185,7 @@ pub fn camera_with_hold(
         full_resolution,
         hold,
         None,
+        false,
     )
 }
 
@@ -183,6 +199,7 @@ pub fn camera_with_candidates(
     full_resolution: bool,
     hold: Arc<AtomicBool>,
     proceed: Arc<AtomicBool>,
+    audio: bool,
 ) -> io::Result<()> {
     camera_impl(
         endpoint,
@@ -194,6 +211,7 @@ pub fn camera_with_candidates(
         full_resolution,
         Some(hold),
         Some(proceed),
+        audio,
     )
 }
 
@@ -207,6 +225,7 @@ fn camera_impl(
     full_resolution: bool,
     hold: Option<Arc<AtomicBool>>,
     competing_candidates: Option<Arc<AtomicBool>>,
+    audio: bool,
 ) -> io::Result<()> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.bind(&SocketAddr::V4(SocketAddrV4::new(peer, 0)).into())?;
@@ -319,9 +338,9 @@ fn camera_impl(
     media.bind(&SocketAddr::V4(SocketAddrV4::new(peer, 0)).into())?;
     media.connect_timeout(&destination.into(), Duration::from_secs(5))?;
     let mut media: std::net::TcpStream = media.into();
-    media.write_all(
-        &media_fixture(full_resolution).map_err(|_| io::Error::other("invalid fixture media"))?,
-    )?;
+    let wire = if audio { audio_video_fixture(full_resolution) } else { media_fixture(full_resolution) }
+        .map_err(|_| io::Error::other("invalid fixture media"))?;
+    media.write_all(&wire)?;
     drop(media);
     if let Some(hold) = hold {
         let deadline = Instant::now() + Duration::from_secs(90);
