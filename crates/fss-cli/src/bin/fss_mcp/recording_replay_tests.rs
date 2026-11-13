@@ -460,6 +460,11 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
                 }
             }
             assert_eq!(retained_modes, 1);
+        } else if target == "qsr" {
+            // QSR shares the immutable payload-read owner, not the archive syscall quota.
+            assert!(excludes(branch, "retained_import"));
+            assert!(excludes(branch, "max_query_io_calls"));
+            assert!(!excludes(branch, "max_query_read_objects"));
         } else {
             assert!(excludes(branch, "retained_import"));
             assert!(excludes(branch, "max_query_read_objects"));

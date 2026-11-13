@@ -1168,7 +1168,8 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
             .ok_or("UTC property")?;
         assert_eq!(property.get("type").and_then(Input::text), Some("string"));
     }
-    assert_eq!(modes.len(), 7);
+    // Seven catalog/clock modes plus native and retained source-replay modes.
+    assert_eq!(modes.len(), 9);
     let utc_set = modes
         .iter()
         .filter_map(Input::object)

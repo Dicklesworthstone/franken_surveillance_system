@@ -1,8 +1,49 @@
 # Implementation status
 
-**As of:** 2026-11-12 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-13 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Immutable QSR agent queries — 2026-11-13
+
+Canonical `fss query --target qsr` and MCP `query` now expose the existing
+retained, historically screened package-zone observations: complete sampled
+counts/presence, sampled dwell and ordered lane-stage transitions/interruption
+rows. The native reconstruction chain accepts the sealed immutable retained
+owner, so these reads coexist with a writer and never invoke local recovery or
+effect reconciliation. Original inference/source/capsule/adapter proof, current
+mask/deletion restrictions and historical screening are verified under one
+nonrenewing payload-byte/read-attempt allowance through final revalidation.
+Native QSR bytes and report identities are preserved.
+
+CLI requires `--verify-qsr-source=yes`; MCP requires the independent launcher
+grant `--allow-qsr-source-verification` with a fixed root and principal. The
+closed selector permits an exact report digest, bounded existing-zone roles,
+ordered lane stages and an optional current anchor. Complete native values and
+protected deployment context use the existing AOP-005 cognitive envelope, H0
+handles and a 256 KiB complete-response ceiling. Unknown/masked samples and lane
+interruptions remain explicit. Queue-wait, service, POS joins, physical identity,
+continuous coverage and cross-camera journeys remain outside this evidence.
+See [the operator workflow](docs/QSR_OBSERVATIONS.md).
+
+Added six immutable-owner regressions, six canonical admission/complete-row
+contracts, real Rust/CLI/MCP parity and unchanged-filesystem cases, and MCP
+selector/authority tests. Scoped pinned formatting, whitespace checks, schema
+metadata validation and 62 schema admission/denial cases passed. Hosted
+[recording lifecycle checks at 656b043](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43336593045)
+compiled the changed reference/CLI code and executed native suites; they exposed
+two recorder schema assumptions about all non-recording targets. The QSR branch
+now explicitly excludes foreign selectors, while the regression retains the
+legacy exclusions and checks QSR's intentionally shared payload-read budget.
+Discovery tests now enumerate all five query targets and all nine existing
+recording modes. Outbound discovery validation uses the bounded output-document
+parser; the 64 KiB inbound request-frame limit is unchanged. The full MCP binary
+suite accompanies the QSR process cases.
+The QSR suites run in an early explicit reference-workflow step; their runtime
+results remain pending at this checkpoint. Local compilation was interrupted
+in dependencies and its workspace later became unavailable. No native DSR,
+physical-camera result, measured detector accuracy or release qualification is
+claimed by this change.
 
 ## Imported recorder queries and source-loss fusion — 2026-11-12
 
