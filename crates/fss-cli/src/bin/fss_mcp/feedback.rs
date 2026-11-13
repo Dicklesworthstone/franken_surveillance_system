@@ -364,7 +364,15 @@ mod tests {
         assert!(FEEDBACK_TOOL.contains("\"additionalProperties\":false"));
         assert!(FEEDBACK_TOOL.contains("\"idempotentHint\":true"));
         assert!(FEEDBACK_TOOL.contains("1..256 total"));
-        assert!(FEEDBACK_TOOL.contains("recorded only"));
+        let description = fields
+            .get("description")
+            .and_then(Value::text)
+            .ok_or("feedback description")?;
+        assert!(description.contains("disposition create_learning_proposal"));
+        assert!(description.contains("Other targets/dispositions record requests only."));
+        assert!(description.contains(
+            "No learning promotion, policy, model, threshold, retention, privacy, identity or effect authority changes."
+        ));
         Ok(())
     }
 }

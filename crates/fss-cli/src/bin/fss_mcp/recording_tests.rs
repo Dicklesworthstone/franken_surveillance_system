@@ -1589,12 +1589,25 @@ fn utc_sessions_mcp_refuses_mixed_modes_partial_items_lossy_numbers_and_owner_ov
         quote(&format!("[{item}]")),
         format!("[{item},{item}]"),
         format!("[{}]", vec![item.clone(); 9].join(",")),
-        format!("[{{\"generation\":\"1\",{}}}]", &item[1..item.len() - 1]),
     ] {
         let mut fields = valid.clone();
         fields.insert("sessions", sessions);
         refused(&mut server, &fields);
     }
+    // Duplicate decoded keys are malformed JSON, refused before the typed argument adapter.
+    // Keep that parser-boundary rejection separate from the -32602 cases above.
+    let mut fields = valid.clone();
+    fields.insert(
+        "sessions",
+        format!("[{{\"generation\":\"1\",{}}}]", &item[1..item.len() - 1]),
+    );
+    let mut calls = 0;
+    let response = server.handle_with(&request(&fields), |_| {
+        calls += 1;
+        (String::new(), ExitIdentity::SUCCESS)
+    });
+    assert_eq!(calls, 0, "duplicate session keys dispatched");
+    assert!(response.is_some_and(|value| value.contains("\"code\":-32700")));
     Ok(())
 }
 

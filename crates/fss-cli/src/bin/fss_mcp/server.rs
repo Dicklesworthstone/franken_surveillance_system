@@ -916,15 +916,16 @@ mod tests {
             .and_then(|schema| schema.get("oneOf"))
             .and_then(Input::array)
             .ok_or("investigation intent families")?;
-        assert_eq!(families.len(), 2);
+        assert_eq!(families.len(), 3);
         let mut transitions = BTreeSet::new();
+        let mut probe_shapes = BTreeSet::new();
         for (index, family) in families.iter().enumerate() {
             let family = family.object().ok_or("intent family")?;
             let variants = family
                 .get("oneOf")
                 .and_then(Input::array)
                 .ok_or("action variants")?;
-            assert_eq!(variants.len(), if index == 0 { 11 } else { 15 });
+            assert_eq!(variants.len(), [11, 15, 7][index]);
             if index == 0 {
                 assert_eq!(
                     family.get("additionalProperties").and_then(Input::boolean),
@@ -950,11 +951,20 @@ mod tests {
                     .and_then(|value| value.get("const"))
                     .and_then(Input::text)
                     .ok_or("transition")?;
-                assert!(
-                    transitions.insert(transition),
-                    "duplicate transition {transition}"
-                );
-                if index == 1 {
+                let inserted = transitions.insert(transition);
+                if index == 2 && transition == "probe" {
+                    let required = variant
+                        .get("required")
+                        .and_then(Input::array)
+                        .ok_or("probe required fields")?
+                        .iter()
+                        .map(|field| field.text().ok_or("probe field"))
+                        .collect::<Result<BTreeSet<_>, _>>()?;
+                    assert!(probe_shapes.insert(required), "duplicate probe shape");
+                } else {
+                    assert!(inserted, "duplicate transition {transition}");
+                }
+                if index >= 1 {
                     assert_eq!(
                         variant.get("additionalProperties").and_then(Input::boolean),
                         Some(false)
@@ -965,6 +975,23 @@ mod tests {
                 }
             }
         }
+        assert_eq!(
+            probe_shapes,
+            BTreeSet::from([
+                BTreeSet::from(["session", "transition", "subscription", "authority_root"]),
+                BTreeSet::from([
+                    "session",
+                    "transition",
+                    "subscription",
+                    "authority_root",
+                    "case",
+                    "expected",
+                    "hypothesis",
+                    "side",
+                    "subscription_state",
+                ]),
+            ])
+        );
         assert_eq!(
             transitions,
             BTreeSet::from([
@@ -994,6 +1021,12 @@ mod tests {
                 "finding",
                 "finding-withdraw",
                 "finding-list",
+                "probe",
+                "probe-inspect",
+                "probe-ack",
+                "probe-discard",
+                "probe-advance",
+                "probe-citation",
             ])
         );
         let annotations = tool

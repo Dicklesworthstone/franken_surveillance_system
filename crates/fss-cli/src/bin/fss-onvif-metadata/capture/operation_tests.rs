@@ -196,9 +196,10 @@ fn native_cold_created_recovery_keeps_receipt_on_postcommit_refusal_and_retries_
         let cold_cx = directory.context(&plan)?;
         let cold = ReferenceDeployment::reopen(&plan.root, SITE, &cold_cx)?;
         let binding = plan.operation.as_ref().ok_or("operation binding missing")?;
+        let internal_id = capture_operation::operation_key(SITE, &binding.operation_id)?;
         assert_eq!(
             cold.restart_reclassified(),
-            std::slice::from_ref(&binding.operation_id)
+            std::slice::from_ref(&internal_id)
         );
         let operation = capture_operation::inspect(
             &cold,
@@ -207,6 +208,9 @@ fn native_cold_created_recovery_keeps_receipt_on_postcommit_refusal_and_retries_
             None,
             &cold_cx,
         )?;
+        assert_eq!(operation.owner_operation_id, binding.operation_id);
+        assert_eq!(operation.internal_operation_id, internal_id);
+        assert_eq!(operation.receipt.intent.operation_id, internal_id);
         assert_eq!(operation.receipt.state, EffectState::Indeterminate);
         let journal = fs::read(plan.root.join("effects/journal.fssj"))?;
         assert!(journal.starts_with(&committed_journal));
