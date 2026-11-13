@@ -24,7 +24,7 @@
 use fss_core::{ContentDigest, Generation};
 
 use crate::dtype::DType;
-use crate::shape::Shape;
+use crate::shape::{MAX_TENSOR_RANK, Shape};
 use crate::tensor::Tensor;
 
 /// Magic bytes of the canonical tensor form.
@@ -202,7 +202,18 @@ pub fn decode_canonical_tensor(bytes: &[u8]) -> Result<CanonicalTensor, Canonica
         return Err(CanonicalTensorError::UnknownVersion(version));
     }
     let dtype = dtype_for_tag(bytes[8]).ok_or(CanonicalTensorError::UnknownDtype(bytes[8]))?;
-    let rank = u32::from_be_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]) as usize;
+    let rank = usize::try_from(u32::from_be_bytes([
+        bytes[9], bytes[10], bytes[11], bytes[12],
+    ]))
+    .map_err(|_| CanonicalTensorError::Inconsistent {
+        reason: "rank exceeds tensor limit",
+    })?;
+    // Reject hostile ranks before calculating framing, allocating, or reading dimensions.
+    if rank > MAX_TENSOR_RANK {
+        return Err(CanonicalTensorError::Inconsistent {
+            reason: "rank exceeds tensor limit",
+        });
+    }
     let dims_len = rank
         .checked_mul(8)
         .ok_or(CanonicalTensorError::Inconsistent {
@@ -212,14 +223,21 @@ pub fn decode_canonical_tensor(bytes: &[u8]) -> Result<CanonicalTensor, Canonica
     let dims_end = pos
         .checked_add(dims_len)
         .ok_or(CanonicalTensorError::Truncated)?;
-    if dims_end + 24 > bytes.len() {
+    let metadata_end = dims_end
+        .checked_add(24)
+        .ok_or(CanonicalTensorError::Truncated)?;
+    if metadata_end > bytes.len() {
         return Err(CanonicalTensorError::Truncated);
     }
     let mut dims = Vec::with_capacity(rank);
     for _ in 0..rank {
         let mut a = [0u8; 8];
         a.copy_from_slice(&bytes[pos..pos + 8]);
-        dims.push(u64::from_be_bytes(a) as usize);
+        dims.push(usize::try_from(u64::from_be_bytes(a)).map_err(|_| {
+            CanonicalTensorError::Inconsistent {
+                reason: "dimension exceeds usize",
+            }
+        })?);
         pos += 8;
     }
     let read_u64 = |pos: &mut usize| -> u64 {
@@ -229,8 +247,14 @@ pub fn decode_canonical_tensor(bytes: &[u8]) -> Result<CanonicalTensor, Canonica
         u64::from_be_bytes(a)
     };
     let generation = Generation::from_u64(read_u64(&mut pos));
-    let element_count = read_u64(&mut pos) as usize;
-    let storage_len = read_u64(&mut pos) as usize;
+    let element_count =
+        usize::try_from(read_u64(&mut pos)).map_err(|_| CanonicalTensorError::Inconsistent {
+            reason: "element count exceeds usize",
+        })?;
+    let storage_len =
+        usize::try_from(read_u64(&mut pos)).map_err(|_| CanonicalTensorError::Inconsistent {
+            reason: "storage length exceeds usize",
+        })?;
     let shape = Shape::new(dims).map_err(|_| CanonicalTensorError::Inconsistent {
         reason: "invalid shape",
     })?;

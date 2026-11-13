@@ -9,7 +9,7 @@ use fss_core::Generation;
 use fss_tensor::canonical::{
     CanonicalTensorError, canonical_tensor_bytes, decode_canonical_tensor,
 };
-use fss_tensor::{DType, Shape, Tensor};
+use fss_tensor::{DType, MAX_TENSOR_RANK, Shape, Tensor};
 
 fn emit(property: &str, cases: u64) {
     println!(
@@ -173,5 +173,127 @@ fn p5_semantic_identity() -> Result<(), Box<dyn std::error::Error>> {
         "reordered content hashes differently"
     );
     emit("semantic-identity", 2);
+    Ok(())
+}
+
+/// P6 RANK ADMISSION: reject oversized ranks from the header alone, before
+/// attempting to read or allocate their dimension arrays.
+#[test]
+fn p6_rank_is_bounded_before_dimensions() -> Result<(), Box<dyn std::error::Error>> {
+    let good = canonical_tensor_bytes(DType::U8, &Shape::scalar(), Generation::GENESIS, &[42])?;
+    for rank in [u32::try_from(MAX_TENSOR_RANK)? + 1, u32::MAX] {
+        let mut header = good[..13].to_vec();
+        header[9..13].copy_from_slice(&rank.to_be_bytes());
+        assert_eq!(
+            decode_canonical_tensor(&header),
+            Err(CanonicalTensorError::Inconsistent {
+                reason: "rank exceeds tensor limit",
+            }),
+        );
+    }
+    emit("rank-bounded-before-dimensions", 2);
+    Ok(())
+}
+
+/// P7 VALID BOUNDARIES: scalars, maximum-rank tensors, and empty tensors
+/// preserve the version-one encoding; every proper prefix refuses.
+#[test]
+fn p7_rank_boundaries_preserve_canonical_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cases = 0;
+    for dims in [Vec::new(), vec![1; MAX_TENSOR_RANK], vec![0; MAX_TENSOR_RANK]] {
+        let shape = Shape::new(dims)?;
+        let payload = vec![42; shape.num_elements()?];
+        let generation = Generation::from_u64(7);
+        let good = canonical_tensor_bytes(DType::U8, &shape, generation, &payload)?;
+        let decoded = decode_canonical_tensor(&good)?;
+        assert_eq!(decoded.dtype, DType::U8);
+        assert_eq!(decoded.shape, shape);
+        assert_eq!(decoded.generation, generation);
+        assert_eq!(decoded.storage, payload);
+        assert_eq!(
+            canonical_tensor_bytes(
+                decoded.dtype,
+                &decoded.shape,
+                decoded.generation,
+                &decoded.storage,
+            )?,
+            good,
+        );
+        cases += 1;
+        for cut in 0..good.len() {
+            assert_eq!(
+                decode_canonical_tensor(&good[..cut]),
+                Err(CanonicalTensorError::Truncated),
+            );
+            cases += 1;
+        }
+    }
+    emit("rank-boundaries-and-truncation", cases);
+    Ok(())
+}
+
+/// P8 OVERFLOW REFUSAL: hostile dimensions and byte counts cannot wrap
+/// multiplication or framing arithmetic into a small valid tensor.
+#[test]
+fn p8_shape_storage_and_framing_overflow_refuse() -> Result<(), Box<dyn std::error::Error>> {
+    let maximum = u64::try_from(usize::MAX)?;
+    let shape = Shape::new(vec![1, 1])?;
+    let mut product = canonical_tensor_bytes(DType::U8, &shape, Generation::GENESIS, &[7])?;
+    product[13..21].copy_from_slice(&maximum.to_be_bytes());
+    product[21..29].copy_from_slice(&2u64.to_be_bytes());
+    assert_eq!(
+        decode_canonical_tensor(&product),
+        Err(CanonicalTensorError::Inconsistent {
+            reason: "shape element count overflow",
+        }),
+    );
+
+    let shape = Shape::new(vec![1])?;
+    let mut storage = canonical_tensor_bytes(DType::U64, &shape, Generation::GENESIS, &[0; 8])?;
+    storage[13..21].copy_from_slice(&maximum.to_be_bytes());
+    storage[29..37].copy_from_slice(&maximum.to_be_bytes());
+    assert_eq!(
+        decode_canonical_tensor(&storage),
+        Err(CanonicalTensorError::Inconsistent {
+            reason: "storage length overflow",
+        }),
+    );
+
+    let mut framing = canonical_tensor_bytes(DType::U8, &shape, Generation::GENESIS, &[7])?;
+    for offset in [13, 29, 37] {
+        framing[offset..offset + 8].copy_from_slice(&maximum.to_be_bytes());
+    }
+    assert_eq!(
+        decode_canonical_tensor(&framing),
+        Err(CanonicalTensorError::Truncated),
+    );
+    emit("shape-storage-framing-overflow", 3);
+    Ok(())
+}
+
+/// P9 WIDTH SAFETY: high wire-integer bits must never alias a smaller
+/// tensor. On 32-bit targets these used to be silently discarded.
+#[test]
+fn p9_wide_wire_counts_cannot_alias_small_tensor() -> Result<(), Box<dyn std::error::Error>> {
+    let shape = Shape::new(vec![1])?;
+    let good = canonical_tensor_bytes(DType::U8, &shape, Generation::GENESIS, &[7])?;
+    let wide = (1u64 << 32) + 1;
+    for (offset, reason) in [
+        (13, "dimension exceeds usize"),
+        (29, "element count exceeds usize"),
+        (37, "storage length exceeds usize"),
+    ] {
+        let mut bytes = good.clone();
+        bytes[offset..offset + 8].copy_from_slice(&wide.to_be_bytes());
+        let result = decode_canonical_tensor(&bytes);
+        assert!(
+            result.is_err(),
+            "wire integer at offset {offset} must not truncate"
+        );
+        if usize::BITS == 32 {
+            assert_eq!(result, Err(CanonicalTensorError::Inconsistent { reason }));
+        }
+    }
+    emit("wire-integers-do-not-truncate", 3);
     Ok(())
 }
