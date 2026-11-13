@@ -58,7 +58,9 @@ fn valid_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 impl QsrConfig {
-    pub(super) fn validate_shape(&self) -> Result<()> {
+    /// Validate finite roles, lane annotations and work limits before any source I/O.
+    /// Zone membership is checked later against the exact retained source recipe.
+    pub fn validate_shape(&self) -> Result<()> {
         if self.zone_roles.len() > MAX_QSR_ZONES || self.lane_stages.len() > MAX_QSR_ZONES {
             return Err(QsrError::Limit);
         }
@@ -75,6 +77,13 @@ impl QsrConfig {
         for stage in &self.lane_stages {
             if !valid_id(stage) || !stages.insert(stage) {
                 return Err(QsrError::Invalid("invalid or duplicate lane stage"));
+            }
+        }
+        for binding in &self.zone_roles {
+            if (binding.role == QsrZoneRole::LaneStage) != stages.contains(&binding.zone) {
+                return Err(QsrError::Invalid(
+                    "lane-stage role conflicts with ordered lane",
+                ));
             }
         }
         Ok(())

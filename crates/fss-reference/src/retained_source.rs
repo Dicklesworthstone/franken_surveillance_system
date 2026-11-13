@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerSnapshot};
+use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot};
 use fss_publication::{LocalPublicationState, SlotName, root_record_bytes};
 
 use crate::agent_orient::{
@@ -133,6 +133,18 @@ pub trait RetainedSource: sealed::Sealed {
     fn root(&self) -> &Path;
     /// Committed authority supplied by the native ledger owner.
     fn ledger(&self) -> RetainedLedger<'_>;
+    /// Site lineage from the exact committed authority snapshot.
+    fn site_lineage(&self) -> &str {
+        &self.current_anchor().site_lineage
+    }
+    /// Exact opening authority anchor; this method performs no I/O.
+    fn current_anchor(&self) -> &LedgerAnchor {
+        &self.ledger().current().anchor
+    }
+    /// Refuse an authority change using this owner's original read allowance.
+    fn verify_read_head(&self) -> Result<(), FileIngestError>;
+    /// Maximum native tombstone entries inspected by one custody lookup.
+    fn tombstone_lookup_work(&self) -> u64;
     /// Read one content-addressed payload within an explicit allocation bound.
     fn read_object_bounded(
         &self,
@@ -169,6 +181,17 @@ impl RetainedSource for ReferenceDeployment {
             current: ReferenceDeployment::ledger(self).current(),
             batches: ReferenceDeployment::ledger(self).batches(),
         }
+    }
+
+    fn verify_read_head(&self) -> Result<(), FileIngestError> {
+        self.ledger()
+            .verify_durable_head()
+            .map_err(crate::ReferenceError::from)?;
+        Ok(())
+    }
+
+    fn tombstone_lookup_work(&self) -> u64 {
+        self.publisher().limits().max_tombstones as u64
     }
 
     fn read_object_bounded(
@@ -351,6 +374,11 @@ impl<'a> ImmutableRetainedSource<'a> {
         for (slot, (root, children)) in publications {
             self.check_publication(&slot, root, children)?;
         }
+        self.verify_read_head()
+    }
+
+    fn revalidate_authority(&self) -> Result<(), FileIngestError> {
+        self.admit()?;
         let current = DeploymentHistory::read_metadata_cancellable(
             &self.root,
             &self.limits.snapshot,
@@ -388,6 +416,15 @@ impl RetainedSource for ImmutableRetainedSource<'_> {
             current: self.history.retained_ledger_snapshot(),
             batches: self.history.batches_through_head(),
         }
+    }
+
+    fn verify_read_head(&self) -> Result<(), FileIngestError> {
+        self.revalidate_authority()
+    }
+
+    fn tombstone_lookup_work(&self) -> u64 {
+        // Native immutable custody checks inspect the digest's exact tombstone path.
+        1
     }
 
     fn read_object_bounded(

@@ -5,9 +5,11 @@ use std::collections::BTreeSet;
 
 use fss_core::{DigestAlgorithm, SensorId};
 
+use crate::retained_source::RetainedSource;
+
 use super::{
     MAX_DETECTIONS, MAX_LABELS, MAX_PACKAGE_DETECT_FRAMES, MAX_TEXT, PackageDetectionRecord,
-    PackageEventError, PackageTrackingBoundary, ReferenceDeployment, ReplayCx, Result, checkpoint,
+    PackageEventError, PackageTrackingBoundary, ReplayCx, Result, checkpoint,
 };
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::{RetainedFileImport, RetainedReadLimits};
@@ -16,7 +18,7 @@ use crate::ingest::{RetainedFileImport, RetainedReadLimits};
 /// against current authority. An old delayed computation is not blessed by a newer publication
 /// anchor, and a later mask cannot authorize export or reuse of older coordinates.
 pub(super) fn verify_current_privacy(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     record: &PackageDetectionRecord,
     anchor: &fss_core::LedgerAnchor,
     report_json: &[u8],
@@ -220,7 +222,7 @@ fn boundary(previous: SourcePoint, current: SourcePoint) -> Option<PackageTracki
 /// A maximum of 64 segments is verified, sequentially, with the existing 16 MiB per-segment and
 /// 512 MiB source ceilings. This is custody work, not an additional model call.
 pub(in crate::ingest) fn verify_sources(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     record: &PackageDetectionRecord,
     cx: &ReplayCx,
 ) -> Result<Vec<PackageTrackingBoundary>> {
@@ -230,7 +232,7 @@ pub(in crate::ingest) fn verify_sources(
 /// Optional shared byte admission for consumers composing several native source analyses.
 /// Reservations include raw chunk and HTTP/RTSP origin reads and survive cache replacement.
 pub(in crate::ingest) fn verify_sources_with_budget(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     record: &PackageDetectionRecord,
     source_budget: Option<&crate::ingest::retained::SourceReadBudget>,
     cx: &ReplayCx,

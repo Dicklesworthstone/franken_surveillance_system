@@ -18,6 +18,7 @@ use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::source_capsule;
 use super::zone_dwell::{DwellPolicy, MAX_DWELL_NS};
 use super::{RetainedFileImport, RetainedReadLimits};
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReplayCx};
 
 mod compute;
@@ -370,7 +371,7 @@ impl PackageZoneReport {
         )
     }
     fn analyze_inner(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         package_report: ContentDigest,
         label: &str,
         tracking: PackageTrackingConfig,

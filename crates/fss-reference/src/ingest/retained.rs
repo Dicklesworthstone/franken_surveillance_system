@@ -611,7 +611,7 @@ impl RetainedFileImport {
 
     fn revalidate(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> Result<(), FileIngestError> {
@@ -626,7 +626,7 @@ impl RetainedFileImport {
     /// Root availability and authority are rechecked on every call. No media decoding is implied.
     pub fn read_segment(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         index: usize,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
@@ -646,7 +646,7 @@ impl RetainedFileImport {
     /// authority are still rechecked on every call.
     pub fn read_segment_cached(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         index: usize,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
@@ -656,7 +656,7 @@ impl RetainedFileImport {
         let bytes = assemble_segment(&self.manifest, index, limits, chunks, |d, length| {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
             let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
-            Ok(deployment.publisher().spool().read_bounded(d, maximum)?)
+            deployment.read_object_bounded(d, maximum)
         })?;
         super::http_import::verify_segment_budgeted(
             deployment,
@@ -682,7 +682,7 @@ impl RetainedFileImport {
     /// are rechecked on every call.
     pub fn read_omission_span(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         index: usize,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
@@ -693,7 +693,7 @@ impl RetainedFileImport {
     /// Internal source-read admission shared with a streaming decoder's recovery attempts.
     pub(crate) fn read_omission_span_budgeted(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         index: usize,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
@@ -716,7 +716,7 @@ impl RetainedFileImport {
             |d, length| {
                 checkpoint(cx, STAGE_RETAINED_CHUNK)?;
                 let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
-                Ok(deployment.publisher().spool().read_bounded(d, maximum)?)
+                deployment.read_object_bounded(d, maximum)
             },
         )?;
         chunks.verify_origin(deployment, &self.manifest, span.offset, &bytes, cx)?;
@@ -728,7 +728,7 @@ impl RetainedFileImport {
     /// Repeated chunks are retained in the stream. Success proves byte custody, not coverage.
     pub fn verify_source(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> Result<ContentDigest, FileIngestError> {
@@ -736,7 +736,7 @@ impl RetainedFileImport {
         let result = verify_source_chunks(&self.manifest, |d, length| {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
             let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
-            Ok(deployment.publisher().spool().read_bounded(d, maximum)?)
+            deployment.read_object_bounded(d, maximum)
         })?;
         super::http_import::verify_originals(deployment, &self.manifest, cx)?;
         super::rtsp_import::verify_originals(deployment, &self.manifest, cx)?;
@@ -920,7 +920,7 @@ impl VerifiedChunkCache {
 
     fn verify_origin(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         manifest: &FileImportManifest,
         offset: u64,
         bytes: &[u8],

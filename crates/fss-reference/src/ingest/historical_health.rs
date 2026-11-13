@@ -27,6 +27,7 @@ use super::recorded_decode::RecordedDecodeError;
 use super::recorded_watch::{SourcePublicationGuard, WatchError, WatchOptions, WatchPlan};
 use super::sensor_health::{policy_bytes, policy_digest};
 use super::{FileIngestError, RetainedFileImport};
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 mod wire;
@@ -822,7 +823,7 @@ fn inspect(
 }
 
 fn inspect_with_deletions(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
     deletions: &crate::deletion::DeletionIndex,
     mut read: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>>,
@@ -847,13 +848,11 @@ fn inspect_with_deletions(
         return Err(HistoricalHealthError::Unavailable);
     }
     let target = slot("hh", digest)?;
-    if deployment
-        .publisher()
-        .root(&target)
-        .is_none_or(|root| root.root != report.provenance_root)
-    {
-        return Err(HistoricalHealthError::Unavailable);
-    }
+    deployment.check_publication(
+        &target,
+        report.provenance_root,
+        report.record.manifest()?.children().len(),
+    )?;
     Ok(report)
 }
 

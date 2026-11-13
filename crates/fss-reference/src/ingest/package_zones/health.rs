@@ -35,7 +35,7 @@ pub(super) struct Screening {
 
 impl Screening {
     pub(super) fn read(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         analysis: &PackageAnalysisReport,
         privacy: &MaskBinding,
         limits: HealthExposureLimits,
@@ -93,9 +93,7 @@ impl Screening {
                 .ok_or(PackageZoneError::Limit)?;
             trace_reads = trace_reads.checked_add(1).ok_or(PackageZoneError::Limit)?;
             let bytes = deployment
-                .publisher()
-                .spool()
-                .read_bounded(
+                .read_object_bounded(
                     digest,
                     remaining.min(crate::ingest::long_dwell::MAX_LONG_DWELL_TRACE_BYTES),
                 )

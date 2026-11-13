@@ -30,6 +30,7 @@ use fss_core::{
 };
 
 use crate::reference_deployment::FAMILY_PRIVACY_MASK_POLICY;
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Maximum rectangles in one policy.
@@ -478,7 +479,7 @@ pub fn mask_object_id(sensor: &SensorId) -> Result<ObjectId, ContractError> {
 
 /// Every retained generation of `sensor`'s mask object: (generation, payload, prior generation).
 fn retained_generations(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     sensor: &SensorId,
 ) -> Result<Vec<(u64, ContentDigest, Option<u64>)>, PrivacyMaskError> {
     retained_generations_from_batches(deployment.ledger().batches(), sensor)
@@ -527,12 +528,18 @@ pub(crate) fn refuse_unmasked_history(
 }
 
 fn read_policy(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     sensor: &SensorId,
     generation: u64,
     digest: ContentDigest,
 ) -> Result<RetainedMaskPolicy, PrivacyMaskError> {
-    let bytes = deployment.publisher().spool().read(digest)?;
+    let bytes = deployment
+        .read_object_bounded(digest, MAX_MASK_POLICY_BYTES)
+        .map_err(|error| match error {
+            super::FileIngestError::CancellationRequested { .. } => PrivacyMaskError::Cancelled,
+            super::FileIngestError::Spool(error) => PrivacyMaskError::Spool(error),
+            _ => PrivacyMaskError::InvalidRecord,
+        })?;
     let policy = PrivacyMaskPolicy::from_bytes(&bytes, digest)?;
     if policy.sensor_id() != sensor {
         return Err(PrivacyMaskError::InvalidRecord);
@@ -547,7 +554,7 @@ fn read_policy(
 /// The sensor's current binding: its newest retained policy generation, or the explicit
 /// no-policy marker. Damaged custody fails closed; it is never treated as "no policy".
 pub fn current_mask(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     sensor: &SensorId,
 ) -> Result<MaskBinding, PrivacyMaskError> {
     let generations = retained_generations(deployment, sensor)?;

@@ -248,7 +248,7 @@ impl PublishCancellation for ReadAccess<'_> {
     }
 }
 struct RetainedReader<'a> {
-    deployment: &'a ReferenceDeployment,
+    deployment: &'a dyn RetainedSource,
     reserve: &'a mut dyn FnMut(u64) -> Result<(), FileIngestError>,
     expected: &'a [(ContentDigest, u64)],
     seen: BTreeSet<ContentDigest>,
@@ -277,21 +277,14 @@ impl DatagramObjectReader for RetainedReader<'_> {
             self.error = Some(error);
             return Err(DatagramArchiveError::Limit);
         }
-        work.charge(self.deployment.publisher().limits().max_tombstones as u64)?;
-        if self
-            .deployment
-            .publisher()
-            .tombstones()
-            .any(|d| *d == digest)
-        {
-            return Err(DatagramArchiveError::Tombstoned);
-        }
+        work.charge(self.deployment.tombstone_lookup_work())?;
         let bytes = self
             .deployment
-            .publisher()
-            .spool()
-            .read_bounded(digest, length as usize)
-            .map_err(DatagramArchiveError::Spool)?;
+            .read_object_bounded(digest, length as usize)
+            .map_err(|error| {
+                self.error = Some(error);
+                DatagramArchiveError::Source
+            })?;
         if bytes.len() as u64 != length {
             return Err(DatagramArchiveError::Source);
         }
@@ -328,7 +321,7 @@ fn proof(
 }
 
 fn verify(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     proof: &Proof,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
@@ -339,7 +332,7 @@ fn verify(
     // admission ceiling as initial import, with additional finite verification overhead.
     let overhead = proof.request.pin.payload_bytes * 16
         + proof.request.pin.datagrams * 100_000
-        + proof.request.pin.datagrams * 6 * deployment.publisher().limits().max_tombstones as u64;
+        + proof.request.pin.datagrams * 6 * deployment.tombstone_lookup_work();
     let mut work = WorkBudget::new(MAX_REPLAY_WORK.saturating_add(overhead));
     let mut reader = RetainedReader {
         deployment,
@@ -463,7 +456,7 @@ impl fmt::Debug for OriginCache {
 }
 
 pub(crate) fn verify_range_budgeted(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     offset: u64,
     bytes: &[u8],
@@ -497,7 +490,7 @@ pub(crate) fn verify_range_budgeted(
 }
 
 pub(crate) fn verify_originals(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {

@@ -37,6 +37,7 @@ use super::privacy_mask::{
 };
 use super::retained::SourceReadBudget;
 use super::{FileIngestError, RetainedFileImport, RetainedReadLimits};
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Receipt format owned by the retained-media composition, not a second JPEG implementation.
@@ -564,7 +565,7 @@ impl CanonicalEncode for RecordedDecodeReceipt {
 }
 
 pub(crate) fn source_capsule(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     retained: &RetainedFileImport,
     index: usize,
 ) -> Result<(SensorCapsule, ContentDigest), RecordedDecodeError> {
@@ -610,10 +611,8 @@ pub(crate) fn source_capsule(
     if !batch.children.contains(&delta.payload_digest) {
         return Err(RecordedDecodeError::InvalidReceipt);
     }
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(delta.payload_digest, MAX_RECORDED_DECODE_RECEIPT_BYTES)?;
+    let bytes =
+        deployment.read_object_bounded(delta.payload_digest, MAX_RECORDED_DECODE_RECEIPT_BYTES)?;
     if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES
         || ContentDigest::sha256(&bytes) != delta.payload_digest
     {

@@ -12,6 +12,7 @@ use std::fmt;
 use fss_core::ContentDigest;
 
 use super::package_zones::{PackageZoneError, PackageZoneReport};
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReplayCx};
 
 mod derive;
@@ -85,6 +86,19 @@ impl QsrObservationReport {
     /// allowance. A failed final check returns no report, even when derivation has completed.
     pub fn open(
         deployment: &ReferenceDeployment,
+        report_digest: ContentDigest,
+        config: QsrConfig,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::open_retained(deployment, report_digest, config, cx)
+    }
+
+    /// Reconstruct through a sealed retained-source owner without requiring a publisher or
+    /// writer lock. All original-byte, capsule, privacy, health and retained-proof checks use
+    /// that same owner. An immutable caller must finish with its owner's `revalidate` before
+    /// delivering the result, so the complete read shares one non-replenishing allowance.
+    pub fn open_retained(
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         config: QsrConfig,
         cx: &ReplayCx,

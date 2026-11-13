@@ -19,17 +19,17 @@ fn batch_id(digest: ContentDigest) -> Result<BatchId> {
 fn object_id(digest: ContentDigest) -> Result<ObjectId> {
     ObjectId::parse(format!("object:package-zones:{}", hex(digest))).map_err(source)
 }
-pub(super) fn check_history_bound(deployment: &ReferenceDeployment) -> Result<()> {
+pub(super) fn check_history_bound(deployment: &dyn RetainedSource) -> Result<()> {
     if deployment.ledger().batches().len() > MAX_LEDGER_BATCHES {
         return Err(PackageZoneError::Limit);
     }
     Ok(())
 }
-pub(super) fn check_scope(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+pub(super) fn check_scope(deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
     if deployment.root() != cx.root_dir() {
         return Err(PackageZoneError::AuthorityChanged);
     }
-    deployment.ledger().verify_durable_head().map_err(source)?;
+    deployment.verify_read_head().map_err(source)?;
     Ok(())
 }
 pub(super) fn approval(
@@ -81,15 +81,9 @@ pub(super) fn manifest(
     )
     .map_err(source)
 }
-fn read(
-    deployment: &ReferenceDeployment,
-    digest: ContentDigest,
-    maximum: usize,
-) -> Result<Vec<u8>> {
+fn read(deployment: &dyn RetainedSource, digest: ContentDigest, maximum: usize) -> Result<Vec<u8>> {
     let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, maximum)
+        .read_object_bounded(digest, maximum)
         .map_err(source)?;
     if ContentDigest::sha256(&bytes) != digest {
         return Err(PackageZoneError::Mismatch);
@@ -130,7 +124,7 @@ fn delta(report: &PackageZoneReport) -> Result<EvidenceDelta> {
     })
 }
 pub(super) fn check_detection(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     analysis: &PackageAnalysisReport,
 ) -> Result<()> {
     let record = analysis.retained().record();
@@ -154,7 +148,7 @@ pub(super) fn check_detection(
     Ok(())
 }
 pub(super) fn existing(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     report: &PackageZoneReport,
 ) -> Result<Option<LedgerAnchor>> {
     let target = batch_id(report.digest)?;
@@ -183,10 +177,6 @@ pub(super) fn existing(
         || batch.batch_digest != batch.computed_digest()
         || !batch.is_canonically_ordered()
         || batch.new_anchor.site_lineage != report.site
-        || deployment
-            .publisher()
-            .root(&slot(report.digest)?)
-            .is_none_or(|root| root.root != report.provenance_root())
         || read(deployment, report.provenance_root(), 64 * 1024)?
             != report.manifest.canonical_bytes()
         || read(deployment, report.digest, MAX_PACKAGE_ZONE_REPORT_BYTES)? != report.bytes
@@ -203,6 +193,13 @@ pub(super) fn existing(
     {
         return Err(PackageZoneError::Mismatch);
     }
+    deployment
+        .check_publication(
+            &slot(report.digest)?,
+            report.provenance_root(),
+            report.manifest.children().len(),
+        )
+        .map_err(source)?;
     Ok(Some(batch.new_anchor.clone()))
 }
 
@@ -210,7 +207,7 @@ impl PackageZoneReport {
     /// Rebuild from the exact selected retained recipe and compare every byte. This is a cold
     /// source-verified read, not metadata-only inspection, and never runs the neural model.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         digest: ContentDigest,
         cx: &ReplayCx,
     ) -> Result<Self> {
@@ -224,7 +221,7 @@ impl PackageZoneReport {
     /// Cold reconstruction with an explicit whole-operation historical screening allowance.
     /// The retained canonical recipe selects v1/v2; limits never change its interpretation.
     pub fn open_with_health_limits(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         digest: ContentDigest,
         limits: super::super::historical_health::exposure::HealthExposureLimits,
         cx: &ReplayCx,
@@ -270,7 +267,7 @@ impl PackageZoneReport {
     }
     pub(super) fn revalidate(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<()> {
         check_scope(deployment, cx)?;
@@ -310,7 +307,7 @@ impl PackageZoneReport {
     /// consumes this report's remaining screening allowance; no new allowance is substituted.
     pub(in crate::ingest) fn revalidate_retained_read(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<()> {
         self.revalidate(deployment, cx)?;

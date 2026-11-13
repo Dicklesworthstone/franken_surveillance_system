@@ -46,6 +46,7 @@ use super::package_detect::{MAX_PACKAGE_DETECT_FRAMES, PackageDetectReport};
 use super::recorded_decode::RecordedDecodeError;
 use super::rgb_package::RgbDetectorPackage;
 use super::tracker::{TrackerConfig, TrackerError, TrackerStepError};
+use crate::retained_source::RetainedSource;
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
@@ -235,8 +236,10 @@ fn count(d: &mut CanonicalDecoder<'_>, ceiling: usize) -> Result<usize> {
     }
     Ok(n)
 }
-fn read_verified(deployment: &ReferenceDeployment, digest: ContentDigest) -> Result<Vec<u8>> {
-    let bytes = deployment.publisher().spool().read(digest)?;
+fn read_verified(deployment: &dyn RetainedSource, digest: ContentDigest) -> Result<Vec<u8>> {
+    let bytes = deployment
+        .read_object(digest)
+        .map_err(RecordedDecodeError::from)?;
     if ContentDigest::sha256(&bytes) != digest {
         return Err(PackageEventError::Mismatch);
     }
@@ -539,7 +542,7 @@ impl RetainedPackageDetection {
     /// Reopens and verifies a retained package detection by its report digest, including the
     /// exact source capsules and encoded source bytes. Missing custody is not reconstructed.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         cx: &ReplayCx,
     ) -> Result<Self> {
@@ -549,7 +552,7 @@ impl RetainedPackageDetection {
     /// Additive whole-query source allowance for composing several retained analyses.
     /// Existing public reads retain their original uncached custody behavior.
     pub(in crate::ingest) fn open_with_source_budget(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         source_budget: Option<&super::retained::SourceReadBudget>,
         cx: &ReplayCx,
@@ -578,14 +581,13 @@ impl RetainedPackageDetection {
         children.dedup();
         if *delta != record.delta(delta.payload_digest, root)?
             || batch.children != children
-            || deployment
-                .publisher()
-                .root(&record.slot()?)
-                .is_none_or(|r| r.root != root)
             || read_verified(deployment, root)? != manifest.canonical_bytes()
         {
             return Err(PackageEventError::Mismatch);
         }
+        deployment
+            .check_publication(&record.slot()?, root, manifest.children().len())
+            .map_err(RecordedDecodeError::from)?;
         let report_json = read_verified(deployment, record.report_digest)?;
         source_validation::verify_current_privacy(
             deployment,
@@ -767,7 +769,7 @@ impl PackageAnalysisReport {
     /// Reopens the retained detection and source custody (no model execution), then tracks
     /// `label` with exact observation assignments and reset boundaries in the v2 report.
     pub fn read(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         label: &str,
         config: PackageTrackingConfig,
@@ -778,7 +780,7 @@ impl PackageAnalysisReport {
 
     /// Native analysis under a shared original-byte allowance owned by a composing consumer.
     pub(in crate::ingest) fn read_with_source_budget(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         label: &str,
         config: PackageTrackingConfig,
@@ -831,7 +833,7 @@ impl PackageAnalysisReport {
     /// Verifies exported v2 report bytes by rebuilding from retained custody. Legacy v1
     /// analyses and unknown policy generations require a fresh report and fresh approval.
     pub fn verify(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         bytes: &[u8],
         expected: ContentDigest,
         cx: &ReplayCx,

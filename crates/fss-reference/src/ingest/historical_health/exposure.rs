@@ -16,9 +16,10 @@ use super::{
     HistoricalHealthReadReport, MAX_HISTORICAL_HEALTH_METADATA_BYTES, Result, checkpoint,
     inspect_with_deletions, valid_digest,
 };
+use crate::ReplayCx;
 use crate::ingest::sensor_health::HealthFinding;
 use crate::reference_deployment::FAMILY_DELETION_TOMBSTONE;
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::retained_source::RetainedSource;
 
 /// Maximum committed diagnostic identities in one complete catalog, including tombstoned rows.
 pub const MAX_HEALTH_EXPOSURE_RECORDS: usize = 256;
@@ -263,7 +264,7 @@ fn charge(counter: &mut usize, amount: usize, maximum: usize) -> Result<()> {
 }
 
 struct CatalogReader<'a> {
-    deployment: &'a ReferenceDeployment,
+    deployment: &'a dyn RetainedSource,
     limits: HealthExposureLimits,
     usage: &'a mut HealthExposureUsage,
     cx: &'a ReplayCx,
@@ -285,9 +286,7 @@ impl CatalogReader<'_> {
             .ok_or(HistoricalHealthError::Limit)?;
         let bytes = self
             .deployment
-            .publisher()
-            .spool()
-            .read_bounded(digest, remaining.min(bound))?;
+            .read_object_bounded(digest, remaining.min(bound))?;
         charge(
             &mut self.usage.metadata_bytes_read,
             bytes.len(),
@@ -303,7 +302,7 @@ impl HealthExposureCatalog {
     /// provenance are verified by the existing metadata owner; native traces/pixels are not read.
     /// The durable ledger head is checked before and after loading. No mutation is performed.
     pub fn read(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         limits: HealthExposureLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
@@ -312,10 +311,7 @@ impl HealthExposureCatalog {
         if cx.root_dir() != deployment.root() {
             return Err(HistoricalHealthError::AuthorityChanged);
         }
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
+        deployment.verify_read_head()?;
         let batches = deployment.ledger().batches();
         let mut usage = HealthExposureUsage::default();
         let mut history_width = 0_usize;
@@ -407,10 +403,7 @@ impl HealthExposureCatalog {
             reader.usage.records_loaded += 1;
         }
         checkpoint(cx, "historical_health_exposure:complete")?;
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
+        deployment.verify_read_head()?;
         Ok(Self {
             anchor: deployment.current_anchor().clone(),
             root: deployment.root().to_path_buf(),
