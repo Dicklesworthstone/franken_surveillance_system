@@ -50,13 +50,19 @@ where
     }
     let limits = ProbeLimits::new(want);
     let mut head = vec![0u8; limits.max_bytes];
-    let read = match input.read(&mut head) {
-        Ok(read) => read,
-        Err(error) => {
-            let _ = writeln!(out, "error: stdin: {error}");
-            return EXIT_USAGE;
+    // A pipe hands back short reads freely, so fill the window before deciding; a single `read`
+    // would report Insufficient on a head that is actually complete.
+    let mut read = 0usize;
+    while read < head.len() {
+        match input.read(&mut head[read..]) {
+            Ok(0) => break,
+            Ok(count) => read += count,
+            Err(error) => {
+                let _ = writeln!(out, "error: stdin: {error}");
+                return EXIT_USAGE;
+            }
         }
-    };
+    }
     match probe(&head[..read], &limits) {
         ProbeOutcome::Identified {
             container,
@@ -143,6 +149,30 @@ mod tests {
         let (code, line) = invoke(&[], &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(code, EXIT_OK);
         assert!(line.contains("media=image"), "{line}");
+    }
+
+    #[test]
+    fn a_short_reading_pipe_still_identifies() {
+        /// Yields one byte per call, like a pipe that is being filled slowly.
+        struct Dribble(&'static [u8], usize);
+        impl Read for Dribble {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let Some(byte) = self.0.get(self.1) else {
+                    return Ok(0);
+                };
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                buf[0] = *byte;
+                self.1 += 1;
+                Ok(1)
+            }
+        }
+        let mut input = Dribble(b"\x1a\x45\xdf\xa3matroska", 0);
+        let mut out = Vec::new();
+        let code = run(std::iter::empty(), &mut input, &mut out);
+        assert_eq!(code, EXIT_OK);
+        assert!(String::from_utf8_lossy(&out).contains("matroska"));
     }
 
     #[test]
