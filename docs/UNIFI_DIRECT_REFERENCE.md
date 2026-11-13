@@ -15633,3 +15633,29 @@ dropped a pending join, released the gate, drained the exact completion, and
 checked the retained original bytes and source/camera claims. This establishes
 that synthetic bootstrap cancellation path only, not cancellation of managed
 video publication or rollover, physical-camera behavior, or retention.
+
+The managed bootstrap-to-recording transition now refuses a zero or excessive
+wait and a foreign clock before consuming its bootstrap owner; a cancelled
+owner is aborted instead of advancing. Strict-remote no-run build
+`j-30107138793668633` compiled base
+`06e63f038947cc6a3844a27f435cf9ea796d98a5` with the patched TLS-vendor
+overlay. Its wrapper returned 102 when Linux artifacts were rejected on macOS;
+terminal acknowledgement, source release and pair retirement were observed.
+The exact Linux binary, SHA-256
+`c52a26e60aa491b509347cc5d062cb5c8bf87efd13d2b93c9bc82fd1326b888a`,
+matched on the worker and isolated omarchy host. There, the direct
+`deadline_recovery_schedules_over_synthetic_tls` and
+`full_resolution_factory_stream_over_synthetic_tls` tests each passed
+(1 passed, 3 filtered). The fixture checks both rejected transitions followed
+by a valid transition; the latter test also decodes synthetic 2688 x 1512
+video. These are direct isolated Linux test results, not successful RCH test
+jobs or physical-camera results. The cancellation branch at this transition
+was not separately exercised by these tests.
+
+On 2026-11-12 a read-only probe of a recently completed fallback recording
+reported H.264 video at 1280 x 720, approximately 30 fps. An actively written
+file could not yet be probed because its MP4 metadata was incomplete; a file
+older than ten minutes was used instead. The recorder service and fallback
+timer were active after the synthetic tests. This point-in-time observation
+does not prove uninterrupted recording, a full-resolution camera capture, or
+30-day retention.

@@ -215,6 +215,33 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope,
         Self { owner: Some(ManagedRecordingOwner::Recording(recording)), ready: false, halted: false }
     }
 
+    /// Transfer a running managed recording into retained generation provisioning.
+    /// Before recording starts, after the owner or its controller is stopped,
+    /// or when the generation bootstrap is not admissible, both original
+    /// owners are returned unchanged.
+    /// This starts no work and does not establish storage independence or retention.
+    pub fn into_retained_provisioning(
+        mut self,
+        bootstrap: super::av_rollover_generation::BootstrapWorker,
+    ) -> Result<super::video_retained_provision::RetainedSession<'scope, 'task, IO>, (Self, super::av_rollover_generation::BootstrapWorker)> {
+        if self.halted
+            || !matches!(self.owner, Some(ManagedRecordingOwner::Recording(_)))
+            || self.control().is_none()
+        {
+            return Err((self, bootstrap));
+        }
+        let Some(ManagedRecordingOwner::Recording(managed)) = self.owner.take() else {
+            unreachable!("recording owner checked above")
+        };
+        match super::video_retained_provision::RetainedSession::with_bootstrap(managed, bootstrap) {
+            Ok(retained) => Ok(retained),
+            Err((managed, bootstrap)) => {
+                self.owner = Some(ManagedRecordingOwner::Recording(managed));
+                Err((self, bootstrap))
+            }
+        }
+    }
+
     /// Borrow the controller while the retained phase permits it.
     pub fn control(&mut self) -> Option<super::recording_session::Control<'_, 'scope, 'task, IO>> {
         if self.halted { return None; }

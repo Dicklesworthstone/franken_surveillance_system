@@ -5158,7 +5158,31 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                                 journal_io:Arc::new(HostSpoolIo),custody_io:Arc::new(HostSpoolIo),journal_limits:EffectJournalLimits::default(),custody_limits:EffectJournalLimits::default(),
                                 custody_scope:ContentDigest::sha256(b"retained generation pin"),
                             }}).map_err(|_|"bootstrap worker invalid")?;
-                            retained::RetainedSession::with_bootstrap(managed,bootstrap).map_err(|_|"retained bootstrap session refused")?
+                            if matches!(bootstrap_mode,19|20|21) {
+                                let mut recording = video_bootstrap::ManagedRecording::from_managed(managed);
+                                if recording.control().is_none() { return Err("recording controller missing before provisioning handoff".into()); }
+                                let bootstrap = if bootstrap_mode == 19 {
+                                    bootstrap.abort();
+                                    let (returned, refused) = match recording.into_retained_provisioning(bootstrap) {
+                                        Err(owners) => owners,
+                                        Ok(_) => return Err("cancelled generation bootstrap was accepted".into()),
+                                    };
+                                    recording = returned;
+                                    if recording.control().is_none() { return Err("refusal lost recording controller".into()); }
+                                    let mut retired = refused.retire().map_err(|_| "refused bootstrap unexpectedly running")?;
+                                    if !retired.fenced || retired.journal_attempted || retired.custody_attempted || retired.outcome.is_some() {
+                                        return Err("refused bootstrap changed storage".into());
+                                    }
+                                    let plan = retired.plan.take().ok_or("refused bootstrap lost plan")?;
+                                    generation::BootstrapWorker::new(generation::BootstrapInputs { plan, storage: retired.storage })
+                                        .map_err(|_| "explicit replacement bootstrap refused")?
+                                } else { bootstrap };
+                                let mut retained = recording.into_retained_provisioning(bootstrap).map_err(|_| "recording provisioning handoff refused")?;
+                                if retained.control().is_none() { return Err("recording controller missing after provisioning handoff".into()); }
+                                retained
+                            } else {
+                                retained::RetainedSession::with_bootstrap(managed,bootstrap).map_err(|_|"retained bootstrap session refused")?
+                            }
                         } else {
                             let store=FileEffectJournal::create(&journal_path, EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
                             let pin=fss_object::effect_journal::FileTrustedRootPinRetainer::create(&pin_path, EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(b"retained generation pin"))?;
@@ -5217,7 +5241,28 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                                 if auto.remaining!=1 || auto.custody.len()!=1 {return Err("cancelled automatic custody changed".into());}
                                 let inner=owners.inner.into_parts();
                                 if inner.worker.is_some() || inner.started {return Err("cancelled automatic session started another creator".into());}
-                                let managed=inner.managed.into_parts();
+                                let original_bootstrap = owners.bootstrap_retirement.ok_or("bootstrap custody missing after cancellation")?;
+                                let probe_plan = generation::Plan::new(generation::Configuration {
+                                    namespace: "retained-video-probe".into(), scope_seed: ContentDigest::sha256(b"stopped video fixture"), first: 1, count: 1,
+                                    journal_replay: rollover_replay.clone(), pin_replay: rollover_replay.clone(),
+                                    journal_io: Arc::new(HostSpoolIo), pin_io: Arc::new(HostSpoolIo), journal_limits: EffectJournalLimits::default(), pin_limits: EffectJournalLimits::default(),
+                                    read: rollover_read.clone(), object_limits: archive::StagedAvLimits {max_objects:8192,max_object_bytes:64*1024*1024,max_total_bytes:128*1024*1024}, work_limit:4_000_000_000,
+                                }).map_err(|_| "stopped probe plan invalid")?;
+                                let probe = generation::BootstrapWorker::new(generation::BootstrapInputs { plan: probe_plan, storage: original_bootstrap.storage })
+                                    .map_err(|_| "stopped probe bootstrap invalid")?;
+                                let stopped = video_bootstrap::ManagedRecording::from_managed(inner.managed);
+                                let (stopped, probe) = match stopped.into_retained_provisioning(probe) {
+                                    Err(owners) => owners,
+                                    Ok(_) => return Err("stopped recording admitted provisioning".into()),
+                                };
+                                let probe = probe.retire().map_err(|_| "stopped probe unexpectedly running")?;
+                                if probe.journal_attempted || probe.custody_attempted || probe.outcome.is_some() {
+                                    return Err("stopped recording performed provisioning work".into());
+                                }
+                                let managed = match stopped.into_owner() {
+                                    video_bootstrap::ManagedRecordingOwner::Recording(managed) => managed.into_parts(),
+                                    _ => return Err("stopped recording owner lost".into()),
+                                };
                                 match managed.owner {
                                     Some(video_session::ManagedOwner::Recording(mut session))=>{
                                         let _=session.join_source().await; let _=session.join_video().await;
@@ -5228,7 +5273,7 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                                     },
                                     _=>return Err("cancelled automatic managed owner missing".into()),
                                 }
-                                drop((retirement,auto,owners.bootstrap_retirement));
+                                drop((retirement,auto,probe));
                                 println!("automatic_creator_observation=cancelled pending_generation=1 journal_sequence=2");
                                 return Ok::<bool, Box<dyn Error>>(true);
                             }
