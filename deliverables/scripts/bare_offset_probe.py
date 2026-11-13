@@ -51,10 +51,16 @@ while off < END:
             break
         off += STEP
     print(f"{time.strftime('%H:%M:%S')} fired {fired[:1]}..{fired[-1:] or ''} n={len(fired)}", flush=True)
-    # a reboot kills the session and the next three probes
-    fails = sum(0 if probe() else 1 for _ in range(3))
-    if fails == 3:
-        print(f"REBOOT? after batch ending {off - STEP} (fired {fired[0]}..{fired[-1] if fired else '?'})", flush=True)
+    # A reboot kills the session for far longer than a doze: a normal sleep costs one or two
+    # probes (the unit answers again inside a couple of seconds), so demand a sustained outage.
+    fails = 0
+    for _ in range(8):
+        if probe():
+            break
+        fails += 1
+        time.sleep(2)
+    if fails >= 6:
+        print(f"REBOOT? after batch ending {off - STEP} (fired {fired[0]}..{fired[-1] if fired else '?'}, {fails} probes down)", flush=True)
         for _ in range(20):
             time.sleep(3)
             if probe():
