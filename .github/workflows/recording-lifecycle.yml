@@ -7,6 +7,15 @@ on:
     branches: [main]
     paths:
       - 'crates/fss-reference/src/onvif/**'
+      - 'crates/fss-reference/src/agent_event_changes.rs'
+      - 'crates/fss-reference/src/agent_event_changes/**'
+      - 'crates/fss-reference/tests/agent_event_changes_contract.rs'
+      - 'crates/fss-reference/src/agent_event_hydration.rs'
+      - 'crates/fss-reference/src/deployment_session/evidence_hydration.rs'
+      - 'crates/fss-reference/src/deployment_session/evidence_hydration/**'
+      - 'crates/fss-reference/tests/agent_event_hydration_contract.rs'
+      - 'schemas/event_revision_comparison.v1.json'
+      - 'schemas/agent_evidence_hydration.v1.json'
       - 'crates/fss-reference/tests/onvif_recording_contract.rs'
       - 'crates/fss-reference/tests/onvif_recording_contract/**'
       - 'crates/fss-core/tests/onvif_recording_wire_contract.rs'
