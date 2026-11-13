@@ -249,6 +249,7 @@ struct Options {
     lab_auto_retained_generations: Option<u64>,
     lab_stop_after_retained_reservation: bool,
     lab_inband_avc: bool,
+    lab_inband_avc_auto: bool,
     lab_av_history_records: Option<usize>,
     lab_renew_batch: Option<u64>,
     lab_decode_owned: bool,
@@ -336,8 +337,8 @@ fn options() -> ResultBox<Options> {
         if !(1..=8).contains(&count) {return Err("laboratory renewal batch must be 1 to 8".into());}
         args.pop();Some(count)
     } else {None};
-    let lab_inband_avc = args.last().is_some_and(|s| s == "--lab-inband-avc");
-    if lab_inband_avc { args.pop(); }
+    let lab_inband_avc_explicit = args.last().is_some_and(|s| s == "--lab-inband-avc");
+    if lab_inband_avc_explicit { args.pop(); }
     let lab_stop_after_retained_reservation = args.last().is_some_and(|s| s == "--lab-stop-after-retained-reservation");
     if lab_stop_after_retained_reservation { args.pop(); }
     let lab_auto_retained_generations = if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-auto-retained-generations=")) {
@@ -364,6 +365,12 @@ fn options() -> ResultBox<Options> {
     } else { None };
     let lab_auto_pinned_setup = args.last().is_some_and(|s| s == "--lab-auto-pinned-setup");
     if lab_auto_pinned_setup { args.pop(); }
+    // The automatic managed video-only laboratory path preserves identical
+    // in-band parameter sets using avc3. Manual and A/V paths retain their
+    // explicit selection; parameter-set changes are still refused by the muxer.
+    let lab_inband_avc_auto = lab_auto_pinned_setup && lab_managed_archive
+        && lab_video_only_archive && !lab_inband_avc_explicit;
+    let lab_inband_avc = lab_inband_avc_explicit || lab_inband_avc_auto;
     let discovery_hint = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--discovery-hint=")) {
         let ip = value.parse::<Ipv4Addr>()?;
         args.pop();
@@ -626,6 +633,7 @@ fn options() -> ResultBox<Options> {
         lab_auto_retained_generations,
         lab_stop_after_retained_reservation,
         lab_inband_avc,
+        lab_inband_avc_auto,
         lab_av_history_records,
         lab_renew_batch,
         lab_decode_owned,
@@ -882,6 +890,9 @@ fn derive_av_fragment(
 }
 fn run(args: Options) -> ResultBox<()> {
     println!("trial_video_channel_request={:?} resolution=unverified", args.video_channel);
+    if args.lab_inband_avc_auto {
+        println!("trial_avc_selection=automatic_inband format=avc3 configuration_changes=refused");
+    }
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     println!("trial_media_before_reply={}", args.media_before_reply);
     println!("trial_event_replies={}", args.reply_events);

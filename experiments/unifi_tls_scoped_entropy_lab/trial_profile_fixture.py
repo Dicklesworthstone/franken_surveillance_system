@@ -138,7 +138,7 @@ def serve_http(tls, controller_port, address, profiles, needs_handoff=False, fin
                     + b"\r\nConnection: keep-alive\r\n\r\n" + body)
 
 
-def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False):
+def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False, inband=False, wait_seconds=20, expect_auto_inband=False, expect_media_refusal=None):
     case = root / name
     case.mkdir(mode=0o700)
     credential = case / "credential.json"
@@ -161,7 +161,7 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
     server.num_tickets = 0
     server.load_cert_chain(pem, pem_key)
     command = [binary, f"{address}:{controller_port}", "auto" if auto_pin else address, "auto" if auto_pin else MAC.hex(), str(cert), str(key),
-               str(case / "journal"), str(case / "clip.mp4"), "12345678-1234-4abc-9abc-123456789abc", "20"]
+               str(case / "journal"), str(case / "clip.mp4"), "12345678-1234-4abc-9abc-123456789abc", str(wait_seconds)]
     if override:
         command.append(f"--video-channel={override}")
     if clock_burst == "continuing":
@@ -175,11 +175,18 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         command.append("--lab-segments=3" if archive else "--lab-segments=2")
     if auto_pin:
         command.extend(["--auto-discovery=24", f"--discovery-hint={address}", "--lab-auto-pinned-setup", f"--lab-setup-fence={root / 'camera-fence'}"])
+    if inband and not archive:
+        raise ValueError("in-band AVC replay requires an owned archive")
+    if expect_auto_inband and (inband or not auto_pin or archive != "video"):
+        raise ValueError("automatic in-band AVC requires automatic video-only archive without an explicit switch")
     if archive:
         command.append("--lab-owned-archive")
         if archive != "av":
             command.append("--lab-video-only-archive")
-        command.extend(["--lab-managed-archive", "--lab-av-history-records=5", "--lab-decode-owned"])
+        command.append("--lab-managed-archive")
+        if inband:
+            command.append("--lab-inband-avc")
+        command.extend(["--lab-av-history-records=5", "--lab-decode-owned"])
     if auto_pin:
         command.append(f"--anchored-journal={case / 'keeper'},{case / 'root'}")
     command += [f"--setup-camera={udp.getsockname()[1]},{https.getsockname()[1]},{cert},{credential}", "--owner-authorized"]
@@ -262,10 +269,6 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                 if name == "handoff-changed":
                     out, err = child.communicate(timeout=15)
                     output = out + err
-                    if auto_pin and (b"trial_pin_discovery=matched candidates=1 credentials_sent=false" not in output or b"trial_setup_fence=created" not in output or b"trial_journal=anchored" not in output):
-                        raise ValueError("automatic pinned setup or anchored journal trace missing")
-                    if auto_pin and b"trial_task_outcome=effect_unsettled" not in output:
-                        raise ValueError("automatic setup lost its unsettled effect outcome")
                     if clock_burst == "continuing" and b"trial_stage=startup_protocol_trace clocks=2" not in output:
                         raise ValueError("pre-hello clock effect traces missing")
                     if child.returncode == 0 or b"video profile changed after setup" not in output or b"dispatch_started=true accept_started=true" not in output:
@@ -334,13 +337,27 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                             if reply.get("functionName") != "EventSmartMotion" or reply.get("inResponseTo") != 78:
                                 raise ValueError("selection-time event reply missing")
                         with socket.create_connection((address, target.port), timeout=5) as transport:
-                            transport.sendall(media)
+                            if inband or expect_auto_inband:
+                                # Full-resolution real-media replay can apply archive backpressure.
+                                transport.settimeout(90)
+                            try:
+                                transport.sendall(media)
+                            except (BrokenPipeError, ConnectionResetError):
+                                if expect_media_refusal is None:
+                                    raise
                         try:
                             out, err = child.communicate(timeout=90)
                         finally:
                             for candidate in held:
                                 candidate.close()
                         out = prefix + out
+                        if expect_media_refusal is not None:
+                            if child.returncode == 0 or expect_media_refusal not in out + err or b"trial_complete" in out:
+                                raise ValueError("expected media refusal was not retained")
+                            if expect_auto_inband and b"trial_avc_selection=automatic_inband" not in out:
+                                raise ValueError("automatic in-band AVC selection missing before refusal")
+                            print(f"trial_profile_fixture case={name} media_refused=true result=pass", flush=True)
+                            return
                         if child.returncode != 0 or b"trial_complete" not in out:
                             report = out.decode(errors="replace")
                             raise RuntimeError("synthetic media trial failed: " + err.decode(errors="replace")[-1200:] + " stages=" + " | ".join(report.splitlines()[-20:]))
@@ -384,6 +401,12 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                                 raise ValueError("synthetic high-resolution media output mismatch")
                             subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-i", str(clip), "-map", "0:v:0", "-f", "null", "-"], capture_output=True, check=True, timeout=30)
                     output = out + err
+                    if auto_pin and (b"trial_pin_discovery=matched candidates=1 credentials_sent=false" not in output or b"trial_setup_fence=created" not in output or b"trial_journal=anchored" not in output):
+                        raise ValueError("automatic pinned setup or anchored journal trace missing")
+                    if auto_pin and b"trial_task_outcome=effect_unsettled" not in output:
+                        raise ValueError("automatic setup lost its unsettled effect outcome")
+                    if expect_auto_inband and (b"trial_avc_selection=automatic_inband format=avc3 configuration_changes=refused" not in output or b"trial_owned_avc_profile=avc3" not in output):
+                        raise ValueError("automatic in-band AVC selection missing")
                     if override is None and f"trial_video_channel_selected=Video{expected[-1]}".encode() not in output:
                         raise ValueError("selection marker missing")
         archive_detail = (f"segments=3 audio_packets={readback_fields['audio_frames']} video_rust_decode" if archive == "av" else

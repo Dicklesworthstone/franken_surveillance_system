@@ -2,6 +2,7 @@
 """Create a disposable TLS research workspace without modifying the registry."""
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -16,10 +17,10 @@ import tarfile
 EXPECTED = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 ROOT = Path(__file__).resolve().parent
 COPY_FILES = (
-    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_pin_discovery_fixture.py", "trial_media_fixture.py", "src/lib.rs",
+    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_auto_setup_fixture.py", "trial_live_media_probe.py", "trial_pin_discovery_fixture.py", "trial_media_fixture.py", "src/lib.rs",
     "src/server.rs", "src/owned.rs", "src/owned/client.rs", "src/owned/offload.rs", "src/client_handshake.rs",
     "src/camera_tls.rs", "src/camera_tls_owned.rs", "src/camera_tls_client.rs", "src/camera_setup.rs", "src/snapshot_auth.rs", "src/bin/live_tls_probe.rs", "src/bin/live_snapshot_probe.rs",
-    "src/bin/unifi_scoped_direct_trial.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_run_id/mod.rs",
+    "src/bin/unifi_scoped_direct_trial.rs", "src/bin/live_media_probe.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_run_id/mod.rs", "src/bin/trial_setup_fence/mod.rs",
     "src/bin/trial_owned_archive/mod.rs", "src/bin/trial_owned_archive/video.rs", "src/bin/trial_owned_archive/still_export.rs",
     "src/fleet_transport.rs", "src/fleet_leased.rs", "src/prepared_setup.rs", "src/prepared_camera.rs", "src/camera_factory.rs", "src/setup_upgrade.rs",
     "tests/scoped_entropy.rs", "tests/owned_entropy.rs", "tests/client_scoped_entropy.rs",
@@ -28,7 +29,7 @@ COPY_FILES = (
 
 
 def validate_copy_manifest(root, files):
-    """Check simple Rust module and literal include paths before creating a workspace."""
+    """Check local Rust and Python dependencies before creating a workspace."""
     if len(set(files)) != len(files):
         raise ValueError("duplicate workspace source")
     missing = [path for path in files if not (root / path).is_file()]
@@ -36,6 +37,21 @@ def validate_copy_manifest(root, files):
         raise ValueError("workspace source missing: " + ", ".join(missing))
     manifest = set(files)
     for source in files:
+        if source.endswith(".py"):
+            path = PurePosixPath(source)
+            tree = ast.parse((root / source).read_text(), filename=source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    names = (node.module.split(".", 1)[0],)
+                elif isinstance(node, ast.Import):
+                    names = tuple(alias.name.split(".", 1)[0] for alias in node.names)
+                else:
+                    continue
+                for name in names:
+                    local = path.parent / (name + ".py")
+                    if (root / local).is_file() and str(local) not in manifest:
+                        raise ValueError("workspace Python import omitted in " + source + ": " + name)
+            continue
         if not source.endswith(".rs"):
             continue
         path = PurePosixPath(source)

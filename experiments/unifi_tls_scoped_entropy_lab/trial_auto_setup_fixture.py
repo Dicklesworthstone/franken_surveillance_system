@@ -7,6 +7,7 @@ All generated fixture keys, journals and output remain in the new directory.
 import os
 import hashlib
 from pathlib import Path
+import re
 import select
 import socket
 import ssl
@@ -16,6 +17,28 @@ import time
 
 from trial_pin_discovery_fixture import certificate
 from trial_profile_fixture import MAC, advertisement, run
+
+
+def inject_changed_sps(media, avc_path, flv_tag):
+    source = Path(avc_path).read_bytes()
+    starts = list(re.finditer(b"\x00\x00\x00\x01|\x00\x00\x01", source))
+    nals = [source[item.end():starts[i + 1].start() if i + 1 < len(starts) else len(source)]
+            for i, item in enumerate(starts)]
+    sps = bytearray(next(nal for nal in nals if nal and nal[0] & 31 == 7))
+    sps[-1] ^= 1
+    offset = 13
+    while offset + 15 <= len(media):
+        size = int.from_bytes(media[offset + 1:offset + 4], "big")
+        end = offset + 11 + size
+        if end + 4 > len(media):
+            raise ValueError("invalid synthetic FLV")
+        body = media[offset + 11:end]
+        if media[offset] == 9 and len(body) >= 5 and body[1] == 1:
+            timestamp = int.from_bytes(media[offset + 4:offset + 7], "big") | media[offset + 7] << 24
+            changed = body[:5] + len(sps).to_bytes(4, "big") + sps + body[5:]
+            return media[:offset] + flv_tag(timestamp, changed) + media[end + 4:]
+        offset = end + 4
+    raise ValueError("synthetic FLV lacks video samples")
 
 
 def refusal_controls(binary, root, cert, key, wrong_pin):
@@ -319,7 +342,7 @@ def main():
     refusal_controls(binary, root, first[2], key, second[2])
     wrong_pin_control(binary, root, first, key, second[2])
     sys.path.insert(0, str(Path(sys.argv[3]).resolve(strict=True)))
-    from media_before_reply_fixture import media_fixture
+    from media_before_reply_fixture import flv_tag, media_fixture
     profiles = {"video1": {"width": 2688, "height": 1512, "fps": 30},
                 "video2": {"width": 1280, "height": 720, "fps": 30}}
     run(str(binary), "10.198.0.1", root, (first[0], first[1], first[2], key),
@@ -334,6 +357,21 @@ def main():
     retry_after_restart(binary, root, first, key)
     concurrent_attempts(binary, root, first, key)
     inspect_fence_controls(binary, root, first[2], second[2])
+    inband_root = root / "automatic-inband"
+    inband_root.mkdir(mode=0o700)
+    (inband_root / "camera-fence").mkdir(mode=0o700)
+    from trial_profile_fixture import archive_media
+    media = archive_media(sys.argv[4], flv_tag)
+    run(str(binary), "10.198.0.1", inband_root, (first[0], first[1], first[2], key),
+        "auto-handoff-inband", profiles, "video1", media=media,
+        archive="video", auto_pin=True, expect_auto_inband=True)
+    changed_root = root / "changed-inband"
+    changed_root.mkdir(mode=0o700)
+    (changed_root / "camera-fence").mkdir(mode=0o700)
+    run(str(binary), "10.198.0.1", changed_root, (first[0], first[1], first[2], key),
+        "auto-handoff-changed-inband", profiles, "video1", media=inject_changed_sps(media, sys.argv[4], flv_tag),
+        archive="video", auto_pin=True, expect_auto_inband=True,
+        expect_media_refusal=b"recording reason=Mux(UnsupportedFormat)")
 
 
 if __name__ == "__main__":
