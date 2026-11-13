@@ -33,3 +33,4 @@ Generated: 2026-11-09T01:29:16-0500  ·  source: /var/lib/fss-telemetry/waits.js
 | wyze-192.168.4.39 | TUTK frame execution (beacon /fss-ran?via=rtsp-enable in the | timeout | 2 | 2026-11-09T02:24:55 | 2026-11-09T02:23Z: login succeeds (K1000 |
 | wyze-192.168.4.51 | camera GET for the capsule over the tunnel | observed | 2 | 2026-11-09T06:22:59 | 2026-11-09T02:54:56Z GET /4.52.17.100.ta |
 | yi-192.168.4.20 | camera joining our AP post re-provision (yi_u1.py catch) | timeout | 0 | 2026-11-06T18:00:19 | listener armed 20h+ (pid 38257 since Nov |
+| wyze-192.168.4.39 | fresh boot (power cycle): frames deliver but nothing executes | open | 3 | 2026-11-13T15:45 | 15:45 K10003 ack + 1638B accepted, no /fss-ran beacon, 554 down |
