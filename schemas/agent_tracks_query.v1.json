@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_tracks_query.v1.json",
+  "title": "Source-verified retained detector track selector for AOP-005",
+  "description": "Closed read intent over one retained package-detection report, an exact model-vocabulary label and an explicit native tracking recipe. The launcher fixes deployment/principal and independently grants internal source verification. One immutable owner verifies current history, source custody, privacy and deletion under a shared nonrenewing payload allowance. Responses use the existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts. Pages contain complete actual matched observations, per-sample confirmation, exact assigned detection/score/box, source-frame references and all continuity boundaries; tentative history is never retroactively confirmed. No new model execution, predicted-only samples, media disclosure, event publication or effects. Native track identity does not establish physical identity, calibrated confidence, continuous coverage or absence. The complete protected page fits 256 KiB or refuses. Native admission remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "report_digest", "label"],
+  "properties": {
+    "target": {"const": "tracks"},
+    "report_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71,
+      "not": {"const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+      "description": "Exact retained fss.package_detection_report.v1 digest, not a canonical record payload, loose path or latest selector. Metadata-only reports discovery returns this handle without granting source verification."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\u0000-\u001f\u007f-\u009f]+(?![\\s\\S])",
+      "description": "Exact case-sensitive model-vocabulary member. Native admission enforces a 512 UTF-8-byte bound and refuses unknown labels; no class normalization or physical classification is inferred."
+    },
+    "confirmation_hits": {
+      "type": "integer", "minimum": 1, "maximum": 4294967295, "default": 2,
+      "description": "Native association hits required for confirmation. The exact resulting value is bound into the analysis and continuation. Confirmation is not corroboration."
+    },
+    "maximum_missed_frames": {
+      "type": "integer", "minimum": 1, "maximum": 4294967295, "default": 1,
+      "description": "Native consecutive-miss retirement policy. Missed-frame predictions are not returned as actual observations."
+    },
+    "minimum_iou_ppm": {
+      "type": "integer", "minimum": 0, "maximum": 1000000, "default": 100000,
+      "description": "Native predicted-box association threshold in integer parts per million. Actual assigned source rows are preserved without nearby-row substitution."
+    },
+    "max_entries": {
+      "type": "integer", "minimum": 1, "maximum": 32, "default": 16,
+      "description": "Complete matched observations per page, ordered by native track id then observation display order. All source-frame metadata and source-continuity boundaries remain visible on every page."
+    },
+    "anchor": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "description": "Optional exact current deployment authority/effect-history precondition, separate from the historical source anchor."
+    },
+    "continuation": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "description": "Exact native continuation returned by the preceding page. It binds complete analysis, current authority/effect prefix, label, recipe, principal, grant privacy/retention scope, page size and read allowance. A changed head requires a fresh query; no offset or silent rebase."
+    },
+    "max_query_read_bytes": {
+      "type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 10, "default": "1073741824",
+      "description": "One whole-page payload-byte ceiling, 1..4294967296, covering history, retained metadata, original encoded source verification and final rereads. Failed reads invalidate the remaining balance. Not a filesystem-framing or CPU measurement."
+    },
+    "max_query_read_objects": {
+      "type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 7, "default": "1000000",
+      "description": "One whole-page payload-read-attempt ceiling, 1..4000000, shared through final revalidation. Not a filesystem syscall quota; no refill between stages."
+    }
+  }
+}

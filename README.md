@@ -226,6 +226,17 @@ unique-person, service-time or detector-accuracy claim and writes no QSR object 
 security event. See [the retained QSR workflow](docs/QSR_OBSERVATIONS.md) and
 [observation definitions](registries/QSR_OBSERVATIONS.md).
 
+`fss query --target tracks` exposes actual matched detector-track observations
+through the same CLI/MCP query envelope, with exact source/model provenance,
+per-sample tentative/confirmed state and explicit continuity resets. It verifies
+retained source custody under a separate source-read grant and supports exact
+pagination while a deployment writer remains active. See
+[retained detector track queries](docs/AGENT_TRACKS_QUERY.md).
+`fss query --target reports` discovers the exact detector and zone-report handles
+needed by tracks and QSR, with bounded filters and pagination over verified
+retained metadata. It reads no original media and grants no source-verification
+authority. See [report discovery](docs/AGENT_REPORT_CATALOG.md).
+
 Validation, recorded probing and capture planning perform no device contact,
 credential reads, recording or signed rights verification. Automatic Protect export
 acquisition, automatic ONVIF discovery, TLS/RTSPS, automatic all-source probing and a site

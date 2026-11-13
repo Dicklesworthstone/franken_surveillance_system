@@ -220,6 +220,7 @@ fn refused(arguments: &str) {
     let mut calls = 0;
     let response = ready()
         .with_qsr_source_verification()
+        .with_tracks_source_verification()
         .handle_with(&request(arguments), |_| {
             calls += 1;
             ("{}".to_owned(), ExitIdentity::SUCCESS)
@@ -255,6 +256,15 @@ fn qsr_fields_never_extend_other_query_targets() {
             r#""lane_stages":[]"#.to_owned(),
         ] {
             refused(&format!(r#"{{"target":"{target}",{field}}}"#));
+        }
+    }
+    // Tracks share the retained detector report selector, but never QSR zone annotations.
+    for target in [
+        format!(r#""target":"tracks","report_digest":"{REPORT}","label":"person""#),
+        r#""target":"reports""#.to_owned(),
+    ] {
+        for field in [r#""zone_roles":[]"#, r#""lane_stages":[]"#] {
+            refused(&format!("{{{target},{field}}}"));
         }
     }
 }
@@ -305,6 +315,8 @@ fn tools_list_exposes_qsr_under_existing_query_with_closed_target_fields() -> Te
         "archive_root",
         "verify_qsr_source",
         "allow_qsr_source_verification",
+        "verify_tracks_source",
+        "allow_tracks_source_verification",
     ] {
         assert!(!properties.contains_key(forbidden));
     }
@@ -358,21 +370,36 @@ fn tools_list_exposes_qsr_under_existing_query_with_closed_target_fields() -> Te
                 ]
             );
         } else {
-            let excluded = branch
-                .get("not")
-                .and_then(NativeValue::object)
-                .and_then(|fields| fields.get("anyOf"))
-                .and_then(NativeValue::array)
-                .ok_or("exclusions")?;
-            for field in ["report_digest", "zone_roles", "lane_stages"] {
-                assert!(excluded.iter().any(|row| {
-                    row.object()
-                        .and_then(|fields| fields.get("required"))
+            let excludes = |field: &str| {
+                branch
+                    .get("propertyNames")
+                    .and_then(NativeValue::object)
+                    .and_then(|fields| fields.get("enum"))
+                    .and_then(NativeValue::array)
+                    .is_some_and(|allowed| !allowed.iter().any(|value| value.text() == Some(field)))
+                    || branch
+                        .get("not")
+                        .and_then(NativeValue::object)
+                        .and_then(|fields| fields.get("anyOf"))
                         .and_then(NativeValue::array)
-                        .is_some_and(|required| {
-                            required.len() == 1 && required[0].text() == Some(field)
+                        .is_some_and(|excluded| {
+                            excluded.iter().any(|row| {
+                                row.object()
+                                    .and_then(|fields| fields.get("required"))
+                                    .and_then(NativeValue::array)
+                                    .is_some_and(|required| {
+                                        required.len() == 1 && required[0].text() == Some(field)
+                                    })
+                            })
                         })
-                }));
+            };
+            for field in ["zone_roles", "lane_stages"] {
+                assert!(excludes(field), "{target} admits QSR-only {field}");
+            }
+            if target == "tracks" {
+                assert!(!excludes("report_digest"));
+            } else {
+                assert!(excludes("report_digest"));
             }
         }
     }

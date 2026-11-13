@@ -82,6 +82,8 @@ pub mod recording_query_cmd;
 pub mod redact;
 /// Shared bounded recorder timestamp projection for archive and retained-media queries.
 pub mod replay_time_json;
+/// Metadata-only discovery of retained detector and zone-report handles.
+pub mod report_catalog_query_cmd;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
 /// Exact owner-approved session authority revocation through AOP-010.
@@ -106,6 +108,8 @@ pub mod status_cmd;
 /// Bounded multi-camera supervisor coordinator with explicit sequential fusion (`fss-becce`).
 pub mod supervisor;
 pub mod token;
+/// Canonical source-verified detector track reads shared by CLI and MCP.
+pub mod tracks_query_cmd;
 /// Pure native UniFi selection, private argument composition and outer approval.
 pub mod unifi_plan;
 

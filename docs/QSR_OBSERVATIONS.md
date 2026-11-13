@@ -22,6 +22,10 @@ knowledge, contradictions and unresolved obligations. It performs no model infer
 
 The selected digest is a retained, historically screened
 `fss.package_zone_report.v2`, created and retained through the workflow below.
+The metadata-only [report catalogue](AGENT_REPORT_CATALOG.md),
+`fss query --target reports --family package_zone_report`, discovers exact retained
+handles and their v1/v2 schema. Discovery does not establish QSR eligibility;
+this query still verifies the native source and screening evidence.
 Source verification reads original encoded evidence internally, so the local operator
 must explicitly enable it. It grants no media disclosure or effect capability.
 

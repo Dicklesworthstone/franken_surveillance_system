@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use fss_core::{
-    ContentDigest, ContextAuthority, KnowledgeState, OperationId, PrincipalId, RootAuthoritySpec,
-    RuntimeGrant,
+    ContentDigest, ContextAuthority, KnowledgeState, ObjectId, OperationId, PrincipalId,
+    RootAuthoritySpec, RuntimeGrant,
 };
 use fss_object::SPOOL_OBJECTS_DIR;
 use fss_publication::LOCAL_SPOOL_DIR;
@@ -21,6 +21,7 @@ use fss_reference::agent_report_catalog::{
     ReportCatalogError, ReportCatalogFamily, ReportCatalogFilter, ReportCatalogLimits,
     ReportCatalogRequest, query_report_catalog,
 };
+use fss_reference::deletion::{approval_digest, commit_deletion, plan_deletion};
 use fss_reference::ingest::package_event::PACKAGE_DETECTION_RECORD_DOMAIN;
 use fss_reference::ingest::package_zones::{
     PACKAGE_ZONE_REPORT_DOMAIN, PACKAGE_ZONE_SCREENED_REPORT_DOMAIN, PackageZone,
@@ -278,6 +279,81 @@ fn filters_never_bypass_complete_index_integrity_or_aggregate_read_limits() -> T
 }
 
 #[test]
+fn completed_native_source_deletion_revokes_derivatives_without_poisoning_discovery() -> Test {
+    let fixture = Fixture::new("agent-report-catalog-completed-deletion")?;
+    let root = &fixture.source.root;
+    let request = request()?;
+    let limits = ReportCatalogLimits::default();
+    let cx = context(root, &request, limits)?;
+    let before = query_report_catalog(root, &request, limits, &cx, &|| false)?;
+    assert_eq!(before.rows.len(), 2);
+    cx.drain_and_finalize();
+
+    // Committed native deletion revokes the derivative closure. This is deliberately distinct
+    // from missing source media with no revocation, which leaves metadata discoverable above.
+    let writer = qsr_observations_support::context(root)?;
+    let mut deployment = ReferenceDeployment::open(root, SITE, &writer)?;
+    let plan = plan_deletion(&deployment, fixture.source.import, &writer)?;
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    let report_objects = before
+        .rows
+        .iter()
+        .map(|row| {
+            let native = match row.family {
+                ReportCatalogFamily::PackageDetectionRecord => "package-detection",
+                ReportCatalogFamily::PackageZoneReport => "package-zones",
+            };
+            let identity: String = row
+                .report_digest
+                .bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            ObjectId::parse(format!("object:{native}:{identity}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for object in &report_objects {
+        assert!(
+            plan.tombstones
+                .iter()
+                .any(|entry| entry.object_id == object.as_str())
+        );
+    }
+    let digest = plan.digest()?;
+    commit_deletion(
+        &mut deployment,
+        digest,
+        approval_digest(digest, SITE, PRINCIPAL)?,
+        PRINCIPAL,
+        &writer,
+    )?;
+    for object in &report_objects {
+        let current = deployment
+            .ledger()
+            .current()
+            .objects
+            .get(object)
+            .ok_or("current report tombstone")?;
+        assert_eq!(current.family, "deletion_tombstone");
+        assert_eq!(current.generation, 2);
+        assert_eq!(current.payload_digest, digest);
+    }
+    drop(deployment);
+    writer.drain_and_finalize();
+
+    let deleted = files(root)?;
+    let cx = context(root, &request, limits)?;
+    let after = query_report_catalog(root, &request, limits, &cx, &|| false)?;
+    assert_eq!(after.scanned_reports, 0);
+    assert_eq!(after.matched_reports, 0);
+    assert!(after.rows.is_empty());
+    assert_ne!(after.anchor_token, before.anchor_token);
+    assert_eq!(files(root)?, deleted);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
 fn legacy_zone_schema_remains_explicit_and_never_claims_qsr_eligibility() -> Test {
     let fixture = package_support::Fixture::new(
         "agent-report-catalog-legacy",
@@ -316,12 +392,43 @@ fn legacy_zone_schema_remains_explicit_and_never_claims_qsr_eligibility() -> Tes
     assert_eq!(query.rows.len(), 1);
     assert_eq!(query.rows[0].report_digest, zones.digest());
     assert_eq!(query.rows[0].schema, PACKAGE_ZONE_REPORT_DOMAIN);
-    assert!(
-        query
-            .epistemic()
-            .propositions
-            .iter()
-            .any(|claim| { claim.statement.contains("qsr_eligibility=unknown") })
+    let epistemic = query.epistemic();
+    let encoded = epistemic
+        .propositions
+        .iter()
+        .find_map(|claim| claim.statement.strip_prefix("Retained report metadata: "))
+        .ok_or("native report metadata projection")?;
+    let projected = fss_core::json_input::parse(encoded)?;
+    let fields = projected.object().ok_or("report metadata object")?;
+    assert_eq!(
+        fields
+            .get("schema")
+            .and_then(fss_core::json_input::Value::text),
+        Some(PACKAGE_ZONE_REPORT_DOMAIN)
+    );
+    assert_eq!(
+        fields
+            .get("report_digest")
+            .and_then(fss_core::json_input::Value::text),
+        Some(zones.digest().to_text().as_str())
+    );
+    assert_eq!(
+        fields
+            .get("metadata_availability")
+            .and_then(fss_core::json_input::Value::text),
+        Some("verified")
+    );
+    assert_eq!(
+        fields
+            .get("source_payload_availability")
+            .and_then(fss_core::json_input::Value::text),
+        Some("unknown")
+    );
+    assert_eq!(
+        fields
+            .get("qsr_eligibility")
+            .and_then(fss_core::json_input::Value::text),
+        Some("unknown")
     );
     cx.drain_and_finalize();
     Ok(())

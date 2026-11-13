@@ -699,6 +699,65 @@ pub(crate) fn build_qsr_response(
     )
 }
 
+/// Matched detector track metadata requires independent source-verification consent.
+pub(crate) fn build_tracks_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+        || parts.capability != fss_core::RuntimeGrant::AgentQuery.as_str()
+    {
+        return Err(RenderError("invalid tracks query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only retained detector tracks with explicitly authorized source verification"
+            .to_owned();
+    projection.visible_domains.extend([
+        "retained-package-detection-metadata".to_owned(),
+        "matched-track-observation-metadata".to_owned(),
+        "model-recipe-and-source-continuity-metadata".to_owned(),
+    ]);
+    build_response_for_basis_privacy_and_capabilities(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+        vec![
+            fss_core::RuntimeGrant::AgentQuery.as_str().to_owned(),
+            fss_core::RuntimeGrant::ReadMedia.as_str().to_owned(),
+        ],
+    )
+}
+
+/// Retained report discovery discloses metadata under AgentQuery authority alone.
+pub(crate) fn build_report_catalog_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+        || parts.capability != fss_core::RuntimeGrant::AgentQuery.as_str()
+    {
+        return Err(RenderError("invalid report catalogue query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only discovery of retained detector and zone-report metadata".to_owned();
+    projection.visible_domains.extend([
+        "retained-package-detection-metadata".to_owned(),
+        "retained-package-zone-report-metadata".to_owned(),
+        "report-publication-and-provenance-metadata".to_owned(),
+    ]);
+    build_response_for_basis_and_privacy(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+    )
+}
+
 /// Explicit privacy projection for native archive metadata, scoped to AOP-005 only.
 pub(crate) fn build_recording_response(
     parts: ResponseParts,

@@ -13,6 +13,27 @@ impl ObjectMember for fss_cli::json_input::Value {
     }
 }
 
+fn excludes_field(node: &fss_cli::json_input::Value, field: &str) -> bool {
+    use fss_cli::json_input::Value;
+    node.get("propertyNames")
+        .and_then(|value| value.get("enum"))
+        .and_then(Value::array)
+        .is_some_and(|allowed| !allowed.iter().any(|value| value.text() == Some(field)))
+        || node
+            .get("not")
+            .and_then(|value| value.get("anyOf"))
+            .and_then(Value::array)
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.get("required")
+                        .and_then(Value::array)
+                        .is_some_and(|required| {
+                            required.iter().any(|value| value.text() == Some(field))
+                        })
+                })
+            })
+}
+
 fn replay_fields(codec: &str) -> Fields {
     let mut values = fields(codec);
     for field in ["catalog_slot", "catalog_root", "start_tick", "end_tick"] {
@@ -236,7 +257,6 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
     }
     for field in [
         "ntp_era",
-        "max_query_results",
         "max_query_windows",
         "max_query_samples",
         "max_query_packets",
@@ -273,6 +293,18 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
             .and_then(input::Value::text)
             .ok_or("mode target")?;
         if target == "recordings" {
+            let result_bound = branch
+                .get("properties")
+                .and_then(|value| value.get("max_query_results"))
+                .ok_or("recording result bound")?;
+            assert_eq!(
+                result_bound.get("type").and_then(input::Value::text),
+                Some("integer")
+            );
+            assert_eq!(
+                result_bound.get("maximum").and_then(input::Value::integer),
+                Some(128)
+            );
             let modes = branch
                 .get("oneOf")
                 .and_then(input::Value::array)
@@ -338,18 +370,7 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
             }
             assert_eq!(replay_modes, 2);
         } else {
-            assert!(
-                branch
-                    .get("not")
-                    .and_then(|value| value.get("anyOf"))
-                    .and_then(input::Value::array)
-                    .is_some_and(|values| values.iter().any(|value| value
-                        .get("required")
-                        .and_then(input::Value::array)
-                        .is_some_and(|required| required
-                            .iter()
-                            .any(|value| value.text() == Some("replay_root")))))
-            );
+            assert!(excludes_field(branch, "replay_root"));
         }
     }
     Ok(())
@@ -427,18 +448,7 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
             .and_then(|v| v.get("const"))
             .and_then(input::Value::text)
             .ok_or("target")?;
-        let excludes = |node: &input::Value, field: &str| {
-            node.get("not")
-                .and_then(|v| v.get("anyOf"))
-                .and_then(input::Value::array)
-                .is_some_and(|rows| {
-                    rows.iter().any(|row| {
-                        row.get("required")
-                            .and_then(input::Value::array)
-                            .is_some_and(|r| r.iter().any(|v| v.text() == Some(field)))
-                    })
-                })
-        };
+        let excludes = excludes_field;
         if target == "recordings" {
             let modes = branch
                 .get("oneOf")
@@ -460,8 +470,8 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
                 }
             }
             assert_eq!(retained_modes, 1);
-        } else if target == "qsr" {
-            // QSR shares the immutable payload-read owner, not the archive syscall quota.
+        } else if matches!(target, "qsr" | "tracks" | "reports") {
+            // These targets share immutable payload-read accounting, not archive syscall quotas.
             assert!(excludes(branch, "retained_import"));
             assert!(excludes(branch, "max_query_io_calls"));
             assert!(!excludes(branch, "max_query_read_objects"));

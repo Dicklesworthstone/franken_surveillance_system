@@ -79,16 +79,19 @@ impl DeploymentReportCatalogQuery {
         ];
         for row in &self.rows {
             propositions.push(EnvelopeProposition {
-                id: format!("claim:report-catalog:{}:{}", row.family.as_str(), hex(row.report_digest)),
-                statement: format!(
-                    "Retained report metadata: family={}, report_digest={}, record_digest={}, provenance_root={}, publication_slot={}, schema={}, declared_validity_ns=[{},{}], retention_commit={}, metadata_availability=verified, source_payload_availability=unknown, source_reconstruction=not_performed, qsr_eligibility=unknown. The declared interval is source-native, not trusted UTC or continuous coverage.",
-                    row.family.as_str(), row.report_digest, row.record_digest, row.provenance_root,
-                    row.publication_slot, row.schema, row.validity.earliest.0,
-                    row.validity.latest.0, row.committed_sequence,
+                id: format!(
+                    "claim:report-catalog:{}:{}",
+                    row.family.as_str(),
+                    hex(row.report_digest)
                 ),
+                statement: format!("Retained report metadata: {}", row_json(row)),
                 state: KnowledgeState::Known,
                 provenance: "derived".to_owned(),
-                evidence: vec![row.report_digest.to_text(), row.record_digest.to_text(), row.provenance_root.to_text()],
+                evidence: vec![
+                    row.report_digest.to_text(),
+                    row.record_digest.to_text(),
+                    row.provenance_root.to_text(),
+                ],
             });
         }
         EnvelopeEpistemic {
@@ -123,6 +126,49 @@ impl DeploymentReportCatalogQuery {
             stop_reason: if remaining == 0 { "committed_index_exhausted" } else { "page_limit" }.to_owned(),
         }
     }
+}
+
+fn quote(value: &str) -> String {
+    let mut encoded = String::new();
+    encoded.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            '\t' => encoded.push_str("\\t"),
+            character if character < ' ' => {
+                encoded.push_str(&format!("\\u{:04x}", character as u32))
+            }
+            character => encoded.push(character),
+        }
+    }
+    encoded.push('"');
+    encoded
+}
+
+/// Exact native row fields inside the existing statement, without a second outer envelope.
+/// Times and commit sequences are decimal strings so JSON consumers preserve all i128/u64 bits.
+fn row_json(row: &ReportCatalogRow) -> String {
+    format!(
+        concat!(
+            "{{\"family\":{},\"report_digest\":{},\"record_digest\":{},",
+            "\"provenance_root\":{},\"publication_slot\":{},\"schema\":{},",
+            "\"declared_validity_ns\":[{},{}],\"retention_commit\":{},",
+            "\"metadata_availability\":\"verified\",\"source_payload_availability\":\"unknown\",",
+            "\"source_reconstruction\":\"not_performed\",\"qsr_eligibility\":\"unknown\"}}"
+        ),
+        quote(row.family.as_str()),
+        quote(&row.report_digest.to_text()),
+        quote(&row.record_digest.to_text()),
+        quote(&row.provenance_root.to_text()),
+        quote(&row.publication_slot),
+        quote(&row.schema),
+        quote(&row.validity.earliest.0.to_string()),
+        quote(&row.validity.latest.0.to_string()),
+        quote(&row.committed_sequence.to_string()),
+    )
 }
 
 pub(super) fn compile(

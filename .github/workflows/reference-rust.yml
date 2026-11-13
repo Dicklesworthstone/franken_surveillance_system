@@ -41,7 +41,7 @@ jobs:
           qsr_exit=0
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test qsr_observations_existing_contract --test qsr_observations_immutable_contract --test agent_qsr_contract --test agent_tracks_contract --test agent_report_catalog_contract || qsr_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || qsr_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test qsr_query_cli_contract || qsr_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test qsr_query_cli_contract --test tracks_query_cli_contract --test report_catalog_query_cli_contract || qsr_exit=1
           exit "$qsr_exit"
       - name: Verify native recorder replay and durable receipts
         if: success() || failure()

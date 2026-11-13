@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_report_catalog_query.v1.json",
+  "title": "Retained report metadata discovery selector for AOP-005",
+  "description": "Closed metadata-only discovery of retained package detection and package-zone report handles. The launcher fixes deployment/principal. The immutable reader verifies the complete bounded current declaration index, exact native publication manifests and retained metadata/report bytes before filtering and pagination, then revalidates under the same allowance. Existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts preserve protected deployment context. Returned handles establish metadata custody only: original source availability, current source reconstruction, privacy eligibility for coordinates and QSR eligibility remain unestablished. No ReadMedia grant, original-media read, model execution, recovery, publication or effect is inferred. The complete protected page fits 256 KiB or refuses. Native admission remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target"],
+  "properties": {
+    "target": {"const": "reports"},
+    "family": {
+      "enum": ["package_detection_record", "package_zone_report"],
+      "description": "Exact existing cognition family; omission selects both. Detector rows expose the original package-detection report digest accepted by tracks queries. Zone rows retain v1 versus v2 metadata identity; discovery does not certify QSR eligibility."
+    },
+    "from_ns": {
+      "type": "string", "pattern": "^(0|-?[1-9][0-9]*)(?![\\s\\S])", "maxLength": 40,
+      "description": "Optional inclusive lower endpoint as a canonical i128 decimal string. Selects closed overlap with the declaration's source-native validity interval. No UTC conversion, cross-source clock alignment or physical timing claim."
+    },
+    "through_ns": {
+      "type": "string", "pattern": "^(0|-?[1-9][0-9]*)(?![\\s\\S])", "maxLength": 40,
+      "description": "Optional inclusive upper endpoint as a canonical i128 decimal string. Native admission requires from_ns <= through_ns when both are supplied."
+    },
+    "max_entries": {
+      "type": "integer", "minimum": 1, "maximum": 32, "default": 16,
+      "description": "Complete report metadata handles per page, in native family then report-digest order."
+    },
+    "anchor": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "description": "Optional exact current deployment authority/effect-history precondition. Historical report declarations do not select historical authority."
+    },
+    "continuation": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "description": "Exact native continuation from the preceding page, bound to principal, filters, page size, complete verified index, all limits and the current authority/effect prefix. No offset, discovery bypass or silent rebase."
+    },
+    "max_query_read_bytes": {
+      "type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 9, "default": "268435456",
+      "description": "Shared metadata payload-byte ceiling, 1..268435456, covering current history, native manifests, retained records/reports and final rereads. Original source media is not read; failed reads invalidate the remaining balance."
+    },
+    "max_query_read_objects": {
+      "type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 5, "default": "65536",
+      "description": "Shared metadata payload-read-attempt ceiling, 1..65536, including final revalidation. Not an archive filesystem syscall quota."
+    },
+    "max_query_results": {
+      "type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 4, "default": "4096",
+      "description": "Complete supported-family report-index ceiling, 1..4096, applied before family/time filtering and pagination. A smaller filter never bypasses verification or truncates an over-budget index. Native traversal separately admits at most 65536 ledger objects and committed batches."
+    }
+  }
+}

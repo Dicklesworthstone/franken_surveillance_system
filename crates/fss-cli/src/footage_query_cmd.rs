@@ -141,6 +141,12 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--zone-roles",
             "--lane-stages",
             "--verify-qsr-source",
+            "--label",
+            "--confirmation-hits",
+            "--maximum-missed-frames",
+            "--minimum-iou-ppm",
+            "--verify-tracks-source",
+            "--family",
         ],
     )?;
     match take(&values, "--target") {
@@ -156,6 +162,13 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         }
         Some((_, target, _)) if target == "qsr" => {
             crate::qsr_query_cmd::parse_qsr_query_args(tokens).map(FssCommand::QsrQuery)
+        }
+        Some((_, target, _)) if target == "tracks" => {
+            crate::tracks_query_cmd::parse_tracks_query_args(tokens).map(FssCommand::TracksQuery)
+        }
+        Some((_, target, _)) if target == "reports" => {
+            crate::report_catalog_query_cmd::parse_report_catalog_query_args(tokens)
+                .map(FssCommand::ReportCatalogQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
             if ["--retained-import", "--max-query-read-objects"]
@@ -230,7 +243,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         Some((_, target, index)) => Err(malformed(
             "--target",
             target,
-            "expected events, footage, recordings, onvif or qsr",
+            "expected events, footage, recordings, onvif, qsr, tracks or reports",
             *index,
         )),
     }
