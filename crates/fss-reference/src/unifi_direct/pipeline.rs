@@ -305,7 +305,9 @@ impl Pipeline {
 
     /// Remaining work in the installed probe, if any; this is not authority.
     pub fn name_probe_work_remaining(&self) -> Option<u64> {
-        self.name_probe.as_ref().map(extended_flv::stream::NameProbeOwner::work_remaining)
+        self.name_probe
+            .as_ref()
+            .map(extended_flv::stream::NameProbeOwner::work_remaining)
     }
 
     /// Advance an installed connection-local probe without consuming source.
@@ -321,11 +323,16 @@ impl Pipeline {
         if self.stopped || (self.started && !self.probing) {
             return Err(NameProbeError::NotFresh);
         }
-        let probe = self.name_probe.as_mut().ok_or(NameProbeError::NotConfigured)?;
+        let probe = self
+            .name_probe
+            .as_mut()
+            .ok_or(NameProbeError::NotConfigured)?;
         self.started = true;
         self.probing = true;
         match self.ingress.probe_name_step(task, cx, now, probe).await {
-            Ok(ingress::NameProbeStep::Progress { appended }) => Ok(ingress::NameProbeStep::Progress { appended }),
+            Ok(ingress::NameProbeStep::Progress { appended }) => {
+                Ok(ingress::NameProbeStep::Progress { appended })
+            }
             Ok(result @ ingress::NameProbeStep::Matched { .. }) => {
                 self.probing = false;
                 self.first_byte_only = true;

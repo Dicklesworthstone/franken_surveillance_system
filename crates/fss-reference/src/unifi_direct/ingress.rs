@@ -294,39 +294,92 @@ impl DirectIngress {
         now: TimestampNs,
         probe: &mut stream::NameProbeOwner,
     ) -> Result<NameProbeStep, NameProbeError> {
-        runtime_cx.checkpoint().map_err(|_| NameProbeError::Ingress(Error::CancelledOrUnauthorized))?;
-        owner.checkpoint(now, &BudgetVector::ZERO).map_err(|_| NameProbeError::Ingress(Error::CancelledOrUnauthorized))?;
-        match probe.inspect(&self.framer).map_err(NameProbeError::Inspect)? {
-            stream::NameProbe::Matched { tag_index } => return Ok(NameProbeStep::Matched { tag_index }),
-            stream::NameProbe::Mismatched { tag_index } => return Ok(NameProbeStep::Mismatched { tag_index }),
-            stream::NameProbe::LimitReached { tags_scanned } => return Ok(NameProbeStep::LimitReached { tags_scanned }),
+        runtime_cx
+            .checkpoint()
+            .map_err(|_| NameProbeError::Ingress(Error::CancelledOrUnauthorized))?;
+        owner
+            .checkpoint(now, &BudgetVector::ZERO)
+            .map_err(|_| NameProbeError::Ingress(Error::CancelledOrUnauthorized))?;
+        match probe
+            .inspect(&self.framer)
+            .map_err(NameProbeError::Inspect)?
+        {
+            stream::NameProbe::Matched { tag_index } => {
+                return Ok(NameProbeStep::Matched { tag_index });
+            }
+            stream::NameProbe::Mismatched { tag_index } => {
+                return Ok(NameProbeStep::Mismatched { tag_index });
+            }
+            stream::NameProbe::LimitReached { tags_scanned } => {
+                return Ok(NameProbeStep::LimitReached { tags_scanned });
+            }
             stream::NameProbe::NeedMore => (),
         }
         if self.buffered.is_none() && self.source.pending_bytes().is_some() {
-            self.buffered = self.source.take_chunk().map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
-                .map(|source| BufferedChunk { source, appended: 0 });
+            self.buffered = self
+                .source
+                .take_chunk()
+                .map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
+                .map(|source| BufferedChunk {
+                    source,
+                    appended: 0,
+                });
         }
         if self.buffered.is_none() {
-            match self.source.receive(owner, runtime_cx, now).await.map_err(|e| NameProbeError::Ingress(Error::Source(e)))? {
+            match self
+                .source
+                .receive(owner, runtime_cx, now)
+                .await
+                .map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
+            {
                 Receive::Data { .. } => {
-                    self.buffered = self.source.take_chunk().map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
-                        .map(|source| BufferedChunk { source, appended: 0 });
+                    self.buffered = self
+                        .source
+                        .take_chunk()
+                        .map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
+                        .map(|source| BufferedChunk {
+                            source,
+                            appended: 0,
+                        });
                 }
                 Receive::Eof if self.framer.next_offset() == 0 => return Ok(NameProbeStep::Empty),
                 Receive::Eof | Receive::LimitReached => return Ok(NameProbeStep::Incomplete),
             }
         }
-        let buffered = self.buffered.as_mut().ok_or(NameProbeError::Ingress(Error::Source(tcp_ingress::IngressError::PendingChunk)))?;
+        let buffered = self
+            .buffered
+            .as_mut()
+            .ok_or(NameProbeError::Ingress(Error::Source(
+                tcp_ingress::IngressError::PendingChunk,
+            )))?;
         let remaining = &buffered.source.bytes()[buffered.appended..];
-        let inspected = usize::try_from(self.framer.next_offset()).map_err(|_| NameProbeError::Ingress(Error::OffsetOverflow))?;
-        let prefix_space = probe.byte_limit().checked_sub(inspected).ok_or(NameProbeError::Ingress(Error::OffsetOverflow))?;
-        let appended = remaining.len().min(self.framer.remaining_capacity()).min(prefix_space);
-        if appended == 0 { return Err(NameProbeError::Ingress(Error::Framing(stream::Error::BufferLimit))); }
-        let offset = buffered.source.offset().checked_add(buffered.appended as u64)
+        let inspected = usize::try_from(self.framer.next_offset())
+            .map_err(|_| NameProbeError::Ingress(Error::OffsetOverflow))?;
+        let prefix_space = probe
+            .byte_limit()
+            .checked_sub(inspected)
             .ok_or(NameProbeError::Ingress(Error::OffsetOverflow))?;
-        self.framer.append(offset, &remaining[..appended]).map_err(|e| NameProbeError::Ingress(Error::Framing(e)))?;
+        let appended = remaining
+            .len()
+            .min(self.framer.remaining_capacity())
+            .min(prefix_space);
+        if appended == 0 {
+            return Err(NameProbeError::Ingress(Error::Framing(
+                stream::Error::BufferLimit,
+            )));
+        }
+        let offset = buffered
+            .source
+            .offset()
+            .checked_add(buffered.appended as u64)
+            .ok_or(NameProbeError::Ingress(Error::OffsetOverflow))?;
+        self.framer
+            .append(offset, &remaining[..appended])
+            .map_err(|e| NameProbeError::Ingress(Error::Framing(e)))?;
         buffered.appended += appended;
-        if buffered.appended == buffered.source.bytes().len() { self.buffered = None; }
+        if buffered.appended == buffered.source.bytes().len() {
+            self.buffered = None;
+        }
         Ok(NameProbeStep::Progress { appended })
     }
 
