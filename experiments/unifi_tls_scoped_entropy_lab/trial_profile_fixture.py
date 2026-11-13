@@ -138,7 +138,7 @@ def serve_http(tls, controller_port, address, profiles, needs_handoff=False, fin
                     + b"\r\nConnection: keep-alive\r\n\r\n" + body)
 
 
-def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None):
+def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False):
     case = root / name
     case.mkdir(mode=0o700)
     credential = case / "credential.json"
@@ -158,8 +158,9 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
     pem, pem_key, cert, key = certs
     server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server.minimum_version = ssl.TLSVersion.TLSv1_3
+    server.num_tickets = 0
     server.load_cert_chain(pem, pem_key)
-    command = [binary, f"{address}:{controller_port}", address, MAC.hex(), str(cert), str(key),
+    command = [binary, f"{address}:{controller_port}", "auto" if auto_pin else address, "auto" if auto_pin else MAC.hex(), str(cert), str(key),
                str(case / "journal"), str(case / "clip.mp4"), "12345678-1234-4abc-9abc-123456789abc", "20"]
     if override:
         command.append(f"--video-channel={override}")
@@ -172,21 +173,34 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         if archive == "av":
             command.append("--lab-aac-config=1408")
         command.append("--lab-segments=3" if archive else "--lab-segments=2")
+    if auto_pin:
+        command.extend(["--auto-discovery=24", f"--discovery-hint={address}", "--lab-auto-pinned-setup", f"--lab-setup-fence={root / 'camera-fence'}"])
     if archive:
         command.append("--lab-owned-archive")
         if archive != "av":
             command.append("--lab-video-only-archive")
         command.extend(["--lab-managed-archive", "--lab-av-history-records=5", "--lab-decode-owned"])
+    if auto_pin:
+        command.append(f"--anchored-journal={case / 'keeper'},{case / 'root'}")
     command += [f"--setup-camera={udp.getsockname()[1]},{https.getsockname()[1]},{cert},{credential}", "--owner-authorized"]
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output = b""
     try:
         _, source = udp.recvfrom(1024)
         udp.sendto(advertisement(address), source)
+        if auto_pin:
+            raw, _ = https.accept()
+            raw.settimeout(8)
+            with server.wrap_socket(raw, server_side=True) as probe:
+                try:
+                    if probe.recv(1):
+                        raise ValueError("pin probe sent application data")
+                except (ssl.SSLEOFError, ssl.SSLZeroReturnError, ConnectionResetError, BrokenPipeError):
+                    pass
         raw, _ = https.accept()
         with server.wrap_socket(raw, server_side=True) as camera:
             camera.settimeout(15)
-            handoff = name.startswith("handoff-")
+            handoff = name.startswith("handoff-") or name.startswith("auto-handoff-")
             serve_http(camera, controller_port, address, profiles, needs_handoff=expected is None or handoff, finish_handoff=handoff, changed=name == "handoff-changed")
             if expected is None:
                 try:
@@ -248,6 +262,10 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                 if name == "handoff-changed":
                     out, err = child.communicate(timeout=15)
                     output = out + err
+                    if auto_pin and (b"trial_pin_discovery=matched candidates=1 credentials_sent=false" not in output or b"trial_setup_fence=created" not in output or b"trial_journal=anchored" not in output):
+                        raise ValueError("automatic pinned setup or anchored journal trace missing")
+                    if auto_pin and b"trial_task_outcome=effect_unsettled" not in output:
+                        raise ValueError("automatic setup lost its unsettled effect outcome")
                     if clock_burst == "continuing" and b"trial_stage=startup_protocol_trace clocks=2" not in output:
                         raise ValueError("pre-hello clock effect traces missing")
                     if child.returncode == 0 or b"video profile changed after setup" not in output or b"dispatch_started=true accept_started=true" not in output:
@@ -373,6 +391,11 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         detail = (f" width=2688 height=1512 frames={streams[0]['nb_read_frames']} {archive_detail}=pass"
                   if media is not None else "")
         print(f"trial_profile_fixture case={name} selected={expected or 'none'}{detail} result=pass", flush=True)
+    except Exception:
+        if auto_pin:
+            out, err = stop_child(child) if child.poll() is None else child.communicate()
+            print("auto_setup_fixture diagnostic=" + (out + err).decode(errors="replace")[-3000:], flush=True)
+        raise
     finally:
         if child.poll() is None:
             stop_child(child)
