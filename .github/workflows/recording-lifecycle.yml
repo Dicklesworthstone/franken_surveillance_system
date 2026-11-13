@@ -63,3 +63,10 @@ jobs:
         run: bash scripts/bootstrap_toolchain.sh
       - name: Verify recording discovery, replay and review expiry
         run: bash scripts/check_recording_lifecycle.sh all
+      - name: Verify durable event metadata hydration contracts
+        if: ${{ success() || failure() }}
+        run: |
+          hydration_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_hydration_contract || hydration_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --test event_hydration_query_cli_contract || hydration_exit=1
+          exit "$hydration_exit"

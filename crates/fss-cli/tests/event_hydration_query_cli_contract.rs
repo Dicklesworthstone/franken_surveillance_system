@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
+use fss_cli::query_cmd::MAX_QUERY_OUTPUT_BYTES;
 use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
 use fss_core::json_input::{Value, parse};
 use fss_core::{
@@ -491,7 +492,14 @@ impl Fixture {
         let stdout = String::from_utf8(output.stdout)?;
         let lines: Vec<_> = stdout.lines().collect();
         assert_eq!(lines.len(), 2, "{stdout}");
-        Ok(parse(lines[1])?)
+        // MCP quotes the complete native response in one content.text string. The intent
+        // parser's 64 KiB string bound is smaller than this query's 256 KiB output contract.
+        // Keep an explicit finite wire ceiling, including worst-case JSON escaping, and
+        // retain the strict report parser's duplicate-key, Unicode and depth checks.
+        assert!(lines[1].len() <= 6 * MAX_QUERY_OUTPUT_BYTES + 1024);
+        Ok(fss_core::json_input::parse_reconstruction_atlas_report(
+            lines[1],
+        )?)
     }
 }
 
@@ -503,12 +511,15 @@ impl Drop for Fixture {
 }
 
 fn mcp_body(wire: &Value, failed: bool) -> Test<String> {
-    let result = field(wire, "result")?;
+    let result = field(wire, "result")
+        .map_err(|_| format!("expected an MCP tool result, received {}", json(wire)))?;
     assert_eq!(field(result, "isError")?.boolean(), Some(failed));
     let content = array(result, "content")?;
     assert_eq!(content.len(), 1);
     assert_eq!(text(&content[0], "type")?, "text");
-    Ok(text(&content[0], "text")?.to_owned())
+    let body = text(&content[0], "text")?;
+    assert!(body.len() <= MAX_QUERY_OUTPUT_BYTES);
+    Ok(body.to_owned())
 }
 
 fn conforms(fixture: &Fixture, schema: &str, instance: &Value) -> Test {
@@ -1000,6 +1011,7 @@ fn insufficient_request_and_cumulative_session_budgets_never_degrade_h1_to_h0() 
     assert_eq!(exit, 0, "{body}");
     let (descriptor, cursor) = next(&parse(&body)?)?;
     for budget in [1, EVENT_HYDRATION_H1_TOKENS] {
+        let before_attempt = tree(&fixture.root)?;
         let wire = fixture.mcp(
             &session,
             "H1",
@@ -1010,7 +1022,24 @@ fn insufficient_request_and_cumulative_session_budgets_never_degrade_h1_to_h0() 
                 ("budget_tokens", Value::Number(budget.to_string())),
             ],
         )?;
-        refused(&fixture, &mcp_body(&wire, true)?)?;
+        if budget < EVENT_HYDRATION_H1_TOKENS {
+            // The known H1 quote is checked by the canonical parser before any session
+            // admission. An inadequate per-request ceiling is an invalid-params response,
+            // while an adequate ceiling with an exhausted session is a native refusal.
+            assert_eq!(
+                field(field(&wire, "error")?, "code")?.integer(),
+                Some(-32602),
+                "insufficient per-request budget: {}",
+                json(&wire)
+            );
+            assert!(
+                wire.object()
+                    .is_some_and(|value| !value.contains_key("result"))
+            );
+            assert_eq!(tree(&fixture.root)?, before_attempt);
+        } else {
+            refused(&fixture, &mcp_body(&wire, true)?)?;
+        }
         assert_eq!(fixture.spent(&session)?, EVENT_HYDRATION_H0_TOKENS);
         assert_eq!(authority_tree(&fixture.root)?, before);
     }
@@ -1053,14 +1082,30 @@ fn closed_cli_mcp_grammar_rejects_source_grants_lossy_numbers_and_scope_override
         ("budget_tokens", Value::Text("5000".to_owned())),
         ("budget_tokens", Value::Number("1e3".to_owned())),
         ("budget_tokens", Value::Number("16001".to_owned())),
-        ("continuation", Value::Text("x".repeat(16_385))),
     ] {
         let wire = fixture.mcp(&session, "H0", PRINCIPAL, &[(key, value)])?;
         assert_eq!(
             field(field(&wire, "error")?, "code")?.integer(),
-            Some(-32602)
+            Some(-32602),
+            "invalid {key}: {}",
+            json(&wire)
         );
         assert_eq!(tree(&fixture.root)?, before);
     }
+    // A decoded string beyond the MCP frame parser's 16 KiB bound never reaches the
+    // tool grammar, so it has the protocol's parse-error identity, not invalid params.
+    let wire = fixture.mcp(
+        &session,
+        "H0",
+        PRINCIPAL,
+        &[("continuation", Value::Text("x".repeat(16_385)))],
+    )?;
+    assert_eq!(
+        field(field(&wire, "error")?, "code")?.integer(),
+        Some(-32700),
+        "oversize MCP string: {}",
+        json(&wire)
+    );
+    assert_eq!(tree(&fixture.root)?, before);
     Ok(())
 }
