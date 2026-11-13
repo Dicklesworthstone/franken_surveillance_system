@@ -11,6 +11,7 @@ description = "Bounded source-linked AVC fragmented MP4 remuxing for FSS"
 workspace = true
 
 [dependencies]
+fss-core = { path = "../fss-core" }
 fss-packet = { path = "../fss-packet" }
 
 [dev-dependencies]

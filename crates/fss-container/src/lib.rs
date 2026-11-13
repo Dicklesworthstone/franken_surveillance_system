@@ -18,6 +18,8 @@ pub mod flv_av;
 pub mod flv_avc;
 /// Allocation-free framing for timed, lossless grayscale Matroska derivatives.
 pub mod matroska_gray;
+/// Bounded, allocation-free head probing that names a container family without decoding (FSS-053).
+pub mod probe;
 mod hevc;
 mod init;
 mod mux;
