@@ -8,11 +8,12 @@
 
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_packet::{dbus_handshake as wire, dbus_object_manager::GattWriteMode};
-use std::fmt;
+use std::{fmt, ops::Range};
 
 /// Registered effect only for independently validated management negotiation.
 pub const EFFECT_CLASS: &str = "EFFECT-CAMERA-MANAGEMENT-001";
 const DOMAIN: &str = "fss.unifi-direct.bluez-management-preconditions.v1";
+const FRAGMENT_DOMAIN: &str = "fss.unifi-direct.bluez-management-fragment.v1";
 
 /// Caller-supplied claims that an independent authority must revalidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +57,9 @@ pub struct Plan {
     camera: ContentDigest,
     fence: u64,
     request: ContentDigest,
+    base_preconditions: ContentDigest,
     preconditions: ContentDigest,
+    fragment_bound: bool,
 }
 impl fmt::Debug for Plan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -91,8 +94,71 @@ impl Plan {
             camera: current.camera,
             fence: current.lease_fence,
             request,
+            base_preconditions: preconditions,
             preconditions,
+            fragment_bound: false,
         })
+    }
+    /// Bind one write-with-response fragment to its complete length-framed
+    /// negotiation packet and exact byte range. This constructs an inert plan;
+    /// it does not prove earlier fragments were sent or authorize credentials.
+    pub fn for_fragment(
+        serial: u32,
+        owner: &str,
+        device: &str,
+        characteristic: &str,
+        frame: &[u8],
+        range: Range<usize>,
+        current: Preconditions,
+    ) -> Result<Self, Error> {
+        if frame.len() < 2
+            || frame.len() > usize::from(u16::MAX)
+            || usize::from(u16::from_be_bytes([frame[0], frame[1]])) != frame.len()
+            || range.start >= range.end
+            || range.end > frame.len()
+            || range.end - range.start > 512
+        {
+            return Err(Error::Limit);
+        }
+        Self::new(
+            serial,
+            owner,
+            device,
+            characteristic,
+            GattWriteMode::Request,
+            &frame[range.clone()],
+            current,
+        )?
+        .bind_fragment(ContentDigest::sha256(frame), frame.len(), range)
+    }
+
+    pub(super) fn bind_fragment(
+        mut self,
+        frame: ContentDigest,
+        total: usize,
+        range: Range<usize>,
+    ) -> Result<Self, Error> {
+        if !valid_digest(frame)
+            || total < 2
+            || total > usize::from(u16::MAX)
+            || range.start >= range.end
+            || range.end > total
+            || range.end - range.start > 512
+            || self.mode != GattWriteMode::Request
+            || self.fragment_bound
+        {
+            return Err(Error::Preconditions);
+        }
+        let mut e = CanonicalEncoder::new();
+        e.text(FRAGMENT_DOMAIN);
+        e.digest(self.preconditions);
+        e.digest(frame);
+        e.u64(u64::try_from(total).map_err(|_| Error::Limit)?);
+        e.u64(u64::try_from(range.start).map_err(|_| Error::Limit)?);
+        e.u64(u64::try_from(range.end).map_err(|_| Error::Limit)?);
+        self.preconditions = ContentDigest::sha256(&e.finish_checked().map_err(|_| Error::Limit)?);
+        self.fragment_bound = true;
+        Ok(self)
     }
     /// Exact encoded request digest for an effect preparation.
     pub fn request_digest(&self) -> ContentDigest {
@@ -117,14 +183,14 @@ impl Plan {
     }
     /// Compare fresh caller claims without asserting their authenticity.
     pub fn check_current(&self, current: Preconditions) -> Result<(), Error> {
-        if preconditions_digest(
+        let base = preconditions_digest(
             &self.owner,
             &self.device,
             &self.characteristic,
             self.mode,
             current,
-        )? != self.preconditions
-        {
+        )?;
+        if base != self.base_preconditions {
             return Err(Error::Preconditions);
         }
         Ok(())
