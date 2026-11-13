@@ -30,7 +30,9 @@ pub use bootstrap::{
     BootstrapStage, BootstrapStartError, BootstrapStorage, BootstrapWorker,
 };
 pub use retained::{
-    BindRefusal, CreatorObservation, ReservationError, ReservationRefusal, ReservedPlan,
+    BindRefusal, CreatorObservation, DiscoverError, DiscoverRefusal, InventoryCursor,
+    InventoryDisposition, InventoryEntry, InventoryError, InventoryPage, OpenSwitchesError,
+    OpenSwitchesRefusal, OpenedSwitches, ReservationError, ReservationRefusal, ReservedPlan,
 };
 pub use worker::{
     ReservationCompletion, ReservationInputs, ReservationOutcome, ReservationRequest,

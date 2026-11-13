@@ -2,7 +2,7 @@
 //! Drained, region-owned creation or reopening of a retained generation plan.
 //! Separate paths and pins are caller assertions, not proof of independent media.
 
-use super::{Plan, ReservationError, ReservedPlan};
+use super::{DiscoverError, Plan, ReservationError, ReservedPlan};
 use crate::{ReplayCx, unifi_direct::metered::MeteredClock};
 use asupersync::{Cx, runtime::JoinError};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, RuntimeGrant};
@@ -35,6 +35,15 @@ pub enum BootstrapMode {
     Recover {
         /// Independently retained minimum, not an external-effect receipt.
         minimum: EffectJournalPin,
+    },
+    /// Reopen and derive the next generation from the retained history.
+    Discover {
+        /// Independently retained minimum, not an external-effect receipt.
+        minimum: EffectJournalPin,
+        /// Maximum reservation records to inspect, at most 65,536.
+        max_records: usize,
+        /// Explicit bounded allowance for history work.
+        work_limit: u64,
     },
 }
 
@@ -132,6 +141,7 @@ struct State {
     ready: Option<ReservedPlan>,
     error: Option<EffectPersistenceError>,
     plan_error: Option<ReservationError>,
+    discover_error: Option<DiscoverError>,
     outcome: Option<BootstrapOutcome>,
 }
 type Job = Box<dyn FnOnce(Cx) + Send + 'static>;
@@ -183,6 +193,8 @@ pub struct BootstrapRetirement {
     pub error: Option<EffectPersistenceError>,
     /// Plan-binding failure, when available.
     pub plan_error: Option<ReservationError>,
+    /// Generation-discovery failure, when that mode was selected.
+    pub discover_error: Option<DiscoverError>,
     /// Storage outcome, or none if no attempt was started.
     pub outcome: Option<BootstrapOutcome>,
     /// An uncertain result or cancellation prevents automatic use.
@@ -219,11 +231,16 @@ fn valid_limits(limits: EffectJournalLimits) -> bool {
 fn valid_minimum(mode: BootstrapMode) -> bool {
     match mode {
         BootstrapMode::Create => true,
-        BootstrapMode::Recover { minimum } => {
+        BootstrapMode::Recover { minimum } | BootstrapMode::Discover { minimum, .. } => {
             minimum.sequence > 0
                 && minimum.root.algorithm() == DigestAlgorithm::Sha256
                 && !minimum.root.is_laboratory()
                 && minimum.root.bytes() != [0; 32]
+                && match mode {
+                    BootstrapMode::Discover { max_records, work_limit, .. } =>
+                        (1..=65_536).contains(&max_records) && (1..=100_000_000_000).contains(&work_limit),
+                    _ => true,
+                }
         }
     }
 }
@@ -272,6 +289,7 @@ impl BootstrapWorker {
                 ready: None,
                 error: None,
                 plan_error: None,
+                discover_error: None,
                 outcome: None,
             })),
             running: None,
@@ -379,7 +397,7 @@ impl BootstrapWorker {
                     s.journal_limits,
                     s.journal_io.clone(),
                 ),
-                BootstrapMode::Recover { minimum } => FileEffectJournal::open(
+                BootstrapMode::Recover { minimum } | BootstrapMode::Discover { minimum, .. } => FileEffectJournal::open(
                     &s.journal_root,
                     s.journal_limits,
                     s.journal_io.clone(),
@@ -427,7 +445,7 @@ impl BootstrapWorker {
                     s.custody_io.clone(),
                     s.custody_scope,
                 ),
-                BootstrapMode::Recover { .. } => FileTrustedRootPinRetainer::open_trusting_storage(
+                BootstrapMode::Recover { .. } | BootstrapMode::Discover { .. } => FileTrustedRootPinRetainer::open_trusting_storage(
                     &s.custody_root,
                     s.custody_limits,
                     s.custody_io.clone(),
@@ -457,7 +475,7 @@ impl BootstrapWorker {
             };
             let bound = match state.storage.mode {
                 BootstrapMode::Create => PinRetainedEffectJournal::try_new(journal, retainer),
-                BootstrapMode::Recover { .. } => {
+                BootstrapMode::Recover { .. } | BootstrapMode::Discover { .. } => {
                     PinRetainedEffectJournal::try_for_reconciliation(journal, retainer)
                 }
             };
@@ -483,12 +501,20 @@ impl BootstrapWorker {
                 state.outcome = Some(BootstrapOutcome::Indeterminate);
                 return;
             };
+            enum PlanRefusal {
+                Bound(super::BindRefusal),
+                Discovered(super::DiscoverRefusal),
+            }
             let result = match state.storage.mode {
                 BootstrapMode::Create => {
-                    ReservedPlan::create_guarded(plan, bound, &journal_replay, &mut guard)
+                    ReservedPlan::create_guarded(plan, bound, &journal_replay, &mut guard).map_err(PlanRefusal::Bound)
                 }
                 BootstrapMode::Recover { .. } => {
-                    ReservedPlan::recover_guarded(plan, bound, &journal_replay, &mut guard)
+                    ReservedPlan::recover_guarded(plan, bound, &journal_replay, &mut guard).map_err(PlanRefusal::Bound)
+                }
+                BootstrapMode::Discover { max_records, work_limit, .. } => {
+                    ReservedPlan::recover_discovered_guarded(plan, bound, &journal_replay, max_records,
+                        &mut fss_geometry::WorkBudget::new(work_limit), &mut guard).map_err(PlanRefusal::Discovered)
                 }
             };
             match result {
@@ -503,10 +529,22 @@ impl BootstrapWorker {
                     }
                 }
                 Err(refusal) => {
-                    let cancelled = matches!(refusal.reason, ReservationError::Cancelled);
-                    state.plan = Some(refusal.plan);
-                    state.bound = Some(refusal.journal);
-                    state.plan_error = Some(refusal.reason);
+                    let cancelled = match refusal {
+                        PlanRefusal::Bound(refusal) => {
+                            let cancelled = matches!(refusal.reason, ReservationError::Cancelled);
+                            state.plan = Some(refusal.plan);
+                            state.bound = Some(refusal.journal);
+                            state.plan_error = Some(refusal.reason);
+                            cancelled
+                        }
+                        PlanRefusal::Discovered(refusal) => {
+                            let cancelled = matches!(refusal.reason, DiscoverError::Cancelled | DiscoverError::Bind(ReservationError::Cancelled) | DiscoverError::Work(fss_geometry::GeometryError::Cancelled));
+                            state.plan = Some(refusal.plan);
+                            state.bound = Some(refusal.journal);
+                            state.discover_error = Some(refusal.reason);
+                            cancelled
+                        }
+                    };
                     state.outcome = Some(if cancelled {
                         BootstrapOutcome::Cancelled
                     } else {
@@ -605,6 +643,7 @@ impl BootstrapWorker {
                     ready: state.ready,
                     error: state.error,
                     plan_error: state.plan_error,
+                    discover_error: state.discover_error,
                     outcome: state.outcome,
                     fenced,
                 })

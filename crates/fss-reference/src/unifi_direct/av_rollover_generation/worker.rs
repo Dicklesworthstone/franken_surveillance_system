@@ -19,9 +19,10 @@ use fss_runtime::{
 };
 
 use super::{
-    CreatorObservation, Identity, ReservationError, ReservationRefusal, ReservedPlan, Worker,
+    CreatorObservation, Identity, OpenSwitchesError, OpenSwitchesRefusal, OpenedSwitches,
+    ReservationError, ReservationRefusal, ReservedPlan, Worker,
 };
-use crate::{ReplayCx, unifi_direct::metered::MeteredClock};
+use crate::{ReplayCx, unifi_direct::{archive::journal::rollover::{SelectedSwitch, SwitchPredecessor}, metered::MeteredClock}};
 
 /// A single, explicitly selected operation. An evidence digest is a caller
 /// assertion, not proof that the underlying creator has been reconciled.
@@ -38,6 +39,18 @@ pub enum ReservationRequest {
     /// Record the managed owner's observation of an exact successful creator.
     /// The observation is local and does not assert independent custody.
     ObservedCreator(CreatorObservation),
+    /// Open and compare every candidate in a bounded retained inventory.
+    /// This explicitly trusts the configured pin-storage roots.
+    InspectSwitches {
+        /// Exact predecessor to match.
+        predecessor: SwitchPredecessor,
+        /// Maximum number of candidates, at most 128.
+        max_candidates: usize,
+        /// Maximum reservation records, at most 65,536.
+        max_records: usize,
+        /// Explicit work allowance including storage-read ceilings.
+        work_limit: u64,
+    },
 }
 
 /// Exact owners and authority for one worker. Paths are caller assertions;
@@ -94,6 +107,24 @@ pub enum ReservationOutcome {
     ReservationRefused(ReservationRefusal),
     /// Recording reconciliation was refused or became indeterminate.
     ReconciliationRefused(ReservationError),
+    /// Inventory and candidate switches were opened and compared.
+    SwitchesInspected {
+        /// Complete opened candidate custody.
+        opened: OpenedSwitches,
+        /// Unique match among this inventory, if any.
+        selected: Option<SelectedSwitch>,
+    },
+    /// Candidate opening refused while preserving all partial owners.
+    SwitchOpeningRefused(OpenSwitchesRefusal),
+    /// Selection refused while retaining the complete opened owners.
+    SwitchSelectionRefused {
+        /// Candidate custody to retain or reconcile.
+        opened: OpenedSwitches,
+        /// Exact selection refusal.
+        error: OpenSwitchesError,
+    },
+    /// Cancellation was observed after opening and before selection.
+    SwitchInspectionCancelled(OpenedSwitches),
 }
 
 struct State {
@@ -183,7 +214,7 @@ impl ReservationWorker {
                         ReservationRequest::ObservedCreator(observation) => {
                             state.inputs.plan.pending() == Some(observation.identity())
                         }
-                        ReservationRequest::Reserve => false,
+                        ReservationRequest::Reserve | ReservationRequest::InspectSwitches { .. } => false,
                     }
             })
     }
@@ -192,6 +223,10 @@ impl ReservationWorker {
         if !direct_child(&inputs.journal_resource, inputs.journal_replay.root_dir())
             || !direct_child(&inputs.custody_resource, inputs.custody_replay.root_dir())
             || inputs.journal_resource == inputs.custody_resource
+            || matches!(&inputs.request, ReservationRequest::InspectSwitches { max_candidates, max_records, work_limit, .. }
+                if !(1..=128).contains(max_candidates) || !(1..=65_536).contains(max_records)
+                    || !(1..=100_000_000_000).contains(work_limit)
+                    || !inputs.plan.uses_replays(&inputs.journal_replay, &inputs.custody_replay))
         {
             return Err(inputs);
         }
@@ -244,6 +279,12 @@ impl ReservationWorker {
                 .map_err(ReservationStartError::Task)?;
             task.checkpoint_for(RuntimeGrant::ObjectStage, custody, now, &BudgetVector::ZERO)
                 .map_err(ReservationStartError::Task)?;
+            if matches!(&state.inputs.request, ReservationRequest::InspectSwitches { .. }) {
+                for root in [state.inputs.journal_replay.root_dir(), state.inputs.custody_replay.root_dir()] {
+                    task.checkpoint_for(RuntimeGrant::ObjectStage, root.to_str().ok_or(ReservationStartError::Context)?, now, &BudgetVector::ZERO)
+                        .map_err(ReservationStartError::Task)?;
+                }
+            }
             state
                 .inputs
                 .journal_replay
@@ -284,6 +325,7 @@ impl ReservationWorker {
                 Reserve,
                 Reconcile(Identity, ContentDigest),
                 Observed(Identity),
+                Inspect(SwitchPredecessor, usize, usize, u64),
             }
             let result = match &state.inputs.request {
                 ReservationRequest::Reserve => Action::Reserve,
@@ -292,6 +334,9 @@ impl ReservationWorker {
                 }
                 ReservationRequest::ObservedCreator(observation) => {
                     Action::Observed(observation.identity().clone())
+                }
+                ReservationRequest::InspectSwitches { predecessor, max_candidates, max_records, work_limit } => {
+                    Action::Inspect(*predecessor, *max_candidates, *max_records, *work_limit)
                 }
             };
             let outcome = match result {
@@ -320,6 +365,19 @@ impl ReservationWorker {
                     Ok(pin) => ReservationOutcome::Reconciled(pin),
                     Err(error) => ReservationOutcome::ReconciliationRefused(error),
                 },
+                Action::Inspect(predecessor, max_candidates, max_records, work_limit) => {
+                    let cancelled = || aborted.load(Ordering::Acquire) || child.is_cancel_requested();
+                    let mut work = fss_geometry::WorkBudget::with_cancellation_probe(work_limit, &cancelled);
+                    match state.inputs.plan.open_switches_trusting_custody(max_candidates, max_records, &mut work, &journal) {
+                        Err(refusal) => ReservationOutcome::SwitchOpeningRefused(refusal),
+                        Ok(opened) if guard().is_err() => ReservationOutcome::SwitchInspectionCancelled(opened),
+                        Ok(mut opened) => match opened.select(&mut state.inputs.plan, predecessor, max_records, &mut work, &journal) {
+                            Ok(_) if guard().is_err() => ReservationOutcome::SwitchInspectionCancelled(opened),
+                            Ok(selected) => ReservationOutcome::SwitchesInspected { opened, selected },
+                            Err(error) => ReservationOutcome::SwitchSelectionRefused { opened, error },
+                        },
+                    }
+                }
             };
             state.outcome = Some(outcome);
         });

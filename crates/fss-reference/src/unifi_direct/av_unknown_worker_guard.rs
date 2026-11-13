@@ -46,6 +46,8 @@ pub struct BootstrapResources {
     pub limits: archive::Limits,
     /// Maximum work per publication attempt.
     pub work_limit: u64,
+    /// Replayed rollover history that must accompany this worker, if any.
+    pub rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
 }
 
 /// A guard and the explicitly hypothesized sender-clock origin.
@@ -85,6 +87,19 @@ pub enum BootstrapRefusal<'scope, 'task, IO> {
         /// Original sender-clock hypothesis.
         origin: av_recording::SenderClockOrigin,
     },
+    /// A recovered lineage could not be reattached; every owner is retained.
+    RecoveredWorker {
+        /// Original supervisor.
+        supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+        /// Unconsumed unknown-time worker parts.
+        parts: av_worker::UnknownTimeParts,
+        /// Exact first original segment.
+        first_segment: recording::Segment,
+        /// Original sender-clock hypothesis.
+        origin: av_recording::SenderClockOrigin,
+        /// The exact recovered transition chain.
+        custody: archive::journal::rollover::WorkerCustody,
+    },
 }
 
 /// Converted A/V sink and all owners awaiting worker construction.
@@ -98,6 +113,8 @@ pub struct PreparedBootstrap<'scope, 'task, IO> {
     pub first_segment: recording::Segment,
     /// Sender-clock hypothesis, not a physical capture-time observation.
     pub origin: av_recording::SenderClockOrigin,
+    /// Replayed rollover history, held until worker attachment.
+    pub rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
 }
 
 /// A refused transfer leaves the original segment held by the guard.
@@ -1446,6 +1463,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             parts,
             first_segment,
             origin,
+            rollover_custody: resources.rollover_custody,
         }))
     }
 
@@ -1460,17 +1478,32 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             parts,
             first_segment,
             origin,
+            rollover_custody,
         } = *prepared;
-        let worker = match av_worker::UnknownTimeWorker::new(parts) {
-            Ok(worker) => worker,
-            Err(parts) => {
-                return Err(Box::new(BootstrapRefusal::Worker {
-                    supervisor,
-                    parts,
-                    first_segment,
-                    origin,
-                }));
-            }
+        let worker = match rollover_custody {
+            Some(custody) => match av_worker::UnknownTimeWorker::from_recovered(parts, custody) {
+                Ok(worker) => worker,
+                Err((parts, custody)) => {
+                    return Err(Box::new(BootstrapRefusal::RecoveredWorker {
+                        supervisor,
+                        parts,
+                        first_segment,
+                        origin,
+                        custody,
+                    }));
+                }
+            },
+            None => match av_worker::UnknownTimeWorker::new(parts) {
+                Ok(worker) => worker,
+                Err(parts) => {
+                    return Err(Box::new(BootstrapRefusal::Worker {
+                        supervisor,
+                        parts,
+                        first_segment,
+                        origin,
+                    }));
+                }
+            },
         };
         Ok(Box::new(BootstrapStarted {
             guard: Self {
