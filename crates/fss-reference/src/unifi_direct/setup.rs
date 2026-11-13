@@ -1073,6 +1073,25 @@ impl Owner<'_, '_, '_> {
                 observation: before,
             });
         }
+        // A bound listener port is a camera claim, not a guarantee. Refresh it
+        // after the settings preflight and before preparing a handoff, so an
+        // already-observed change cannot leave a new management obligation.
+        // The remote value may still change after this read.
+        let status = if let Some(port) = expected_port {
+            let current = camera
+                .status(remaining(self.cx, deadline)?)
+                .await
+                .map_err(Error::Camera)?;
+            if !guard.current() {
+                return Err(Error::Denied);
+            }
+            if current.controller_port != camera_api::ControllerPort::Reported(port) {
+                return Err(Error::ControllerPort);
+            }
+            current
+        } else {
+            status
+        };
         let conditions = handoff::Preconditions {
             camera: cfg.camera,
             peer_admission: cfg.peer_admission,

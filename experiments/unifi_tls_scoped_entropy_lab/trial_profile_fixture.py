@@ -111,7 +111,7 @@ def serve_http(tls, controller_port, address, profiles, needs_handoff=False, fin
     routes = (b"POST /api/1.1/login ", b"GET /api/1.1/status ",
               b"GET /api/1.1/settings ", b"GET /api/1.1/settings ")
     if finish_handoff:
-        routes += (b"PUT /api/1.1/settings ", b"GET /api/1.1/settings ")
+        routes += (b"GET /api/1.1/status ", b"PUT /api/1.1/settings ", b"GET /api/1.1/settings ")
     prior = "192.168.1.10" if address != "192.168.1.10" else "192.168.1.11"
     settings = json.dumps({"controller": {"addr": prior if needs_handoff else address}, "av": {"video": profiles}}, separators=(",", ":")).encode()
     for index, route in enumerate(routes):
@@ -127,12 +127,12 @@ def serve_http(tls, controller_port, address, profiles, needs_handoff=False, fin
         if length > 4096:
             raise ValueError("HTTP body limit")
         request_body = exact(tls, length)
-        if index == 4 and json.loads(request_body) != {"controller": {"addr": address}}:
+        if route.startswith(b"PUT ") and json.loads(request_body) != {"controller": {"addr": address}}:
             raise ValueError("handoff targeted an unexpected destination")
         body = (b"{}" if index == 0 else
-                json.dumps({"controller": {"port": controller_port}}).encode() if index == 1 else
-                b'{"success":true}' if index == 4 else
-                json.dumps({"controller": {"addr": address}, "av": {"video": {**profiles, "video1": {"width": 640, "height": 360, "fps": 15}} if changed else profiles}}, separators=(",", ":")).encode() if index == 5 else settings)
+                json.dumps({"controller": {"port": controller_port}}).encode() if route.startswith(b"GET /api/1.1/status ") else
+                b'{"success":true}' if route.startswith(b"PUT ") else
+                json.dumps({"controller": {"addr": address}, "av": {"video": {**profiles, "video1": {"width": 640, "height": 360, "fps": 15}} if changed else profiles}}, separators=(",", ":")).encode() if finish_handoff and index == 6 else settings)
         cookie = b"Set-Cookie: authId=fixture-cookie\r\n" if index == 0 else b""
         tls.sendall(b"HTTP/1.1 200 OK\r\n" + cookie + b"Content-Length: " + str(len(body)).encode()
                     + b"\r\nConnection: keep-alive\r\n\r\n" + body)

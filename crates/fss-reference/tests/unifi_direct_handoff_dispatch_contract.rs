@@ -45,7 +45,9 @@ type Test = Result<(), Box<dyn Error>>;
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if std::env::var_os("FSS_TEST_PRESERVE_ARTIFACTS").is_none() {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
 struct Sink {
@@ -403,6 +405,7 @@ fn exercise_framing(framing: Framing) -> Test {
                     assert!(!format!("{observed:?}").contains("fixture-secret"));
                     assert_eq!(session.phase(), Phase::ReconcileSettings);
                     assert!(session.prepare_snapshot().is_err());
+                    assert!(session.prepare_status().is_err());
                     let readback = session.prepare_settings()?;
                     session.finish_write(readback, WriteOutcome::NotWritten)?;
                     assert_eq!(session.phase(), Phase::ReconcileSettings);
@@ -738,14 +741,23 @@ fn http_fixture(
         "GET /api/1.1/settings ",
     ];
     let double_read = observe || setup_preflight;
-    let handoff_index = if setup_preflight { 4 } else { 3 };
-    let routes: &[&str] = if observe {
-        &observe_routes
-    } else if setup_preflight {
-        &setup_routes
+    let refresh_status =
+        setup_preflight && !observe && reported_port.is_some() && !already && !changed;
+    let handoff_index = if setup_preflight {
+        4 + usize::from(refresh_status)
     } else {
-        &handoff_routes
+        3
     };
+    let mut routes: Vec<&str> = if observe {
+        observe_routes.to_vec()
+    } else if setup_preflight {
+        setup_routes.to_vec()
+    } else {
+        handoff_routes.to_vec()
+    };
+    if refresh_status {
+        routes.insert(4, "GET /api/1.1/status ");
+    }
     for (index, route) in routes.iter().enumerate() {
         let request = http_request(&mut socket)?;
         if !request.starts_with(route.as_bytes()) {
@@ -788,11 +800,18 @@ fn http_fixture(
                     if port == u16::MAX { port - 1 } else { port + 1 }
                 ),
                 2 => "{}".to_owned(),
+                3 if index == 4 => format!(
+                    r#"{{"controller":{{"port":{}}}}}"#,
+                    if port == u16::MAX { port - 1 } else { port + 1 }
+                ),
+                4 if index == 4 => "{}".to_owned(),
                 _ => format!(r#"{{"controller":{{"port":{port}}}}}"#),
             }
         });
         let body: &[u8] = match index {
-            1 if status_body.is_some() => status_body.as_deref().unwrap_or("{}").as_bytes(),
+            i if (i == 1 || refresh_status && i == 4) && status_body.is_some() => {
+                status_body.as_deref().unwrap_or("{}").as_bytes()
+            }
             2 if already => target_body.as_bytes(),
             2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
             3 if double_read && changed => br#"{"controller":{"addr":"192.168.1.99"}}"#,
@@ -827,7 +846,7 @@ fn http_fixture(
         );
         socket.write_all(header.as_bytes())?;
         socket.write_all(body)?;
-        if index == 3 && double_read && stop_before_handoff {
+        if index + 1 == handoff_index && double_read && stop_before_handoff {
             let mut byte = [0u8; 1];
             return if socket.read(&mut byte)? == 0 {
                 Ok(())
@@ -835,7 +854,16 @@ fn http_fixture(
                 Err(std::io::Error::other("expired setup sent a handoff"))
             };
         }
-        if index == 1 && reported_port.as_ref().is_some_and(|(_, mode)| *mode != 0) {
+        if (index == 1
+            && reported_port
+                .as_ref()
+                .is_some_and(|(_, mode)| matches!(*mode, 1 | 2)))
+            || (refresh_status
+                && index == 4
+                && reported_port
+                    .as_ref()
+                    .is_some_and(|(_, mode)| matches!(*mode, 3 | 4)))
+        {
             let mut byte = [0u8; 1];
             return if socket.read(&mut byte)? == 0 {
                 Ok(())
@@ -2374,7 +2402,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         false,
         0,
     )?;
-    for mode in [1, 2] {
+    for mode in [1, 2, 3, 4] {
         run_discovered_setup_with_listener(
             false,
             false,

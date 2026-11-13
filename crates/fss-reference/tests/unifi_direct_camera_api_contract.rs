@@ -294,6 +294,32 @@ fn login_status_and_repeated_snapshot_sequence() -> Test {
 }
 
 #[test]
+fn refreshed_status_returns_to_ready_and_fences_incomplete_writes() -> Test {
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut session)?;
+    status(&mut session)?;
+
+    let request = session.prepare_status()?;
+    session.finish_write(request, WriteOutcome::NotWritten)?;
+    assert_eq!(session.phase(), Phase::Snapshot);
+    let request = session.prepare_status()?;
+    session.finish_write(request, WriteOutcome::Written)?;
+    let shape = session.accept_status(Response::new(
+        200,
+        "OK",
+        br#"{"controller":{"port":7443}}"#.to_vec(),
+    ))?;
+    assert_eq!(shape.controller_port, ControllerPort::Reported(7443));
+    assert_eq!(session.phase(), Phase::Snapshot);
+
+    let request = session.prepare_status()?;
+    session.finish_write(request, WriteOutcome::Indeterminate)?;
+    assert_eq!(session.phase(), Phase::Fenced);
+    assert!(session.prepare_status().is_err());
+    Ok(())
+}
+
+#[test]
 fn partial_write_fences_and_unwritten_request_can_be_prepared_again() -> Test {
     let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
     let request = s.prepare_login(CREDENTIAL)?;

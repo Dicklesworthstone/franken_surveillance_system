@@ -102,6 +102,7 @@ pub enum Phase {
 enum Kind {
     Login,
     Status,
+    RefreshStatus,
     Settings,
     SettingsAfterHandoff,
     Snapshot,
@@ -644,13 +645,17 @@ impl Session {
         bytes.extend_from_slice(body);
         self.prepare(Kind::Login, bytes)
     }
-    /// Prepare the authenticated read-only status request.
+    /// Prepare the authenticated read-only status request. After the first
+    /// complete status response, a refresh is allowed between operations but
+    /// never while a handoff requires settings reconciliation.
     pub fn prepare_status(&mut self) -> Result<Request, Error> {
-        if self.phase != Phase::Status {
-            return Err(Error::State);
-        }
+        let kind = match self.phase {
+            Phase::Status => Kind::Status,
+            Phase::Snapshot => Kind::RefreshStatus,
+            _ => return Err(Error::State),
+        };
         let bytes = self.get("/api/1.1/status", "application/json")?;
-        self.prepare(Kind::Status, bytes)
+        self.prepare(kind, bytes)
     }
     /// Prepare one authenticated read-only JPEG request; may be repeated after a complete response.
     pub fn prepare_snapshot(&mut self) -> Result<Request, Error> {
@@ -707,11 +712,13 @@ impl Session {
             (_, WriteOutcome::Indeterminate) => Phase::Fenced,
             (Kind::Login, WriteOutcome::NotWritten) => Phase::Login,
             (Kind::Status, WriteOutcome::NotWritten) => Phase::Status,
+            (Kind::RefreshStatus, WriteOutcome::NotWritten) => Phase::Snapshot,
             (Kind::Snapshot, WriteOutcome::NotWritten) => Phase::Snapshot,
             (Kind::Settings, WriteOutcome::NotWritten) => Phase::Snapshot,
             (Kind::SettingsAfterHandoff, WriteOutcome::NotWritten) => Phase::ReconcileSettings,
             (Kind::Login, WriteOutcome::Written) => Phase::AwaitLogin,
             (Kind::Status, WriteOutcome::Written) => Phase::AwaitStatus,
+            (Kind::RefreshStatus, WriteOutcome::Written) => Phase::AwaitStatus,
             (Kind::Snapshot, WriteOutcome::Written) => Phase::AwaitSnapshot,
             (Kind::Settings, WriteOutcome::Written) => Phase::AwaitSettings,
             (Kind::SettingsAfterHandoff, WriteOutcome::Written) => Phase::AwaitSettings,
