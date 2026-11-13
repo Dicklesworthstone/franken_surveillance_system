@@ -15693,3 +15693,83 @@ controller, and a subsequent explicit fresh bootstrap and reservation. These
 are synthetic direct Linux results, not a passing second RCH job, physical G4
 recording, restart recovery, audio integration, or retention proof. The
 existing recorder and fallback timer were active after these checks.
+
+### Selected audio/video recording attachment (2026-11-13 UTC)
+
+The A/V recording session now accepts a selected controller, pipeline, storage
+and collector through a source-and-camera binding check before audio tracking
+is enabled. An invalid binding returns every original owner; audio bootstrap
+refusal returns the assembled supervisor, collector and storage owners. The
+binding is a caller claim, not camera authentication. This entry point does
+not itself perform discovery, automatic provisioning or camera takeover.
+
+The first strict-remote attempt, `j-30107138793668685`, failed the focused
+synthetic test (0 passed, 116 filtered) after the first archive readback and
+history recovery, while starting its second connection. The diagnostic reported
+only the broad supervisor category. Its hash-matched binary
+`2ea0c5f3142816db9a67152dc6d2443c4f797d2f750bc08cd6636e1a14b580aa`
+also failed on the isolated omarchy host (0 passed, 116 filtered) earlier in
+bootstrap with the same broad category. The underlying event is unknown.
+The fixture now reports the nested supervisor variant without logging media.
+
+Subsequent strict-remote `j-30107138793668692` passed the focused selected A/V
+fixture (1 passed, 116 filtered): it refused a wrong camera claim, retained
+the source and owners, accepted the corrected claim, read back synthetic A/V
+with three video samples and two audio frames, and archived a second synthetic
+connection. Job `j-30107138793668693` passed the separate existing audio-setup
+refusal fixture (1 passed, 116 filtered). Both used base
+`d023afe338af06d699a9dd87593089d33a787c4d` and clean-overlay fingerprint
+`ccfbe389d4983437d0d0310920703e53c834aa29f9706290a11eb639b1f1112d`,
+exited zero, were acknowledged and released source and pair. Neither passing
+run explains or erases the prior failures. These fixtures do not establish
+physical-camera audio/video capture, cold process restart, automatic enrollment,
+or retention; the existing recorder and fallback timer were active afterward.
+
+### Automatic fleet audio/video fixture (2026-11-13 UTC)
+
+The laboratory fleet fixture can now supply synthetic AAC-tagged video through
+the automatic stream factory, selected A/V recording attachment, separate
+source archive and A/V readback. The AAC payload is synthetic, with a supplied
+unverified configuration; it is not decodable-audio or synchronization proof.
+Strict-remote no-run job `j-30107138793668696` built base
+`cb5dd72dd21597c976895e4d72e7912f1b78fa00` with both lab test overlays and
+the patched TLS vendor. Its wrapper returned 102 when Linux artifacts were
+rejected on macOS, and terminal acknowledgement and release were observed.
+Its exact binary, SHA-256
+`2dbcdd6817db48f77abffa082473ef5fa705067f90357648543ecf88ee485cdb`,
+matched on the worker and isolated omarchy host. Direct isolated runs passed
+the ordinary A/V scenario and the existing full-resolution video-only
+scenario (each 1 passed, 4 filtered). The former read back three synthetic
+video samples and two synthetic AAC frames; the latter is not an A/V test.
+
+A new combined full-resolution A/V test initially failed at bootstrap. The
+diagnostic build `j-30107138793668701` established the refusal was
+`Media(NoAudio)`: the first segment of this all-keyframe fixture contained
+no audio. A later fixture explicitly allowed an initial video-only fragment
+and required a subsequent A/V fragment, but its direct tests failed while
+the fixture was missing handling for a source-side progress event and then
+an audio observation. Builds `j-30107138793668700`, `...701`, `...702`,
+`...704`, and `...706` were no-run builds whose wrappers returned 102 at
+Linux-to-macOS artifact transfer; their terminal acknowledgements and source
+and pair releases were observed. The failed direct executions remain failures.
+Those runs did not prove the high-resolution A/V outcome.
+
+The final fixture handles only the specific source progress and unconfigured
+AAC observation returned after the initial fragment; audio fences and other
+unexpected outcomes still fail. Strict-remote no-run job `j-30107138793668710`
+compiled that revision with the same base and lab overlays. Its wrapper also
+returned 102 at Linux-to-macOS artifact transfer, and its terminal result,
+source release and pair release were acknowledged. The exact Linux binary,
+SHA-256 `ea29b777efe5546d62a66d345da3ea7f585a83669a01f40a522b64b5c5a42cee`,
+matched on worker and isolated omarchy host before and after execution.
+Separate direct isolated runs of the ordinary and full-resolution automatic
+A/V fixtures passed (each 1 passed, 5 filtered). The latter read back one
+explicitly video-only initial fragment and a later A/V fragment, decoded a
+2688 x 1512 video frame, and reported one synthetic AAC frame. The former read
+back three video samples and two synthetic AAC frames. These direct tests do
+not erase the earlier failed attempts, prove playable audio, authenticate a
+camera, or establish audio synchronization, uninterrupted coverage, physical
+G4 capture, unattended production operation or retention. The fixture still
+uses the experimental TLS laboratory and caller-supplied setup and storage
+owners. The existing recorder and fallback timer were active afterward; no
+physical camera was contacted by these tests.
