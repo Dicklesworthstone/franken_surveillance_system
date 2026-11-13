@@ -401,8 +401,44 @@ impl WorkerCustody {
         work: &mut WorkBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<UnknownTimePin, SettledAvError> {
+        self.verify_settled(journal, keeper, deployment, read, retain, limits, objects, work, cx, false)
+    }
+
+    pub(crate) fn verify_settled_video(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        objects: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<UnknownTimePin, SettledAvError> {
+        self.verify_settled(journal, keeper, deployment, read, retain, limits, objects, work, cx, true)
+    }
+
+    fn verify_settled(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+        deployment: &mut ReferenceDeployment,
+        read: &dyn archive::ReadAuthority,
+        retain: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        objects: archive::StagedAvLimits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+        video_only: bool,
+    ) -> Result<UnknownTimePin, SettledAvError> {
         self.check(journal, keeper, cx).map_err(SettledAvError::History)?;
-        let pin = archive::verify_settled_unknown_time_av_anchored(
+        let verify = if video_only {
+            archive::verify_settled_unknown_time_video_anchored
+        } else {
+            archive::verify_settled_unknown_time_av_anchored
+        };
+        let pin = verify(
             deployment, read, retain, limits, objects, work, cx, journal, keeper,
         ).map_err(SettledAvError::Verification)?;
         self.check(journal, keeper, cx).map_err(SettledAvError::History)?;

@@ -4855,6 +4855,50 @@ fn owned_video_only_restart_archives_new_connection() -> Test {
     task.join().map_err(|_|"owned video restart fixture thread panicked")?.map_err(Into::into)
 }
 
+#[test]
+fn owned_video_graph_restart_recovers_exact_profile() -> Test {
+    let task = std::thread::Builder::new().name("owned-video-graph-restart".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture()?, false, true, false, 24))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "video graph restart fixture thread panicked")?.map_err(Into::into)
+}
+
+#[test]
+#[ignore = "requires bounded private full-resolution camera-derived video-only FLV on stdin"]
+fn owned_video_graph_restart_private_camera_video() -> Test {
+    let mut wire = Vec::new();
+    std::io::stdin().lock().take(8 * 1024 * 1024 + 1).read_to_end(&mut wire)?;
+    if wire.len() < 13 || wire.len() > 8 * 1024 * 1024 { return Err("private video input bound refused".into()); }
+    let task = std::thread::Builder::new().name("private-video-graph-restart".into()).stack_size(16 * 1024 * 1024).spawn(move || {
+        let result: Test = lean_owned_session_replay(wire, false, true, false, 25);
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "private video graph restart fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+fn owned_rolled_video_graph_restart_archives_new_connection() -> Test {
+    let task = std::thread::Builder::new().name("rolled-video-graph-restart".into()).stack_size(16 * 1024 * 1024).spawn(|| {
+        let result: Test = (|| lean_owned_session_replay(video_only_media_fixture()?, false, true, false, 26))();
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "rolled video graph restart fixture panicked")?.map_err(Into::into)
+}
+
+#[test]
+#[ignore = "requires bounded private full-resolution camera-derived video-only FLV on stdin"]
+fn owned_rolled_video_graph_restart_private_camera_video() -> Test {
+    let mut wire = Vec::new();
+    std::io::stdin().lock().take(8 * 1024 * 1024 + 1).read_to_end(&mut wire)?;
+    if wire.len() < 13 || wire.len() > 8 * 1024 * 1024 { return Err("private video input bound refused".into()); }
+    let task = std::thread::Builder::new().name("private-rolled-video-restart".into()).stack_size(16 * 1024 * 1024).spawn(move || {
+        let result: Test = lean_owned_session_replay(wire, false, true, false, 27);
+        result.map_err(|error| error.to_string())
+    })?;
+    task.join().map_err(|_| "private rolled video graph restart fixture panicked")?.map_err(Into::into)
+}
+
 fn owned_source_limits() -> fss_reference::DeploymentLimits {
     fss_reference::DeploymentLimits {max_roots:256,spool_total_max_bytes:1024*1024*1024,..fss_reference::DeploymentLimits::standard()}
 }
@@ -4878,18 +4922,24 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
     cx: &'scope asupersync::Cx,
     clock: MeteredClock<'scope, 'task>,
     bootstrap_mode: u8,
+    storage_cfg: fss_reference::unifi_direct::recording_storage::Configuration<'_>,
+    replay_authority: &fss_core::region::ContextAuthority,
+    retain: Arc<dyn fss_reference::unifi_direct::archive::RetainAuthority + Send + Sync>,
+    management: Preconditions,
+    stream: intent::Preconditions,
+    admission_policy: &'scope FixtureMediaAdmission,
 ) -> Test {
     use fss_reference::unifi_direct::{archive, evidence, retirement_source, source_coordinator::ArchiveAdmission, source_worker, video_bootstrap, video_owned_sink, video_session, video_worker};
     use fss_packet::extended_flv::stream::{Next, SearchMode};
-    let key = SourceKey { connection: 1, generation: 1 };
+    let key = storage_cfg.source;
     let admission = ArchiveAdmission { resource: "fixture:video-session", cost: &BudgetVector::ZERO };
     let mut source_pins = Vec::new();
     let mut offered_sources = 0usize;
     let mut syncs = 0usize;
     let mut session = if bootstrap_mode != 0 {
-        let policy = video_bootstrap::Policy { inband: bootstrap_mode == 4, retention: ContentDigest::sha256(b"worker guard retention"), media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default() };
+        let policy = video_bootstrap::Policy { inband: matches!(bootstrap_mode, 4 | 25 | 27), retention: ContentDigest::sha256(b"worker guard retention"), media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default() };
         let wrong_key = SourceKey { connection: key.connection, generation: key.generation + 1 };
-        let refused = match video_bootstrap::Bootstrap::begin(supervisor, coordinator.into_worker(), resources, wrong_key, ContentDigest::sha256(b"fixture camera"), policy) {
+        let refused = match video_bootstrap::Bootstrap::begin(supervisor, coordinator.into_worker(), resources, wrong_key, storage_cfg.camera_claim, policy) {
             Err(parts) => parts,
             Ok(_) => return Err("bootstrap accepted a different recorder key".into()),
         };
@@ -5833,7 +5883,7 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
             _ => return Err("tail driver stopped unexpectedly".into()),
         }
     }
-    if pending.is_some() || (bootstrap_mode == 3 && !tail_retried) || (bootstrap_mode != 4 && unframed_count == 0) { return Err("tail driver did not preserve the unframed suffix or finish its retry".into()); }
+    if pending.is_some() || (bootstrap_mode == 3 && !tail_retried) || (!matches!(bootstrap_mode, 4 | 25 | 27) && unframed_count == 0) { return Err("tail driver did not preserve the unframed suffix or finish its retry".into()); }
     let tail_count = tail_pins.len();
     let tail_parts = driver.into_parts().map_err(|_| "tail driver did not drain")?;
     if !tail_parts.plan.is_empty() { return Err("tail driver left unoffered source".into()); }
@@ -5879,6 +5929,125 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
     }
     let retired_sink = video.sink.retire();
     if retired_sink.pending.is_some() || retired_sink.pending_pin.is_some() { return Err("video source left pending".into()); }
+    if matches!(bootstrap_mode, 24 | 25 | 26 | 27) {
+        use fss_reference::unifi_direct::recording_storage::{self, HistoryMinimum, Retainers};
+        use fss_runtime::effect_journal::EffectPinRetainer;
+        struct Deny;
+        impl archive::ReadAuthority for Deny { fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { false } }
+        let source_minimum = HistoryMinimum { journal: source.journal.anchor(), keeper: source.keeper.anchor() };
+        let video_minimum = HistoryMinimum { journal: video.journal.anchor(), keeper: video.keeper.anchor() };
+        let video_pin = video.journal.confirmed().ok_or("video root missing")?;
+        let objects = archive::StagedAvLimits { max_objects: 8192, max_object_bytes: 64 * 1024 * 1024, max_total_bytes: 256 * 1024 * 1024 };
+        assert_eq!(archive::verify_settled_unknown_time_video_anchored(&mut video.deployment, access, retain.as_ref(), archive::Limits::default(), objects, &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.replay, &video.journal, &video.keeper)?, video_pin);
+        assert!(archive::verify_settled_unknown_time_av_anchored(&mut video.deployment, access, retain.as_ref(), archive::Limits::default(), objects, &mut fss_geometry::WorkBudget::new(4_000_000_000), &video.replay, &video.journal, &video.keeper).is_err());
+        drop(retired_sink);
+        drop(source);
+        drop(video.deployment);
+        drop(video.journal);
+        drop(video.keeper);
+        let witness = rollover_root.join("witness");
+        let open = |name: &str| -> Result<Box<dyn EffectPinRetainer>, Box<dyn Error>> {
+            Ok(Box::new(fss_object::effect_journal::FileTrustedRootPinRetainer::open_trusting_storage(witness.join(name), EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(format!("owned-witness:{name}").as_bytes()))?))
+        };
+        let retainers = Retainers { source_journal: open("source-journal")?, source_keeper: open("source-keeper")?, av_journal: open("av-journal")?, av_keeper: open("av-keeper")? };
+        let source_replay = fss_reference::ReplayCx::from_context_authority(replay_authority, rollover_root.to_path_buf())?;
+        let video_replay = fss_reference::ReplayCx::from_context_authority(replay_authority, rollover_root.to_path_buf())?;
+        let recovered = recording_storage::recover_histories_retained(task, cx, clock, storage_cfg, source_minimum, video_minimum, source_replay, video_replay, retainers)?;
+        let recovered = if matches!(bootstrap_mode, 26 | 27) {
+            use archive::journal::rollover::{Previous, RecoveredLineage, Staged};
+            use fss_runtime::effect_journal::PinRetainedEffectJournal;
+            let (old_source, mut video_history, prior_custody) = recovered.into_histories();
+            assert!(prior_custody.is_none());
+            drop(old_source);
+            let mut deployment = fss_reference::ReferenceDeployment::open_with_limits(&storage_cfg.root.join("av"), storage_cfg.site_lineage, storage_cfg.av_deployment_limits, &video_history.replay)?;
+            let receipt = archive::replay_confirmed_unknown_time_video_anchored(&mut deployment, access, retain.as_ref(), archive::Limits::default(), objects, &mut fss_geometry::WorkBudget::new(4_000_000_000), &video_history.replay, &mut video_history.journal, &mut video_history.keeper)?;
+            assert_eq!(receipt.outcome, fss_publication::RootLedgerOutcome::AlreadyLedgered);
+            let recording_storage::RecoveredHistory { journal, keeper, replay: video_replay } = video_history;
+            let make_store = |name: &str| -> Result<Box<dyn fss_runtime::effect_journal::EffectJournalStore>, Box<dyn Error>> {
+                let file = FileEffectJournal::create(storage_cfg.root.join(name), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+                let pin = fss_object::effect_journal::FileTrustedRootPinRetainer::create(witness.join(name), EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(format!("owned-witness:{name}").as_bytes()))?;
+                Ok(Box::new(PinRetainedEffectJournal::new(Box::new(file), Box::new(pin))?))
+            };
+            let staged = Staged::begin(Previous { journal, keeper }, make_store("rolled-video-journal")?, make_store("rolled-video-keeper")?, &video_replay).map_err(|_| "video rollover staging refused")?;
+            let file = FileEffectJournal::create(storage_cfg.root.join("rolled-video-switch"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+            let pin = fss_object::effect_journal::FileTrustedRootPinRetainer::create(witness.join("rolled-video-switch"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(b"owned-witness:rolled-video-switch"))?;
+            let switch = PinRetainedEffectJournal::new(Box::new(file), Box::new(pin))?;
+            let mut active = staged.commit(switch, &video_replay).map_err(|_| "video rollover switch refused")?;
+            let receipt = active.replay_confirmed_video(&mut deployment, access, retain.as_ref(), archive::Limits::default(), objects, &mut fss_geometry::WorkBudget::new(4_000_000_000), &video_replay)?;
+            assert_eq!(receipt.outcome, fss_publication::RootLedgerOutcome::AlreadyLedgered);
+            let lineage: RecoveredLineage = active.into_recovered_lineage(&video_replay).map_err(|_| "video rollover lineage refused")?;
+            assert_eq!(lineage.transition_count(), 1);
+            drop(deployment);
+            let source_replay = fss_reference::ReplayCx::from_context_authority(replay_authority, rollover_root.to_path_buf())?;
+            let source = recording_storage::recover_source_retained(task, cx, clock, storage_cfg, source_minimum, source_replay, &video_replay, recording_storage::SourceRetainers { journal: open("source-journal")?, keeper: open("source-keeper")? })?;
+            recording_storage::join_source_and_av_lineage(storage_cfg, source, lineage, video_replay).map_err(|_| "video rollover lineage join refused")?
+        } else { recovered };
+        let next = recording_storage::Configuration { source: SourceKey { connection: 2, generation: 1 }, ..storage_cfg };
+        let refused = recording_storage::resume_confirmed(task, cx, clock, next, recovered, access, retain.clone(), objects).err().ok_or("A/V profile accepted video graph")?;
+        assert!(matches!(refused.reason, recording_storage::Error::AvReadback));
+        let refused = recording_storage::resume_confirmed_video(task, cx, clock, next, refused.histories, &Deny, retain.clone(), objects).err().ok_or("denied restart accepted")?;
+        let mut resumed = recording_storage::resume_confirmed_video(task, cx, clock, next, refused.histories, access, retain.clone(), objects).map_err(|_| "video graph restart refused")?;
+        assert_eq!(resumed.boundary().previous, key);
+        assert_eq!(resumed.boundary().next, next.source);
+        assert_eq!(resumed.boundary().av_root, video_pin);
+        let plan = resumed.prepare_boundary()?;
+        let custody_path = witness.join("video-restart-boundary-journal");
+        let store = FileEffectJournal::create(&custody_path, EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+        let retainer = fss_object::effect_journal::FileTrustedRootPinRetainer::create(witness.join("video-restart-boundary-retainer"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), ContentDigest::sha256(b"video restart boundary retainer"))?;
+        let wrapped = fss_runtime::effect_journal::PinRetainedEffectJournal::new(Box::new(store), Box::new(retainer))?;
+        let replay = fss_reference::ReplayCx::from_context_authority(replay_authority, rollover_root.to_path_buf())?;
+        let mut custody = recording_storage::boundary::Custody::create(wrapped, &plan, custody_path.to_str().ok_or("boundary path")?.to_string(), replay, task, cx, clock)?;
+        let receipt = resumed.publish_boundary(&plan, &mut custody, task, cx, clock, access, &mut fss_geometry::WorkBudget::new(1_000_000_000))?;
+        assert_eq!(receipt.root, plan.pin().root);
+        let owners = resumed.into_owners(&plan, &mut custody, task, cx, clock, access, &mut fss_geometry::WorkBudget::new(1_000_000_000)).map_err(|_| "video boundary verification refused")?;
+
+        let bind = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
+        let control = controller_listener::Listener::bind(task, cx, clock, admission_policy, bind, "fixture:camera", Duration::from_secs(5)).await?;
+        let address = SocketAddr::V4(control.local_addr());
+        let wire = expected.to_vec();
+        let peer = std::thread::spawn(move || -> io::Result<()> {
+            let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+            socket.set_read_timeout(Some(Duration::from_secs(90)))?;
+            let mut request = HEAD.as_bytes().to_vec(); request.extend(frame(HELLO)); socket.write_all(&request)?;
+            let mut header = Vec::new(); let mut byte = [0u8; 1];
+            while !header.ends_with(b"\r\n\r\n") { socket.read_exact(&mut byte)?; header.push(byte[0]); if header.len() > 4096 { return Err(io::Error::other("upgrade limit")); } }
+            if !header.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
+            if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_hello".len()).any(|w| w == b"ubnt_avclient_hello") { return Err(io::Error::other("hello reply")); }
+            socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":10}"#))?;
+            if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w| w == b"ubnt_avclient_timeSync") { return Err(io::Error::other("startup clock reply")); }
+            if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_paramAgreement".len()).any(|w| w == b"ubnt_avclient_paramAgreement") { return Err(io::Error::other("agreement")); }
+            socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":3}"#))?;
+            let request = receive_binary(&mut socket)?; let text = std::str::from_utf8(&request).map_err(io::Error::other)?;
+            let destination: SocketAddr = text.split_once("tcp://").and_then(|(_,s)| s.split_once('?')).map(|(s,_)| s).ok_or_else(|| io::Error::other("stream destination"))?.parse().map_err(io::Error::other)?;
+            if !matches!(destination, SocketAddr::V4(addr) if addr.ip().is_loopback() && addr.port()!=0) { return Err(io::Error::other("stream destination scope")); }
+            socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+            let mut media = std::net::TcpStream::connect_timeout(&destination, Duration::from_secs(5))?; media.set_write_timeout(Some(Duration::from_secs(90)))?;
+            let split = wire.len().min(100); media.write_all(&wire[..split])?;
+            socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
+            if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w| w == b"ubnt_avclient_timeSync") { return Err(io::Error::other("live clock reply")); }
+            let writer = std::thread::spawn(move || media.write_all(&wire[split..]));
+            let closed = matches!(socket.read(&mut byte), Ok(0));
+            match writer.join().map_err(|_| io::Error::other("media writer panic"))? { Ok(()) => (), Err(error) if closed && matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) => (), Err(error) => return Err(error) }
+            if closed { Ok(()) } else { Err(io::Error::other("controller did not retire")) }
+        });
+        let operations = [OperationId::parse("operation:video-restart-hello")?, OperationId::parse("operation:video-restart-agreement")?, OperationId::parse("operation:video-restart-stream")?, OperationId::parse("operation:video-restart-clock-startup")?, OperationId::parse("operation:video-restart-clock-live")?];
+        let management = Preconditions { session_generation: 2, ..management };
+        let stream = intent::Preconditions { stream_generation: 2, ..stream };
+        let (io, gate) = control.accept(4096, Duration::from_secs(5)).await?;
+        let controller = Controller::new(Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?, 1)?;
+        let mut session = owner::accept_guarded(io, ProtocolPolicy::RequireOffer, &FixtureAdmission, gate, controller, Duration::from_secs(5)).await?;
+        let start = listener::Start { bind, resource: "fixture:camera", admission: admission_policy, channel: VideoChannel::Video2, video: VideoCodec::H264, audio: AudioCodec::Aac, stream_name: "0123456789abcdef", hello: &operations[0], agreement: &operations[1], stream: &operations[2], time_sync: &operations[3..4], management, stream_conditions: stream, chunk_bytes: 4096, max_bytes: u64::try_from(expected.len())? + 1, bind_wait: Duration::from_secs(5), conversation_wait: Duration::from_secs(5), accept_wait: Duration::from_secs(5) };
+        let framer = Framer::with_mode(FlvLimits::default(), fss_packet::extended_flv::stream::MAX_BUFFER_BYTES, SearchMode::ZeroStreamId)?;
+        let recorder = if matches!(bootstrap_mode, 25 | 27) { recording::Recorder::new_inband(next.source, recording::Limits::default())? } else { recording::Recorder::new(next.source, recording::Limits::default())? };
+        let mut trace = listener::StartTrace::default();
+        let started = listener::start_tracked(owner, &mut session, &start, framer, recorder, &mut trace).await?;
+        let supervisor = supervisor::Supervisor::new(session, started.pipeline, management);
+        let recording_storage::Created { coordinator, av: resources } = owners;
+        Box::pin(drive_video_only_session(supervisor, coordinator, resources, expected, owner, &operations[4], access, rollover_read, rollover_root, rollover_replay, task, cx, clock, if matches!(bootstrap_mode, 25 | 27) { 4 } else { 2 }, next, replay_authority, retain, management, stream, admission_policy)).await?;
+        peer.join().map_err(|_| "restart peer panic")??;
+        println!("video_graph_restart=passed exact_profile=true wrong_profile_refused=true denied_read_refused=true new_connection_archived=true");
+        return Ok(());
+    }
     println!("video_session_loopback=passed sources={offered_sources} video_segments={} tail_records={tail_count} unframed_records={unframed_count} tail_start={tail_start} tail_end={tail_end} audio_samples=0 capture_bounds=unknown", if bootstrap_mode == 4 { 1 } else if matches!(bootstrap_mode, 5 | 8 | 9 | 10 | 11 | 13 | 15 | 16 | 18) { 3 } else { 2 });
     Ok(())
 }
@@ -6016,7 +6185,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
     let address=SocketAddr::V4(control.local_addr());let expected=wire.clone();
     let peer=std::thread::spawn(move || -> io::Result<()> {
-        let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(if video_session == 4 { 60 } else { 10 })))?;
+        let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;socket.set_read_timeout(Some(Duration::from_secs(if matches!(video_session, 4 | 25 | 27) { 90 } else { 10 })))?;
         let mut request=HEAD.as_bytes().to_vec();request.extend(frame(HELLO));socket.write_all(&request)?;
         let mut header=Vec::new();let mut byte=[0u8;1];while !header.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte)?;header.push(byte[0]);if header.len()>4096{return Err(io::Error::other("upgrade limit"));}}
         if !header.starts_with(b"HTTP/1.1 101 "){return Err(io::Error::other("upgrade refused"));}
@@ -6029,7 +6198,7 @@ async fn lean_owned_session_task<'scope,'task>(
         let destination:SocketAddr=text.split_once("tcp://").and_then(|(_,s)|s.split_once('?')).map(|(s,_)|s).ok_or_else(||io::Error::other("stream destination"))?.parse().map_err(io::Error::other)?;
         if !matches!(destination,SocketAddr::V4(addr) if addr.ip().is_loopback() && addr.port()!=0){return Err(io::Error::other("stream destination scope"));}
         socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
-        let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;media.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;media.set_write_timeout(Some(Duration::from_secs(if matches!(video_session, 4 | 25 | 27) { 90 } else { 10 })))?;
         let split=wire.len().min(100);media.write_all(&wire[..split])?;
         socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
         if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync"){return Err(io::Error::other("live clock reply"));}
@@ -6047,7 +6216,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let mut owner=conversation::Owner {cx,task,clock,effects,leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&FixtureClock};
     let start=listener::Start {bind,resource:"fixture:camera",admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&operations[0],agreement:&operations[1],stream:&operations[2],time_sync:&operations[3..4],management,stream_conditions:stream,chunk_bytes:4096,max_bytes:u64::try_from(expected.len())?+1,bind_wait:Duration::from_secs(5),conversation_wait:Duration::from_secs(5),accept_wait:Duration::from_secs(5)};
     let framer=Framer::with_mode(FlvLimits::default(),fss_packet::extended_flv::stream::MAX_BUFFER_BYTES,fss_packet::extended_flv::stream::SearchMode::ZeroStreamId)?;
-    let recorder=if video_session == 4 { recording::Recorder::new_inband(SourceKey {connection:1,generation:1},recording::Limits::default())? } else { recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())? };
+    let recorder=if matches!(video_session, 4 | 25 | 27) { recording::Recorder::new_inband(SourceKey {connection:1,generation:1},recording::Limits::default())? } else { recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())? };
     let mut trace=listener::StartTrace::default();
     let started=listener::start_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace).await?;
     let pipeline=started.pipeline;
@@ -6113,7 +6282,7 @@ async fn lean_owned_session_task<'scope,'task>(
     if video_session != 0 && video_session != 23 {
         let supervisor=supervisor::Supervisor::new(session,pipeline,management);
         let recording_storage::Created {coordinator,av:resources}=storage;
-        Box::pin(drive_video_only_session(supervisor, coordinator, resources, &expected, &mut owner, &operations[4], access.as_ref(), access.clone(), temp, Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?), task, cx, clock, if video_session >= 2 { video_session } else { 0 })).await?;
+        Box::pin(drive_video_only_session(supervisor, coordinator, resources, &expected, &mut owner, &operations[4], access.as_ref(), access.clone(), temp, Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?), task, cx, clock, if video_session >= 2 { video_session } else { 0 }, storage_cfg, &replay_authority, access.clone(), management, stream, &policy)).await?;
         peer.join().map_err(|_|"video session peer panicked")??;
         return Ok(());
     }

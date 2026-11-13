@@ -679,10 +679,44 @@ pub fn resume_confirmed<'task>(
     cx: &Cx,
     clock: MeteredClock<'_, 'task>,
     cfg: Configuration<'_>,
+    histories: Recovered,
+    read_authority: &dyn archive::ReadAuthority,
+    retain_authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
+    object_limits: archive::StagedAvLimits,
+) -> Result<Resumed, ResumeRefusal> {
+    resume_confirmed_inner(task, cx, clock, cfg, histories, read_authority,
+        retain_authority, object_limits, false)
+}
+
+/// Revalidate and resume an exclusively video-only confirmed graph.
+///
+/// This has the same custody, restart-boundary and camera-effect requirements
+/// as [`resume_confirmed`]. The caller selects the profile explicitly; a
+/// failed A/V read is never treated as evidence of a video-only graph.
+pub fn resume_confirmed_video<'task>(
+    task: &TaskCx<'task>,
+    cx: &Cx,
+    clock: MeteredClock<'_, 'task>,
+    cfg: Configuration<'_>,
+    histories: Recovered,
+    read_authority: &dyn archive::ReadAuthority,
+    retain_authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
+    object_limits: archive::StagedAvLimits,
+) -> Result<Resumed, ResumeRefusal> {
+    resume_confirmed_inner(task, cx, clock, cfg, histories, read_authority,
+        retain_authority, object_limits, true)
+}
+
+fn resume_confirmed_inner<'task>(
+    task: &TaskCx<'task>,
+    cx: &Cx,
+    clock: MeteredClock<'_, 'task>,
+    cfg: Configuration<'_>,
     mut histories: Recovered,
     read_authority: &dyn archive::ReadAuthority,
     retain_authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
     object_limits: archive::StagedAvLimits,
+    video_only: bool,
 ) -> Result<Resumed, ResumeRefusal> {
     let prepared = (|| -> Result<_, Error> {
         if !histories.retained {
@@ -755,22 +789,23 @@ pub fn resume_confirmed<'task>(
             return Err(Error::SourceClaimMismatch);
         }
         let previous = source.key();
-        let clip = archive::read_unknown_time_av_any(
-            &mut av_deployment,
-            av_pin,
-            read_authority,
-            cfg.limits,
-            &mut fss_geometry::WorkBudget::new(cfg.work_limit),
-            &histories.av.replay,
-        )
-        .map_err(|_| Error::AvReadback)?;
-        if clip.claimed_source() != previous
+        let claimed_source = if video_only {
+            archive::read_unknown_time_video_clip(
+                &mut av_deployment, av_pin, read_authority, cfg.limits,
+                &mut fss_geometry::WorkBudget::new(cfg.work_limit), &histories.av.replay,
+            ).map_err(|_| Error::AvReadback)?.claimed_source()
+        } else {
+            archive::read_unknown_time_av_any(
+                &mut av_deployment, av_pin, read_authority, cfg.limits,
+                &mut fss_geometry::WorkBudget::new(cfg.work_limit), &histories.av.replay,
+            ).map_err(|_| Error::AvReadback)?.claimed_source()
+        };
+        if claimed_source != previous
             || (cfg.source.generation, cfg.source.connection)
                 <= (previous.generation, previous.connection)
         {
             return Err(Error::RestartBoundary);
         }
-        drop(clip);
         let source_plan = super::source_evidence::Prepared::from_recovered(&source);
         let recovery_authority = RecoveryAuthority {
             read: read_authority,
@@ -791,7 +826,12 @@ pub fn resume_confirmed<'task>(
             return Err(Error::Reconciliation);
         }
         if let Some(custody) = &mut histories.av_rollover_custody {
-            let checked = custody.verify_settled_av(
+            let verify = if video_only {
+                archive::journal::rollover::WorkerCustody::verify_settled_video
+            } else {
+                archive::journal::rollover::WorkerCustody::verify_settled_av
+            };
+            let checked = verify(custody,
                 &histories.av.journal,
                 &histories.av.keeper,
                 &mut av_deployment,
@@ -806,7 +846,12 @@ pub fn resume_confirmed<'task>(
                 return Err(Error::Reconciliation);
             }
         } else {
-            let av_receipt = archive::replay_confirmed_unknown_time_av_anchored(
+            let replay = if video_only {
+                archive::replay_confirmed_unknown_time_video_anchored
+            } else {
+                archive::replay_confirmed_unknown_time_av_anchored
+            };
+            let av_receipt = replay(
                 &mut av_deployment,
                 read_authority,
                 retain_authority.as_ref(),

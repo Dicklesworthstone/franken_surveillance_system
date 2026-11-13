@@ -1228,13 +1228,50 @@ pub fn verify_settled_unknown_time_av_anchored(
     journal: &journal::UnknownTimeJournal,
     keeper: &journal::UnknownTimeAnchorKeeper,
 ) -> Result<UnknownTimePin, ConfirmedAvReplayError> {
+    verify_settled_unknown_time_graph_anchored(
+        deployment, read_authority, retain_authority, limits, object_limits,
+        work, cx, journal, keeper, ConfirmedGraphProfile::AudioVideo,
+    )
+}
+
+/// Recheck a settled video-only history and its complete bounded graph.
+/// This performs no publication and does not prove identity or continuity.
+pub fn verify_settled_unknown_time_video_anchored(
+    deployment: &mut ReferenceDeployment,
+    read_authority: &dyn ReadAuthority,
+    retain_authority: &dyn RetainAuthority,
+    limits: Limits,
+    object_limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+) -> Result<UnknownTimePin, ConfirmedVideoReplayError> {
+    verify_settled_unknown_time_graph_anchored(
+        deployment, read_authority, retain_authority, limits, object_limits,
+        work, cx, journal, keeper, ConfirmedGraphProfile::Video,
+    )
+}
+
+fn verify_settled_unknown_time_graph_anchored(
+    deployment: &mut ReferenceDeployment,
+    read_authority: &dyn ReadAuthority,
+    retain_authority: &dyn RetainAuthority,
+    limits: Limits,
+    object_limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+    profile: ConfirmedGraphProfile,
+) -> Result<UnknownTimePin, ConfirmedAvReplayError> {
     let pin = journal.confirmed().ok_or(ConfirmedAvReplayError::History)?;
     if !retain_authority.permits(pin.retention, pin.root) {
         return Err(ConfirmedAvReplayError::Readback(Error::Denied));
     }
     let (checked, _graph) = read_confirmed_unknown_time_graph(
         deployment, read_authority, limits, object_limits, work, cx,
-        journal, keeper, ConfirmedGraphProfile::AudioVideo, false,
+        journal, keeper, profile, false,
     )?;
     if checked != pin || !retain_authority.permits(pin.retention, pin.root) {
         return Err(ConfirmedAvReplayError::Readback(Error::Denied));
