@@ -2,6 +2,7 @@
 //! Real retained JPEG screening and cold metadata custody, with no fabricated health receipts.
 
 use super::*;
+use crate::ReferenceDeployment;
 use crate::ingest::historical_health::HistoricalHealthRetention;
 use crate::ingest::long_dwell::LongDwellLimits;
 use crate::ingest::long_watch::LongWatchReport;

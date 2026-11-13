@@ -95,9 +95,19 @@
     "crates/fss-reference/src/ingest/qsr_observations.rs",
     "crates/fss-reference/src/ingest/qsr_observations/existing.rs",
     "crates/fss-reference/src/agent_recording_context/replay/retained.rs",
-    "crates/fss-cli/src/recording_query_cmd/replay/retained.rs"
+    "crates/fss-cli/src/recording_query_cmd/replay/retained.rs",
+    "crates/fss-reference/src/agent_qsr.rs",
+    "crates/fss-cli/src/qsr_query_cmd.rs"
   ],
   "module_declarations": {
+    "crates/fss-reference/src/agent_qsr.rs": "ambiguous",
+    "crates/fss-reference/src/agent_qsr/projection.rs": "cognition",
+    "crates/fss-reference/tests/agent_qsr_contract.rs": "support",
+    "crates/fss-reference/tests/qsr_observations_immutable_contract.rs": "support",
+    "crates/fss-cli/src/qsr_query_cmd.rs": "ambiguous",
+    "crates/fss-cli/tests/qsr_query_cli_contract.rs": "support",
+    "crates/fss-cli/src/bin/fss_mcp/qsr.rs": "support",
+    "crates/fss-cli/src/bin/fss_mcp/qsr_tests.rs": "support",
     "crates/fss-reference/src/agent_recording_context/replay.rs": "cognition",
     "crates/fss-reference/src/agent_recording_context/replay/permit.rs": "authority",
     "crates/fss-reference/src/agent_recording_context/replay/projection.rs": "cognition",

@@ -28,6 +28,8 @@ pub mod agent_onvif;
 pub mod agent_orient;
 /// Bounded AOP-005 queries of committed event records, with exact continuations.
 pub mod agent_query;
+/// Canonical read-only QSR observations from retained screened detector evidence.
+pub mod agent_qsr;
 /// Protected deployment context for exact native recording metadata queries.
 pub mod agent_recording_context;
 /// Read-only, exactly pinned native AVC/HEVC catalog metadata discovery.
