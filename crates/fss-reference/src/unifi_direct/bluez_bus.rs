@@ -16,15 +16,16 @@ use asupersync::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     time::timeout_at,
 };
-use fss_core::{BudgetVector, RuntimeGrant};
+use fss_core::{BudgetVector, ContentDigest, OperationId, RuntimeGrant};
 use fss_packet::{
     dbus_bluez_signal as signals, dbus_handshake as wire, dbus_object_manager as object_manager,
 };
 use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 use std::{
     collections::VecDeque,
-    fmt, io,
+    fmt, future::Future, io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -760,10 +761,10 @@ fn own_paths(paths: &[&str]) -> Result<Vec<String>, Error> {
 const MAX_QUEUED_CHANGES: usize = 32;
 
 /// A validated change frame. Its contents are untrusted claims, not camera identity.
-pub struct ChangeFrame(Vec<u8>);
+pub struct ChangeFrame(Vec<u8>, Option<(Arc<()>, u64)>);
 #[cfg(test)]
 pub(super) fn test_change_frame(bytes: Vec<u8>) -> ChangeFrame {
-    ChangeFrame(bytes)
+    ChangeFrame(bytes, None)
 }
 impl fmt::Debug for ChangeFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -806,6 +807,302 @@ pub struct Watch<'scope, 'task, 'policy, IO> {
     gatt_binding: Option<GattEndpoints>,
     gatt_stale: bool,
     notification_state: NotificationState,
+    notification_epoch: Option<Arc<()>>,
+    next_notification_sequence: u64,
+}
+
+/// Why a notification-frame owner stopped or refused an input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotificationFramesError {
+    /// The watch, notification epoch or selected endpoints no longer match.
+    Scope,
+    /// A previous change still belongs to this owner.
+    Pending,
+    /// A change arrived out of order or its earlier change was not supplied.
+    Sequence,
+    /// The owner was fenced after an incomplete or invalid frame.
+    Fenced,
+    /// The bounded UniFi packet framer refused the input.
+    Framing(fss_packet::unifi_ble::FailureKind),
+    /// A previously validated BlueZ change could not be decoded again.
+    Decode,
+    /// The requested maximum frame size was invalid.
+    Configuration,
+    /// Task authority or the bounded decode/allocation budget was unavailable.
+    Budget,
+}
+impl fmt::Display for NotificationFramesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "BlueZ notification framing refused: {self:?}")
+    }
+}
+impl std::error::Error for NotificationFramesError {}
+
+/// An input refused before being consumed; the original change remains owned.
+#[must_use]
+#[derive(Debug)]
+pub struct NotificationFramesRefusal {
+    /// Payload-free refusal reason.
+    pub reason: NotificationFramesError,
+    /// The original BlueZ change, unchanged and still caller-owned.
+    pub change: ChangeFrame,
+}
+
+/// A completed packet, the original inspected change, or a request for input.
+#[must_use]
+#[derive(Debug)]
+pub enum NotificationFramesStep {
+    /// One complete length-framed packet. It is not authenticated or decoded.
+    Packet(fss_packet::unifi_ble::Bytes),
+    /// The complete original BlueZ change for the caller's inventory handling.
+    Change(ChangeFrame),
+    /// No change is currently held; a partial packet may still be buffered.
+    NeedChange,
+}
+
+/// All remaining input after the caller retires a notification-frame owner.
+#[must_use]
+pub struct NotificationFramesRetirement {
+    /// Incomplete or refused packet prefix, including its original length bytes.
+    pub packet_prefix: fss_packet::unifi_ble::Bytes,
+    /// Original change and the count of its value bytes already accepted, if any.
+    pub pending_change: Option<(ChangeFrame, usize)>,
+    /// A framing or decoding failure prevented further processing.
+    pub fenced: bool,
+}
+
+/// Bounded, single-owner composition of one notification epoch and BLE framer.
+///
+/// Every accepted change must have been returned by this exact watch during
+/// the same active subscription. Original changes are returned for separate
+/// inventory handling; unrelated changes are never consumed as packet bytes.
+/// Local epoch binding is not device identity, continuity or peer authentication.
+pub struct NotificationFrames {
+    epoch: Arc<()>,
+    next_sequence: u64,
+    framer: fss_packet::unifi_ble::Framer,
+    maximum: u64,
+    frame_started: bool,
+    pending: Option<(ChangeFrame, usize)>,
+    fenced: bool,
+}
+
+impl NotificationFrames {
+    /// Bind to the current active, non-stale selection without performing I/O.
+    pub fn new<IO>(
+        watch: &Watch<'_, '_, '_, IO>,
+        endpoints: &GattEndpoints,
+        maximum: usize,
+    ) -> Result<Self, NotificationFramesError> {
+        let epoch = watch
+            .notification_epoch
+            .as_ref()
+            .ok_or(NotificationFramesError::Scope)?;
+        if watch.notification_state != NotificationState::Active
+            || watch.device_state != DeviceLinkState::ConnectAcknowledged
+            || watch.gatt_stale
+            || watch.gatt_binding.as_ref() != Some(endpoints)
+            || watch.next_notification_sequence != 0
+        {
+            return Err(NotificationFramesError::Scope);
+        }
+        let result = Self {
+            epoch: Arc::clone(epoch),
+            next_sequence: 0,
+            framer: fss_packet::unifi_ble::Framer::new(maximum)
+                .ok_or(NotificationFramesError::Configuration)?,
+            maximum: u64::try_from(maximum).map_err(|_| NotificationFramesError::Configuration)?,
+            frame_started: false,
+            pending: None,
+            fenced: false,
+        };
+        if !result.current(watch, endpoints) {
+            return Err(NotificationFramesError::Scope);
+        }
+        Ok(result)
+    }
+
+    fn current<IO>(&self, watch: &Watch<'_, '_, '_, IO>, endpoints: &GattEndpoints) -> bool {
+        let Some(device) = watch.device_path.as_deref() else {
+            return false;
+        };
+        if !(watch.notification_state == NotificationState::Active
+            && watch.device_state == DeviceLinkState::ConnectAcknowledged
+            && !watch.gatt_stale
+            && watch.gatt_binding.as_ref() == Some(endpoints)
+            && watch
+                .notification_epoch
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch)))
+        {
+            return false;
+        }
+        if watch.cx.checkpoint().is_err() {
+            return false;
+        }
+        for (resource, grant) in [
+            (watch.resource.as_str(), RuntimeGrant::ObserveStatus),
+            (device, RuntimeGrant::AdapterNet),
+            (endpoints.notify.as_str(), RuntimeGrant::AdapterNet),
+        ] {
+            if !watch.admission.permits(resource, Stage::BluezNotifyRead) {
+                return false;
+            }
+            let Ok(now) = watch.clock.now() else {
+                return false;
+            };
+            if watch
+                .task
+                .checkpoint_for(grant, resource, now, &BudgetVector::ZERO)
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Transfer one change returned by this exact watch. Refusal returns it intact.
+    pub fn submit<IO>(
+        &mut self,
+        watch: &Watch<'_, '_, '_, IO>,
+        endpoints: &GattEndpoints,
+        change: ChangeFrame,
+    ) -> Result<(), NotificationFramesRefusal> {
+        let reason = if self.fenced {
+            Some(NotificationFramesError::Fenced)
+        } else if !self.current(watch, endpoints)
+            || !change
+                .1
+                .as_ref()
+                .is_some_and(|(epoch, _)| Arc::ptr_eq(epoch, &self.epoch))
+        {
+            Some(NotificationFramesError::Scope)
+        } else if change
+            .1
+            .as_ref()
+            .is_some_and(|(_, sequence)| *sequence != self.next_sequence)
+        {
+            Some(NotificationFramesError::Sequence)
+        } else if self.pending.is_some() {
+            Some(NotificationFramesError::Pending)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(NotificationFramesRefusal { reason, change });
+        }
+        let Some(next_sequence) = self.next_sequence.checked_add(1) else {
+            self.fenced = true;
+            return Err(NotificationFramesRefusal {
+                reason: NotificationFramesError::Fenced,
+                change,
+            });
+        };
+        self.next_sequence = next_sequence;
+        self.pending = Some((change, 0));
+        Ok(())
+    }
+
+    /// Drain one packet or return the original change; bounded backpressure
+    /// requires draining a change before submitting the next one.
+    pub fn next<IO>(
+        &mut self,
+        watch: &Watch<'_, '_, '_, IO>,
+        endpoints: &GattEndpoints,
+    ) -> Result<NotificationFramesStep, NotificationFramesError> {
+        if self.fenced {
+            return Err(NotificationFramesError::Fenced);
+        }
+        if !self.current(watch, endpoints) {
+            return Err(NotificationFramesError::Scope);
+        }
+        let Some((frame, offset)) = self.pending.as_mut() else {
+            return Ok(NotificationFramesStep::NeedChange);
+        };
+        let now = watch
+            .clock
+            .now()
+            .map_err(|_| NotificationFramesError::Budget)?;
+        let mut decode_cost = BudgetVector::ZERO;
+        decode_cost.bytes =
+            u64::try_from(frame.0.len()).map_err(|_| NotificationFramesError::Budget)?;
+        watch
+            .task
+            .checkpoint_for(
+                RuntimeGrant::ObserveStatus,
+                &watch.resource,
+                now,
+                &decode_cost,
+            )
+            .map_err(|_| NotificationFramesError::Budget)?;
+        let event = match frame.decode(&watch.owner) {
+            Ok(event) => event,
+            Err(_) => {
+                self.fenced = true;
+                return Err(NotificationFramesError::Decode);
+            }
+        };
+        if let signals::Event::Properties { path, change } = event
+            && path == endpoints.notify
+            && change.interface == "org.bluez.GattCharacteristic1"
+            && let object_manager::GattValueChange::Present(value) = change.gatt_value
+            && *offset < value.len()
+        {
+            if !self.frame_started {
+                if watch.cx.checkpoint().is_err()
+                    || !watch
+                        .admission
+                        .permits(&endpoints.notify, Stage::BluezNotifyRead)
+                {
+                    return Err(NotificationFramesError::Budget);
+                }
+                let now = watch
+                    .clock
+                    .now()
+                    .map_err(|_| NotificationFramesError::Budget)?;
+                let mut cost = BudgetVector::ZERO;
+                cost.bytes = self.maximum;
+                watch
+                    .task
+                    .checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.notify, now, &cost)
+                    .map_err(|_| NotificationFramesError::Budget)?;
+                self.frame_started = true;
+            }
+            match self.framer.feed(&value[*offset..]) {
+                Ok(fed) => {
+                    *offset += fed.consumed;
+                    if fed.complete {
+                        self.frame_started = false;
+                        if let Some(packet) = self.framer.take() {
+                            return Ok(NotificationFramesStep::Packet(packet));
+                        }
+                        self.fenced = true;
+                        return Err(NotificationFramesError::Decode);
+                    }
+                }
+                Err(error) => {
+                    *offset += error.consumed;
+                    self.fenced = true;
+                    return Err(NotificationFramesError::Framing(error.kind));
+                }
+            }
+        }
+        // A partial packet has consumed the entire current value. Return the
+        // original change, but remove its one-use notification admission.
+        let (mut frame, _) = self.pending.take().ok_or(NotificationFramesError::Decode)?;
+        frame.1 = None;
+        Ok(NotificationFramesStep::Change(frame))
+    }
+
+    /// Preserve an unfinished packet and original change when stopping.
+    pub fn retire(self) -> NotificationFramesRetirement {
+        NotificationFramesRetirement {
+            packet_prefix: self.framer.retire(),
+            pending_change: self.pending,
+            fenced: self.fenced,
+        }
+    }
 }
 
 fn within(path: &str, parent: &str) -> bool {
@@ -1001,7 +1298,7 @@ fn accept_change(frame: Vec<u8>, owner: &str) -> Result<ChangeFrame, Error> {
         },
     )
     .map_err(Error::Signal)?;
-    Ok(ChangeFrame(frame))
+    Ok(ChangeFrame(frame, None))
 }
 
 async fn watch_response<IO: AsyncRead + Unpin>(
@@ -1154,6 +1451,8 @@ pub async fn open_watch<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unp
         gatt_binding: None,
         gatt_stale: false,
         notification_state: NotificationState::Inactive,
+        notification_epoch: None,
+        next_notification_sequence: 0,
     })
 }
 
@@ -1419,6 +1718,11 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
             wire::NotifyMethod::Start => NotificationState::Active,
             wire::NotifyMethod::Stop => NotificationState::Inactive,
         };
+        self.notification_epoch = match method {
+            wire::NotifyMethod::Start => Some(Arc::new(())),
+            wire::NotifyMethod::Stop => None,
+        };
+        self.next_notification_sequence = 0;
         if method == wire::NotifyMethod::Stop && self.gatt_stale {
             self.gatt_binding = None;
         }
@@ -1472,7 +1776,10 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
         };
         guarded.check().map_err(io_error)?;
         self.notification_state = NotificationState::Uncertain;
-        let change = if let Some(frame) = self.queued.pop_front() {
+        if self.next_notification_sequence == u64::MAX {
+            return Err(Error::Limit);
+        }
+        let mut change = if let Some(frame) = self.queued.pop_front() {
             Some(frame)
         } else {
             match message_or_idle(self.cx, &mut guarded, wait)
@@ -1497,6 +1804,17 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
                 .decode(&self.owner)
                 .map_err(|_| Error::NotificationUncertain)?;
             self.gatt_stale = invalidates_gatt(&event, device, &endpoints.notify);
+        }
+        if let Some(frame) = &mut change {
+            frame.1 = Some((
+                Arc::clone(
+                    self.notification_epoch
+                        .as_ref()
+                        .ok_or(Error::NotificationUncertain)?,
+                ),
+                self.next_notification_sequence,
+            ));
+            self.next_notification_sequence += 1;
         }
         self.notification_state = NotificationState::Active;
         Ok(change)

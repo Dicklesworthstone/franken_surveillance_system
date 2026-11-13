@@ -113,6 +113,7 @@ struct Policy {
     deny_notify_path: bool,
     revoke_notify_read: bool,
     notify_read_checks: Cell<usize>,
+    deny_frame_read: Cell<bool>,
 }
 impl Admission for Policy {
     fn permits(&self, resource: &str, stage: Stage) -> bool {
@@ -135,6 +136,9 @@ impl Admission for Policy {
             return false;
         }
         if resource == NOTIFY_PATH && stage == Stage::BluezNotifyRead {
+            if self.deny_frame_read.get() {
+                return false;
+            }
             let count = self.notify_read_checks.get() + 1;
             self.notify_read_checks.set(count);
             if self.revoke_notify_read && count > 4 {
@@ -283,6 +287,7 @@ fn run_case(
         deny_notify_path: false,
         revoke_notify_read: false,
         notify_read_checks: Cell::new(0),
+        deny_frame_read: Cell::new(false),
     };
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -503,6 +508,7 @@ fn run_inventory(
         deny_notify_path: false,
         revoke_notify_read: false,
         notify_read_checks: Cell::new(0),
+        deny_frame_read: Cell::new(false),
     };
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -804,6 +810,10 @@ enum WatchAction {
     GattCancelled,
     GattBadReply,
     Notify,
+    NotifyRetire,
+    NotifyBadPacket,
+    NotifyBudget,
+    NotifyDecodeBudget,
     NotifyCancelled,
     NotifyReadCancelled,
     NotifyStopCancelled,
@@ -829,6 +839,13 @@ fn run_watch_action(
 ) -> TestResult {
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 64 * 1024;
+    budget.bytes = if matches!(action, WatchAction::NotifyDecodeBudget) {
+        0
+    } else if matches!(action, WatchAction::NotifyBudget) {
+        u64::try_from(gatt_value_frame(&[0]).len())?
+    } else {
+        4096
+    };
     let (mut owner, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:bluez-watch".into(),
@@ -936,6 +953,7 @@ fn run_watch_action(
         deny_notify_path: matches!(action, WatchAction::NotifyPathDenied),
         revoke_notify_read: matches!(action, WatchAction::ManagementWriteNotifyRevoked),
         notify_read_checks: Cell::new(0),
+        deny_frame_read: Cell::new(false),
     };
     let result = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -1195,7 +1213,7 @@ fn run_watch_action(
                             drop(watch);
                             Ok(())
                         }
-                        Ok(mut watch) if matches!(action, WatchAction::Notify | WatchAction::NotifyCancelled | WatchAction::NotifyReadCancelled | WatchAction::NotifyStopCancelled | WatchAction::NotifyBadReply | WatchAction::NotifyIdle | WatchAction::NotifyPathDenied | WatchAction::NotifyTopology) => {
+                        Ok(mut watch) if matches!(action, WatchAction::Notify | WatchAction::NotifyRetire | WatchAction::NotifyBadPacket | WatchAction::NotifyBudget | WatchAction::NotifyDecodeBudget | WatchAction::NotifyCancelled | WatchAction::NotifyReadCancelled | WatchAction::NotifyStopCancelled | WatchAction::NotifyBadReply | WatchAction::NotifyIdle | WatchAction::NotifyPathDenied | WatchAction::NotifyTopology) => {
                             watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
                             let endpoints = watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await?;
                             if matches!(action, WatchAction::NotifyCancelled) {
@@ -1243,15 +1261,27 @@ fn run_watch_action(
                                     drop(watch);
                                     Ok(())
                                 } else if matches!(action, WatchAction::NotifyTopology) {
+                                    use bluez_bus::{NotificationFrames, NotificationFramesError as FrameError, NotificationFramesStep as FrameStep};
+                                    let mut frames = NotificationFrames::new(&watch, &endpoints, 128).map_err(|_| "topology framer")?;
                                     let unrelated = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing unrelated change")?;
                                     unrelated.decode(watch.owner())?;
                                     assert!(!watch.gatt_selection_stale());
+                                    frames.submit(&watch, &endpoints, unrelated).map_err(|_| "unrelated submit")?;
+                                    assert!(matches!(frames.next(&watch, &endpoints), Ok(FrameStep::Change(_))));
                                     let active = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing active notification status")?;
                                     active.decode(watch.owner())?;
                                     assert!(!watch.gatt_selection_stale());
+                                    frames.submit(&watch, &endpoints, active).map_err(|_| "status submit")?;
+                                    assert!(matches!(frames.next(&watch, &endpoints), Ok(FrameStep::Change(_))));
                                     let changed = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing selected-device change")?;
                                     changed.decode(watch.owner())?;
                                     assert!(watch.gatt_selection_stale());
+                                    let refused = frames.submit(&watch, &endpoints, changed).expect_err("stale selection accepted data");
+                                    assert_eq!(refused.reason, FrameError::Scope);
+                                    refused.change.decode(watch.owner())?;
+                                    let retired = frames.retire();
+                                    assert!(retired.packet_prefix.as_bytes().is_empty());
+                                    assert!(retired.pending_change.is_none() && !retired.fenced);
                                     assert!(matches!(watch.next_notify_change(&endpoints, Duration::from_secs(1)).await, Err(BusError::GattStale)));
                                     assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
                                     watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
@@ -1270,24 +1300,71 @@ fn run_watch_action(
                                     assert!(matches!(watch.disconnect_device(DEVICE, Duration::from_secs(1)).await, Err(BusError::Configuration)));
                                     assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
                                     assert_eq!(watch.pending_changes(), 1);
-                                    let mut framer = fss_packet::unifi_ble::Framer::new(128).ok_or("framer")?;
-                                    for index in 0..2 {
-                                        let frame = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing notification")?;
-                                        let event = frame.decode(watch.owner())?;
-                                        let fss_packet::dbus_bluez_signal::Event::Properties { path, change } = event else { return Err("unexpected change".into()); };
-                                        assert_eq!(path, endpoints.notify());
-                                        let fss_packet::dbus_object_manager::GattValueChange::Present(value) = change.gatt_value else { return Err("missing value".into()); };
-                                        let fed = framer.feed(value)?;
-                                        if index == 0 { assert_eq!(fed.consumed, 1); assert!(!fed.complete); }
-                                        else {
-                                            assert_eq!(fed.consumed, 3); assert!(fed.complete);
-                                            assert_eq!(framer.take().ok_or("first packet")?.as_bytes(), &[0, 4, 0xa5, 0x5a]);
-                                            let fed2 = framer.feed(&value[fed.consumed..])?;
-                                            assert_eq!(fed2.consumed, 3); assert!(fed2.complete);
-                                            assert_eq!(framer.take().ok_or("second packet")?.as_bytes(), &[0, 3, 0x7e]);
-                                        }
+                                    use bluez_bus::{NotificationFrames, NotificationFramesError as FrameError, NotificationFramesStep as FrameStep};
+                                    let mut frames = NotificationFrames::new(&watch, &endpoints, 128).map_err(|_| "framer")?;
+                                    let first = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing notification")?;
+                                    assert!(matches!(NotificationFrames::new(&watch, &endpoints, 128), Err(FrameError::Scope)));
+                                    if matches!(action, WatchAction::NotifyBudget | WatchAction::NotifyDecodeBudget) {
+                                        frames.submit(&watch, &endpoints, first).map_err(|_| "budget submit")?;
+                                        assert!(matches!(frames.next(&watch, &endpoints), Err(FrameError::Budget)));
+                                        let retired = frames.retire();
+                                        assert!(retired.packet_prefix.as_bytes().is_empty());
+                                        let (_, accepted) = retired.pending_change.ok_or("original change lost")?;
+                                        assert_eq!(accepted, 0);
+                                        assert!(!retired.fenced);
+                                        watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                        watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                        return Ok(());
                                     }
+                                    if matches!(action, WatchAction::NotifyBadPacket) {
+                                        frames.submit(&watch, &endpoints, first).map_err(|_| "bad packet submit")?;
+                                        assert!(matches!(frames.next(&watch, &endpoints), Err(FrameError::Framing(fss_packet::unifi_ble::FailureKind::InvalidLength))));
+                                        assert!(matches!(frames.next(&watch, &endpoints), Err(FrameError::Fenced)));
+                                        let retired = frames.retire();
+                                        assert_eq!(retired.packet_prefix.as_bytes(), &[0, 1]);
+                                        let (original, accepted) = retired.pending_change.ok_or("original change lost")?;
+                                        assert_eq!(accepted, 2);
+                                        assert!(matches!(original.decode(watch.owner())?, fss_packet::dbus_bluez_signal::Event::Properties { .. }));
+                                        assert!(retired.fenced);
+                                        watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                        watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                        return Ok(());
+                                    }
+                                    if matches!(action, WatchAction::NotifyRetire) {
+                                        frames.submit(&watch, &endpoints, first).map_err(|_| "partial submit")?;
+                                        assert!(matches!(frames.next(&watch, &endpoints), Ok(FrameStep::Change(_))));
+                                        let retired = frames.retire();
+                                        assert_eq!(retired.packet_prefix.as_bytes(), &[0]);
+                                        assert!(retired.pending_change.is_none() && !retired.fenced);
+                                        watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                        watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                        return Ok(());
+                                    }
+                                    let second = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing second notification")?;
+                                    let reordered = frames.submit(&watch, &endpoints, second).expect_err("a later change cannot overtake an earlier one");
+                                    assert_eq!(reordered.reason, FrameError::Sequence);
+                                    frames.submit(&watch, &endpoints, first).map_err(|_| "first submit")?;
+                                    let blocked = frames.submit(&watch, &endpoints, reordered.change).expect_err("pending change must apply backpressure");
+                                    assert_eq!(blocked.reason, FrameError::Pending);
+                                    policy.deny_frame_read.set(true);
+                                    assert!(matches!(frames.next(&watch, &endpoints), Err(FrameError::Scope)));
+                                    policy.deny_frame_read.set(false);
+                                    let FrameStep::Change(first) = frames.next(&watch, &endpoints).map_err(|_| "first drain")? else { return Err("partial packet did not return its change".into()); };
+                                    let replay = frames.submit(&watch, &endpoints, first).expect_err("a consumed change cannot be replayed");
+                                    assert_eq!(replay.reason, FrameError::Scope);
+                                    assert!(matches!(replay.change.decode(watch.owner())?, fss_packet::dbus_bluez_signal::Event::Properties { .. }));
+                                    frames.submit(&watch, &endpoints, blocked.change).map_err(|_| "second submit")?;
+                                    let FrameStep::Packet(first) = frames.next(&watch, &endpoints).map_err(|_| "first packet")? else { return Err("first packet missing".into()); };
+                                    assert_eq!(first.as_bytes(), &[0, 4, 0xa5, 0x5a]);
+                                    let FrameStep::Packet(second) = frames.next(&watch, &endpoints).map_err(|_| "second packet")? else { return Err("second packet missing".into()); };
+                                    assert_eq!(second.as_bytes(), &[0, 3, 0x7e]);
+                                    assert!(matches!(frames.next(&watch, &endpoints), Ok(FrameStep::Change(_))));
+                                    assert!(matches!(frames.next(&watch, &endpoints), Ok(FrameStep::NeedChange)));
                                     watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                    assert!(matches!(frames.next(&watch, &endpoints), Err(FrameError::Scope)));
+                                    let retired = frames.retire();
+                                    assert!(retired.packet_prefix.as_bytes().is_empty());
+                                    assert!(retired.pending_change.is_none() && !retired.fenced);
                                     assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Inactive);
                                     watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
                                     drop(watch);
@@ -1797,6 +1874,9 @@ fn notification_values_reassemble_split_and_combined_ble_packets() -> TestResult
     input.extend_from_slice(&owned_empty_reply(10, ":1.42"));
     input.extend_from_slice(&owned_empty_reply(11, ":1.42"));
     run_watch_action(input.clone(), None, Ok(()), WatchAction::Notify)?;
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::NotifyRetire)?;
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::NotifyBudget)?;
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::NotifyDecodeBudget)?;
     run_watch_action(
         input.clone(),
         None,
@@ -1809,6 +1889,18 @@ fn notification_values_reassemble_split_and_combined_ble_packets() -> TestResult
         Err(BusError::Denied),
         WatchAction::Notify,
     )
+}
+
+#[test]
+fn malformed_notification_preserves_original_and_fences_assembler() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(8, ":1.42", &gatt_inventory_body()));
+    input.extend_from_slice(&gatt_value_frame(&[0, 1]));
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    input.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+    input.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+    run_watch_action(input, None, Ok(()), WatchAction::NotifyBadPacket)
 }
 
 #[test]
