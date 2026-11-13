@@ -17151,12 +17151,78 @@ inside an isolated loopback network.
 
 The research workspace manifest now includes the previously omitted
 `trial_setup_fence` module as well as this probe and its test fixture; the
-manifest validator passes. The probe has not yet been compiled or exercised.
-The pinned strict-remote attempt for source snapshot
+manifest validator passes. The pinned strict-remote attempt for source snapshot
 `8a699be14d07b981abe1e6c5456076240d5e2916` timed out in queue
 `9253469360607986176` before admission (exit 103). A subsequent pool-selected
-build was admitted as job `30097323753213218` on `hz4` and remains in flight.
-Neither outcome is a camera-to-Rust stream result.
+build, job `30097323753213218` on `hz4`, returned Cargo and wrapper exit zero,
+with terminal acknowledgment and source and pair release. The executable
+SHA-256 was `d1d7c3da1ebeeb92e4722446c3bf6e6b780b6609d27c78ad5edf66b8c92c647d`.
+The built Rust source matches the worktree after rustfmt formatting.
+
+On ts1, the executable and fixture passed three isolated loopback checks:
+missing owner authorization was refused, an unexpected source address was
+refused, and synthetic 2688 x 1512 media decoded. The fixture SHA-256 was
+`3aac7eae7d763a88fca5a6f6095bff06a502bbaa99b103bcaf2420319d804a7d`.
+On trj, the same hash-verified executable received the previously saved G4
+clip over isolated loopback, assembled a 150-sample segment and decoded one
+2688 x 1512 picture. The input was stream-copied twice into memory from the
+prior Scrypted capture, with two duplicate timestamps advanced by 1 ms, as
+described in the earlier automatic-setup replay. Source and binary hashes
+were unchanged. This was not a live camera connection, peer authentication,
+camera setup, continuous recording, or a retention test. The recorder and
+fallback timer remained active afterward with restart count 2.
+
+A further bounded check read 20 seconds of fresh high-profile video through
+the already-running Scrypted relay and stream-copied it into memory using
+FFmpeg. The capture held 601 video samples and five IDRs; no timestamp
+corrections were made. A local socket in the existing controller container's
+network namespace then fed that capture to the same hash-verified Rust
+listener, which assembled a 150-sample segment and decoded a 2688 x 1512
+picture. The socket used loopback, but the namespace was the existing shared
+controller namespace, not a newly isolated one. The first fresh-feed attempt
+failed before capture because the local FFmpeg rejected `-rw_timeout`; a
+separate read check and the retry above succeeded after removing the option.
+The fresh capture was replayed after collection rather than streamed directly
+into Rust as it arrived. It was not saved, and no camera setting was changed
+for this check. Scrypted and FFmpeg remained in the source path, and no audio,
+direct live Rust connection, long-running continuity, or retention was proved.
+The recorder and fallback timer remained active with restart count 2.
+
+### Passive high-profile extended-FLV replay (2026-11-13 UTC)
+
+A read-only capture observed the existing high-track TCP push while the
+controller and recorder stayed running. One private source was selected from
+the established high-track socket; the IP association is not physical-device
+authentication. The capture began midstream and was reconstructed in memory.
+Its final 15-second run found one contiguous TCP payload run and 688 structural
+tag candidates, including 33 metadata-kind candidates; 687 gaps between
+consecutive candidates were nonempty, with the largest 16 bytes. Candidate
+boundaries and metadata kinds remain heuristic, not authenticated records.
+None of those metadata candidates contained the literal `streamName`; because
+the capture began midstream, that observation says nothing about what was sent
+at connection startup. A [separate controller author reports](https://github.com/AlexxIT/go2rtc/issues/2457)
+that their camera supplies the requested stream name in incoming metadata;
+its presence and format on this G4 remain unverified.
+
+The capture's selected original camera bytes, including their inter-tag data,
+were sent over loopback in a newly isolated network namespace to the
+hash-verified `live_media_probe`. Because the capture started midstream, the
+test synthesized an FLV header, an AVC configuration from the existing relay's
+SDP, one inter-tag pad, and the start boundary at a structurally identified
+IDR. Matching SDP reads bracketed the capture but cannot establish the source
+configuration epoch. The Rust listener assembled a 150-sample segment and
+decoded a 2688 x 1512 picture. The video and packet bytes stayed in memory,
+and no camera setting was changed. This is physical-camera-derived native
+extended-FLV media through the Rust listener, not a live camera-to-Rust
+connection, authenticated identity, control handoff, audio test, or continuous
+recording. The final audit helper, outside the repository at
+`work/g4-high-passive-metadata.py`, had SHA-256
+`46dc18eafe7b1e29222e350319c972968c567a6c411b1b917fe1245980a0088c`.
+An earlier metadata-only capture and an earlier replay with the prior helper
+revision also completed. The recorder and fallback timer were active after
+the final run, with restart count 2.
+
+### Research workspace preparation
 
 The preparation manifest also includes `trial_auto_setup_fixture.py` so a
 fresh research workspace can run the synthetic automatic-setup cases. Its
@@ -17168,3 +17234,76 @@ One fresh workspace was prepared successfully, and its copies of the setup
 fence module, push probe, probe fixture, and automatic-setup fixture matched
 the source files byte for byte. No Rust runtime test was implied by that copy
 check.
+
+### Bounded script-metadata claims (2026-11-13 UTC)
+
+`fss_packet::extended_flv::metadata` now interprets a bounded subset of AMF0
+script data as a borrowed event name and optional top-level `streamName` claim.
+It supports object and ECMA-array roots, ordinary primitive and bounded nested
+values, and the `@setDataFrame` wrapper. Unsupported value types, malformed or
+trailing data, duplicate names, excessive nesting and oversized inputs refuse
+without returning partial claims. Debug output redacts both strings. The
+record-facing entry point borrows the original `SourceRecord` and refuses a
+provisional boundary. A nonprovisional boundary and the metadata itself remain
+untrusted; no listener, fleet selector, camera identity, or authorization is
+automatically changed by this parser. The AMF framing is based on the
+[AMF0 specification](https://rtmp.veriskope.com/pdf/amf0-file-format-specification.pdf),
+not a claim that every camera uses this profile.
+
+Strict-remote job `30097323753213243`, source commit
+`49bb5cebb990cb25f7b5afdc87f90effa5b22989`, passed six synthetic tests, with
+one private-input test ignored. Its wrapper exited zero, acknowledged the
+terminal result, and released source and pair. The Rust metadata source and
+test SHA-256 values were
+`8bb8b9f0cc8602f357ff3a2159fc32af1014a9ce1e508edae4f2dc5d56370c21` and
+`c2819156d87c54e68687fc9dcb142ab65bdc0fcc51e17692ddbfef6c6a59c2f1`.
+An earlier five-test build passed; a later `hz4` attempt stopped before Cargo
+started because the remote disk monitor timed out, with source and pair
+released. A subsequent pool-selected build succeeded.
+
+After adding excessive-field, oversized-string, array-length and invalid-UTF-8
+refusal cases, strict-remote job `30097323753213246` at source commit
+`b7276e7b5f8a6d3c77ab96dbd612a16de59f0175` passed eight tests with the
+private-input test ignored. It exited zero, acknowledged termination, and
+released source and pair. The parser source was unchanged; the final test
+source SHA-256 was
+`a94929d88730e5848df7cff660d85353476c6bcee0fb63f29e9e5a662ad7bbb8`.
+
+The exact test executable, SHA-256
+`561fa410b9d9df9e79224b1e3748caffe219cf293552769c42be0d8fc7273f00`, was
+hash-checked on the worker, ts1 and trj. In an owner-run private-input test on
+trj it parsed all seven structural metadata-tag candidates from a fresh
+midstream high-profile G4 capture; none contained a top-level stream name, and
+none used a type unsupported by this parser. The source bytes remained in
+memory. In the same capture the existing Rust listener decoded a 2688 x 1512
+frame from a 150-sample segment, with the synthesized framing and relay-SDP
+qualification described above. The helper SHA-256 was
+`dd181c0ed23a482544452d607a815a13c34fbda80b792a1ffc990d058f309e0f`.
+The missing name in a midstream sample does not establish startup behavior or
+qualify automatic stream association. Direct live controller handoff, native
+recording, and 30-day retention remain unproven. The existing recorder and
+fallback timer remained active with restart count 2.
+
+### Non-consuming startup name inspection (2026-11-13 UTC)
+
+The packet framer can now inspect a bounded initial prefix for a caller-chosen
+AMF0 event and 16-character stream-name claim without consuming or copying
+its source bytes. It returns distinct matching, mismatching, incomplete and
+bound-reached outcomes, rejects provisional framing and unsupported metadata,
+and debits caller-supplied work. The successor search is shared with ordinary
+framing so both honor the same explicit trailer policy. The caller must retain
+the source, establish connection-specific expectations and supervise repeated
+work. A matching claim is unauthenticated and is not proof of camera identity.
+
+Strict-remote job `30097323753213252`, source commit
+`a17e8dac50dcfb8d0cd13dd4899b407a2b7426d0`, passed 11 metadata tests and 14
+existing stream-framing tests; one owner-private metadata test was ignored.
+The job exited zero, acknowledged termination, and released its source and
+pair. The tested stream and test sources had SHA-256
+`ce8378c48f244c65caf06e9139bc38fcc1beba9ca333d63c8a7d902e2ce63485` and
+`58b3ea5d6de832e583edf82a1f92ef06d73dcfa54c27f0c13ff4d399f87f8bbb`.
+The tests include every byte boundary, preservation of the original source,
+mismatched names, exhausted work, unsupported metadata and provisional
+boundaries. This is a synchronous packet-layer facility: it is not yet wired
+into the Asupersync listener or automatic candidate selection, and no G4
+connection-start metadata or direct live camera handoff was tested here.
