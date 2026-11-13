@@ -1,10 +1,17 @@
 #![forbid(unsafe_code)]
 //! Deterministic H1 projection tests; these do not substitute for the binary integration test.
 
+#[path = "../custody_review/fixture.rs"]
+mod fixture;
+
 use super::*;
 use fss_core::{
     CaptureInterval, DecisionPath, EventEvidence, EventHypothesis, EventId, EventKind, EventState,
-    EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, ProbabilityInterval, TimestampNs,
+    EvidenceClass, EvidenceEdgeRelation, ExplainQuestion, LedgerAnchor, PrincipalId,
+    ProbabilityInterval, TimestampNs,
+};
+use fss_reference::agent_orient::{
+    OrientLimits, OrientRequest, explain_event, orient_deployment, read_deployment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -88,6 +95,68 @@ fn review(propositions: Vec<EnvelopeProposition>) -> TestResult<SupportReview> {
         availability_basis: None,
         graph_remaining: GRAPH_BUDGET,
     })
+}
+
+#[test]
+fn support_preserves_why_and_what_changed_receipts_without_reclassifying_context() -> TestResult {
+    let f = fixture::Fixture::new("support-question")?;
+    let before = fixture::inventory(&f.root)?;
+    let limits = OrientLimits::default();
+    let snapshot = read_deployment(&f.root, &limits)?;
+    let orientation = orient_deployment(
+        &snapshot,
+        &OrientRequest {
+            view: AgentView::Brief,
+            principal: PrincipalId::parse(crate::orient_cmd::DEFAULT_PRINCIPAL)?,
+            budget_tokens: None,
+        },
+        &limits,
+    )?;
+    let original =
+        explain_event(&snapshot, &orientation, &f.event.event_id)?.ok_or("missing event")?;
+    let support = |explanation: &EventExplanation| {
+        compile(
+            &snapshot,
+            &orientation,
+            explanation,
+            AgentView::Forensic,
+            u64::from(AgentView::Forensic.maximum_tokens()),
+        )
+    };
+    let why = support(&original)?;
+    assert_eq!(original.receipt.question(), ExplainQuestion::Why);
+    assert_eq!(why.receipt.question(), ExplainQuestion::Why);
+    assert!(
+        why.receipt
+            .evidence_subgraph()
+            .contains(&original.receipt.receipt_digest())
+    );
+
+    let mut changed = original.clone();
+    changed.receipt = ExplainReceipt::compile(
+        ExplainQuestion::WhatChanged,
+        original.receipt.subject(),
+        original.receipt.evidence_subgraph().to_vec(),
+        original.receipt.expansion_handles().to_vec(),
+        original.receipt.expansion_handles().len() as u32,
+    )?;
+    let comparison = support(&changed)?;
+    assert_eq!(comparison.receipt.question(), ExplainQuestion::WhatChanged);
+    assert_eq!(comparison.receipt.subject(), why.receipt.subject());
+    assert!(
+        comparison
+            .receipt
+            .evidence_subgraph()
+            .contains(&changed.receipt.receipt_digest())
+    );
+    assert_ne!(
+        comparison.receipt.receipt_digest(),
+        why.receipt.receipt_digest()
+    );
+    assert_eq!(comparison.propositions, why.propositions);
+    assert_eq!(original.receipt.question(), ExplainQuestion::Why);
+    assert_eq!(fixture::inventory(&f.root)?, before);
+    Ok(())
 }
 
 #[test]
