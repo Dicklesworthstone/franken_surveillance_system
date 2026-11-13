@@ -76,5 +76,6 @@ jobs:
           comparison_exit=0
           cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract || comparison_exit=1
           cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli || comparison_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib support_preserves_why_and_what_changed_receipts_without_reclassifying_context || comparison_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || comparison_exit=1
           exit "$comparison_exit"
