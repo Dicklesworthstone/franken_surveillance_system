@@ -10,11 +10,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use fss_core::durable::DurableFormat;
 use fss_core::{
     ContentDigest, ContextAuthority, KnowledgeState, ObjectId, OperationId, PrincipalId,
     RootAuthoritySpec, RuntimeGrant,
 };
-use fss_object::SPOOL_OBJECTS_DIR;
+use fss_object::{SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR};
 use fss_publication::LOCAL_SPOOL_DIR;
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_report_catalog::{
@@ -527,6 +528,14 @@ fn cooperative_metadata_revalidation_refuses_observed_report_changes() -> Test {
     let digest = query.rows[0].record_digest;
     let path = object_path(root, digest);
     let original = fs::read(&path)?;
+    let envelope = DurableFormat::spool_object(
+        &SPOOL_OBJECT_MAGIC,
+        SPOOL_OBJECT_FORMAT_VERSION,
+        original.len(),
+    )
+    .decode(&original)?;
+    assert_eq!(envelope.checksum(), digest);
+    let payload = envelope.payload();
     let armed = AtomicBool::new(false);
     let mutated = AtomicBool::new(false);
     let admission = || {
@@ -537,7 +546,7 @@ fn cooperative_metadata_revalidation_refuses_observed_report_changes() -> Test {
         false
     };
     let owner = ImmutableRetainedSource::open_cancellable(root, limits.read, &cx, &admission)?;
-    assert_eq!(owner.read_object_bounded(digest, original.len())?, original);
+    assert_eq!(owner.read_object_bounded(digest, payload.len())?, payload);
     armed.store(true, Ordering::SeqCst);
     assert!(owner.revalidate().is_err());
     assert!(mutated.load(Ordering::SeqCst));
