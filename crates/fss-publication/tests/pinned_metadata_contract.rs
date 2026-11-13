@@ -321,50 +321,39 @@ fn cancellation_before_admission_during_reads_and_at_final_revalidation_returns_
 }
 
 #[test]
-fn last_cancellation_callback_cannot_change_custody_after_final_verification() -> TestResult {
+fn final_admission_revalidates_custody_changed_by_the_cancellation_callback() -> TestResult {
     for change in ["tombstone", "slot", "metadata"] {
         let fixture = Fixture::new(change)?;
-        let observe = |cancelled: &(dyn Fn() -> bool + Sync)| {
-            let mut reader =
-                PinnedMetadataReader::new(&HostSpoolIo, &fixture.root, limits(), cancelled)?;
-            let manifest = reader.manifest(&fixture.slot, fixture.manifest.root())?;
-            reader.metadata(&manifest)?;
-            reader.finish()
-        };
-        let calls = AtomicUsize::new(0);
-        let count = || {
-            calls.fetch_add(1, Ordering::SeqCst);
-            false
-        };
-        observe(&count)?;
-        let total = calls.load(Ordering::SeqCst);
-        assert!(total > 0);
-        calls.store(0, Ordering::SeqCst);
-
         let replacement = root_record_bytes(
             &fixture.slot,
             ContentDigest::sha256(b"different current root"),
             fixture.manifest.children().len(),
         )?;
+        let finalizing = AtomicBool::new(false);
+        let attempted = AtomicBool::new(false);
         let wrote = AtomicBool::new(false);
         let mutate = || {
-            if calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+            if finalizing.load(Ordering::SeqCst) && !attempted.swap(true, Ordering::SeqCst) {
                 let result = match change {
                     "tombstone" => fs::write(
                         fixture.tombstone(fixture.source, ""),
-                        b"late selected-source deletion",
+                        b"selected-source deletion at final admission",
                     ),
                     "slot" => fs::write(fixture.root.join("roots/catalog.root"), &replacement),
                     _ => fs::write(
                         fixture.object(ContentDigest::sha256(&fixture.metadata)),
-                        b"late metadata corruption",
+                        b"metadata corruption at final admission",
                     ),
                 };
                 wrote.store(result.is_ok(), Ordering::SeqCst);
             }
             false
         };
-        let result = observe(&mutate);
+        let mut reader = PinnedMetadataReader::new(&HostSpoolIo, &fixture.root, limits(), &mutate)?;
+        let manifest = reader.manifest(&fixture.slot, fixture.manifest.root())?;
+        reader.metadata(&manifest)?;
+        finalizing.store(true, Ordering::SeqCst);
+        let result = reader.finish();
         assert!(
             wrote.load(Ordering::SeqCst),
             "mutation did not run: {change}"
@@ -374,7 +363,7 @@ fn last_cancellation_callback_cannot_change_custody_after_final_verification() -
             "slot" => PinnedMetadataError::Changed,
             _ => PinnedMetadataError::MetadataUnavailable,
         };
-        assert_eq!(result, Err(expected), "last callback mutation: {change}");
+        assert_eq!(result, Err(expected), "final admission mutation: {change}");
     }
     Ok(())
 }

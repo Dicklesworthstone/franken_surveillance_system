@@ -234,8 +234,8 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
 
     /// Rehash admitted metadata and repeat every exact slot, tombstone and namespace observation.
     /// Consumes the capability so a caller cannot refill or reuse its request budget.
-    /// Cancellation is admitted immediately before this bounded final pass. No caller callback
-    /// runs during or after it; all reads still consume the original byte and I/O allowances.
+    /// Cancellation remains live at every I/O boundary throughout the bounded final pass.
+    /// Revalidation detects observed changes; it is not an atomic snapshot or a read lease.
     pub fn finish(self) -> Result<MetadataReadUsage> {
         self.revalidate_for_release(&|| false)?;
         Ok(self.usage())
@@ -387,21 +387,24 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
     }
 
     fn revalidate_for_release(&self, cancelled: &dyn Fn() -> bool) -> Result<()> {
-        // The I/O callback can change semantic authority, so it must precede that guard.
-        // The guard can change custody, so the physical observation must follow both.
-        self.io.check()?;
-        self.io.without_callbacks(|| {
-            if cancelled() {
-                return Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled));
-            }
-            let result = self.revalidate();
-            self.io.check()?;
-            result
-        })
+        let result = self.revalidate_guarded(cancelled);
+        // Preserve precise budget/I/O refusals without running another I/O callback after
+        // the final semantic guard, which could invalidate that authority observation.
+        self.io.check_latched()?;
+        result
     }
 
-    fn revalidate(&self) -> Result<()> {
-        let admit = || self.io.check().map_err(PinnedMetadataError::from);
+    fn revalidate_guarded(&self, cancelled: &dyn Fn() -> bool) -> Result<()> {
+        let admit = || -> Result<()> {
+            // I/O admission can change native permission. Observe semantic authority last
+            // at every selected-object boundary, including the end of the final pass.
+            self.io.check()?;
+            if cancelled() {
+                Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled))
+            } else {
+                Ok(())
+            }
+        };
         admit()?;
         if let Some(Err(error)) = &self.namespace {
             return Err(error.clone());

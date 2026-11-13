@@ -598,31 +598,87 @@ fn checksummed_source_and_index_forgery_still_fails_real_native_packet_replay() 
 
 #[test]
 fn dynamic_native_permission_revoked_during_final_rehash_stops_before_next_object_read() -> Test {
-    struct RevokedDuringFinal<'a>(&'a RecordingSpoolIo);
+    struct RevokedDuringFinal<'a> {
+        io: &'a RecordingSpoolIo,
+        revoke_at: usize,
+    }
     impl PublishCancellation for RevokedDuringFinal<'_> {
         fn cancel_requested(&self, _: PublishCutPoint) -> bool {
-            // First pass: one exact root record + five object payloads. The first
-            // final-pass payload opens the seventh file and revokes permission.
-            self.0.call_count(SpoolIoCall::OpenRead) >= 7
+            self.io.call_count(SpoolIoCall::OpenRead) >= self.revoke_at
         }
     }
     let dir = Directory::new()?;
     let original = avc(0)?;
     let mut owner = publisher(&dir)?;
     let slot = publish(&mut owner, &original, "selected")?;
-    let io = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
-    let mut reader = PinnedClosureReader::new(&io, &dir.0, read_limits(1), &running)?;
-    assert!(
-        load_pinned_recording(
-            &mut reader,
-            &slot,
-            original.manifest().root(),
-            &scope()?,
-            &RevokedDuringFinal(&io)
-        )
-        .is_err()
-    );
-    assert_eq!(io.call_count(SpoolIoCall::OpenRead), 7);
-    assert_eq!(reader.usage().completed_roots, 0);
+    // Initial retrieval opens one root record and five payloads. Exercise revocation
+    // at every final payload and the final root-record read, including the original
+    // seventh-open regression. A second unguarded pass cannot satisfy these checks.
+    for revoke_at in 7..=12 {
+        let io = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
+        let mut reader = PinnedClosureReader::new(&io, &dir.0, read_limits(1), &running)?;
+        assert!(
+            load_pinned_recording(
+                &mut reader,
+                &slot,
+                original.manifest().root(),
+                &scope()?,
+                &RevokedDuringFinal { io: &io, revoke_at }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            io.call_count(SpoolIoCall::OpenRead),
+            revoke_at,
+            "native authority revoked at open {revoke_at}"
+        );
+        assert_eq!(reader.usage().completed_roots, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn original_io_permission_stays_live_during_final_rehash() -> Test {
+    let dir = Directory::new()?;
+    let original = avc(0)?;
+    let mut owner = publisher(&dir)?;
+    let slot = publish(&mut owner, &original, "selected")?;
+    for revoke_at in 7..=12 {
+        let io = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
+        let reads_at_revocation = AtomicUsize::new(usize::MAX);
+        let cancelled = || {
+            if io.call_count(SpoolIoCall::OpenRead) >= revoke_at {
+                let _ = reads_at_revocation.compare_exchange(
+                    usize::MAX,
+                    io.call_count(SpoolIoCall::Read),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                true
+            } else {
+                false
+            }
+        };
+        let mut reader = PinnedClosureReader::new(&io, &dir.0, read_limits(1), &cancelled)?;
+        assert!(
+            load_pinned_recording(
+                &mut reader,
+                &slot,
+                original.manifest().root(),
+                &scope()?,
+                &NeverCancel,
+            )
+            .is_err()
+        );
+        assert_eq!(io.call_count(SpoolIoCall::OpenRead), revoke_at);
+        let admitted_reads = reads_at_revocation.load(Ordering::SeqCst);
+        assert_ne!(admitted_reads, usize::MAX);
+        assert_eq!(
+            io.call_count(SpoolIoCall::Read),
+            admitted_reads,
+            "no payload read after I/O permission was revoked"
+        );
+        assert_eq!(reader.usage().completed_roots, 0);
+    }
     Ok(())
 }

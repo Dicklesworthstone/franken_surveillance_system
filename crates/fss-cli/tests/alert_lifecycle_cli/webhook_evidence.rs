@@ -7,9 +7,9 @@ use fss_ledger::{
     DurableReferenceLedger, HostJournalReadIo, IncompleteTailPolicy, JournalFileMetadata,
     JournalReadIo,
 };
-use fss_object::{InMemoryObjectStore, ObjectLimits};
+use fss_object::{InMemoryObjectStore, ObjectLimits, SPOOL_HOLDS_DIR};
 use fss_publication::{
-    LOCAL_TOMBSTONES_DIR, LocalPublicationError, ROOT_INDETERMINATE_SUFFIX,
+    LOCAL_SPOOL_DIR, LOCAL_TOMBSTONES_DIR, LocalPublicationError, ROOT_INDETERMINATE_SUFFIX,
     TOMBSTONE_RECORD_SUFFIX, tombstone_record_bytes,
 };
 use fss_reference::webhook::retained::{
@@ -324,7 +324,14 @@ fn canonical_tombstone_or_indeterminate_marker_refuses_still_present_wire() -> T
         let hex = digest.to_text();
         let hex = hex.trim_start_matches("sha256:");
         assert!(dir.0.join("objects/spool/objects").join(hex).is_file());
-        assert!(dir.0.join("objects/spool/holds").join(hex).is_file());
+        assert!(
+            dir.0
+                .join("objects")
+                .join(LOCAL_SPOOL_DIR)
+                .join(SPOOL_HOLDS_DIR)
+                .join(hex)
+                .is_file()
+        );
         let record = TombstoneRecord::new(
             ObjectId::parse("object:retained-wire-test")?,
             Generation(2),
@@ -494,7 +501,9 @@ fn final_retained_admission_cannot_release_changed_custody_or_history() -> TestR
                 )),
             "hold" => dir
                 .0
-                .join("objects/spool/holds")
+                .join("objects")
+                .join(LOCAL_SPOOL_DIR)
+                .join(SPOOL_HOLDS_DIR)
                 .join(digest.to_text().trim_start_matches("sha256:")),
             "publication" => dir
                 .0

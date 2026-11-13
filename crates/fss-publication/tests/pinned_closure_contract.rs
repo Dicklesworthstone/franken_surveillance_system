@@ -324,21 +324,8 @@ fn final_io_callback_cannot_revoke_authority_after_the_semantic_guard() -> Test 
 }
 
 #[test]
-fn final_semantic_guard_cannot_delete_source_after_physical_verification() -> Test {
+fn semantic_admission_changes_are_revalidated_before_releasing_the_closure() -> Test {
     let f = Fixture::new()?;
-    let calls = AtomicUsize::new(0);
-    let count = || {
-        calls.fetch_add(1, Ordering::SeqCst);
-        false
-    };
-    let mut baseline = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &running)?;
-    f.read_children(&mut baseline)?;
-    baseline.finish_root_with(&count)?;
-    let total = calls.load(Ordering::SeqCst);
-    assert!(total > 0);
-    drop(baseline);
-    calls.store(0, Ordering::SeqCst);
-
     let mut reader = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &running)?;
     f.read_children(&mut reader)?;
     let marker = f.root.join("tombstones").join(format!(
@@ -347,11 +334,12 @@ fn final_semantic_guard_cannot_delete_source_after_physical_verification() -> Te
             .to_text()
             .replacen(':', "-", 1)
     ));
+    let calls = AtomicUsize::new(0);
     let wrote = AtomicBool::new(false);
     let mutate = || {
-        if calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
             wrote.store(
-                fs::write(&marker, b"late deletion").is_ok(),
+                fs::write(&marker, b"deletion at semantic admission").is_ok(),
                 Ordering::SeqCst,
             );
         }
@@ -388,26 +376,13 @@ fn cancellation_checks_resume_before_the_next_root_admission() -> Test {
 }
 
 #[test]
-fn finalization_rechecks_layout_after_its_last_callback() -> Test {
+fn finalization_rechecks_layout_changed_at_admission() -> Test {
     let f = Fixture::new()?;
-    let calls = AtomicUsize::new(0);
-    let count = || {
-        calls.fetch_add(1, Ordering::SeqCst);
-        false
-    };
-    let mut baseline = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &count)?;
-    f.read(&mut baseline)?;
-    calls.store(0, Ordering::SeqCst);
-    baseline.finalize()?;
-    let total = calls.load(Ordering::SeqCst);
-    assert!(total > 0);
-    drop(baseline);
-
     let finalizing = AtomicBool::new(false);
+    let attempted = AtomicBool::new(false);
     let changed = AtomicBool::new(false);
-    calls.store(0, Ordering::SeqCst);
     let mutate = || {
-        if finalizing.load(Ordering::SeqCst) && calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+        if finalizing.load(Ordering::SeqCst) && !attempted.swap(true, Ordering::SeqCst) {
             changed.store(
                 fs::remove_dir(f.root.join("tombstones")).is_ok(),
                 Ordering::SeqCst,
