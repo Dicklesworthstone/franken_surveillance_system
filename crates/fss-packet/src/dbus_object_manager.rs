@@ -467,6 +467,323 @@ pub fn parse_inventory(body: &[u8], endian: Endian) -> Result<Inventory<'_>, Err
     })
 }
 
+/// The caller's required mode for writes to the selected characteristic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GattWriteMode {
+    /// Require the BlueZ `write` flag (write with response).
+    Request,
+    /// Require `write-without-response` (a command).
+    Command,
+}
+
+/// A scoped GATT selection refusal; none of these establishes device absence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GattSelectionError {
+    /// The caller supplied invalid or conflicting UUIDs.
+    Configuration,
+    /// The snapshot is unresolved, incomplete, or lacks the requested objects.
+    Incomplete,
+    /// More than one object matched, or hierarchy claims conflicted.
+    Ambiguous,
+    /// Selected characteristic flags did not support the requested operation.
+    Unsupported,
+}
+
+/// The selected untrusted object paths. Matching a UUID does not authenticate
+/// a device or authorize GATT operations.
+pub struct GattSelection<'a> {
+    service: &'a str,
+    notify: &'a str,
+    write: &'a str,
+}
+impl<'a> GattSelection<'a> {
+    /// The selected service object.
+    pub fn service(&self) -> &'a str {
+        self.service
+    }
+    /// The selected notification or indication characteristic.
+    pub fn notify(&self) -> &'a str {
+        self.notify
+    }
+    /// The selected write characteristic.
+    pub fn write(&self) -> &'a str {
+        self.write
+    }
+}
+impl fmt::Debug for GattSelection<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GattSelection").finish_non_exhaustive()
+    }
+}
+
+struct GattService<'a> {
+    path: &'a str,
+    uuid: Option<&'a str>,
+    device: Option<&'a str>,
+}
+struct GattCharacteristic<'a> {
+    path: &'a str,
+    uuid: Option<&'a str>,
+    service: Option<&'a str>,
+    flags: Option<Vec<&'a str>>,
+}
+
+/// Bounded GATT claims for one device, borrowed from the original snapshot.
+pub struct GattSnapshot<'a> {
+    device: &'a str,
+    resolved: Option<bool>,
+    services: Vec<GattService<'a>>,
+    characteristics: Vec<GattCharacteristic<'a>>,
+}
+impl fmt::Debug for GattSnapshot<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GattSnapshot")
+            .field("resolved", &self.resolved)
+            .field("services", &self.services.len())
+            .field("characteristics", &self.characteristics.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn uuid128(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+}
+fn child_of(parent: &str, child: &str) -> bool {
+    child
+        .strip_prefix(parent)
+        .is_some_and(|tail| tail.starts_with('/') && tail.len() > 1)
+}
+
+impl<'a> GattSnapshot<'a> {
+    /// Select one service and two different characteristics from this snapshot.
+    /// All expected UUIDs and the write mode are supplied by the caller's
+    /// model-specific policy; no UniFi-wide compatibility is inferred.
+    pub fn select(
+        &self,
+        service_uuid: &str,
+        notify_uuid: &str,
+        write_uuid: &str,
+        mode: GattWriteMode,
+    ) -> Result<GattSelection<'a>, GattSelectionError> {
+        use GattSelectionError as E;
+        if !uuid128(service_uuid)
+            || !uuid128(notify_uuid)
+            || !uuid128(write_uuid)
+            || notify_uuid.eq_ignore_ascii_case(write_uuid)
+        {
+            return Err(E::Configuration);
+        }
+        if self.resolved != Some(true) {
+            return Err(E::Incomplete);
+        }
+        let mut service = None;
+        for item in &self.services {
+            let uuid = item.uuid.ok_or(E::Incomplete)?;
+            let device = item.device.ok_or(E::Incomplete)?;
+            if device != self.device || !child_of(self.device, item.path) {
+                return Err(E::Ambiguous);
+            }
+            if uuid.eq_ignore_ascii_case(service_uuid) {
+                if service.replace(item.path).is_some() {
+                    return Err(E::Ambiguous);
+                }
+            }
+        }
+        let service = service.ok_or(E::Incomplete)?;
+        let (mut notify, mut write) = (None, None);
+        for item in &self.characteristics {
+            let parent = item.service.ok_or(E::Incomplete)?;
+            if !child_of(self.device, parent) || !child_of(parent, item.path) {
+                return Err(E::Ambiguous);
+            }
+            if parent != service {
+                continue;
+            }
+            let uuid = item.uuid.ok_or(E::Incomplete)?;
+            let (slot, valid_flag) = if uuid.eq_ignore_ascii_case(notify_uuid) {
+                (&mut notify, "notify")
+            } else if uuid.eq_ignore_ascii_case(write_uuid) {
+                (
+                    &mut write,
+                    match mode {
+                        GattWriteMode::Request => "write",
+                        GattWriteMode::Command => "write-without-response",
+                    },
+                )
+            } else {
+                continue;
+            };
+            let flags = item.flags.as_ref().ok_or(E::Incomplete)?;
+            if !flags
+                .iter()
+                .any(|flag| *flag == valid_flag || (valid_flag == "notify" && *flag == "indicate"))
+            {
+                return Err(E::Unsupported);
+            }
+            if slot.replace(item.path).is_some() {
+                return Err(E::Ambiguous);
+            }
+        }
+        Ok(GattSelection {
+            service,
+            notify: notify.ok_or(E::Incomplete)?,
+            write: write.ok_or(E::Incomplete)?,
+        })
+    }
+}
+
+fn gatt_variant_string<'a>(c: &mut Cursor<'a>, path: bool) -> Result<&'a str, Error> {
+    c.count()?;
+    if c.signature(true)? != if path { b"o" } else { b"s" } {
+        return Err(Error::Invalid);
+    }
+    let value = c.string(path)?;
+    if value.is_empty() || value.len() > 1024 {
+        return Err(Error::Limit);
+    }
+    Ok(value)
+}
+
+/// Decode one complete ObjectManager body and retain only GATT claims beneath
+/// `device`. Other objects are structurally checked and skipped. The caller
+/// must independently correlate the response, owner, device, and snapshot epoch.
+pub fn parse_gatt_snapshot<'a>(
+    body: &'a [u8],
+    endian: Endian,
+    device: &'a str,
+) -> Result<GattSnapshot<'a>, Error> {
+    if body.len() > MAX_BODY || !object_path(device) || device == "/" || device.len() > 1024 {
+        return Err(Error::Invalid);
+    }
+    let mut c = Cursor {
+        data: body,
+        at: 0,
+        endian,
+        values: 0,
+    };
+    let (mut paths, mut services, mut characteristics) = (Vec::new(), Vec::new(), Vec::new());
+    let mut resolved = None;
+    let outer = c.array(8)?;
+    while c.at < outer {
+        c.count()?;
+        c.pad(8)?;
+        if c.at >= outer || paths.len() == MAX_OBJECTS {
+            return Err(Error::Limit);
+        }
+        let path = c.string(true)?;
+        if paths.contains(&path) {
+            return Err(Error::Invalid);
+        }
+        paths.push(path);
+        if path != device && !child_of(device, path) {
+            c.skip(b"a{sa{sv}}", 0, 0)?;
+            if c.at > outer {
+                return Err(Error::Invalid);
+            }
+            continue;
+        }
+        let interface_end = c.array(8)?;
+        if interface_end > outer {
+            return Err(Error::Invalid);
+        }
+        let mut interfaces_seen = Vec::new();
+        while c.at < interface_end {
+            c.count()?;
+            c.pad(8)?;
+            if c.at >= interface_end || interfaces_seen.len() == MAX_INTERFACES {
+                return Err(Error::Limit);
+            }
+            let interface = c.string(false)?;
+            if interface.is_empty() || interfaces_seen.contains(&interface) {
+                return Err(Error::Invalid);
+            }
+            interfaces_seen.push(interface);
+            let end = c.array(8)?;
+            if end > interface_end {
+                return Err(Error::Invalid);
+            }
+            let (mut props, mut uuid, mut parent, mut flags) = (Vec::new(), None, None, None);
+            while c.at < end {
+                c.count()?;
+                c.pad(8)?;
+                if c.at >= end || props.len() == MAX_PROPERTIES {
+                    return Err(Error::Limit);
+                }
+                let name = c.string(false)?;
+                if name.is_empty() || props.contains(&name) {
+                    return Err(Error::Invalid);
+                }
+                props.push(name);
+                match (interface, name) {
+                    ("org.bluez.Device1", "ServicesResolved") if path == device => {
+                        c.count()?;
+                        if c.signature(true)? != b"b" {
+                            return Err(Error::Invalid);
+                        }
+                        resolved = Some(match c.u32()? {
+                            0 => false,
+                            1 => true,
+                            _ => return Err(Error::Invalid),
+                        });
+                    }
+                    ("org.bluez.GattService1" | "org.bluez.GattCharacteristic1", "UUID") => {
+                        uuid = Some(gatt_variant_string(&mut c, false)?)
+                    }
+                    ("org.bluez.GattService1", "Device")
+                    | ("org.bluez.GattCharacteristic1", "Service") => {
+                        parent = Some(gatt_variant_string(&mut c, true)?)
+                    }
+                    ("org.bluez.GattCharacteristic1", "Flags") => {
+                        flags = Some(c.service_list(end)?)
+                    }
+                    _ => {
+                        c.skip(b"v", 0, 0)?;
+                    }
+                }
+                if c.at > end {
+                    return Err(Error::Invalid);
+                }
+            }
+            if c.at != end {
+                return Err(Error::Invalid);
+            }
+            match interface {
+                "org.bluez.GattService1" => services.push(GattService {
+                    path,
+                    uuid,
+                    device: parent,
+                }),
+                "org.bluez.GattCharacteristic1" => characteristics.push(GattCharacteristic {
+                    path,
+                    uuid,
+                    service: parent,
+                    flags,
+                }),
+                _ => {}
+            }
+        }
+        if c.at != interface_end {
+            return Err(Error::Invalid);
+        }
+    }
+    if c.at != outer || outer != body.len() {
+        return Err(Error::Invalid);
+    }
+    Ok(GattSnapshot {
+        device,
+        resolved,
+        services,
+        characteristics,
+    })
+}
+
 /// One untrusted `InterfacesAdded` body. This is a partial change, not a
 /// complete object snapshot; the caller must bind the signal's source/header.
 pub struct InterfacesAdded<'a> {
@@ -582,6 +899,27 @@ pub enum ServiceChange<'a> {
     /// A replacement list was supplied; it may be empty.
     Present(Vec<&'a str>),
 }
+
+/// A GATT characteristic value claim. A present value borrows the original
+/// D-Bus body; invalidation and an absent property are distinct.
+#[derive(Clone, Copy)]
+pub enum GattValueChange<'a> {
+    /// The characteristic value was not mentioned.
+    Unchanged,
+    /// The characteristic value was invalidated without a replacement.
+    Invalidated,
+    /// Original bytes supplied in this property change, possibly empty.
+    Present(&'a [u8]),
+}
+impl fmt::Debug for GattValueChange<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unchanged => f.write_str("Unchanged"),
+            Self::Invalidated => f.write_str("Invalidated"),
+            Self::Present(value) => f.debug_tuple("Present").field(&value.len()).finish(),
+        }
+    }
+}
 impl fmt::Debug for ServiceChange<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -601,11 +939,21 @@ pub struct PropertiesChanged<'a> {
     pub services: ServiceChange<'a>,
     /// Adapter1 `Powered` was changed or invalidated; its value is not retained.
     pub adapter_power_changed: bool,
+    /// GattCharacteristic1 value bytes, when present or invalidated.
+    pub gatt_value: GattValueChange<'a>,
+    /// Whether this signal reports `Notifying` as true. False means unknown,
+    /// invalidated, absent or false, not necessarily an inactive session.
+    pub gatt_notifying_active: bool,
+    /// Whether this characteristic signal changes or invalidates something
+    /// other than `Value` or a positive `Notifying` claim. Unknown properties,
+    /// a false `Notifying` claim, and invalidations are included.
+    pub gatt_other_changed: bool,
 }
 impl fmt::Debug for PropertiesChanged<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PropertiesChanged")
             .field("services", &self.services)
+            .field("gatt_value", &self.gatt_value)
             .finish_non_exhaustive()
     }
 }
@@ -632,6 +980,8 @@ pub fn parse_properties_changed(
     let end = c.array(8)?;
     let mut changed = Vec::new();
     let mut services = ServiceChange::Unchanged;
+    let mut gatt_value = GattValueChange::Unchanged;
+    let mut gatt_notifying_active = false;
     while c.at < end {
         c.count()?;
         c.pad(8)?;
@@ -645,6 +995,26 @@ pub fn parse_properties_changed(
         changed.push(name);
         if interface == "org.bluez.Device1" && name == "UUIDs" {
             services = ServiceChange::Present(c.service_list(end)?);
+        } else if interface == "org.bluez.GattCharacteristic1" && name == "Value" {
+            c.count()?;
+            if c.signature(true)? != b"ay" {
+                return Err(Error::Invalid);
+            }
+            let value_end = c.array(1)?;
+            if value_end > end {
+                return Err(Error::Invalid);
+            }
+            gatt_value = GattValueChange::Present(c.take(value_end - c.at)?);
+        } else if interface == "org.bluez.GattCharacteristic1" && name == "Notifying" {
+            c.count()?;
+            if c.signature(true)? != b"b" {
+                return Err(Error::Invalid);
+            }
+            gatt_notifying_active = match c.u32()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::Invalid),
+            };
         } else {
             c.skip(b"v", 0, 0)?;
         }
@@ -659,11 +1029,21 @@ pub fn parse_properties_changed(
     if interface == "org.bluez.Device1" && invalidated.contains(&"UUIDs") {
         services = ServiceChange::Invalidated;
     }
+    if interface == "org.bluez.GattCharacteristic1" && invalidated.contains(&"Value") {
+        gatt_value = GattValueChange::Invalidated;
+    }
     Ok(PropertiesChanged {
         interface,
         services,
         adapter_power_changed: interface == "org.bluez.Adapter1"
             && (changed.contains(&"Powered") || invalidated.contains(&"Powered")),
+        gatt_value,
+        gatt_notifying_active,
+        gatt_other_changed: interface == "org.bluez.GattCharacteristic1"
+            && (changed
+                .iter()
+                .any(|name| *name != "Value" && !(*name == "Notifying" && gatt_notifying_active))
+                || invalidated.iter().any(|name| *name != "Value")),
     })
 }
 
@@ -1032,6 +1412,324 @@ mod tests {
                 assert!(!parse_properties_changed(&unrelated, endian)?.adapter_power_changed);
             }
         }
+        Ok(())
+    }
+
+    fn gatt_value_signal(
+        endian: Endian,
+        value: Option<&[u8]>,
+        invalidated: bool,
+        wrong_type: bool,
+    ) -> Vec<u8> {
+        let mut w = Writer::new(endian);
+        w.text("org.bluez.GattCharacteristic1");
+        let properties = w.array(8);
+        if let Some(value) = value {
+            w.prop("Value", if wrong_type { "as" } else { "ay" });
+            let array = w.array(if wrong_type { 4 } else { 1 });
+            if wrong_type {
+                w.text("wrong");
+            } else {
+                w.data.extend_from_slice(value);
+            }
+            w.finish(array);
+        }
+        w.finish(properties);
+        let invalid = w.array(4);
+        if invalidated {
+            w.text("Value");
+        }
+        w.finish(invalid);
+        w.data
+    }
+
+    #[test]
+    fn gatt_value_changes_preserve_bytes_and_distinguish_invalidation() -> Result<(), Error> {
+        for endian in [Endian::Little, Endian::Big] {
+            let body = gatt_value_signal(endian, Some(&[0x00, 0x04, 0xa5, 0x5a]), false, false);
+            let change = parse_properties_changed(&body, endian)?;
+            assert!(!change.gatt_other_changed);
+            assert!(
+                matches!(change.gatt_value, GattValueChange::Present(value) if value == [0x00, 0x04, 0xa5, 0x5a])
+            );
+            assert!(!format!("{change:?}").contains("165"));
+            for end in 0..body.len() {
+                assert!(parse_properties_changed(&body[..end], endian).is_err());
+            }
+            let invalid = gatt_value_signal(endian, None, true, false);
+            assert!(matches!(
+                parse_properties_changed(&invalid, endian)?.gatt_value,
+                GattValueChange::Invalidated
+            ));
+            let absent = gatt_value_signal(endian, None, false, false);
+            assert!(matches!(
+                parse_properties_changed(&absent, endian)?.gatt_value,
+                GattValueChange::Unchanged
+            ));
+            assert!(
+                parse_properties_changed(
+                    &gatt_value_signal(endian, Some(&[1]), true, false),
+                    endian
+                )
+                .is_err()
+            );
+            assert!(
+                parse_properties_changed(
+                    &gatt_value_signal(endian, Some(&[1]), false, true),
+                    endian
+                )
+                .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gatt_value_with_other_changes_is_distinguished() -> Result<(), Error> {
+        for endian in [Endian::Little, Endian::Big] {
+            for invalidated in [false, true] {
+                let mut w = Writer::new(endian);
+                w.text("org.bluez.GattCharacteristic1");
+                let properties = w.array(8);
+                w.prop("Value", "ay");
+                let value = w.array(1);
+                w.data.extend_from_slice(&[0x12, 0x34]);
+                w.finish(value);
+                if !invalidated {
+                    w.prop("Flags", "as");
+                    let flags = w.array(4);
+                    w.text("notify");
+                    w.finish(flags);
+                }
+                w.finish(properties);
+                let invalid = w.array(4);
+                if invalidated {
+                    w.text("Flags");
+                }
+                w.finish(invalid);
+                let change = parse_properties_changed(&w.data, endian)?;
+                assert!(change.gatt_other_changed);
+                assert!(matches!(
+                    change.gatt_value,
+                    GattValueChange::Present([0x12, 0x34])
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gatt_notifying_claim_distinguishes_active_loss_and_invalidation() -> Result<(), Error> {
+        for endian in [Endian::Little, Endian::Big] {
+            for value in [0, 1, 2] {
+                let mut w = Writer::new(endian);
+                w.text("org.bluez.GattCharacteristic1");
+                let properties = w.array(8);
+                w.prop("Notifying", "b");
+                w.number(value);
+                w.finish(properties);
+                let invalid = w.array(4);
+                w.finish(invalid);
+                let parsed = parse_properties_changed(&w.data, endian);
+                if value == 2 {
+                    assert!(parsed.is_err());
+                } else {
+                    let change = parsed?;
+                    assert_eq!(change.gatt_notifying_active, value == 1);
+                    assert_eq!(change.gatt_other_changed, value == 0);
+                }
+            }
+            let mut w = Writer::new(endian);
+            w.text("org.bluez.GattCharacteristic1");
+            let properties = w.array(8);
+            w.finish(properties);
+            let invalid = w.array(4);
+            w.text("Notifying");
+            w.finish(invalid);
+            let change = parse_properties_changed(&w.data, endian)?;
+            assert!(!change.gatt_notifying_active);
+            assert!(change.gatt_other_changed);
+        }
+        Ok(())
+    }
+
+    const GATT_DEVICE: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB";
+    const GATT_SERVICE: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001";
+    const GATT_NOTIFY: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char001";
+    const GATT_WRITE: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char002";
+    const SERVICE_UUID: &str = "0c430d0c-00ef-4367-bc6f-ca7c51e6b61f";
+    const NOTIFY_UUID: &str = "d587c47f-ac6e-4388-a31c-e6cd380ba043";
+    const WRITE_UUID: &str = "9280f26c-a56f-43ea-b769-d5d732e1ac67";
+
+    fn gatt_body(
+        endian: Endian,
+        resolved: bool,
+        duplicate: bool,
+        write_flag: &str,
+        wrong_parent: bool,
+    ) -> Vec<u8> {
+        let mut w = Writer::new(endian);
+        let outer = w.array(8);
+        w.pad(8);
+        w.text(GATT_DEVICE);
+        let interfaces = w.array(8);
+        w.pad(8);
+        w.text("org.bluez.Device1");
+        let props = w.array(8);
+        w.prop("ServicesResolved", "b");
+        w.number(u32::from(resolved));
+        w.finish(props);
+        w.finish(interfaces);
+        w.pad(8);
+        w.text(GATT_SERVICE);
+        let interfaces = w.array(8);
+        w.pad(8);
+        w.text("org.bluez.GattService1");
+        let props = w.array(8);
+        w.prop("UUID", "s");
+        w.text(SERVICE_UUID);
+        w.prop("Device", "o");
+        w.text(GATT_DEVICE);
+        w.finish(props);
+        w.finish(interfaces);
+        for (path, uuid, flag) in [
+            (GATT_NOTIFY, NOTIFY_UUID, "notify"),
+            (GATT_WRITE, WRITE_UUID, write_flag),
+        ] {
+            w.pad(8);
+            w.text(path);
+            let interfaces = w.array(8);
+            w.pad(8);
+            w.text("org.bluez.GattCharacteristic1");
+            let props = w.array(8);
+            w.prop("UUID", "s");
+            w.text(uuid);
+            w.prop("Service", "o");
+            w.text(if wrong_parent {
+                GATT_DEVICE
+            } else {
+                GATT_SERVICE
+            });
+            if !flag.is_empty() {
+                w.prop("Flags", "as");
+                let flags = w.array(4);
+                w.text(flag);
+                w.finish(flags);
+            }
+            w.finish(props);
+            w.finish(interfaces);
+        }
+        if duplicate {
+            w.pad(8);
+            w.text("/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char003");
+            let interfaces = w.array(8);
+            w.pad(8);
+            w.text("org.bluez.GattCharacteristic1");
+            let props = w.array(8);
+            w.prop("UUID", "s");
+            w.text(WRITE_UUID);
+            w.prop("Service", "o");
+            w.text(GATT_SERVICE);
+            w.prop("Flags", "as");
+            let flags = w.array(4);
+            w.text(write_flag);
+            w.finish(flags);
+            w.finish(props);
+            w.finish(interfaces);
+        }
+        // An incomplete service under another device must not affect this one.
+        w.pad(8);
+        w.text("/org/bluez/hci0/dev_01_23_45_67_89_AC/service001");
+        let interfaces = w.array(8);
+        w.pad(8);
+        w.text("org.bluez.GattService1");
+        let props = w.array(8);
+        w.prop("UUID", "s");
+        w.text(SERVICE_UUID);
+        w.finish(props);
+        w.finish(interfaces);
+        w.finish(outer);
+        w.data
+    }
+
+    #[test]
+    fn gatt_snapshot_selects_only_the_requested_device_and_characteristics() -> Result<(), Error> {
+        for endian in [Endian::Little, Endian::Big] {
+            let body = gatt_body(endian, true, false, "write", false);
+            let snapshot = parse_gatt_snapshot(&body, endian, GATT_DEVICE)?;
+            let selected = snapshot
+                .select(
+                    SERVICE_UUID,
+                    NOTIFY_UUID,
+                    WRITE_UUID,
+                    GattWriteMode::Request,
+                )
+                .map_err(|_| Error::Invalid)?;
+            assert_eq!(selected.service(), GATT_SERVICE);
+            assert_eq!(selected.notify(), GATT_NOTIFY);
+            assert_eq!(selected.write(), GATT_WRITE);
+            assert!(!format!("{selected:?} {snapshot:?}").contains("dev_01"));
+            for end in 0..body.len() {
+                assert!(parse_gatt_snapshot(&body[..end], endian, GATT_DEVICE).is_err());
+            }
+            assert!(matches!(
+                snapshot.select(
+                    SERVICE_UUID,
+                    NOTIFY_UUID,
+                    WRITE_UUID,
+                    GattWriteMode::Command
+                ),
+                Err(GattSelectionError::Unsupported)
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gatt_selection_refuses_unresolved_duplicates_and_crossed_hierarchy() -> Result<(), Error> {
+        for (resolved, duplicate, wrong_parent, expected) in [
+            (false, false, false, GattSelectionError::Incomplete),
+            (true, true, false, GattSelectionError::Ambiguous),
+            (true, false, true, GattSelectionError::Ambiguous),
+        ] {
+            let body = gatt_body(Endian::Little, resolved, duplicate, "write", wrong_parent);
+            let snapshot = parse_gatt_snapshot(&body, Endian::Little, GATT_DEVICE)?;
+            assert!(
+                matches!(snapshot.select(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, GattWriteMode::Request), Err(error) if error == expected)
+            );
+        }
+        let body = gatt_body(Endian::Little, true, false, "write-without-response", false);
+        let snapshot = parse_gatt_snapshot(&body, Endian::Little, GATT_DEVICE)?;
+        assert!(
+            snapshot
+                .select(
+                    SERVICE_UUID,
+                    NOTIFY_UUID,
+                    WRITE_UUID,
+                    GattWriteMode::Command
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            snapshot.select(
+                SERVICE_UUID,
+                NOTIFY_UUID,
+                NOTIFY_UUID,
+                GattWriteMode::Command
+            ),
+            Err(GattSelectionError::Configuration)
+        ));
+        let body = gatt_body(Endian::Little, true, false, "", false);
+        let snapshot = parse_gatt_snapshot(&body, Endian::Little, GATT_DEVICE)?;
+        assert!(matches!(
+            snapshot.select(
+                SERVICE_UUID,
+                NOTIFY_UUID,
+                WRITE_UUID,
+                GattWriteMode::Request
+            ),
+            Err(GattSelectionError::Incomplete)
+        ));
         Ok(())
     }
 }

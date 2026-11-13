@@ -47,6 +47,8 @@ pub mod av_worker;
 pub mod av_worker_guard;
 /// Task-owned, bounded local D-Bus observation for future BlueZ transport.
 pub mod bluez_bus;
+/// Exact, inert bindings for authorized BlueZ management-negotiation writes.
+pub mod bluez_gatt_management;
 /// Task-owned BlueZ scan and claim-projection lifecycle.
 pub mod bluez_monitor;
 /// Bounded reconciliation of scoped BlueZ inventory and device changes.

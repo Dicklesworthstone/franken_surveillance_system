@@ -391,6 +391,9 @@ mod tests {
                 interface: "org.bluez.Device1",
                 services,
                 adapter_power_changed: false,
+                gatt_value: fss_packet::dbus_object_manager::GattValueChange::Unchanged,
+                gatt_notifying_active: false,
+                gatt_other_changed: false,
             },
         }
     }

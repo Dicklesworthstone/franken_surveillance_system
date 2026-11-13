@@ -1,13 +1,16 @@
 #![forbid(unsafe_code)]
-//! Task-owned, read-only local D-Bus and BlueZ inventory observations.
+//! Task-owned local D-Bus observation and explicitly admitted BlueZ operations.
 //!
 //! The caller supplies an already connected, independently admitted local bus
 //! stream. An optional read-only snapshot can report untrusted adapter paths.
-//! It does not start discovery, contact cameras, establish Bluetooth identity,
-//! or configure Wi-Fi. One-shot observations retire the stream; a watch holds
-//! it until the caller drops it or an operation fails.
+//! Optional discovery and device-connection operations have external effects;
+//! they do not establish Bluetooth identity or configure Wi-Fi. One-shot
+//! observations retire the stream; a watch holds it until dropped or retired.
 
-use super::metered::{MeteredClock, MeteredIo};
+use super::{
+    bluez_gatt_management as gatt_management,
+    metered::{MeteredClock, MeteredIo},
+};
 use asupersync::{
     Cx,
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -17,7 +20,7 @@ use fss_core::{BudgetVector, RuntimeGrant};
 use fss_packet::{
     dbus_bluez_signal as signals, dbus_handshake as wire, dbus_object_manager as object_manager,
 };
-use fss_runtime::execution::TaskCx;
+use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 use std::{
     collections::VecDeque,
     fmt, io,
@@ -49,6 +52,20 @@ pub enum Stage {
     BluezDiscoveryStart,
     /// Release a discovery session acquired by this connection.
     BluezDiscoveryStop,
+    /// Connect one independently admitted BlueZ device.
+    BluezDeviceConnect,
+    /// Disconnect an admitted device and its profiles.
+    BluezDeviceDisconnect,
+    /// Read GATT object claims for the explicitly admitted device.
+    BluezGattInventory,
+    /// Start a notification session on an admitted characteristic.
+    BluezNotifyStart,
+    /// Receive a change while a notification session is active.
+    BluezNotifyRead,
+    /// Stop this connection's notification session.
+    BluezNotifyStop,
+    /// Send a separately authorized management-negotiation characteristic write.
+    BluezManagementWrite,
 }
 
 /// Independently authorized local bus policy. It must bind the connected socket
@@ -58,7 +75,9 @@ pub trait Admission {
     fn permits(&self, resource: &str, stage: Stage) -> bool;
 }
 
-/// Payload-free refusal. Every error retires the connection.
+/// Payload-free refusal. Borrowed device operations retain their watch and
+/// fence it when effects or bus framing are uncertain; consuming operations
+/// retire their connection on error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     /// Clock, task, resource or deadline did not match the supplied transport.
@@ -79,6 +98,16 @@ pub enum Error {
     OwnerChanged,
     /// A discovery call may have taken effect but its result is unknown.
     DiscoveryUncertain,
+    /// A device connection call may have taken effect or its framing was lost.
+    DeviceUncertain,
+    /// GATT object claims were incomplete, ambiguous, or unsupported.
+    GattSelection(object_manager::GattSelectionError),
+    /// Changes overlap the requested GATT snapshot and require reconciliation.
+    GattOverlap,
+    /// A device or GATT change invalidated the selected endpoint claims.
+    GattStale,
+    /// A notification operation or framing has an unresolved outcome.
+    NotificationUncertain,
     /// The bus reported no current owner for the BlueZ service name.
     BluezUnavailable,
     /// Allocation or the bounded signal count was exhausted.
@@ -207,6 +236,132 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for Guarded<'_, '_, '_, IO> {
 struct ScanGuarded<'a, 'scope, 'task, IO> {
     bus: Guarded<'a, 'scope, 'task, IO>,
     adapter: &'a str,
+}
+
+// GATT I/O requires the bus, device, and exact characteristic grants at each
+// poll, so a revoked characteristic cannot continue using a live device grant.
+struct GattGuarded<'a, 'scope, 'task, IO> {
+    device: ScanGuarded<'a, 'scope, 'task, IO>,
+    characteristic: &'a str,
+}
+
+/// Live authority must independently bind the device identity, transport,
+/// current lease, and exact request to the registered management-negotiation
+/// effect. It must reject arbitrary camera settings and credential provisioning.
+/// The check is repeated before each transport poll and must be nonblocking.
+pub trait GattManagementAuthority {
+    /// Revalidate the exact plan and one-use committed permit.
+    fn permits(
+        &self,
+        plan: &gatt_management::Plan,
+        current: gatt_management::Preconditions,
+        permit: &CommittedEffect,
+    ) -> bool;
+}
+
+struct GattManagementGuarded<'a, 'scope, 'task, IO> {
+    io: GattGuarded<'a, 'scope, 'task, IO>,
+    cx: &'a Cx,
+    plan: &'a gatt_management::Plan,
+    current: gatt_management::Preconditions,
+    permit: &'a CommittedEffect,
+    authority: &'a dyn GattManagementAuthority,
+}
+impl<IO> GattManagementGuarded<'_, '_, '_, IO> {
+    fn check(&self) -> io::Result<()> {
+        self.io.check()?;
+        if self.cx.checkpoint().is_err()
+            || !self.authority.permits(self.plan, self.current, self.permit)
+        {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(())
+    }
+}
+impl<IO: AsyncRead + Unpin> AsyncRead for GattManagementGuarded<'_, '_, '_, IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+impl<IO: AsyncWrite + Unpin> AsyncWrite for GattManagementGuarded<'_, '_, '_, IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.check()?;
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+impl<IO> GattGuarded<'_, '_, '_, IO> {
+    fn check(&self) -> io::Result<()> {
+        self.device.check()?;
+        if !self
+            .device
+            .bus
+            .admission
+            .permits(self.characteristic, self.device.bus.stage)
+        {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let now = self
+            .device
+            .bus
+            .clock
+            .now()
+            .map_err(|_| io::ErrorKind::Interrupted)?;
+        self.device
+            .bus
+            .task
+            .checkpoint_for(
+                RuntimeGrant::AdapterNet,
+                self.characteristic,
+                now,
+                &BudgetVector::ZERO,
+            )
+            .map_err(|_| io::ErrorKind::PermissionDenied.into())
+    }
+}
+impl<IO: AsyncRead + Unpin> AsyncRead for GattGuarded<'_, '_, '_, IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut self.device).poll_read(cx, buf)
+    }
+}
+impl<IO: AsyncWrite + Unpin> AsyncWrite for GattGuarded<'_, '_, '_, IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.check()?;
+        Pin::new(&mut self.device).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut self.device).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut self.device).poll_shutdown(cx)
+    }
 }
 impl<IO> ScanGuarded<'_, '_, '_, IO> {
     fn check(&self) -> io::Result<()> {
@@ -606,8 +761,13 @@ impl ChangeFrame {
     }
 }
 
-/// A task-owned signal subscription. Dropping it closes the connection and
-/// releases its bus matches. No snapshot or active Bluetooth scan is implied.
+/// A task-owned signal subscription. Dropping it closes the bus connection and
+/// releases its matches; it does not prove an admitted device was disconnected.
+/// No snapshot, Bluetooth scan, or authenticated device identity is implied.
+/// While notifications are active, use the borrowed notification methods;
+/// consuming watch methods refuse and consume the watch on error, leaving
+/// notification cleanup unresolved.
+#[must_use = "retain or explicitly dispose of device connection obligations"]
 pub struct Watch<'scope, 'task, 'policy, IO> {
     cx: &'scope Cx,
     task: &'scope TaskCx<'task>,
@@ -618,6 +778,148 @@ pub struct Watch<'scope, 'task, 'policy, IO> {
     owner: String,
     queued: VecDeque<ChangeFrame>,
     next_serial: u32,
+    device_state: DeviceLinkState,
+    device_path: Option<String>,
+    gatt_binding: Option<GattEndpoints>,
+    gatt_stale: bool,
+    notification_state: NotificationState,
+}
+
+fn within(path: &str, parent: &str) -> bool {
+    path == parent
+        || path
+            .strip_prefix(parent)
+            .is_some_and(|tail| tail.starts_with('/'))
+}
+
+// Conservative: values and a positive Notifying claim on the selected
+// characteristic may be delivered; other selected-device changes require a
+// fresh snapshot. Unrelated devices do not invalidate this selection.
+fn invalidates_gatt(event: &signals::Event<'_>, device: &str, notify: &str) -> bool {
+    let adapter = device
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    match event {
+        signals::Event::Added(value) => value.path == adapter || within(value.path, device),
+        signals::Event::Removed(value) => value.path == adapter || within(value.path, device),
+        signals::Event::Properties { path, change } => {
+            if *path == notify
+                && change.interface == "org.bluez.GattCharacteristic1"
+                && (matches!(
+                    change.gatt_value,
+                    object_manager::GattValueChange::Present(_)
+                ) || (matches!(
+                    change.gatt_value,
+                    object_manager::GattValueChange::Unchanged
+                ) && change.gatt_notifying_active))
+                && !change.gatt_other_changed
+            {
+                false
+            } else {
+                *path == adapter || within(path, device)
+            }
+        }
+    }
+}
+
+/// Local observation of this watch's device-link operations. An acknowledgment
+/// is not a current connection guarantee or proof of remote device identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceLinkState {
+    /// No device connection has been requested by this watch.
+    Unlinked,
+    /// BlueZ acknowledged the connect call; the link may have changed since.
+    ConnectAcknowledged,
+    /// A call was interrupted or could not be correlated; further bus I/O is fenced.
+    Uncertain,
+}
+
+/// Local outcome of this watch's notification-session operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotificationState {
+    /// No notification session is held by this watch.
+    Inactive,
+    /// BlueZ acknowledged notification start; delivery is not guaranteed.
+    Active,
+    /// A call or a read was interrupted, so cleanup and framing are unresolved.
+    Uncertain,
+}
+
+/// Refusal before an authorized GATT negotiation write is claimed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GattManagementRefusalReason {
+    /// The session, selected endpoints, mode, serial, or wait is not current.
+    Session,
+    /// A change awaits reconciliation or the selection became stale.
+    Stale,
+    /// The committed permit has no journal-backed owner.
+    JournalRequired,
+    /// The permit does not match this effect, request, conditions, resource or lease.
+    PermitMismatch,
+    /// Fresh conditions or the independent semantic/identity authority refused.
+    Denied,
+    /// The one-use permit was already claimed.
+    PermitUsed,
+}
+
+/// A pre-dispatch refusal retains the caller's permit for reconciliation.
+#[must_use]
+#[derive(Debug)]
+pub struct GattManagementRefusal {
+    /// Reason no new dispatch was claimed.
+    pub reason: GattManagementRefusalReason,
+    /// Original permit; a previously claimed permit must not be reused.
+    pub permit: CommittedEffect,
+}
+
+/// Locally observed outcome; neither result verifies the camera's state.
+#[must_use]
+#[derive(Debug)]
+pub enum GattManagementWrite {
+    /// BlueZ returned a correlated success; the effect remains to be reconciled.
+    Acknowledged {
+        /// Claimed permit retained for independent reconciliation.
+        permit: CommittedEffect,
+    },
+    /// Dispatch, reply framing, authority or cancellation became uncertain.
+    Indeterminate {
+        /// Claimed permit retained for independent reconciliation.
+        permit: CommittedEffect,
+    },
+}
+
+/// Caller-owned GATT endpoint claims from one correlated BlueZ snapshot.
+/// These paths are untrusted, can become stale, and confer no operation authority.
+#[derive(Eq, PartialEq)]
+pub struct GattEndpoints {
+    service: String,
+    notify: String,
+    write: String,
+    mode: object_manager::GattWriteMode,
+}
+impl GattEndpoints {
+    /// Claimed service object path.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+    /// Claimed notification or indication object path.
+    pub fn notify(&self) -> &str {
+        &self.notify
+    }
+    /// Claimed write object path.
+    pub fn write(&self) -> &str {
+        &self.write
+    }
+    /// Write mode required by the selected characteristic claim.
+    pub fn write_mode(&self) -> object_manager::GattWriteMode {
+        self.mode
+    }
+}
+impl fmt::Debug for GattEndpoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GattEndpoints").finish_non_exhaustive()
+    }
 }
 
 /// An acquired adapter scan. The owner must explicitly stop it on the same
@@ -824,6 +1126,11 @@ pub async fn open_watch<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unp
         owner,
         queued,
         next_serial: 7,
+        device_state: DeviceLinkState::Unlinked,
+        device_path: None,
+        gatt_binding: None,
+        gatt_stale: false,
+        notification_state: NotificationState::Inactive,
     })
 }
 
@@ -833,14 +1140,578 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
         &self.owner
     }
 
+    /// Number of already-received changes awaiting caller reconciliation.
+    /// New signals can arrive at any time, including after this observation.
+    pub fn pending_changes(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// Inspect the local device-operation state without exposing the device path.
+    pub fn device_link_state(&self) -> DeviceLinkState {
+        self.device_state
+    }
+
+    /// The exact caller-supplied path retained for an acknowledged or uncertain
+    /// operation. The path is an untrusted identifier, not proof of identity.
+    pub fn device_link_path(&self) -> Option<&str> {
+        self.device_path.as_deref()
+    }
+
+    /// Local notification-session state; it is not a delivery guarantee.
+    pub fn notification_state(&self) -> NotificationState {
+        self.notification_state
+    }
+
+    /// Whether an observed change invalidated the selected GATT claims. Check
+    /// this before consuming the just-returned frame as notification data.
+    pub fn gatt_selection_stale(&self) -> bool {
+        self.gatt_stale
+    }
+
+    /// Next local call serial, for preparing an exact effect binding. Another
+    /// call may advance it before dispatch; the dispatcher rechecks it.
+    pub fn next_gatt_serial(&self) -> u32 {
+        self.next_serial
+    }
+
+    fn require_no_notifications(&self) -> Result<(), Error> {
+        match self.notification_state {
+            NotificationState::Inactive => Ok(()),
+            NotificationState::Active => Err(Error::Configuration),
+            NotificationState::Uncertain => Err(Error::NotificationUncertain),
+        }
+    }
+
+    /// Select caller-specified GATT UUIDs from a correlated snapshot for the
+    /// acknowledged device. The caller must drain and reconcile overlapping
+    /// changes, and revalidate the selected paths before any subsequent use.
+    /// Cancellation after submission fences the watch because D-Bus framing may
+    /// be partial. This operation never connects or writes to the device.
+    pub async fn select_gatt(
+        &mut self,
+        service_uuid: &str,
+        notify_uuid: &str,
+        write_uuid: &str,
+        mode: object_manager::GattWriteMode,
+        wait: Duration,
+    ) -> Result<GattEndpoints, Error> {
+        self.require_no_notifications()?;
+        match self.device_state {
+            DeviceLinkState::ConnectAcknowledged => {}
+            DeviceLinkState::Uncertain => return Err(Error::DeviceUncertain),
+            DeviceLinkState::Unlinked => return Err(Error::Configuration),
+        }
+        if wait.is_zero() || wait > MAX_WAIT {
+            return Err(Error::Configuration);
+        }
+        if !self.queued.is_empty() {
+            return Err(Error::GattOverlap);
+        }
+        let device = self.device_path.as_deref().ok_or(Error::Configuration)?;
+        let serial = self.next_serial;
+        let next = serial.checked_add(1).ok_or(Error::Limit)?;
+        let request =
+            wire::bluez_managed_objects_for_owner(serial, &self.owner).map_err(Error::Protocol)?;
+        let mut guarded = ScanGuarded {
+            bus: Guarded {
+                io: &mut self.io,
+                task: self.task,
+                clock: self.clock,
+                admission: self.admission,
+                resource: &self.resource,
+                stage: Stage::BluezGattInventory,
+            },
+            adapter: device,
+        };
+        guarded.check().map_err(io_error)?;
+        self.next_serial = next;
+        self.gatt_binding = None;
+        self.device_state = DeviceLinkState::Uncertain;
+        let exchange = async {
+            guarded
+                .write_all(&request)
+                .await
+                .map_err(|_| Error::DeviceUncertain)?;
+            guarded.flush().await.map_err(|_| Error::DeviceUncertain)?;
+            let frame = watch_response(&mut guarded, &self.owner, &mut self.queued)
+                .await
+                .map_err(|_| Error::DeviceUncertain)?;
+            let body = wire::parse_bluez_managed_objects_reply(&frame, serial)
+                .map_err(|_| Error::DeviceUncertain)?
+                .ok_or(Error::DeviceUncertain)?;
+            if body.consumed != frame.len() || body.sender != Some(self.owner.as_str()) {
+                return Err(Error::DeviceUncertain);
+            }
+            guarded.check().map_err(|_| Error::DeviceUncertain)?;
+            Ok(frame)
+        };
+        let frame = timeout_at(self.cx.now() + wait, exchange)
+            .await
+            .map_err(|_| Error::DeviceUncertain)??;
+        self.device_state = DeviceLinkState::ConnectAcknowledged;
+        if !self.queued.is_empty() {
+            return Err(Error::GattOverlap);
+        }
+        let body = wire::parse_bluez_managed_objects_reply(&frame, serial)
+            .map_err(Error::Protocol)?
+            .ok_or(Error::Protocol(wire::Error::Invalid))?;
+        let endian = if body.little_endian {
+            object_manager::Endian::Little
+        } else {
+            object_manager::Endian::Big
+        };
+        let snapshot = object_manager::parse_gatt_snapshot(body.body, endian, device)
+            .map_err(Error::Inventory)?;
+        let selected = snapshot
+            .select(service_uuid, notify_uuid, write_uuid, mode)
+            .map_err(Error::GattSelection)?;
+        let copy = |value: &str| -> Result<String, Error> {
+            let mut result = String::new();
+            result
+                .try_reserve_exact(value.len())
+                .map_err(|_| Error::Limit)?;
+            result.push_str(value);
+            Ok(result)
+        };
+        let endpoints = GattEndpoints {
+            service: copy(selected.service())?,
+            notify: copy(selected.notify())?,
+            write: copy(selected.write())?,
+            mode,
+        };
+        self.gatt_binding = Some(GattEndpoints {
+            service: copy(&endpoints.service)?,
+            notify: copy(&endpoints.notify)?,
+            write: copy(&endpoints.write)?,
+            mode,
+        });
+        self.gatt_stale = false;
+        Ok(endpoints)
+    }
+
+    /// Start notifications on the exact characteristic selected by this watch.
+    /// The caller must reconcile intervening changes; a returned acknowledgment
+    /// is not proof of camera identity or guaranteed delivery.
+    pub async fn start_notify(
+        &mut self,
+        endpoints: &GattEndpoints,
+        wait: Duration,
+    ) -> Result<(), Error> {
+        self.notify_call(endpoints, wire::NotifyMethod::Start, wait)
+            .await
+    }
+
+    /// Stop the notification session explicitly. BlueZ sessions can be shared;
+    /// this releases only the session associated with this call and bus client.
+    pub async fn stop_notify(
+        &mut self,
+        endpoints: &GattEndpoints,
+        wait: Duration,
+    ) -> Result<(), Error> {
+        self.notify_call(endpoints, wire::NotifyMethod::Stop, wait)
+            .await
+    }
+
+    async fn notify_call(
+        &mut self,
+        endpoints: &GattEndpoints,
+        method: wire::NotifyMethod,
+        wait: Duration,
+    ) -> Result<(), Error> {
+        if self.device_state == DeviceLinkState::Uncertain {
+            return Err(Error::DeviceUncertain);
+        }
+        if self.device_state != DeviceLinkState::ConnectAcknowledged
+            || self.gatt_binding.as_ref() != Some(endpoints)
+        {
+            return Err(Error::Configuration);
+        }
+        if self.gatt_stale && method == wire::NotifyMethod::Start {
+            return Err(Error::GattStale);
+        }
+        match (method, self.notification_state) {
+            (_, NotificationState::Uncertain) => return Err(Error::NotificationUncertain),
+            (wire::NotifyMethod::Start, NotificationState::Inactive) if self.queued.is_empty() => {}
+            (wire::NotifyMethod::Start, NotificationState::Inactive) => {
+                return Err(Error::GattOverlap);
+            }
+            (wire::NotifyMethod::Stop, NotificationState::Active) => {}
+            _ => return Err(Error::Configuration),
+        }
+        if wait.is_zero() || wait > MAX_WAIT {
+            return Err(Error::Configuration);
+        }
+        let device = self.device_path.as_deref().ok_or(Error::Configuration)?;
+        let serial = self.next_serial;
+        let next = serial.checked_add(1).ok_or(Error::Limit)?;
+        let request =
+            wire::bluez_gatt_notify(serial, &self.owner, device, &endpoints.notify, method)
+                .map_err(Error::Protocol)?;
+        let stage = match method {
+            wire::NotifyMethod::Start => Stage::BluezNotifyStart,
+            wire::NotifyMethod::Stop => Stage::BluezNotifyStop,
+        };
+        let mut guarded = GattGuarded {
+            device: ScanGuarded {
+                bus: Guarded {
+                    io: &mut self.io,
+                    task: self.task,
+                    clock: self.clock,
+                    admission: self.admission,
+                    resource: &self.resource,
+                    stage,
+                },
+                adapter: device,
+            },
+            characteristic: &endpoints.notify,
+        };
+        guarded.check().map_err(io_error)?;
+        self.next_serial = next;
+        self.notification_state = NotificationState::Uncertain;
+        let exchange = async {
+            guarded
+                .write_all(&request)
+                .await
+                .map_err(|_| Error::NotificationUncertain)?;
+            guarded
+                .flush()
+                .await
+                .map_err(|_| Error::NotificationUncertain)?;
+            let frame = watch_response(&mut guarded, &self.owner, &mut self.queued)
+                .await
+                .map_err(|_| Error::NotificationUncertain)?;
+            if wire::parse_empty_method_reply_from(&frame, serial, &self.owner)
+                .map_err(|_| Error::NotificationUncertain)?
+                != Some(frame.len())
+            {
+                return Err(Error::NotificationUncertain);
+            }
+            guarded.check().map_err(|_| Error::NotificationUncertain)?;
+            Ok(())
+        };
+        timeout_at(self.cx.now() + wait, exchange)
+            .await
+            .map_err(|_| Error::NotificationUncertain)??;
+        self.notification_state = match method {
+            wire::NotifyMethod::Start => NotificationState::Active,
+            wire::NotifyMethod::Stop => NotificationState::Inactive,
+        };
+        if method == wire::NotifyMethod::Stop && self.gatt_stale {
+            self.gatt_binding = None;
+        }
+        Ok(())
+    }
+
+    /// Receive one owner-scoped BlueZ change while notifications are active.
+    /// Returns `None` only for a fully idle deadline. The caller must examine
+    /// every change, check `gatt_selection_stale` before accepting its bytes,
+    /// bind values to the selected characteristic, and preserve the frame and
+    /// any unconsumed bytes. A related change is returned once, then further
+    /// reads are fenced; explicit stop remains available. Cancellation fences
+    /// this watch because a partial D-Bus frame may have been consumed.
+    pub async fn next_notify_change(
+        &mut self,
+        endpoints: &GattEndpoints,
+        wait: Duration,
+    ) -> Result<Option<ChangeFrame>, Error> {
+        if self.device_state == DeviceLinkState::Uncertain {
+            return Err(Error::DeviceUncertain);
+        }
+        if self.device_state != DeviceLinkState::ConnectAcknowledged
+            || self.gatt_binding.as_ref() != Some(endpoints)
+        {
+            return Err(Error::Configuration);
+        }
+        if self.notification_state == NotificationState::Uncertain {
+            return Err(Error::NotificationUncertain);
+        }
+        if self.gatt_stale {
+            return Err(Error::GattStale);
+        }
+        if self.notification_state != NotificationState::Active || wait.is_zero() || wait > MAX_WAIT
+        {
+            return Err(Error::Configuration);
+        }
+        let device = self.device_path.as_deref().ok_or(Error::Configuration)?;
+        let mut guarded = GattGuarded {
+            device: ScanGuarded {
+                bus: Guarded {
+                    io: &mut self.io,
+                    task: self.task,
+                    clock: self.clock,
+                    admission: self.admission,
+                    resource: &self.resource,
+                    stage: Stage::BluezNotifyRead,
+                },
+                adapter: device,
+            },
+            characteristic: &endpoints.notify,
+        };
+        guarded.check().map_err(io_error)?;
+        self.notification_state = NotificationState::Uncertain;
+        let change = if let Some(frame) = self.queued.pop_front() {
+            Some(frame)
+        } else {
+            match message_or_idle(self.cx, &mut guarded, wait)
+                .await
+                .map_err(|_| Error::NotificationUncertain)?
+            {
+                None => None,
+                Some(frame) if frame[1] == 4 => Some(
+                    accept_change(frame, &self.owner).map_err(|_| Error::NotificationUncertain)?,
+                ),
+                Some(_) => return Err(Error::NotificationUncertain),
+            }
+        };
+        if guarded.check().is_err() {
+            if let Some(frame) = change {
+                self.queued.push_front(frame);
+            }
+            return Err(Error::NotificationUncertain);
+        }
+        if let Some(frame) = &change {
+            let event = frame
+                .decode(&self.owner)
+                .map_err(|_| Error::NotificationUncertain)?;
+            self.gatt_stale = invalidates_gatt(&event, device, &endpoints.notify);
+        }
+        self.notification_state = NotificationState::Active;
+        Ok(change)
+    }
+
+    /// Send one separately committed and independently authorized management
+    /// negotiation write. This does not authorize Wi-Fi provisioning or other
+    /// settings, authenticate a device, or settle the effect. A dropped or
+    /// interrupted future after the dispatch claim fences this watch and leaves
+    /// the journaled obligation for reconciliation; it is never retried here.
+    pub async fn dispatch_gatt_management(
+        &mut self,
+        endpoints: &GattEndpoints,
+        plan: &gatt_management::Plan,
+        current: gatt_management::Preconditions,
+        mut permit: CommittedEffect,
+        authority: &dyn GattManagementAuthority,
+        wait: Duration,
+    ) -> Result<GattManagementWrite, GattManagementRefusal> {
+        macro_rules! refuse {
+            ($reason:expr) => {
+                return Err(GattManagementRefusal {
+                    reason: $reason,
+                    permit,
+                })
+            };
+        }
+        if self.device_state != DeviceLinkState::ConnectAcknowledged
+            || self.notification_state != NotificationState::Active
+            || self.gatt_binding.as_ref() != Some(endpoints)
+            || wait.is_zero()
+            || wait > MAX_WAIT
+            || !self.cx.has_timer()
+        {
+            refuse!(GattManagementRefusalReason::Session);
+        }
+        if self.gatt_stale || !self.queued.is_empty() {
+            refuse!(GattManagementRefusalReason::Stale);
+        }
+        let Some(device) = self.device_path.as_deref() else {
+            refuse!(GattManagementRefusalReason::Session);
+        };
+        if !plan.matches(
+            self.next_serial,
+            &self.owner,
+            device,
+            &endpoints.write,
+            endpoints.mode,
+        ) {
+            refuse!(GattManagementRefusalReason::Session);
+        }
+        if !permit.journal_backed() {
+            refuse!(GattManagementRefusalReason::JournalRequired);
+        }
+        if permit.prepared().effect_class() != gatt_management::EFFECT_CLASS
+            || permit.prepared().request_digest() != plan.request_digest()
+            || permit.prepared().precondition_digest() != plan.precondition_digest()
+            || permit.resource() != plan.resource()
+            || permit.fence() != plan.fence()
+        {
+            refuse!(GattManagementRefusalReason::PermitMismatch);
+        }
+        if plan.check_current(current).is_err()
+            || self.cx.checkpoint().is_err()
+            || !authority.permits(plan, current, &permit)
+        {
+            refuse!(GattManagementRefusalReason::Denied);
+        }
+        let serial = self.next_serial;
+        let Some(next) = serial.checked_add(1) else {
+            refuse!(GattManagementRefusalReason::Session);
+        };
+        let guarded = GattGuarded {
+            device: ScanGuarded {
+                bus: Guarded {
+                    io: &mut self.io,
+                    task: self.task,
+                    clock: self.clock,
+                    admission: self.admission,
+                    resource: &self.resource,
+                    stage: Stage::BluezManagementWrite,
+                },
+                adapter: device,
+            },
+            characteristic: &endpoints.write,
+        };
+        if guarded.check().is_err() {
+            refuse!(GattManagementRefusalReason::Denied);
+        }
+        if !permit.try_claim_dispatch() {
+            refuse!(GattManagementRefusalReason::PermitUsed);
+        }
+        self.next_serial = next;
+        self.notification_state = NotificationState::Uncertain;
+        let exchange = async {
+            let mut guarded = GattManagementGuarded {
+                io: guarded,
+                cx: self.cx,
+                plan,
+                current,
+                permit: &permit,
+                authority,
+            };
+            guarded
+                .write_all(plan.message_bytes())
+                .await
+                .map_err(|_| ())?;
+            guarded.flush().await.map_err(|_| ())?;
+            let frame = watch_response(&mut guarded, &self.owner, &mut self.queued)
+                .await
+                .map_err(|_| ())?;
+            if wire::parse_empty_method_reply_from(&frame, serial, &self.owner).map_err(|_| ())?
+                != Some(frame.len())
+            {
+                return Err(());
+            }
+            guarded.check().map_err(|_| ())?;
+            Ok(())
+        };
+        match timeout_at(self.cx.now() + wait, exchange).await {
+            Ok(Ok(())) => {
+                self.notification_state = NotificationState::Active;
+                Ok(GattManagementWrite::Acknowledged { permit })
+            }
+            _ => Ok(GattManagementWrite::Indeterminate { permit }),
+        }
+    }
+
+    /// Ask BlueZ to connect one specifically admitted device. The watch remains
+    /// caller-owned across cancellation; once a call might have been written,
+    /// cancellation or an uncorrelated reply fences it as uncertain. A success
+    /// is a BlueZ acknowledgment, not proof of identity or GATT readiness.
+    /// This in-memory fence is not a durable journal or crash recovery.
+    pub async fn connect_device(&mut self, device: &str, wait: Duration) -> Result<(), Error> {
+        self.device_call(device, wire::DeviceMethod::Connect, wait)
+            .await
+    }
+
+    /// Explicitly disconnect the same device after an acknowledged connect.
+    /// BlueZ may disconnect other clients' profiles too; independent policy
+    /// must authorize that effect. No automatic cleanup or retry is implied.
+    pub async fn disconnect_device(&mut self, device: &str, wait: Duration) -> Result<(), Error> {
+        self.device_call(device, wire::DeviceMethod::Disconnect, wait)
+            .await
+    }
+
+    async fn device_call(
+        &mut self,
+        device: &str,
+        method: wire::DeviceMethod,
+        wait: Duration,
+    ) -> Result<(), Error> {
+        self.require_no_notifications()?;
+        match (method, self.device_state) {
+            (_, DeviceLinkState::Uncertain) => return Err(Error::DeviceUncertain),
+            (wire::DeviceMethod::Connect, DeviceLinkState::Unlinked) => {}
+            (wire::DeviceMethod::Disconnect, DeviceLinkState::ConnectAcknowledged)
+                if self.device_path.as_deref() == Some(device) => {}
+            _ => return Err(Error::Configuration),
+        }
+        if wait.is_zero() || wait > MAX_WAIT {
+            return Err(Error::Configuration);
+        }
+        let serial = self.next_serial;
+        let next = serial.checked_add(1).ok_or(Error::Limit)?;
+        let request = wire::bluez_device_connection(serial, &self.owner, device, method)
+            .map_err(Error::Protocol)?;
+        let stage = match method {
+            wire::DeviceMethod::Connect => Stage::BluezDeviceConnect,
+            wire::DeviceMethod::Disconnect => Stage::BluezDeviceDisconnect,
+        };
+        let mut saved_path = String::new();
+        saved_path
+            .try_reserve_exact(device.len())
+            .map_err(|_| Error::Limit)?;
+        saved_path.push_str(device);
+        let mut guarded = ScanGuarded {
+            bus: Guarded {
+                io: &mut self.io,
+                task: self.task,
+                clock: self.clock,
+                admission: self.admission,
+                resource: &self.resource,
+                stage,
+            },
+            adapter: device,
+        };
+        guarded.check().map_err(io_error)?;
+        self.next_serial = next;
+        self.device_path = Some(saved_path);
+        self.gatt_binding = None;
+        // Set this before the first awaited write so dropping the future cannot
+        // make a partially submitted operation appear safe to retry.
+        self.device_state = DeviceLinkState::Uncertain;
+        let exchange = async {
+            guarded
+                .write_all(&request)
+                .await
+                .map_err(|_| Error::DeviceUncertain)?;
+            guarded.flush().await.map_err(|_| Error::DeviceUncertain)?;
+            let frame = watch_response(&mut guarded, &self.owner, &mut self.queued)
+                .await
+                .map_err(|_| Error::DeviceUncertain)?;
+            if wire::parse_empty_method_reply_from(&frame, serial, &self.owner)
+                .map_err(|_| Error::DeviceUncertain)?
+                != Some(frame.len())
+            {
+                return Err(Error::DeviceUncertain);
+            }
+            guarded.check().map_err(|_| Error::DeviceUncertain)?;
+            Ok(())
+        };
+        timeout_at(self.cx.now() + wait, exchange)
+            .await
+            .map_err(|_| Error::DeviceUncertain)??;
+        match method {
+            wire::DeviceMethod::Connect => self.device_state = DeviceLinkState::ConnectAcknowledged,
+            wire::DeviceMethod::Disconnect => {
+                self.device_state = DeviceLinkState::Unlinked;
+                self.device_path = None;
+            }
+        }
+        Ok(())
+    }
+
     /// Start a scan only on an independently admitted adapter path. The caller
     /// must use the returned handle to stop the session on the same connection.
     /// Interruption after a call was attempted is reported as uncertain.
     pub async fn start_discovery(
-        self,
+        mut self,
         adapter: &str,
         wait: Duration,
     ) -> Result<Discovering<'scope, 'task, 'policy, IO>, Error> {
+        self.require_no_notifications()?;
+        if self.device_state == DeviceLinkState::Uncertain {
+            return Err(Error::DeviceUncertain);
+        }
+        self.gatt_binding = None;
         let watch = self
             .discovery_call(adapter, wire::DiscoveryMethod::Start, wait)
             .await?;
@@ -927,6 +1798,11 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
     /// An overlap is explicit because snapshot and changes may describe the
     /// same mutation and must not be blindly replayed as an ordered delta.
     pub async fn inventory(mut self, wait: Duration) -> Result<(Self, WatchInventory), Error> {
+        self.require_no_notifications()?;
+        if self.device_state == DeviceLinkState::Uncertain {
+            return Err(Error::DeviceUncertain);
+        }
+        self.gatt_binding = None;
         if wait.is_zero() || wait > MAX_WAIT {
             return Err(Error::Configuration);
         }
@@ -972,6 +1848,11 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
     /// On timeout, cancellation, revocation, owner change or any protocol
     /// failure, the stream is dropped: a partial frame is never retried.
     pub async fn next_change(mut self, wait: Duration) -> Result<(Self, ChangeFrame), Error> {
+        self.require_no_notifications()?;
+        if self.device_state == DeviceLinkState::Uncertain {
+            return Err(Error::DeviceUncertain);
+        }
+        self.gatt_binding = None;
         if wait.is_zero() || wait > MAX_WAIT {
             return Err(Error::Configuration);
         }

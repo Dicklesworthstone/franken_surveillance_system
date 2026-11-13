@@ -6,22 +6,27 @@ use asupersync::{
     runtime::RuntimeBuilder,
 };
 use fss_core::{
-    BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec,
+    BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind, RootAuthoritySpec,
     RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
 use fss_packet::dbus_handshake as wire;
 use fss_reference::unifi_direct::{
     bluez_bus::{self, Admission, Error as BusError, Stage},
+    bluez_gatt_management as management,
     bluez_monitor::{Monitor, Reason as MonitorReason, Stop as MonitorStop},
     metered::{MeteredClock, MeteredIo},
 };
 use fss_runtime::{
     authority::AuthorityCx,
+    effect::{CommitApproval, CommittedEffect, EffectCoordinator, PrepareSpec},
+    effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError},
     execution::{TaskCompletion, TaskSpec, run_owned_async},
+    lease::LeaseRegistry,
 };
 use std::{
     cell::{Cell, RefCell},
     error::Error,
+    future::{Future, poll_fn},
     io,
     pin::Pin,
     rc::Rc,
@@ -30,12 +35,50 @@ use std::{
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
+const DEVICE: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB";
+const SERVICE_PATH: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001";
+const NOTIFY_PATH: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char001";
+const WRITE_PATH: &str = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char002";
+const SERVICE_UUID: &str = "0c430d0c-00ef-4367-bc6f-ca7c51e6b61f";
+const NOTIFY_UUID: &str = "d587c47f-ac6e-4388-a31c-e6cd380ba043";
+const WRITE_UUID: &str = "9280f26c-a56f-43ea-b769-d5d732e1ac67";
+
+// A synthetic journal for effect ownership tests. It provides no durability.
+#[derive(Debug, Default)]
+struct TestJournal { records: Vec<Vec<u8>>, pins: Vec<EffectJournalPin> }
+impl EffectJournalStore for TestJournal {
+    fn head(&self) -> Option<EffectJournalPin> { self.pins.last().copied() }
+    fn records(&self) -> &[Vec<u8>] { &self.records }
+    fn contains(&self, pin: EffectJournalPin) -> bool { self.pins.contains(&pin) }
+    fn reserve_capacity(&mut self, _: usize, _: usize) -> Result<(), EffectPersistenceError> { Ok(()) }
+    fn append(&mut self, expected: Option<EffectJournalPin>, record: &[u8]) -> Result<EffectJournalPin, EffectPersistenceError> {
+        if expected != self.head() { return Err(EffectPersistenceError::PinMismatch); }
+        let pin = EffectJournalPin { sequence: self.pins.len() as u64 + 1, root: ContentDigest::sha256(record) };
+        self.records.push(record.to_vec());
+        self.pins.push(pin);
+        Ok(pin)
+    }
+}
+
+struct ManagementPolicy { checks: Cell<usize>, allow: usize }
+impl bluez_bus::GattManagementAuthority for ManagementPolicy {
+    fn permits(&self, plan: &management::Plan, current: management::Preconditions, _: &CommittedEffect) -> bool {
+        let count = self.checks.get() + 1;
+        self.checks.set(count);
+        count <= self.allow && plan.check_current(current).is_ok()
+            && plan.message_bytes().windows(3).any(|part| part == [0x11, 0x22, 0x33])
+    }
+}
 
 struct Policy {
     deny: Option<Stage>,
     checks: Cell<usize>,
     revoke_adapter_watch: bool,
     adapter_watch_checks: Cell<usize>,
+    deny_device_path: bool,
+    revoke_device_connect: bool,
+    device_connect_checks: Cell<usize>,
+    deny_notify_path: bool,
 }
 impl Admission for Policy {
     fn permits(&self, resource: &str, stage: Stage) -> bool {
@@ -47,7 +90,20 @@ impl Admission for Policy {
                 return false;
             }
         }
-        matches!(resource, "fixture:system-bus" | "/org/bluez/hci0") && self.deny != Some(stage)
+        if resource == DEVICE && stage == Stage::BluezDeviceConnect {
+            let count = self.device_connect_checks.get() + 1;
+            self.device_connect_checks.set(count);
+            if self.deny_device_path || (self.revoke_device_connect && count > 1) {
+                return false;
+            }
+        }
+        if resource == NOTIFY_PATH && stage == Stage::BluezNotifyStart && self.deny_notify_path {
+            return false;
+        }
+        matches!(
+            resource,
+            "fixture:system-bus" | "/org/bluez/hci0" | DEVICE | NOTIFY_PATH | WRITE_PATH
+        ) && self.deny != Some(stage)
     }
 }
 
@@ -71,11 +127,14 @@ impl AsyncRead for Fixture {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         if self.read_at == self.input.len() {
-            let stop_written = self
-                .written
-                .borrow()
+            let written = self.written.borrow();
+            let stop_written = written
                 .windows(b"StopDiscovery".len())
-                .any(|part| part == b"StopDiscovery");
+                .any(|part| part == b"StopDiscovery")
+                || written
+                    .windows(b"StopNotify".len())
+                    .any(|part| part == b"StopNotify");
+            drop(written);
             if stop_written {
                 if let Some(reply) = self.deferred_stop_reply.take() {
                     self.input.extend_from_slice(&reply);
@@ -169,6 +228,34 @@ fn run_case(
         budget,
         TimestampNs(1),
     )?;
+    let management_action = matches!(action, WatchAction::ManagementWrite | WatchAction::ManagementWriteCancelled | WatchAction::ManagementWriteWrongReply | WatchAction::ManagementWriteRevoked);
+    let mut management_effects = None;
+    let mut prepared_management = None;
+    let management_operation = OperationId::parse("operation:synthetic-gatt-management")?;
+    if management_action {
+        let mut effects = EffectCoordinator::with_journal(Box::new(TestJournal::default()))?;
+        let mut leases = LeaseRegistry::new();
+        let camera = ContentDigest::sha256(b"synthetic camera identity");
+        let resource = format!("camera:{}", camera.to_text());
+        let lease = leases.acquire(&resource, owner.region().as_str(), None, TimestampNs(2))?;
+        let current = management::Preconditions { camera, peer_admission: ContentDigest::sha256(b"synthetic admission"), session_generation: 1, lease_fence: lease.fence };
+        let plan = management::Plan::new(10, ":1.42", DEVICE, WRITE_PATH, fss_packet::dbus_object_manager::GattWriteMode::Request, &[0x11, 0x22, 0x33], current)?;
+        let prepared = effects.prepare(&owner, &mut tree, &mut leases, PrepareSpec {
+            operation: &management_operation,
+            idempotency_key: IdempotencyKey::parse(management_operation.as_str())?,
+            request_digest: plan.request_digest(),
+            precondition_digest: plan.precondition_digest(),
+            resource: &resource,
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::CameraManagementPrepare,
+            commit_grant: RuntimeGrant::CameraManagementCommit,
+            terminal_predicate: "independent management observation or reconciliation",
+        }, TimestampNs(3))?;
+        let approval = CommitApproval { prepared_digest: prepared.digest(), current_precondition_digest: plan.precondition_digest() };
+        let permit = effects.commit(&owner, &tree, &mut leases, prepared, TimestampNs(4), approval)?;
+        prepared_management = Some((plan, current, permit));
+        management_effects = Some(effects);
+    }
     let runtime = RuntimeBuilder::current_thread().build()?;
     let written = Rc::new(RefCell::new(Vec::new()));
     let dropped = Rc::new(Cell::new(false));
@@ -177,20 +264,24 @@ fn run_case(
         checks: Cell::new(0),
         revoke_adapter_watch: false,
         adapter_watch_checks: Cell::new(0),
+        deny_device_path: false,
+        revoke_device_connect: false,
+        device_connect_checks: Cell::new(0),
+        deny_notify_path: false,
     };
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let result = run_owned_async(
             &mut owner,
             &mut tree,
             TaskSpec {
                 task_id: TaskId::new("task:bluez-bus")?,
-                started_at: TimestampNs(2),
+                started_at: TimestampNs(if management_action { 5 } else { 2 }),
             },
             &cx,
             async |task, cx| {
                 let output: TestResult = async {
-                    let clock = MeteredClock::new(task, cx, TimestampNs(3))?;
+                    let clock = MeteredClock::new(task, cx, TimestampNs(if management_action { 6 } else { 3 }))?;
                     let io = MeteredIo::with_clock(
                         Fixture {
                             input,
@@ -391,6 +482,10 @@ fn run_inventory(
         checks: Cell::new(0),
         revoke_adapter_watch: false,
         adapter_watch_checks: Cell::new(0),
+        deny_device_path: false,
+        revoke_device_connect: false,
+        device_connect_checks: Cell::new(0),
+        deny_notify_path: false,
     };
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -552,6 +647,75 @@ fn signal_with_interface(sender: &str, interface: &str, member: &str) -> Vec<u8>
     frame
 }
 
+fn gatt_value_frame(value: &[u8]) -> Vec<u8> {
+    gatt_value_frame_at(NOTIFY_PATH, value)
+}
+
+fn gatt_value_frame_at(path: &str, value: &[u8]) -> Vec<u8> {
+    gatt_properties_frame(path, Some(value), None)
+}
+
+fn gatt_properties_frame(path: &str, value: Option<&[u8]>, notifying: Option<bool>) -> Vec<u8> {
+    fn pad(out: &mut Vec<u8>, n: usize) {
+        while out.len() % n != 0 {
+            out.push(0);
+        }
+    }
+    fn text(out: &mut Vec<u8>, value: &str) {
+        pad(out, 4);
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+        out.push(0);
+    }
+    fn field(out: &mut Vec<u8>, code: u8, kind: u8, value: &str) {
+        pad(out, 8);
+        out.extend_from_slice(&[code, 1, kind, 0]);
+        text(out, value);
+    }
+    let mut body = Vec::new();
+    text(&mut body, "org.bluez.GattCharacteristic1");
+    pad(&mut body, 4);
+    let props_at = body.len();
+    body.extend_from_slice(&0_u32.to_le_bytes());
+    pad(&mut body, 8);
+    let props_start = body.len();
+    if let Some(value) = value {
+        text(&mut body, "Value");
+        body.extend_from_slice(&[2, b'a', b'y', 0]);
+        pad(&mut body, 4);
+        body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        body.extend_from_slice(value);
+    }
+    if let Some(notifying) = notifying {
+        pad(&mut body, 8);
+        text(&mut body, "Notifying");
+        body.extend_from_slice(&[1, b'b', 0]);
+        pad(&mut body, 4);
+        body.extend_from_slice(&u32::from(notifying).to_le_bytes());
+    }
+    let props_len = (body.len() - props_start) as u32;
+    body[props_at..props_at + 4].copy_from_slice(&props_len.to_le_bytes());
+    pad(&mut body, 4);
+    body.extend_from_slice(&0_u32.to_le_bytes());
+    let mut frame = b"l\x04\x00\x01".to_vec();
+    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&44_u32.to_le_bytes());
+    frame.extend_from_slice(&0_u32.to_le_bytes());
+    field(&mut frame, 1, b'o', path);
+    field(&mut frame, 2, b's', "org.freedesktop.DBus.Properties");
+    field(&mut frame, 3, b's', "PropertiesChanged");
+    field(&mut frame, 7, b's', ":1.42");
+    pad(&mut frame, 8);
+    frame.extend_from_slice(&[8, 1, b'g', 0, 8]);
+    frame.extend_from_slice(b"sa{sv}as");
+    frame.push(0);
+    let header_len = (frame.len() - 16) as u32;
+    frame[12..16].copy_from_slice(&header_len.to_le_bytes());
+    pad(&mut frame, 8);
+    frame.extend_from_slice(&body);
+    frame
+}
+
 fn empty_reply(serial: u32) -> Vec<u8> {
     let mut bytes = b"l\x02\x00\x01".to_vec();
     bytes.extend_from_slice(&0_u32.to_le_bytes());
@@ -612,6 +776,29 @@ enum WatchAction {
     MonitorProjection,
     MonitorPartial,
     MonitorOverlap,
+    DeviceLifecycle,
+    DeviceCancelled,
+    DeviceDisconnectCancelled,
+    DeviceBadReply,
+    DevicePathDenied,
+    DeviceRevoked,
+    Gatt,
+    GattOverlap,
+    GattCancelled,
+    GattBadReply,
+    Notify,
+    NotifyCancelled,
+    NotifyReadCancelled,
+    NotifyStopCancelled,
+    NotifyBadReply,
+    NotifyIdle,
+    NotifyStale,
+    NotifyTopology,
+    NotifyPathDenied,
+    ManagementWrite,
+    ManagementWriteCancelled,
+    ManagementWriteWrongReply,
+    ManagementWriteRevoked,
 }
 
 fn run_watch_action(
@@ -630,6 +817,8 @@ fn run_watch_action(
             capabilities: vec![
                 RuntimeGrant::AdapterNet.as_str().into(),
                 RuntimeGrant::ObserveStatus.as_str().into(),
+                RuntimeGrant::CameraManagementPrepare.as_str().into(),
+                RuntimeGrant::CameraManagementCommit.as_str().into(),
             ],
             deadline: Some(TimestampNs(60_000_000_000)),
             priority: 10,
@@ -651,6 +840,10 @@ fn run_watch_action(
         checks: Cell::new(0),
         revoke_adapter_watch: matches!(action, WatchAction::ScanRevoked),
         adapter_watch_checks: Cell::new(0),
+        deny_device_path: matches!(action, WatchAction::DevicePathDenied),
+        revoke_device_connect: matches!(action, WatchAction::DeviceRevoked),
+        device_connect_checks: Cell::new(0),
+        deny_notify_path: matches!(action, WatchAction::NotifyPathDenied),
     };
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -687,6 +880,10 @@ fn run_watch_action(
                                 }
                             ) {
                                 Some(owned_empty_reply(8, ":1.42"))
+                            } else if matches!(action, WatchAction::NotifyIdle) {
+                                let mut replies = owned_empty_reply(10, ":1.42");
+                                replies.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+                                Some(replies)
                             } else {
                                 None
                             },
@@ -717,6 +914,224 @@ fn run_watch_action(
                                     Ok(())
                                 }
                                 Err(error) => Err(error),
+                            }
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::DeviceLifecycle | WatchAction::DevicePathDenied) => {
+                            let unpolled = watch.connect_device(DEVICE, Duration::from_secs(1));
+                            drop(unpolled);
+                            assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Unlinked);
+                            match watch.connect_device(DEVICE, Duration::from_secs(1)).await {
+                                Ok(()) => {
+                                    assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::ConnectAcknowledged);
+                                    assert_eq!(watch.device_link_path(), Some(DEVICE));
+                                    assert!(matches!(watch.disconnect_device("/org/bluez/hci0/dev_01_23_45_67_89_AC", Duration::from_secs(1)).await, Err(BusError::Configuration)));
+                                    let result = watch.disconnect_device(DEVICE, Duration::from_secs(1)).await;
+                                    if result.is_ok() { assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Unlinked); assert_eq!(watch.device_link_path(), None); }
+                                    else { assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::ConnectAcknowledged); }
+                                    drop(watch);
+                                    result
+                                }
+                                Err(error) => {
+                                    assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Unlinked);
+                                    drop(watch);
+                                    Err(error)
+                                }
+                            }
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::DeviceBadReply | WatchAction::DeviceRevoked) => {
+                            let result = watch.connect_device(DEVICE, Duration::from_secs(1)).await;
+                            assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Uncertain);
+                            assert_eq!(watch.device_link_path(), Some(DEVICE));
+                            assert!(matches!(watch.connect_device(DEVICE, Duration::from_secs(1)).await, Err(BusError::DeviceUncertain)));
+                            drop(watch);
+                            result
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::DeviceCancelled) => {
+                            let mut attempt = Box::pin(watch.connect_device(DEVICE, Duration::from_secs(1)));
+                            let mut polls = 0;
+                            poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                Poll::Pending if writes.borrow().windows(b"Connect".len()).any(|part| part == b"Connect") => Poll::Ready(()),
+                                Poll::Pending => { polls += 1; assert!(polls <= 1024); cx.waker().wake_by_ref(); Poll::Pending },
+                                Poll::Ready(_) => panic!("fixture unexpectedly finished before cancellation"),
+                            }).await;
+                            drop(attempt);
+                            assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Uncertain);
+                            assert_eq!(watch.device_link_path(), Some(DEVICE));
+                            assert!(writes.borrow().windows(b"Connect".len()).any(|part| part == b"Connect"));
+                            assert!(matches!(watch.connect_device(DEVICE, Duration::from_secs(1)).await, Err(BusError::DeviceUncertain)));
+                            assert!(matches!(watch.inventory(Duration::from_secs(1)).await, Err(BusError::DeviceUncertain)));
+                            Ok(())
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::DeviceDisconnectCancelled) => {
+                            watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                            let mut attempt = Box::pin(watch.disconnect_device(DEVICE, Duration::from_secs(1)));
+                            let mut polls = 0;
+                            poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                Poll::Pending if writes.borrow().windows(b"Disconnect".len()).any(|part| part == b"Disconnect") => Poll::Ready(()),
+                                Poll::Pending => { polls += 1; assert!(polls <= 1024); cx.waker().wake_by_ref(); Poll::Pending },
+                                Poll::Ready(_) => panic!("fixture unexpectedly finished before cancellation"),
+                            }).await;
+                            drop(attempt);
+                            assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Uncertain);
+                            assert!(writes.borrow().windows(b"Disconnect".len()).any(|part| part == b"Disconnect"));
+                            assert!(matches!(watch.disconnect_device(DEVICE, Duration::from_secs(1)).await, Err(BusError::DeviceUncertain)));
+                            drop(watch);
+                            Ok(())
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::Gatt | WatchAction::GattOverlap | WatchAction::GattBadReply) => {
+                            watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                            let first = watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await;
+                            let selected = if matches!(action, WatchAction::GattOverlap) {
+                                assert!(matches!(first, Err(BusError::GattOverlap)));
+                                assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::ConnectAcknowledged);
+                                assert_eq!(watch.pending_changes(), 1);
+                                let (next, change) = watch.next_change(Duration::from_secs(1)).await?;
+                                change.decode(next.owner())?;
+                                watch = next;
+                                assert_eq!(watch.pending_changes(), 0);
+                                watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await
+                            } else { first };
+                            match selected {
+                                Ok(endpoints) => {
+                                    assert_eq!(endpoints.service(), SERVICE_PATH);
+                                    assert_eq!(endpoints.notify(), NOTIFY_PATH);
+                                    assert_eq!(endpoints.write(), WRITE_PATH);
+                                    assert!(!format!("{endpoints:?}").contains("dev_01"));
+                                    watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                    drop(watch);
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    assert_eq!(watch.device_link_state(), if matches!(error, BusError::DeviceUncertain) { bluez_bus::DeviceLinkState::Uncertain } else { bluez_bus::DeviceLinkState::ConnectAcknowledged });
+                                    drop(watch);
+                                    Err(error)
+                                }
+                            }
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::GattCancelled) => {
+                            watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                            let mut attempt = Box::pin(watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)));
+                            let mut polls = 0;
+                            poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                Poll::Pending if writes.borrow().windows(b"GetManagedObjects".len()).any(|part| part == b"GetManagedObjects") => Poll::Ready(()),
+                                Poll::Pending => { polls += 1; assert!(polls <= 1024); cx.waker().wake_by_ref(); Poll::Pending },
+                                Poll::Ready(_) => panic!("fixture unexpectedly finished before cancellation"),
+                            }).await;
+                            drop(attempt);
+                            assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Uncertain);
+                            assert_eq!(watch.device_link_path(), Some(DEVICE));
+                            assert!(matches!(watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await, Err(BusError::DeviceUncertain)));
+                            drop(watch);
+                            Ok(())
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::NotifyStale) => {
+                            watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                            let endpoints = watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await?;
+                            let (mut watch, _change) = watch.next_change(Duration::from_secs(1)).await?;
+                            assert!(matches!(watch.start_notify(&endpoints, Duration::from_secs(1)).await, Err(BusError::Configuration)));
+                            assert!(!writes.borrow().windows(b"StartNotify".len()).any(|part| part == b"StartNotify"));
+                            watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                            drop(watch);
+                            Ok(())
+                        }
+                        Ok(mut watch) if matches!(action, WatchAction::Notify | WatchAction::NotifyCancelled | WatchAction::NotifyReadCancelled | WatchAction::NotifyStopCancelled | WatchAction::NotifyBadReply | WatchAction::NotifyIdle | WatchAction::NotifyPathDenied | WatchAction::NotifyTopology) => {
+                            watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                            let endpoints = watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await?;
+                            if matches!(action, WatchAction::NotifyCancelled) {
+                                let mut attempt = Box::pin(watch.start_notify(&endpoints, Duration::from_secs(1)));
+                                let mut polls = 0;
+                                poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                    Poll::Pending if writes.borrow().windows(b"StartNotify".len()).any(|part| part == b"StartNotify") => Poll::Ready(()),
+                                    Poll::Pending => { polls += 1; assert!(polls <= 1024); cx.waker().wake_by_ref(); Poll::Pending },
+                                    Poll::Ready(_) => panic!("notification start unexpectedly finished before cancellation"),
+                                }).await;
+                                drop(attempt);
+                                assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
+                                assert!(matches!(watch.start_notify(&endpoints, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
+                                drop(watch);
+                                Ok(())
+                            } else {
+                                let result = watch.start_notify(&endpoints, Duration::from_secs(1)).await;
+                                if let Err(error) = result {
+                                    assert_eq!(watch.notification_state(), if matches!(error, BusError::NotificationUncertain) { bluez_bus::NotificationState::Uncertain } else { bluez_bus::NotificationState::Inactive });
+                                    drop(watch);
+                                    Err(error)
+                                } else if matches!(action, WatchAction::NotifyReadCancelled) {
+                                    let mut attempt = Box::pin(watch.next_notify_change(&endpoints, Duration::from_secs(1)));
+                                    poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                        Poll::Pending => Poll::Ready(()),
+                                        Poll::Ready(_) => panic!("notification read unexpectedly finished before cancellation"),
+                                    }).await;
+                                    drop(attempt);
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
+                                    assert!(matches!(watch.next_notify_change(&endpoints, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
+                                    drop(watch);
+                                    Ok(())
+                                } else if matches!(action, WatchAction::NotifyStopCancelled) {
+                                    let mut attempt = Box::pin(watch.stop_notify(&endpoints, Duration::from_secs(1)));
+                                    let mut polls = 0;
+                                    poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                        Poll::Pending if writes.borrow().windows(b"StopNotify".len()).any(|part| part == b"StopNotify") => Poll::Ready(()),
+                                        Poll::Pending => { polls += 1; assert!(polls <= 1024); cx.waker().wake_by_ref(); Poll::Pending },
+                                        Poll::Ready(_) => panic!("notification stop unexpectedly finished before cancellation"),
+                                    }).await;
+                                    drop(attempt);
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
+                                    assert!(matches!(watch.stop_notify(&endpoints, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
+                                    assert!(matches!(watch.disconnect_device(DEVICE, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
+                                    drop(watch);
+                                    Ok(())
+                                } else if matches!(action, WatchAction::NotifyTopology) {
+                                    let unrelated = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing unrelated change")?;
+                                    unrelated.decode(watch.owner())?;
+                                    assert!(!watch.gatt_selection_stale());
+                                    let active = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing active notification status")?;
+                                    active.decode(watch.owner())?;
+                                    assert!(!watch.gatt_selection_stale());
+                                    let changed = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing selected-device change")?;
+                                    changed.decode(watch.owner())?;
+                                    assert!(watch.gatt_selection_stale());
+                                    assert!(matches!(watch.next_notify_change(&endpoints, Duration::from_secs(1)).await, Err(BusError::GattStale)));
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
+                                    watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                    assert!(matches!(watch.start_notify(&endpoints, Duration::from_secs(1)).await, Err(BusError::Configuration)));
+                                    watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                    Ok(())
+                                } else if matches!(action, WatchAction::NotifyIdle) {
+                                    assert!(watch.next_notify_change(&endpoints, Duration::from_millis(30)).await?.is_none());
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
+                                    watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                    watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                    drop(watch);
+                                    Ok(())
+                                } else {
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
+                                    assert!(matches!(watch.disconnect_device(DEVICE, Duration::from_secs(1)).await, Err(BusError::Configuration)));
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
+                                    assert_eq!(watch.pending_changes(), 1);
+                                    let mut framer = fss_packet::unifi_ble::Framer::new(128).ok_or("framer")?;
+                                    for index in 0..2 {
+                                        let frame = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing notification")?;
+                                        let event = frame.decode(watch.owner())?;
+                                        let fss_packet::dbus_bluez_signal::Event::Properties { path, change } = event else { return Err("unexpected change".into()); };
+                                        assert_eq!(path, endpoints.notify());
+                                        let fss_packet::dbus_object_manager::GattValueChange::Present(value) = change.gatt_value else { return Err("missing value".into()); };
+                                        let fed = framer.feed(value)?;
+                                        if index == 0 { assert_eq!(fed.consumed, 1); assert!(!fed.complete); }
+                                        else {
+                                            assert_eq!(fed.consumed, 3); assert!(fed.complete);
+                                            assert_eq!(framer.take().ok_or("first packet")?.as_bytes(), &[0, 4, 0xa5, 0x5a]);
+                                            let fed2 = framer.feed(&value[fed.consumed..])?;
+                                            assert_eq!(fed2.consumed, 3); assert!(fed2.complete);
+                                            assert_eq!(framer.take().ok_or("second packet")?.as_bytes(), &[0, 3, 0x7e]);
+                                        }
+                                    }
+                                    watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Inactive);
+                                    watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                    drop(watch);
+                                    Ok(())
+                                }
                             }
                         }
                         Ok(watch) if matches!(action, WatchAction::Inventory { .. }) => {
@@ -878,7 +1293,11 @@ fn run_watch_action(
         .await?;
         result.receipt?;
         result.output
-    })
+    });
+    if let Some(effects) = management_effects {
+        assert_eq!(effects.journal().operation(&management_operation).ok_or("missing effect")?.state, fss_core::EffectState::Committed);
+    }
+    result
 }
 
 fn owned_inventory_reply(serial: u32, sender: &str) -> Vec<u8> {
@@ -910,6 +1329,85 @@ fn owned_inventory_reply_body(serial: u32, sender: &str, body: &[u8]) -> Vec<u8>
     }
     frame.extend_from_slice(body);
     frame
+}
+
+fn gatt_inventory_body() -> Vec<u8> {
+    struct Writer(Vec<u8>);
+    impl Writer {
+        fn pad(&mut self, align: usize) {
+            while self.0.len() % align != 0 {
+                self.0.push(0);
+            }
+        }
+        fn string(&mut self, value: &str) {
+            self.pad(4);
+            self.0
+                .extend_from_slice(&(value.len() as u32).to_le_bytes());
+            self.0.extend_from_slice(value.as_bytes());
+            self.0.push(0);
+        }
+        fn array(&mut self, align: usize) -> (usize, usize) {
+            self.pad(4);
+            let index = self.0.len();
+            self.0.extend_from_slice(&0_u32.to_le_bytes());
+            self.pad(align);
+            (index, self.0.len())
+        }
+        fn finish(&mut self, (at, start): (usize, usize)) {
+            let length = (self.0.len() - start) as u32;
+            self.0[at..at + 4].copy_from_slice(&length.to_le_bytes());
+        }
+        fn property(&mut self, key: &str, signature: &[u8]) {
+            self.pad(8);
+            self.string(key);
+            self.0.push(signature.len() as u8);
+            self.0.extend_from_slice(signature);
+            self.0.push(0);
+        }
+        fn object(&mut self, path: &str, interface: &str) -> ((usize, usize), (usize, usize)) {
+            self.pad(8);
+            self.string(path);
+            let interfaces = self.array(8);
+            self.pad(8);
+            self.string(interface);
+            let props = self.array(8);
+            (interfaces, props)
+        }
+        fn finish_object(&mut self, (interfaces, props): ((usize, usize), (usize, usize))) {
+            self.finish(props);
+            self.finish(interfaces);
+        }
+    }
+    let mut w = Writer(Vec::new());
+    let root = w.array(8);
+    let object = w.object(DEVICE, "org.bluez.Device1");
+    w.property("ServicesResolved", b"b");
+    w.pad(4);
+    w.0.extend_from_slice(&1_u32.to_le_bytes());
+    w.finish_object(object);
+    let object = w.object(SERVICE_PATH, "org.bluez.GattService1");
+    w.property("UUID", b"s");
+    w.string(SERVICE_UUID);
+    w.property("Device", b"o");
+    w.string(DEVICE);
+    w.finish_object(object);
+    for (path, uuid, flag) in [
+        (NOTIFY_PATH, NOTIFY_UUID, "notify"),
+        (WRITE_PATH, WRITE_UUID, "write"),
+    ] {
+        let object = w.object(path, "org.bluez.GattCharacteristic1");
+        w.property("UUID", b"s");
+        w.string(uuid);
+        w.property("Service", b"o");
+        w.string(SERVICE_PATH);
+        w.property("Flags", b"as");
+        let flags = w.array(4);
+        w.string(flag);
+        w.finish(flags);
+        w.finish_object(object);
+    }
+    w.finish(root);
+    w.0
 }
 
 fn inventory_with_adapter() -> Vec<u8> {
@@ -1022,6 +1520,204 @@ fn discovery_requires_authority_and_an_acknowledged_stop() -> TestResult {
         Err(BusError::DiscoveryUncertain),
         WatchAction::Scan,
     )
+}
+
+#[test]
+fn device_link_requires_admission_and_correlated_lifecycle_replies() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_empty_reply(8, ":1.42"));
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::DeviceLifecycle)?;
+    run_watch_action(
+        input.clone(),
+        Some(Stage::BluezDeviceConnect),
+        Err(BusError::Denied),
+        WatchAction::DeviceLifecycle,
+    )?;
+    run_watch_action(
+        input.clone(),
+        None,
+        Err(BusError::Denied),
+        WatchAction::DevicePathDenied,
+    )?;
+    run_watch_action(
+        watch_input(None, ":1.42"),
+        None,
+        Err(BusError::DeviceUncertain),
+        WatchAction::DeviceRevoked,
+    )?;
+    run_watch_action(
+        input,
+        Some(Stage::BluezDeviceDisconnect),
+        Err(BusError::Denied),
+        WatchAction::DeviceLifecycle,
+    )?;
+    let mut wrong_owner = watch_input(None, ":1.42");
+    wrong_owner.extend_from_slice(&owned_empty_reply(7, ":1.99"));
+    run_watch_action(
+        wrong_owner,
+        None,
+        Err(BusError::DeviceUncertain),
+        WatchAction::DeviceBadReply,
+    )
+}
+
+#[test]
+fn cancellation_after_device_connect_submission_fences_the_watch() -> TestResult {
+    run_watch_action(
+        watch_input(None, ":1.42"),
+        None,
+        Ok(()),
+        WatchAction::DeviceCancelled,
+    )?;
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    run_watch_action(input, None, Ok(()), WatchAction::DeviceDisconnectCancelled)
+}
+
+#[test]
+fn gatt_selection_is_scoped_correlated_and_preserves_overlapping_changes() -> TestResult {
+    let body = gatt_inventory_body();
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(8, ":1.42", &body));
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::Gatt)?;
+    run_watch_action(
+        input,
+        Some(Stage::BluezGattInventory),
+        Err(BusError::Denied),
+        WatchAction::Gatt,
+    )?;
+    let mut overlap = watch_input(None, ":1.42");
+    overlap.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    overlap.extend_from_slice(&watch_signal(":1.42", "PropertiesChanged"));
+    overlap.extend_from_slice(&owned_inventory_reply_body(8, ":1.42", &body));
+    overlap.extend_from_slice(&owned_inventory_reply_body(9, ":1.42", &body));
+    overlap.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+    run_watch_action(overlap, None, Ok(()), WatchAction::GattOverlap)?;
+    let mut wrong_owner = watch_input(None, ":1.42");
+    wrong_owner.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    wrong_owner.extend_from_slice(&owned_inventory_reply_body(8, ":1.99", &body));
+    run_watch_action(
+        wrong_owner,
+        None,
+        Err(BusError::DeviceUncertain),
+        WatchAction::GattBadReply,
+    )
+}
+
+#[test]
+fn cancelled_gatt_inventory_fences_the_owned_device_watch() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    run_watch_action(input, None, Ok(()), WatchAction::GattCancelled)
+}
+
+#[test]
+fn notification_values_reassemble_split_and_combined_ble_packets() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(
+        8,
+        ":1.42",
+        &gatt_inventory_body(),
+    ));
+    input.extend_from_slice(&gatt_value_frame(&[0]));
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    input.extend_from_slice(&gatt_value_frame(&[4, 0xa5, 0x5a, 0, 3, 0x7e]));
+    input.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+    input.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::Notify)?;
+    run_watch_action(
+        input.clone(),
+        None,
+        Err(BusError::Denied),
+        WatchAction::NotifyPathDenied,
+    )?;
+    run_watch_action(
+        input,
+        Some(Stage::BluezNotifyStart),
+        Err(BusError::Denied),
+        WatchAction::Notify,
+    )
+}
+
+#[test]
+fn gatt_topology_change_fences_further_reads_but_allows_session_stop() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(
+        8,
+        ":1.42",
+        &gatt_inventory_body(),
+    ));
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    input.extend_from_slice(&gatt_value_frame_at(
+        "/org/bluez/hci0/dev_01_23_45_67_89_AC/service001/char001",
+        &[1],
+    ));
+    input.extend_from_slice(&gatt_properties_frame(NOTIFY_PATH, None, Some(true)));
+    for change in [
+        gatt_value_frame_at(WRITE_PATH, &[2]),
+        gatt_properties_frame(NOTIFY_PATH, None, Some(false)),
+        gatt_properties_frame(NOTIFY_PATH, Some(&[2]), Some(false)),
+    ] {
+        let mut case = input.clone();
+        case.extend_from_slice(&change);
+        case.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+        case.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+        run_watch_action(case, None, Ok(()), WatchAction::NotifyTopology)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_notification_start_or_read_fences_the_owned_watch() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(
+        8,
+        ":1.42",
+        &gatt_inventory_body(),
+    ));
+    run_watch_action(input.clone(), None, Ok(()), WatchAction::NotifyCancelled)?;
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    run_watch_action(
+        input.clone(),
+        None,
+        Ok(()),
+        WatchAction::NotifyReadCancelled,
+    )?;
+    run_watch_action(
+        input.clone(),
+        None,
+        Ok(()),
+        WatchAction::NotifyStopCancelled,
+    )?;
+    run_watch_action(input, None, Ok(()), WatchAction::NotifyIdle)
+}
+
+#[test]
+fn notification_start_refuses_stale_selection_and_wrong_owner() -> TestResult {
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(
+        8,
+        ":1.42",
+        &gatt_inventory_body(),
+    ));
+    let mut wrong_owner = input.clone();
+    wrong_owner.extend_from_slice(&owned_empty_reply(9, ":1.99"));
+    run_watch_action(
+        wrong_owner,
+        None,
+        Err(BusError::NotificationUncertain),
+        WatchAction::NotifyBadReply,
+    )?;
+    input.extend_from_slice(&watch_signal(":1.42", "PropertiesChanged"));
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    run_watch_action(input, None, Ok(()), WatchAction::NotifyStale)
 }
 
 #[test]

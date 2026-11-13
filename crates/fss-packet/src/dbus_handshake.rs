@@ -322,6 +322,211 @@ pub fn bluez_adapter_discovery(
     Ok(out)
 }
 
+/// An explicit BlueZ device connection operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceMethod {
+    /// Ask BlueZ to connect the selected device's connectable profiles.
+    Connect,
+    /// Ask BlueZ to disconnect the device's profiles and underlying link.
+    Disconnect,
+}
+
+fn valid_bluez_device_path(device: &str) -> bool {
+    let Some(tail) = device.strip_prefix("/org/bluez/hci") else {
+        return false;
+    };
+    let Some((adapter, address)) = tail.split_once("/dev_") else {
+        return false;
+    };
+    !adapter.is_empty()
+        && adapter.len() <= 8
+        && adapter.bytes().all(|b| b.is_ascii_digit())
+        && address.len() == 17
+        && address.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 2 | 5 | 8 | 11 | 14) {
+                b == b'_'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+        && valid_object_path(device)
+}
+
+/// Encode a connection operation for one conventional BlueZ device object.
+/// Sending either operation has external effects. The caller must independently
+/// authorize the device and establish whether disconnecting other clients is
+/// acceptable; a path or an acknowledged call does not authenticate a camera.
+pub fn bluez_device_connection(
+    serial: u32,
+    owner: &str,
+    device: &str,
+    method: DeviceMethod,
+) -> Result<Vec<u8>, Error> {
+    if serial == 0 || !valid_unique_owner(owner) || !valid_bluez_device_path(device) {
+        return Err(Error::Invalid);
+    }
+    let mut out = vec![b'l', 1, 2, 1];
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&serial.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    string_field(&mut out, 1, b'o', device.as_bytes());
+    string_field(&mut out, 2, b's', b"org.bluez.Device1");
+    string_field(
+        &mut out,
+        3,
+        b's',
+        match method {
+            DeviceMethod::Connect => b"Connect",
+            DeviceMethod::Disconnect => b"Disconnect",
+        },
+    );
+    string_field(&mut out, 6, b's', owner.as_bytes());
+    finish_header(&mut out)?;
+    Ok(out)
+}
+
+/// One explicit notification-session operation on a GATT characteristic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotifyMethod {
+    /// Request a notification or indication session.
+    Start,
+    /// Release this client's previously requested session.
+    Stop,
+}
+
+/// Encode an owner-addressed notification call within one device subtree.
+/// The caller must separately bind the characteristic to a current service
+/// claim and authorize the operation; a path is not camera identity proof.
+pub fn bluez_gatt_notify(
+    serial: u32,
+    owner: &str,
+    device: &str,
+    characteristic: &str,
+    method: NotifyMethod,
+) -> Result<Vec<u8>, Error> {
+    if serial == 0
+        || !valid_unique_owner(owner)
+        || !valid_bluez_device_path(device)
+        || !valid_gatt_characteristic(device, characteristic)
+    {
+        return Err(Error::Invalid);
+    }
+    let mut out = vec![b'l', 1, 2, 1];
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&serial.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    string_field(&mut out, 1, b'o', characteristic.as_bytes());
+    string_field(&mut out, 2, b's', b"org.bluez.GattCharacteristic1");
+    string_field(
+        &mut out,
+        3,
+        b's',
+        match method {
+            NotifyMethod::Start => b"StartNotify",
+            NotifyMethod::Stop => b"StopNotify",
+        },
+    );
+    string_field(&mut out, 6, b's', owner.as_bytes());
+    finish_header(&mut out)?;
+    Ok(out)
+}
+
+fn valid_gatt_characteristic(device: &str, characteristic: &str) -> bool {
+    valid_object_path(characteristic)
+        && characteristic
+            .strip_prefix(device)
+            .is_some_and(|tail| tail.starts_with('/') && tail.len() > 1)
+}
+
+/// Maximum payload for one restricted GATT write request. The caller must also
+/// enforce the negotiated transport MTU and the device protocol's limits.
+pub const MAX_GATT_WRITE_BYTES: usize = 512;
+
+/// Prepared local-bus bytes, which can contain sensitive device traffic.
+/// Formatting deliberately omits both payload and device identifiers. This
+/// wrapper does not promise memory erasure or safe handling of plaintext secrets.
+pub struct GattWrite(Vec<u8>);
+impl GattWrite {
+    /// Borrow the entire encoded D-Bus method call for an authorized transport.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl fmt::Debug for GattWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GattWrite")
+            .field("message_bytes", &self.0.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Prepare a single `GattCharacteristic1.WriteValue` call, addressed to an
+/// already resolved unique BlueZ owner. This performs no I/O, checks no lease
+/// or authority, does not authenticate a camera, and must not be used to send
+/// plaintext credentials. Sending this call is an external effect whose owner
+/// must durably record and reconcile interrupted or ambiguous outcomes.
+pub fn bluez_gatt_write(
+    serial: u32,
+    owner: &str,
+    device: &str,
+    characteristic: &str,
+    mode: crate::dbus_object_manager::GattWriteMode,
+    value: &[u8],
+) -> Result<GattWrite, Error> {
+    if serial == 0
+        || !valid_unique_owner(owner)
+        || !valid_bluez_device_path(device)
+        || !valid_gatt_characteristic(device, characteristic)
+    {
+        return Err(Error::Invalid);
+    }
+    if value.len() > MAX_GATT_WRITE_BYTES {
+        return Err(Error::Limit);
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(1024 + value.len())
+        .map_err(|_| Error::Limit)?;
+    out.extend_from_slice(&[b'l', 1, 2, 1]);
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&serial.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    string_field(&mut out, 1, b'o', characteristic.as_bytes());
+    string_field(&mut out, 2, b's', b"org.bluez.GattCharacteristic1");
+    string_field(&mut out, 3, b's', b"WriteValue");
+    string_field(&mut out, 6, b's', owner.as_bytes());
+    pad(&mut out, 8);
+    out.extend_from_slice(&[8, 1, b'g', 0, 7]);
+    out.extend_from_slice(b"aya{sv}\0");
+    finish_header(&mut out)?;
+    let body_start = out.len();
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value);
+    pad(&mut out, 4);
+    let options_length = out.len();
+    out.extend_from_slice(&0u32.to_le_bytes());
+    pad(&mut out, 8);
+    let options_start = out.len();
+    out.extend_from_slice(&4u32.to_le_bytes());
+    out.extend_from_slice(b"type\0");
+    out.extend_from_slice(&[1, b's', 0]);
+    pad(&mut out, 4);
+    let mode_name: &[u8] = match mode {
+        crate::dbus_object_manager::GattWriteMode::Request => b"request",
+        crate::dbus_object_manager::GattWriteMode::Command => b"command",
+    };
+    out.extend_from_slice(&(mode_name.len() as u32).to_le_bytes());
+    out.extend_from_slice(mode_name);
+    out.push(0);
+    let options_bytes = u32::try_from(out.len() - options_start).map_err(|_| Error::Limit)?;
+    out[options_length..options_length + 4].copy_from_slice(&options_bytes.to_le_bytes());
+    let body_bytes = u32::try_from(out.len() - body_start).map_err(|_| Error::Limit)?;
+    out[4..8].copy_from_slice(&body_bytes.to_le_bytes());
+    if out.len() > MAX_MESSAGE_BYTES {
+        return Err(Error::Limit);
+    }
+    Ok(GattWrite(out))
+}
+
 fn read_u32(bytes: &[u8], at: usize, little: bool) -> Result<u32, Error> {
     let end = at.checked_add(4).ok_or(Error::Limit)?;
     let a: [u8; 4] = bytes
@@ -1012,6 +1217,166 @@ mod tests {
         assert!(parse_empty_method_reply_from(&frame, 8, "org.bluez").is_err());
         for n in 0..frame.len() {
             assert!(parse_empty_method_reply_from(&frame[..n], 8, ":1.42")?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn device_calls_are_owner_scoped_and_reject_other_paths() -> Result<(), Error> {
+        for (method, member) in [
+            (DeviceMethod::Connect, b"Connect".as_slice()),
+            (DeviceMethod::Disconnect, b"Disconnect".as_slice()),
+        ] {
+            let call = bluez_device_connection(
+                7,
+                ":1.42",
+                "/org/bluez/hci0/dev_01_23_45_67_89_AB",
+                method,
+            )?;
+            assert_eq!(declared_message_len(&call)?, Some(call.len()));
+            assert_eq!(call[2], 2);
+            assert!(call.windows(member.len()).any(|value| value == member));
+            assert!(call.windows(17).any(|value| value == b"org.bluez.Device1"));
+            for invalid in [
+                "/org/bluez/hci/dev_01_23_45_67_89_AB",
+                "/org/bluez/hciX/dev_01_23_45_67_89_AB",
+                "/org/bluez/hci0/dev_01_23_45_67_89_AG",
+                "/org/bluez/hci0/dev_01_23_45_67_89_AB/service01",
+                "/org/bluez/hci0/dev_01_23_45_67_89_AB_",
+                "/org/bluez/hci123456789/dev_01_23_45_67_89_AB",
+            ] {
+                assert!(bluez_device_connection(7, ":1.42", invalid, method).is_err());
+            }
+            assert!(
+                bluez_device_connection(
+                    0,
+                    ":1.42",
+                    "/org/bluez/hci0/dev_01_23_45_67_89_AB",
+                    method
+                )
+                .is_err()
+            );
+            assert!(
+                bluez_device_connection(
+                    7,
+                    "org.bluez",
+                    "/org/bluez/hci0/dev_01_23_45_67_89_AB",
+                    method
+                )
+                .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn notification_calls_require_exact_device_subtree_and_owner() -> Result<(), Error> {
+        let device = "/org/bluez/hci0/dev_01_23_45_67_89_AB";
+        let path = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char001";
+        for (method, member) in [
+            (NotifyMethod::Start, b"StartNotify".as_slice()),
+            (NotifyMethod::Stop, b"StopNotify".as_slice()),
+        ] {
+            let call = bluez_gatt_notify(8, ":1.42", device, path, method)?;
+            assert_eq!(declared_message_len(&call)?, Some(call.len()));
+            assert!(call.windows(member.len()).any(|v| v == member));
+            for invalid in [
+                device,
+                "/org/bluez/hci0/dev_01_23_45_67_89_AC/service001/char001",
+                "/org/bluez/hci0/dev_01_23_45_67_89_ABextra/char001",
+                "/org/bluez/hci0/dev_01_23_45_67_89_AB/../char001",
+            ] {
+                assert!(bluez_gatt_notify(8, ":1.42", device, invalid, method).is_err());
+            }
+            assert!(bluez_gatt_notify(8, "org.bluez", device, path, method).is_err());
+            assert!(bluez_gatt_notify(0, ":1.42", device, path, method).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gatt_writes_encode_bounded_values_and_explicit_modes() -> Result<(), Error> {
+        use crate::dbus_object_manager::GattWriteMode;
+        let device = "/org/bluez/hci0/dev_01_23_45_67_89_AB";
+        let characteristic = "/org/bluez/hci0/dev_01_23_45_67_89_AB/service001/char002";
+        for (mode, name) in [
+            (GattWriteMode::Request, b"request".as_slice()),
+            (GattWriteMode::Command, b"command".as_slice()),
+        ] {
+            for size in (0..=17).chain([MAX_GATT_WRITE_BYTES]) {
+                let value = vec![0xa5; size];
+                let message = bluez_gatt_write(9, ":1.42", device, characteristic, mode, &value)?;
+                let bytes = message.as_bytes();
+                // Fixed non-secret samples for an independent D-Bus parser.
+                if size == 0 || size == 3 {
+                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                    println!(
+                        "GATT_ORACLE_{}_{}={hex}",
+                        String::from_utf8_lossy(name),
+                        size
+                    );
+                }
+                assert_eq!(declared_message_len(bytes)?, Some(bytes.len()));
+                assert_eq!(bytes[2], 2);
+                let fields =
+                    u32::from_le_bytes(bytes[12..16].try_into().map_err(|_| Error::Invalid)?)
+                        as usize;
+                let body = (16 + fields + 7) & !7;
+                assert!(bytes[..body].windows(8).any(|part| part == b"aya{sv}\0"));
+                assert_eq!(&bytes[body..body + 4], &(size as u32).to_le_bytes());
+                assert_eq!(&bytes[body + 4..body + 4 + size], value);
+                let options_len_at = (body + 4 + size + 3) & !3;
+                let options_start = (options_len_at + 4 + 7) & !7;
+                let options_length = u32::from_le_bytes(
+                    bytes[options_len_at..options_len_at + 4]
+                        .try_into()
+                        .map_err(|_| Error::Invalid)?,
+                ) as usize;
+                assert_eq!(options_start + options_length, bytes.len());
+                assert_eq!(
+                    &bytes[options_start..options_start + 9],
+                    b"\x04\0\0\0type\0"
+                );
+                assert_eq!(&bytes[options_start + 9..options_start + 12], b"\x01s\0");
+                assert_eq!(
+                    &bytes[options_start + 12..options_start + 16],
+                    &7_u32.to_le_bytes()
+                );
+                assert_eq!(&bytes[options_start + 16..options_start + 23], name);
+                assert_eq!(bytes[options_start + 23], 0);
+                assert!(!format!("{message:?}").contains("165"));
+            }
+        }
+        assert!(matches!(
+            bluez_gatt_write(
+                1,
+                ":1.42",
+                device,
+                characteristic,
+                GattWriteMode::Request,
+                &[0; MAX_GATT_WRITE_BYTES + 1]
+            ),
+            Err(Error::Limit)
+        ));
+        for (serial, owner, path) in [
+            (0, ":1.42", characteristic),
+            (1, "org.bluez", characteristic),
+            (1, ":1.42", device),
+            (
+                1,
+                ":1.42",
+                "/org/bluez/hci0/dev_01_23_45_67_89_AC/service001/char002",
+            ),
+            (
+                1,
+                ":1.42",
+                "/org/bluez/hci0/dev_01_23_45_67_89_ABextra/char002",
+            ),
+        ] {
+            assert!(
+                bluez_gatt_write(serial, owner, device, path, GattWriteMode::Request, &[1])
+                    .is_err()
+            );
         }
         Ok(())
     }
