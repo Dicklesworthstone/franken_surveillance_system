@@ -484,16 +484,7 @@ impl DurableDisclosureStore {
     }
 
     fn synchronize_catalog(&mut self, now: Option<TimestampNs>) -> Result<(), DisclosureError> {
-        self.sessions.verify_storage()?;
-        let report = read_report(self.sessions.path(), self.sessions.limits)?;
-        // Read-only verification is not adoption: this owner already holds the independently
-        // trusted tip. A second read must agree before it can supply replay-protection metadata.
-        if report.last_root() != self.sessions.committed_root()
-            || report.incomplete_tail().is_some()
-        {
-            return Err(DurableSessionError::RootMismatch.into());
-        }
-        recovery::restore_catalog(&mut self.catalog, &report, self.sessions.limits, now)
+        synchronize_catalog(&self.sessions, &mut self.catalog, now)
     }
 
     fn deliver<T>(
@@ -504,23 +495,80 @@ impl DurableDisclosureStore {
             &mut ReferenceHydrationCatalog,
         ) -> Result<(T, DisclosureAdmission), DisclosureError>,
     ) -> Result<JournaledDisclosure<T>, DisclosureError> {
-        self.sessions.preflight()?;
-        self.synchronize_catalog(Some(now))?;
-        let mut memory = self.sessions.memory.clone();
-        let mut catalog = self.catalog.clone();
-        let result = operation(&mut memory, &mut catalog);
-        let checkpoint = match memory.checkpoint(self.sessions.limits.max_checkpoint_bytes) {
-            Ok(checkpoint) => checkpoint,
-            Err(error) => {
-                self.sessions.fenced = true;
-                return Err(DurableSessionError::from(error).into());
-            }
-        };
-        match result {
+        deliver_atomic(&mut self.sessions, &mut self.catalog, now, operation)
+    }
+}
+
+impl DurableSessionStore {
+    /// Hydrates through this sole journal owner, committing the session charge and exact
+    /// cursor issuance/consumption in one existing disclosure record before returning bytes.
+    ///
+    /// The catalog is rebuilt from currently verified descriptors and artifacts. Each call
+    /// restores the journal's durable replay protection before admission; callers cannot
+    /// revive a consumed cursor by constructing a fresh catalog. Session/workspace/claim
+    /// operations can continue through this same owner. Do not use the legacy `hydrate`
+    /// method for a catalog whose cursor state is owned by this atomic path.
+    pub fn hydrate_atomic(
+        &mut self,
+        principal: &PrincipalId,
+        alias: &SessionAlias,
+        request: &HydrationRequest,
+        catalog: &mut ReferenceHydrationCatalog,
+        now: TimestampNs,
+    ) -> Result<JournaledDisclosure<HydrationResponse>, DisclosureError> {
+        deliver_atomic(self, catalog, now, |sessions, catalog| {
+            let response = sessions
+                .hydrate(principal, alias, request, catalog, now)
+                .map_err(DisclosureError::Session)?;
+            let admission = admission(principal, request, &response, None);
+            Ok((response, admission))
+        })
+    }
+}
+
+fn synchronize_catalog(
+    sessions: &DurableSessionStore,
+    catalog: &mut ReferenceHydrationCatalog,
+    now: Option<TimestampNs>,
+) -> Result<(), DisclosureError> {
+    sessions.verify_storage()?;
+    let report = read_report(sessions.path(), sessions.limits)?;
+    // Read-only verification is not adoption: this owner already holds the independently
+    // trusted tip. A second read must agree before it can supply replay-protection metadata.
+    if report.last_root() != sessions.committed_root() || report.incomplete_tail().is_some() {
+        return Err(DurableSessionError::RootMismatch.into());
+    }
+    recovery::restore_catalog(catalog, &report, sessions.limits, now)
+}
+
+// Both the owned catalog wrapper and an existing deployment session owner use this exact
+// transaction. No second journal handle, new record kind or relaxed replay rule is introduced.
+fn deliver_atomic<T>(
+    sessions: &mut DurableSessionStore,
+    current_catalog: &mut ReferenceHydrationCatalog,
+    now: TimestampNs,
+    operation: impl FnOnce(
+        &mut ReferenceSessionStore,
+        &mut ReferenceHydrationCatalog,
+    ) -> Result<(T, DisclosureAdmission), DisclosureError>,
+) -> Result<JournaledDisclosure<T>, DisclosureError> {
+    sessions.preflight()?;
+    synchronize_catalog(sessions, current_catalog, Some(now))?;
+    let mut memory = sessions.memory.clone();
+    let mut catalog = current_catalog.clone();
+    let result = operation(&mut memory, &mut catalog);
+    let checkpoint = match memory.checkpoint(sessions.limits.max_checkpoint_bytes) {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            sessions.fenced = true;
+            return Err(DurableSessionError::from(error).into());
+        }
+    };
+    match result {
             Err(error) => {
                 // Preserve clock and expiry mutations, but never publish staged cursor state.
-                if checkpoint.digest() != self.sessions.checkpoint_digest {
-                    self.sessions.commit_candidate(PendingSession {
+                if checkpoint.digest() != sessions.checkpoint_digest {
+                    sessions.commit_candidate(PendingSession {
                         memory,
                         checkpoint,
                         coordination: None,
@@ -533,15 +581,15 @@ impl DurableDisclosureStore {
                 let prepared = (|| -> Result<Vec<u8>, DisclosureError> {
                     let cursors = catalog.checkpoint_cursors(now, MAX_RECORD_BYTES)?;
                     let payload = encode(
-                        self.sessions.checkpoint_digest,
+                        sessions.checkpoint_digest,
                         checkpoint.as_bytes(),
                         &cursors,
                         &admission,
                     )?;
                     // Validate the same semantic reconstruction that cold recovery will use.
                     let mut cursor_history = None;
-                    let report = read_report(self.sessions.path(), self.sessions.limits)?;
-                    if report.last_root() != self.sessions.committed_root()
+                    let report = read_report(sessions.path(), sessions.limits)?;
+                    if report.last_root() != sessions.committed_root()
                         || report.incomplete_tail().is_some()
                     {
                         return Err(DurableSessionError::RootMismatch.into());
@@ -551,7 +599,7 @@ impl DurableDisclosureStore {
                             && source_registration::has_catalog_snapshot(record.payload())
                         {
                             let (cursors, _) = source_registration::catalog_snapshot(
-                                record.payload(), self.sessions.limits,
+                                record.payload(), sessions.limits,
                             )?;
                             cursor_history = Some(CursorCheckpoint::decode(
                                 cursors,
@@ -563,35 +611,34 @@ impl DurableDisclosureStore {
                     restore_record(
                         &payload,
                         ContentDigest::sha256(&payload),
-                        Some(&self.sessions.memory),
+                        Some(&sessions.memory),
                         &mut cursor_history,
-                        self.sessions.limits,
+                        sessions.limits,
                     )?;
                     Ok(payload)
                 })();
                 let payload = match prepared {
                     Ok(payload) => payload,
                     Err(error) => {
-                        self.sessions.fenced = true;
+                        sessions.fenced = true;
                         return Err(error);
                     }
                 };
                 // Even a zero-token, same-clock disclosure gets a record: it can issue a cursor.
-                self.sessions.commit_candidate(PendingSession {
+                sessions.commit_candidate(PendingSession {
                     memory,
                     checkpoint,
                     coordination: None,
                     record: Some((SESSION_CHECKPOINT_RECORD_KIND, payload)),
                 })?;
-                self.catalog = catalog;
+                *current_catalog = catalog;
                 Ok(JournaledDisclosure {
                     response,
                     admission,
-                    committed_root: self.sessions.committed_root(),
+                    committed_root: sessions.committed_root(),
                 })
             }
         }
-    }
 }
 
 fn admission(

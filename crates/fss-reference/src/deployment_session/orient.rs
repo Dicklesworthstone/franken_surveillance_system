@@ -217,6 +217,47 @@ pub(super) fn with_admitted_session_read<T>(
     session_id: &SessionId,
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
 ) -> Result<(T, u64, u64), DeploymentSessionError> {
+    with_admitted_session_history(
+        root,
+        principal,
+        session_id,
+        DeploymentHistory::read,
+        &|| false,
+        read,
+    )
+}
+
+/// Metadata-only session admission under the selected owner's cumulative payload allowance.
+/// This path never invokes the global spool doctor or opens original media. Session journal
+/// and pin reads retain their separate existing bounds, reported by the returned counters.
+pub(super) fn with_admitted_session_metadata_read<T>(
+    root: &Path,
+    principal: &PrincipalId,
+    session_id: &SessionId,
+    budget: &crate::agent_orient::MetadataReadBudget,
+    cancelled: &dyn Fn() -> bool,
+    read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
+) -> Result<(T, u64, u64), DeploymentSessionError> {
+    with_admitted_session_history(
+        root,
+        principal,
+        session_id,
+        |root, limits| {
+            DeploymentHistory::read_metadata_cancellable(root, limits, budget, cancelled)
+        },
+        cancelled,
+        read,
+    )
+}
+
+fn with_admitted_session_history<T>(
+    root: &Path,
+    principal: &PrincipalId,
+    session_id: &SessionId,
+    history: impl FnOnce(&Path, &OrientLimits) -> Result<DeploymentHistory, DeploymentReadError>,
+    cancelled: &dyn Fn() -> bool,
+    read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
+) -> Result<(T, u64, u64), DeploymentSessionError> {
     // These existing layout/restore-fence checks perform reads only. In particular a restored
     // historical checkpoint cannot regain live session authority through this read operation.
     let root = ensure_agent_writable(root)?;
@@ -264,8 +305,8 @@ pub(super) fn with_admitted_session_read<T>(
         WorkClaimLimits::default(),
     )?;
     let limits = OrientLimits::default();
-    let history = DeploymentHistory::read(&root, &limits)?;
-    let head = history.snapshot_at(history.head())?;
+    let history = history(&root, &limits)?;
+    let head = history.snapshot_at_cancellable(history.head(), cancelled)?;
     let now = evidence_now(&head);
     let (session, revision, remaining_tokens) =
         store.session_workspace(principal, session_id, now)?;
@@ -297,7 +338,7 @@ pub(super) fn with_admitted_session_read<T>(
             refusal.code()
         ))
     })?;
-    let basis = history.snapshot_at(position)?;
+    let basis = history.snapshot_at_cancellable(position, cancelled)?;
     if basis.anchor != session.current_anchor
         || revision.capsule().current_anchor != session.current_anchor
     {

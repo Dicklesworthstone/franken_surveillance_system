@@ -21,6 +21,8 @@ mod adapter_uvc;
 mod adapter_wyze;
 /// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
 pub mod agent_follow;
+/// Exact H0/H1 event metadata descriptors for durable session-bound evidence hydration.
+pub mod agent_event_hydration;
 pub mod agent_footage;
 /// Canonical read-only ONVIF vendor-claim interpretation over exact retained sources.
 pub mod agent_onvif;

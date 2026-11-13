@@ -35,6 +35,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify durable event metadata hydration
+        if: success() || failure()
+        run: |
+          hydration_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test agent_event_hydration_contract || hydration_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::evidence_hydration::tests || hydration_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::disclosure::tests || hydration_exit=1
+          exit "$hydration_exit"
       - name: Verify immutable perception reads and canonical CLI/MCP parity
         if: success() || failure()
         run: |

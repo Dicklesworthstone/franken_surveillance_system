@@ -89,6 +89,8 @@ use crate::situation_sections::{
 
 /// Exact owner-approved revocation of retained session authority (AOP-010).
 pub mod cancellation;
+/// Exact retained event H0/H1 reads with atomic session charge and cursor persistence.
+pub mod evidence_hydration;
 /// Explicit plan-outcome mission enrollment and evidence-derived lifecycle assessments.
 pub mod mission;
 mod opening_retry;
@@ -151,15 +153,19 @@ pub const HANDOFF_LIFETIME_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 /// additionally needs the operator's exact approval of that plan, never a session grant;
 /// `CAP-AGENT-FEEDBACK-001` appends advisory proposals that never mutate policy;
 /// `CAP-AGENT-EXPLAIN-001` admits exact read-only learning inspection for newly opened sessions;
+/// query and evidence-hydration grants admit exact retained metadata under durable disclosure
+/// charging; they do not grant original-media access or silently upgrade an existing session;
 /// `CAP-AGENT-WORK-CLAIM-001` reserves bounded work leases that coordinate cognition only.
-pub const SESSION_CAPABILITIES: [&str; 11] = [
+pub const SESSION_CAPABILITIES: [&str; 13] = [
     "CAP-AGENT-CASE-WRITE-001",
+    "CAP-AGENT-EVIDENCE-HYDRATE-001",
     "CAP-AGENT-EXPLAIN-001",
     "CAP-AGENT-FEEDBACK-001",
     "CAP-AGENT-HANDOFF-READ-001",
     "CAP-AGENT-HANDOFF-WRITE-001",
     "CAP-AGENT-INVESTIGATE-001",
     "CAP-AGENT-PLAN-PREPARE-001",
+    "CAP-AGENT-QUERY-001",
     "CAP-AGENT-SESSION-READ-001",
     "CAP-AGENT-SESSION-WRITE-001",
     "CAP-AGENT-SITUATION-READ-001",

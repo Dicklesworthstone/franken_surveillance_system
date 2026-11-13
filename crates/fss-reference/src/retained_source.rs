@@ -270,6 +270,19 @@ impl<'a> ImmutableRetainedSource<'a> {
         cx: &'a ReplayCx,
         cancelled: &'a (dyn Fn() -> bool + Sync),
     ) -> Result<Self, FileIngestError> {
+        let budget = MetadataReadBudget::new(limits.max_read_bytes, limits.max_read_objects);
+        Self::open_with_metadata_budget(root, limits, cx, cancelled, budget)
+    }
+
+    /// Continue an already admitted metadata read without replenishing its allowance. Private
+    /// session owners use this after their initial authority projection shares the same budget.
+    pub(crate) fn open_with_metadata_budget(
+        root: &Path,
+        limits: ImmutableRetainedReadLimits,
+        cx: &'a ReplayCx,
+        cancelled: &'a (dyn Fn() -> bool + Sync),
+        budget: MetadataReadBudget,
+    ) -> Result<Self, FileIngestError> {
         if root != cx.root_dir() {
             return Err(corrupt(
                 "immutable retained root differs from read authority",
@@ -285,7 +298,6 @@ impl<'a> ImmutableRetainedSource<'a> {
                 detail: "immutable retained read allowances must be positive".to_owned(),
             });
         }
-        let budget = MetadataReadBudget::new(limits.max_read_bytes, limits.max_read_objects);
         let admission = || cancelled() || cx.checkpoint(STAGE).is_err();
         if admission() {
             return Err(cancelled_error());

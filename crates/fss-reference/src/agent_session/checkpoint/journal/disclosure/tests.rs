@@ -18,6 +18,101 @@ use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SOURCE: &[u8] = b"original private footage must never enter the disclosure journal";
 
+#[test]
+fn existing_session_owner_and_disclosure_wrapper_share_cold_cursor_and_workspace_history()
+-> TestResult {
+    use crate::agent_session::work_claims::WorkClaimLimits;
+    use crate::agent_session::workspace::WorkspaceLimits;
+
+    let limits = DurableSessionLimits::default();
+    let claims = WorkClaimLimits::default();
+    let (fixture, owner) = Fixture::new(512, limits)?;
+    let DurableDisclosureStore {
+        mut sessions,
+        mut catalog,
+    } = owner;
+    sessions.initialize_workspaces(WorkspaceLimits::default())?;
+    sessions.enable_coordination(claims)?;
+    let admitted = sessions.hydrate_atomic(
+        &fixture.params.principal_id,
+        &fixture.alias,
+        &fixture.request(HydrationLevel::H2)?,
+        &mut catalog,
+        TimestampNs(20),
+    )?;
+    let cursor = admitted
+        .response
+        .receipt
+        .continuation
+        .ok_or("missing durable cursor")?;
+    assert_eq!(admitted.admission.charged_tokens(), 512);
+    let root = sessions.committed_root();
+    drop(sessions);
+    // The legacy wrapper cold-opens the exact same mixed journal, not a translated history.
+    let mut owner = DurableDisclosureStore::open_existing_with_coordination(
+        fixture.path(),
+        root,
+        limits,
+        claims,
+        fixture.blueprint.clone(),
+    )?;
+    let continuation = fixture.continuation(cursor.clone())?;
+    owner.hydrate_from_source(
+        &fixture.params.principal_id,
+        &fixture.alias,
+        &continuation,
+        &fixture.reader,
+        TimestampNs(21),
+    )?;
+    let root = owner.committed_root();
+    assert_eq!(fixture.remaining(&mut owner, 21)?, 1_024);
+    assert_eq!(fixture.reader.calls.get(), 1);
+    drop(owner);
+    // Reconstructing only the immutable catalog cannot discard the wrapper's consumption.
+    let mut sessions =
+        DurableSessionStore::open_existing_with_coordination(fixture.path(), root, limits, claims)?;
+    let stable = std::fs::read(fixture.path())?;
+    let mut rebuilt = fixture.blueprint.clone();
+    let failure = sessions
+        .hydrate_atomic(
+            &fixture.params.principal_id,
+            &fixture.alias,
+            &continuation,
+            &mut rebuilt,
+            TimestampNs(21),
+        )
+        .expect_err("consumed cursor must refuse");
+    assert!(matches!(
+        failure,
+        DisclosureError::Session(ReferenceSessionError::Hydration(
+            HydrationError::ContinuationAlreadyConsumed
+        ))
+    ));
+    assert!(
+        rebuilt
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or("tombstone missing")?
+            .consumed
+    );
+    assert_eq!(
+        sessions.remaining_token_budget(
+            &fixture.params.principal_id,
+            &fixture.params.session_id,
+            TimestampNs(21)
+        )?,
+        1_024
+    );
+    // Workspace initialization remains idempotent after both kinds of disclosure writer.
+    assert_eq!(
+        sessions.initialize_workspaces(WorkspaceLimits::default())?,
+        root
+    );
+    assert_eq!(std::fs::read(fixture.path())?, stable);
+    assert_eq!(fixture.reader.calls.get(), 1);
+    fixture.no_source_in_journal()?;
+    Ok(())
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> TestResult<Self> {
