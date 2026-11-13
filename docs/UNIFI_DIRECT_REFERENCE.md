@@ -16484,18 +16484,335 @@ exists. This does not provision Wi-Fi, create a credential, perform a handoff,
 or start video. The initial compiler check, job
 `j-30097323753212765`, passed with exit 0 using the retained snapshots under
 `/home/ubuntu/projects/fss-pinscan-0ac121d6f861`; its source predates the later
-discovery-target edge-case fix and its test. Neither revision has been
-qualified by a real-device or synthetic multi-camera run yet. A separate
-loopback fixture was added for a matching pin, a wrong pin and two candidates
-presenting the same pin. The refusal cases use absent credential files; the
-fixture retains its synthetic files and has not yet run. The discovery-target
+discovery-target edge-case fix and its test. A separate loopback fixture covers
+a matching pin, a wrong pin and two candidates presenting the same pin. The
+refusal cases use absent credential files; the fixture retains its synthetic
+files. The discovery-target
 helper also has a pure regression test for a /32 scope, duplicate broadcasts and
-invalid bounds, which has not yet run. A newer prepared source pair, including
+invalid bounds. The trial's argument parser currently
+accepts only prefixes 8 through 30, so /32 is not reachable through this CLI;
+the target helper's full-width check is defensive, not a demonstrated CLI bug.
+A newer prepared source pair, including
 these changes, is retained under `/home/ubuntu/projects/fss-pinscan2-1c603a0b6470`
 with source commit `c61a3d887b3e3a5ea15e96f182374701d1d17b29` and lab commit
 `f24cec1197b3ddd25577bcf254794f095a2aa9c2`. Strict-remote unit-test job
 `j-30097323753212773` exited 101 before compiling because its worker lacked
-the offline `x509-cert` dependency; no test ran. A retry on the earlier
-compiler's worker, `j-30097323753212777`, is running. Both prior terminal
-results were acknowledged and released their sources and pairs. The loopback
-fixture has not been executed.
+the offline `x509-cert` dependency; no test ran. Retry
+`j-30097323753212777` exceeded RCH's 1,800-second remote execution limit while
+compiling and did not produce a test result. Supported same-ID recovery
+returned delivery exit 120, with an earlier daemon exit of 130; the terminal
+record was acknowledged and the sources and pair were released. Neither
+attempt is a passing unit test. A separate read-only socket check on ts1
+confirmed that its two loopback source addresses can reply from the same UDP
+port; that verifies a fixture prerequisite, not pin matching or the fixture.
+A separate `cargo build --locked` for the same source pair, job
+`j-30097323753212801`, completed on vmi1149989 and produced the executable;
+unlike the test, this laboratory build is allowed to fetch locked packages if
+needed. It fetched `x509-cert`, returned exit 0, was acknowledged and released
+its sources and pair. The executable SHA-256 was
+`3787544a20a695992044d6703bc7a4399fea70438e5b4c1eb6fd638a6cb268c2`.
+The focused unit test was submitted again as `j-30097323753212815` on that
+worker, now with offline resolution. Its wrapper returned zero and custody was
+released, but the test summary was truncated in the observed output, so the
+test denominator is not established by that receipt. Warm-cache rerun
+`j-30097323753212817` retained its complete output on ts1 and passed the exact
+test (1 passed, 3 filtered); it exited 0, was acknowledged and released source
+and pair.
+At the same time RCH's global job listing reported journal errors and an
+incomplete listing. The original test handle continued to emit compiler
+output; the listing error is not a test verdict or evidence of released custody.
+
+The first loopback-fixture attempt stopped before discovery because it used a
+/32 prefix rejected by the trial parser. A corrected /30 attempt reached the
+TLS probe but the synthetic server saw `BrokenPipeError` while reading. A
+subsequent fixture revision disabled TLS tickets and handled a closed probe;
+it passed all three cases against the hash-matched executable on ts1. The
+passing fixture SHA-256 was
+`9b4e2013cfdc78945b25ec1aa993435378df2323aa60423d08770d683e36915c`.
+No application data was observed during the synthetic TLS probes; the wrong
+and duplicate pin cases used nonexistent credential paths and produced no
+journal or output file. These are local synthetic results, not a production
+TLS audit.
+
+An exact executable copy on trj then completed one read-only observation of
+the owner's G4 using an authorized interface and its saved certificate pin
+and credential, but no camera IP, MAC or discovery hint. It matched one
+discovered candidate by pin before loading credentials, read matching settings,
+selected the camera-reported 2688 x 1512 at 30 fps profile, and decoded the
+separate 640 x 360 JPEG snapshot. The executable hash matched before and after;
+no journal or output file was created. The pin was previously observed on the
+network and does not independently authenticate physical identity; login may
+leave a session of unknown expiry. This does not establish full-resolution
+direct video, unattended first-time enrollment, or reconciliation of the prior
+physical effects. The fallback recorder and timer remained active with restart
+count 1 before and after.
+
+### Scoped TLS laboratory dependency snapshot (2026-11-13 UTC)
+
+The retained pinscan2 laboratory workspace resolved `cargo metadata --locked
+--offline` on ts1. Its raw metadata SHA-256 is
+`5c66c759b2cbe32697d6180a67a3c8803f159575f663f62375fdccd7de00111c`.
+An all-platform normal/build metadata traversal over the selected TLS roots
+included optional/target-specific packages including `ring`; this traversal is
+an overapproximation, not proof that those packages are built for Linux. A
+separate `cargo tree --target x86_64-unknown-linux-gnu -e normal,build` for
+`rustls`, `rustls-pure`, `p256` and `x509-cert` listed 83 package versions,
+with no `ring` and no package declaring a native `links` value. Metadata for
+those packages declares seven build-script targets and three proc macros; all
+83 report a license expression or license-file field. The exact tree SHA-256 is
+`c459f42644ccf3aa4d8907a028a0223ef7ba089e1a855e05f06d3908ce057ec8`.
+
+The Linux tree includes `getrandom` through enabled dependencies, including
+`rustls-pure`; presence in the tree does not prove whether a particular
+handshake invokes it. These counts do not audit source-level unsafe code,
+verify license files, prove runtime entropy closure, or describe every target
+or feature configuration. They describe the patched experimental laboratory,
+not the FSS production dependency closure or DEP-TLS-001 admission. The raw
+metadata and tree are retained in the ts1 pinscan2 laboratory directory.
+
+Inspection of the resolved `rustls-pure` 0.15.4 `src/lib.rs` (SHA-256
+`4e8d10b52532e8732a5d6177280b7495e374b183cfaeb231eb4820d48ef3e8e0`)
+found direct `getrandom::fill` calls in its default random source and in the
+helper used by its default X25519, P-256, P-384 and hybrid key exchanges. The
+scoped trial replaces its provider random source and groups and supplies the
+patched per-configuration hooks; this source inspection alone does not prove
+that no other active provider or transitive path obtains ambient entropy. In
+this exact provider revision the ECDSA signing implementation calls
+`try_sign` and identifies its nonces as deterministic; this differs from an
+earlier upstream-revision observation and is not a transitive cryptographic
+audit. The provider source itself declares `forbid(unsafe_code)`; its
+dependencies and build scripts have not been audited by that observation.
+The resolved `ecdsa` 0.17.0 `signing.rs` (SHA-256
+`3aed067761f2aa2d5430b92ebcd4390bf5e3b63c6fdaef71b93aa1dc404c7008`)
+routes its `Signer::try_sign` implementation through message hashing and
+RFC 6979 prehash signing. That supports the provider's deterministic-nonce
+description for this specific call path, but does not audit every transitive
+implementation or establish entropy behavior elsewhere in TLS.
+For this laboratory's Linux feature tree, `aes-gcm`'s `getrandom` feature
+is enabled through Asupersync's dependency path; the same tree also reaches
+`rustls-pure`. Feature reachability does not establish that a given handshake
+uses that entropy source. The lab manifest also leaves default features on for
+some direct dependencies, so its feature configuration is not a proposed
+production admission profile.
+
+A subsequent lexical scan of `src/**/*.rs` for unsafe blocks, functions,
+traits, implementations and extern declarations covered all 83 packages in
+the Linux tree and found matching lines in 33. The scan includes inactive
+platform code, tests and comments, and does not establish which matches compile
+or whether any are unsound. The largest counts included `libc` (794 lines),
+`getrandom` (109), `chacha20` (66), `aes` (60) and `poly1305` (50). The
+retained machine-readable report SHA-256 is
+`b4a40f570fd0f2fcc5041246c1556c3ba50206fad9823c6cf9a26ca2103875bd`.
+This is an audit lead, not a count of executable unsafe blocks or evidence
+that the dependency closure is memory-safe. Target and feature guards, actual
+build-script effects, cryptographic uses and each relevant unsafe boundary still
+need review before production admission.
+
+The resolved `aes` 0.9.4 source supports an `aes_backend="soft"` build
+configuration that excludes the hardware-specific backend modules; its soft
+backend module declares `deny(unsafe_code)`. However, the parent crate source
+also contains unsafe accesses to its soft union field, so this switch alone
+does not establish an unsafe-free AES dependency or the safety of the full
+TLS closure. No backend setting was changed or tested by this inspection.
+
+### Fallback recorder observation (2026-11-13 UTC)
+
+At approximately 08:15 UTC, the existing recorder and bulk fallback timer
+were active. The recorder had restarted twice since its current systemd
+counter began; its latest process had exited with status 1 at 08:10:59 UTC,
+and systemd restarted it at 08:11:09 UTC. The journal category check did not
+establish the underlying cause. The bulk fallback archive contained 16 media
+files modified in the preceding 15 minutes, with the newest 11 seconds old.
+A separate read-only `ffprobe` of one recent closed archive candidate reported
+60 seconds of H.264 video at 1280 x 720 and 30 fps. This sampled fallback
+recording is lower resolution than the G4-reported 2688 x 1512 profile; the
+observation is not proof of uninterrupted recording, a continuous coverage
+interval, or native FSS streaming. No camera or recorder settings were changed.
+
+### Stable local claim for pinned discovery (2026-11-13 UTC)
+
+The scoped TLS laboratory now derives its automatic-discovery camera claim
+from a domain-separated digest of the supplied certificate bytes. The same
+claim is used for each candidate probe and for the selected camera, rather
+than deriving it from the discovered MAC and IP. This makes the local claim
+stable across network address changes when the pin remains unchanged. Manual
+MAC selection retains its prior MAC-and-IP-derived claim. This is an
+experimental claim migration, not independent physical identity: certificate
+rotation creates a different claim, duplicated certificates can identify more
+than one device, and unreachable duplicates are not ruled out. Existing
+MAC/IP-keyed journals are not migrated or reconciled by this change. It must
+not be used to bypass an unresolved effect or manufacture a trusted identity.
+
+The trial source SHA-256 was
+`e6444376673af4f8a19daaa655cac7329de35ea7ef941429d9a7d8e8d0e5382a`.
+Clean paired source commits `37733b6e3e59fc0122f0fb76a4ad14c1ee964327`
+and `f597260b22d4227b748ff496bc06795503bd61cf` were built on ts1 through
+strict-remote job `j-30097323753212822`, with Cargo and wrapper exit 0.
+The retrieved executable SHA-256 was
+`9e7565058ec0b508aeb55293d4f33c6c618c13a09c8592c0f4ac970b937b6ac1`.
+The loopback fixture passed 3/3 scenarios: matching pin, wrong pin, and
+duplicate matching pins. Strict-remote job `j-30097323753212828` passed 2/2
+focused tests, including the same pin across changed MAC and address,
+pin rotation, and the preserved manual-address behavior; three tests were
+filtered. Both jobs returned exit 0 and their source and pair were released.
+The address changes in that test are synthetic; the G4's network address was
+not changed to test it. The synthetic fixture files and source snapshots were
+retained on ts1 under `fss-stablepin-fixture-4b9da1b38829` and
+`fss-stablepin-4b9da1b38829` respectively.
+
+An exact copy of the binary then ran once on trj in read-only automatic
+discovery mode without a supplied camera IP, MAC, or discovery hint. One
+candidate matched the previously network-observed pin before credential
+access; the camera login and consistent-settings observation completed and
+the separate 640 x 360 JPEG decoded in memory. No effect journal or media
+output file was created, and the executable hash was unchanged. A local
+output filter incorrectly expected bare numeric video metrics even though
+the trial formats them as `Reported(...)`; its false match result does not
+show that the camera lacks the high profile, and this run did not retain a
+verifiable resolution claim. The earlier explicit high-profile observations
+remain separate. Login can leave a session of unknown expiry. The fallback
+recorder and timer were active before and after this run, with restart count
+2 on both checks. This is not first-time enrollment, direct live video,
+continuous native recording, or 30-day-retention proof; the prior physical
+handoff and time-sync effects remain indeterminate and were not retried.
+
+### Larger bounded pinned discovery windows (2026-11-13 UTC)
+
+The scoped trial formerly refused any discovery report containing more than
+16 eligible pin-probe candidates. It now allows at most 64 candidates, with
+up to 128 datagrams in the two-second discovery window. Reaching the datagram
+limit still makes the report incomplete and refuses selection. The probes are
+serial and authority-scoped; the limit remains finite, a slow or interrupted
+scan can fail, and unreachable or unobserved duplicate certificates cannot be
+ruled out. A broadcast claim is not physical identity, and this change does
+not automatically enroll an unpinned device.
+
+The 17-candidate loopback fixture first failed against the previous executable
+with the 16-candidate-limit refusal; its matching, wrong-pin and two-candidate
+duplicate controls had passed. After the candidate bound increased, a
+64-candidate fixture failed against the intermediate executable because its
+64-packet window stopped as incomplete. The final trial increased the packet
+bound without relaxing the incomplete-report refusal. Strict-remote build job
+`j-30097323753212836` compiled that source on `vmi1149989` and returned exit
+0; the wrapper returned 0 and source and execution pair were released. Its
+paired source commits were `cc19899c751693d52faed4bf02139a040ac7a0c8` and
+`ff405893e335f139b8aba77670152f1aa583f319`. The trial source SHA-256 was
+`fe81a8a326c30c4e63cbc230d93e3733b33a7e297da58348350d29f239a0ea26` and
+the retrieved executable SHA-256 was
+`655a6a3cfdc218bb45418c6fd63e345fdbfdcfe8fbf55ca2c1f215c601e377ac`.
+
+The expanded loopback fixture, SHA-256
+`fcc26494033bd316f0bb1d56e114006cfcb227a6d62ff50c46e2794676c96694`,
+passed 8/8 cases against that binary: matching and wrong pins, two duplicate
+pins, a 17th-candidate match and duplicate, a 64th-candidate match, refusal
+before probing at 65 candidates, and refusal before probing when 128 packets
+saturated the window. The final packet-saturation fixture was added after the
+binary build; the Rust source was unchanged. The fixture used synthetic
+loopback peers, certificates and credentials and retained its files on ts1
+under `fss-saturation-4b9da1b38829`.
+
+An exact copy on trj completed one read-only automatic discovery observation
+of the owner's G4 without a supplied camera IP, MAC or hint. One candidate
+matched the previously network-observed pin before credential access; status
+and settings were consistent, and the camera reported Video1 at 2688 x 1512
+and 30 fps. The separate 640 x 360 JPEG snapshot decoded in memory. The
+binary hash was unchanged and no effect journal or output file was created;
+login may leave a session with unknown expiry. The fallback recorder and timer
+were active before and after, with restart count 2 at both checks. These
+observations do not prove live direct video, complete multi-camera discovery,
+physical device identity, continuous recording or 30-day retention. The prior
+physical handoff and time-sync effects remain indeterminate and were not
+retried.
+
+### Pinned discovery through synthetic setup and video (2026-11-13 UTC)
+
+The scoped trial now offers an explicit `--lab-auto-pinned-setup` mode which
+can carry a uniquely pin-matched discovery candidate into the existing setup
+and stream path without a caller-supplied camera MAC or address. It requires
+automatic scoped discovery, a supplied pin and credential, owner authorization,
+and the separate effect, keeper and trusted-root journal paths. The ordinary
+automatic-MAC path remains observation-only without this option. These local
+journal roots are operator-selected and do not prove independent custody. The
+mode is experimental: it does not reconcile previous effects, establish
+physical identity, admit the laboratory TLS closure for production, or make a
+fresh attempt safe after a restart. It must not be used to bypass the existing
+G4's indeterminate handoff and time-sync effects.
+
+The Rust trial source SHA-256 was
+`fb6d26c29ef3d2f92121d912598a31475bf95dcdaae236a44cd9e0a500cd6abf`.
+Strict-remote build job `j-30097323753212845`, using source commits
+`d0e3fe22ab6ed5b2ca5b6a4f16aca3dc90dff42e` and
+`1cee0016c84292187d96439743c7443a8a297c79`, returned Cargo and wrapper exit 0;
+source and pair were released. The retrieved executable SHA-256 was
+`4f7352c87027fe547e085ab77b25d1946f98315ed16d3a960340c51a031238dd`.
+
+The first synthetic end-to-end attempt passed four refusal checks but stopped
+before handoff because its loopback controller address was ineligible. The
+fixture was corrected to run in a private isolated network namespace on ts1.
+Its final sources, `trial_auto_setup_fixture.py` SHA-256
+`de18af6601d6de9f47ea61d849f319ff693cd81cfaaf2d6088da552f83df87b3` and
+`trial_profile_fixture.py` SHA-256
+`0db7955b2161e8af89d1498a0b32db66b8d72f5994af96fbb1ec1590304b0b12`,
+were revised after the build without changing the compiled Rust source. Seven
+checks passed: refusal without explicit opt-in, without an anchored journal,
+with incompatible observation mode, without owner authorization, and with a
+wrong pin; a synthetic handoff and high-profile media push; and reopening the
+anchored journal for reconciliation. The synthetic camera did not receive
+application data during pin probing. The successful path requested Video1,
+produced a clip with six 2688 x 1512 frames, and decoded it with FFmpeg as an
+independent laboratory oracle. Reopening its journal showed five operations,
+all unresolved; the trial reported its effect outcome as unsettled. This
+fixture does not prove device receipt or safe automatic replay. Its retained
+private synthetic files are on ts1 under `fss-auto-final-4b9da1b38829`.
+
+The same executable also passed the eight previously documented synthetic
+pinned-discovery cases. An exact copy ran once against the real G4 in the
+separate read-only observation mode, without the new setup option: one
+candidate matched the existing network-observed pin, status and settings were
+consistent, the camera reported 2688 x 1512 at 30 fps, and its 640 x 360
+snapshot decoded. No effect journal or media output was created, and the
+binary hash was unchanged. Login may leave a session of unknown expiry. The
+existing recorder and fallback timer remained active, with restart count 2 on
+both checks. No physical setup write or new G4 stream was attempted.
+
+### Persistent laboratory setup-attempt fence (2026-11-13 UTC)
+
+The experimental `--lab-auto-pinned-setup` mode now also requires an existing,
+private operator-selected `--lab-setup-fence` directory. After pin-matching a
+candidate and before creating the effect journal or reading the camera
+credential, the trial uses a certificate-derived name and exclusive creation to
+reserve one attempt. The private canonical marker records the local claim,
+run identity, controller UUID, MAC claim and the three journal paths; the
+trial synchronizes the marker and directory before continuing. A pre-existing
+marker refuses the attempt without reading credentials or starting another
+journal. Errors after creation leave the marker in place. This is a local
+laboratory fence, not a reconciler or an automatic release mechanism.
+
+Strict-remote build `j-30097323753212853` used source commits
+`cfe49ade43af61e012f4420a7ef4488ca3ff971a` and
+`43facb4aeed28013733403f2078d93168a2f7871`, returned Cargo and wrapper exit 0,
+and released its source and pair. The trial source SHA-256 was
+`b868478048e99e453aba51256a881de5058739acbd2745b1de5fd7b6f49c776d` and
+the binary SHA-256 was
+`e179321bf1acc025c97c3d8840fc7223267edca18aa4564205612b62eac9e27e`.
+The final fixture source, revised after the build, had SHA-256
+`349a8290df24f065b059d5db921ee36e1a85145424d3b03ccb9a918c4f8588a1`;
+the profile helper SHA-256 was
+`bab07ac304b7043e02eda269708cd3b458429948a0497d498b07988d2db6a74d`.
+Ten checks passed in an isolated synthetic network: five setup-option and
+authority refusals, wrong-pin refusal, high-profile capture, journal reopening,
+restart after a changed IP and MAC, and concurrent attempts sharing one
+fence. The restart kept the marker unchanged and stopped before credential
+access or creating a new journal. In the concurrent case exactly one process
+created a journal, and neither had a credential; the other encountered the
+existing fence. The earlier synthetic journal still contained five unresolved
+operations. Fixture files remain on ts1 under `fss-auto-race-4b9da1b38829`.
+
+This test does not prove crash or power-loss durability, independent storage,
+safe fence release, camera identity or a deployed service. It covers only
+attempts using the same fence directory and certificate; another directory,
+certificate rotation, manual setup or tampering is outside the fence. A
+hostile concurrent replacement of path ancestors is not qualified. It does
+not retroactively fence or reconcile the older physical G4 effects. No G4
+setting was changed during this work; the existing recorder and fallback
+timer were active afterward with restart count 2.
