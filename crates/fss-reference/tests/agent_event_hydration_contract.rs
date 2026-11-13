@@ -1,18 +1,19 @@
 #![forbid(unsafe_code)]
 //! Real retained event metadata, native H0/H1 artifacts and conservative epistemic projection.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
 use fss_core::{
     AgentView, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EventEvidence,
     EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
-    H0Identity, H1CellContext, H1SemanticSynopsis, HandleAvailability, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec, KnowledgeState,
-    OperationId, PrincipalId, ProbabilityInterval, RootAuthoritySpec, SessionId, TimestampNs,
+    H0Identity, H1CellContext, H1SemanticSynopsis, HandleAvailability, HydrationArtifact,
+    HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec,
+    KnowledgeState, LaboratoryAccess, OperationId, PrincipalId, ProbabilityInterval,
+    RootAuthoritySpec, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
-use fss_object::SPOOL_OBJECTS_DIR;
+use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest, SPOOL_OBJECTS_DIR};
 use fss_publication::LOCAL_SPOOL_DIR;
 use fss_reference::agent_event_hydration::{
     EVENT_HYDRATION_CAPABILITY, EVENT_HYDRATION_H0_TOKENS, EVENT_HYDRATION_H1_TOKENS,
@@ -25,7 +26,8 @@ use fss_reference::agent_orient::{
 };
 use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{
-    ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+    ReferenceDeployment, ReferenceHydrationCatalog, ReferencePolicyAction, ReferencePolicyDecision,
+    ReplayCx,
 };
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -211,6 +213,157 @@ fn request(built: &EventHydrationCatalog, level: HydrationLevel) -> Test<Hydrati
         continuation: None,
         issued_at: built.descriptor.published_at,
     })?)
+}
+
+#[test]
+fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consumed_cursors() -> Test
+{
+    let fixture = Fixture::new("mixed-source-history", EventState::Hypothesized, false)?;
+    let mut built = fixture.build()?;
+    let now = built.descriptor.published_at;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(16, 65_536));
+    let mut prior = ReferenceHydrationCatalog::new();
+    let mut legacy = Vec::new();
+    for index in 0..2 {
+        let subject =
+            objects.put_verified(format!("unrelated original source {index}").as_bytes())?;
+        let root = objects
+            .publish_manifest(ObjectManifest::new("source", [subject], None)?)?
+            .root;
+        let capabilities = BTreeSet::from(["capability:legacy-source".to_owned()]);
+        let cost = event_hydration_cost(HydrationLevel::H1)?;
+        let descriptor = SemanticHandle::publish(SemanticHandleSpec {
+            contract_basis: built.descriptor.contract_basis.clone(),
+            anchor: built.descriptor.anchor.clone(),
+            subject_id: format!("subject:unrelated-source-{index}"),
+            subject_digest: subject,
+            semantic_type: "source_object".to_owned(),
+            source_id: format!("sensor:unrelated-source-{index}"),
+            capture_interval: None,
+            spatial_scope: None,
+            privacy_class: "private:property".to_owned(),
+            applied_transform: None,
+            availability: HandleAvailability::Available,
+            retention_until: TimestampNs(1000),
+            levels: [HydrationLevel::H0, HydrationLevel::H3].into(),
+            required_capabilities: BTreeMap::from([
+                (HydrationLevel::H0, capabilities.clone()),
+                (HydrationLevel::H3, capabilities.clone()),
+            ]),
+            estimated_costs: BTreeMap::from([
+                (HydrationLevel::H0, cost),
+                (HydrationLevel::H3, cost),
+            ]),
+            laboratory_access: LaboratoryAccess::Unavailable,
+            debug_capability: None,
+            derivative_handles: BTreeSet::new(),
+            published_at: now,
+        })?;
+        prior.register_descriptor(descriptor.clone())?;
+        prior.register_artifact(
+            &descriptor.handle_id,
+            descriptor.descriptor_digest,
+            HydrationArtifact::publish_h0_identity(&descriptor)?,
+        )?;
+        let binding = prior.bind_source_object(
+            &descriptor.handle_id,
+            descriptor.descriptor_digest,
+            root,
+            &objects,
+        )?;
+        let mut spec = HydrationRequestSpec {
+            contract_basis: descriptor.contract_basis.clone(),
+            session_id: SessionId::parse(format!("session:other-source-{index}"))?,
+            handle_id: descriptor.handle_id.clone(),
+            expected_descriptor_digest: descriptor.descriptor_digest,
+            expected_subject_digest: descriptor.subject_digest,
+            anchor: descriptor.anchor.clone(),
+            requested_level: HydrationLevel::H0,
+            allow_lower_level: false,
+            available_capabilities: capabilities,
+            authorized_privacy_classes: ["private:property".to_owned()].into(),
+            budget: cost,
+            purpose: HydrationPurpose::Routine,
+            continuation: None,
+            issued_at: now,
+        };
+        let response = prior.hydrate(&HydrationRequest::publish(spec.clone())?, now)?;
+        let cursor = response
+            .receipt
+            .continuation
+            .ok_or("legacy cursor missing")?;
+        if index == 0 {
+            spec.requested_level = HydrationLevel::H3;
+            spec.continuation = Some(cursor.clone());
+            prior.hydrate_from_source(&HydrationRequest::publish(spec)?, &objects, now)?;
+        }
+        legacy.push((
+            descriptor,
+            binding.custody_binding_digest(),
+            cursor,
+            index == 0,
+        ));
+    }
+    let checkpoint = prior.checkpoint_cursors(now, 1024 * 1024)?;
+    // No unrelated descriptor, original payload or source reader is supplied to this catalog.
+    built
+        .catalog
+        .restore_cursor_checkpoint(&checkpoint, 1024 * 1024, now)?;
+    let h0_request = request(&built, HydrationLevel::H0)?;
+    let h0 = built.catalog.hydrate(&h0_request, now)?;
+    let cursor = h0.receipt.continuation.ok_or("metadata cursor missing")?;
+    let base = request(&built, HydrationLevel::H1)?;
+    let h1_request = HydrationRequest::publish(HydrationRequestSpec {
+        contract_basis: base.contract_basis,
+        session_id: base.session_id,
+        handle_id: base.handle_id,
+        expected_descriptor_digest: base.expected_descriptor_digest,
+        expected_subject_digest: base.expected_subject_digest,
+        anchor: base.anchor,
+        requested_level: HydrationLevel::H1,
+        allow_lower_level: false,
+        available_capabilities: base.available_capabilities,
+        authorized_privacy_classes: base.authorized_privacy_classes,
+        budget: base.budget,
+        purpose: base.purpose,
+        continuation: Some(cursor.clone()),
+        issued_at: now,
+    })?;
+    built.catalog.hydrate(&h1_request, now)?;
+    let checkpoint = built.catalog.checkpoint_cursors(now, 1024 * 1024)?;
+    let mut cold = fixture.build()?;
+    cold.catalog
+        .restore_cursor_checkpoint(&checkpoint, 1024 * 1024, now)?;
+    for (descriptor, binding, prior_cursor, consumed) in legacy {
+        assert!(
+            cold.catalog
+                .descriptor(&descriptor.handle_id, descriptor.descriptor_digest)
+                .is_none()
+        );
+        assert_eq!(
+            cold.catalog
+                .source_binding_requirement(descriptor.descriptor_digest),
+            Some(binding)
+        );
+        assert_eq!(
+            cold.catalog
+                .issued_cursor(&prior_cursor.cursor_digest)
+                .ok_or("unrelated cursor disappeared")?
+                .consumed,
+            consumed
+        );
+    }
+    assert!(
+        cold.catalog
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or("metadata cursor missing")?
+            .consumed
+    );
+    assert!(matches!(
+        cold.catalog.hydrate(&h1_request, now),
+        Err(HydrationError::ContinuationAlreadyConsumed)
+    ));
+    Ok(())
 }
 
 #[test]

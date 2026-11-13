@@ -235,7 +235,10 @@ pub fn build_event_hydration_catalog(
         return Err(EventHydrationBuildError::Limit);
     }
     let mut catalog = ReferenceHydrationCatalog::with_limits(ReferenceHydrationLimits {
-        max_descriptors: 1,
+        // Only this event descriptor is reconstructed, but the durable catalog checkpoint
+        // also retains unrelated source-custody commitments. That journal-wide metadata uses
+        // the native descriptor ceiling; narrowing it to one would strand a mixed history.
+        max_descriptors: ReferenceHydrationLimits::default().max_descriptors,
         max_payload_bytes: MAX_EVENT_HYDRATION_H0_BYTES + MAX_EVENT_HYDRATION_H1_BYTES,
         max_issued_cursors: 4_096,
     });

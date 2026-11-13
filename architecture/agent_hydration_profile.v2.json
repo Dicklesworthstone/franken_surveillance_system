@@ -1,0 +1,69 @@
+{
+  "schema": "fss.agent_hydration_operation_profile.v1",
+  "semanticProtocol": "fss/1",
+  "contractBasisGeneration": "gen:fss1:event-hydration-v2",
+  "operationRegistryGeneration": "gen:fss1:hydration-operations-v1",
+  "selector": {
+    "operation": "query",
+    "target": "evidence-hydration",
+    "levels": [
+      "H0",
+      "H1"
+    ]
+  },
+  "nativeContractBasisGeneration": "gen:fss1:reference-v4",
+  "baseOperationRegistryGeneration": "gen:fss1:public-v1",
+  "baseOperationRegistryDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
+  "baseSchemaCatalogDigest": "sha256:a82134f79c3922ebdd2ee7f0ab2a10528f6289c19000cb64f67385d7ebc6a577",
+  "operation": {
+    "id": "AOP-005",
+    "name": "query",
+    "mode": "cognition_write",
+    "owner": "fss-query-plan",
+    "defaultView": "AVIEW-003",
+    "requestPayloadSchema": "fss.agent_query_plan.v1",
+    "responsePayloadSchemas": [
+      "fss.agent_cognitive_envelope.v1",
+      "fss.agent_evidence_hydration.v1"
+    ],
+    "requestEnvelope": "fss.agent_request_envelope.v1",
+    "responseEnvelope": "fss.agent_response_envelope.v1",
+    "effectful": false,
+    "durable": true,
+    "gate": "QL-AGENT-001",
+    "requiredCapabilities": [
+      "CAP-AGENT-QUERY-001",
+      "CAP-AGENT-EVIDENCE-HYDRATE-001"
+    ],
+    "retryClasses": [
+      "never_unchanged",
+      "refresh_and_retry",
+      "rebase_required",
+      "backoff",
+      "reconciliation_required",
+      "operator_action_required",
+      "resume_from_continuation"
+    ]
+  },
+  "canonicalOperationRow": "AOP-005|query|cognition_write|fss-query-plan|AVIEW-003|fss.agent_query_plan.v1|fss.agent_cognitive_envelope.v1;fss.agent_evidence_hydration.v1|fss.agent_request_envelope.v1|fss.agent_response_envelope.v1|0|1|QL-AGENT-001|CAP-AGENT-QUERY-001;CAP-AGENT-EVIDENCE-HYDRATE-001|never_unchanged;refresh_and_retry;rebase_required;backoff;reconciliation_required;operator_action_required;resume_from_continuation",
+  "operationDigestDomain": "fss.agent_hydration_operation_profile.v1",
+  "schemaCatalogDigestDomain": "fss.agent_hydration_schema_catalog.v1",
+  "responseSchema": {
+    "identity": "fss.agent_evidence_hydration.v1",
+    "path": "schemas/agent_evidence_hydration.v1.json",
+    "digest": "sha256:978059a46a34cee7783f99015fc1f889229b8401a849a6cf8ab754f678219b3a"
+  },
+  "operationRegistryDigest": "sha256:1fa8bd342678b607db8c0d4d1c72a501d36c1ebac087e15098713a38b19a2202",
+  "schemaCatalogDigest": "sha256:f604dcbb58aaab5ec27d3ba4bbdeb7601639ff2eb71fdb29de4f5aebf426396d",
+  "canonicalBasisDigest": "sha256:d7baa77c92610dcc4c659a7d46c6cf1cb14842568c17a94d4b42b9c0bb70d91f",
+  "binaryBasisDigest": "sha256:cb0a45ff5c5da3ea438d2a56e96ca45fad3ae837094fec64f5b4a1eae659e785",
+  "binaryFixture": "tests/fixtures/contract_basis_event_hydration_v2.bin",
+  "preservedArtifacts": {
+    "architecture/fss1_public_registry.v1.json": "sha256:e4687e12344f9b3209421a99d3e97a1b5389484fbd4af394f96ef124391f2743",
+    "tests/fixtures/contract_basis_v4.bin": "sha256:94a5ca8eff9eb06e2fbf19f08873ae82b99f726991c23251b8642eba4045ef14",
+    "tests/fixtures/contract_basis_probe_v3.bin": "sha256:127edcdc1b9e64ccfecec8aa601fc9ff9a04be98044705acc9515d3465a792f0",
+    "architecture/agent_hydration_profile.v1.json": "sha256:7f7c6d073fe48158716a957b35f46e450946130184227e2869715d66d3e0698b",
+    "tests/fixtures/contract_basis_event_hydration_v1.bin": "sha256:ad5daaea78fb4e0600bbd9c17aa25a9806d2e9827937625612617541847832e6",
+    "tests/fixtures/agent_evidence_hydration_profile_v1.schema.json": "sha256:fb02b9740e8386527973bf3038e509e7b8b94edcd928c526bc0717cc6f5f6f29"
+  }
+}

@@ -93,7 +93,7 @@ After the normal MCP initialization, call `query` with the actual selected IDs:
 {
   "target": "evidence-hydration",
   "session": "session:returned-by-open",
-  "generation": "1",
+  "generation": "0",
   "event_id": "event:selected",
   "revision_digest": "sha256:replace-with-exact-revision-digest",
   "anchor": "replace-with-exact-current-anchor-token",
@@ -102,7 +102,8 @@ After the normal MCP initialization, call `query` with the actual selected IDs:
 }
 ```
 
-`generation` is a canonical decimal string. `budget_tokens` is a JSON integer.
+`generation` is a canonical nonnegative decimal string; newly opened sessions
+start at `"0"`. Read it from the retained session rather than incrementing it. `budget_tokens` is a JSON integer.
 For H1 add `descriptor_digest` and, when resuming, `continuation` as a string
 containing the complete receipt cursor JSON. Root, principal, capability grants,
 privacy overrides and source-verification fields are not accepted from clients.

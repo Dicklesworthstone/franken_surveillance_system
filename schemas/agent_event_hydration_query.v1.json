@@ -16,9 +16,9 @@
     },
     "generation": {
       "type": "string",
-      "pattern": "^[1-9][0-9]*$",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
       "maxLength": 20,
-      "description": "Exact nonzero session symbol-table generation as a canonical u64 decimal string."
+      "description": "Exact retained session symbol-table generation as a canonical u64 decimal string, including initial generation zero."
     },
     "event_id": {
       "type": "string",

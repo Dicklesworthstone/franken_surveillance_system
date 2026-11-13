@@ -360,6 +360,17 @@ impl Fixture {
             .spent_tokens)
     }
 
+    fn generation(&self, session: &str) -> Test<u64> {
+        let state = self.inspect()?;
+        Ok(state
+            .sessions
+            .iter()
+            .find(|state| state.session.session_id.as_str() == session)
+            .ok_or("retained session")?
+            .session
+            .symbol_table_generation)
+    }
+
     fn expected(&self, session: &str) -> Test<EventHydrationCatalog> {
         let snapshot = read_deployment(&self.root, &OrientLimits::default())?;
         let oriented = orient_session(
@@ -390,7 +401,7 @@ impl Fixture {
             ("--target", "evidence-hydration".to_owned()),
             ("--principal", PRINCIPAL.to_owned()),
             ("--session", session.to_owned()),
-            ("--generation", "1".to_owned()),
+            ("--generation", self.generation(session)?.to_string()),
             ("--event-id", EVENT.to_owned()),
             ("--revision-digest", revision),
             ("--anchor", anchor),
@@ -438,7 +449,10 @@ impl Fixture {
         let mut values: BTreeMap<String, Value> = [
             ("target", Value::Text("evidence-hydration".to_owned())),
             ("session", Value::Text(session.to_owned())),
-            ("generation", Value::Text("1".to_owned())),
+            (
+                "generation",
+                Value::Text(self.generation(session)?.to_string()),
+            ),
             ("event_id", Value::Text(EVENT.to_owned())),
             ("revision_digest", Value::Text(revision)),
             ("anchor", Value::Text(anchor)),
@@ -708,6 +722,10 @@ fn accepted(
         "protected pending effect omitted"
     );
     let charged = integer(field(payload, "admission")?, "chargedTokens")?;
+    assert_eq!(
+        integer(field(payload, "admission")?, "sessionGeneration")?,
+        fixture.generation(session)?
+    );
     assert_eq!(charged, integer(field(receipt, "cost")?, "tokens")?);
     assert_eq!(
         charged,
@@ -743,7 +761,7 @@ fn next(reply: &Value) -> Test<(String, String)> {
     ))
 }
 
-fn refused(body: &str) -> Test {
+fn refused(fixture: &Fixture, body: &str) -> Test {
     let reply = parse(body)?;
     assert_eq!(text(&reply, "outcome")?, "refused");
     assert_eq!(
@@ -763,6 +781,7 @@ fn refused(body: &str) -> Test {
     );
     assert_eq!(field(&reply, "payload")?, &Value::Null);
     assert!(!body.contains("payloadBase64"));
+    conforms(fixture, "agent_response_envelope.v1.json", &reply)?;
     Ok(())
 }
 
@@ -771,6 +790,11 @@ fn library_cli_and_cold_mcp_deliver_exact_h0_h1_and_preserve_durable_accounting(
     let fixture = Fixture::new("roundtrip")?;
     let first = fixture.open("library then CLI", SESSION_BUDGET)?;
     let second = fixture.open("fresh MCP processes", SESSION_BUDGET)?;
+    assert_eq!(
+        fixture.generation(&first)?,
+        0,
+        "the actual public session starts at generation zero"
+    );
     let before = authority_tree(&fixture.root)?;
     let expected = fixture.expected(&first)?;
     let (body, exit) = execute_fss_with_exit(parse_fss_args(fixture.args(&first, "H0", &[])?)?);
@@ -817,7 +841,7 @@ fn library_cli_and_cold_mcp_deliver_exact_h0_h1_and_preserve_durable_accounting(
     )?;
     let spent = fixture.spent(&second)?;
     let replay = fixture.mcp(&second, "H1", PRINCIPAL, &options)?;
-    refused(&mcp_body(&replay, true)?)?;
+    refused(&fixture, &mcp_body(&replay, true)?)?;
     assert_eq!(
         fixture.spent(&second)?,
         spent,
@@ -868,9 +892,26 @@ fn foreign_principal_session_descriptor_and_cursor_never_disclose_or_mutate_auth
                 ("continuation", Value::Text(selected_cursor)),
             ],
         )?;
-        refused(&mcp_body(&wire, true)?)?;
+        refused(&fixture, &mcp_body(&wire, true)?)?;
         assert_eq!(authority_tree(&fixture.root)?, before);
     }
+    let wrong_generation = fixture
+        .generation(&session)?
+        .checked_add(1)
+        .ok_or("fixture generation overflow")?;
+    let wire = fixture.mcp(
+        &session,
+        "H1",
+        PRINCIPAL,
+        &[
+            ("descriptor_digest", Value::Text(descriptor.clone())),
+            ("continuation", Value::Text(cursor.clone())),
+            ("generation", Value::Text(wrong_generation.to_string())),
+        ],
+    )?;
+    refused(&fixture, &mcp_body(&wire, true)?)?;
+    assert_eq!(authority_tree(&fixture.root)?, before);
+    assert_eq!(fixture.spent(&session)?, original_spent);
     let mut tampered = parse(&cursor)?;
     let Value::Object(fields) = &mut tampered else {
         return Err("native cursor is not an object".into());
@@ -888,7 +929,7 @@ fn foreign_principal_session_descriptor_and_cursor_never_disclose_or_mutate_auth
     if let Some(error) = wire.object().and_then(|object| object.get("error")) {
         assert_eq!(field(error, "code")?.integer(), Some(-32602));
     } else {
-        refused(&mcp_body(&wire, true)?)?;
+        refused(&fixture, &mcp_body(&wire, true)?)?;
     }
     assert_eq!(authority_tree(&fixture.root)?, before);
     assert_eq!(fixture.spent(&session)?, original_spent);
@@ -943,7 +984,7 @@ fn both_event_revision_and_effect_history_changes_require_a_fresh_exact_anchor()
             ],
         )?;
         assert_ne!(exit, 0);
-        refused(&body)?;
+        refused(&fixture, &body)?;
         assert_eq!(fixture.spent(&session)?, EVENT_HYDRATION_H0_TOKENS);
         assert_eq!(authority_tree(&fixture.root)?, before);
     }
@@ -969,7 +1010,7 @@ fn insufficient_request_and_cumulative_session_budgets_never_degrade_h1_to_h0() 
                 ("budget_tokens", Value::Number(budget.to_string())),
             ],
         )?;
-        refused(&mcp_body(&wire, true)?)?;
+        refused(&fixture, &mcp_body(&wire, true)?)?;
         assert_eq!(fixture.spent(&session)?, EVENT_HYDRATION_H0_TOKENS);
         assert_eq!(authority_tree(&fixture.root)?, before);
     }

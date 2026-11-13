@@ -14,11 +14,11 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE_PATH = "architecture/agent_hydration_profile.v1.json"
+PROFILE_PATH = "architecture/agent_hydration_profile.v2.json"
 SCHEMA_PATH = "schemas/agent_evidence_hydration.v1.json"
 CORE_PATH = "crates/fss-core/src/contract_basis/hydration_profile.rs"
-FIXTURE_PATH = "tests/fixtures/contract_basis_event_hydration_v1.bin"
-BASIS_GENERATION = "gen:fss1:event-hydration-v1"
+FIXTURE_PATH = "tests/fixtures/contract_basis_event_hydration_v2.bin"
+BASIS_GENERATION = "gen:fss1:event-hydration-v2"
 OPERATION_GENERATION = "gen:fss1:hydration-operations-v1"
 OPERATION_DOMAIN = "fss.agent_hydration_operation_profile.v1"
 CATALOG_DOMAIN = "fss.agent_hydration_schema_catalog.v1"
@@ -46,16 +46,21 @@ REFERENCE = {
     "cost": "sha256:c86017d6a6674322613e8b88eb6c3ba994df2c9d071cb8b7045ea31c0f37bc3b",
 }
 PINS = {
-    "HYDRATION_RESPONSE_SCHEMA_DIGEST": "sha256:fb02b9740e8386527973bf3038e509e7b8b94edcd928c526bc0717cc6f5f6f29",
+    "HYDRATION_RESPONSE_SCHEMA_DIGEST": "sha256:978059a46a34cee7783f99015fc1f889229b8401a849a6cf8ab754f678219b3a",
     "HYDRATION_OPERATION_REGISTRY_DIGEST": "sha256:1fa8bd342678b607db8c0d4d1c72a501d36c1ebac087e15098713a38b19a2202",
-    "HYDRATION_SCHEMA_CATALOG_DIGEST": "sha256:1ab2e294b55a77c37e039c5abf0aafe20f8da844ed119aa032dbe63bb91aac0e",
-    "HYDRATION_CONTRACT_BASIS_CANONICAL_DIGEST": "sha256:46ddaba230a55412994d9e8229fd65db9a78b4edd07b93214c01d41581051979",
-    "HYDRATION_CONTRACT_BASIS_FREEZE_DIGEST": "sha256:ad5daaea78fb4e0600bbd9c17aa25a9806d2e9827937625612617541847832e6",
+    "HYDRATION_SCHEMA_CATALOG_DIGEST": "sha256:f604dcbb58aaab5ec27d3ba4bbdeb7601639ff2eb71fdb29de4f5aebf426396d",
+    "HYDRATION_CONTRACT_BASIS_CANONICAL_DIGEST": "sha256:d7baa77c92610dcc4c659a7d46c6cf1cb14842568c17a94d4b42b9c0bb70d91f",
+    "HYDRATION_CONTRACT_BASIS_FREEZE_DIGEST": "sha256:cb0a45ff5c5da3ea438d2a56e96ca45fad3ae837094fec64f5b4a1eae659e785",
 }
 PRESERVED = {
     "architecture/fss1_public_registry.v1.json": "sha256:e4687e12344f9b3209421a99d3e97a1b5389484fbd4af394f96ef124391f2743",
     "tests/fixtures/contract_basis_v4.bin": "sha256:94a5ca8eff9eb06e2fbf19f08873ae82b99f726991c23251b8642eba4045ef14",
     "tests/fixtures/contract_basis_probe_v3.bin": "sha256:127edcdc1b9e64ccfecec8aa601fc9ff9a04be98044705acc9515d3465a792f0",
+    # The initially published presentation rejected legitimate generation-zero sessions.
+    # A new basis accepts the corrected wrapper without recoding its old exact schema pin.
+    "architecture/agent_hydration_profile.v1.json": "sha256:7f7c6d073fe48158716a957b35f46e450946130184227e2869715d66d3e0698b",
+    "tests/fixtures/contract_basis_event_hydration_v1.bin": "sha256:ad5daaea78fb4e0600bbd9c17aa25a9806d2e9827937625612617541847832e6",
+    "tests/fixtures/agent_evidence_hydration_profile_v1.schema.json": "sha256:fb02b9740e8386527973bf3038e509e7b8b94edcd928c526bc0717cc6f5f6f29",
 }
 
 

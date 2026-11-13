@@ -75,8 +75,7 @@ impl EvidenceHydrationRequest {
         let digest_valid = |digest: ContentDigest| {
             digest.algorithm() == DigestAlgorithm::Sha256 && digest.bytes() != [0; 32]
         };
-        if self.generation == 0
-            || !digest_valid(self.expected_revision)
+        if !digest_valid(self.expected_revision)
             || self
                 .expected_descriptor
                 .is_some_and(|digest| !digest_valid(digest))
@@ -177,9 +176,23 @@ impl EvidenceHydrationError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidRequest => "ERR-CLI-MALFORMED-VALUE-001",
-            Self::Cancelled => "ERR-OP-CANCELLED-001",
+            Self::Cancelled => "ERR-AGENT-CONTEXT-INCOMPLETE-001",
             Self::Stale => "ERR-AGENT-RESNAPSHOT-001",
-            Self::Hydration(error) => error.code(),
+            // Native hydration diagnostics use lowercase engine codes. The public response
+            // envelope requires registered ERR identities; the typed cause stays available.
+            Self::Hydration(error) => match error {
+                HydrationError::BudgetExceeded | HydrationError::CapacityExceeded => {
+                    "ERR-BUDGET-EXHAUSTED-001"
+                }
+                HydrationError::CapabilityDenied
+                | HydrationError::PrivacyDenied
+                | HydrationError::LaboratoryGrantRequired => "ERR-AUTH-DENIED-001",
+                HydrationError::DescriptorNotFound
+                | HydrationError::WrongContinuation
+                | HydrationError::ContinuationExpired
+                | HydrationError::ContinuationAlreadyConsumed => "ERR-AGENT-SESSION-STALE-001",
+                _ => "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+            },
             Self::Catalog(_) => "ERR-AGENT-CONTEXT-INCOMPLETE-001",
             Self::Session(_) => "ERR-AUTH-DENIED-001",
             Self::Disclosure(_) => "ERR-AGENT-CONTEXT-INCOMPLETE-001",

@@ -249,7 +249,7 @@
       "target": "evidence-hydration",
       "payloadSchema": "fss.agent_evidence_hydration.v1",
       "rule": "A registered composition of the existing AgentCognitiveEnvelope, SemanticHandle, HydrationRequest, HydrationReceipt and HydrationArtifact. The native bytes and digests remain unchanged; full canonical payloadBase64 is carried outside bounded proposition strings. One exclusive existing session journal synchronizes quoted token charge and cursor replay state before disclosure. No parallel evidence history, source-media grant, effect authority or new public verb.",
-      "contractProfile": "architecture/agent_hydration_profile.v1.json",
+      "contractProfile": "architecture/agent_hydration_profile.v2.json",
       "profileScope": "The outer query response alone selects the exact hydration presentation basis, whose operation row declares cognition_write, durable agent-only charging, both existing grants and unsafe repeat semantics. Nested cognition, session, descriptor, request, receipt and cursor retain their original reference-v4 basis and canonical identities; no automatic session migration or mixed native basis is admitted."
     }
   },

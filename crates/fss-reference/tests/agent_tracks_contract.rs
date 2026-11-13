@@ -545,7 +545,19 @@ fn missed_and_zero_detection_frames_never_become_synthetic_observations_or_physi
         let mut request = request(fixture.report)?;
         request.config.confirmation_hits = 1;
         request.config.maximum_missed_frames = 2;
+        let cx = context(&fixture.root)?;
+        let writer = ReferenceDeployment::open(&fixture.root, SITE, &cx)?;
+        let native = PackageAnalysisReport::read(
+            &writer,
+            fixture.report,
+            &request.label,
+            request.config,
+            &cx,
+        )?;
+        let before = fixture.journals()?;
         let query = attempt(&fixture.root, &request, TrackQueryLimits::default())??;
+        assert_eq!(query.report.encoded(), native.encoded());
+        assert_eq!(query.report.digest(), native.digest());
         let segments = query
             .observations
             .iter()
@@ -557,11 +569,52 @@ fn missed_and_zero_detection_frames_never_become_synthetic_observations_or_physi
             assert!(query.page.next_cursor.is_none());
         } else {
             assert_eq!(segments, vec![0, 2]);
-            assert_eq!(
-                query.observations[0].track_identity,
-                query.observations[1].track_identity
-            );
+            // A retained missed track need not reassociate: this fixture moves the
+            // next box beyond overlap, and native association refuses zero IoU.
             assert!(query.observations.iter().all(|row| row.sample_confirmed));
+        }
+        for row in &query.observations {
+            let track = native
+                .tracks()
+                .iter()
+                .find(|track| track.identity == row.track_identity)
+                .ok_or("native track identity after missed frame")?;
+            let observation = track
+                .observations
+                .get(row.observation_index as usize)
+                .ok_or("native matched observation after missed frame")?;
+            assert_eq!(row.track_id, track.track_id);
+            assert_eq!(&row.observation, observation);
+            assert_eq!(row.track_ever_confirmed, track.confirmed);
+            assert_eq!(
+                Some(row.sample_confirmed),
+                native.sample_is_confirmed(track.identity, row.observation_index as usize)
+            );
+            let frame = native
+                .retained()
+                .record()
+                .frames
+                .get(row.frame_index as usize)
+                .ok_or("native source frame after missed frame")?;
+            assert_eq!(row.observation.segment, frame.segment);
+            assert_eq!(row.observation.capsule_digest, frame.capsule_digest);
+            assert_eq!(row.capture, frame.capture);
+            assert_eq!(row.inference_identity, frame.inference_identity);
+            assert_eq!(row.detection_report_digest, frame.detection_report_digest);
+            let assigned = row
+                .observation
+                .detection
+                .ok_or("actual matched detection")?;
+            let detection = frame
+                .detections
+                .iter()
+                .find(|detection| {
+                    detection.row == assigned.0 && detection.class_index == native.class_index()
+                })
+                .ok_or("assigned detection in exact source frame")?;
+            assert_eq!(assigned.1, detection.score_bits);
+            assert_eq!(assigned.2, detection.bounds);
+            assert_eq!(row.detection_clipped, Some(detection.clipped));
         }
         assert_eq!(query.report.retained().record().frames.len(), 3);
         assert_eq!(
@@ -588,6 +641,9 @@ fn missed_and_zero_detection_frames_never_become_synthetic_observations_or_physi
                 .iter()
                 .any(|entry| entry.contains("missed-frame"))
         );
+        assert_eq!(fixture.journals()?, before);
+        drop(writer);
+        cx.drain_and_finalize();
     }
     Ok(())
 }

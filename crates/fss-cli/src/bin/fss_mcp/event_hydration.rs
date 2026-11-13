@@ -58,11 +58,11 @@ pub(super) fn arguments(
         .filter(|value| {
             value
                 .parse::<u64>()
-                .is_ok_and(|number| number > 0 && number.to_string() == *value)
+                .is_ok_and(|number| number.to_string() == *value)
         })
         .ok_or((
             -32602,
-            "Session generation requires a nonzero canonical u64 decimal string",
+            "Session generation requires a canonical nonnegative u64 decimal string",
         ))?;
     argv.push(format!("--generation={generation}").into());
     let level = fields

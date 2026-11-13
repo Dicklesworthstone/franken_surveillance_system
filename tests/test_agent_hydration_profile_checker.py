@@ -85,6 +85,24 @@ class HydrationProfileTests(unittest.TestCase):
         (self.root / checker.FIXTURE_PATH).unlink()
         self.assertTrue(self.errors())
 
+    def test_initial_profile_manifest_schema_and_binary_cannot_be_rewritten(self) -> None:
+        for relative in (
+            "architecture/agent_hydration_profile.v1.json",
+            "tests/fixtures/agent_evidence_hydration_profile_v1.schema.json",
+            "tests/fixtures/contract_basis_event_hydration_v1.bin",
+        ):
+            with self.subTest(path=relative):
+                path = self.root / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b"\n")
+                self.assertTrue(any(relative in error for error in self.errors()))
+                path.write_bytes(original)
+
+    def test_initial_wrapper_cannot_reuse_the_corrected_profile_basis(self) -> None:
+        original = self.root / "tests/fixtures/agent_evidence_hydration_profile_v1.schema.json"
+        (self.root / checker.SCHEMA_PATH).write_bytes(original.read_bytes())
+        self.assertTrue(any("HYDRATION_RESPONSE_SCHEMA_DIGEST" in error for error in self.errors()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,7 +45,7 @@ fn hydration_profile_pins_schema_charging_row_and_binary_without_rewriting_refer
     );
     let hydration = hydration_contract_basis();
     let fixture =
-        include_bytes!("../../../../tests/fixtures/contract_basis_event_hydration_v1.bin");
+        include_bytes!("../../../../tests/fixtures/contract_basis_event_hydration_v2.bin");
     assert_eq!(encode_canonical_binary(&hydration)?.as_slice(), fixture);
     assert_eq!(decode_canonical_binary(fixture)?, hydration);
     assert_eq!(
@@ -59,6 +59,33 @@ fn hydration_profile_pins_schema_charging_row_and_binary_without_rewriting_refer
     assert!(is_hydration_contract_basis(&hydration));
     assert!(!is_hydration_contract_basis(&reference));
     assert!(!is_hydration_contract_basis(&probe));
+    let historical_bytes =
+        include_bytes!("../../../../tests/fixtures/contract_basis_event_hydration_v1.bin");
+    let historical = decode_canonical_binary(historical_bytes)?;
+    assert_eq!(
+        encode_canonical_binary(&historical)?.as_slice(),
+        historical_bytes
+    );
+    assert_eq!(
+        ContentDigest::sha256(historical_bytes).to_text(),
+        HISTORICAL_HYDRATION_CONTRACT_BASIS_FREEZE_DIGEST_V1
+    );
+    assert_eq!(
+        historical.basis_digest().to_text(),
+        HISTORICAL_HYDRATION_CONTRACT_BASIS_CANONICAL_DIGEST_V1
+    );
+    assert_eq!(
+        historical.schema_catalog_digest.to_text(),
+        HISTORICAL_HYDRATION_SCHEMA_CATALOG_DIGEST_V1
+    );
+    assert_eq!(
+        ContentDigest::sha256(include_bytes!(
+            "../../../../tests/fixtures/agent_evidence_hydration_profile_v1.schema.json"
+        ))
+        .to_text(),
+        HISTORICAL_HYDRATION_RESPONSE_SCHEMA_DIGEST_V1
+    );
+    assert!(!is_hydration_contract_basis(&historical));
     assert!(negotiate_basis(&reference, &hydration).is_err());
     assert!(negotiate_basis(&hydration, &reference).is_err());
     assert_eq!(reference_contract_basis(), reference);

@@ -123,7 +123,17 @@ pub fn parse_event_hydration_query_args(
         )
     })?;
     let (value, index) = required(&values, "--generation")?;
-    let generation = positive("--generation", value, u64::MAX, index)?;
+    let generation = value
+        .parse::<u64>()
+        .ok()
+        .filter(|number| number.to_string() == value)
+        .ok_or_else(|| {
+            malformed(
+                "--generation",
+                "expected the canonical nonnegative retained session generation",
+                index,
+            )
+        })?;
     let (value, index) = required(&values, "--event-id")?;
     let event_id = EventId::parse(value)
         .map_err(|_| malformed("--event-id", "expected an exact event identity", index))?;

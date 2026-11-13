@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_evidence_hydration.v1.json",
+  "title": "Retained event hydration with protected cognitive context v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "cognition",
+    "eventHandle",
+    "anchorToken",
+    "descriptor",
+    "request",
+    "receipt",
+    "artifact",
+    "admission"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_evidence_hydration.v1"
+    },
+    "cognition": {
+      "$ref": "agent_cognitive_envelope.v1.json"
+    },
+    "eventHandle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "anchorToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "descriptor": {
+      "allOf": [
+        {
+          "$ref": "semantic_handle.v1.json"
+        },
+        {
+          "properties": {
+            "anchor": {
+              "allOf": [
+                {
+                  "$ref": "evidence_anchor.v1.json"
+                },
+                {
+                  "required": [
+                    "privacyEpoch"
+                  ]
+                }
+              ]
+            },
+            "levels": {
+              "maxItems": 2,
+              "items": {
+                "enum": [
+                  "H0",
+                  "H1"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "request": {
+      "allOf": [
+        {
+          "$ref": "semantic_hydration_request.v1.json"
+        },
+        {
+          "properties": {
+            "anchor": {
+              "allOf": [
+                {
+                  "$ref": "evidence_anchor.v1.json"
+                },
+                {
+                  "required": [
+                    "privacyEpoch"
+                  ]
+                }
+              ]
+            },
+            "requestedLevel": {
+              "enum": [
+                "H0",
+                "H1"
+              ]
+            },
+            "continuation": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "agent_continuation_cursor.v1.json"
+                    },
+                    {
+                      "properties": {
+                        "basisAnchor": {
+                          "allOf": [
+                            {
+                              "$ref": "evidence_anchor.v1.json"
+                            },
+                            {
+                              "required": [
+                                "privacyEpoch"
+                              ]
+                            }
+                          ]
+                        },
+                        "resumeAnchor": {
+                          "allOf": [
+                            {
+                              "$ref": "evidence_anchor.v1.json"
+                            },
+                            {
+                              "required": [
+                                "privacyEpoch"
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "receipt": {
+      "allOf": [
+        {
+          "$ref": "semantic_hydration_receipt.v1.json"
+        },
+        {
+          "properties": {
+            "anchor": {
+              "allOf": [
+                {
+                  "$ref": "evidence_anchor.v1.json"
+                },
+                {
+                  "required": [
+                    "privacyEpoch"
+                  ]
+                }
+              ]
+            },
+            "requestedLevel": {
+              "enum": [
+                "H0",
+                "H1"
+              ]
+            },
+            "continuation": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "agent_continuation_cursor.v1.json"
+                    },
+                    {
+                      "properties": {
+                        "basisAnchor": {
+                          "allOf": [
+                            {
+                              "$ref": "evidence_anchor.v1.json"
+                            },
+                            {
+                              "required": [
+                                "privacyEpoch"
+                              ]
+                            }
+                          ]
+                        },
+                        "resumeAnchor": {
+                          "allOf": [
+                            {
+                              "$ref": "evidence_anchor.v1.json"
+                            },
+                            {
+                              "required": [
+                                "privacyEpoch"
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "semantic_hydration_artifact.v1.json"
+            },
+            {
+              "properties": {
+                "level": {
+                  "enum": [
+                    "H0",
+                    "H1"
+                  ]
+                },
+                "payloadBase64": {
+                  "maxLength": 87384
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "journalRoot",
+        "chargedTokens",
+        "remainingTokens",
+        "sessionGeneration"
+      ],
+      "properties": {
+        "journalRoot": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "minLength": 71,
+          "maxLength": 71,
+          "not": {
+            "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "chargedTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16000
+        },
+        "remainingTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "sessionGeneration": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
