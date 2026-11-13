@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/event_revision_comparison.v1.json",
+  "title": "FSS exact adjacent retained event revision comparison v1",
+  "description": "A read-only comparison of complete adjacent event metadata revisions under current authority. Native validation additionally checks lineage, exact digests, immediate supersession, changed-field completeness, ordering and custody; differences do not establish physical causation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "anchorToken",
+    "changes",
+    "comparisonDigest",
+    "from",
+    "policyDigest",
+    "question",
+    "schema",
+    "to"
+  ],
+  "properties": {
+    "anchorToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 14,
+      "items": {
+        "$ref": "#/$defs/change"
+      }
+    },
+    "comparisonDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "from": {
+      "$ref": "#/$defs/revision"
+    },
+    "policyDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "question": {
+      "const": "what_changed"
+    },
+    "schema": {
+      "const": "fss.event_revision_comparison.v1"
+    },
+    "to": {
+      "$ref": "#/$defs/revision"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitSequence",
+        "publicationRoot",
+        "revision",
+        "revisionDigest"
+      ],
+      "properties": {
+        "commitSequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "publicationRoot": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision": {
+          "$ref": "event_hypothesis.v1.json"
+        },
+        "revisionDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "after",
+        "before",
+        "field"
+      ],
+      "properties": {
+        "field": {
+          "enum": [
+            "decisionPath",
+            "eventId",
+            "evidence",
+            "kind",
+            "modelReceipts",
+            "probability",
+            "revision",
+            "schema",
+            "state",
+            "supersedes",
+            "timeInterval",
+            "trackIds",
+            "uncertaintyReason",
+            "zoneIds"
+          ]
+        },
+        "before": {},
+        "after": {}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "field": {
+              "const": "decisionPath"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/decisionPath"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/decisionPath"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "eventId"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/eventId"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/eventId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "evidence"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/evidence"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/evidence"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "kind"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/kind"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/kind"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "modelReceipts"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/modelReceipts"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/modelReceipts"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "probability"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/probability"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/probability"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "revision"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/revision"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/revision"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "schema"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/schema"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/schema"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "state"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/state"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/state"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "supersedes"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/supersedes"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/supersedes"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "timeInterval"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/timeInterval"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/timeInterval"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "trackIds"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/trackIds"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/trackIds"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "uncertaintyReason"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/uncertaintyReason"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/uncertaintyReason"
+            }
+          }
+        },
+        {
+          "properties": {
+            "field": {
+              "const": "zoneIds"
+            },
+            "before": {
+              "$ref": "event_hypothesis.v1.json#/properties/zoneIds"
+            },
+            "after": {
+              "$ref": "event_hypothesis.v1.json#/properties/zoneIds"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

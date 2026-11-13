@@ -23,6 +23,8 @@ mod adapter_wyze;
 pub mod agent_follow;
 /// Exact H0/H1 event metadata descriptors for durable session-bound evidence hydration.
 pub mod agent_event_hydration;
+/// Exact adjacent event-revision changes under current immutable metadata authority.
+pub mod agent_event_changes;
 pub mod agent_footage;
 /// Canonical read-only ONVIF vendor-claim interpretation over exact retained sources.
 pub mod agent_onvif;

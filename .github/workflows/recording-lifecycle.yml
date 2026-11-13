@@ -70,3 +70,11 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_hydration_contract || hydration_exit=1
           cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --test event_hydration_query_cli_contract || hydration_exit=1
           exit "$hydration_exit"
+      - name: Verify exact event revision comparisons and explanation compatibility
+        if: ${{ success() || failure() }}
+        run: |
+          comparison_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract || comparison_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli || comparison_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || comparison_exit=1
+          exit "$comparison_exit"
