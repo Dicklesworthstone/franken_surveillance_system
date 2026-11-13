@@ -17053,6 +17053,7 @@ Its private test data remains under
 `/bulk/unifi_camera_recordings/verification/fss-private-video-restart-4b9da1b38829`.
 The existing recorder and fallback timer remained active with restart count 2.
 
+
 This is camera-derived media, not a live physical-camera connection, a cold
 process-crash recovery, automatic latest-lineage selection, settled camera
 control, audio, complete sample coverage, or 30-day recording proof.
@@ -17634,3 +17635,180 @@ the parser oracle, private-bus oracle and fixture hashes were respectively
 `9fe0e39878d2e93c7b6d991e8aa4aa40bca1adbbf85dbe27f048cbc130147b87` and
 `59c8d8d5c6fc52e2a22e22f952ad7b3a356cf25afe407858690a452b2f4a3a42`.
 The existing recorder and fallback timer remained active with restart count 2.
+
+### Task-owned GATT management negotiation write (2026-11-13 UTC)
+
+`bluez_gatt_management::Plan` binds an encoded GATT request to caller-supplied
+camera identity, peer-admission, session generation and lease claims, as well
+as the exact bus owner, serial, device, characteristic and requested write mode.
+These are claims, not device authentication or evidence of message semantics.
+The plan is restricted to separately verified management negotiation under the
+existing `EFFECT-CAMERA-MANAGEMENT-001` effect. It does not authorize Wi-Fi
+provisioning, arbitrary settings, or plaintext credential handling; an
+independent live authority must validate the actual semantics and identity.
+
+`Watch::dispatch_gatt_management` requires the currently selected write
+characteristic and mode, active notification session, matching unclaimed
+journal-backed effect permit, fresh claims and empty queued-change buffer.
+It rechecks bus, device, write-characteristic, notification-characteristic,
+task, and independent management authority while polling. It claims the permit
+and fences the session before its first transport write. Correlated BlueZ
+success is only a local acknowledgment; the effect remains unresolved until
+independently reconciled. Cancellation, incomplete transport, permission
+revocation or uncorrelated response after claim leaves the watch uncertain and
+the committed journal obligation outstanding; the code does not retry. A
+dropped future before its first poll performs no transport I/O, but its permit
+and outstanding effect still require owner reconciliation. The check only
+covers signals observed by the bus watch and does not prove uninterrupted
+coverage. Caller-supplied journal storage and authority remain separate trust
+boundaries; `journal_backed()` is not independent proof of their durability.
+
+At snapshot `81b8348e5ddada8e767215fecad5cf2da673b962`, strict-remote job
+`30097323753213367` passed 25 BlueZ integration tests. Its management-write
+test used a synthetic in-memory journal and fragmented transport to check
+correlated acknowledgment, pending notifications, denied or stale authority,
+wrong request, absent journal, one-use permit, cancellation after submission,
+authority revocation, wrong-owner reply and retained committed effect state.
+The test does not establish durable storage or a physical device operation.
+The subsequent notification-admission revision additionally checks admission
+for interleaved notification reads and tests denial and revocation; its first
+test run, job `30097323753213368`, was refused before execution because the
+remote disk monitor timed out. It exited 120, was acknowledged, and released
+its source and pair. The preflight refusal was not an executed test; the
+revision was subsequently retried on a different worker.
+
+The retry, job `30097323753213372`, subsequently passed all 25 tests on
+snapshot `fecd4c88a4dbcc82c8c1995e02edab60f46c104f`, including notification
+admission denied before dispatch and revoked after a partial write. The job
+exited 0, was acknowledged, and released its source and pair. The watch,
+management plan and integration-test hashes were respectively
+`b20e1bc5dc33f796d3b3b043aba8e581cc94a4cd2897919090fd69e25fa262f2`,
+`2089b5928b1d0d47f1a17789c71b0bd85d88ec3bbba9a0ae13894e3d226386bc`, and
+`564a54ae4bb01586996cec1893a99cad5bd114f523fdeed838a39ebe575afaf9`,
+matching the current checkout at verification. These are synthetic responses
+with a non-durable in-memory test journal. No camera call was made; the
+recorder and fallback timer remained active with restart count 2.
+
+### Passive full-resolution Rust still
+
+The `unifi_live_still_probe` example receives a bounded FLV stream, decodes
+H.264 using the Rust media pipeline, and encodes a JPEG in a supervised worker.
+The JPEG is checked by decoding its luma and comparing dimensions; its color
+conversion assumes BT.601 full range because the decoder does not expose the
+source color metadata. The example creates a private output file exclusively
+and syncs it; its path checks do not defend against a hostile concurrent
+replacement of parent directories. It is a diagnostic, not a production
+recording or camera-control service.
+
+At source snapshot `e5356d1bc5ddec69881b0c013afd4f57266bb709`, the example
+had SHA-256 `0b01c49969ccf7c9a430fb52cddb52f5d0d474b33a231ea62be58fbb1ce502e7`.
+Strict-remote build job `30097323753213381` exited 0, was acknowledged, and
+released its source and worker pair. The prior build job `30097323753213380`
+failed with a type-inference error before the correction; it was acknowledged
+and released its resources. A synthetic fixture tested three outcomes:
+missing owner authorization and an unapproved peer were refused, while an
+approved loopback stream produced a private 2688 × 1512 JPEG. The fixture ran
+the Rust binary unprivileged in an isolated network namespace.
+
+A separate passive test produced a 2688 × 1512 JPEG from the live G4 high
+stream. The Rust receiver consumed more than 3 MB after its initial buffer;
+the private JPEG is at
+`/bulk/unifi_camera_recordings/fss-live-still-e5356d1/g4-high.jpg` on `trj`
+and has SHA-256
+`d756d80ef85487dee3af38e97ad2b6080046d2317043388db525245b2348432d`.
+The input was a passive copy of the existing camera push while Scrypted still
+owned the camera connection. Its FLV startup and AVC configuration were
+synthetic, with configuration obtained from the existing relay SDP; the
+configuration epoch and camera peer identity were not independently verified.
+This is evidence of a real live full-resolution Rust decode and JPEG export,
+not a direct Rust camera session, color-accuracy proof, audio test, sustained
+recording, or Scrypted/Docker replacement. No camera setting or controller
+handoff was changed. The existing recorder and fallback timer remained active,
+with recorder restart count 2. Earlier physical controller and time-sync
+effects remain indeterminate and were not replayed.
+
+### Refreshing the listener port before a handoff
+
+The listener-bound setup path previously checked the camera's reported
+controller port before two settings reads, then used that earlier claim to
+prepare the handoff. It now reads status again after those settings reads and
+before preparing an effect, refusing a changed, missing, unset, or unsupported
+port. The camera API permits a status refresh in its ready phase and returns to
+that phase if the request is definitely unwritten; an indeterminate write
+fences the session. A status refresh cannot bypass the required settings
+readback after a handoff.
+
+This is a bounded preflight improvement, not a guarantee that the port stays
+unchanged after the refresh. The already-associated path still returns before
+this new refresh, and status is an untrusted camera claim. Neither this check
+nor the tests reconcile the old physical G4 handoff or time-sync effects.
+
+On synthetic snapshot `8bd504d`, strict-remote job `30097323753213384` passed
+14 camera API and 19 handoff-dispatch tests; six listener-dependent tests
+were ignored. On snapshot `ea3fd2b`, job `30097323753213385` passed the
+listener-bound test with the new changed-port and missing-port cases. The
+fixture required an empty operation journal and a closed connection with no
+handoff request for each refusal. On snapshot `4cc5ebd`, job
+`30097323753213386` passed all six listener-dependent cases, including shared
+listeners and fleet recovery. Both later snapshots retain the same application
+sources; their test changes add cases and adjust formatting. All three jobs
+exited 0, were acknowledged, and released source and worker pair. They used
+synthetic traffic with test-artifact preservation enabled. A check of trj
+after these runs found the existing recorder and fallback timer active, with
+recorder restart count 2. No G4 operation was performed by these tests.
+
+The ordinary suite was subsequently repeated using the Rust files from
+snapshot `5199e88`, which adds an assertion that status refresh is refused while post-handoff
+settings reconciliation is required. Job `30097323753213392` passed all 14
+camera API and 19 non-ignored handoff-dispatch tests; six listener tests
+remained ignored in that invocation and were covered by job
+`30097323753213386` above. A separate worker-side hash check, job
+`30097323753213391`, matched the current camera API, setup and both test files
+to the local checkout. It was a subsequent source observation, not an
+independent receipt captured atomically during the test. An earlier attempt
+at that hash check, job `30097323753213390`, exited 1 because an RCH slot
+argument was passed to the hash program; it did not run a test. All four
+later jobs mentioned here exited as stated, were acknowledged, and released
+source and pair custody.
+
+### Ordered BlueZ notification framing
+
+`bluez_bus::NotificationFrames` now composes the task-owned BlueZ watch with
+the bounded UniFi BLE packet framer. It binds to one active notification
+epoch before the first change is delivered, accepts changes in the watch's
+local delivery order, and returns every original change for separate
+inventory handling. The owner drains a change before supplying the next;
+split packets and multiple packets in one value are supported. Returned
+changes lose their one-use admission so they cannot be replayed as input.
+Unrelated changes are returned without feeding their values to the packet
+framer. A stale selection, ended subscription, revoked watch admission,
+out-of-order change or a change from another epoch is refused. These local
+sequence and epoch bindings do not prove that BlueZ delivered every device
+notification or authenticate the camera.
+
+The owner checks the task, bus, device and characteristic admission before
+processing; it debits the D-Bus frame length for each decode and the configured
+maximum packet size before starting each new packet. Budget refusal preserves
+the pending change without accepting its value. Framing failure fences the
+owner; explicit retirement returns the partial packet prefix and original
+pending change with its accepted-byte offset. A returned packet remains
+caller-owned. This is a bounded input component, not a durable journal,
+encrypted BLE session, Wi-Fi credential handler or automatic enrollment.
+
+Strict-remote job `30097323753213403` ran all 26 BlueZ bus integration tests
+on snapshot `8091480` and exited 0. The synthetic cases include fragmented and
+combined values, ordering, replay, backpressure, permission revocation,
+separate decode and packet budget refusals, retirement of a partial prefix,
+malformed length with original-change retention, unrelated changes and
+selected-device topology changes. Earlier jobs `30097323753213399` and
+`30097323753213401` passed 25 and 26 tests on preceding revisions. A
+subsequent separate worker-side hash observation, job `30097323753213404`,
+matched the checkout's watch and test hashes:
+`46f7a47b52d3d3f61ee500b2c95eb8b389ee50d8b86627ec8fb115c1dda57bab` and
+`32f4fc0e06dbba4782fa090580399f041e69ade3676abf782bb2bb33664af41c`.
+The hash observation was not atomic with the test run. All four jobs exited 0,
+were acknowledged, and released source and pair custody. No physical BLE or
+camera operation was performed. The existing recorder and fallback timer on
+trj remained active with restart count 2. The historical G4 handoff and clock
+effects remain indeterminate; real provisioning, native camera ownership,
+continuous recording and 30-day retention still require separate proof.
