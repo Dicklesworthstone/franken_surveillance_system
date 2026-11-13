@@ -76,6 +76,33 @@ fn ordinary_reads_are_unchanged_until_a_cap_is_explicitly_installed() -> TestRes
 }
 
 #[test]
+fn indexed_length_bounds_reads_without_trusting_later_file_changes() -> TestResult {
+    use std::io::Write;
+
+    let directory = TempDirectory::new()?;
+    let io = Arc::new(RecordingSpoolIo::new(Arc::new(HostSpoolIo)));
+    let mut spool = StagingSpool::open_with_io(&directory.0, limits(), io.clone())?;
+    let payload = b"bounded source";
+    let digest = spool.stage_bytes(payload)?.digest;
+    let empty = spool.stage_bytes(b"")?.digest;
+    let before = io.call_count(SpoolIoCall::Read);
+    assert_eq!(spool.indexed_payload_len(digest)?, payload.len() as u64);
+    assert_eq!(spool.indexed_payload_len(empty)?, 0);
+    assert!(matches!(spool.indexed_payload_len(ContentDigest::sha256(b"absent")), Err(SpoolError::Missing(_))));
+    assert_eq!(io.call_count(SpoolIoCall::Read), before);
+    assert_eq!(spool.read_bounded(digest, payload.len())?, payload);
+    assert_eq!(spool.read_bounded(empty, 0)?, b"");
+
+    fs::OpenOptions::new().append(true).open(spool.object_path(digest))?.write_all(b"x")?;
+    assert_eq!(spool.indexed_payload_len(digest)?, payload.len() as u64);
+    assert!(matches!(spool.read_bounded(digest, payload.len()), Err(SpoolError::Corrupt { .. })));
+    drop(spool);
+    let reopened = StagingSpool::open(&directory.0, limits())?;
+    assert!(matches!(reopened.indexed_payload_len(digest), Err(SpoolError::Corrupt { .. })));
+    Ok(())
+}
+
+#[test]
 fn reads_missing_objects_and_verification_share_the_same_allowance() -> TestResult {
     let directory = TempDirectory::new()?;
     let io = Arc::new(RecordingSpoolIo::new(Arc::new(HostSpoolIo)));

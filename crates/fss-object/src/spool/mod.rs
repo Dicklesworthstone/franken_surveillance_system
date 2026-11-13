@@ -621,6 +621,19 @@ impl StagingSpool {
         self.index.get(&digest).map(|entry| entry.state)
     }
 
+    /// Payload length recorded when an indexed object was staged or recovered.
+    ///
+    /// This is a bound for a subsequent read, not proof that the file remains
+    /// unchanged. A read must still enforce that bound and verify the digest.
+    pub fn indexed_payload_len(&self, digest: ContentDigest) -> Result<u64, SpoolError> {
+        self.require_live()?;
+        let entry = self.index.get(&digest).ok_or(SpoolError::Missing(digest))?;
+        if let SpoolObjectState::Corrupt(kind) = entry.state {
+            return Err(SpoolError::Corrupt { digest, kind });
+        }
+        Ok(entry.charged)
+    }
+
     /// Path an object with this digest occupies, whether or not it is present.
     #[must_use]
     pub fn object_path(&self, digest: ContentDigest) -> PathBuf {
