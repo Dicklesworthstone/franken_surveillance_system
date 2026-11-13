@@ -406,7 +406,7 @@ fn parallel_fleet_upgrade_scenario(
     use fss_reference::unifi_direct::{
         AudioCodec, VideoChannel, VideoCodec, archive, conversation, evidence, intent, management,
         av_bootstrap, av_bootstrap_driver, av_owned_sink, av_rollover_generation, av_rollover_supplies, av_unknown_worker_guard, av_worker,
-        pipeline, receive, recording, recording_provision, recording_rollover, recording_session, recording_storage, retirement_source, source_coordinator, source_handoff,
+        pipeline, receive, recording, recording_provision, recording_retained_provision, recording_rollover, recording_session, recording_storage, retirement_source, source_coordinator, source_handoff,
         source_worker, supervisor, video_bootstrap, video_session, video_worker,
     };
     use fss_unifi_scoped_tls_entropy_lab::fleet_leased::{
@@ -699,58 +699,89 @@ fn parallel_fleet_upgrade_scenario(
                         work_limit: 4_000_000_000,
                     }).map_err(|_| "automatic A/V plan invalid")?;
                     let audio_policy = recording_session::AudioAllowancePolicy::new(64, 128, 256).ok_or("automatic A/V audio policy invalid")?;
+                    let reservation_replay = Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority, archive_base.clone())?);
+                    let bootstrap = av_rollover_generation::BootstrapWorker::new(av_rollover_generation::BootstrapInputs {
+                        plan,
+                        storage: av_rollover_generation::BootstrapStorage {
+                            mode: av_rollover_generation::BootstrapMode::Create,
+                            journal_root: archive_base.join("auto-av-reservations"),
+                            custody_root: archive_base.join("auto-av-reservation-pins"),
+                            journal_replay: reservation_replay.clone(), custody_replay: reservation_replay,
+                            journal_io: Arc::new(HostSpoolIo), custody_io: Arc::new(HostSpoolIo),
+                            journal_limits: EffectJournalLimits::default(), custody_limits: EffectJournalLimits::default(),
+                            custody_scope: ContentDigest::sha256(b"scoped fleet A/V reservation custody"),
+                        },
+                    }).map_err(|_| "automatic A/V reservation bootstrap invalid")?;
                     let selected = recording_session::SelectedRecording { session, pipeline,
                         management: management::Preconditions { camera: ContentDigest::sha256(b"wrong A/V camera"), ..management }, storage: created, collector };
-                    let refusal = match recording_provision::ProvisioningSession::begin_selected(selected, audio_policy, plan) {
-                        Err(refusal) => refusal,
-                        Ok(_) => return Err("automatic A/V accepted wrong camera")?,
+                    bootstrap.abort();
+                    let (selected, audio_policy, bootstrap) = match recording_retained_provision::RetainedSession::begin_selected(selected, audio_policy, bootstrap) {
+                        Err(recording_retained_provision::SelectedRefusal::Bootstrap { selected, audio, bootstrap }) => (selected, audio, bootstrap),
+                        _ => return Err("automatic retained A/V accepted a cancelled bootstrap")?,
                     };
-                    if refusal.plan.remaining() != 1 { return Err("refused A/V plan advanced")?; }
-                    let mut selected = match refusal.recording {
-                        recording_session::SelectedRefusal::Binding(selected) => selected,
-                        _ => return Err("automatic A/V refused at wrong stage")?,
+                    let mut retired = bootstrap.retire().map_err(|_| "cancelled bootstrap unexpectedly running")?;
+                    if !retired.fenced || retired.journal_attempted || retired.custody_attempted || retired.outcome.is_some() {
+                        return Err("cancelled bootstrap performed work")?;
+                    }
+                    let bootstrap = av_rollover_generation::BootstrapWorker::new(av_rollover_generation::BootstrapInputs {
+                        plan: retired.plan.take().ok_or("cancelled bootstrap lost its plan")?, storage: retired.storage,
+                    }).map_err(|_| "explicit replacement bootstrap invalid")?;
+                    let (mut selected, audio_policy, bootstrap) = match recording_retained_provision::RetainedSession::begin_selected(selected, audio_policy, bootstrap) {
+                        Err(recording_retained_provision::SelectedRefusal::Recording {
+                            recording: recording_session::SelectedRefusal::Binding(selected), audio, bootstrap,
+                        }) => (selected, audio, bootstrap),
+                        _ => return Err("automatic retained A/V accepted or lost the wrong camera")?,
                     };
+                    if !bootstrap.is_unstarted() { return Err("refused A/V bootstrap was started")?; }
                     selected.management = management;
-                    let mut provisioning = recording_provision::ProvisioningSession::begin_selected(selected, refusal.audio, refusal.plan)
-                        .map_err(|_| "automatic A/V selection refused")?;
+                    let mut provisioning = recording_retained_provision::RetainedSession::begin_selected(selected, audio_policy, bootstrap)
+                        .map_err(|_| "automatic A/V retained session refused")?;
+                    if !provisioning.enable_creator_observation(0) { return Err("automatic A/V reservation observation refused")?; }
                     let admission = source_coordinator::ArchiveAdmission { resource, cost: &BudgetVector::ZERO };
                     let plan_op = OperationId::parse(format!("operation:auto-av-{index}-plan"))?;
                     if !matches!(provisioning.step(&mut owner, &plan_op, Duration::ZERO, task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
-                        recording_provision::Step::Configuration) { return Err("zero wait advanced A/V provisioning")?; }
+                        recording_retained_provision::Step::Configuration) { return Err("zero wait advanced A/V provisioning")?; }
                     if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_secs(31), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
-                        recording_provision::Step::Configuration) { return Err("excessive wait advanced A/V provisioning")?; }
-                    let identity = match provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
-                        recording_provision::Step::SupplyPlanned(identity) => identity,
-                        _ => return Err("automatic A/V did not plan storage")?,
-                    };
-                    if identity.journal_root.exists() || identity.pin_root.exists() { return Err("A/V plan performed storage I/O")?; }
-                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::ZERO, task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
-                        recording_provision::Step::Configuration) { return Err("zero wait started planned A/V storage")?; }
+                        recording_retained_provision::Step::Configuration) { return Err("excessive wait advanced A/V provisioning")?; }
+                    if archive_base.join("auto-av-reservations").exists() || archive_base.join("auto-av-reservation-pins").exists() { return Err("invalid wait started reservation I/O")?; }
                     if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
-                        recording_provision::Step::SupplyStarted) { return Err("automatic A/V storage did not start")?; }
+                        recording_retained_provision::Step::BootstrapStarted) { return Err("A/V reservation bootstrap did not start")?; }
+                    if !timeout(cx.now(), Duration::from_secs(10), provisioning.join_bootstrap()).await? { return Err("A/V reservation bootstrap did not join")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_retained_provision::Step::BootstrapReady) { return Err("A/V reservation bootstrap was not ready")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_retained_provision::Step::ReservationStarted) { return Err("A/V reservation did not start")?; }
+                    if !timeout(cx.now(), Duration::from_secs(10), provisioning.join_reservation()).await? { return Err("A/V reservation did not join")?; }
+                    let identity = match provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
+                        recording_retained_provision::Step::Reserved(identity) => identity,
+                        _ => return Err("automatic A/V did not reserve storage")?,
+                    };
+                    if identity.generation != 1 || identity.journal_root.exists() || identity.pin_root.exists() { return Err("A/V reservation started creator early")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_retained_provision::Step::Session(recording_provision::Step::SupplyStarted)) { return Err("automatic A/V storage did not start")?; }
                     if !timeout(cx.now(), Duration::from_secs(10), provisioning.join_supply()).await? { return Err("automatic A/V storage did not join")?; }
                     match provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
-                        recording_provision::Step::SupplyInstalled(completion) if completion.runtime.is_ok() && completion.outcome == av_rollover_supplies::Outcome::Ready => (),
+                        recording_retained_provision::Step::Session(recording_provision::Step::SupplyInstalled(completion)) if completion.runtime.is_ok() && completion.outcome == av_rollover_supplies::Outcome::Ready => (),
                         _ => return Err("automatic A/V storage not installed")?,
                     }
-                    let owners = provisioning.into_parts();
-                    if owners.started || owners.worker.is_some() || owners.failed.is_some() || owners.custody.is_none() || owners.plan.as_ref().is_none_or(|p| p.remaining() != 0) {
-                        return Err("automatic A/V provisioning custody incomplete")?;
-                    }
-                    let (managed, _audio_policy, supplies) = owners.managed.into_parts();
-                    if supplies.is_none() { return Err("automatic A/V supplies missing")?; }
-                    let _custody = owners.custody;
-                    let _supplies = supplies;
-                    let mut recording = match managed {
-                        Some(recording_rollover::ManagedOwners::Session(session)) => *session,
-                        _ => return Err("automatic A/V recording owner missing")?,
-                    };
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_retained_provision::Step::ReservationStarted) { return Err("A/V creator observation did not start")?; }
+                    if !timeout(cx.now(), Duration::from_secs(10), provisioning.join_reservation()).await? { return Err("A/V creator observation did not join")?; }
+                    if !matches!(provisioning.step(&mut owner, &plan_op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await,
+                        recording_retained_provision::Step::Reconciled(_)) { return Err("A/V creator observation not retained")?; }
+                    let custody = provisioning.take_custody().ok_or("A/V creator custody missing")?;
+                    if custody.root != identity.journal_root || custody.switch_custody.as_ref().is_none_or(|pin| pin.root != identity.pin_root) { return Err("A/V creator custody did not match reservation")?; }
                     let mut started = false;
                     let mut source_count = 0usize;
                     let mut pins = Vec::new();
                     for number in 0..512u64 {
                         let op = OperationId::parse(format!("operation:auto-av-{index}-{number}"))?;
-                        match recording.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission).await {
+                        let event = match provisioning.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Session(event)))) => event,
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Renewed { .. }))) => continue,
+                            _ => return Err("automatic A/V provisioning requires reconciliation".into()),
+                        };
+                        match event {
                             recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceOffered(source_handoff::BootstrapResult::Accepted { .. })
                                 | source_coordinator::BootstrapStep::SourceStarted
                                 | source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Retained)
@@ -797,6 +828,11 @@ fn parallel_fleet_upgrade_scenario(
                                 }
                             }
                             recording_session::Step::TransitionRefused => {
+                                let owners = provisioning.into_parts().inner.into_parts();
+                                let (managed, _, _) = owners.managed.into_parts();
+                                let Some(recording_rollover::ManagedOwners::Session(recording)) = managed else {
+                                    return Err("A/V refusal lost its managed owner".into());
+                                };
                                 let (_, phase) = recording.into_parts();
                                 let recording_session::Phase::TransitionRefused(refusal) = phase else {
                                     return Err("A/V transition refusal lost its owner".into());
@@ -827,6 +863,23 @@ fn parallel_fleet_upgrade_scenario(
                     }
                     if pins.len() < if full_resolution { 2 } else { 1 } { return Err("automatic A/V publication missing")?; }
                     if !started || source_count == 0 { return Err("automatic A/V source not accounted")?; }
+                    let retained = provisioning.into_parts();
+                    if retained.started || retained.reservation.is_some() || retained.bootstrap.is_some() || retained.bootstrap_retirement.is_none()
+                        || retained.retirement.as_ref().is_none_or(|r| r.inputs.plan.pending().is_some()) {
+                        return Err("automatic A/V reservation custody incomplete")?;
+                    }
+                    let owners = retained.inner.into_parts();
+                    if owners.started || owners.worker.is_some() || owners.failed.is_some() || owners.custody.is_some() || owners.plan.is_some() {
+                        return Err("automatic A/V provisioning custody incomplete")?;
+                    }
+                    let (managed, _audio_policy, supplies) = owners.managed.into_parts();
+                    if supplies.is_none() { return Err("automatic A/V supplies missing")?; }
+                    let _custody = custody;
+                    let _supplies = supplies;
+                    let recording = match managed {
+                        Some(recording_rollover::ManagedOwners::Session(session)) => *session,
+                        _ => return Err("automatic A/V recording owner missing")?,
+                    };
                     let mut shutdown = match recording.stop() {
                         recording_session::Stop::Recording(shutdown) => shutdown,
                         _ => return Err("automatic A/V stop phase mismatch")?,
@@ -1451,7 +1504,10 @@ fn parallel_fleet_upgrade_scenario(
                             cx, &mut upgrade_owner, &mut listener, endpoint.port(), &mut http, &cfg, handoff::Framing::ContentLength,
                             4096, Duration::from_secs(10), Duration::from_secs(20), &mut trace, tls_config,
                             &mut inbound_leases, ProtocolPolicy::RequireOffer, &policy, controller,
-                        ).await?;
+                        ).await.map_err(|error| format!(
+                            "scoped setup/upgrade stopped: {error:?}; listener_refusal={:?}",
+                            trace.setup_mut().listener_refusal(),
+                        ))?;
                         assert_eq!(session.claimed_mac(), MACS[0]);
                         assert!(matches!(trace.outcome(), Some(setup::Outcome::Observed { readback: handoff::Readback::Requested, .. })));
                         assert!(inbound_leases.iter().all(Option::is_none));
@@ -2584,7 +2640,18 @@ fn parallel_fleet_upgrade_scenario(
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(Event::RouteRefused { index, reason }))))), .. } => return Err(format!("third setup route refused: index={index:?} reason={reason:?}").into()),
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Started(index)))))), .. } => return Err(format!("third setup unexpected lease start: index={index}").into()),
                             RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Work(Some(SupplyEvent::Installed(index)))))), .. } => return Err(format!("third setup unexpected lease install: index={index}").into()),
-                            _ => return Err("unexpected event while driving third setup".into()),
+                            other => {
+                                let kind = match &other {
+                                    RetryingFleetEvent::Retry { selection, .. } => format!("retry selection={selection:?}"),
+                                    RetryingFleetEvent::Fleet { event: FleetStreamEvent::Stream { index, .. }, .. } => format!("stream index={index}"),
+                                    RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(PumpEvent::Route(event))))), .. } => format!("route {:?}", std::mem::discriminant(event)),
+                                    RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(Progress::Event(event)))), .. } => format!("pump {:?}", std::mem::discriminant(event)),
+                                    RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(Supervised::Fleet(progress))), .. } => format!("progress {:?}", std::mem::discriminant(progress)),
+                                    RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(AutomaticEvent::Progress(event)), .. } => format!("supervised {:?}", std::mem::discriminant(event)),
+                                    RetryingFleetEvent::Fleet { event: FleetStreamEvent::Automatic(event), .. } => format!("automatic {:?}", std::mem::discriminant(event)),
+                                };
+                                return Err(format!("unexpected event while driving third setup: {kind}").into());
+                            }
                         }
                     };
                     assert_eq!(parallel_finished, capacity == 2);
