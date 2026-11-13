@@ -387,7 +387,11 @@ fn parallel_fleet_upgrade_scenario(
     changed_readback: bool,
     abort_source: bool,
     audio: bool,
+    rollover: bool,
 ) -> Test {
+    if rollover && (!audio || !full_resolution) {
+        return Err("rollover scenario requires full-resolution audio/video".into());
+    }
     eprintln!("fleet_fixture scenario capacity={capacity} full_resolution={full_resolution} changed_readback={changed_readback}");
     use asupersync::{io::AsyncReadExt, time::timeout};
     use fss_container::{
@@ -560,6 +564,7 @@ fn parallel_fleet_upgrade_scenario(
         archive_budget: BudgetVector,
         abort_source: bool,
         audio: bool,
+        rollover: bool,
         candidate_hold: Arc<AtomicBool>,
         candidate_proceed: Arc<AtomicBool>,
     }
@@ -588,6 +593,7 @@ fn parallel_fleet_upgrade_scenario(
             let archive_budget = state.archive_budget;
             let abort_source = state.abort_source;
             let audio = state.audio;
+            let rollover = state.rollover;
             let candidate_hold = state.candidate_hold.clone();
             let candidate_proceed = state.candidate_proceed.clone();
             let (cx, task, clock, leases, policy, resource, peer, camera, admission, fence, full_resolution) =
@@ -679,7 +685,7 @@ fn parallel_fleet_upgrade_scenario(
                     source_deployment_limits: fss_reference::DeploymentLimits::standard(),
                     av_deployment_limits: fss_reference::DeploymentLimits::standard(),
                     source_history_limits: EffectJournalLimits::default(),
-                    av_history_limits: EffectJournalLimits::default(),
+                    av_history_limits: EffectJournalLimits { max_records: if rollover { 5 } else { EffectJournalLimits::default().max_records }, ..EffectJournalLimits::default() },
                     limits: archive::Limits::default(), max_source_bytes: 1024 * 1024,
                     work_limit: 4_000_000_000,
                 }, source_replay, video_replay, write_access)?;
@@ -774,11 +780,26 @@ fn parallel_fleet_upgrade_scenario(
                     let mut started = false;
                     let mut source_count = 0usize;
                     let mut pins = Vec::new();
+                    let mut rollover_need: Option<av_worker::RolloverNeed> = None;
+                    let mut rollover_resumed = false;
+                    let mut after_rollover = 0usize;
                     for number in 0..512u64 {
                         let op = OperationId::parse(format!("operation:auto-av-{index}-{number}"))?;
                         let event = match provisioning.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
                             recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Session(event)))) => event,
                             recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Renewed { .. }))) => continue,
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::PreflightStarted)) if rollover && rollover_need.is_some() => continue,
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::RolloverStarted))) if rollover && rollover_need.is_some() => continue,
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::Control(control)))) if rollover && rollover_need.is_some() => {
+                                if control_event(control)? { return Err("A/V control ended during rollover".into()); }
+                                continue;
+                            }
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Resumed(receipt))) if rollover && !rollover_resumed => {
+                                let need = rollover_need.ok_or("A/V resumed without a capacity boundary")?;
+                                if receipt.root != need.confirmed.root || format!("{:?}", receipt.outcome) != "AlreadyLedgered" { return Err("A/V rollover replay receipt mismatch".into()); }
+                                rollover_resumed = true;
+                                continue;
+                            }
                             _ => return Err("automatic A/V provisioning requires reconciliation".into()),
                         };
                         match event {
@@ -810,10 +831,14 @@ fn parallel_fleet_upgrade_scenario(
                                 av_unknown_worker_guard::Advance::Archive(av_unknown_worker_guard::Drive::Archive(completion))))) => {
                                 if completion.runtime.is_err() { return Err("A/V archive worker failed".into()); }
                                 match completion.outcome {
-                                    av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value)) => pins.push(value.pin),
+                                    av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value)) => { pins.push(value.pin); if rollover_resumed { after_rollover += 1; } },
+                                    av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused { reason: av_worker::FailureReason::JournalCapacity, pending: None, receipt: None, rollover: Some(need), .. }) if rollover && rollover_need.is_none() => {
+                                        if pins.last() != Some(&need.confirmed) { return Err("A/V rollover predecessor mismatch".into()); }
+                                        rollover_need = Some(need);
+                                    }
                                     _ => return Err("A/V archive requires reconciliation".into()),
                                 }
-                                if pins.len() >= if full_resolution { 2 } else { 1 } { break; }
+                                if if rollover { rollover_resumed && after_rollover > 0 } else { pins.len() >= if full_resolution { 2 } else { 1 } } { break; }
                             }
                             recording_session::Step::Recording(source_coordinator::Step::Session(av_unknown_worker_guard::SessionEvent::Advance(
                                 av_unknown_worker_guard::Advance::Archive(av_unknown_worker_guard::Drive::Control { step, completion })))) => {
@@ -821,10 +846,14 @@ fn parallel_fleet_upgrade_scenario(
                                 if let Some(completion) = completion {
                                     if completion.runtime.is_err() { return Err("A/V archive worker failed".into()); }
                                     match completion.outcome {
-                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value)) => pins.push(value.pin),
+                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value)) => { pins.push(value.pin); if rollover_resumed { after_rollover += 1; } },
+                                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused { reason: av_worker::FailureReason::JournalCapacity, pending: None, receipt: None, rollover: Some(need), .. }) if rollover && rollover_need.is_none() => {
+                                            if pins.last() != Some(&need.confirmed) { return Err("A/V rollover predecessor mismatch".into()); }
+                                            rollover_need = Some(need);
+                                        }
                                         _ => return Err("A/V archive requires reconciliation".into()),
                                     }
-                                    if pins.len() >= if full_resolution { 2 } else { 1 } { break; }
+                                    if if rollover { rollover_resumed && after_rollover > 0 } else { pins.len() >= if full_resolution { 2 } else { 1 } } { break; }
                                 }
                             }
                             recording_session::Step::TransitionRefused => {
@@ -862,6 +891,7 @@ fn parallel_fleet_upgrade_scenario(
                         }
                     }
                     if pins.len() < if full_resolution { 2 } else { 1 } { return Err("automatic A/V publication missing")?; }
+                    if rollover && (!rollover_resumed || after_rollover == 0) { return Err("automatic A/V rollover did not publish after resume")?; }
                     if !started || source_count == 0 { return Err("automatic A/V source not accounted")?; }
                     let retained = provisioning.into_parts();
                     if retained.started || retained.reservation.is_some() || retained.bootstrap.is_some() || retained.bootstrap_retirement.is_none()
@@ -873,7 +903,7 @@ fn parallel_fleet_upgrade_scenario(
                         return Err("automatic A/V provisioning custody incomplete")?;
                     }
                     let (managed, _audio_policy, supplies) = owners.managed.into_parts();
-                    if supplies.is_none() { return Err("automatic A/V supplies missing")?; }
+                    if supplies.is_none() != rollover { return Err("automatic A/V supply custody mismatch")?; }
                     let _custody = custody;
                     let _supplies = supplies;
                     let recording = match managed {
@@ -891,6 +921,7 @@ fn parallel_fleet_upgrade_scenario(
                     let source = source_owner.into_worker().retire().map_err(|_| "automatic A/V source did not retire")?;
                     if source.fenced || source.pending.is_some() { return Err("automatic A/V source unresolved")?; }
                     let retired = (*guard).retire().map_err(|_| "automatic A/V guard did not retire")?;
+                    if rollover && retired.worker.rollover_custody.is_none() { return Err("A/V rollover custody missing")?; }
                     let mut parts = retired.worker.parts;
                     let mut av_clips = 0usize;
                     let mut video_only = 0usize;
@@ -2978,7 +3009,7 @@ fn parallel_fleet_upgrade_scenario(
                         let media = AutoMedia { index: 2, cx, task, clock, effects: Some(auto_third_effects), leases: &leases,
                             policy: &policy, resource: &resources[2], peer, camera: cameras[2],
                             admission: admissions[2], fence: fences[2], full_resolution,
-                            archive_base: Some(temp.0.clone()), archive_budget: budget, abort_source, audio,
+                            archive_base: Some(temp.0.clone()), archive_budget: budget, abort_source, audio, rollover,
                             candidate_hold: third_hold, candidate_proceed: third_proceed };
                         let mut make_third = auto_media_factory(media, made_third.clone(), polled_third.clone(), release_third);
                         let mut third_streams = ActiveStreams::new(&fleet, 1).map_err(|_| "third automatic stream capacity")?;
@@ -3396,7 +3427,7 @@ fn deadline_recovery_schedules_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, false)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, false, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
@@ -3411,7 +3442,7 @@ fn full_resolution_factory_stream_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, false)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, false, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
@@ -3426,7 +3457,7 @@ fn automatic_audio_video_stream_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, true)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, true, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
@@ -3441,11 +3472,26 @@ fn automatic_full_resolution_audio_video_over_synthetic_tls() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, true)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, true, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
         .map_err(|_| "automatic full A/V fixture thread panicked")?
+        .map_err(Into::into)
+}
+
+#[test]
+fn automatic_full_resolution_audio_video_rollover_over_synthetic_tls() -> Test {
+    std::thread::Builder::new()
+        .name("scoped-automatic-full-av-rollover".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, true, true)
+                .map_err(|error| error.to_string())
+        })?
+        .join()
+        .map_err(|_| "automatic full A/V rollover fixture thread panicked")?
         .map_err(Into::into)
 }
 
@@ -3456,7 +3502,7 @@ fn managed_recording_cancellation_retains_blocked_source() -> Test {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let (peer, cert, key) = fleet_fixture_inputs().map_err(|error| error.to_string())?;
-            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, true, false)
+            parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, true, false, false)
                 .map_err(|error| error.to_string())
         })?
         .join()
@@ -3495,10 +3541,10 @@ fn fleet_fixture_inputs() -> Result<(Ipv4Addr, Vec<u8>, Vec<u8>), Box<dyn Error>
 
 fn run_fleet_scenarios() -> Test {
     let (peer, cert, key) = fleet_fixture_inputs()?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false, false, false)?;
-    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, true, false, false)
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, false, false, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 2, true, false, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, false, false, false, false)?;
+    parallel_fleet_upgrade_scenario(peer, &cert, &key, 1, false, true, false, false, false)
 }
 
 #[derive(Debug)]
