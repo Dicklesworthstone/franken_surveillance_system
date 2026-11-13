@@ -74,6 +74,8 @@ pub mod onvif_replay_plan;
 pub mod orient_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
 pub mod probe_cmd;
+/// Canonical source-verified sampled QSR reads shared by CLI and MCP.
+pub mod qsr_query_cmd;
 /// Read-only AOP-005 projection of the verified event-record query engine.
 pub mod query_cmd;
 pub mod recording_query_cmd;

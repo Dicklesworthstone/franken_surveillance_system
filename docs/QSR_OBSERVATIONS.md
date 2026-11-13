@@ -1,6 +1,6 @@
 # QSR observations from retained detector tracks
 
-`fss-event qsr` turns an existing, retained, historically screened package-zone
+`fss query --target qsr` and `fss-event qsr` turn an existing, retained, historically screened package-zone
 report into sampled zone counts and presence, sampled dwell, and ordered lane-stage
 endpoint observations. It reopens the native source evidence before answering.
 It does not run a second detector or tracker, acquire a camera stream, publish a
@@ -8,11 +8,75 @@ security event, retain a new QSR object, or grant an effect capability.
 
 This is an unqualified reference implementation for VIT-012. Its output counts
 confirmed model-track observations. It does not measure detector quality, count
-unique physical people, certify an empty scene, infer customer service, or provide
-the future `fss/1` QSR view. Queue wait, door-open state, POS joins and cross-camera
+unique physical people, certify an empty scene or infer customer service.
+The canonical query uses the existing `fss/1` AOP-005 response contract. Queue wait, door-open state, POS joins and cross-camera
 lane journeys still require their own evidence and qualified interpretations.
 
-## Read an existing report
+## Canonical CLI and MCP query
+
+Use the canonical query when a read must coexist with an active deployment writer
+and leave every deployment file unchanged. It reads the current authority and effect
+journals without recovery, verifies the exact retained source through one immutable
+owner, and returns the complete sampled observations with the deployment's protected
+knowledge, contradictions and unresolved obligations. It performs no model inference.
+
+The selected digest is a retained, historically screened
+`fss.package_zone_report.v2`, created and retained through the workflow below.
+Source verification reads original encoded evidence internally, so the local operator
+must explicitly enable it. It grants no media disclosure or effect capability.
+
+```sh
+fss query --target qsr --json \
+  --root /absolute/path/to/existing/deployment \
+  --principal principal:restaurant-operator \
+  --report-digest sha256:RETAINED_SCREENED_ZONE_REPORT \
+  --verify-qsr-source=yes \
+  --zone-roles '[{"zone":"counter_queue","role":"queue"},{"zone":"register_2","role":"register"}]'
+```
+
+For an ordered lane, use `--lane-stages '["order_point","pay_window","present_window"]'`.
+Lane roles are inferred from this ordered list; do not also assign those zones an
+area, queue or register role. All annotations must name existing source zones.
+An optional `--anchor` pins the current authority/effect-history token returned by
+an earlier query. A changed head refuses that request.
+
+For MCP, the launcher binds the deployment and principal and grants QSR verification
+separately from recorder replay verification:
+
+```sh
+fss-mcp --root /absolute/path/to/existing/deployment \
+  --principal principal:restaurant-operator \
+  --allow-qsr-source-verification
+```
+
+After the standard MCP initialization handshake, call the existing `query` tool:
+
+```json
+{
+  "target": "qsr",
+  "report_digest": "sha256:RETAINED_SCREENED_ZONE_REPORT",
+  "zone_roles": [{"zone": "counter_queue", "role": "queue"}]
+}
+```
+
+Clients cannot change the bound root/principal, enable source verification, request
+media hydration, select a loose file, or use historical/continuation selectors.
+The native result is preserved as complete named JSON values in the existing
+`AgentCognitiveEnvelope.v1` propositions, inside `AgentResponseEnvelope.v1`.
+Each `claim:qsr:<section>:<ordinal>` preserves one exact native array row; non-array
+sections and empty arrays use `claim:qsr:<section>`. The native QSR digest and
+source/provenance handles remain explicit. Unknown samples are never converted to
+zero, and all selected rows must fit the 256 KiB complete response or it refuses.
+
+The default cumulative allowance is 1 GiB of payload reads and 1,000,000 read
+attempts, including final source and authority revalidation. CLI options
+`--max-query-read-bytes` and `--max-query-read-objects` can select smaller bounds
+or increase them to at most 4 GiB and 4,000,000 attempts. MCP uses the corresponding
+`max_query_read_bytes` and `max_query_read_objects` keys with canonical decimal
+strings. These measure payload reads, not filesystem syscall counts. The
+60-second deadline is cooperative; CPU time and full output tokens are unmetered.
+
+## Native fss-event read
 
 The command opens an established deployment without running effect reconciliation.
 Prepared, committed and indeterminate effects keep their exact journal state;
@@ -91,14 +155,16 @@ completed customer journey.
 
 ## Source, policy and coverage bindings
 
-The command uses `QsrObservationReport::open_existing`, which keeps its deployment
+The native `fss-event qsr` command uses `QsrObservationReport::open_existing`, which keeps its deployment
 handle inside the reference owner. API callers with nonstandard deployment capacities
 use `open_existing_with_limits` and supply the exact original limits; layout v1 retains
 only their digest, so the values cannot be inferred. The CLI uses standard capacities
 and refuses a different persisted digest.
 
 Callers that already own a deployment may continue to use `QsrObservationReport::open`.
-All three constructors select an exact retained report through `PackageZoneReport::open`,
+The canonical bridge instead uses `QsrObservationReport::open_retained` with an
+`ImmutableRetainedSource` and finishes that same owner's final revalidation before
+returning. All constructors select an exact retained report through `PackageZoneReport::open`,
 which rechecks source custody,
 the source model/detection record, native tracking reconstruction, current privacy,
 historical diagnostic custody and deletion state. A changed privacy interpretation,
@@ -164,6 +230,9 @@ cargo test -p fss-cli --test qsr_cli_contract
 cargo test -p fss-reference --lib ingest::qsr_observations
 cargo test -p fss-reference --test package_zones_contract health::qsr
 cargo test -p fss-cli --bin fss-event qsr::tests
+cargo test --locked --offline -p fss-reference --test qsr_observations_immutable_contract --test agent_qsr_contract
+cargo test --locked --offline -p fss-cli --test qsr_query_cli_contract
+cargo test --locked --offline -p fss-cli --bin fss-mcp qsr
 ```
 
 The machine projection is defined in

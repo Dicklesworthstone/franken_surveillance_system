@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_qsr_query.v1.json",
+  "title": "Immutable QSR observation selector for AOP-005",
+  "description": "Closed QSR read intent over one exact retained screened package-zone report. The operator fixes deployment and principal and separately grants bounded internal verification of original encoded evidence. The immutable owner shares one nonrenewing payload-byte/read-attempt allowance through current history, source reconstruction and final revalidation. Source bytes and decoded pixels are never returned. Complete source, frame, zone, sample, dwell, transition and interruption observations use the existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts, with exact evidence handles and explicit uncertainty. The complete protected response must fit 256 KiB or the read refuses. No source discovery, policy mutation, publication, continuation, historical authority selector or effect authority. Native admission remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "report_digest"],
+  "properties": {
+    "target": {"const": "qsr"},
+    "report_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71,
+      "not": {"const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+      "description": "Exact nonzero retained fss.package_zone_report.v2 digest; never a path, latest lookup or caller-authored report."
+    },
+    "zone_roles": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "description": "Optional annotations on existing source zones. Native admission requires unique zone IDs and refuses unknown zones or conflicts with lane_stages. Unannotated zones default to area; lane_stage roles are derived only from lane_stages.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["zone", "role"],
+        "properties": {
+          "zone": {"$ref": "#/$defs/zone_id"},
+          "role": {"enum": ["area", "queue", "register"]}
+        }
+      }
+    },
+    "lane_stages": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "anyOf": [{"maxItems": 0}, {"minItems": 2}],
+      "items": {"$ref": "#/$defs/zone_id"},
+      "description": "Empty or two to sixteen distinct existing source-zone IDs in explicit lane order. Preserves conservative adjacent-stage endpoint observations and typed interruptions; no crossing time, queue wait, transaction or physical-identity claim."
+    },
+    "anchor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Optional exact current deployment authority/effect-history token, independent of the historical source report."
+    },
+    "max_query_read_bytes": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 10,
+      "default": "1073741824",
+      "description": "One whole-request payload-byte ceiling, 1..4294967296. Includes history, retained metadata, original encoded source bytes and final revalidation. Successful bounded payload reads are charged; filesystem probes and framing are not included. Failed reads invalidate the remaining balance; no refill between stages."
+    },
+    "max_query_read_objects": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 7,
+      "default": "1000000",
+      "description": "One whole-request payload-read-attempt ceiling, 1..4000000, including history, retained metadata, original source verification and final revalidation. It is not a filesystem syscall count."
+    }
+  },
+  "$defs": {
+    "zone_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    }
+  }
+}

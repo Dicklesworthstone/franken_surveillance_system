@@ -19,13 +19,15 @@ mod investigate;
 mod json;
 #[path = "fss_mcp/onvif.rs"]
 mod onvif;
+#[path = "fss_mcp/qsr.rs"]
+mod qsr;
 #[path = "fss_mcp/recordings.rs"]
 mod recordings;
 #[path = "fss_mcp/server.rs"]
 mod server;
 
 const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID] [--archive-root EXISTING_ARCHIVE]\n\
-        [--allow-replay-source-verification]\n\
+        [--allow-replay-source-verification] [--allow-qsr-source-verification]\n\
 MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root, optional archive root and principal; clients cannot override them.\n\
 Catalog queries and archive recorder replay require the optional archive binding.\n\
@@ -33,10 +35,12 @@ Explicit retained-import recorder queries use the fixed deployment without an ar
 Recorder UTC replay requires the launcher's explicit source-verification grant in either mode;\n\
 clients cannot enable it. The grant permits bounded verification in the fixed source owner,\n\
 with exact replay pins and no source disclosure, pixel decode, network or publication.\n\
+QSR reads require the separate QSR source-verification grant and an exact retained report.\n\
+They verify original encoded evidence without returning media or creating retained state.\n\
 The principal is an audit label, not authentication. Session open/handoff/resume and explicit\n\
 durable follow, investigate and advisory feedback write agent state. Alert controls\n\
 use native exact approvals and durable receipts; inspect with wait after response loss.\n\
-No network listener. Follow/wait reads are at most 10 seconds; recorder source verification\n\
+No network listener. Follow/wait reads are at most 10 seconds; source verification\n\
 and approved dispatch are at most 60 seconds.\n\
 Mission text is literal, never a file to read. Session budgets are cumulative;\n\
 same-head retry and resume behavior comes from the native session implementation.\n\
@@ -49,6 +53,7 @@ struct Options {
     principal: String,
     archive_root: Option<OsString>,
     allow_replay_source_verification: bool,
+    allow_qsr_source_verification: bool,
 }
 
 fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, &'static str> {
@@ -67,6 +72,7 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
     let mut principal = None;
     let mut archive_root = None;
     let mut allow_replay_source_verification = false;
+    let mut allow_qsr_source_verification = false;
     let mut flag = Some(first);
     while let Some(current) = flag {
         if current == "--allow-replay-source-verification" {
@@ -74,6 +80,14 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
                 return Err("duplicate replay source-verification grant");
             }
             allow_replay_source_verification = true;
+            flag = args.next();
+            continue;
+        }
+        if current == "--allow-qsr-source-verification" {
+            if allow_qsr_source_verification {
+                return Err("duplicate QSR source-verification grant");
+            }
+            allow_qsr_source_verification = true;
             flag = args.next();
             continue;
         }
@@ -113,6 +127,7 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
         principal,
         archive_root,
         allow_replay_source_verification,
+        allow_qsr_source_verification,
     }))
 }
 
@@ -122,6 +137,7 @@ fn main() -> ExitCode {
         principal,
         archive_root,
         allow_replay_source_verification,
+        allow_qsr_source_verification,
     } = match options(std::env::args_os().skip(1)) {
         Ok(Some(options)) => options,
         Ok(None) => {
@@ -153,6 +169,9 @@ fn main() -> ExitCode {
     }
     if allow_replay_source_verification {
         server = server.with_replay_source_verification();
+    }
+    if allow_qsr_source_verification {
+        server = server.with_qsr_source_verification();
     }
     match server::serve(&mut server, io::stdin().lock(), io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -217,6 +236,7 @@ mod tests {
                 principal: "principal:archive-operator".into(),
                 archive_root: Some("/owner/archive with spaces".into()),
                 allow_replay_source_verification: false,
+                allow_qsr_source_verification: false,
             }))
         );
         assert!(
@@ -284,6 +304,61 @@ mod tests {
         )?
         .ok_or("missing ordinary options")?;
         assert!(!ordinary.allow_replay_source_verification);
+        assert!(!ordinary.allow_qsr_source_verification);
+        Ok(())
+    }
+
+    #[test]
+    fn qsr_source_verification_is_a_separate_launcher_grant() -> Result<(), &'static str> {
+        let qsr = options(
+            [
+                "--allow-qsr-source-verification",
+                "--root",
+                "/owner/deployment with spaces",
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing QSR launcher options")?;
+        assert!(qsr.allow_qsr_source_verification);
+        assert!(!qsr.allow_replay_source_verification);
+        assert!(qsr.archive_root.is_none());
+        let replay = options(
+            [
+                "--root",
+                "/owner/deployment",
+                "--allow-replay-source-verification",
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing recorder options")?;
+        assert!(!replay.allow_qsr_source_verification);
+        let both = options(
+            [
+                "--root",
+                "/owner/deployment",
+                "--allow-replay-source-verification",
+                "--allow-qsr-source-verification",
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing combined options")?;
+        assert!(both.allow_qsr_source_verification && both.allow_replay_source_verification);
+        for args in [
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--allow-qsr-source-verification",
+                "--allow-qsr-source-verification",
+            ],
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--allow-qsr-source-verification=yes",
+            ],
+            vec!["--root", "/owner/deployment", "--verify-qsr-source=yes"],
+        ] {
+            assert!(options(args.into_iter().map(OsString::from)).is_err());
+        }
         Ok(())
     }
 }

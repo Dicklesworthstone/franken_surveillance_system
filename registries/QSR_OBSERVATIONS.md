@@ -1,7 +1,8 @@
 # QSR observation vocabulary
 
 These are derived read views over one exact retained
-`fss.package_zone_report.v2`, exposed by `fss-event qsr`. They are separate from
+`fss.package_zone_report.v2`, exposed by `fss-event qsr` and the canonical
+`fss query --target qsr` read. They are separate from
 security `EventKind` hypotheses. Reading them creates no event, retained object,
 rights lease, notification, device action or assertion about a physical person.
 
@@ -70,5 +71,40 @@ success, predicted missing observation, synthetic detector output or fallback
 source is admitted. Read-only result bytes do not constitute a durable retention
 promise or an authenticated receipt from a physical camera.
 
+## Canonical agent query
+
+`fss query --target qsr` and the existing MCP `query` tool use AOP-005 and the
+registered `case` view. The request pins `report_digest`; optional inline
+`zone_roles` contain only `zone` and `role` (`area`, `queue` or `register`), while
+`lane_stages` assigns the separate lane-stage role in explicit order. Conflicting
+annotations, duplicate IDs, unknown source zones and single-stage lanes refuse.
+Current `anchor` is an independent optional precondition. Other query targets,
+historical `at`, continuation tokens, raw-source disclosure and path indirection
+are outside this closed selector.
+
+CLI owners explicitly supply `--verify-qsr-source=yes`. MCP operators separately
+launch with `--allow-qsr-source-verification`; a recorder replay grant or client
+argument cannot enable QSR source reads. Deployment and principal remain fixed
+by the launcher. No archive binding is needed. Original encoded source custody
+is required to verify recorded inference and adapter evidence, but no model is
+run and no pixels are decoded or returned. The immutable reader opens no
+publisher, recovery path or lock and creates no retained state.
+
+One nonrenewing allowance covers history, retained source reconstruction,
+original encoded evidence and final authority/custody/privacy/deletion checks.
+`max_query_read_bytes` defaults to 1 GiB and permits at most 4 GiB;
+`max_query_read_objects` defaults to 1,000,000 and permits at most 4,000,000
+payload-read attempts. Both MCP values are exact positive decimal strings.
+These are payload-read bounds, not filesystem syscall counts. A failed source
+read invalidates the remaining balance.
+
+The complete native report is projected into the unchanged
+`AgentCognitiveEnvelope.v1`, inside `AgentResponseEnvelope.v1`: source, frame,
+zone, sample, dwell, transition and interruption values retain exact source
+handles, array ordinals and epistemic states. The protected envelope must fit
+256 KiB or the whole read refuses. This smaller agent-output bound does not
+change the native report schema or permit a truncated successful prefix.
+
 See [the operator workflow](../docs/QSR_OBSERVATIONS.md) and
-[the report schema](../schemas/qsr_observation_report.v1.json).
+[the report schema](../schemas/qsr_observation_report.v1.json). The canonical
+selector is [agent_qsr_query.v1](../schemas/agent_qsr_query.v1.json).

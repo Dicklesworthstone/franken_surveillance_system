@@ -668,6 +668,37 @@ pub(crate) fn build_onvif_response(
     )
 }
 
+/// Sampled QSR metadata requires independent internal source-verification consent.
+pub(crate) fn build_qsr_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+        || parts.capability != fss_core::RuntimeGrant::AgentQuery.as_str()
+    {
+        return Err(RenderError("invalid QSR query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only sampled QSR query with explicitly authorized source verification".to_owned();
+    projection.visible_domains.extend([
+        "retained-screened-package-zone-metadata".to_owned(),
+        "sampled-qsr-count-presence-dwell-lane-metadata".to_owned(),
+        "historical-screening-and-mask-boundaries".to_owned(),
+    ]);
+    build_response_for_basis_privacy_and_capabilities(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+        vec![
+            fss_core::RuntimeGrant::AgentQuery.as_str().to_owned(),
+            fss_core::RuntimeGrant::ReadMedia.as_str().to_owned(),
+        ],
+    )
+}
+
 /// Explicit privacy projection for native archive metadata, scoped to AOP-005 only.
 pub(crate) fn build_recording_response(
     parts: ResponseParts,
