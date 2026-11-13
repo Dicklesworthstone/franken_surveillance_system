@@ -7,6 +7,7 @@ use fss_core::{
     BudgetVector, CanonicalDecoder, ContentDigest, OperationId, RegionId, RegionKind,
     RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
+use fss_core::effect::EffectState;
 use fss_reference::unifi_direct::{Identity, metered::MeteredClock};
 use fss_runtime::{
     authority::AuthorityCx,
@@ -68,6 +69,7 @@ fn read_file(parent: &File, name: &std::ffi::OsStr, private: bool) -> ResultBox<
 }
 
 struct Fence {
+    run: String,
     uuid: String,
     mac: [u8; 6],
     paths: [PathBuf; 3],
@@ -82,6 +84,7 @@ fn decode(bytes: &[u8], claim: ContentDigest, scope: &Path) -> ResultBox<Fence> 
     if run.len() != 32 || !run.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("invalid setup fence run identity".into());
     }
+    let run = run.to_owned();
     let uuid = decoder.text()?.to_owned();
     Identity::new("FSS", &uuid, "1.20.0")?;
     let mac: [u8; 6] = decoder.bytes()?.try_into().map_err(|_| "invalid setup fence MAC")?;
@@ -93,7 +96,7 @@ fn decode(bytes: &[u8], claim: ContentDigest, scope: &Path) -> ResultBox<Fence> 
             .any(|other| path.starts_with(other) || other.starts_with(path))) {
         return Err("setup fence journal paths are outside the authorized scope".into());
     }
-    Ok(Fence { uuid, mac, paths })
+    Ok(Fence { run, uuid, mac, paths })
 }
 
 /// Inspect the exact operator-scoped marker and its journal; this grants no
@@ -151,9 +154,24 @@ pub(super) fn inspect(args: &[String]) -> ResultBox<()> {
                 }
                 let (journal, minimum) = trial_checkpoint::reopen(&retained.paths[0], &retained.paths[1], &retained.paths[2], &retained.uuid, retained.mac)?;
                 let recovered = EffectCoordinator::recover(journal, minimum)?;
-                let total = recovered.journal().operations().count();
-                let unresolved = recovered.journal().operations().filter(|receipt| !receipt.state.is_terminal()).count();
-                println!("trial_fence_inspection=reconciliation_only operations={total} unresolved={unresolved} fence_trust=operator_selected root_trust=operator_selected independence=unverified");
+                let expected_operation_prefix = format!("operation:unifi-trial-{}-", retained.run);
+                let mut states = [0usize; 8];
+                for receipt in recovered.journal().operations() {
+                    if !receipt.intent.operation_id.as_str().starts_with(&expected_operation_prefix) {
+                        return Err("setup fence run does not match journal operations".into());
+                    }
+                    let index = match receipt.state {
+                        EffectState::Prepared => 0, EffectState::Committed => 1,
+                        EffectState::AdapterAccepted => 2, EffectState::Observed => 3,
+                        EffectState::Verified => 4, EffectState::Cancelled => 5,
+                        EffectState::Failed => 6, EffectState::Indeterminate => 7,
+                    };
+                    states[index] += 1;
+                }
+                let total: usize = states.iter().sum();
+                let unresolved = states[0] + states[1] + states[2] + states[3] + states[7];
+                println!("trial_fence_inspection=reconciliation_only operations={total} unresolved={unresolved} restart_authority=none fence_trust=operator_selected root_trust=operator_selected independence=unverified");
+                println!("trial_fence_effect_states prepared={} committed={} adapter_accepted={} observed={} verified={} cancelled={} failed={} indeterminate={}", states[0], states[1], states[2], states[3], states[4], states[5], states[6], states[7]);
                 Ok(())
             })();
             let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("fence inspection refused".into()) };

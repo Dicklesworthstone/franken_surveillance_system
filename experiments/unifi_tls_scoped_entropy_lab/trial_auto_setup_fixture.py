@@ -238,6 +238,11 @@ def inspect_fence_controls(binary, root, cert, wrong_cert):
     result = inspect(root / "camera-fence", cert, root)
     assert result.returncode == 0, result.stderr
     assert b"trial_fence_inspection=reconciliation_only operations=5 unresolved=5" in result.stdout
+    states_line = next(line for line in result.stdout.decode().splitlines() if line.startswith("trial_fence_effect_states "))
+    states = {key: int(value) for key, value in (part.split("=", 1) for part in states_line.split()[1:])}
+    assert set(states) == {"prepared", "committed", "adapter_accepted", "observed", "verified", "cancelled", "failed", "indeterminate"}
+    assert sum(states.values()) == 5
+    assert sum(states[name] for name in ("prepared", "committed", "adapter_accepted", "observed", "indeterminate")) == 5
     assert inventory() == before and marker.read_bytes() == original
     print("auto_setup_fixture case=fence-inspection result=pass", flush=True)
     result = inspect(root / "camera-fence", wrong_cert, root)
@@ -273,6 +278,16 @@ def inspect_fence_controls(binary, root, cert, wrong_cert):
         fields.append(original[cursor:cursor + count])
         cursor += count
     assert len(fields) == 8
+    wrong_run = fields.copy()
+    wrong_run[2] = b"0" * 32 if fields[2] != b"0" * 32 else b"1" * 32
+    encoded = b"".join(len(value).to_bytes(8, "big") + value for value in wrong_run)
+    directory = case / "wrong-run"
+    directory.mkdir(mode=0o700)
+    with (directory / marker.name).open("xb") as handle:
+        handle.write(encoded)
+    os.chmod(directory / marker.name, 0o600)
+    result = inspect(directory, cert, root)
+    assert result.returncode != 0 and b"run does not match journal" in result.stderr
     missing = [case / name for name in ("missing-journal", "missing-keeper", "missing-root")]
     fields[5:] = [str(path).encode() for path in missing]
     encoded = b"".join(len(value).to_bytes(8, "big") + value for value in fields)
