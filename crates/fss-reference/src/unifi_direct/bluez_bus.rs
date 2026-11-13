@@ -261,6 +261,7 @@ pub trait GattManagementAuthority {
 
 struct GattManagementGuarded<'a, 'scope, 'task, IO> {
     io: GattGuarded<'a, 'scope, 'task, IO>,
+    notify: &'a str,
     cx: &'a Cx,
     plan: &'a gatt_management::Plan,
     current: gatt_management::Preconditions,
@@ -270,6 +271,7 @@ struct GattManagementGuarded<'a, 'scope, 'task, IO> {
 impl<IO> GattManagementGuarded<'_, '_, '_, IO> {
     fn check(&self) -> io::Result<()> {
         self.io.check()?;
+        self.io.check_notification_access(self.notify)?;
         if self.cx.checkpoint().is_err()
             || !self.authority.permits(self.plan, self.current, self.permit)
         {
@@ -307,6 +309,27 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for GattManagementGuarded<'_, '_, '_, IO
     }
 }
 impl<IO> GattGuarded<'_, '_, '_, IO> {
+    fn check_notification_access(&self, notify: &str) -> io::Result<()> {
+        if !self
+            .device
+            .bus
+            .admission
+            .permits(notify, Stage::BluezNotifyRead)
+        {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let now = self
+            .device
+            .bus
+            .clock
+            .now()
+            .map_err(|_| io::ErrorKind::Interrupted)?;
+        self.device
+            .bus
+            .task
+            .checkpoint_for(RuntimeGrant::AdapterNet, notify, now, &BudgetVector::ZERO)
+            .map_err(|_| io::ErrorKind::PermissionDenied.into())
+    }
     fn check(&self) -> io::Result<()> {
         self.device.check()?;
         if !self
@@ -1560,7 +1583,11 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
             },
             characteristic: &endpoints.write,
         };
-        if guarded.check().is_err() {
+        if guarded.check().is_err()
+            || guarded
+                .check_notification_access(&endpoints.notify)
+                .is_err()
+        {
             refuse!(GattManagementRefusalReason::Denied);
         }
         if !permit.try_claim_dispatch() {
@@ -1571,6 +1598,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
         let exchange = async {
             let mut guarded = GattManagementGuarded {
                 io: guarded,
+                notify: &endpoints.notify,
                 cx: self.cx,
                 plan,
                 current,
