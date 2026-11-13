@@ -17399,3 +17399,238 @@ was acknowledged and source and pair were released.
 The test peer is synthetic and the G4's original startup metadata is still
 unobserved; neither this binding nor a matching name authorizes a handoff or
 proves camera identity, live native capture or unattended recording.
+
+### Live passive high-track ingress (2026-11-13 UTC)
+
+A bounded passive tap selected the one established high-track socket and
+reassembled its camera-originated TCP payload while the existing controller
+continued to own that connection. Beginning at a structurally identified IDR,
+it fed the ongoing bytes to the previously built, hash-verified Rust
+`live_media_probe` over loopback in an isolated network namespace. The Rust
+listener assembled a 150-sample segment and decoded a 2688 x 1512 picture.
+The socket received 3,171,223 bytes after the initial buffered input; this was
+not a whole-capture replay after the camera feed stopped. No media was saved.
+
+Because the tap joined midstream, it supplied a synthetic FLV header, a
+synthetic AVC configuration tag from the existing relay's SDP, and an inter-tag
+pad. Matching SDP reads bracketed the run but do not prove the stream's codec
+configuration epoch. The peer was selected by an existing socket claim, not
+independent physical authentication. Scrypted remained in the camera control
+and connection path. This is live camera-derived input through the native Rust
+media pipeline, not direct camera-to-Rust connectivity, native controller
+handoff, audio coverage, source custody, continuous recording or 30-day
+retention proof. No camera settings were changed. The existing recorder and
+fallback timer remained active with restart count 2; a privileged file
+inventory found six recent MP4 files, which is not proof of gap-free coverage.
+
+The observer source outside the repository was
+`work/g4-live-high-tap-20261113.py`, SHA-256
+`da2cd46292d462456cba3c8f25be4efa24cdb5380d9a4e4b17be45be0a1abe2b`.
+It imported the prior passive helper, SHA-256
+`dd181c0ed23a482544452d607a815a13c34fbda80b792a1ffc990d058f309e0f`.
+The unchanged Rust executable's SHA-256 was
+`d1d7c3da1ebeeb92e4722446c3bf6e6b780b6609d27c78ad5edf66b8c92c647d`,
+checked before and after the run. This binary predates the latest optional
+startup-name selector and therefore does not test that selector.
+
+### Task-owned BlueZ device connection (2026-11-13 UTC)
+
+The native D-Bus layer can now encode `Device1.Connect` and `Disconnect` for
+one conventional, caller-selected device path and a resolved unique BlueZ
+owner. The task-owned watch checks both bus and device authority on I/O,
+correlates the reply, and retains the device path and an uncertain state if a
+call is cancelled, interrupted, revoked, or cannot be correlated. An uncertain
+watch refuses further device operations and bus selection. A connect reply is
+an acknowledgment, not device authentication or proof of GATT readiness. A
+disconnect is explicit because [BlueZ can disconnect other profiles and the
+underlying device link](https://bluez.readthedocs.io/en/latest/device-api/).
+The fence exists only in memory; a dropped process has no durable connection
+journal, automatic recovery, or verified cleanup. This does not yet discover
+GATT characteristics, perform a key exchange, or provision Wi-Fi.
+
+Strict-remote job `30097323753213315` passed all 18 BlueZ bus tests at source
+snapshot `22a863aa75431238424a92f52fe9dcfb7c20da49`. They covered the
+synthetic lifecycle, independent device-path denial, authority revocation,
+wrong-owner reply, unpolled cancellation, partial connect and disconnect
+cancellation, and retained uncertain path. The earlier job
+`30097323753213311` passed 17 of 18 tests and failed because the cancellation
+test asserted a complete method name before the fragmented writer had sent
+it; the fixture was changed to wait for observed submission. Job
+`30097323753213312` then passed all 18 tests before the retained-path accessor
+was added. These are simulated bus peers, not physical-device connections.
+The packet, bus, and test source SHA-256 values in the final snapshot were
+`bb3ae8483c1d53e3a3baafdf4648be05854f0346a6ae6b743fd4275da8e06ad7`,
+`a592beba97fa2d022d64f912259d320f09947cbd1f6dbd154edadd3f0b96191d`, and
+`1a635a42a9e5e41b6e1c4e150d32017c5d145563a03c45bf6c6b6f73d6256d87`.
+At the same snapshot strict-remote job `30097323753213316` passed all 12
+D-Bus handshake unit tests, including the new device-call encoding and path
+refusals. Both final jobs exited zero, acknowledged terminal results, and
+released their sources and pairs; the earlier failed job also acknowledged
+termination and released source and pair.
+
+Separately, the previously hash-verified scan executable
+`6a9111c5d0e1a9b86b0fad35896ceba34a6a6c5c0333553e492440f9a50bfb5b` ran on
+ts1 with the adapter initially not discovering. It started and stopped its
+own scan, reported 32 changes including 31 device changes, and saw no claim
+for its single G3 candidate service UUID. The adapter again reported discovery
+off afterward. This is not a count of unique devices, proof that the G4 is
+absent, a test of the new device connection API, or Wi-Fi setup. The existing
+G4 recorder and fallback timer remained active, with restart count 2.
+
+### Scoped GATT endpoint selection (2026-11-13 UTC)
+
+The packet parser and task-owned BlueZ watch can now select a service and
+notification/write characteristics from an owner-correlated ObjectManager
+snapshot for the device whose connect call BlueZ acknowledged. The caller
+provides the model-specific UUIDs and explicitly selects write-with-response
+or write-without-response. Selection requires a resolved service snapshot,
+matching device and service hierarchy, unique requested objects, and suitable
+characteristic flags. Missing, duplicate, crossed or unsupported claims are
+refused. These are untrusted and potentially stale paths, not physical-device
+authentication or authority to send credentials.
+
+The watch retains overlapping change frames and requires callers to drain and
+reconcile them before resnapshotting. Cancellation during the borrowed D-Bus
+inventory fences the watch because the frame may be partial. The restricted
+bus framing still has an 8,192-byte complete-message limit; a larger BlueZ
+inventory is refused. At this snapshot notification subscription, characteristic
+writes, key exchange, Wi-Fi setup, durable recovery and physical G4
+interoperability had not been implemented or verified.
+
+At source snapshot `3926e499c27d473ae9757369ccd6eba3713c2773`, strict-remote
+job `30097323753213323` passed all 20 BlueZ bus contract tests, including
+selection, denial, wrong-owner response, overlapping changes, and cancelled
+inventory. Job `30097323753213325` passed all 12 ObjectManager unit tests,
+including both byte orders, every truncated prefix, missing flags, duplicate
+characteristics, unrelated-device isolation and crossed hierarchy. Both jobs
+exited zero, acknowledged terminal results and released source and pair. The
+packet, watch, and bus-test SHA-256 values were
+`a6808e3be25080daaf7cac3172b71ef3e0b226ad0823210c3ebf9d3e7a0d9294`,
+`61b503ec5ceb385358ce80b903175a03bdf4a2cfdff52cdfeb3f89f004834ff5`, and
+`05dc4d5f413ff0f9387f232be1e85606f9892f292b80eac67366f6cda49ab0d1`.
+The tests use synthetic BlueZ responses. The existing G4 recorder and fallback
+timer remained active with restart count 2; no camera call was made.
+
+### GATT notifications and BLE framing (2026-11-13 UTC)
+
+The task-owned BlueZ watch now supports explicit StartNotify, change reads,
+and StopNotify for the characteristic selected on that same watch. The bus,
+device and characteristic policies are checked during I/O. Interleaved signals
+are retained, and a partial or cancelled operation fences the in-memory session
+as uncertain. An idle read deadline before any frame byte keeps the session
+active. The watch distinguishes a known active session from an uncertain one
+and refuses device disconnect until notification cleanup is acknowledged.
+Consuming watch methods still consume the owner on refusal; callers must use
+the borrowed notification operations while the session is active.
+
+The packet parser retains GattCharacteristic1 `Value` changes as borrowed
+bytes, distinct from invalidated or unmentioned values, with redacted debug
+output. BlueZ also updates Value after a successful read, so callers must bind
+each change to the selected characteristic and examine other changes rather
+than treating every event as authenticated notification data. A synthetic
+fixture passed one fragmented and one combined set of values into the existing
+bounded UniFi BLE framer and recovered two packets without discarding the
+remaining input. The caller still owns each change frame and feeds the framer;
+this is not an automated encrypted provisioning session.
+
+Strict-remote job `30097323753213336` passed all 23 BlueZ bus integration tests
+at snapshot `793ce455fd858ca9c10f5d963f21e6052e2774ed`. They cover queued
+values before the start reply, split and combined packets, stale selection,
+wrong owner, device and characteristic authority, idle read, and cancellation
+of start, read and stop. An earlier version passed the same 23 tests in job
+`30097323753213335`. At snapshot `1fb3f98f1d1c48ef5e3c37f0826a0344b22dba29`,
+job `30097323753213332` passed 29 D-Bus packet tests; the packet source files
+are unchanged in the later snapshot. These tests use synthetic BlueZ frames,
+not a physical G4 or a live notification subscription. All three terminal
+results were acknowledged and their sources and pairs released.
+
+The handshake, ObjectManager, watch, registry, and bus-test SHA-256 values in
+the final snapshot were
+`42bdb6ca54ff0e187135d6b89139fee7567bb79c50827012384eb59c9bc34d9f`,
+`c5bda7d008160358031b05b135cd3fa499a55a6776e3ad3a1b82bcb63866f83b`,
+`d7ce8242f4c079b2c1aeeb0d80583dd1cfda8615607b6ff239be8a10322faa25`,
+`3b83eb5b699ad2eb5171f2e2ac03c35a93cbb805a1f72210b4fb07d43ceed99b`, and
+`5bffb5095a465bef81768421765515088e3b410e45623ef28b39df396c8fd3e2`.
+Characteristic writes, key exchange, secret provisioning, durable recovery,
+physical G4 Bluetooth compatibility and direct native recording remain open.
+
+The final snapshot also passed all six `bluez_registry::tests` in strict-remote
+job `30097323753213339` on hz4 (Cargo exit 0). The prior pinned attempt,
+`30097323753213338`, was refused before execution by disk reservation; it was
+not a test failure. These registry tests exercise synthetic events.
+
+### Selected GATT change fence (2026-11-13 UTC)
+
+The watch now records a stale endpoint selection when an observed change affects
+the selected adapter, device, or a descendant GATT object. A value-only change
+or a positive `Notifying` claim on the selected notification characteristic is
+not itself a stale-selection event. A false or invalidated `Notifying` claim,
+an invalidated value, a mixed value and incompatible property change, and
+unknown selected-object changes do invalidate it. Changes to unrelated device
+subtrees do not. The interpretation is deliberately conservative: even an
+unrelated property on the selected adapter may require a fresh selection.
+
+The triggering frame is returned once, and the caller must check
+`gatt_selection_stale()` before accepting its bytes. Further notification
+reads are refused, while explicit `StopNotify` remains available. After an
+acknowledged stop, the stale binding cannot be reused. This fence only covers
+changes observed on the watch: it does not authenticate the device, establish
+absence of queued or missed signals, or turn a BlueZ acknowledgment into a
+delivery guarantee. Caller-owned framing, write journaling, credential safety,
+physical compatibility and full provisioning remain open.
+
+At snapshot `9940b3f98d50fa5f051352d56bb8453c467416a4`, strict-remote job
+`30097323753213355` passed 24 BlueZ bus integration tests, including selected
+write-characteristic changes, notification loss, mixed value/loss, unrelated
+device changes and explicit stop. Job `30097323753213348` passed 31 packet
+tests at `ac15f81062c73a6fd411e93fdde3bd53f2a97cce`; the packet source was
+unchanged in the final snapshot. These results use synthetic D-Bus frames.
+Both jobs finished with exit 0 and were acknowledged. The final ObjectManager,
+watch, registry and integration-test source hashes were respectively
+`554f95780857c22e1e6c8a471bdb22af5802bf3300854a7899d27315a0507e75`,
+`cf8d527305eeeb7cdd7dbfda18b7aa608ac714f83a8620955f93dc3069fd3abb`,
+`4470cdfea168df23fdd1d4be93179898cdff6c521baaa165bbd9850a361439ee`, and
+`e8ee8ac95929b1e938901708c901b6372d8e32ed006779ba2330958ca20be56b`.
+No physical camera call was made; the existing recorder and fallback timer
+were active with restart count 2 at the final status check.
+
+The same final snapshot passed all six BlueZ registry unit tests in strict-remote
+job `30097323753213357`. All three final jobs ended with exit 0, their terminal
+results acknowledged, and source and pair custody released.
+
+### GATT write encoding and private bus oracle (2026-11-13 UTC)
+
+`fss-packet::dbus_handshake::bluez_gatt_write` prepares a bounded owner-addressed
+`GattCharacteristic1.WriteValue` message with signature `aya{sv}` and an
+explicit `request` or `command` type. The caller supplies the write bytes;
+the encoder does not transmit them, grant authority, authenticate the camera,
+enforce an ATT MTU, or provide secure memory erasure. Its payload-bearing
+wrapper redacts debug output and is not qualified for plaintext credentials.
+The 512-byte profile cap is a local bound, not a negotiated device limit.
+Production use still requires the selected characteristic, durable effect
+intent, independent device identity, per-poll authority, interrupted-write
+reconciliation, secure provisioning material and a tested transport owner.
+
+On snapshot `153f058d2e3b4cdf25919ed70aef33d55fae17d5`, strict-remote job
+`30097323753213361` passed 32 D-Bus packet tests. Four fixed synthetic values
+printed by that run matched
+[`gatt_write_synthetic_vectors.txt`](../experiments/unifi_ble_crypto_lab/gatt_write_synthetic_vectors.txt)
+byte for byte. On `ts1`, the independent system GDBus parser accepted all four
+via [`gatt_wire_oracle.py`](../experiments/unifi_ble_crypto_lab/gatt_wire_oracle.py).
+The private-bus oracle then authenticated a separate raw client, replaced only
+the fixture's same-length synthetic unique-owner name with the fake service's
+current owner, and sent the resulting Rust-encoded calls through a disposable
+abstract Unix D-Bus daemon. Its fake service received all four payloads and
+write modes and returned replies. The first oracle run failed in the Python
+test harness because it treated a GDBus result tuple as a message; it was fixed
+before the passing run. These are local synthetic results, not a physical BLE
+or camera test. The remote job exited 0, was acknowledged, and released its
+source and pair custody.
+
+The encoder SHA-256 was
+`9f97e1a1acfa7ebf4fdfca8893418fa7e3f6559d16d6f5adb8e9907e876ac590`;
+the parser oracle, private-bus oracle and fixture hashes were respectively
+`a6600e97d0f1f50a0fb84b05f210344090dd52ea0c0fac43506febb88615a475`,
+`9fe0e39878d2e93c7b6d991e8aa4aa40bca1adbbf85dbe27f048cbc130147b87` and
+`59c8d8d5c6fc52e2a22e22f952ad7b3a356cf25afe407858690a452b2f4a3a42`.
+The existing recorder and fallback timer remained active with restart count 2.
