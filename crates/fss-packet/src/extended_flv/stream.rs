@@ -65,9 +65,10 @@ impl fmt::Display for NameProbeError {
 }
 impl std::error::Error for NameProbeError {}
 
-/// Connection-local expectations and remaining work for a startup name probe.
-/// A caller owns this value across pending operations and cancellation. Debug
-/// output omits the event and stream name, neither of which authenticates a peer.
+/// Caller-bound expectations and remaining work for a startup name probe.
+/// A caller must bind this owner to one source and retain it across pending
+/// operations and cancellation. This type does not enforce source identity.
+/// Debug output omits the event and name; neither authenticates a peer.
 pub struct NameProbeOwner {
     event: String,
     name: String,

@@ -11,7 +11,7 @@ use super::{
 use asupersync::{Cx, net::TcpListener, time::timeout_at, types::Time};
 use fss_container::flv_avc::SourceKey;
 use fss_core::{BudgetVector, RuntimeGrant};
-use fss_packet::extended_flv::stream::Framer;
+use fss_packet::extended_flv::stream::{Framer, NameProbeOwner};
 use fss_runtime::{
     execution::TaskCx,
     tcp_ingress::{MAX_CHUNK_BYTES, TcpIngress},
@@ -331,10 +331,17 @@ pub struct StartedBeforeReply {
 /// Returning this owner does not select a healthy source or settle effects.
 #[must_use = "retire the pipeline and explicitly supervise the retained listener"]
 pub struct StartedWithListener<'scope, 'task, 'policy> {
-    /// The first admitted connection and local startup observations.
-    pub started: StartedBeforeReply,
-    /// The same bound listener, available for another admitted connection.
-    pub listener: Listener<'scope, 'task, 'policy>,
+    started: StartedBeforeReply,
+    listener: Listener<'scope, 'task, 'policy>,
+    requested_stream_name: [u8; 16],
+}
+
+impl<'scope, 'task, 'policy> StartedWithListener<'scope, 'task, 'policy> {
+    /// Recover the first connection and listener for explicit disposition.
+    /// Splitting the owner discards the request binding used for selection.
+    pub fn into_parts(self) -> (StartedBeforeReply, Listener<'scope, 'task, 'policy>) {
+        (self.started, self.listener)
+    }
 }
 
 /// Refusal while selecting a nonempty connection. Source bytes remain with the
@@ -357,6 +364,12 @@ pub enum CandidateError {
     Accept(Error),
     /// First-byte probe failed; the candidate pipeline remains caller-owned.
     Probe(super::pipeline::ProbeError),
+    /// Name-probe construction refused the caller's bounded configuration.
+    NameConfiguration(fss_packet::extended_flv::stream::NameProbeError),
+    /// Name-probe transport or task authority failed; candidates remain owned.
+    NameProbe(super::pipeline::NameProbeError),
+    /// The attempt limit was reached without a matching stream-name claim.
+    NoMatchingName,
 }
 impl fmt::Display for CandidateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -374,6 +387,28 @@ pub struct CandidateRefusal<'scope, 'task, 'policy> {
     pub pipeline: Pipeline,
 }
 
+// Immutable selector-local template. Each distinct connection gets its own
+// bounded owner; this neither authenticates a peer nor grants stream authority.
+struct NameRequirement {
+    event: String,
+    name: String,
+    byte_limit: usize,
+    tag_limit: usize,
+    work: u64,
+}
+impl NameRequirement {
+    fn owner(&self) -> Result<NameProbeOwner, CandidateError> {
+        NameProbeOwner::new(
+            &self.event,
+            &self.name,
+            self.byte_limit,
+            self.tag_limit,
+            self.work,
+        )
+        .map_err(CandidateError::NameConfiguration)
+    }
+}
+
 /// Bounded, caller-owned selection of the first connection to send a byte.
 /// A nonempty connection is not necessarily valid media or an authenticated
 /// camera. Control traffic must be supervised independently while this runs.
@@ -384,6 +419,8 @@ pub struct MediaCandidates<'scope, 'task, 'policy> {
     additional: [Option<Box<Pipeline>>; MAX_MEDIA_CANDIDATES - 1],
     parallel: bool,
     validate_header: bool,
+    name_requirement: Option<NameRequirement>,
+    name_rejections: usize,
     probeable: [bool; MAX_MEDIA_CANDIDATES],
     cursor: usize,
     selected: usize,
@@ -394,6 +431,7 @@ pub struct MediaCandidates<'scope, 'task, 'policy> {
     max_bytes: u64,
     deadline: Time,
     ready: bool,
+    fenced: bool,
 }
 
 impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
@@ -424,6 +462,8 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
             additional: std::array::from_fn(|_| None),
             parallel: false,
             validate_header: false,
+            name_requirement: None,
+            name_rejections: 0,
             probeable: std::array::from_fn(|index| index == 0),
             cursor: 0,
             selected: 0,
@@ -434,6 +474,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
             max_bytes,
             deadline,
             ready: false,
+            fenced: false,
         })
     }
 
@@ -476,7 +517,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
     where
         F: FnMut(usize) -> std::io::Result<(Framer, Recorder)>,
     {
-        if self.ready {
+        if self.ready || self.fenced {
             return Err(CandidateError::Configuration);
         }
         if self.parallel {
@@ -553,6 +594,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
     pub fn enable_parallel(&mut self) -> Result<(), CandidateError> {
         if self.attempts != 1
             || self.ready
+            || self.name_requirement.is_some()
             || !self.current.as_ref().is_some_and(Pipeline::is_fresh)
         {
             return Err(CandidateError::Configuration);
@@ -568,11 +610,66 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
         if !self.parallel
             || self.attempts != 1
             || self.ready
+            || self.name_requirement.is_some()
             || !self.current.as_ref().is_some_and(Pipeline::is_fresh)
         {
             return Err(CandidateError::Configuration);
         }
         self.validate_header = true;
+        Ok(())
+    }
+
+    /// Require an explicitly expected event and stream-name claim before
+    /// selecting a candidate. Each admitted connection receives an independent
+    /// bounded probe; rejected pipelines and their source bytes remain owned.
+    /// The caller must bind these expectations to the actual stream request.
+    /// A matching claim is unauthenticated and does not establish identity.
+    pub fn require_stream_name(
+        &mut self,
+        event: &str,
+        name: &str,
+        byte_limit: usize,
+        tag_limit: usize,
+        work_per_candidate: u64,
+    ) -> Result<(), CandidateError> {
+        if !self.parallel
+            || self.attempts != 1
+            || self.ready
+            || self.name_requirement.is_some()
+            || !self.current.as_ref().is_some_and(Pipeline::is_fresh)
+            || u64::try_from(byte_limit).map_or(true, |value| value > self.max_bytes)
+        {
+            return Err(CandidateError::Configuration);
+        }
+        let probe = NameProbeOwner::new(event, name, byte_limit, tag_limit, work_per_candidate)
+            .map_err(CandidateError::NameConfiguration)?;
+        let mut event_copy = String::new();
+        event_copy.try_reserve_exact(event.len()).map_err(|_| {
+            CandidateError::NameConfiguration(
+                fss_packet::extended_flv::stream::NameProbeError::Allocation,
+            )
+        })?;
+        event_copy.push_str(event);
+        let mut name_copy = String::new();
+        name_copy.try_reserve_exact(name.len()).map_err(|_| {
+            CandidateError::NameConfiguration(
+                fss_packet::extended_flv::stream::NameProbeError::Allocation,
+            )
+        })?;
+        name_copy.push_str(name);
+        let requirement = NameRequirement {
+            event: event_copy,
+            name: name_copy,
+            byte_limit,
+            tag_limit,
+            work: work_per_candidate,
+        };
+        self.current
+            .as_mut()
+            .ok_or(CandidateError::Configuration)?
+            .begin_name_probe(probe)
+            .map_err(|_| CandidateError::Configuration)?;
+        self.name_requirement = Some(requirement);
         Ok(())
     }
 
@@ -586,6 +683,10 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
         }
         enum Ready {
             Probe(usize, Result<Observation, super::pipeline::ProbeError>),
+            Name(
+                usize,
+                Result<super::ingress::NameProbeStep, super::pipeline::NameProbeError>,
+            ),
             Accept(Result<Pipeline, Error>),
         }
         loop {
@@ -598,7 +699,9 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                 return Err(CandidateError::Deadline);
             }
             if !self.probeable.iter().any(|value| *value) && self.attempts == self.max_attempts {
-                return Err(if self.validate_header {
+                return Err(if self.name_requirement.is_some() {
+                    CandidateError::NoMatchingName
+                } else if self.validate_header {
                     CandidateError::NoValidHeader
                 } else {
                     CandidateError::EmptyLimit
@@ -636,6 +739,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
             let probeable = &self.probeable;
             let cursor = self.cursor;
             let validate_header = self.validate_header;
+            let validate_name = self.name_requirement.is_some();
             let ready = timeout_at(
                 self.deadline,
                 poll_fn(|context| {
@@ -654,7 +758,12 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                                 Ok(now) => now,
                                 Err(_) => return Poll::Ready(Ready::Accept(Err(Error::Authority))),
                             };
-                            if validate_header {
+                            if validate_name {
+                                let mut probe = pin!(pipeline.probe_name_step(task, cx, now));
+                                if let Poll::Ready(result) = probe.as_mut().poll(context) {
+                                    return Poll::Ready(Ready::Name(index, result));
+                                }
+                            } else if validate_header {
                                 let mut probe = pin!(pipeline.probe_header_step(task, cx, now));
                                 if let Poll::Ready(result) = probe.as_mut().poll(context) {
                                     return Poll::Ready(Ready::Probe(
@@ -696,9 +805,78 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                         .find(|(_, slot)| slot.is_none())
                         .expect("bounded candidate slot");
                     *slot = Some(Box::new(pipeline));
+                    if let Some(requirement) = &self.name_requirement {
+                        let probe = match requirement.owner() {
+                            Ok(probe) => probe,
+                            Err(error) => {
+                                self.fenced = true;
+                                return Err(error);
+                            }
+                        };
+                        if slot
+                            .as_deref_mut()
+                            .expect("installed candidate")
+                            .begin_name_probe(probe)
+                            .is_err()
+                        {
+                            self.fenced = true;
+                            return Err(CandidateError::Configuration);
+                        }
+                    }
                     self.probeable[index + 1] = true;
                 }
                 Ready::Probe(_index, Err(error)) => return Err(CandidateError::Probe(error)),
+                Ready::Name(
+                    index,
+                    Err(super::pipeline::NameProbeError::Ingress(
+                        super::ingress::NameProbeError::Inspect(
+                            fss_packet::extended_flv::stream::NameProbeError::Metadata(_)
+                            | fss_packet::extended_flv::stream::NameProbeError::Framing(_)
+                            | fss_packet::extended_flv::stream::NameProbeError::Provisional
+                            | fss_packet::extended_flv::stream::NameProbeError::WorkLimit,
+                        ),
+                    )),
+                ) => {
+                    self.name_rejections += 1;
+                    self.probeable[index] = false;
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                }
+                Ready::Name(_, Err(error)) => return Err(CandidateError::NameProbe(error)),
+                Ready::Name(index, Ok(super::ingress::NameProbeStep::Matched { .. })) => {
+                    self.selected = index;
+                    self.ready = true;
+                    return Ok(());
+                }
+                Ready::Name(index, Ok(super::ingress::NameProbeStep::Progress { .. })) => {
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                    asupersync::runtime::yield_now().await;
+                }
+                Ready::Name(
+                    index,
+                    Ok(
+                        super::ingress::NameProbeStep::Mismatched { .. }
+                        | super::ingress::NameProbeStep::LimitReached { .. }
+                        | super::ingress::NameProbeStep::Incomplete,
+                    ),
+                ) => {
+                    self.name_rejections += 1;
+                    self.probeable[index] = false;
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                }
+                Ready::Name(index, Ok(super::ingress::NameProbeStep::Empty)) => {
+                    self.name_rejections += 1;
+                    self.probeable[index] = false;
+                    self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
+                    let retired = if index == 0 {
+                        self.current.take().expect("probed candidate").retire()
+                    } else {
+                        self.additional[index - 1]
+                            .take()
+                            .expect("probed candidate")
+                            .retire()
+                    };
+                    debug_assert_eq!(retired.ingress.source.received, 0);
+                }
                 Ready::Probe(
                     index,
                     Ok(
@@ -753,6 +931,12 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
     /// The count of accepted candidate connections, including the first.
     pub fn attempts(&self) -> usize {
         self.attempts
+    }
+
+    /// Candidate name probes rejected or exhausted under the explicit policy.
+    /// This count is local observation, not evidence of camera absence.
+    pub fn name_rejections(&self) -> usize {
+        self.name_rejections
     }
 
     /// Transfer a nonempty pipeline only after selection succeeds.
@@ -996,6 +1180,11 @@ where
     if !trace.is_empty() {
         return Err(StartError::Listener(Error::Configuration));
     }
+    let requested_stream_name: [u8; 16] = cfg
+        .stream_name
+        .as_bytes()
+        .try_into()
+        .map_err(|_| StartError::Request)?;
     trace.attempted = true;
     let (progress, pipeline, listener) = start_inner(
         owner, session, cfg, framer, recorder, false, trace, None, None,
@@ -1014,6 +1203,7 @@ where
                 pipeline,
             },
             listener,
+            requested_stream_name,
         }),
         StartProgress::Confirmed(_) => Err(StartError::Conversation(
             super::conversation::Error::Configuration,
@@ -1147,6 +1337,11 @@ where
     {
         return Err(StartError::Listener(Error::Configuration));
     }
+    let requested_stream_name: [u8; 16] = cfg
+        .stream_name
+        .as_bytes()
+        .try_into()
+        .map_err(|_| StartError::Request)?;
     trace.attempted = true;
     let (progress, pipeline, listener) = start_inner(
         owner,
@@ -1173,6 +1368,7 @@ where
                 pipeline,
             },
             listener,
+            requested_stream_name,
         }),
         StartProgress::Confirmed(_) => Err(StartError::Conversation(
             super::conversation::Error::Configuration,
@@ -1190,6 +1386,7 @@ pub struct ValidatedStartupEvidence {
     pub time_syncs_during_accept: usize,
     /// Controller observations received during that accept.
     pub observations_during_accept: Vec<super::Observation>,
+    requested_stream_name: [u8; 16],
 }
 
 /// Constructor refusal preserving the original listener, pipeline, and
@@ -1220,7 +1417,11 @@ impl<'scope, 'task, 'policy> ValidatedMediaSelection<'scope, 'task, 'policy> {
         max_bytes: u64,
         wait: Duration,
     ) -> Result<Self, ValidatedSelectionRefusal<'scope, 'task, 'policy>> {
-        let StartedWithListener { listener, started } = startup;
+        let StartedWithListener {
+            listener,
+            started,
+            requested_stream_name,
+        } = startup;
         let StartedBeforeReply {
             dispatched,
             time_syncs_during_accept,
@@ -1240,12 +1441,14 @@ impl<'scope, 'task, 'policy> ValidatedMediaSelection<'scope, 'task, 'policy> {
                     dispatched,
                     time_syncs_during_accept,
                     observations_during_accept,
+                    requested_stream_name,
                 },
                 candidates,
             }),
             Err(CandidateRefusal { listener, pipeline }) => Err(ValidatedSelectionRefusal {
                 startup: StartedWithListener {
                     listener,
+                    requested_stream_name,
                     started: StartedBeforeReply {
                         dispatched,
                         time_syncs_during_accept,
@@ -1265,6 +1468,22 @@ impl<'scope, 'task, 'policy> ValidatedMediaSelection<'scope, 'task, 'policy> {
     /// Number of admitted candidate connections, including the initial one.
     pub fn attempts(&self) -> usize {
         self.candidates.attempts()
+    }
+
+    /// Opt into a bounded claim requirement for the locally dispatched name.
+    /// The caller chooses the event; matching metadata does not authenticate
+    /// a camera or establish that it accepted the stream request.
+    pub fn require_stream_name(
+        &mut self,
+        event: &str,
+        byte_limit: usize,
+        tag_limit: usize,
+        work_per_candidate: u64,
+    ) -> Result<(), CandidateError> {
+        let name = std::str::from_utf8(&self.startup.requested_stream_name)
+            .map_err(|_| CandidateError::Configuration)?;
+        self.candidates
+            .require_stream_name(event, name, byte_limit, tag_limit, work_per_candidate)
     }
 
     /// Select while supervising the supplied controller. Cancellation preserves

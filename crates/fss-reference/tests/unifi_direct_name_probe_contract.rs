@@ -160,8 +160,12 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
                     let mut retained_header = 0;
                     while retained_header < 13 {
                         match pipeline.probe_name_step(task, cx, clock.now()?).await? {
-                            ingress::NameProbeStep::Progress { appended } => retained_header += appended,
-                            other => return Err(format!("unexpected partial header: {other:?}").into()),
+                            ingress::NameProbeStep::Progress { appended } => {
+                                retained_header += appended
+                            }
+                            other => {
+                                return Err(format!("unexpected partial header: {other:?}").into());
+                            }
                         }
                     }
                     assert_eq!(retained_header, 13);
@@ -264,7 +268,11 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
                         .await?;
                     pipeline
                         .begin_name_probe(NameProbeOwner::new(
-                            "event1", "0123456789abcdef", 13, 4, 1_000_000,
+                            "event1",
+                            "0123456789abcdef",
+                            13,
+                            4,
+                            1_000_000,
                         )?)
                         .map_err(|_| "probe refused")?;
                     peer.join().map_err(|_| "peer panicked")??;
@@ -276,17 +284,153 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
                                 bounded = true;
                                 break;
                             }
-                            other => return Err(format!("unexpected bound result: {other:?}").into()),
+                            other => {
+                                return Err(format!("unexpected bound result: {other:?}").into());
+                            }
                         }
                     }
                     assert!(bounded);
                     let retired = pipeline.retire();
-                    assert_eq!(retired.ingress.framing.bytes(), &media("0123456789abcdef")[..13]);
+                    assert_eq!(
+                        retired.ingress.framing.bytes(),
+                        &media("0123456789abcdef")[..13]
+                    );
                     if let Some(chunk) = retired.ingress.buffered {
                         let start = chunk.source.offset() as usize;
-                        assert_eq!(&chunk.source.bytes()[..chunk.appended],
-                            &media("0123456789abcdef")[start..start + chunk.appended]);
+                        assert_eq!(
+                            &chunk.source.bytes()[..chunk.appended],
+                            &media("0123456789abcdef")[start..start + chunk.appended]
+                        );
                     }
+
+                    // A wrong-name connection cannot win selection, and its
+                    // exact prefix remains owned while a later candidate wins.
+                    let peer = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut socket =
+                            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        socket.write_all(&media("ffffffffffffffff"))
+                    });
+                    let (framer, recorder) = parts(4)?;
+                    let initial = listener
+                        .accept_next(framer, recorder, 4096, 100_000, Duration::from_secs(5))
+                        .await?;
+                    peer.join().map_err(|_| "peer panicked")??;
+                    let mut candidates = listener::MediaCandidates::new_validating(
+                        listener,
+                        initial,
+                        2,
+                        4096,
+                        100_000,
+                        Duration::from_secs(5),
+                    )
+                    .map_err(|_| "candidate setup refused")?;
+                    assert!(matches!(
+                        candidates.require_stream_name(
+                            "event1",
+                            "0123456789abcdef",
+                            200_000,
+                            4,
+                            1_000_000
+                        ),
+                        Err(listener::CandidateError::Configuration)
+                    ));
+                    candidates.require_stream_name(
+                        "event1",
+                        "0123456789abcdef",
+                        4096,
+                        4,
+                        1_000_000,
+                    )?;
+                    assert!(matches!(
+                        candidates.require_flv_header(),
+                        Err(listener::CandidateError::Configuration)
+                    ));
+                    let mut factory =
+                        |_: usize| parts(5).map_err(|_| std::io::Error::other("fixture parts"));
+                    for _ in 0..64 {
+                        let mut wait = Box::pin(candidates.select(&mut factory));
+                        poll_fn(|cx| match wait.as_mut().poll(cx) {
+                            Poll::Pending => Poll::Ready(()),
+                            Poll::Ready(result) => panic!("unexpected early selection: {result:?}"),
+                        })
+                        .await;
+                        drop(wait);
+                        if candidates.name_rejections() == 1 {
+                            break;
+                        }
+                        asupersync::runtime::yield_now().await;
+                    }
+                    assert_eq!(candidates.name_rejections(), 1);
+                    let peer = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut socket =
+                            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        socket.write_all(&media("0123456789abcdef"))
+                    });
+                    candidates.select(&mut factory).await?;
+                    peer.join().map_err(|_| "peer panicked")??;
+                    assert_eq!(candidates.attempts(), 2);
+                    let selected = candidates
+                        .take_ready()
+                        .ok_or("matching candidate missing")?;
+                    assert_eq!(selected.source_key().connection, 5);
+                    assert_eq!(
+                        selected.retire().ingress.framing.bytes(),
+                        media("0123456789abcdef")
+                    );
+                    let (mut listener, rejected, additional) = candidates.into_parts();
+                    assert_eq!(
+                        rejected
+                            .ok_or("rejected candidate lost")?
+                            .retire()
+                            .ingress
+                            .framing
+                            .bytes(),
+                        media("ffffffffffffffff")
+                    );
+                    assert!(additional.into_iter().all(|item| item.is_none()));
+
+                    let peer = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut socket =
+                            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        socket.write_all(&media("ffffffffffffffff"))
+                    });
+                    let (framer, recorder) = parts(6)?;
+                    let initial = listener
+                        .accept_next(framer, recorder, 4096, 100_000, Duration::from_secs(5))
+                        .await?;
+                    peer.join().map_err(|_| "peer panicked")??;
+                    let mut candidates = listener::MediaCandidates::new_validating(
+                        listener,
+                        initial,
+                        1,
+                        4096,
+                        100_000,
+                        Duration::from_secs(5),
+                    )
+                    .map_err(|_| "candidate setup refused")?;
+                    candidates.require_stream_name(
+                        "event1",
+                        "0123456789abcdef",
+                        4096,
+                        4,
+                        1_000_000,
+                    )?;
+                    let mut factory =
+                        |_: usize| parts(7).map_err(|_| std::io::Error::other("fixture parts"));
+                    assert!(matches!(
+                        candidates.select(&mut factory).await,
+                        Err(listener::CandidateError::NoMatchingName)
+                    ));
+                    let (_listener, rejected, _) = candidates.into_parts();
+                    assert_eq!(
+                        rejected
+                            .ok_or("exhausted candidate lost")?
+                            .retire()
+                            .ingress
+                            .framing
+                            .bytes(),
+                        media("ffffffffffffffff")
+                    );
                     Ok(())
                 }
                 .await;

@@ -148,7 +148,8 @@ const ROLLOVER_REPLY_EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        // Retain test journals and media for inspection under the workspace's
+        // no-deletion rule.
     }
 }
 struct FixtureAdmission;
@@ -1859,6 +1860,10 @@ where
 }
 
 fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8, emit_event: bool, archive_guard: bool, async_archive: bool, cancel_archive: bool, audio_change: bool, unknown_archive: bool, replay_wire: Option<Vec<u8>>, late_audio_change: u8) -> Test {
+    conversation_scenario_with_name_selection(revoke_stream, revoke_after_start, revoke_audio_pending, reply_after_media, never_reply, early_reply, stop_mode, emit_event, archive_guard, async_archive, cancel_archive, audio_change, unknown_archive, replay_wire, late_audio_change, false)
+}
+
+fn conversation_scenario_with_name_selection(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8, emit_event: bool, archive_guard: bool, async_archive: bool, cancel_archive: bool, audio_change: bool, unknown_archive: bool, replay_wire: Option<Vec<u8>>, late_audio_change: u8, name_selection: bool) -> Test {
     let camera_replay = replay_wire.is_some();
     static NEXT_SCENARIO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let scenario = NEXT_SCENARIO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2045,6 +2050,13 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                     None if matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28)=>media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?,
                     None=>media_fixture()?,
                 };
+                let name_tag_len = if name_selection {
+                    let mut metadata = flv_tag(0, b"\x02\x00\x06event1\x03\x00\x0astreamName\x02\x00\x100123456789abcdef\x00\x00\x09");
+                    metadata[0] = 18;
+                    let length = metadata.len();
+                    drop(wire.splice(13..13, metadata));
+                    length
+                } else { 0 };
                 if revoke_audio_pending {
                     let mut audio=flv_tag(0,&[0xaf,0,0x14,0x08]);
                     audio[0]=8;
@@ -2100,6 +2112,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                     }
                     let stream_request=receive_binary(&mut socket)?;
                     if !stream_request.windows(b"ChangeVideoSettings".len()).any(|w|w==b"ChangeVideoSettings") { return Err(io::Error::other("missing stream request")); }
+                    if name_selection && !stream_request.windows(b"0123456789abcdef".len()).any(|w|w==b"0123456789abcdef") { return Err(io::Error::other("requested stream name missing")); }
                     let message=std::str::from_utf8(&stream_request).map_err(io::Error::other)?;
                     let destination=message.split_once("tcp://").and_then(|(_,suffix)|suffix.split_once('?')).map(|(addr,_)|addr).ok_or_else(||io::Error::other("missing stream destination"))?;
                     let destination:SocketAddr=destination.parse().map_err(io::Error::other)?;
@@ -2134,7 +2147,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                         }
                     }
                     let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;
-                    let split=if reply_after_media {13} else if audio_change {
+                    let split=if reply_after_media {13 + name_tag_len} else if audio_change {
                         let length=(usize::from(wire[14])<<16)|(usize::from(wire[15])<<8)|usize::from(wire[16]);
                         13+11+length+4
                     } else {wire.len().min(100)};
@@ -2283,6 +2296,9 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                     }
                     let retained=result.ok_or("unexpected timeout")?.map_err(|error|format!("initial startup: {error:?}"))?;
                     let mut selection=listener::ValidatedMediaSelection::new(retained,3,4096,1_000_000,Duration::from_secs(5)).map_err(|_|"candidate configuration refused")?;
+                    if name_selection {
+                        selection.require_stream_name("event1", 4096, 4, 1_000_000)?;
+                    }
                     let mut fresh=|index:usize| -> io::Result<_> {
                         let framer=Framer::new(FlvLimits::default(),1024*1024).map_err(io::Error::other)?;
                         let recorder=recording::Recorder::new(SourceKey {connection:10+index as u64,generation:1},recording::Limits::default()).map_err(io::Error::other)?;
@@ -6622,6 +6638,11 @@ fn owned_conversation_requests_a_stream_that_reaches_the_recording_pipeline() ->
 #[test]
 fn media_can_be_processed_before_the_camera_settings_reply() -> Test {
     conversation_scenario(false, false, false, true, false, false)
+}
+
+#[test]
+fn dispatched_name_selects_media_during_control_conversation() -> Test {
+    conversation_scenario_with_name_selection(false, false, false, true, false, false, 0, false, false, false, false, false, false, None, 0, true)
 }
 
 #[test]
