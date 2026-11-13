@@ -1,21 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.jeffreyemanuel.wyze-ota-announce</string>
-  <key>ProgramArguments</key><array>
-    <string>/bin/bash</string>
-    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_ota_announce.sh</string>
-    <string>80482c4bcf0b</string>
-    <string>https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.104.tar</string>
-    <string>4.52.17.104</string>
-    <string>8ae37e4424fc39bebcf20b2253077371</string>
-  </array>
-  <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><false/>
-  <key>ThrottleInterval</key><integer>60</integer>
-  <key>StandardOutPath</key><string>/tmp/ota/announce.log</string>
-  <key>StandardErrorPath</key><string>/tmp/ota/announce.log</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.jeffreyemanuel.wyze-ota-announce</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_ota_announce.sh</string>
+		<string>80482c4bcf0b</string>
+		<string>https://donations-procedure-parameter-blond.trycloudflare.com/4.52.17.105.tar</string>
+		<string>4.52.17.105</string>
+		<string>78df62c7d00b458a090b268be12fd768</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/ota/announce.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/ota/announce.log</string>
+	<key>ThrottleInterval</key>
+	<integer>60</integer>
+</dict>
+</plist>
