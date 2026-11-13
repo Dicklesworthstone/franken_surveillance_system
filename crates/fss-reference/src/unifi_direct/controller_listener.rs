@@ -33,6 +33,28 @@ use std::{
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
 
+/// Payload-free reason a controller listener did not admit a setup attempt.
+/// This is a local observation, not a camera identity or reachability result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadinessRefusal {
+    /// The expected endpoint does not match the bound listener.
+    Endpoint,
+    /// The caller did not use the task that owns the listener.
+    Task,
+    /// The caller did not use the runtime context that owns the listener.
+    Context,
+    /// The caller's task clock differs from the listener's clock.
+    Clock,
+    /// Live listener policy refused the bound endpoint.
+    ListenerPolicy,
+    /// Live policy refused the camera-to-listener relationship.
+    CameraPolicy,
+    /// Runtime or task authority refused the listener resource.
+    ListenerAuthority,
+    /// Runtime or task authority refused the camera resource.
+    CameraAuthority,
+}
+
 fn valid_ip(ip: Ipv4Addr) -> bool {
     (ip.is_private() || ip.is_loopback() || ip.is_link_local())
         && !ip.is_unspecified()
@@ -334,24 +356,52 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
         endpoint: SocketAddrV4,
         claimed_peer: Ipv4Addr,
     ) -> bool {
-        endpoint.port() != 0
-            && self.bound == endpoint
-            && std::ptr::eq(
-                std::ptr::from_ref(self.task).cast::<()>(),
-                std::ptr::from_ref(task).cast::<()>(),
-            )
-            && std::ptr::eq(self.cx, cx)
-            && self.clock.same_mapping(clock)
-            && self.policy.listener(self.requested, Some(self.bound))
-            && (self.resource == resource
-                || self.policy.controller_camera(
-                    self.bound, &self.resource, resource, claimed_peer,
-                ))
-            // Policy evaluation may itself consume time or revoke task
-            // authority. Recheck both scoped resources after it returns.
-            && Self::check(self.task, self.cx, self.clock, &self.resource).is_ok()
-            && (self.resource == resource
-                || Self::check(self.task, self.cx, self.clock, resource).is_ok())
+        self.readiness(task, cx, clock, resource, endpoint, claimed_peer)
+            .is_ok()
+    }
+
+    pub(crate) fn readiness(
+        &self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        clock: &MeteredClock<'_, '_>,
+        resource: &str,
+        endpoint: SocketAddrV4,
+        claimed_peer: Ipv4Addr,
+    ) -> Result<(), ReadinessRefusal> {
+        if endpoint.port() == 0 || self.bound != endpoint {
+            return Err(ReadinessRefusal::Endpoint);
+        }
+        if !std::ptr::eq(
+            std::ptr::from_ref(self.task).cast::<()>(),
+            std::ptr::from_ref(task).cast::<()>(),
+        ) {
+            return Err(ReadinessRefusal::Task);
+        }
+        if !std::ptr::eq(self.cx, cx) {
+            return Err(ReadinessRefusal::Context);
+        }
+        if !self.clock.same_mapping(clock) {
+            return Err(ReadinessRefusal::Clock);
+        }
+        if !self.policy.listener(self.requested, Some(self.bound)) {
+            return Err(ReadinessRefusal::ListenerPolicy);
+        }
+        if self.resource != resource
+            && !self.policy.controller_camera(self.bound, &self.resource, resource, claimed_peer)
+        {
+            return Err(ReadinessRefusal::CameraPolicy);
+        }
+        // Policy evaluation may itself consume time or revoke task authority.
+        if Self::check(self.task, self.cx, self.clock, &self.resource).is_err() {
+            return Err(ReadinessRefusal::ListenerAuthority);
+        }
+        if self.resource != resource
+            && Self::check(self.task, self.cx, self.clock, resource).is_err()
+        {
+            return Err(ReadinessRefusal::CameraAuthority);
+        }
+        Ok(())
     }
 
     /// Accept one currently admitted peer and meter ciphertext at the raw socket.

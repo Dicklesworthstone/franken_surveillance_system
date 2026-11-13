@@ -137,6 +137,7 @@ pub struct Trace {
     permit: Option<CommittedEffect>,
     response: Option<camera_api::HandoffResponseObservation>,
     profile: Option<Box<ProfilePreflight>>,
+    listener_refusal: Option<controller_listener::ReadinessRefusal>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +186,11 @@ struct ProfilePreflight {
     selection: Option<camera_api::VideoProfileSelection>,
 }
 impl Trace {
+    /// Most recent pre-effect listener readiness refusal for this unstarted
+    /// trace. This is a local diagnostic and does not authenticate a camera.
+    pub fn listener_refusal(&self) -> Option<controller_listener::ReadinessRefusal> {
+        self.listener_refusal
+    }
     /// Require a usable reported profile before preparing a handoff. The
     /// selection is a camera claim, not authority or proof of video delivery.
     /// Configure once, before a setup attempt starts; use a fresh trace for a
@@ -877,7 +883,12 @@ impl Owner<'_, '_, '_> {
             .ok_or(Error::Configuration)?
             .source()
             .ip();
-        if !listener.ready_for(self.task, self.cx, &self.clock, &resource, endpoint, peer) {
+        let readiness =
+            listener.readiness(self.task, self.cx, &self.clock, &resource, endpoint, peer);
+        if !trace.started {
+            trace.listener_refusal = readiness.err();
+        }
+        if readiness.is_err() {
             return Err(Error::ControllerUnavailable);
         }
         let admitted = ReadyAdmission {

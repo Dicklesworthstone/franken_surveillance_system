@@ -1572,18 +1572,24 @@ fn run_discovered_setup_with_listener(
                                 Ipv4Addr::new(127, 0, 0, 2),
                             ));
                         }
+                        let mut listener_trace = setup::Trace::default();
                         assert!(matches!(
                             owner
-                                .run_when_listening(
+                                .run_when_listening_tracked(
                                     &control,
                                     0,
                                     &mut http,
                                     &config!(&report),
-                                    framing
+                                    framing,
+                                    &mut listener_trace,
                                 )
                                 .await,
                             Err(setup::Error::ControllerUnavailable)
                         ));
+                        assert_eq!(
+                            listener_trace.listener_refusal(),
+                            Some(controller_listener::ReadinessRefusal::Endpoint)
+                        );
                         let wrong_port = if port == u16::MAX { port - 1 } else { port + 1 };
                         assert!(matches!(
                             owner
@@ -1617,16 +1623,21 @@ fn run_discovered_setup_with_listener(
                         live.store(false, std::sync::atomic::Ordering::Release);
                         assert!(matches!(
                             owner
-                                .run_when_listening(
+                                .run_when_listening_tracked(
                                     &control,
                                     port,
                                     &mut http,
                                     &config!(&report),
-                                    framing
+                                    framing,
+                                    &mut listener_trace,
                                 )
                                 .await,
                             Err(setup::Error::ControllerUnavailable)
                         ));
+                        assert_eq!(
+                            listener_trace.listener_refusal(),
+                            Some(controller_listener::ReadinessRefusal::ListenerPolicy)
+                        );
                         assert_eq!(http.phase(), Phase::Login);
                         live.store(true, std::sync::atomic::Ordering::Release);
                         if matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18) {
