@@ -236,7 +236,8 @@ impl AgentResponseEnvelope {
         if self.outcome == ResponseOutcome::Error && self.error_id.is_none() {
             return Err(ContractError::NotFound);
         }
-        if self.payload_schema == "fss.agent_cognitive_envelope.v2"
+        if matches!(self.payload_schema.as_str(),
+            "fss.agent_cognitive_envelope.v2" | crate::contract_basis::HYDRATION_RESPONSE_SCHEMA)
             && !self
                 .operation
                 .response_payload_schemas_for_basis(&self.contract_basis)
@@ -244,6 +245,13 @@ impl AgentResponseEnvelope {
         {
             return Err(ContractError::InvalidIdentifier);
         }
+        validate_hydration_profile_response(
+            &self.contract_basis,
+            self.operation,
+            &self.payload_schema,
+            &self.recovery_class,
+            self.safe_retry,
+        )?;
         for list in [
             &self.effective_capabilities,
             &self.warnings,
@@ -333,10 +341,12 @@ impl AgentResponseEnvelope {
         check_str_public(&payload_schema, 256).map_err(ContractBasisError::Contract)?;
         // V2 is an explicit additive presentation profile, never a silent widening of a
         // public-v1 session or an unrelated operation. Legacy response construction is unchanged.
-        if payload_schema == "fss.agent_cognitive_envelope.v2"
-            && !operation
-                .response_payload_schemas_for_basis(&contract_basis)
-                .is_some_and(|schemas| schemas.contains(&payload_schema.as_str()))
+        if matches!(
+            payload_schema.as_str(),
+            "fss.agent_cognitive_envelope.v2" | crate::contract_basis::HYDRATION_RESPONSE_SCHEMA
+        ) && !operation
+            .response_payload_schemas_for_basis(&contract_basis)
+            .is_some_and(|schemas| schemas.contains(&payload_schema.as_str()))
         {
             return Err(ContractBasisError::Contract(
                 ContractError::InvalidIdentifier,
@@ -367,6 +377,14 @@ impl AgentResponseEnvelope {
         }
         let recovery_class = recovery_class.into();
         check_str_public(&recovery_class, 64).map_err(ContractBasisError::Contract)?;
+        validate_hydration_profile_response(
+            &contract_basis,
+            operation,
+            &payload_schema,
+            &recovery_class,
+            safe_retry,
+        )
+        .map_err(ContractBasisError::Contract)?;
         let budgets_json = budgets_json.into();
         check_str_public(&budgets_json, 65_536).map_err(ContractBasisError::Contract)?;
         let effective_privacy_projection_json = effective_privacy_projection_json.into();
@@ -414,6 +432,34 @@ impl AgentResponseEnvelope {
             created_at_ns,
         })
     }
+}
+
+// Only the new explicitly selected Query profile changes admission. Existing cognitive payloads,
+// frozen reference/probe envelopes and their historical retry classifications remain untouched.
+fn validate_hydration_profile_response(
+    basis: &ContractBasis,
+    operation: AgentOperation,
+    payload_schema: &str,
+    recovery_class: &str,
+    safe_retry: ResponseSafeRetry,
+) -> Result<(), ContractError> {
+    if crate::contract_basis::is_hydration_contract_basis(basis)
+        && operation == AgentOperation::Query
+    {
+        let schemas = operation
+            .response_payload_schemas_for_basis(basis)
+            .ok_or(ContractError::InvalidIdentifier)?;
+        let retries = operation
+            .retry_classes_for_basis(basis)
+            .ok_or(ContractError::InvalidIdentifier)?;
+        if !schemas.contains(&payload_schema)
+            || !retries.iter().any(|retry| retry.as_str() == recovery_class)
+            || safe_retry != ResponseSafeRetry::No
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+    }
+    Ok(())
 }
 
 fn check_str_public(value: &str, max_len: usize) -> Result<(), ContractError> {

@@ -104,6 +104,11 @@
           "type": "null"
         }
       ]
+    },
+    "privacyEpoch": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Native LedgerAnchor privacy_epoch. Optional for legacy presentation, where privacy policyGenerationId carries it separately; required by exact hydration interchange to reproduce descriptor and continuation digests."
     }
   }
 }

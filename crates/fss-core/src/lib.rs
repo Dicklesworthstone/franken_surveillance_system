@@ -163,9 +163,10 @@ pub use contract_basis::{
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V3,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_COST_V1, SUPERSEDED_COST_REGISTRY_DIGEST_V1,
     SUPERSEDED_REGISTRY_DIGESTS, StaleBasisReason, check_basis_freshness, check_compatibility,
-    decode_canonical_binary, encode_canonical_binary, negotiate_basis,
-    negotiate_basis_with_superseded, reference_contract_basis, refuse_stale_anchor,
-    registered_operation, superseded_registry_digests, validate_contract_basis,
+    decode_canonical_binary, encode_canonical_binary, hydration_contract_basis,
+    is_hydration_contract_basis, negotiate_basis, negotiate_basis_with_superseded,
+    reference_contract_basis, refuse_stale_anchor, registered_operation,
+    superseded_registry_digests, validate_contract_basis,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};

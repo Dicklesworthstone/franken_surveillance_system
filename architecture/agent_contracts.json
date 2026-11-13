@@ -243,7 +243,15 @@
     "innerWorldProjection": "SituationFrame",
     "worldModel": "WorldEnvelope",
     "controlProjection": "SituationCapsule.controlEnvelope",
-    "effectiveProjection": "AgentResponseEnvelope reports effectiveViewId, effectiveCapabilities, effectivePrivacyProjection, taskState, and payloadDigest; requested authority is never presumed effective."
+    "effectiveProjection": "AgentResponseEnvelope reports effectiveViewId, effectiveCapabilities, effectivePrivacyProjection, taskState, and payloadDigest; requested authority is never presumed effective.",
+    "eventEvidenceHydration": {
+      "operation": "AOP-005",
+      "target": "evidence-hydration",
+      "payloadSchema": "fss.agent_evidence_hydration.v1",
+      "rule": "A registered composition of the existing AgentCognitiveEnvelope, SemanticHandle, HydrationRequest, HydrationReceipt and HydrationArtifact. The native bytes and digests remain unchanged; full canonical payloadBase64 is carried outside bounded proposition strings. One exclusive existing session journal synchronizes quoted token charge and cursor replay state before disclosure. No parallel evidence history, source-media grant, effect authority or new public verb.",
+      "contractProfile": "architecture/agent_hydration_profile.v1.json",
+      "profileScope": "The outer query response alone selects the exact hydration presentation basis, whose operation row declares cognition_write, durable agent-only charging, both existing grants and unsafe repeat semantics. Nested cognition, session, descriptor, request, receipt and cursor retain their original reference-v4 basis and canonical identities; no automatic session migration or mixed native basis is admitted."
+    }
   },
   "semanticCompressionRule": "Every lossy ContextPack carries a SemanticCompressionReceipt; contradictions, not-observable domains, effect indeterminacy, hard clamps, and mission-critical obligations are non-droppable.",
   "publicOperationIds": [
@@ -658,7 +666,13 @@
         "carrier": "the answer's privacy projection policyGenerationId privacy-epoch:<n>"
       }
     ],
-    "nullRule": "model, calibration, graph, and search generations are null when the answer consumed none (the schema's explicit null form)."
+    "nullRule": "model, calibration, graph, and search generations are null when the answer consumed none (the schema's explicit null form).",
+    "exactHydrationInterchange": {
+      "renderer": "crates/fss-cli/src/event_hydration_query_cmd/wire.rs",
+      "additionalField": "privacyEpoch",
+      "source": "LedgerAnchor.privacy_epoch",
+      "rule": "The optional evidence_anchor.v1 field is always emitted and required inside hydration descriptor/request/receipt/cursor anchors, so their complete native digests round-trip without guessing privacy state. Existing ordinary presentation remains unchanged."
+    }
   },
   "consequenceSeverityScale": {
     "owner": "fss-core PossibleWorld.consequence_severity",

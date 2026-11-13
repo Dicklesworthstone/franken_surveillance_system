@@ -620,7 +620,14 @@ impl AgentOperation {
         basis: &ContractBasis,
     ) -> Option<ResponseSchemaList> {
         let generation = self.generation_for_basis(basis)?;
-        if generation == crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION
+        if generation == crate::contract_basis::HYDRATION_OPERATION_REGISTRY_GENERATION
+            && self == Self::Query
+        {
+            Some(&[
+                concat!("fss.agent_cognitive_envelope", ".v1"),
+                crate::contract_basis::HYDRATION_RESPONSE_SCHEMA,
+            ])
+        } else if generation == crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION
             && self == Self::Investigate
         {
             Some(&[
@@ -765,6 +772,78 @@ impl AgentOperation {
         self.mode().requires_durability()
     }
 
+    /// Explicit profile mode; legacy `mode()` and canonical row bytes remain frozen.
+    #[must_use]
+    pub fn mode_for_basis(self, basis: &ContractBasis) -> Option<OperationMode> {
+        self.generation_for_basis(basis)?;
+        Some(
+            if self == Self::Query && crate::contract_basis::is_hydration_contract_basis(basis) {
+                OperationMode::CognitionWrite
+            } else {
+                self.mode()
+            },
+        )
+    }
+
+    /// Hydration commits its charge/cursor state; an ordinary query remains a non-durable read.
+    #[must_use]
+    pub fn durable_for_basis(self, basis: &ContractBasis) -> Option<bool> {
+        self.mode_for_basis(basis)
+            .map(OperationMode::requires_durability)
+    }
+
+    /// The presentation profile describes requirements; selecting it grants none of them.
+    #[must_use]
+    pub fn required_capabilities_for_basis(self, basis: &ContractBasis) -> Option<CapabilityList> {
+        self.generation_for_basis(basis)?;
+        Some(
+            if self == Self::Query && crate::contract_basis::is_hydration_contract_basis(basis) {
+                &["CAP-AGENT-QUERY-001", "CAP-AGENT-EVIDENCE-HYDRATE-001"]
+            } else {
+                self.required_capabilities()
+            },
+        )
+    }
+
+    /// A response loss can leave a committed disclosure charge, so no free read retry is offered.
+    #[must_use]
+    pub fn retry_classes_for_basis(self, basis: &ContractBasis) -> Option<RetryClassList> {
+        self.generation_for_basis(basis)?;
+        Some(
+            if self == Self::Query && crate::contract_basis::is_hydration_contract_basis(basis) {
+                &[
+                    OperationRetryClass::NeverUnchanged,
+                    OperationRetryClass::RefreshAndRetry,
+                    OperationRetryClass::RebaseRequired,
+                    OperationRetryClass::Backoff,
+                    OperationRetryClass::ReconciliationRequired,
+                    OperationRetryClass::OperatorActionRequired,
+                    OperationRetryClass::ResumeFromContinuation,
+                ]
+            } else {
+                self.retry_classes()
+            },
+        )
+    }
+
+    /// Validate an explicitly selected row without reinterpreting the legacy binary codec.
+    pub fn validate_row_for_basis(self, basis: &ContractBasis) -> Result<(), ContractError> {
+        self.validate_row()?;
+        let mode = self
+            .mode_for_basis(basis)
+            .ok_or(ContractError::InvalidIdentifier)?;
+        let durable = self
+            .durable_for_basis(basis)
+            .ok_or(ContractError::InvalidIdentifier)?;
+        if mode.affects_effect_plane() != self.effectful()
+            || mode.requires_durability() != durable
+            || (self.effectful() && !durable)
+        {
+            return Err(ContractError::OperationEffectModeMismatch);
+        }
+        Ok(())
+    }
+
     /// Returns the qualification gate of this operation row.
     #[must_use]
     pub const fn gate(self) -> &'static str {
@@ -780,7 +859,9 @@ impl AgentOperation {
     /// Explicit registry selection preserves the original reference universe and row bytes.
     #[must_use]
     pub fn generation_for_basis(self, basis: &ContractBasis) -> Option<&'static str> {
-        if crate::contract_basis::is_probe_contract_basis(basis) {
+        if crate::contract_basis::is_hydration_contract_basis(basis) {
+            Some(crate::contract_basis::HYDRATION_OPERATION_REGISTRY_GENERATION)
+        } else if crate::contract_basis::is_probe_contract_basis(basis) {
             Some(crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION)
         } else if basis.semantic_protocol == crate::contract_basis::CANONICAL_SEMANTIC_PROTOCOL
             && ContentDigest::parse(crate::contract_basis::REFERENCE_OPERATION_REGISTRY_DIGEST)
@@ -849,7 +930,11 @@ impl AgentOperation {
     #[must_use]
     pub fn canonical_row_encoding_for_basis(self, basis: &ContractBasis) -> Option<&'static str> {
         let generation = self.generation_for_basis(basis)?;
-        if generation == crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION
+        if generation == crate::contract_basis::HYDRATION_OPERATION_REGISTRY_GENERATION
+            && self == Self::Query
+        {
+            Some(crate::contract_basis::HYDRATION_QUERY_CANONICAL_ROW)
+        } else if generation == crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION
             && self == Self::Investigate
         {
             Some(

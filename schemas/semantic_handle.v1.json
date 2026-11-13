@@ -97,7 +97,7 @@
   "$defs": {
     "stableId": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9:+._-]{1,511}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:+._/-]{1,511}$"
     },
     "digest": {
       "type": "string",

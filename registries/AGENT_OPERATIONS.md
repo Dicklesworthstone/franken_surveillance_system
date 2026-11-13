@@ -19,6 +19,25 @@ and exact V2 cognitive schema bytes. Basis-aware native selectors refuse mixed o
 unknown profiles; the default row codec and V1 schema stay frozen. Both generations
 have independent immutable pins checked by the registry validators.
 
+The explicit `query --target evidence-hydration` target selects the separate
+`gen:fss1:event-hydration-v1` presentation basis. Its exact operation snapshot is
+`architecture/agent_hydration_profile.v1.json`, under operation generation
+`gen:fss1:hydration-operations-v1`. That target uses `AOP-005` in `cognition_write`
+mode, with `durable=true`, `effectful=false`, and both `CAP-AGENT-QUERY-001` and
+`CAP-AGENT-EVIDENCE-HYDRATE-001`. It synchronizes session token charges and cursor
+state before disclosure; non-continuation retries may incur another charge and
+are never advertised as safe read retries. No public verb or resource is added.
+
+This profile adds `fss.agent_evidence_hydration.v1` to its Query response allowlist
+and binds the exact composite schema bytes. The default table below, public-v1,
+public-v2, probe presentation and their binary fixtures remain unchanged. The
+native session, semantic descriptor, hydration request, receipt, artifact and
+continuation retain their existing reference-v4 basis; only the explicitly
+selected outer presentation uses the new profile. The standalone
+`scripts/agent_hydration_profile_checker.py` verifies its exact operation row,
+schema bytes, native pins and independent binary fixture without rewriting any
+baseline.
+
 | ID | Name | Owner | Mode | Default view | Typed request payload | Effectful | Durable | Gate | Status |
 |---|---|---|---|---|---|---:|---:|---|---|
 | `AOP-001` | `session.open` | `fss-agent-session` | `session_control` | `AVIEW-002` | `fss.agent_mission.v1` | no | yes | `QL-AGENT-001` | `specified` |

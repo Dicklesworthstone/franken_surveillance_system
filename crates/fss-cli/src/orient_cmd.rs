@@ -731,6 +731,52 @@ pub(crate) fn build_tracks_response(
     )
 }
 
+/// Event metadata hydration discloses only H0/H1 under both live session grants.
+/// Its existing session journal records charges and cursors; it has no media/effect grant.
+pub(crate) fn build_event_hydration_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use fss_reference::deployment_session::evidence_hydration::{
+        EVIDENCE_HYDRATION_CAPABILITY, EVIDENCE_QUERY_CAPABILITY, EvidenceHydrationAnswer,
+    };
+    if parts.operation != "query"
+        || !matches!(parts.view, AgentView::Case | AgentView::Forensic)
+        || parts.payload_schema != EvidenceHydrationAnswer::SCHEMA
+        || parts.capability != EVIDENCE_HYDRATION_CAPABILITY
+    {
+        return Err(RenderError("invalid event evidence hydration response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose = "session-authorized retained event metadata hydration".to_owned();
+    projection.visible_domains.extend([
+        "retained-event-identity-and-semantic-synopsis".to_owned(),
+        "event-evidence-provenance-and-disclosure-receipt".to_owned(),
+    ]);
+    // Required intent is not effective authority on refusal. A payload-free response must
+    // not advertise the grants of a session whose principal or stored scope was rejected.
+    let capabilities = if parts.payload_json == "null" {
+        projection.purpose =
+            "payload-free hydration refusal at a historical metadata observation".to_owned();
+        projection.visible_domains.clear();
+        projection
+            .redacted_domains
+            .push("all-requested-event-evidence".to_owned());
+        Vec::new()
+    } else {
+        vec![
+            EVIDENCE_QUERY_CAPABILITY.to_owned(),
+            EVIDENCE_HYDRATION_CAPABILITY.to_owned(),
+        ]
+    };
+    build_response_for_basis_privacy_and_capabilities(
+        parts,
+        false,
+        fss_core::hydration_contract_basis(),
+        projection.envelope_json(),
+        capabilities,
+    )
+}
+
 /// Retained report discovery discloses metadata under AgentQuery authority alone.
 pub(crate) fn build_report_catalog_response(
     parts: ResponseParts,

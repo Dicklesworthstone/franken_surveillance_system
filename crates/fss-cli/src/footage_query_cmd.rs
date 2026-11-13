@@ -147,6 +147,11 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--minimum-iou-ppm",
             "--verify-tracks-source",
             "--family",
+            "--session",
+            "--revision-digest",
+            "--descriptor-digest",
+            "--level",
+            "--budget-tokens",
         ],
     )?;
     match take(&values, "--target") {
@@ -169,6 +174,10 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         Some((_, target, _)) if target == "reports" => {
             crate::report_catalog_query_cmd::parse_report_catalog_query_args(tokens)
                 .map(FssCommand::ReportCatalogQuery)
+        }
+        Some((_, target, _)) if target == "evidence-hydration" => {
+            crate::event_hydration_query_cmd::parse_event_hydration_query_args(tokens)
+                .map(FssCommand::EventHydrationQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
             if ["--retained-import", "--max-query-read-objects"]
@@ -243,7 +252,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         Some((_, target, index)) => Err(malformed(
             "--target",
             target,
-            "expected events, footage, recordings, onvif, qsr, tracks or reports",
+            "expected events, footage, recordings, onvif, qsr, tracks, reports or evidence-hydration",
             *index,
         )),
     }

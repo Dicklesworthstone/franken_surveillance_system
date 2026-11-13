@@ -75,12 +75,14 @@ impl EvidenceHydrationRequest {
         let digest_valid = |digest: ContentDigest| {
             digest.algorithm() == DigestAlgorithm::Sha256 && digest.bytes() != [0; 32]
         };
-        if !digest_valid(self.expected_revision)
+        if self.generation == 0
+            || !digest_valid(self.expected_revision)
             || self
                 .expected_descriptor
                 .is_some_and(|digest| !digest_valid(digest))
             || self.event_id.as_str().len() > fss_core::event::MAX_EVENT_ID_LEN
             || !(1..=MAX_EVIDENCE_HYDRATION_TOKENS).contains(&self.budget_tokens)
+            || (self.continuation.is_some() && self.level != HydrationLevel::H1)
             || (self.expected_descriptor.is_none()
                 && (self.level != HydrationLevel::H0 || self.continuation.is_some()))
         {
@@ -228,6 +230,15 @@ impl From<FileIngestError> for EvidenceHydrationError {
     }
 }
 
+/// Historical metadata observation usable for a payload-free refusal, never a session grant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvidenceHydrationObservation {
+    /// Verified metadata anchor observed during admission, without a later freshness claim.
+    pub anchor: LedgerAnchor,
+    /// Evidence-clock observation at that anchor.
+    pub observed_at: TimestampNs,
+}
+
 /// Refusal never contains hydrated payload. A known charge survives post-commit failures.
 #[derive(Debug)]
 pub struct EvidenceHydrationFailure {
@@ -235,6 +246,8 @@ pub struct EvidenceHydrationFailure {
     pub error: EvidenceHydrationError,
     /// Definitely committed charge, if the failure occurred after synchronized disclosure.
     pub committed: Option<EvidenceHydrationCharge>,
+    /// An already observed metadata anchor; rendering must not open another reader on failure.
+    pub observed: Option<EvidenceHydrationObservation>,
 }
 impl fmt::Display for EvidenceHydrationFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -294,6 +307,7 @@ pub fn hydrate_event_evidence(
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<EvidenceHydrationAnswer, EvidenceHydrationFailure> {
     let mut committed = None;
+    let mut observed = None;
     let result = (|| -> Result<EvidenceHydrationAnswer, EvidenceHydrationError> {
         request.validate()?;
         cancelled_check(cancelled)?;
@@ -312,6 +326,12 @@ pub fn hydrate_event_evidence(
             &request.session_id,
             &read_budget,
             cancelled,
+            |snapshot| {
+                observed = Some(EvidenceHydrationObservation {
+                    anchor: snapshot.anchor.clone(),
+                    observed_at: evidence_now(snapshot),
+                });
+            },
             |read| {
                 if read.session.symbol_table_generation != request.generation
                     || read.session.current_anchor != read.head.anchor
@@ -502,7 +522,11 @@ pub fn hydrate_event_evidence(
             remaining_tokens: charge.remaining_tokens,
         })
     })();
-    result.map_err(|error| EvidenceHydrationFailure { error, committed })
+    result.map_err(|error| EvidenceHydrationFailure {
+        error,
+        committed,
+        observed,
+    })
 }
 
 #[cfg(test)]

@@ -39,9 +39,15 @@ jobs:
         if: success() || failure()
         run: |
           hydration_exit=0
+          python3 scripts/agent_hydration_profile_checker.py || hydration_exit=1
+          python3 -m unittest discover -s tests -p test_json_instance_validate.py || hydration_exit=1
+          python3 -m unittest discover -s tests -p test_agent_hydration_profile_checker.py || hydration_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-core --lib contract_basis::hydration_profile_tests || hydration_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test agent_event_hydration_contract || hydration_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::evidence_hydration::tests || hydration_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::disclosure::tests || hydration_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib event_hydration_query_cmd:: || hydration_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test event_hydration_query_cli_contract || hydration_exit=1
           exit "$hydration_exit"
       - name: Verify immutable perception reads and canonical CLI/MCP parity
         if: success() || failure()

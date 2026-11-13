@@ -204,6 +204,118 @@ class TestJsonInstanceValidate(unittest.TestCase):
         with self.assertRaises(SchemaSyntaxError):
             self.validator.validate(schema, "x")
 
+    def test_one_of_requires_exactly_one_matching_branch(self):
+        schema = {"oneOf": [{"type": "integer"}, {"type": "number"}]}
+        self.validator.validate(schema, 1.5)
+        for value, matches in (("neither", 0), (1, 2), (True, 0)):
+            with self.subTest(value=value):
+                with self.assertRaises(JsonInstanceValidationError) as caught:
+                    self.validator.validate(schema, value)
+                self.assertEqual(caught.exception.keyword, "oneOf")
+                self.assertIn(f"matches {matches} oneOf branches", caught.exception.message)
+
+        # Boolean branches are schemas, not values to ignore or count as objects.
+        self.validator.validate({"oneOf": [False, {"const": "valid"}]}, "valid")
+        self.validator.validate({"oneOf": [True, False]}, None)
+        for schema, value in (
+            ({"oneOf": [False]}, None),
+            ({"oneOf": [False, {"const": "valid"}]}, "invalid"),
+            ({"oneOf": [True, {"const": "valid"}]}, "valid"),
+        ):
+            with self.subTest(schema=schema, value=value):
+                with self.assertRaises(JsonInstanceValidationError):
+                    self.validator.validate(schema, value)
+
+    def test_one_of_statically_checks_all_branches(self):
+        unsupported = {"type": "string", "dependentRequired": {"a": ["b"]}}
+        for schema, instance in (
+            ({"oneOf": [{"type": "integer"}, unsupported]}, 7),
+            ({"properties": {"absent": {"oneOf": [{}, unsupported]}}}, {}),
+            (
+                {"oneOf": [{"const": 7}, {"$ref": "#/$defs/unsupported"}],
+                 "$defs": {"unsupported": unsupported}},
+                7,
+            ),
+        ):
+            with self.subTest(schema=schema):
+                with self.assertRaises(SchemaSyntaxError) as caught:
+                    self.validator.validate(schema, instance)
+                self.assertEqual(caught.exception.keyword, "dependentRequired")
+
+    def test_one_of_rejects_malformed_reachable_branch_lists(self):
+        for branches in (None, True, {}, "branch", [], [None], [42], [[]]):
+            with self.subTest(branches=branches):
+                schema = {"properties": {"absent": {"oneOf": branches}}}
+                with self.assertRaises(SchemaSyntaxError) as caught:
+                    self.validator.validate(schema, {})
+                self.assertEqual(caught.exception.keyword, "oneOf")
+
+    def test_event_hydration_schema_closure_is_statically_supported(self):
+        for name in (
+            "agent_evidence_hydration.v1.json",
+            "semantic_hydration_request.v1.json",
+            "semantic_hydration_receipt.v1.json",
+        ):
+            with self.subTest(name=name):
+                path = REPO_ROOT / "schemas" / name
+                schema = parse_strict_json(path.read_text(encoding="utf-8"))
+                self.validator.check_reachable_schema_keywords(schema, schema, name, name)
+                with self.assertRaises(JsonInstanceValidationError):
+                    self.validator.validate(schema, {}, name)
+
+    def test_property_names_and_every_matching_value_schema_apply(self):
+        schema = {
+            "type": "object",
+            "propertyNames": {"enum": ["fixed", "H0", "H1"]},
+            "properties": {"fixed": {"type": "integer"}, "H0": {"maximum": 4}},
+            "patternProperties": {"^H[01]$": {"type": "integer"}, "0$": {"minimum": 2}},
+            "additionalProperties": False,
+        }
+        self.validator.validate(schema, {"fixed": 0, "H0": 3, "H1": 1})
+        for value in ({"H2": 1}, {"H0\n": 3}, {"H0": 1}, {"H0": 5}, {"H0": "3"}):
+            with self.subTest(value=value):
+                with self.assertRaises(JsonInstanceValidationError):
+                    self.validator.validate(schema, value)
+
+        # Pattern matches are searches. Matching keys are not additional properties,
+        # but unknown keys and an anchored name with a trailing newline remain refused.
+        self.validator.validate(
+            {"patternProperties": {"H0": {"type": "integer"}}, "additionalProperties": False},
+            {"prefix-H0-suffix": 1},
+        )
+        closed = {"patternProperties": {"^H0$": {"type": "integer"}}, "additionalProperties": False}
+        for value in ({"other": 1}, {"H0\n": 1}):
+            with self.assertRaises(JsonInstanceValidationError):
+                self.validator.validate(closed, value)
+        self.validator.validate({"propertyNames": False}, {})
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate({"propertyNames": False}, {"H0": 1})
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate({"patternProperties": {"^H0$": False}}, {"H0": 1})
+
+    def test_property_applicators_refuse_unsupported_or_malformed_unvisited_schemas(self):
+        for schema, keyword in (
+            ({"propertyNames": {"dependentSchemas": {}}}, "dependentSchemas"),
+            ({"patternProperties": {"^absent$": {"dependentSchemas": {}}}}, "dependentSchemas"),
+            ({"patternProperties": {"[": {}}}, "patternProperties"),
+            ({"patternProperties": {"^H0$": None}}, "patternProperties"),
+            ({"patternProperties": []}, "patternProperties"),
+            ({"propertyNames": []}, "propertyNames"),
+        ):
+            with self.subTest(schema=schema):
+                with self.assertRaises(SchemaSyntaxError) as caught:
+                    self.validator.validate(schema, {})
+                self.assertEqual(caught.exception.keyword, keyword)
+
+    def test_content_encoding_remains_an_annotation_with_adjacent_assertions(self):
+        schema = {"type": "string", "contentEncoding": "base64", "maxLength": 8}
+        # Draft 2020-12 does not make this annotation an encoded-content assertion.
+        self.validator.validate(schema, "not b64!")
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, "too long for the bound")
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, 42)
+
     def test_agent_contract_schemas_are_statically_supported(self):
         # Every keyword reachable from the orient/explain answer schemas is in the subset, so a
         # conforming instance can be validated end to end (fss-iqg1k).

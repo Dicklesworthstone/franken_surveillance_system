@@ -30,6 +30,18 @@ use crate::evidence::LedgerAnchor;
 #[path = "contract_basis/probe_profile_tests.rs"]
 mod probe_profile_tests;
 
+mod hydration_profile;
+pub use hydration_profile::{
+    HYDRATION_CONTRACT_BASIS_CANONICAL_DIGEST, HYDRATION_CONTRACT_BASIS_FREEZE_DIGEST,
+    HYDRATION_CONTRACT_BASIS_GENERATION, HYDRATION_OPERATION_REGISTRY_DIGEST,
+    HYDRATION_OPERATION_REGISTRY_GENERATION, HYDRATION_QUERY_CANONICAL_ROW,
+    HYDRATION_RESPONSE_SCHEMA, HYDRATION_RESPONSE_SCHEMA_DIGEST, HYDRATION_SCHEMA_CATALOG_DIGEST,
+    hydration_contract_basis, is_hydration_contract_basis,
+};
+#[cfg(test)]
+#[path = "contract_basis/hydration_profile_tests.rs"]
+mod hydration_profile_tests;
+
 /// Canonical schema URI for agent contract basis instances.
 pub const SCHEMA_CONTRACT_BASIS: &str = "fss.agent_contract_basis.v1";
 
@@ -1127,9 +1139,12 @@ pub fn registered_operation(
             },
         }
     })?;
-    operation
-        .validate_row()
-        .map_err(ContractBasisError::Contract)?;
+    if is_hydration_contract_basis(basis) {
+        operation.validate_row_for_basis(basis)
+    } else {
+        operation.validate_row()
+    }
+    .map_err(ContractBasisError::Contract)?;
     Ok(operation)
 }
 

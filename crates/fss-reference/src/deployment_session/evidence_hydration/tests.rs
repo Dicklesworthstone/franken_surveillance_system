@@ -297,6 +297,17 @@ fn changed_scope_or_precommit_cancellation_has_no_disclosure_or_charge() -> Test
         let failure = hydrate_event_evidence(&fixture.root, &request, &|| choice == 6)
             .expect_err("scope must be refused");
         assert!(failure.committed.is_none());
+        if choice <= 3 {
+            assert!(
+                failure.observed.is_some(),
+                "refusal retains the already verified metadata anchor without another read"
+            );
+        } else {
+            assert!(
+                failure.observed.is_none(),
+                "malformed or cancelled admission performs no metadata read"
+            );
+        }
         assert_eq!(fixture.journal_bytes()?, stable);
         assert_eq!(fixture.spent()?, 0);
     }
@@ -441,6 +452,7 @@ fn initial_metadata_admission_consumes_the_same_later_owner_allowance() -> Test 
         &fixture.request.session_id,
         &measure,
         &|| false,
+        |_| {},
         |_| Ok(()),
     )?;
     let (_, attempts) = measure.consumed();
@@ -453,6 +465,7 @@ fn initial_metadata_admission_consumes_the_same_later_owner_allowance() -> Test 
         &fixture.request.session_id,
         &exact,
         &|| false,
+        |_| {},
         |_| Ok(()),
     )?;
     assert_eq!(exact.consumed().1, attempts);

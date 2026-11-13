@@ -35,9 +35,9 @@ pub const EVENT_HYDRATION_QUERY_CAPABILITY: &str = "CAP-AGENT-QUERY-001";
 pub const MAX_EVENT_HYDRATION_READ_BYTES: usize = 256 * 1024 * 1024;
 /// One shared immutable payload read-attempt allowance, including final revalidation.
 pub const MAX_EVENT_HYDRATION_READ_OBJECTS: usize = 65_536;
-/// Conservative H0 response quote, matching the existing case-view token ceiling.
+/// Fixed H0 disclosure price, matching the existing case-view token ceiling.
 pub const EVENT_HYDRATION_H0_TOKENS: u64 = 5_000;
-/// Conservative H1 response quote, matching the existing forensic-view token ceiling.
+/// Fixed H1 disclosure price, matching the existing forensic-view token ceiling.
 pub const EVENT_HYDRATION_H1_TOKENS: u64 = 16_000;
 /// Maximum complete canonical H0 identity bytes.
 pub const MAX_EVENT_HYDRATION_H0_BYTES: usize = 8 * 1024;
@@ -114,7 +114,7 @@ pub struct EventHydrationCatalog {
     pub event_handle: String,
 }
 
-/// Conservative descriptor quote. These are ceilings, not measured filesystem syscall counts.
+/// Fixed token price and finite metadata read ceilings; not measured CPU or output tokens.
 pub fn event_hydration_cost(
     level: HydrationLevel,
 ) -> Result<BudgetVector, EventHydrationBuildError> {

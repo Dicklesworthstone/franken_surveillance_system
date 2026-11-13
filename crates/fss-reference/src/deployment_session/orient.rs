@@ -223,6 +223,7 @@ pub(super) fn with_admitted_session_read<T>(
         session_id,
         DeploymentHistory::read,
         &|| false,
+        |_| {},
         read,
     )
 }
@@ -236,6 +237,7 @@ pub(super) fn with_admitted_session_metadata_read<T>(
     session_id: &SessionId,
     budget: &crate::agent_orient::MetadataReadBudget,
     cancelled: &dyn Fn() -> bool,
+    observed: impl FnOnce(&DeploymentSnapshot),
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
 ) -> Result<(T, u64, u64), DeploymentSessionError> {
     with_admitted_session_history(
@@ -246,6 +248,7 @@ pub(super) fn with_admitted_session_metadata_read<T>(
             DeploymentHistory::read_metadata_cancellable(root, limits, budget, cancelled)
         },
         cancelled,
+        observed,
         read,
     )
 }
@@ -256,6 +259,7 @@ fn with_admitted_session_history<T>(
     session_id: &SessionId,
     history: impl FnOnce(&Path, &OrientLimits) -> Result<DeploymentHistory, DeploymentReadError>,
     cancelled: &dyn Fn() -> bool,
+    observed: impl FnOnce(&DeploymentSnapshot),
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
 ) -> Result<(T, u64, u64), DeploymentSessionError> {
     // These existing layout/restore-fence checks perform reads only. In particular a restored
@@ -307,6 +311,9 @@ fn with_admitted_session_history<T>(
     let limits = OrientLimits::default();
     let history = history(&root, &limits)?;
     let head = history.snapshot_at_cancellable(history.head(), cancelled)?;
+    // Preserve the already verified historical anchor for a payload-free refusal. The private
+    // hydration adapter copies only this observation; it performs no second read or callback.
+    observed(&head);
     let now = evidence_now(&head);
     let (session, revision, remaining_tokens) =
         store.session_workspace(principal, session_id, now)?;

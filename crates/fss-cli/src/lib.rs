@@ -40,6 +40,8 @@ pub mod episode_cmd;
 pub mod error;
 /// Source-bound calibrated class advice over native watch and corroboration reports.
 pub mod event_fusion;
+/// Session-owned H0/H1 event evidence hydration through canonical AOP-005.
+pub mod event_hydration_query_cmd;
 /// `fss feedback` (AOP-013): advisory, evidence-linked proposals; never a policy mutation.
 pub mod feedback_cmd;
 /// Shared findings (FSS-227): the case-board intent family of `fss investigate` (AOP-006).

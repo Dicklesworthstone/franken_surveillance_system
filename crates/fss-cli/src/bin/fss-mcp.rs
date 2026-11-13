@@ -11,6 +11,8 @@ use std::process::ExitCode;
 mod control;
 #[path = "fss_mcp/coordination.rs"]
 mod coordination;
+#[path = "fss_mcp/event_hydration.rs"]
+mod event_hydration;
 #[path = "fss_mcp/feedback.rs"]
 mod feedback;
 #[path = "fss_mcp/investigate.rs"]
@@ -45,11 +47,15 @@ They verify original encoded evidence without returning media or creating retain
 Detector track reads require the separate tracks source-verification grant and exact report.\n\
 They return matched observations with tentative/confirmed state and continuity boundaries.\n\
 Report discovery returns retained metadata handles without a source-verification grant.\n\
+Event evidence-hydration uses an existing session and exact current event revision/anchor.\n\
+H0 costs 5000 and H1 costs 16000 cumulative tokens; agent-journal charge/cursor writes\n\
+precede output. Use the full receipt.continuation JSON for H1; consumed cursors never replay.\n\
+No source-media grant is needed or admitted; H2/H3/H4 are unavailable.\n\
 The principal is an audit label, not authentication. Session open/handoff/resume and explicit\n\
 durable follow, investigate and advisory feedback write agent state. Alert controls\n\
 use native exact approvals and durable receipts; inspect with wait after response loss.\n\
 No network listener. Follow/wait reads are at most 10 seconds; source verification\n\
-and approved dispatch are at most 60 seconds.\n\
+event hydration and approved dispatch are at most 60 seconds (cooperative).\n\
 Mission text is literal, never a file to read. Session budgets are cumulative;\n\
 same-head retry and resume behavior comes from the native session implementation.\n\
 Input frames are limited to 64 KiB; semantic responses to 4 MiB before escaping.\n\

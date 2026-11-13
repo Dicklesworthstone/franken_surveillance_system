@@ -4,12 +4,12 @@ r"""Strict JSON Schema Draft 2020-12 instance validator (stdlib only).
 Validates JSON instances against repository JSON schemas adhering to the
 CAP- EXEC model execution receipt specification (fss-2h5zq.47):
 - Supported validation keywords: type (including type arrays), const, enum,
-  required, properties, additionalProperties (bool or schema), pattern,
+  required, properties, patternProperties, propertyNames, additionalProperties (bool or schema), pattern,
   minLength, maxLength, minimum, maximum, exclusiveMinimum, exclusiveMaximum,
   minItems, maxItems, uniqueItems,
-  maxProperties, items, anyOf, allOf, not, if/then/else, $ref.
+  maxProperties, items, anyOf, allOf, oneOf, not, if/then/else, $ref.
 - Supported container/annotation keywords: $schema, $id, title, description,
-  $comment, $defs.
+  $comment, $defs, contentEncoding (annotation only; native artifact integrity is separate).
 - Refuses any unknown keyword in statically reachable subschemas.
 - Strict type semantics: bool is not integer or number; const/enum compare type-strictly.
 - ECMA-style end anchoring (\Z) for pattern keywords.
@@ -45,6 +45,7 @@ SUPPORTED_ANNOTATION_KEYWORDS = frozenset({
     "description",
     "$comment",
     "$defs",
+    "contentEncoding",
 })
 
 SUPPORTED_VALIDATION_KEYWORDS = frozenset({
@@ -53,6 +54,8 @@ SUPPORTED_VALIDATION_KEYWORDS = frozenset({
     "enum",
     "required",
     "properties",
+    "patternProperties",
+    "propertyNames",
     "additionalProperties",
     "pattern",
     "minLength",
@@ -68,6 +71,7 @@ SUPPORTED_VALIDATION_KEYWORDS = frozenset({
     "items",
     "anyOf",
     "allOf",
+    "oneOf",
     "not",
     "if",
     "then",
@@ -174,6 +178,20 @@ class InstanceValidator:
         self._compiled_patterns: dict[str, re.Pattern[str]] = {}
         self._verified_subschemas: set[int] = set()
 
+    def _pattern(self, pattern: str, schema_loc: str, keyword: str) -> re.Pattern[str]:
+        if not isinstance(pattern, str):
+            raise SchemaSyntaxError(schema_loc, keyword, "pattern must be a string")
+        if pattern not in self._compiled_patterns:
+            # Preserve the existing ECMA end-anchor behavior for property patterns too.
+            effective = pattern
+            if effective.endswith("$") and not effective.endswith(r"\$"):
+                effective = effective[:-1] + r"\Z"
+            try:
+                self._compiled_patterns[pattern] = re.compile(effective)
+            except re.error as exc:
+                raise SchemaSyntaxError(schema_loc, keyword, f"invalid regex '{pattern}': {exc}")
+        return self._compiled_patterns[pattern]
+
     def _resolve_ref(
         self, ref: str, current_doc: dict[str, Any], origin_rel: str
     ) -> tuple[dict[str, Any], dict[str, Any], str]:
@@ -255,6 +273,31 @@ class InstanceValidator:
                 ):
                     raise SchemaSyntaxError(schema_loc, kw, f"{kw} must be a finite number")
 
+        if "oneOf" in schema:
+            alternatives = schema["oneOf"]
+            if (
+                not isinstance(alternatives, list)
+                or not alternatives
+                or any(not isinstance(alt, (dict, bool)) for alt in alternatives)
+            ):
+                raise SchemaSyntaxError(
+                    schema_loc, "oneOf", "oneOf must be a non-empty array of schemas"
+                )
+        if "propertyNames" in schema and not isinstance(schema["propertyNames"], (dict, bool)):
+            raise SchemaSyntaxError(schema_loc, "propertyNames", "propertyNames must be a schema")
+        if "patternProperties" in schema:
+            patterns = schema["patternProperties"]
+            if not isinstance(patterns, dict):
+                raise SchemaSyntaxError(
+                    schema_loc, "patternProperties", "patternProperties must be an object"
+                )
+            for pattern, branch in patterns.items():
+                self._pattern(pattern, schema_loc, "patternProperties")
+                if not isinstance(branch, (dict, bool)):
+                    raise SchemaSyntaxError(
+                        schema_loc, "patternProperties", "each property pattern must name a schema"
+                    )
+
         self._verified_subschemas.add(sid)
 
     def check_reachable_schema_keywords(
@@ -284,11 +327,12 @@ class InstanceValidator:
                 resolved, target_doc, new_origin, f"{new_origin}#{ref}", visited
             )
 
-        if "properties" in schema and isinstance(schema["properties"], dict):
-            for k, prop_schema in schema["properties"].items():
-                self.check_reachable_schema_keywords(
-                    prop_schema, current_doc, origin_rel, f"{schema_loc}/properties/{k}", visited
-                )
+        for applicator in ("properties", "patternProperties"):
+            if applicator in schema and isinstance(schema[applicator], dict):
+                for k, prop_schema in schema[applicator].items():
+                    self.check_reachable_schema_keywords(
+                        prop_schema, current_doc, origin_rel, f"{schema_loc}/{applicator}/{k}", visited
+                    )
 
         if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
             self.check_reachable_schema_keywords(
@@ -304,14 +348,14 @@ class InstanceValidator:
                 schema["items"], current_doc, origin_rel, f"{schema_loc}/items", visited
             )
 
-        for combinator in ("anyOf", "allOf"):
+        for combinator in ("anyOf", "allOf", "oneOf"):
             if combinator in schema and isinstance(schema[combinator], list):
                 for idx, alt in enumerate(schema[combinator]):
                     self.check_reachable_schema_keywords(
                         alt, current_doc, origin_rel, f"{schema_loc}/{combinator}/{idx}", visited
                     )
 
-        for applicator in ("not", "if", "then", "else"):
+        for applicator in ("not", "if", "then", "else", "propertyNames"):
             if applicator in schema and isinstance(schema[applicator], dict):
                 self.check_reachable_schema_keywords(
                     schema[applicator], current_doc, origin_rel, f"{schema_loc}/{applicator}", visited
@@ -326,7 +370,7 @@ class InstanceValidator:
         origin_rel: str,
         schema_loc: str,
     ) -> bool:
-        """Returns whether the instance validates against a subschema (for not/if)."""
+        """Returns whether the instance validates against a subschema (for not/if/oneOf)."""
         try:
             self.validate_node(schema, instance, data_path, current_doc, origin_rel, schema_loc)
         except JsonInstanceValidationError:
@@ -335,7 +379,7 @@ class InstanceValidator:
 
     def validate_node(
         self,
-        schema: dict[str, Any],
+        schema: dict[str, Any] | bool,
         instance: Any,
         data_path: str,
         current_doc: dict[str, Any],
@@ -343,6 +387,10 @@ class InstanceValidator:
         schema_loc: str,
     ) -> None:
         """Validates instance node against schema node."""
+        if schema is False:
+            raise JsonInstanceValidationError(
+                data_path, "value is forbidden by a false schema", "false"
+            )
         if not isinstance(schema, dict):
             return
 
@@ -420,18 +468,7 @@ class InstanceValidator:
                     )
             if "pattern" in schema:
                 pat_str = schema["pattern"]
-                if pat_str not in self._compiled_patterns:
-                    # End-anchor with \Z if it ends with $ to prevent trailing newline acceptance
-                    effective_pat = pat_str
-                    if effective_pat.endswith("$") and not effective_pat.endswith(r"\$"):
-                        effective_pat = effective_pat[:-1] + r"\Z"
-                    try:
-                        self._compiled_patterns[pat_str] = re.compile(effective_pat)
-                    except re.error as exc:
-                        raise SchemaSyntaxError(
-                            schema_loc, "pattern", f"invalid regex '{pat_str}': {exc}"
-                        )
-                regex = self._compiled_patterns[pat_str]
+                regex = self._pattern(pat_str, schema_loc, "pattern")
                 if not regex.search(instance):
                     raise JsonInstanceValidationError(
                         data_path,
@@ -517,7 +554,7 @@ class InstanceValidator:
                         f"{schema_loc}/items",
                     )
 
-        # 8. Object-specific keywords: maxProperties, required, properties, additionalProperties
+        # 8. Object-specific keywords; all matching property schemas apply independently.
         if isinstance(instance, dict):
             if "maxProperties" in schema:
                 mp = schema["maxProperties"]
@@ -538,11 +575,19 @@ class InstanceValidator:
                         )
 
             properties_schema = schema.get("properties", {})
+            pattern_properties = schema.get("patternProperties", {})
             additional_props = schema.get("additionalProperties", True)
 
             for key, val in instance.items():
                 prop_path = f"{data_path}.{key}" if data_path != "#" else f"#/{key}"
+                if "propertyNames" in schema:
+                    self.validate_node(
+                        schema["propertyNames"], key, prop_path, current_doc,
+                        origin_rel, f"{schema_loc}/propertyNames",
+                    )
+                matched = False
                 if key in properties_schema:
+                    matched = True
                     prop_subschema = properties_schema[key]
                     self.validate_node(
                         prop_subschema,
@@ -552,7 +597,14 @@ class InstanceValidator:
                         origin_rel,
                         f"{schema_loc}/properties/{key}",
                     )
-                else:
+                for pattern, branch in pattern_properties.items():
+                    if self._pattern(pattern, schema_loc, "patternProperties").search(key):
+                        matched = True
+                        self.validate_node(
+                            branch, val, prop_path, current_doc,
+                            origin_rel, f"{schema_loc}/patternProperties/{pattern}",
+                        )
+                if not matched:
                     if additional_props is False:
                         raise JsonInstanceValidationError(
                             data_path,
@@ -605,6 +657,27 @@ class InstanceValidator:
                     current_doc,
                     origin_rel,
                     f"{schema_loc}/allOf/{idx}",
+                )
+
+        # Exactly one branch must match. Static traversal has already checked every
+        # branch, so neither a successful branch nor an absent property hides bad schemas.
+        if "oneOf" in schema:
+            matches = sum(
+                self._conforms(
+                    branch,
+                    instance,
+                    data_path,
+                    current_doc,
+                    origin_rel,
+                    f"{schema_loc}/oneOf/{idx}",
+                )
+                for idx, branch in enumerate(schema["oneOf"])
+            )
+            if matches != 1:
+                raise JsonInstanceValidationError(
+                    data_path,
+                    f"value matches {matches} oneOf branches; exactly one is required",
+                    "oneOf",
                 )
 
         # 11. not

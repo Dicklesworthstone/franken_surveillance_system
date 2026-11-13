@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_event_hydration_query.v1.json",
+  "title": "Session-owned retained event evidence hydration query v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "target": {
+      "const": "evidence-hydration"
+    },
+    "session": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Exact retained session. The fixed server principal must own it and its query/hydration/privacy grants must remain live."
+    },
+    "generation": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 20,
+      "description": "Exact nonzero session symbol-table generation as a canonical u64 decimal string."
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "revision_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71,
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "description": "Exact current event revision digest returned by query or explain; never a source-media digest."
+    },
+    "anchor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Required full current authority/effect-history token; a changed head requires explicit session rebase."
+    },
+    "level": {
+      "enum": [
+        "H0",
+        "H1"
+      ],
+      "description": "H0 discovers exact identity, availability and prices; H1 delivers a semantic synopsis of retained metadata. No H2/H3/H4 or media disclosure."
+    },
+    "descriptor_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71,
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "description": "Exact H0 descriptor digest, required for H1 and progressive continuation."
+    },
+    "budget_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16000,
+      "description": "Per-request token ceiling. Native conservative quotes are H0=5000 and H1=16000; the session lifetime budget must also suffice. Charge is durable before disclosure."
+    },
+    "continuation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "description": "The complete exact receipt.continuation JSON object encoded as a string, including privacyEpoch in both anchors. H1 only. Native durable issuance/consumption verification refuses replay; a bare cursor token is insufficient."
+    }
+  },
+  "required": [
+    "target",
+    "session",
+    "generation",
+    "event_id",
+    "revision_digest",
+    "anchor",
+    "level"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "level": {
+            "const": "H1"
+          }
+        },
+        "required": [
+          "level"
+        ]
+      },
+      "then": {
+        "required": [
+          "descriptor_digest"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "continuation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "level": {
+            "const": "H1"
+          }
+        },
+        "required": [
+          "descriptor_digest"
+        ]
+      }
+    }
+  ]
+}

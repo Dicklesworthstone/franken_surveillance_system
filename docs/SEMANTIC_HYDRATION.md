@@ -119,6 +119,16 @@ The reference tests cover:
 - H4 qualification/debugging clamps;
 - deterministic replay and descriptor mismatch.
 
+## Retained event CLI and MCP profile
+
+The [exact retained event profile](AGENT_EVENT_HYDRATION.md) now binds H0 and H1
+to the deployment session journal. It exposes the full native descriptor, request,
+receipt and canonical artifact through CLI and MCP, with atomic token/cursor
+accounting, cold replay protection and final metadata revalidation. Its outer
+presentation basis declares durable charging; native evidence identities remain
+on their original basis. This profile admits metadata only and does not complete
+the broader H2-H4, TUI, report or qualification work.
+
 ## Current boundary
 
 This implementation establishes the dependency-free core contract and deterministic reference behavior. FSS-210 remains broader than code presence. Completion still requires:
