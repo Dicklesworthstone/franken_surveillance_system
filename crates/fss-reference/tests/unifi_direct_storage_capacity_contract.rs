@@ -338,6 +338,140 @@ fn retained_generation_reservations_survive_reopen_and_refuse_mismatch() -> Test
     Ok(())
 }
 
+/// Child side of the cross-process reservation test. The parent retains the
+/// journal head between the two processes; no physical camera is contacted.
+#[test]
+#[ignore = "invoked by the separate-process reservation fixture"]
+fn generation_reservation_process_child() -> Test {
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
+    };
+    use fss_reference::unifi_direct::av_rollover_generation::{
+        Configuration, Plan, ReservationError, ReservedPlan,
+    };
+    use fss_runtime::effect_journal::{EffectJournalPin, PinRetainedEffectJournal};
+
+    let root = PathBuf::from(std::env::var("FSS_TEST_GENERATION_ROOT")?);
+    let mode = std::env::var("FSS_TEST_GENERATION_MODE")?;
+    let authority = fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:generation-process".into(),
+        operation_id: OperationId::parse("operation:generation-process")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"generation process fixture"),
+        generation: 1,
+    })?;
+    let replay = Arc::new(ReplayCx::from_context_authority(&authority, root.clone())?);
+    let limits = EffectJournalLimits::default();
+    let config = |first: u64| Configuration {
+        namespace: "camera".into(),
+        scope_seed: ContentDigest::sha256(b"generation process scope"),
+        first,
+        count: 2,
+        journal_replay: replay.clone(),
+        pin_replay: replay.clone(),
+        journal_io: Arc::new(HostSpoolIo),
+        pin_io: Arc::new(HostSpoolIo),
+        journal_limits: limits,
+        pin_limits: limits,
+        read: Arc::new(Access(ContentDigest::sha256(b"retention"))),
+        object_limits: archive::StagedAvLimits {
+            max_objects: 16,
+            max_object_bytes: 4096,
+            max_total_bytes: 65536,
+        },
+        work_limit: 100_000,
+    };
+    let pin_scope = ContentDigest::sha256(b"generation process pin fixture");
+    if mode == "write" {
+        let store = FileEffectJournal::create(root.join("reservations"), limits, Arc::new(HostSpoolIo))?;
+        let pin = FileTrustedRootPinRetainer::create(root.join("reservation-pin"), limits, Arc::new(HostSpoolIo), pin_scope)?;
+        let journal = PinRetainedEffectJournal::new(Box::new(store), Box::new(pin))?;
+        let plan = Plan::new(config(20)).map_err(|_| "writer plan invalid")?;
+        let mut reserved = ReservedPlan::create(plan, journal, &replay).map_err(|_| "writer plan refused")?;
+        let (identity, worker) = reserved.reserve_next(&replay).map_err(|_| "writer reservation refused")?.ok_or("writer reservation missing")?;
+        if identity.generation != 20 || identity.journal_root.exists() || identity.pin_root.exists() {
+            return Err("writer unexpectedly started the creator".into());
+        }
+        let retired = worker.retire().map_err(|_| "writer creator unexpectedly running")?;
+        if retired.outcome.is_some() || retired.inputs.is_none() {
+            return Err("writer creator ownership not retained".into());
+        }
+        let head = reserved.head().ok_or("writer head missing")?;
+        if head.sequence != 2 { return Err("writer head sequence changed".into()); }
+        println!("generation_reservation_head={}", head.root.to_text());
+        return Ok(());
+    }
+    if mode != "read" { return Err("unknown generation fixture mode".into()); }
+    let minimum = EffectJournalPin {
+        sequence: 2,
+        root: ContentDigest::parse(std::env::var("FSS_TEST_GENERATION_HEAD")?)?,
+    };
+    let store = FileEffectJournal::open(root.join("reservations"), limits, Arc::new(HostSpoolIo), minimum)?;
+    let pin = FileTrustedRootPinRetainer::open_trusting_storage(root.join("reservation-pin"), limits, Arc::new(HostSpoolIo), pin_scope)?;
+    let journal = PinRetainedEffectJournal::for_reconciliation(Box::new(store), Box::new(pin))?;
+    let plan = Plan::new(config(21)).map_err(|_| "reader plan invalid")?;
+    let mut recovered = ReservedPlan::recover(plan, journal, &replay).map_err(|_| "reader plan refused")?;
+    let first = recovered.pending().cloned().ok_or("reader lost pending reservation")?;
+    if first.generation != 20 || first.journal_root.exists() || first.pin_root.exists() || recovered.head() != Some(minimum) {
+        return Err("reader recovered incorrect reservation".into());
+    }
+    let refusal = match recovered.reserve_next(&replay) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("reader allowed a new generation before reconciliation".into()),
+    };
+    if !matches!(refusal.reason, ReservationError::ReconciliationRequired) || refusal.candidate.is_some() {
+        return Err("reader lost the pending reservation fence".into());
+    }
+    recovered.record_reconciliation(&first, ContentDigest::sha256(b"synthetic assessed evidence"), &replay)
+        .map_err(|_| "reader reconciliation refused")?;
+    let (second, worker) = recovered.reserve_next(&replay).map_err(|_| "reader next reservation refused")?.ok_or("reader next reservation missing")?;
+    if second.generation != 21 || second.pin_scope == first.pin_scope || second.journal_root.exists() || second.pin_root.exists() {
+        return Err("reader reused or started a generation".into());
+    }
+    let retired = worker.retire().map_err(|_| "reader creator unexpectedly running")?;
+    if retired.outcome.is_some() || retired.inputs.is_none() { return Err("reader creator ownership lost".into()); }
+    println!("generation_reservation_process=recovered pending_fenced=true next_generation=21");
+    Ok(())
+}
+
+#[test]
+fn retained_generation_survives_reserving_process_exit() -> Test {
+    use std::{os::unix::fs::DirBuilderExt, process::Command};
+
+    let root = std::env::temp_dir().join(format!("fss-generation-process-{}", std::process::id()));
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let temp = Temp(std::fs::canonicalize(root)?);
+    let exe = std::env::current_exe()?;
+    let run = |mode: &str, head: Option<&str>| -> std::io::Result<std::process::Output> {
+        let mut command = Command::new(&exe);
+        command.args(["generation_reservation_process_child", "--ignored", "--exact", "--nocapture", "--test-threads=1"])
+            .env("FSS_TEST_GENERATION_ROOT", &temp.0)
+            .env("FSS_TEST_GENERATION_MODE", mode);
+        if let Some(head) = head { command.env("FSS_TEST_GENERATION_HEAD", head); }
+        command.output()
+    };
+    let writer = run("write", None)?;
+    if !writer.status.success() { return Err(format!("reservation writer failed: {}", String::from_utf8_lossy(&writer.stderr)).into()); }
+    let stdout = std::str::from_utf8(&writer.stdout)?;
+    let heads: Vec<_> = stdout.lines().filter_map(|line| line.split_once("generation_reservation_head=").map(|(_, head)| head.trim())).collect();
+    if heads.len() != 1 { return Err("writer did not return exactly one retained head".into()); }
+    let head = ContentDigest::parse(heads[0])?.to_text();
+    let wrong = ContentDigest::sha256(b"wrong process minimum").to_text();
+    if run("read", Some(&wrong))?.status.success() { return Err("reader accepted an incorrect minimum head".into()); }
+    let reader = run("read", Some(&head))?;
+    if !reader.status.success() || !String::from_utf8_lossy(&reader.stdout).contains("generation_reservation_process=recovered pending_fenced=true next_generation=21") {
+        return Err(format!("reservation reader failed: {}", String::from_utf8_lossy(&reader.stderr)).into());
+    }
+    Ok(())
+}
+
 #[test]
 fn retained_generation_worker_drains_and_preserves_cancelled_reservations() -> Test {
     use fss_object::{HostSpoolIo,effect_journal::{EffectJournalLimits,FileEffectJournal,FileTrustedRootPinRetainer}};
