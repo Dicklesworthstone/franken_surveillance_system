@@ -35,11 +35,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Verify immutable QSR reads and canonical CLI/MCP parity
+      - name: Verify immutable perception reads and canonical CLI/MCP parity
         if: success() || failure()
         run: |
           qsr_exit=0
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test qsr_observations_existing_contract --test qsr_observations_immutable_contract --test agent_qsr_contract || qsr_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test qsr_observations_existing_contract --test qsr_observations_immutable_contract --test agent_qsr_contract --test agent_tracks_contract --test agent_report_catalog_contract || qsr_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || qsr_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test qsr_query_cli_contract || qsr_exit=1
           exit "$qsr_exit"
