@@ -303,7 +303,7 @@ pub struct DeploymentQsrQuery {
     pub admission: QueryReadReceipt,
     /// Exact input, source permit and current authority identity.
     pub request_digest: ContentDigest,
-    /// Request, native report and canonical plan identity.
+    /// Request, original native report, whole-lane companion and canonical plan identity.
     pub decision_digest: ContentDigest,
     /// Separate internal source-verification grant identity.
     pub source_permit_digest: ContentDigest,
@@ -411,9 +411,10 @@ pub fn query_qsr_in_deployment(
     )
     .map_err(|_| QsrQueryError::Contract)?;
     let mut e = CanonicalEncoder::new();
-    e.text("fss.agent_qsr_query.decision.v1");
+    e.text("fss.agent_qsr_query.lane_decision.v1");
     e.digest(request_digest);
     e.digest(report.digest());
+    e.digest(report.lane_traversals().digest());
     e.digest(plan.plan_digest());
     Ok(DeploymentQsrQuery {
         snapshot,

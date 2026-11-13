@@ -73,6 +73,9 @@ impl Fixture {
         }
     }
     fn run(&self) -> Result<QsrObservations> {
+        self.run_complete().map(|derived| derived.observations)
+    }
+    fn run_complete(&self) -> Result<derive::Derived> {
         derive::derive(
             &self.config,
             self.gap,
@@ -456,4 +459,349 @@ fn work_bounds_and_cancellation_refuse_complete_derivation() {
         .validate_shape()
         .is_err()
     );
+}
+
+#[test]
+fn whole_lane_uses_original_endpoints_not_summed_stage_uncertainty() -> Result<()> {
+    let f = Fixture::lane(&[Some(0), Some(0), None, Some(1), None, Some(2)]);
+    let derived = f.run_complete()?;
+    assert_eq!(derived.observations.lane_transitions.len(), 2);
+    let summed_minimum: u128 = derived
+        .observations
+        .lane_transitions
+        .iter()
+        .map(|row| row.minimum_elapsed_ns)
+        .sum();
+    let summed_maximum: u128 = derived
+        .observations
+        .lane_transitions
+        .iter()
+        .map(|row| row.maximum_elapsed_ns)
+        .sum();
+    assert_eq!((summed_minimum, summed_maximum), (46, 54));
+    let rows = derived.lane_traversals;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.status, QsrLaneTraversalStatus::Completed);
+    assert_eq!(
+        row.termination,
+        QsrLaneTraversalTermination::LastStageObserved
+    );
+    assert_eq!((row.minimum_elapsed_ns, row.maximum_elapsed_ns), (48, 52));
+    assert_eq!(
+        (row.from_frame, row.last_observed_frame, row.at_frame),
+        (0, 5, 5)
+    );
+    assert_eq!((row.missing_initial_stages, row.remaining_stages), (0, 0));
+    assert_eq!(
+        row.stages
+            .iter()
+            .map(|stage| (stage.stage, stage.frame))
+            .collect::<Vec<_>>(),
+        [(0, 0), (1, 3), (2, 5)]
+    );
+    Ok(())
+}
+
+#[test]
+fn whole_lane_preserves_report_end_censoring_and_partial_suffixes() -> Result<()> {
+    let prefix = Fixture::lane(&[Some(0), Some(0), None, Some(1), None]).run_complete()?;
+    assert_eq!(prefix.lane_traversals.len(), 1);
+    let row = &prefix.lane_traversals[0];
+    assert_eq!(row.status, QsrLaneTraversalStatus::Incomplete);
+    assert_eq!(
+        row.termination,
+        QsrLaneTraversalTermination::SourceSampleEnded
+    );
+    assert_eq!(
+        (row.from_frame, row.last_observed_frame, row.at_frame),
+        (0, 4, 4)
+    );
+    assert_eq!((row.missing_initial_stages, row.remaining_stages), (0, 1));
+    assert_eq!((row.minimum_elapsed_ns, row.maximum_elapsed_ns), (38, 42));
+    let suffix = Fixture::lane(&[Some(1), None, Some(2), Some(2), None]).run_complete()?;
+    assert_eq!(suffix.lane_traversals.len(), 1);
+    let row = &suffix.lane_traversals[0];
+    assert_eq!(row.status, QsrLaneTraversalStatus::Incomplete);
+    assert_eq!(
+        row.termination,
+        QsrLaneTraversalTermination::LastStageObserved
+    );
+    assert_eq!((row.missing_initial_stages, row.remaining_stages), (1, 0));
+    assert_eq!(
+        (row.from_frame, row.last_observed_frame, row.at_frame),
+        (0, 2, 2)
+    );
+    assert_eq!((row.minimum_elapsed_ns, row.maximum_elapsed_ns), (18, 22));
+    Ok(())
+}
+
+#[test]
+fn whole_lane_never_bridges_source_or_observability_barriers() -> Result<()> {
+    use QsrLaneInterruptionReason as Why;
+    for case in 0..7 {
+        let mut f = Fixture::lane(&[Some(0), None, Some(1), Some(2)]);
+        let reason = match case {
+            0 => {
+                f.frames[1].source_boundary = true;
+                Why::SourceBoundary
+            }
+            1 => {
+                f.health[1] = false;
+                Why::HistoricalScreening
+            }
+            2 => {
+                f.frames[1].time_reliable = false;
+                Why::UnreliableTime
+            }
+            3 => {
+                f.frame_cells(1, |cell| {
+                    cell.detection_row = None;
+                    cell.bounds = None;
+                    cell.relation = PackageZoneRelation::Unobserved;
+                });
+                Why::MissingObservation
+            }
+            4 => {
+                f.frame_cells(1, |cell| cell.sample_confirmed = false);
+                Why::MissingObservation
+            }
+            5 => {
+                f.gap = 1;
+                Why::SampleGap
+            }
+            _ => {
+                for cell in &mut f.cells {
+                    if cell.frame == 1 && cell.zone < 2 {
+                        cell.relation = PackageZoneRelation::Inside;
+                    }
+                }
+                Why::AmbiguousStage
+            }
+        };
+        let derived = f.run_complete()?;
+        assert!(!derived.lane_traversals.is_empty(), "case {case}");
+        let row = &derived.lane_traversals[0];
+        assert_eq!(
+            row.status,
+            QsrLaneTraversalStatus::Interrupted,
+            "case {case}"
+        );
+        assert_eq!(
+            row.termination,
+            QsrLaneTraversalTermination::Interrupted(reason),
+            "case {case}"
+        );
+        assert_eq!(
+            (row.from_frame, row.last_observed_frame, row.at_frame),
+            (0, 0, 1)
+        );
+        assert_eq!((row.minimum_elapsed_ns, row.maximum_elapsed_ns), (0, 0));
+        assert!(
+            derived
+                .lane_traversals
+                .iter()
+                .all(|row| row.status != QsrLaneTraversalStatus::Completed),
+            "case {case}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn whole_lane_restarts_without_repairing_skipped_or_reversed_sequences() -> Result<()> {
+    let skipped = Fixture::lane(&[Some(0), Some(2), Some(1), Some(2)]).run_complete()?;
+    assert_eq!(skipped.lane_traversals.len(), 3);
+    assert_eq!(
+        skipped.lane_traversals[0].termination,
+        QsrLaneTraversalTermination::Interrupted(QsrLaneInterruptionReason::SkippedStage)
+    );
+    assert!(
+        skipped
+            .lane_traversals
+            .iter()
+            .all(|row| row.status != QsrLaneTraversalStatus::Completed)
+    );
+    let reversed = Fixture::lane(&[Some(0), Some(1), Some(0), Some(1), Some(2)]).run_complete()?;
+    assert_eq!(reversed.lane_traversals.len(), 2);
+    assert_eq!(
+        reversed.lane_traversals[0].termination,
+        QsrLaneTraversalTermination::Interrupted(QsrLaneInterruptionReason::ReversedStage)
+    );
+    assert_eq!(
+        reversed.lane_traversals[1].status,
+        QsrLaneTraversalStatus::Completed
+    );
+    assert_eq!(reversed.lane_traversals[1].from_frame, 2);
+    assert_eq!(
+        (
+            reversed.lane_traversals[1].minimum_elapsed_ns,
+            reversed.lane_traversals[1].maximum_elapsed_ns
+        ),
+        (18, 22)
+    );
+    Ok(())
+}
+
+#[test]
+fn whole_lane_does_not_count_final_stage_dwell_twice_and_keeps_later_runs_separate() -> Result<()> {
+    let derived = Fixture::lane(&[
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(2),
+        None,
+        Some(0),
+        Some(1),
+        Some(2),
+    ])
+    .run_complete()?;
+    assert_eq!(derived.lane_traversals.len(), 2);
+    assert!(
+        derived
+            .lane_traversals
+            .iter()
+            .all(|row| row.status == QsrLaneTraversalStatus::Completed)
+    );
+    assert_eq!(
+        derived
+            .lane_traversals
+            .iter()
+            .map(|row| (row.from_frame, row.at_frame))
+            .collect::<Vec<_>>(),
+        [(0, 2), (5, 7)]
+    );
+    for stage in [1, 2] {
+        let single = Fixture::lane(&[Some(stage)]).run_complete()?;
+        assert_eq!(single.lane_traversals.len(), 1);
+        assert_eq!(
+            single.lane_traversals[0].status,
+            QsrLaneTraversalStatus::Incomplete
+        );
+        assert_eq!(
+            (
+                single.lane_traversals[0].minimum_elapsed_ns,
+                single.lane_traversals[0].maximum_elapsed_ns
+            ),
+            (0, 0)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn whole_lane_uncertainty_widens_bounds_or_breaks_continuity_without_overflow() -> Result<()> {
+    let mut f = Fixture::lane(&[Some(0), Some(1), Some(2)]);
+    let original = f.run_complete()?.lane_traversals.remove(0);
+    f.gap = 100;
+    for frame in &mut f.frames {
+        frame.capture.earliest.0 -= 5;
+        frame.capture.latest.0 += 5;
+    }
+    let widened = f.run_complete()?.lane_traversals.remove(0);
+    assert_eq!(
+        (original.minimum_elapsed_ns, original.maximum_elapsed_ns),
+        (18, 22)
+    );
+    assert_eq!(
+        (widened.minimum_elapsed_ns, widened.maximum_elapsed_ns),
+        (8, 32)
+    );
+    f.gap = 12;
+    assert!(
+        f.run_complete()?
+            .lane_traversals
+            .iter()
+            .all(|row| row.status != QsrLaneTraversalStatus::Completed)
+    );
+    f.frames[0].capture = CaptureInterval {
+        earliest: TimestampNs(i128::MIN),
+        latest: TimestampNs(i128::MIN + 1),
+    };
+    f.frames[1].capture = CaptureInterval {
+        earliest: TimestampNs(i128::MAX - 3),
+        latest: TimestampNs(i128::MAX - 2),
+    };
+    f.frames[2].capture = CaptureInterval {
+        earliest: TimestampNs(i128::MAX - 1),
+        latest: TimestampNs(i128::MAX),
+    };
+    f.gap = u64::MAX;
+    let extreme = f.run_complete()?;
+    assert!(
+        extreme
+            .lane_traversals
+            .iter()
+            .all(|row| row.status != QsrLaneTraversalStatus::Completed)
+    );
+    assert_eq!(
+        extreme.lane_traversals[0].termination,
+        QsrLaneTraversalTermination::Interrupted(QsrLaneInterruptionReason::SampleGap)
+    );
+    Ok(())
+}
+
+#[test]
+fn lane_companion_identity_binds_source_and_complete_rows_without_reinterpreting_qsr_v1()
+-> Result<()> {
+    let mut f = Fixture::lane(&[Some(0), Some(1), Some(2)]);
+    let derived = f.run_complete()?;
+    let original = derived.observations;
+    let rows = derived.lane_traversals;
+    f.cells.reverse();
+    let permuted = f.run_complete()?;
+    assert_eq!(permuted.observations, original);
+    assert_eq!(permuted.lane_traversals, rows);
+    let source = ContentDigest::sha256(b"original QSR v1 identity");
+    let companion = QsrLaneTraversalReport::build(
+        source,
+        source,
+        source,
+        f.frames.len(),
+        f.gap,
+        &f.config.lane_stages,
+        rows.clone(),
+    )?;
+    assert_eq!(
+        companion.digest(),
+        ContentDigest::sha256(companion.encoded())
+    );
+    let changed = QsrLaneTraversalReport::build(
+        ContentDigest::sha256(b"different original QSR identity"),
+        source,
+        source,
+        f.frames.len(),
+        f.gap,
+        &f.config.lane_stages,
+        rows,
+    )?;
+    assert_ne!(companion.digest(), changed.digest());
+    let json = fss_core::json_input::parse(companion.to_json()).map_err(|_| QsrError::Mismatch)?;
+    let json = json.object().ok_or(QsrError::Mismatch)?;
+    assert_eq!(
+        json.get("source_qsr_report")
+            .and_then(fss_core::json_input::Value::text),
+        Some(source.to_text().as_str())
+    );
+    assert_eq!(
+        json.get("schema")
+            .and_then(fss_core::json_input::Value::text),
+        Some(QSR_LANE_TRAVERSAL_SCHEMA)
+    );
+    assert!(
+        companion
+            .to_json()
+            .contains("\"service_or_wait_duration_established\":false")
+    );
+    assert!(
+        companion
+            .to_json()
+            .contains("\"minimum_elapsed_ns\":\"18\"")
+    );
+    assert_eq!(QSR_OBSERVATION_SCHEMA, "fss.qsr_observation_report.v1");
+    assert_eq!(
+        QSR_OBSERVATION_POLICY,
+        "fss.qsr_observation_policy.v1:actual-confirmed-boxes;complete-historical-screen;no-absence;sampled-dwell;adjacent-ordered-stage-endpoints"
+    );
+    Ok(())
 }

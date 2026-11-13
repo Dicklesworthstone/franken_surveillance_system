@@ -19,6 +19,7 @@ a typed refusal. It never becomes a successful zero count.
 | `QSR-OBS-PRESENCE-001` | Sampled presence in an area, queue or register zone | `observed` means at least one supporting confirmed track. `not_observed` means none was observed in that admitted sample. Masked or historically unsupported samples are `unknown` with a null count. | `not_observed` never certifies absence, an empty scene, an unused register, a transaction or lack of service. |
 | `QSR-OBS-DWELL-001` | Source-sampled zone dwell | Project an existing source-owner `sampled_dwell` event with its exact supporting track, source frames, capture bounds and minimum/maximum duration. Recheck that every supporting sample remains confirmed, inside, unclipped, time-reliable and historically supported. | The source maximum-sample-gap policy remains in force. This is sampled track dwell, not continuous occupancy, waiting time, door state or door-open duration. |
 | `QSR-OBS-LANE-STAGE-001` | Adjacent ordered lane-stage observations | For one analysis-local track, follow explicitly ordered existing stage zones. Two unambiguous adjacent stage observations support conservative lower/upper bounds on their observed endpoint separation. Each transition retains its source-frame endpoints. | No inferred crossing time, queue wait, order/payment/presentation action, service duration, physical identity or complete vehicle trip is certified. |
+| `QSR-OBS-LANE-TRAVERSAL-001` | Whole observed ordered-lane sequences | The independent lane companion retains every visited stage's first source frame, exact first/last supported observations, termination, missing initial/remaining stages and direct capture-endpoint separation. First-through-last adjacent sequences are completed; partial suffixes and source-end censoring are incomplete; existing continuity barriers produce interrupted sequences. | Completed rows remain estimated, incomplete/interrupted rows unknown. No physical identity, continuous trip, queue wait, service duration, inferred missing stage or effect authority is established. |
 
 ## Roles and source scope
 
@@ -71,6 +72,15 @@ success, predicted missing observation, synthetic detector output or fallback
 source is admitted. Read-only result bytes do not constitute a durable retention
 promise or an authenticated receipt from a physical camera.
 
+The additive `fss.qsr_lane_traversal_report.v1` companion preserves that original
+report encoding and policy. Its checked `FSSQRL01` version 1 identity binds the
+original QSR digest, the exact `QSR_LANE_TRAVERSAL_POLICY` digest, declared stage
+order and every sequence row. Source/frame/configuration metadata remain bound
+through the original report. The companion uses the existing admitted lane
+samples, source-read allowance, cancellation and final revalidation; no second
+source read or interpretation of unsupported samples is introduced. It contains
+at most 4,096 sequences and 8 MiB of complete JSON.
+
 ## Canonical agent query
 
 `fss query --target qsr` and the existing MCP `query` tool use AOP-005 and the
@@ -104,6 +114,14 @@ zone, sample, dwell, transition and interruption values retain exact source
 handles, array ordinals and epistemic states. The protected envelope must fit
 256 KiB or the whole read refuses. This smaller agent-output bound does not
 change the native report schema or permit a truncated successful prefix.
+
+The complete lane companion is projected alongside the original report under
+`claim:qsr-lane:*`; original observations retain `claim:qsr:*`. Companion rows cite
+both report roots and the original source/provenance. The separate
+`fss.agent_qsr_query.lane_decision.v1` decision binds the admitted request, original
+QSR report, companion and plan. Existing v1 observation and decision domains keep
+their original meanings. The legacy `fss-event qsr` JSON remains the original
+report; native callers can obtain the companion through `lane_traversals()`.
 
 See [the operator workflow](../docs/QSR_OBSERVATIONS.md) and
 [the report schema](../schemas/qsr_observation_report.v1.json). The canonical

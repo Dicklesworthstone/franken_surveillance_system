@@ -39,6 +39,7 @@ pub struct Fixture {
     pub report: ContentDigest,
     pub expected_json: String,
     pub expected_bytes: Vec<u8>,
+    pub expected_lane_json: String,
 }
 
 impl Fixture {
@@ -47,6 +48,15 @@ impl Fixture {
     }
 
     pub fn new_with_limits(label: &str, limits: DeploymentLimits) -> Test<Self> {
+        Self::build(label, limits, false)
+    }
+
+    /// Actual retained numeric detector evidence crossing two declared, distinct lane regions.
+    pub fn new_lane(label: &str) -> Test<Self> {
+        Self::build(label, DeploymentLimits::standard(), true)
+    }
+
+    fn build(label: &str, limits: DeploymentLimits, lane: bool) -> Test<Self> {
         let source =
             package::Fixture::new_with_limits(label, [128, 160, 192], Some(1_000_000), limits)?;
         let cx = context(&source.root)?;
@@ -88,6 +98,35 @@ impl Fixture {
             .health_diagnostic()
             .ok_or("native health diagnostic")?;
         proposal.retain(&mut deployment, proposal.approval_digest(), &cx)?;
+        let mut source_zones = vec![PackageZone {
+            id: "image".into(),
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 16,
+            margin: 0,
+        }];
+        if lane {
+            source_zones.extend([
+                PackageZone {
+                    id: "early".into(),
+                    x: 13,
+                    y: 0,
+                    width: 6,
+                    height: 16,
+                    margin: 0,
+                },
+                PackageZone {
+                    id: "late".into(),
+                    x: 15,
+                    y: 0,
+                    width: 7,
+                    height: 16,
+                    margin: 0,
+                },
+            ]);
+            source_zones.sort_by(|left, right| left.id.cmp(&right.id));
+        }
         let mut zones = PackageZoneReport::analyze_screened(
             &deployment,
             source.report,
@@ -96,24 +135,27 @@ impl Fixture {
             PackageZoneConfig {
                 maximum_sample_gap_ns: 110_000_000,
                 dwell: None,
-                zones: vec![PackageZone {
-                    id: "image".into(),
-                    x: 0,
-                    y: 0,
-                    width: 32,
-                    height: 16,
-                    margin: 0,
-                }],
+                zones: source_zones,
             },
             HealthExposureLimits::default(),
             &cx,
         )?;
         zones.retain(&mut deployment, zones.approval_digest(), &cx)?;
-        let expected = QsrObservationReport::open(&deployment, zones.digest(), config(), &cx)?;
-        assert_eq!(expected.observations().zones[0].supported_frames, 3);
-        assert_eq!(expected.observations().zones[0].unknown_frames, 0);
+        let mut configuration = config();
+        if lane {
+            configuration.lane_stages = vec!["early".into(), "late".into()];
+        }
+        let expected = QsrObservationReport::open(&deployment, zones.digest(), configuration, &cx)?;
+        let image = expected
+            .config()
+            .zone_roles
+            .iter()
+            .position(|zone| zone.zone == "image")
+            .ok_or("image zone")?;
+        assert_eq!(expected.observations().zones[image].supported_frames, 3);
+        assert_eq!(expected.observations().zones[image].unknown_frames, 0);
         assert_eq!(
-            expected.observations().zones[0].frames_with_observed_tracks,
+            expected.observations().zones[image].frames_with_observed_tracks,
             2
         );
         let authority_before_effects = deployment.current_anchor().clone();
@@ -182,6 +224,7 @@ impl Fixture {
             report: zones.digest(),
             expected_json: expected.to_json()?,
             expected_bytes: expected.encoded().to_vec(),
+            expected_lane_json: expected.lane_traversals().to_json().to_owned(),
         };
         drop(deployment);
         cx.drain_and_finalize();

@@ -177,14 +177,16 @@ fn qsr_final_delivery_checkpoint_and_second_native_source_pass_cancel_without_a_
     let zones = retain_screened(&mut f)?;
     let head = f.deployment.current_anchor().clone();
 
-    let final_gate = context(&f.root, PRINCIPAL)?;
-    final_gate.set_cancel_at_checkpoint(STAGE_QSR_REVALIDATE);
-    assert!(matches!(
-        QsrObservationReport::open(&f.deployment, zones, qsr_config(), &final_gate),
-        Err(QsrError::Cancelled)
-    ));
-    assert_eq!(f.deployment.current_anchor(), &head);
-    final_gate.drain_and_finalize();
+    for stage in ["qsr:lane_companion", STAGE_QSR_REVALIDATE] {
+        let final_gate = context(&f.root, PRINCIPAL)?;
+        final_gate.set_cancel_at_checkpoint(stage);
+        assert!(matches!(
+            QsrObservationReport::open(&f.deployment, zones, qsr_config(), &final_gate),
+            Err(QsrError::Cancelled)
+        ));
+        assert_eq!(f.deployment.current_anchor(), &head);
+        final_gate.drain_and_finalize();
+    }
 
     // Initial cold reconstruction reaches this owner once. The second occurrence must be
     // the final native revalidation, not another renderer or a fabricated source check.

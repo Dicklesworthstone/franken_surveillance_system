@@ -141,6 +141,109 @@ fn same_mcp(fixture: &Fixture, extra: &str, expected: &(String, ExitIdentity)) -
     Ok(())
 }
 
+fn assert_lane_companion(fixture: &Fixture, propositions: &[Value], expected: &str) -> Test {
+    let native = parse(expected)?;
+    let native = native.object().ok_or("native lane companion")?;
+    let mut rows = BTreeMap::new();
+    let mut encoded_rows = BTreeMap::new();
+    let expected_evidence: Vec<_> = [
+        "report_digest",
+        "source_qsr_report",
+        "source_zone_report",
+        "provenance_root",
+    ]
+    .iter()
+    .map(|key| {
+        native
+            .get(*key)
+            .and_then(Value::text)
+            .ok_or("companion evidence")
+    })
+    .collect::<Result<_, _>>()?;
+    for proposition in propositions {
+        let Some(id) = field(proposition, "id")?
+            .text()
+            .and_then(|id| id.strip_prefix("claim:qsr-lane:"))
+        else {
+            continue;
+        };
+        let statement = field(proposition, "statement")?
+            .text()
+            .ok_or("lane statement")?;
+        let encoded_row = statement.split_once(": ").ok_or("lane row")?.1;
+        let row = parse(encoded_row)?;
+        let evidence: Vec<_> = field(proposition, "evidence")?
+            .array()
+            .ok_or("lane evidence")?
+            .iter()
+            .map(|value| value.text().ok_or("evidence text"))
+            .collect::<Result<_, _>>()?;
+        assert_eq!(evidence, expected_evidence);
+        if id.starts_with("traversals:") {
+            let expected_state = if field(&row, "status")?.text() == Some("completed") {
+                "estimated"
+            } else {
+                "unknown"
+            };
+            assert_eq!(field(proposition, "state")?.text(), Some(expected_state));
+        }
+        assert!(rows.insert(id.to_owned(), row).is_none());
+        assert!(
+            encoded_rows
+                .insert(id.to_owned(), encoded_row.to_owned())
+                .is_none()
+        );
+    }
+    let mut emitted = Vec::new();
+    for (section, value) in native {
+        if section == "traversals" && value.array().is_some_and(|values| !values.is_empty()) {
+            let mut encoded = Vec::new();
+            for (ordinal, value) in value.array().ok_or("traversals")?.iter().enumerate() {
+                let id = format!("traversals:{ordinal}");
+                assert_eq!(rows.remove(&id).as_ref(), Some(value));
+                encoded.push(encoded_rows.remove(&id).ok_or("emitted traversal")?);
+            }
+            emitted.push(format!("\"traversals\":[{}]", encoded.join(",")));
+        } else {
+            assert_eq!(rows.remove(section).as_ref(), Some(value));
+            emitted.push(format!(
+                "{}:{}",
+                fss_cli::agent_json::string(section),
+                encoded_rows
+                    .remove(section)
+                    .ok_or("emitted companion section")?
+            ));
+        }
+    }
+    assert!(rows.is_empty(), "unexpected lane companion rows");
+    assert!(encoded_rows.is_empty());
+    // Reassemble the actual emitted rows; the fixture is only an independent parity oracle.
+    // The bounded validation file is outside the deployment whose no-mutation tree is asserted.
+    let emitted = format!("{{{}}}", emitted.join(","));
+    assert!(emitted.len() <= 256 * 1024);
+    let path = fixture
+        .source
+        .directory
+        .0
+        .join("qsr-lane-schema-instance.json");
+    fs::write(&path, emitted)?;
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let checked = Command::new("python3")
+        .arg("-B")
+        .arg(repository.join("scripts/json_instance_validate.py"))
+        .arg(repository.join("schemas/qsr_lane_traversal_report.v1.json"))
+        .arg(&path)
+        .output()?;
+    fs::remove_file(path)?;
+    assert!(
+        checked.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    Ok(())
+}
+
 #[test]
 fn complete_native_rows_and_protected_context_match_across_rust_cli_and_mcp() -> Test {
     let fixture = Fixture::new("canonical-qsr-parity")?;
@@ -193,6 +296,7 @@ fn complete_native_rows_and_protected_context_match_across_rust_cli_and_mcp() ->
         }
     }
     assert!(rows.is_empty(), "unexpected native rows: {rows:?}");
+    assert_lane_companion(&fixture, propositions, &fixture.expected_lane_json)?;
     for handle in field(cognitive, "evidenceHandles")?
         .array()
         .ok_or("handles")?
@@ -200,6 +304,95 @@ fn complete_native_rows_and_protected_context_match_across_rust_cli_and_mcp() ->
         let text = format!("{handle:?}");
         assert!(!text.contains("H1") && !text.contains("H2") && !text.contains("H3"));
     }
+    assert_eq!(tree(&fixture.source.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn observed_whole_lane_completion_reaches_actual_cli_and_mcp_with_bounded_uncertainty() -> Test {
+    let fixture = Fixture::new_lane("canonical-qsr-whole-lane")?;
+    let before = tree(&fixture.source.root)?;
+    let expected = cli(&fixture, &[("--lane-stages", r#"["early","late"]"#)])?;
+    assert_eq!(expected.1, ExitIdentity::SUCCESS, "{}", expected.0);
+    same_mcp(&fixture, r#", "lane_stages":["early","late"]"#, &expected)?;
+    let value = parse(&expected.0)?;
+    let cognitive = field(&value, "payload")?;
+    let propositions = field(field(cognitive, "epistemic")?, "propositions")?
+        .array()
+        .ok_or("propositions")?;
+    assert_lane_companion(&fixture, propositions, &fixture.expected_lane_json)?;
+    let native = parse(&fixture.expected_lane_json)?;
+    let companion_digest = field(&native, "report_digest")?
+        .text()
+        .ok_or("companion digest")?;
+    assert!(
+        field(&value, "proofPointers")?
+            .array()
+            .ok_or("outer proofs")?
+            .iter()
+            .any(|proof| proof.text() == Some(companion_digest))
+    );
+    let rows = field(&native, "traversals")?.array().ok_or("traversals")?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(field(&rows[0], "status")?.text(), Some("completed"));
+    assert_eq!(
+        field(&rows[0], "minimum_elapsed_ns")?.text(),
+        Some("98000000")
+    );
+    assert_eq!(
+        field(&rows[0], "maximum_elapsed_ns")?.text(),
+        Some("102000000")
+    );
+    assert_eq!(
+        field(
+            field(&native, "interpretation")?,
+            "service_or_wait_duration_established"
+        )?
+        .boolean(),
+        Some(false)
+    );
+    assert_eq!(
+        field(
+            field(&native, "interpretation")?,
+            "continuous_traversal_established"
+        )?
+        .boolean(),
+        Some(false)
+    );
+    // Reversing the declared order yields a suffix and a report-end-censored prefix;
+    // neither may inherit the completed row's epistemic state or duration.
+    let reversed = cli(&fixture, &[("--lane-stages", r#"["late","early"]"#)])?;
+    assert_eq!(reversed.1, ExitIdentity::SUCCESS, "{}", reversed.0);
+    same_mcp(&fixture, r#", "lane_stages":["late","early"]"#, &reversed)?;
+    let reversed = parse(&reversed.0)?;
+    let propositions = field(
+        field(field(&reversed, "payload")?, "epistemic")?,
+        "propositions",
+    )?
+    .array()
+    .ok_or("reversed propositions")?;
+    let mut terminations = Vec::new();
+    for proposition in propositions {
+        if !field(proposition, "id")?
+            .text()
+            .is_some_and(|id| id.starts_with("claim:qsr-lane:traversals:"))
+        {
+            continue;
+        }
+        assert_eq!(field(proposition, "state")?.text(), Some("unknown"));
+        let statement = field(proposition, "statement")?
+            .text()
+            .ok_or("reversed statement")?;
+        let row = parse(statement.split_once(": ").ok_or("reversed native row")?.1)?;
+        assert_eq!(field(&row, "status")?.text(), Some("incomplete"));
+        terminations.push(
+            field(&row, "termination")?
+                .text()
+                .ok_or("termination")?
+                .to_owned(),
+        );
+    }
+    assert_eq!(terminations, ["last_stage_observed", "source_sample_ended"]);
     assert_eq!(tree(&fixture.source.root)?, before);
     Ok(())
 }
@@ -215,12 +408,14 @@ fn source_grant_budget_and_corruption_refusals_return_no_partial_observations() 
     let denied = fss_cli::qsr_query_cmd::execute_qsr_query(&typed);
     assert_eq!(denied.1, ExitIdentity::AGENT_REFUSED);
     assert!(!denied.0.contains("claim:qsr:samples"));
+    assert!(!denied.0.contains("claim:qsr-lane:"));
     let denied = mcp(&fixture, false, "")?;
     assert!(field(&denied, "error").is_ok());
     let limited = cli(&fixture, &[("--max-query-read-objects", "1")])?;
     assert_eq!(limited.1, ExitIdentity::AGENT_REFUSED);
     same_mcp(&fixture, r#", "max_query_read_objects":"1""#, &limited)?;
     assert!(!limited.0.contains("claim:qsr:samples"));
+    assert!(!limited.0.contains("claim:qsr-lane:"));
     assert_eq!(tree(&fixture.source.root)?, before);
     let mut corrupt = fs::read(&fixture.source.chunk)?;
     *corrupt.last_mut().ok_or("source byte")? ^= 1;
