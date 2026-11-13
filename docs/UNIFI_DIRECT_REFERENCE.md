@@ -15967,3 +15967,531 @@ These are synthetic lab results, not RCH test passes, physical capture,
 independent pin custody, recorder process recovery or 30-day retention.
 No physical camera effect or recorder configuration change was made; the
 existing recorder and fallback timer were active afterward.
+
+### Full-resolution A/V rollover replay budget (2026-11-13 UTC)
+
+An automatic synthetic full-resolution A/V scenario now forces a journal
+capacity boundary and requires successor preflight, replay of the confirmed
+predecessor, resumption, subsequent publication and archive readback. The
+first direct runs failed after the successor switch. More specific error
+classification showed that predecessor replay exhausted its four-billion-unit
+work budget; that failure was not a cancellation and the limit was not raised.
+
+Archive reads previously reserved work as though every spool child were the
+maximum permitted object size. They now use the staged or recovered index's
+payload length as a tighter read ceiling, charge for the lookup, and pass the
+same ceiling to the physical read. The index is not treated as proof of file
+contents: the bounded read still checks the complete envelope and digest and
+refuses an enlarged replacement. A separate worker error variant preserves
+budget exhaustion instead of conflating it with cancellation.
+
+Strict-remote jobs `j-30107138793668783`, `j-30107138793668784`, and
+`j-30107138793668786` respectively passed the classification regression
+(1 passed, 11 filtered), spool read-budget suite (12 passed), and A/V archive
+readback regression (1 passed, 35 filtered). Their terminal acknowledgement,
+source release and pair release were observed. Lab no-run job
+`j-30107138793668785` compiled on trj but its wrapper returned 102 when macOS
+rejected the Linux artifact; this is not an RCH test pass. The executable's
+SHA-256 was `aee8731fbe79f559629f0ff94deacf0197e7ae3ea8f35e3dc0b8b04930a78280`;
+the stripped copy used on isolated omarchy was
+`63e91923d8e148b455f42487f7c570deaa95d46254e218d8d7f7e488a0bb3e88`.
+The dedicated direct rollover invocation passed (1 passed, 6 filtered),
+read back A/V on both sides of the transition, and decoded a synthetic
+2688 x 1512 frame. The ordinary and full-resolution A/V cases without forced
+rollover also passed separately (1 passed, 6 filtered each). The executable
+hash matched before and after those checks. The fixture source SHA-256 was
+`962cea7c414bc7c4a76ad50c6bfb2a93e4ef1ea9e625d49658a4871ce114d217`.
+This is an isolated synthetic test, not real-camera recording, unattended
+service recovery, independent custody, or proof of 30-day retention. The
+existing recorder and fallback timer were active during the test.
+
+### Reattaching recovered rollover custody (2026-11-13 UTC)
+
+The unknown-time bootstrap resources now carry optional recovered rollover
+custody into the A/V worker. The video-only bootstrap uses the same resources
+and passes that custody to its video worker. Both paths retain all inputs on
+attachment refusal. The worker checks the complete chain against the supplied
+current journal, keeper, retention decision and replay authority; this does
+not discover the current generation or establish independent custody.
+
+Strict-remote job `j-30107138793668793` failed compilation because the first
+version omitted the video-only consumer of the changed resources. That
+consumer was subsequently updated. Job `j-30107138793668800` did not execute:
+its source overlay changed during admission and the wrapper returned 103.
+Both jobs acknowledged their terminal state and released source and pair.
+The corrected targeted test job `j-30107138793668801` compiled and ran two
+tests on `vmi1153651`: one passed and one failed. The failed case had reached
+and passed recovered-worker refusal and attachment, but its later sequence
+readback still expected four billion work units to be insufficient. That
+assumption predates the indexed-length accounting change. The assertion now
+measures the successful replay's work and requires a second run with one unit
+less to return budget exhaustion. Strict-remote job `j-30107138793668813`
+passed both A/V rollover cases (2 passed, 34 filtered), and
+`j-30107138793668814` passed the video rollover and recovered-worker attachment
+case (1 passed, 35 filtered). These exercise worker reattachment, not a cold
+restart or the newly wired bootstrap attachment branch. The normal bootstrap
+regression job `j-30107138793668815` aborted with a default test-thread stack
+overflow; this fixture family had already required a 16 MiB test stack. Direct
+invocations of its hash-matched binary with `RUST_MIN_STACK=16777216` passed
+the A/V bootstrap and video-only restart tests separately (1 passed, 116
+filtered each). The binary SHA-256 was
+`67871656a6ceade870ce07b78cc0f2b040018dfff3ca491796133a0cf0caecda`
+before and after both invocations. The direct runs are not RCH job passes,
+do not establish normal-stack behavior, and use no physical camera. Jobs
+`j-30107138793668801`, `j-30107138793668813`, `j-30107138793668814`, and
+`j-30107138793668815` acknowledged their terminal states and released their
+source and pair.
+
+The automatic service still needs to locate and reopen the latest complete
+rollover lineage, bind it to source history and restart-boundary evidence,
+reconcile camera-control effects, and drive a new recording session. None of
+those obligations is discharged by this attachment path. Prior physical G4
+handoff and clock-effect outcomes remain indeterminate and were not retried.
+In particular, `RecoveredLineage` represents an already replayed successor,
+whereas `resume_confirmed` currently invokes an A/V replay function that
+requires the successor's replay fence to remain set. The two owners cannot
+simply be joined by passing the recovered journal to that function. A restart
+integration must preserve the recovered chain and independently revalidate
+the applicable read and retention authority and root before emitting its
+boundary; it must not manufacture another replay receipt or assume the
+caller-selected lineage is the latest one.
+
+### Checking a settled rollover graph without replay (2026-11-13 UTC)
+
+The archive now exposes a read-only check for a settled confirmed A/V graph.
+It shares the bounded, digest-checked graph reader used by replay, requires
+the in-memory replay fence to be absent, checks current read and retention
+authority, and returns the checked pin without publishing or issuing a
+receipt. Absence of a replay fence alone does not prove replay or custody.
+`RecoveredLineage` can reconstruct its owner from a settled worker's exact
+parts, and rechecks its full retained chain before and after this graph check.
+It rechecks both policies again after the final chain check. Refusal preserves
+the lineage owners; neither check discovers the latest generation or proves
+physical identity, independent custody, or capture continuity.
+
+Strict-remote job `j-30107138793668819` passed the sender-segment suite
+(4 passed, 1 ignored synthetic-output helper). It checked refusal with an
+uncleared replay fence, denied read or retention, a too-small object limit,
+zero work budget, and retention revoked during the read. It checked that a
+successful verification returns the exact pin without changing journal or
+keeper heads. Job `j-30107138793668820` passed the separate synthetic A/V
+session fixture (1 passed, 116 filtered), using `RUST_MIN_STACK=16777216`;
+it checked the settled graph after an actual confirmed replay. This does not
+qualify default or production stack use.
+
+Job `j-30107138793668822` passed the earlier retained-chain fixture (2 passed,
+34 filtered). The final fixture revision added revocation after graph
+verification; job `j-30107138793668823` returned zero, and direct execution
+of its unchanged binary passed both rollover cases (2 passed, 34 filtered) and
+the video-only rollover regression (1 passed, 35 filtered). Binary SHA-256
+`ad9589751d8478b86a6576b46610ea8861f85adca325b3f9d07b63a90ebf58e0`
+matched before and after both direct runs. Direct invocations are not separate
+RCH passes. All four terminal jobs acknowledged completion and released their
+source and pair. These tests use synthetic media and an in-process worker
+lineage; they do not exercise a cold service restart or the physical camera.
+
+The joined-owner integration below recovers source history without opening
+the same A/V predecessor twice, binds claims, retains a restart boundary, and
+transfers a caller-supplied checked chain to bootstrap. It does not locate the
+latest lineage automatically or settle the unresolved camera effects, so the
+existing recorder remains required.
+
+### Joining recovered source and A/V rollover owners (2026-11-13 UTC)
+
+The restart path now has a source-only retained-history reopen, avoiding a
+second open of the A/V predecessor already owned by a recovered lineage. A
+typed join retains its input owners on a mismatched scope or failed lineage
+check. `resume_confirmed` revalidates a supplied settled lineage and its
+bounded graph without fabricating a replay receipt, then passes the chain to
+the bootstrap resources. The selected lineage and pin custodians still come
+from the caller; this does not discover the newest generation, establish
+independence, settle camera effects, or start a recorder service.
+
+Strict-remote job `j-30107138793668824` passed the existing synthetic A/V
+restart fixture (1 passed, 116 filtered) on the initial integration snapshot
+with `RUST_MIN_STACK=16777216`. The new joined-lineage fixture in
+`j-30107138793668828` failed before recovery because the test's special mode
+selected the wrong camera claim; the fixture was corrected. Both jobs
+acknowledged completion and released source and pair. The corrected
+joined-lineage jobs `j-30107138793668830` and `j-30107138793668831` then
+failed at rollover staging. The latter classified the refusal as `Invalid`:
+the predecessor had only one publication, at journal sequence 3, below the
+rollover protocol's required longer history. The synthetic input and driver
+were extended to require two publications before staging. Both failed jobs
+acknowledged completion and released source and pair; they remain failures.
+Job `j-30107138793668832` then failed while the longer fixture observed a
+source-step variant that its one-segment observer did not classify. The
+observer was extended for specific progress and buffered-media events, and
+additional payload-free diagnostics were added for other source outcomes.
+Job `j-30107138793668833` failed to compile due to a missing delimiter in
+those diagnostics. After correction, `j-30107138793668834` reached the new
+connection and read back synthetic A/V but failed an assertion comparing
+sequence numbers across different journal generations. The fixture now
+compares the new head with the successor's own starting head. These failures
+are not erased by a later run. The fixtures do not touch the physical camera
+or establish production stack behavior.
+
+Strict-remote job `j-30107138793668835` passed the corrected joined-lineage
+fixture (1 passed, 117 filtered), with `RUST_MIN_STACK=16777216`. It archived
+two synthetic A/V segments, replayed a switched successor, reopened the
+separately retained source history, refused an incorrect A/V scope and a
+cancelled join while returning the owners, retained a restart boundary, and
+archived a new connection with rollover custody attached. The journal-head
+comparison uses the successor's own initial head. The test reported camera
+control effects as unsettled and does not demonstrate process-crash recovery
+or physical-camera behavior. Job completion was acknowledged and source and
+pair released.
+
+Direct execution of the same binary passed the existing ordinary A/V and
+video-only restart fixtures separately (1 passed, 117 filtered each) with the
+same test-stack setting. SHA-256
+`f529cf63ac49accba527f7ac77bf6324e458cc5ada583c85bf255fa87a485cb3`
+matched before and after both runs. These direct invocations are not
+additional RCH passes; earlier fixture and compilation failures remain
+recorded above. The final storage, rollover and fixture source SHA-256 values
+were respectively
+`03cb22d8b18beac49dd0402902ff38f83bd74d66ab9383c40cc2d294f7802030`,
+`dd3c86cd2718893a0c33473632fe900dd680aa405beddb69833a39c024224965`, and
+`0877a938d91b9637ff10a914e3a585c5ad90b34da0ba00d2d3ae59c75e0b82bd`.
+
+### Discovering retained generation candidates (2026-11-13 UTC)
+
+The retained reservation owner can enumerate a bounded, head-pinned page of
+generation candidates. A cursor becomes stale if its journal head changes.
+The result distinguishes pending reservations, a creator observed by the
+managed owner, and caller-supplied reconciliation references. None establishes
+that a rollover switch was active or that the reference's contents are valid.
+The synchronous inspection belongs on a drained blocking worker.
+
+The bootstrap worker can also reopen a caller-specified journal at a retained
+minimum and derive its next generation from the complete verified reservation
+history, instead of requiring the caller to guess it. It enforces record and
+work limits and preserves an unresolved reservation for reconciliation. It
+still requires the storage paths, original generation, policies and minimum
+pin from the caller; it does not locate or verify the active A/V lineage.
+Cancellation and refusals return the appropriate retained owners. Independently
+retained custody and physical camera identity are not proven by these tests.
+
+Strict-remote job `j-30107138793668839` passed the storage suite (11 passed,
+1 ignored child helper, invoked by the separate-process test). The separate
+reader recovered the next generation using the original generation and kept
+the unresolved reservation fenced until synthetic reconciliation. The suite
+also covered pagination, stale cursors, bounds, cancellation and the new
+bootstrap mode. Job `j-30107138793668840` passed the subsequently extended
+bootstrap case (1 passed, 11 filtered), including an exhausted work allowance
+that returned the plan and journal owner. The first job used clean-overlay
+fingerprint `05e9c2e690cb5aee5d42f6ab01f030a6fd76ec6118bfce76af272f915c17de7e`;
+the second used `03be74f1de30b2fd6c77e1417b8beeaf155c56f4a5d1df96b072ebb0d9ed0cd0`,
+both on base `369ddad7b1ca38f7833ed61067e9b9fc183f337b`. These are synthetic
+storage fixtures, not a cold recorder-service restart or live camera proof.
+
+On the final recovery source, strict-remote job `j-30107138793668841`
+passed the managed-session creator and next-reservation case (1 passed,
+117 filtered) with `RUST_MIN_STACK=16777216`. Its bounded blocking inventory
+reported the first candidate as creator-observed and the next as pending;
+the fixture does not treat either result as an active-switch proof. Its
+clean-overlay fingerprint was
+`565bdb46f56834d23029aad9cdfa32b28d71bb4526c7b6678c379555b839e3b6` on
+the same base. This is synthetic integration evidence and does not qualify
+default-stack behavior. The next recovery step is to examine candidate switch
+journals and their retained chains, with the supplied custody and bounded work,
+before selecting a lineage and joining it to the recovered source owner. The
+physical camera effects remain unsettled. The existing trj recorder and
+fallback timer were observed active during this work.
+
+### Comparing retained successor switches (2026-11-13 UTC)
+
+The rollover module now inspects a caller-opened, separately retained switch
+without appending, verifies its canonical binding and exact retained head, and
+rechecks the head before returning. A bounded selector compares up to 128
+supplied switches against a predecessor's scope, confirmed root, and journal
+and keeper heads. It refuses invalid candidates and multiple matches and
+rechecks the chosen switch. It does not establish that the supplied list is
+complete, that concurrent writers are excluded, or that storage is independent.
+The candidate still needs complete history recovery and exact-root replay.
+These synchronous reads must run on a drained blocking worker.
+
+Strict-remote job `j-30107138793668842` passed the first inspection fixture
+(1 passed, 11 filtered). Job `j-30107138793668843` failed the full storage
+suite (10 passed, 1 failed, 1 ignored) because the new ambiguity fixture
+attempted to open one exclusive pin store twice. The fixture was changed to
+use a separately retained competing switch, and job `j-30107138793668844`
+passed the full storage suite (11 passed, 1 ignored child helper invoked by the
+separate-process test). It checked a unique match, no match, competing matches,
+wrong scope, insufficient work, and subsequent chained synthetic recovery.
+Its clean-overlay fingerprint was
+`31a93eb35a5aa8bab6f3bd5c13d01ab34d87baf6b0b1debaac685bbc49db7898`
+on base `369ddad7b1ca38f7833ed61067e9b9fc183f337b`. All three jobs
+acknowledged completion and released their source and pair. The final rollover
+source and storage fixture SHA-256 values were respectively
+`5f993c60f6bcc4a828ee3b738a0d6b9be460f5849616def4a440bc58e91c2fac` and
+`3da9a9138c51c6cdec1f999a7edc6bf4d80676ea2791342c77e7de8a06919b2f`.
+This is synthetic storage evidence, not a live camera test or a fully automated
+restart: candidate enumeration must still be tied to custody opening and a
+fresh, complete inventory before the selector can drive the recorder. The
+existing trj recorder and fallback timer were observed active after the run.
+
+### Opening switches from a retained reservation inventory (2026-11-13 UTC)
+
+The retained generation plan can now open a complete inventory of up to 128
+candidate switches using the deterministic journal and pin paths. The caller
+explicitly trusts the configured candidate pin stores, supplies read limits,
+and must exclude concurrent writers. The opener charges those read ceilings
+before opening and checks the reservation inventory again afterward. A missing
+or uncommitted candidate, including a pending reservation, is a refusal rather
+than evidence that no switch exists. Refusals retain previously opened owners
+and any partially bound journal or retainer. Selection checks that the same
+complete reservation inventory is still current before and after comparing
+the opened switches. This synchronous path belongs on a drained blocking
+worker; storage trust is not proof of independent custody or physical identity.
+
+Strict-remote job `j-30107138793668847` passed the integrated synthetic source
+rollover fixture (1 passed, 11 filtered). It covered bounded inventory refusal,
+insufficient work, a missing second candidate while retaining the first owner,
+opening two synthetic switches, selecting a matching predecessor, and refusing
+a stale inventory. Job `j-30107138793668848` passed the complete storage
+target (11 passed, 1 ignored child helper invoked by the separate-process
+test). Both acknowledged completion and released source and pair. They used
+clean-overlay fingerprint
+`f86d9bf74bf866c2fd0a5abf2d90132d2ec9da6cf1c5c08917ff756e8e9b88bc` on
+base `369ddad7b1ca38f7833ed61067e9b9fc183f337b`. The generation parent,
+retained source, and storage test SHA-256 values were respectively
+`504b934f45c345914014b951679e9bd922f7ff31b51bb813f0748747bd5222a9`,
+`4be59ac6fd6048e99af14fab3c9e47d9a3ed58bfe9b923434f47b6c8fc7f7532`, and
+`842d5195116982ccff76246b3a45a7f30e765901dea2165f12d3220deeafea4f`.
+This is not an autonomous service or live-camera recovery test: the opened
+candidate histories still need to be recovered, replayed, and joined into the
+source owner under a drained restart supervisor. The existing trj recorder and
+fallback timer were active after these tests.
+
+### Region-owned candidate switch inspection (2026-11-13 UTC)
+
+The existing reservation worker can now open and compare the complete
+candidate inventory on its drained blocking worker. Admission verifies the
+replay-authority identities and task grants for the candidate roots. The work
+budget observes cancellation, and the worker retains the opened candidates or
+the precise partial-opening refusal until retirement. Cancellation observed
+between opening and selection or immediately after comparison is classified
+as cancelled; cancellation racing with result storage fences retirement. The
+caller must still inspect the drained outcome and any fence. File I/O already
+in progress must return before the worker can drain;
+the test below does not measure cancellation latency or prove atomicity against
+another writer.
+
+Strict-remote job `j-30107138793668849` passed the initial worker fixture
+(1 passed, 11 filtered). Job `j-30107138793668850` passed the full storage
+target (11 passed, 1 ignored child helper invoked by the separate-process
+test), including empty-inventory completion, refusal of an absent pending
+candidate, and pre-start cancellation. On the final fixture revision,
+`j-30107138793668851` passed the full target with the same denominator; its
+synthetic source-rollover fixture also opened two retained candidate stores
+through the worker and returned the matching switch. Its clean-overlay
+fingerprint was
+`0d4be6cec9bbf162df08f05f6e26c28bd2521203f484742cbe00f093757c3196`
+on base `369ddad7b1ca38f7833ed61067e9b9fc183f337b`. All three jobs
+acknowledged completion and released source and pair. The worker, retained
+source, and storage fixture SHA-256 values were respectively
+`fb0fc450ff50d28537d0f2eb2578cb076d3ebae85d77743d32e3d81412df029f`,
+`53b43eebfcd2fcb81dc4eb637b8505d0fd6237cefe2f02b3dbbae0d6359a93f0`, and
+`4eff651a398e26042e260a0031353f01922fea4ee0ca184db571b1a0d6948e8c`.
+This is synthetic worker integration, not a restarted recorder service, a live
+G4 stream, 30-day retention, or Scrypted replacement. The trj recorder and
+fallback timer were active afterward.
+
+### Read-only physical G4 checks (2026-11-13 UTC)
+
+The previously qualified experimental Rust snapshot probe, SHA-256
+`6c39177d59e6b7666bf555b1f922d2263c0b9e61c7447706f3fc6b46e835e02a`,
+was checked before and after one read-only run on trj. It completed TLS 1.3,
+matched the previously network-observed camera certificate, logged in, read
+status and decoded a 640 x 360 snapshot in memory. It did not persist the
+image or issue a settings write. The login may leave a session with unknown
+expiry; the network-observed pin is not independent physical identity proof.
+The physical handoff and time-sync outcomes remain indeterminate.
+
+Separately, an existing completed G4 recording selected from the prior 15
+minutes was read without modifying it. The previously qualified Rust MP4/AVC
+test executable SHA-256
+`653376ff9f0c4a6a9ef71bff3a7b5b92630560db7adadf0f52d281775c05ec5c`
+decoded 30 consecutive 1280 x 720 frames, and an independent FFmpeg decode
+matched the ordered frame-digest-list SHA-256
+`116459b5bb19aee7a6c1d17b2a0571896018d77053425d416c621a178a7e8704`.
+The source recording SHA-256 was
+`799dbcd40ec112651d14eb02a940bfd02c1126c5d99113f2a1aa7c5cd368ca3d`;
+the comparison helper checked source and binary hashes before and after and
+did not write media. This recording came from the existing Scrypted path.
+Neither check exercises the current restart worker, direct live video,
+unattended recording, or 30-day retention. The recorder and fallback timer
+were active afterward, and the recorder restart count was 1 before and after.
+
+The planned current-source task-effect test job `j-30107138793668852` was
+cancelled during compilation when its fixture's automatic temporary-directory
+deletion was identified as conflicting with the workspace's no-deletion rule.
+The daemon reported exit 130; same-job recovery reported delivery exit 120,
+acknowledged the terminal state and released source and pair. It is not a test
+pass. A live camera-derived run through that current fixture remains open.
+### Fresh G4 media through current Rust ingress (2026-11-13 UTC)
+
+Strict-remote ts1 job `j-30107138793668853` built the current ingress test
+target and passed its ordinary cases (3 passed, 3 owner-input cases ignored).
+Its clean-overlay fingerprint was
+`207b8a92455e5b66f09435fbb5c52327cda3e437db057d5a9a23c70a213b7996`
+on base `369ddad7b1ca38f7833ed61067e9b9fc183f337b`. The terminal result
+was acknowledged and source and pair released. The ingress test source
+SHA-256 was `551e0aa73fa0a6c2c964a1adceb3ffb61a7dbbaad157e1e56045c9ad2328c296`.
+
+A separate owner-authorized, 20-second passive observation of the G4's
+existing medium push was then reconstructed in memory and passed to the
+compiled Rust owner-input case on ts1. The current Rust ingress framed three
+samples and decoded three frames at 1280 x 720. The test executable SHA-256
+`f6cbaac2aa86031afccb5a567f1108bd71cef8163f48e779655780510cb1e1da`
+matched before and after. No media was deliberately persisted and no camera
+settings were changed. The relay's AVC configuration was read before and
+after and matched; the FLV header and configuration were synthesized and
+the exact configuration epoch, physical identity, capture bounds, unread
+socket bytes and audio were not established. This separate live-data replay
+was not part of the RCH test count. It does not prove direct camera control,
+recording, higher-resolution live capture, uninterrupted operation, or
+30-day retention. The recorder and fallback timer were active afterward, and
+the recorder restart count remained 1.
+
+### Scoped TLS workspace source closure (2026-11-13 UTC)
+
+The isolated scoped-TLS workspace preparation list omitted three modules
+declared by its library: `prepared_setup`, `prepared_camera`, and
+`camera_factory`. The list now includes them. Before creating a workspace,
+the script checks for duplicate and missing listed files and checks that each
+top-level public library module is present. Four in-memory Python checks
+passed: the current list, an omitted declared module, a missing file and a
+duplicate entry. No test workspace or camera effect was created in that
+check. The script SHA-256 was
+`0d014ea6b9a7812c521d5480da72c05b047641b16e249260540c6eb32bd5a864`.
+This is a source-list check, not a fresh workspace build, TLS-provider
+admission, real camera handoff or direct recording result. The existing
+recorder and fallback timer remained active.
+
+The preflight was subsequently extended to inspect simple external Rust
+module declarations, explicit `#[path]` attributes and literal `include_bytes!`
+or `include_str!` inputs across the copy list. A read-only check found no
+further omissions in the current list. Seven in-memory checks passed: the
+complete list; missing top-level, nested and explicit-path modules; a missing
+embedded fixture; a missing listed file; and a duplicate. The revised script
+SHA-256 was `13243f36df0c060596d2ce33e93f7110f075e135baf70a4f4e107aef4aecd69b`.
+The check is lexical rather than a Rust parser or dependency qualification.
+The intended clean-overlay remote preparation job was refused by the command
+parser because that runner does not combine `--job` with a clean overlay;
+no remote job was submitted. A local disk preflight then reported critical
+pressure, so no additional checkout or fresh build was started. The recorder
+and fallback timer were observed active afterward.
+
+### Fresh scoped TLS preparation and trial check (2026-11-13 UTC)
+
+A clean source archive at FSS base
+`369ddad7b1ca38f7833ed61067e9b9fc183f337b` plus the 15 relevant changed
+source and lab files was staged on ts1 without a new Mac checkout. The
+overlay hashes matched the working files. The repaired `prepare.py` created a
+new isolated TLS workspace on ts1, and 39 copied files matched the staged
+inputs (the Cargo manifest was intentionally rewritten for dependency paths).
+The workspace and source snapshots remain on ts1 at
+`/home/ubuntu/projects/fss-unifi-lab-ebeb21d73c224309` and
+`/home/ubuntu/projects/fss-unifi-check-ebeb21d73c224309`; their disposable
+Git commits are `4a6127d83d0bc7a7d29499aa65c02037c6ea83cb` and
+`e729614ec0d76234a9b3b78a73d7386ed8dced3d`, respectively. Generated
+disposable TLS fixture keys were not added to the lab commit.
+
+The first remote Cargo check, job `j-30097323753212734`, failed with exit 101
+because the ordinary transfer's `coverage/` exclusion omitted a tracked graph
+source file. A clean-snapshot retry, `j-30097323753212735`, was stopped before
+Cargo with exit 120 because the worker disk monitor was unavailable. A retry
+on another worker, `j-30097323753212736`, passed
+`cargo check --offline --locked -j 1 --bin unifi_scoped_direct_trial` with
+both Git snapshots transferred as clean roots. Its root tree IDs were
+`3b5e5856e94e40815a714e79a2efa19c4aae2cae` and
+`b947cadc7b2f2e754958d3d9afc61b45d6f7aa16`, with overlay fingerprint
+`fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195`.
+All three terminal results were acknowledged and released source and pair.
+The successful result is a compile check, not a linked executable, test,
+production TLS admission, real-camera handoff or direct-video proof. The
+recorder and fallback timer remained active; recorder restarts remained 1.
+
+The same pinned snapshots subsequently built the Linux trial executable in
+strict-remote job `j-30097323753212740` (Cargo and wrapper exit 0). RCH
+acknowledged the terminal result and released the source and pair. The
+retrieved executable had SHA-256
+`e12bfd788b0833b841d9dcaeca34406fa3ff910cfae856f378f99ef2cd1bcdac`;
+an exact copy on trj matched before and after one owner-authorized observation.
+The integrated trial selected the camera through scoped discovery, completed
+the pinned TLS and login path, read consistent status and settings, and decoded
+a 640 x 360 snapshot in memory. It created neither an effect journal nor an
+output file. The certificate was previously observed over the network and is
+not independent proof of physical identity; login may leave a session until an
+unknown expiry. This read-only observation does not settle the earlier
+indeterminate handoff or time-sync effects and does not establish direct
+full-resolution video, continuous native recording, retention, or production
+TLS readiness.
+
+The same hash-verified executable was then run once in read-only automatic
+discovery mode from trj. It sent scoped subnet and limited broadcast discovery
+queries, selected the already known camera MAC claim, and was not given a
+camera IP or discovery hint. It completed the pinned login and two matching
+settings reads and decoded an in-memory 640 x 360 snapshot. The binary hash
+was unchanged; no effect journal or output file was created. This demonstrates
+one actual-camera broadcast discovery-to-observation path, not unassisted
+enrollment: the MAC, network-observed certificate pin and private credential
+were supplied, the camera was already on Wi-Fi, and the pin does not provide
+independent physical identity. Login may leave a session of unknown expiry.
+
+### Read-only profile selection in setup (2026-11-13 UTC)
+
+The setup `Observation` now exposes the existing bounded profile selector on
+its two matching settings reads. The scoped trial's read-only mode reports the
+selected camera claim under its automatic limits before any handoff. This is
+advisory and does not prove the delivered format or authorize stream setup.
+The source and lab snapshots are staged under
+`/home/ubuntu/projects/fss-profile-0c6f6f2cdd66` on ts1, with commits
+`2a48d162f09d8178e40b5d198c24f78dad927805` and
+`f58fb0d109373fc327f0297be75b7a23dc6db5a1`, respectively. Their changed
+source hashes match the working files. Strict-remote build job
+`j-30097323753212753` completed with exit 0. The first focused profile test
+request timed out before admission on hz4 (wrapper exit 103); no test ran in
+that attempt. The same pinned test passed in `j-30097323753212756` on
+vmi1149989 (1 passed, 2409 filtered; wrapper exit 0). Both completed jobs were
+acknowledged and released their source and pair. The retrieved trial executable
+had SHA-256
+`4421f6a390e62e9cb38b90501f106eb82e6874b32e35a3863a5a4eeadfb3803b`.
+
+An exact copy on trj was run once in read-only broadcast discovery mode with
+the already known MAC, network-observed certificate pin and private
+credential, but no camera IP or discovery hint. It read matching settings and
+selected the camera-reported video1 claim of 2688 x 1512 at 30 fps under the
+trial's limits. The camera's separate JPEG endpoint decoded at 640 x 360. The
+executable hash matched before and after; no journal or output was created.
+This verifies selection from actual camera claims, not high-resolution media
+delivery, automatic provisioning, physical identity, effect reconciliation,
+or production TLS. A login session may remain until an unknown expiry. The
+fallback recorder and timer were active afterward with one service restart,
+unchanged during the observation.
+
+### Pinned discovery without a supplied MAC (in progress)
+
+The scoped trial now has an experimental read-only mode that can inspect up to
+16 unconflicted discovery candidates with TLS and select one matching an
+already supplied certificate pin before loading its credential. It refuses
+multiple matching peers. These probes establish only possession of the pinned
+key; a network-observed pin does not independently establish physical identity.
+Unreachable or failed handshakes do not establish that no other matching camera
+exists. This does not provision Wi-Fi, create a credential, perform a handoff,
+or start video. The pending initial compiler check is job
+`j-30097323753212765` using the retained snapshots under
+`/home/ubuntu/projects/fss-pinscan-0ac121d6f861`; its source predates the later
+discovery-target edge-case fix and its test. Neither revision has been
+qualified by a real-device or synthetic multi-camera run yet. A separate
+loopback fixture was added for a matching pin, a wrong pin and two candidates
+presenting the same pin. The refusal cases use absent credential files; the
+fixture retains its synthetic files and has not yet run. The discovery-target
+helper also has a pure regression test for a /32 scope, duplicate broadcasts and
+invalid bounds, which has not yet run. A newer prepared source pair, including
+these changes, is retained under `/home/ubuntu/projects/fss-pinscan2-1c603a0b6470`
+with source commit `c61a3d887b3e3a5ea15e96f182374701d1d17b29` and lab commit
+`f24cec1197b3ddd25577bcf254794f095a2aa9c2`. These snapshots have not yet been
+compiled or executed.
