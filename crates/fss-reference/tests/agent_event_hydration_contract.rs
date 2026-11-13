@@ -1,17 +1,18 @@
 #![forbid(unsafe_code)]
 //! Real retained event metadata, native H0/H1 artifacts and conservative epistemic projection.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
 use fss_core::{
-    AgentView, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EventEvidence,
-    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
-    H0Identity, H1CellContext, H1SemanticSynopsis, HandleAvailability, HydrationArtifact,
-    HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec,
-    KnowledgeState, LaboratoryAccess, OperationId, PrincipalId, ProbabilityInterval,
-    RootAuthoritySpec, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
+    AgentView, CaptureInterval, Completeness, ContentDigest, ContextAuthority, DecisionPath,
+    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass,
+    EvidenceEdgeRelation, H0Identity, H1CellContext, H1SemanticSynopsis, HandleAvailability,
+    HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest,
+    HydrationRequestSpec, KnowledgeState, LaboratoryAccess, OperationId, PrincipalId,
+    ProbabilityInterval, RootAuthoritySpec, SemanticHandle, SemanticHandleSpec, SessionId,
+    TimestampNs,
 };
 use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest, SPOOL_OBJECTS_DIR};
 use fss_publication::LOCAL_SPOOL_DIR;
@@ -225,13 +226,19 @@ fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consum
     let mut prior = ReferenceHydrationCatalog::new();
     let mut legacy = Vec::new();
     for index in 0..2 {
-        let subject =
-            objects.put_verified(format!("unrelated original source {index}").as_bytes())?;
+        let payload = format!("unrelated original source {index}").into_bytes();
+        let subject = objects.put_verified(&payload)?;
         let root = objects
             .publish_manifest(ObjectManifest::new("source", [subject], None)?)?
             .root;
         let capabilities = BTreeSet::from(["capability:legacy-source".to_owned()]);
         let cost = event_hydration_cost(HydrationLevel::H1)?;
+        let levels = BTreeSet::from([
+            HydrationLevel::H0,
+            HydrationLevel::H1,
+            HydrationLevel::H2,
+            HydrationLevel::H3,
+        ]);
         let descriptor = SemanticHandle::publish(SemanticHandleSpec {
             contract_basis: built.descriptor.contract_basis.clone(),
             anchor: built.descriptor.anchor.clone(),
@@ -245,15 +252,12 @@ fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consum
             applied_transform: None,
             availability: HandleAvailability::Available,
             retention_until: TimestampNs(1000),
-            levels: [HydrationLevel::H0, HydrationLevel::H3].into(),
-            required_capabilities: BTreeMap::from([
-                (HydrationLevel::H0, capabilities.clone()),
-                (HydrationLevel::H3, capabilities.clone()),
-            ]),
-            estimated_costs: BTreeMap::from([
-                (HydrationLevel::H0, cost),
-                (HydrationLevel::H3, cost),
-            ]),
+            required_capabilities: levels
+                .iter()
+                .map(|level| (*level, capabilities.clone()))
+                .collect(),
+            estimated_costs: levels.iter().map(|level| (*level, cost)).collect(),
+            levels,
             laboratory_access: LaboratoryAccess::Unavailable,
             debug_capability: None,
             derivative_handles: BTreeSet::new(),
@@ -265,6 +269,26 @@ fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consum
             descriptor.descriptor_digest,
             HydrationArtifact::publish_h0_identity(&descriptor)?,
         )?;
+        // The native ladder is contiguous and cursors advance only to a real next artifact.
+        // These supported opaque previews model an unrelated legacy source catalog.
+        for level in [HydrationLevel::H1, HydrationLevel::H2] {
+            prior.register_artifact(
+                &descriptor.handle_id,
+                descriptor.descriptor_digest,
+                HydrationArtifact::publish(
+                    level,
+                    "text/plain",
+                    format!(
+                        "bounded {} preview for unrelated source {index}",
+                        level.as_str()
+                    )
+                    .into_bytes(),
+                    [subject],
+                    Completeness::Complete,
+                    None,
+                )?,
+            )?;
+        }
         let binding = prior.bind_source_object(
             &descriptor.handle_id,
             descriptor.descriptor_digest,
@@ -292,19 +316,42 @@ fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consum
             .receipt
             .continuation
             .ok_or("legacy cursor missing")?;
+        let mut cursors = vec![cursor.clone()];
         if index == 0 {
+            let mut next = cursor.clone();
+            for level in [HydrationLevel::H1, HydrationLevel::H2] {
+                spec.requested_level = level;
+                spec.continuation = Some(next);
+                next = prior
+                    .hydrate(&HydrationRequest::publish(spec.clone())?, now)?
+                    .receipt
+                    .continuation
+                    .ok_or("legacy progressive cursor missing")?;
+                cursors.push(next.clone());
+            }
             spec.requested_level = HydrationLevel::H3;
-            spec.continuation = Some(cursor.clone());
-            prior.hydrate_from_source(&HydrationRequest::publish(spec)?, &objects, now)?;
+            spec.continuation = Some(next);
+            let source =
+                prior.hydrate_from_source(&HydrationRequest::publish(spec)?, &objects, now)?;
+            assert_eq!(
+                source
+                    .artifact
+                    .ok_or("legacy source artifact missing")?
+                    .payload,
+                payload
+            );
+            assert!(source.receipt.continuation.is_none());
         }
         legacy.push((
             descriptor,
             binding.custody_binding_digest(),
-            cursor,
+            cursors,
             index == 0,
         ));
     }
     let checkpoint = prior.checkpoint_cursors(now, 1024 * 1024)?;
+    drop(prior);
+    drop(objects);
     // No unrelated descriptor, original payload or source reader is supplied to this catalog.
     built
         .catalog
@@ -334,7 +381,7 @@ fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consum
     let mut cold = fixture.build()?;
     cold.catalog
         .restore_cursor_checkpoint(&checkpoint, 1024 * 1024, now)?;
-    for (descriptor, binding, prior_cursor, consumed) in legacy {
+    for (descriptor, binding, prior_cursors, consumed) in legacy {
         assert!(
             cold.catalog
                 .descriptor(&descriptor.handle_id, descriptor.descriptor_digest)
@@ -345,13 +392,15 @@ fn selected_event_hydration_preserves_other_source_bindings_and_active_or_consum
                 .source_binding_requirement(descriptor.descriptor_digest),
             Some(binding)
         );
-        assert_eq!(
-            cold.catalog
-                .issued_cursor(&prior_cursor.cursor_digest)
-                .ok_or("unrelated cursor disappeared")?
-                .consumed,
-            consumed
-        );
+        for prior_cursor in prior_cursors {
+            assert_eq!(
+                cold.catalog
+                    .issued_cursor(&prior_cursor.cursor_digest)
+                    .ok_or("unrelated cursor disappeared")?
+                    .consumed,
+                consumed
+            );
+        }
     }
     assert!(
         cold.catalog
