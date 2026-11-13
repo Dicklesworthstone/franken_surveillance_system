@@ -111,6 +111,8 @@ struct Policy {
     revoke_device_connect: bool,
     device_connect_checks: Cell<usize>,
     deny_notify_path: bool,
+    revoke_notify_read: bool,
+    notify_read_checks: Cell<usize>,
 }
 impl Admission for Policy {
     fn permits(&self, resource: &str, stage: Stage) -> bool {
@@ -131,6 +133,13 @@ impl Admission for Policy {
         }
         if resource == NOTIFY_PATH && stage == Stage::BluezNotifyStart && self.deny_notify_path {
             return false;
+        }
+        if resource == NOTIFY_PATH && stage == Stage::BluezNotifyRead {
+            let count = self.notify_read_checks.get() + 1;
+            self.notify_read_checks.set(count);
+            if self.revoke_notify_read && count > 4 {
+                return false;
+            }
         }
         matches!(
             resource,
@@ -272,6 +281,8 @@ fn run_case(
         revoke_device_connect: false,
         device_connect_checks: Cell::new(0),
         deny_notify_path: false,
+        revoke_notify_read: false,
+        notify_read_checks: Cell::new(0),
     };
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -490,6 +501,8 @@ fn run_inventory(
         revoke_device_connect: false,
         device_connect_checks: Cell::new(0),
         deny_notify_path: false,
+        revoke_notify_read: false,
+        notify_read_checks: Cell::new(0),
     };
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -804,6 +817,8 @@ enum WatchAction {
     ManagementWriteWrongReply,
     ManagementWriteRevoked,
     ManagementWriteUnjournaled,
+    ManagementWriteNotifyDenied,
+    ManagementWriteNotifyRevoked,
 }
 
 fn run_watch_action(
@@ -845,6 +860,8 @@ fn run_watch_action(
             | WatchAction::ManagementWriteWrongReply
             | WatchAction::ManagementWriteRevoked
             | WatchAction::ManagementWriteUnjournaled
+            | WatchAction::ManagementWriteNotifyDenied
+            | WatchAction::ManagementWriteNotifyRevoked
     );
     let mut management_effects = None;
     let mut prepared_management = None;
@@ -917,6 +934,8 @@ fn run_watch_action(
         revoke_device_connect: matches!(action, WatchAction::DeviceRevoked),
         device_connect_checks: Cell::new(0),
         deny_notify_path: matches!(action, WatchAction::NotifyPathDenied),
+        revoke_notify_read: matches!(action, WatchAction::ManagementWriteNotifyRevoked),
+        notify_read_checks: Cell::new(0),
     };
     let result = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -1104,15 +1123,16 @@ fn run_watch_action(
                             watch.start_notify(&endpoints, Duration::from_secs(1)).await?;
                             assert_eq!(watch.next_gatt_serial(), 10);
                             let policy = ManagementPolicy { checks: Cell::new(0), allow: usize::MAX };
-                            if matches!(action, WatchAction::ManagementWriteUnjournaled) {
-                                let refusal = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &policy, Duration::from_secs(1)).await.expect_err("unjournaled effect");
-                                assert_eq!(refusal.reason, bluez_bus::GattManagementRefusalReason::JournalRequired);
+                            if matches!(action, WatchAction::ManagementWriteUnjournaled | WatchAction::ManagementWriteNotifyDenied) {
+                                let refusal = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &policy, Duration::from_secs(1)).await.expect_err("missing write admission");
+                                assert_eq!(refusal.reason, if matches!(action, WatchAction::ManagementWriteUnjournaled) { bluez_bus::GattManagementRefusalReason::JournalRequired } else { bluez_bus::GattManagementRefusalReason::Denied });
                                 assert!(!writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue"));
                                 watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
                                 watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
                                 drop(watch);
                                 return Ok(());
                             }
+                            let before_dispatch = writes.borrow().len();
                             if matches!(action, WatchAction::ManagementWrite) {
                                 let denied = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &ManagementPolicy { checks: Cell::new(0), allow: 0 }, Duration::from_secs(1)).await.expect_err("denied authority");
                                 assert_eq!(denied.reason, bluez_bus::GattManagementRefusalReason::Denied);
@@ -1152,11 +1172,12 @@ fn run_watch_action(
                                         watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
                                         watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
                                     }
-                                    bluez_bus::GattManagementWrite::Indeterminate { mut permit } if matches!(action, WatchAction::ManagementWriteWrongReply | WatchAction::ManagementWriteRevoked) => {
+                                    bluez_bus::GattManagementWrite::Indeterminate { mut permit } if matches!(action, WatchAction::ManagementWriteWrongReply | WatchAction::ManagementWriteRevoked | WatchAction::ManagementWriteNotifyRevoked) => {
                                         assert!(!permit.try_claim_dispatch());
                                         assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
                                         assert!(matches!(watch.next_notify_change(&endpoints, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
                                         if matches!(action, WatchAction::ManagementWriteRevoked) { assert!(!writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue")); }
+                                        if matches!(action, WatchAction::ManagementWriteNotifyRevoked) { assert!(writes.borrow().len() > before_dispatch); }
                                     }
                                     _ => return Err("unexpected management outcome".into()),
                                 }
@@ -1855,6 +1876,21 @@ fn gatt_management_dispatch_is_bound_to_one_committed_effect() -> TestResult {
         None,
         Ok(()),
         WatchAction::ManagementWriteUnjournaled,
+    )?;
+    let mut denied = base.clone();
+    denied.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+    denied.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+    run_watch_action(
+        denied,
+        Some(Stage::BluezNotifyRead),
+        Ok(()),
+        WatchAction::ManagementWriteNotifyDenied,
+    )?;
+    run_watch_action(
+        base.clone(),
+        None,
+        Ok(()),
+        WatchAction::ManagementWriteNotifyRevoked,
     )?;
     base.extend_from_slice(&owned_empty_reply(10, ":1.99"));
     run_watch_action(base, None, Ok(()), WatchAction::ManagementWriteWrongReply)
