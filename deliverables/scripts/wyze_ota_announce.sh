@@ -14,14 +14,14 @@ ROUNDS=${5:-240}; PAUSE=${6:-58}
 HERE=$(cd "$(dirname "$0")" && pwd)
 SUB=$(printf %s "$MAC" | tr -d ":" | tr "a-f" "A-F")
 LOG=/tmp/ota/fwserve_access.jsonl
-mark=$(grep -ac -- "$VER" "$LOG" 2>/dev/null || echo 0)
+mark=$(grep -ac -- "$VER" "$LOG" 2>/dev/null); mark=${mark:-0}
 for i in $(seq 1 "$ROUNDS"); do
   /opt/homebrew/bin/python3 "$HERE/wyze_cmd.py" send "$MAC" \
     "{\"Action\":\"start\",\"Guid\":\"$SUB-$((1000+i))\",\"Params\":{\"processname\":\"wyzeedgeai_cam_v4_test_protocol\"}}" >/dev/null 2>&1
   sleep 2
   /opt/homebrew/bin/python3 "$HERE/wyze_cmd.py" send "$MAC" \
     "{\"Action\":\"upgrade\",\"Params\":{\"model\":\"HL_CAM4\",\"url\":\"$URL\",\"firmware_ver\":\"$VER\",\"md5\":\"$MD5\",\"sub_mac\":\"$SUB\"},\"sub_mac\":\"$SUB\",\"Guid\":\"$SUB-$((2000+i))\"}" >/dev/null 2>&1
-  now=$(grep -ac -- "$VER" "$LOG" 2>/dev/null || echo 0)
+  now=$(grep -ac -- "$VER" "$LOG" 2>/dev/null); now=${now:-0}
   if [ "$now" -gt "$mark" ]; then echo "$(date +%H:%M:%S) FETCH seen ($mark -> $now)"; mark=$now; fi
   sleep "$PAUSE"
 done
