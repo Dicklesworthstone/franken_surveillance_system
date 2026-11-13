@@ -86,27 +86,53 @@ impl fmt::Debug for NameProbeOwner {
 }
 impl NameProbeOwner {
     /// Bind explicit expectations and a finite cumulative work allowance.
-    pub fn new(event: &str, name: &str, byte_limit: usize, tag_limit: usize, work: u64) -> Result<Self, NameProbeError> {
+    pub fn new(
+        event: &str,
+        name: &str,
+        byte_limit: usize,
+        tag_limit: usize,
+        work: u64,
+    ) -> Result<Self, NameProbeError> {
         validate_name_expectations(event, name, byte_limit, tag_limit)?;
         if work == 0 || work > MAX_NAME_PROBE_WORK {
             return Err(NameProbeError::Configuration);
         }
         let mut event_copy = String::new();
-        event_copy.try_reserve_exact(event.len()).map_err(|_| NameProbeError::Allocation)?;
+        event_copy
+            .try_reserve_exact(event.len())
+            .map_err(|_| NameProbeError::Allocation)?;
         event_copy.push_str(event);
         let mut name_copy = String::new();
-        name_copy.try_reserve_exact(name.len()).map_err(|_| NameProbeError::Allocation)?;
+        name_copy
+            .try_reserve_exact(name.len())
+            .map_err(|_| NameProbeError::Allocation)?;
         name_copy.push_str(name);
-        Ok(Self { event: event_copy, name: name_copy, byte_limit, tag_limit, work_remaining: work })
+        Ok(Self {
+            event: event_copy,
+            name: name_copy,
+            byte_limit,
+            tag_limit,
+            work_remaining: work,
+        })
     }
     /// Inspect without changing the framer; cumulative work cannot be reset.
     pub fn inspect(&mut self, framer: &Framer) -> Result<NameProbe, NameProbeError> {
-        framer.inspect_initial_name(&self.event, &self.name, self.byte_limit, self.tag_limit, &mut self.work_remaining)
+        framer.inspect_initial_name(
+            &self.event,
+            &self.name,
+            self.byte_limit,
+            self.tag_limit,
+            &mut self.work_remaining,
+        )
     }
     /// Bound on the source prefix this owner may inspect.
-    pub const fn byte_limit(&self) -> usize { self.byte_limit }
+    pub const fn byte_limit(&self) -> usize {
+        self.byte_limit
+    }
     /// Remaining cumulative inspection work; this is not a runtime grant.
-    pub const fn work_remaining(&self) -> u64 { self.work_remaining }
+    pub const fn work_remaining(&self) -> u64 {
+        self.work_remaining
+    }
 }
 
 /// Payload-free framing and accounting refusals.
@@ -703,10 +729,18 @@ impl Framer {
     }
 }
 
-fn validate_name_expectations(event: &str, name: &str, byte_limit: usize, tag_limit: usize) -> Result<(), NameProbeError> {
-    if event.is_empty() || event.len() > 128
+fn validate_name_expectations(
+    event: &str,
+    name: &str,
+    byte_limit: usize,
+    tag_limit: usize,
+) -> Result<(), NameProbeError> {
+    if event.is_empty()
+        || event.len() > 128
         || name.len() != 16
-        || !name.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || !(13..=MAX_NAME_PREFIX_BYTES).contains(&byte_limit)
         || !(1..=MAX_NAME_PREFIX_TAGS).contains(&tag_limit)
     {

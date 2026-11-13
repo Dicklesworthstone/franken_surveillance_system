@@ -3,7 +3,7 @@
 
 use fss_packet::extended_flv::{
     self, Limits, Parse, Tag, metadata,
-    stream::{Framer, NameProbe, NameProbeError, Next, RecordKind, SearchMode},
+    stream::{Framer, NameProbe, NameProbeError, NameProbeOwner, Next, RecordKind, SearchMode},
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -380,6 +380,25 @@ fn startup_name_probe_refuses_unsupported_metadata_and_wrong_first_stream_id() -
             extended_flv::stream::Error::StreamIdMismatch
         ))
     );
+    Ok(())
+}
+
+#[test]
+fn startup_name_owner_keeps_immutable_expectations_and_cumulative_work() -> TestResult {
+    let mut framer = Framer::new(Limits::default(), 4096)?;
+    let mut probe = NameProbeOwner::new("event1", "0123456789abcdef", 4096, 4, 100_000)?;
+    let initial = probe.work_remaining();
+    assert_eq!(probe.inspect(&framer)?, NameProbe::NeedMore);
+    assert!(probe.work_remaining() < initial);
+    assert!(!format!("{probe:?}").contains("0123456789abcdef"));
+    let mut payload = event("event1", 3);
+    property_string(&mut payload, "streamName", "0123456789abcdef");
+    finish(&mut payload);
+    let mut source = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    source.extend(wire(18, &payload));
+    framer.append(0, &source)?;
+    assert_eq!(probe.inspect(&framer)?, NameProbe::Matched { tag_index: 0 });
+    assert!(NameProbeOwner::new("event1", "0123456789abcdef", 4096, 4, 0).is_err());
     Ok(())
 }
 
