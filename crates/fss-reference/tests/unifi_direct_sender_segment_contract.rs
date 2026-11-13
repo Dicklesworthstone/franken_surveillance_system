@@ -505,6 +505,14 @@ fn lookahead_clock_keeps_initial_no_audio_segment_and_witness_distinct() -> Test
             max_total_bytes: 256 * 1024 * 1024,
         };
         assert!(matches!(
+            archive::verify_settled_unknown_time_av_anchored(
+                &mut reopened, &Access(retention, true), &Access(retention, true),
+                archive::Limits::default(), object_limits,
+                &mut WorkBudget::new(20_000_000_000), &cx, &journal, &keeper,
+            ),
+            Err(archive::ConfirmedAvReplayError::History)
+        ));
+        assert!(matches!(
             archive::replay_confirmed_unknown_time_av_anchored(
                 &mut reopened,
                 &Access(retention, false),
@@ -538,6 +546,72 @@ fn lookahead_clock_keeps_initial_no_audio_segment_and_witness_distinct() -> Test
         );
         assert_eq!(journal.replay_pin(), None);
         assert_eq!(journal.confirmed(), Some(pin));
+        let journal_head = journal.anchor();
+        let keeper_head = keeper.anchor();
+        assert!(matches!(
+            archive::verify_settled_unknown_time_av_anchored(
+                &mut reopened, &Access(retention, false), &Access(retention, true),
+                archive::Limits::default(), object_limits,
+                &mut WorkBudget::new(20_000_000_000), &cx, &journal, &keeper,
+            ),
+            Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied))
+        ));
+        assert!(matches!(
+            archive::verify_settled_unknown_time_av_anchored(
+                &mut reopened, &Access(retention, true), &Access(retention, false),
+                archive::Limits::default(), object_limits,
+                &mut WorkBudget::new(20_000_000_000), &cx, &journal, &keeper,
+            ),
+            Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied))
+        ));
+        let no_objects = archive::StagedAvLimits { max_objects: 0, ..object_limits };
+        assert!(matches!(
+            archive::verify_settled_unknown_time_av_anchored(
+                &mut reopened, &Access(retention, true), &Access(retention, true),
+                archive::Limits::default(), no_objects,
+                &mut WorkBudget::new(20_000_000_000), &cx, &journal, &keeper,
+            ),
+            Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Limit))
+        ));
+        assert!(matches!(
+            archive::verify_settled_unknown_time_av_anchored(
+                &mut reopened, &Access(retention, true), &Access(retention, true),
+                archive::Limits::default(), object_limits,
+                &mut WorkBudget::new(0), &cx, &journal, &keeper,
+            ),
+            Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Work(
+                fss_geometry::GeometryError::BudgetExhausted
+            )))
+        ));
+        let checked = archive::verify_settled_unknown_time_av_anchored(
+            &mut reopened, &Access(retention, true), &Access(retention, true),
+            archive::Limits::default(), object_limits,
+            &mut WorkBudget::new(20_000_000_000), &cx, &journal, &keeper,
+        )?;
+        assert_eq!(checked, pin);
+        assert_eq!(journal.anchor(), journal_head);
+        assert_eq!(keeper.anchor(), keeper_head);
+        assert_eq!(journal.replay_pin(), None);
+        struct RetentionRevokes(std::cell::Cell<usize>);
+        impl archive::RetainAuthority for RetentionRevokes {
+            fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                let count = self.0.get();
+                self.0.set(count + 1);
+                count == 0
+            }
+        }
+        let revoked_retention = RetentionRevokes(std::cell::Cell::new(0));
+        assert!(matches!(
+            archive::verify_settled_unknown_time_av_anchored(
+                &mut reopened, &Access(retention, true), &revoked_retention,
+                archive::Limits::default(), object_limits,
+                &mut WorkBudget::new(20_000_000_000), &cx, &journal, &keeper,
+            ),
+            Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied))
+        ));
+        assert_eq!(revoked_retention.0.get(), 2);
+        assert_eq!(journal.anchor(), journal_head);
+        assert_eq!(keeper.anchor(), keeper_head);
         assert!(matches!(
             archive::read_unknown_time_av_video_only_clip(
                 &mut reopened,

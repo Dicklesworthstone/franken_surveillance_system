@@ -49,6 +49,23 @@ impl archive::ReadAuthority for Access {
 }
 
 #[test]
+fn rollover_readback_preserves_cancellation_classification() {
+    use fss_geometry::GeometryError;
+    use fss_reference::unifi_direct::av_rollover_worker::ArchiveFailure;
+
+    assert_eq!(
+        ArchiveFailure::from(archive::Error::Work(GeometryError::Cancelled)),
+        ArchiveFailure::Cancelled
+    );
+    assert_eq!(
+        ArchiveFailure::from(archive::Error::Work(GeometryError::BudgetExhausted)),
+        ArchiveFailure::BudgetExhausted
+    );
+    assert_eq!(ArchiveFailure::from(archive::Error::Work(GeometryError::OutOfRange)), ArchiveFailure::Work);
+    assert_eq!(ArchiveFailure::from(archive::Error::Cancelled), ArchiveFailure::Cancelled);
+}
+
+#[test]
 fn rollover_supply_worker_retains_partial_and_ready_owners() -> Test {
     use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer}};
     use fss_reference::unifi_direct::av_rollover_supplies::{Inputs, Outcome, Stage, Worker};
@@ -240,7 +257,7 @@ fn rollover_supply_worker_retains_partial_and_ready_owners() -> Test {
 #[test]
 fn retained_generation_reservations_survive_reopen_and_refuse_mismatch() -> Test {
     use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer}};
-    use fss_reference::unifi_direct::av_rollover_generation::{Configuration, Plan, ReservedPlan, ReservationError};
+    use fss_reference::unifi_direct::av_rollover_generation::{Configuration, DiscoverError, InventoryDisposition, InventoryError, Plan, ReservedPlan, ReservationError};
     use fss_runtime::effect_journal::PinRetainedEffectJournal;
 
     let root=std::env::temp_dir().join(format!("fss-generation-reservation-{}",std::process::id()));
@@ -271,6 +288,18 @@ fn retained_generation_reservations_survive_reopen_and_refuse_mismatch() -> Test
     assert!(worker.retire().map_err(|_|"reserved worker unexpectedly running")?.inputs.is_some());
     let retained_head=reserved.head().ok_or("reservation head missing")?;
     assert_eq!(retained_head.sequence,2);
+    let page=reserved.inventory_page(None,1,32,&mut WorkBudget::new(100_000),&replay).map_err(|_|"pending inventory refused")?;
+    assert_eq!(page.snapshot,retained_head);
+    assert_eq!(page.entries.len(),1);
+    assert_eq!(page.entries[0].identity,first);
+    assert_eq!(page.entries[0].disposition,InventoryDisposition::Pending);
+    assert!(page.next.is_none());
+    assert!(matches!(reserved.inventory_page(None,1,1,&mut WorkBudget::new(100_000),&replay),Err(InventoryError::Limit)));
+    assert!(matches!(reserved.inventory_page(None,1,32,&mut WorkBudget::new(0),&replay),Err(InventoryError::Work(fss_geometry::GeometryError::BudgetExhausted))));
+    let cancelled=ReplayCx::from_context_authority(&authority,temp.0.clone())?;
+    cancelled.request_cancellation();
+    assert!(matches!(reserved.inventory_page(None,1,32,&mut WorkBudget::new(100_000),&cancelled),Err(InventoryError::Cancelled)));
+    assert_eq!(reserved.head(),Some(retained_head));
     let (_plan,journal)=reserved.into_parts();
     drop(journal);
     let reopened=FileEffectJournal::open(temp.0.join("reservations"),limits,Arc::new(HostSpoolIo),retained_head)?;
@@ -282,8 +311,19 @@ fn retained_generation_reservations_survive_reopen_and_refuse_mismatch() -> Test
     let wrong_scope=Plan::new(config("different-camera",21)).map_err(|_|"wrong scope plan invalid")?;
     let refusal=match ReservedPlan::recover(wrong_scope,refusal.journal,&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("different configuration admitted".into())};
     assert!(matches!(refusal.reason,ReservationError::Invalid));
-    let plan=Plan::new(config("camera",21)).map_err(|_|"recovery plan invalid")?;
-    let mut recovered=ReservedPlan::recover(plan,refusal.journal,&replay).map_err(|_|"reservation recovery refused")?;
+    let wrong_first=Plan::new(config("camera",19)).map_err(|_|"wrong starting generation invalid")?;
+    let refusal=match ReservedPlan::recover_discovered(wrong_first,refusal.journal,&replay,32,&mut WorkBudget::new(100_000)) {Err(refusal)=>refusal,Ok(_)=>return Err("wrong original generation accepted".into())};
+    assert!(matches!(refusal.reason,DiscoverError::Invalid));
+    let plan=Plan::new(config("camera",20)).map_err(|_|"recovery plan invalid")?;
+    let refusal=match ReservedPlan::recover_discovered(plan,refusal.journal,&replay,1,&mut WorkBudget::new(100_000)) {Err(refusal)=>refusal,Ok(_)=>return Err("undersized discovery scan accepted".into())};
+    assert!(matches!(refusal.reason,DiscoverError::Limit));
+    let refusal=match ReservedPlan::recover_discovered(refusal.plan,refusal.journal,&replay,32,&mut WorkBudget::new(0)) {Err(refusal)=>refusal,Ok(_)=>return Err("unbudgeted discovery accepted".into())};
+    assert!(matches!(refusal.reason,DiscoverError::Work(fss_geometry::GeometryError::BudgetExhausted)));
+    let cancelled=ReplayCx::from_context_authority(&authority,temp.0.clone())?;
+    cancelled.request_cancellation();
+    let refusal=match ReservedPlan::recover_discovered(refusal.plan,refusal.journal,&cancelled,32,&mut WorkBudget::new(100_000)) {Err(refusal)=>refusal,Ok(_)=>return Err("cancelled discovery accepted".into())};
+    assert!(matches!(refusal.reason,DiscoverError::Cancelled));
+    let mut recovered=ReservedPlan::recover_discovered(refusal.plan,refusal.journal,&replay,32,&mut WorkBudget::new(100_000)).map_err(|_|"automatic reservation recovery refused")?;
     assert_eq!(recovered.pending(),Some(&first));
     let refusal=match recovered.reserve_next(&replay) {Err(refusal)=>refusal,Ok(_)=>return Err("unreconciled reservation admitted".into())};
     assert!(matches!(refusal.reason,ReservationError::ReconciliationRequired) && refusal.candidate.is_none());
@@ -297,6 +337,21 @@ fn retained_generation_reservations_survive_reopen_and_refuse_mismatch() -> Test
     assert_eq!(recovered.head().ok_or("second head missing")?.sequence,4);
     assert!(worker.retire().map_err(|_|"second worker unexpectedly running")?.inputs.is_some());
     assert!(!second.journal_root.exists() && !second.pin_root.exists());
+    let page=recovered.inventory_page(None,1,32,&mut WorkBudget::new(100_000),&replay).map_err(|_|"first inventory page refused")?;
+    assert_eq!(page.entries.len(),1);
+    assert_eq!(page.entries[0].identity,first);
+    assert_eq!(page.entries[0].disposition,InventoryDisposition::Reconciled(ContentDigest::sha256(b"fixture evidence")));
+    let cursor=page.next.ok_or("inventory continuation missing")?;
+    let next=recovered.inventory_page(Some(&cursor),1,32,&mut WorkBudget::new(100_000),&replay).map_err(|_|"second inventory page refused")?;
+    assert_eq!(next.entries.len(),1);
+    assert_eq!(next.entries[0].identity,second);
+    assert_eq!(next.entries[0].disposition,InventoryDisposition::Pending);
+    assert!(next.next.is_none());
+    recovered.record_reconciliation(&second,ContentDigest::sha256(b"second fixture evidence"),&replay).map_err(|_|"second reconciliation refused")?;
+    assert!(matches!(recovered.inventory_page(Some(&cursor),1,32,&mut WorkBudget::new(100_000),&replay),Err(InventoryError::Stale)));
+    let page=recovered.inventory_page(None,2,32,&mut WorkBudget::new(100_000),&replay).map_err(|_|"refreshed inventory refused")?;
+    assert_eq!(page.entries.len(),2);
+    assert_eq!(page.entries[1].disposition,InventoryDisposition::Reconciled(ContentDigest::sha256(b"second fixture evidence")));
 
     let small=EffectJournalLimits {max_records:2,..limits};
     let store=FileEffectJournal::create(temp.0.join("small-reservations"),small,Arc::new(HostSpoolIo))?;
@@ -416,8 +471,10 @@ fn generation_reservation_process_child() -> Test {
     let store = FileEffectJournal::open(root.join("reservations"), limits, Arc::new(HostSpoolIo), minimum)?;
     let pin = FileTrustedRootPinRetainer::open_trusting_storage(root.join("reservation-pin"), limits, Arc::new(HostSpoolIo), pin_scope)?;
     let journal = PinRetainedEffectJournal::for_reconciliation(Box::new(store), Box::new(pin))?;
-    let plan = Plan::new(config(21)).map_err(|_| "reader plan invalid")?;
-    let mut recovered = ReservedPlan::recover(plan, journal, &replay).map_err(|_| "reader plan refused")?;
+    let plan = Plan::new(config(20)).map_err(|_| "reader plan invalid")?;
+    let mut recovered = ReservedPlan::recover_discovered(
+        plan, journal, &replay, 32, &mut fss_geometry::WorkBudget::new(100_000),
+    ).map_err(|_| "reader plan refused")?;
     let first = recovered.pending().cloned().ok_or("reader lost pending reservation")?;
     if first.generation != 20 || first.journal_root.exists() || first.pin_root.exists() || recovered.head() != Some(minimum) {
         return Err("reader recovered incorrect reservation".into());
@@ -613,7 +670,7 @@ fn retained_generation_worker_drains_and_preserves_cancelled_reservations() -> T
 #[test]
 fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> Test {
     use fss_object::{HostSpoolIo,effect_journal::EffectJournalLimits};
-    use fss_reference::unifi_direct::av_rollover_generation::{BootstrapInputs,BootstrapMode,BootstrapOutcome,BootstrapStage,BootstrapStorage,BootstrapStartError,BootstrapWorker,Configuration,Plan,ReservationInputs,ReservationOutcome,ReservationRequest,ReservationWorker};
+    use fss_reference::unifi_direct::av_rollover_generation::{BootstrapInputs,BootstrapMode,BootstrapOutcome,BootstrapStage,BootstrapStorage,BootstrapStartError,BootstrapWorker,Configuration,Plan,ReservationInputs,ReservationOutcome,ReservationRequest,ReservationStartError,ReservationWorker};
     use fss_runtime::effect_journal::EffectJournalPin;
     let root=std::env::temp_dir().join(format!("fss-reservation-bootstrap-{}",std::process::id()));
     std::fs::create_dir(&root)?;
@@ -651,6 +708,10 @@ fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> 
     let plan=make_plan("invalid-recovery",1,&invalid)?;
     let invalid=match BootstrapWorker::new(BootstrapInputs {plan,storage:invalid}) {Err(inputs)=>inputs,Ok(_)=>return Err("invalid recovery minimum accepted".into())};
     assert!(!invalid.storage.journal_root.exists());
+    let invalid=storage("invalid-discovery",BootstrapMode::Discover {minimum:EffectJournalPin {sequence:1,root:ContentDigest::sha256(b"valid minimum")},max_records:0,work_limit:100_000})?;
+    let plan=make_plan("invalid-discovery",1,&invalid)?;
+    let invalid=match BootstrapWorker::new(BootstrapInputs {plan,storage:invalid}) {Err(inputs)=>inputs,Ok(_)=>return Err("invalid discovery limit accepted".into())};
+    assert!(!invalid.storage.journal_root.exists());
     let first_storage=storage("ready-bootstrap",BootstrapMode::Create)?;
     let first_plan=make_plan("ready-bootstrap",1,&first_storage)?;
     let cancelled_storage=storage("cancel-bootstrap",BootstrapMode::Create)?;
@@ -671,6 +732,27 @@ fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> 
                 let mut retirement=bootstrap.retire().map_err(|_|"bootstrap still running")?;
                 assert!(retirement.journal_root_created && retirement.custody_root_created && !retirement.fenced);
                 let plan=retirement.take_ready().ok_or("created retained plan missing")?;
+                let predecessor=archive::journal::rollover::SwitchPredecessor {
+                    scope:ContentDigest::sha256(b"bootstrap switch scope"),
+                    confirmed:archive::UnknownTimePin {root:ContentDigest::sha256(b"bootstrap switch root"),retention:ContentDigest::sha256(b"bootstrap switch retention")},
+                    journal:plan.head().ok_or("bootstrap plan head missing")?,keeper:plan.head().ok_or("bootstrap plan head missing")?,
+                };
+                let mut inspection=ReservationWorker::new(ReservationInputs {
+                    plan,request:ReservationRequest::InspectSwitches {predecessor,max_candidates:2,max_records:32,work_limit:4_000_000_000},
+                    journal_resource:retirement.storage.journal_root.clone(),custody_resource:retirement.storage.custody_root.clone(),
+                    journal_replay:retirement.storage.journal_replay.clone(),custody_replay:retirement.storage.custody_replay.clone(),
+                }).map_err(|_|"switch inspection inputs invalid")?;
+                inspection.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"switch inspection admission refused")?;
+                let mut inspection=inspection.retire().err().ok_or("running inspection retired")?;
+                let completion=inspection.join().await.ok_or("inspection did not join")?;
+                assert!(completion.runtime.is_ok() && completion.outcome_available && !completion.indeterminate);
+                let mut inspection=inspection.retire().map_err(|_|"inspection still running")?;
+                assert!(!inspection.fenced);
+                match inspection.outcome.take() {
+                    Some(ReservationOutcome::SwitchesInspected {opened,selected})=>{assert!(opened.entries().is_empty() && selected.is_none());},
+                    _=>return Err("empty inventory inspection failed".into()),
+                }
+                let plan=inspection.inputs.plan;
                 let mut reservation=ReservationWorker::new(ReservationInputs {plan,request:ReservationRequest::Reserve,journal_resource:retirement.storage.journal_root.clone(),custody_resource:retirement.storage.custody_root.clone(),journal_replay:retirement.storage.journal_replay.clone(),custody_replay:retirement.storage.custody_replay.clone()}).map_err(|_|"reservation inputs invalid")?;
                 reservation.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"reservation admission refused")?;
                 let completion=reservation.join().await.ok_or("reservation not joined")?;
@@ -691,8 +773,18 @@ fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> 
                 let retirement=bootstrap.retire().map_err(|_|"wrong bootstrap still running")?;
                 assert!(retirement.plan.is_some() && retirement.error.is_some() && !retirement.journal_root_created && !retirement.custody_attempted);
 
-                let s=storage("ready-bootstrap",BootstrapMode::Recover {minimum:head})?;
-                let plan=make_plan("ready-bootstrap",2,&s)?;
+                let s=storage("ready-bootstrap",BootstrapMode::Discover {minimum:head,max_records:32,work_limit:1})?;
+                let plan=make_plan("ready-bootstrap",1,&s)?;
+                let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan,storage:s}).map_err(|_|"bounded discovery invalid")?;
+                bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"bounded discovery admission refused")?;
+                let completion=bootstrap.join().await.ok_or("bounded discovery not joined")?;
+                assert!(completion.runtime.is_ok() && completion.outcome==BootstrapOutcome::Refused(BootstrapStage::Plan));
+                let retirement=bootstrap.retire().map_err(|_|"bounded discovery still running")?;
+                assert!(retirement.plan.is_some() && retirement.bound.is_some() && retirement.discover_error.is_some());
+                drop(retirement);
+
+                let s=storage("ready-bootstrap",BootstrapMode::Discover {minimum:head,max_records:32,work_limit:100_000})?;
+                let plan=make_plan("ready-bootstrap",1,&s)?;
                 let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan,storage:s}).map_err(|_|"recovery bootstrap invalid")?;
                 bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"recovery admission refused")?;
                 let completion=bootstrap.join().await.ok_or("recovery not joined")?;
@@ -701,6 +793,28 @@ fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> 
                 assert!(!retirement.journal_root_created && !retirement.custody_root_created);
                 let plan=retirement.take_ready().ok_or("recovered plan missing")?;
                 assert_eq!(plan.pending(),Some(&identity));
+
+                let mut inspection=ReservationWorker::new(ReservationInputs {
+                    plan,request:ReservationRequest::InspectSwitches {predecessor,max_candidates:2,max_records:32,work_limit:4_000_000_000},
+                    journal_resource:retirement.storage.journal_root.clone(),custody_resource:retirement.storage.custody_root.clone(),
+                    journal_replay:retirement.storage.journal_replay.clone(),custody_replay:retirement.storage.custody_replay.clone(),
+                }).map_err(|_|"pending inspection inputs invalid")?;
+                inspection.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"pending inspection admission refused")?;
+                let completion=inspection.join().await.ok_or("pending inspection did not join")?;
+                assert!(completion.runtime.is_ok() && completion.outcome_available && !completion.indeterminate);
+                let inspection=inspection.retire().map_err(|_|"pending inspection still running")?;
+                assert!(matches!(inspection.outcome,Some(ReservationOutcome::SwitchOpeningRefused(_))));
+                assert_eq!(inspection.inputs.plan.pending(),Some(&identity));
+                let mut cancelled_inspection=ReservationWorker::new(ReservationInputs {
+                    plan:inspection.inputs.plan,request:ReservationRequest::InspectSwitches {predecessor,max_candidates:2,max_records:32,work_limit:4_000_000_000},
+                    journal_resource:retirement.storage.journal_root.clone(),custody_resource:retirement.storage.custody_root.clone(),
+                    journal_replay:retirement.storage.journal_replay.clone(),custody_replay:retirement.storage.custody_replay.clone(),
+                }).map_err(|_|"cancelled inspection inputs invalid")?;
+                cancelled_inspection.abort();
+                assert!(matches!(cancelled_inspection.start(task,cx,clock,&BudgetVector::ZERO),Err(ReservationStartError::Fenced)));
+                let cancelled_inspection=cancelled_inspection.retire().map_err(|_|"cancelled inspection still running")?;
+                assert!(cancelled_inspection.fenced && cancelled_inspection.aborted && cancelled_inspection.outcome.is_none());
+                assert_eq!(cancelled_inspection.inputs.plan.pending(),Some(&identity));
 
                 let mut bootstrap=BootstrapWorker::new(BootstrapInputs {plan:cancelled_plan,storage:cancelled_storage}).map_err(|_|"cancel bootstrap invalid")?;
                 bootstrap.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"cancel bootstrap admission refused")?;
@@ -1000,15 +1114,139 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
             Box::new(retainer),
         )?)
     };
+    let mut first_switch_owner = switch(
+        "switch", "switch-retainer", first_switch,
+        ContentDigest::sha256(b"rollover switch custody"),
+    )?;
+    assert!(matches!(
+        archive::journal::rollover::inspect_switch(&mut first_switch_owner, scope, &mut WorkBudget::new(0), &replay),
+        Err(archive::journal::rollover::SwitchInspectionError::Work(_))
+    ));
+    assert!(matches!(
+        archive::journal::rollover::inspect_switch(&mut first_switch_owner, ContentDigest::sha256(b"wrong scope"), &mut WorkBudget::new(100_000), &replay),
+        Err(archive::journal::rollover::SwitchInspectionError::ScopeMismatch)
+    ));
+    let first_observation = archive::journal::rollover::inspect_switch(
+        &mut first_switch_owner, scope, &mut WorkBudget::new(100_000), &replay,
+    ).map_err(|e| format!("first switch inspection failed: {e:?}"))?;
+    assert_eq!(first_observation.binding, first_binding);
+    assert_eq!(first_observation.head, first_switch);
+    let mut second_switch_owner = switch("second-switch", "second-retainer", second_switch, second_scope)?;
+    let second_observation = archive::journal::rollover::inspect_switch(
+        &mut second_switch_owner, scope, &mut WorkBudget::new(100_000), &replay,
+    ).map_err(|e| format!("second switch inspection failed: {e:?}"))?;
+    assert_eq!(second_observation.binding, second_binding);
+    assert_eq!(second_observation.head, second_switch);
+    assert_eq!(second_observation.binding.old_journal, first_heads.journal);
+    assert_eq!(second_observation.binding.old_keeper, first_heads.keeper);
+    let predecessor = archive::journal::rollover::SwitchPredecessor {
+        scope, confirmed:first_binding.confirmed, journal:first_binding.old_journal, keeper:first_binding.old_keeper,
+    };
+    // Inventory-driven opening uses different physical candidate stores, with
+    // the same canonical synthetic switch records as the recovered chain.
+    let shared_replay=Arc::new(ReplayCx::from_context_authority(&replay_authority,temp.0.clone())?);
+    let config=fss_reference::unifi_direct::av_rollover_generation::Configuration {
+        namespace:"opened".into(),scope_seed:ContentDigest::sha256(b"opened candidates"),first:1,count:2,
+        journal_replay:shared_replay.clone(),pin_replay:shared_replay.clone(),journal_io:Arc::new(HostSpoolIo),pin_io:Arc::new(HostSpoolIo),
+        journal_limits:storage_limits,pin_limits:storage_limits,read:Arc::new(Access(retention)),
+        object_limits:archive::StagedAvLimits {max_objects:16,max_object_bytes:4096,max_total_bytes:65536},work_limit:100_000,
+    };
+    let reservation_pin=FileTrustedRootPinRetainer::create(temp.0.join("opened-reservation-pin"),storage_limits,Arc::new(HostSpoolIo),ContentDigest::sha256(b"opened reservation custody"))?;
+    let reservation_journal=PinRetainedEffectJournal::new(store("opened-reservations")?,Box::new(reservation_pin))?;
+    let plan=fss_reference::unifi_direct::av_rollover_generation::Plan::new(config).map_err(|_|"candidate plan invalid")?;
+    let mut reserved=fss_reference::unifi_direct::av_rollover_generation::ReservedPlan::create(plan,reservation_journal,&replay).map_err(|_|"candidate reservation failed")?;
+    let (candidate1,worker)=reserved.reserve_next(&replay).map_err(|_|"first candidate refused")?.ok_or("first candidate missing")?;
+    assert!(worker.retire().map_err(|_|"candidate worker running")?.inputs.is_some());
+    let create_candidate=|identity:&fss_reference::unifi_direct::av_rollover_generation::Identity, bytes:&[u8]| -> Test {
+        std::fs::create_dir(&identity.journal_root)?;
+        let pin=FileTrustedRootPinRetainer::create(&identity.pin_root,storage_limits,Arc::new(HostSpoolIo),identity.pin_scope)?;
+        let journal=FileEffectJournal::create(identity.journal_root.join("switch"),storage_limits,Arc::new(HostSpoolIo))?;
+        let mut switch=PinRetainedEffectJournal::new(Box::new(journal),Box::new(pin))?;
+        switch.append(None,bytes)?;
+        Ok(())
+    };
+    create_candidate(&candidate1,&first_switch_owner.records()[0])?;
+    reserved.record_reconciliation(&candidate1,ContentDigest::sha256(b"candidate assessed"),&replay).map_err(|_|"first candidate reconcile refused")?;
+    let (candidate2,worker)=reserved.reserve_next(&replay).map_err(|_|"second candidate refused")?.ok_or("second candidate missing")?;
+    assert!(worker.retire().map_err(|_|"candidate worker running")?.inputs.is_some());
+    assert!(matches!(reserved.open_switches_trusting_custody(1,32,&mut WorkBudget::new(4_000_000_000),&replay),
+        Err(fss_reference::unifi_direct::av_rollover_generation::OpenSwitchesRefusal {reason:fss_reference::unifi_direct::av_rollover_generation::OpenSwitchesError::Incomplete,..})));
+    assert!(matches!(reserved.open_switches_trusting_custody(2,32,&mut WorkBudget::new(0),&replay),
+        Err(fss_reference::unifi_direct::av_rollover_generation::OpenSwitchesRefusal {reason:fss_reference::unifi_direct::av_rollover_generation::OpenSwitchesError::Inventory(_),..})));
+    let failure=match reserved.open_switches_trusting_custody(2,32,&mut WorkBudget::new(4_000_000_000),&replay) {
+        Err(failure)=>failure,Ok(_)=>return Err("missing candidate silently skipped".into()),
+    };
+    assert!(matches!(failure.reason,fss_reference::unifi_direct::av_rollover_generation::OpenSwitchesError::Storage {index:1,..}));
+    assert_eq!(failure.opened.len(),1);
+    drop(failure);
+    create_candidate(&candidate2,&second_switch_owner.records()[0])?;
+    let budget=BudgetVector::builder().bytes(64*1024*1024).build()?;
+    let (mut authority,mut tree)=AuthorityCx::root(RootAuthoritySpec {
+        trace_id:"trace:switch-inventory-worker".into(),operation_id:OperationId::parse("operation:switch-inventory-worker")?,
+        principal:"principal:fixture".into(),capabilities:vec![RuntimeGrant::ObjectStage.as_str().into()],deadline:None,priority:1,budgets:budget,
+        privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"switch inventory worker"),generation:1,
+    },RegionId::new("region:switch-inventory-worker")?,RegionKind::Process,budget,TimestampNs(1))?;
+    let runtime=RuntimeBuilder::current_thread().blocking_threads(1,1).build()?;
+    let (mut reserved,mut opened)=runtime.block_on(async {
+        let cx=asupersync::Cx::current().ok_or("missing runtime")?;
+        let result=run_owned_async(&mut authority,&mut tree,TaskSpec {task_id:TaskId::new("task:switch-inventory-worker")?,started_at:TimestampNs(3)},&cx,async |task,cx| {
+            let output:Result<_,Box<dyn Error>>=async {
+                use fss_reference::unifi_direct::av_rollover_generation::{ReservationInputs,ReservationOutcome,ReservationRequest,ReservationWorker};
+                let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
+                let mut worker=ReservationWorker::new(ReservationInputs {
+                    plan:reserved,request:ReservationRequest::InspectSwitches {predecessor,max_candidates:2,max_records:32,work_limit:4_000_000_000},
+                    journal_resource:temp.0.join("opened-reservations"),custody_resource:temp.0.join("opened-reservation-pin"),
+                    journal_replay:shared_replay.clone(),custody_replay:shared_replay.clone(),
+                }).map_err(|_|"candidate worker invalid")?;
+                worker.start(task,cx,clock,&BudgetVector::ZERO).map_err(|_|"candidate worker admission refused")?;
+                let completion=worker.join().await.ok_or("candidate worker did not drain")?;
+                if completion.runtime.is_err() || !completion.outcome_available || completion.indeterminate {return Err("candidate worker failed".into());}
+                let mut retirement=worker.retire().map_err(|_|"candidate worker still running")?;
+                if retirement.fenced {return Err("candidate worker fenced".into());}
+                let (opened,chosen)=match retirement.outcome.take() {
+                    Some(ReservationOutcome::SwitchesInspected {opened,selected:Some(chosen)})=>(opened,chosen),
+                    _=>return Err("candidate worker selection missing".into()),
+                };
+                assert_eq!(opened.entries().len(),2);
+                assert_eq!(chosen.index,0);
+                assert_eq!(chosen.observation.binding,first_binding);
+                Ok((retirement.inputs.plan,opened))
+            }.await;
+            let outcome=if output.is_ok(){TaskOutcome::Success}else{TaskOutcome::Failed("switch inventory worker fixture".into())};
+            TaskCompletion {output,outcome,completed_at:TimestampNs(60_000_000_000)}
+        }).await?;
+        result.receipt?;result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    reserved.record_reconciliation(&candidate2,ContentDigest::sha256(b"second candidate assessed"),&replay).map_err(|_|"second candidate reconcile refused")?;
+    assert!(matches!(opened.select(&mut reserved,predecessor,32,&mut WorkBudget::new(100_000),&replay),Err(fss_reference::unifi_direct::av_rollover_generation::OpenSwitchesError::Stale)));
+    let (_,entries,switches)=opened.into_parts();
+    assert_eq!(entries.len(),2);
+    assert_eq!(switches.len(),2);
+    drop(switches);
+    let duplicate_retainer = FileTrustedRootPinRetainer::create(
+        temp.0.join("duplicate-switch-retainer"), storage_limits, Arc::new(HostSpoolIo),
+        ContentDigest::sha256(b"duplicate switch custody"),
+    )?;
+    let mut duplicate_switch = PinRetainedEffectJournal::new(store("duplicate-switch")?, Box::new(duplicate_retainer))?;
+    duplicate_switch.append(None, &first_switch_owner.records()[0])?;
+    let mut candidates = [second_switch_owner, first_switch_owner, duplicate_switch];
+    assert!(matches!(
+        archive::journal::rollover::select_successor_switch(predecessor, &mut candidates[1..], &mut WorkBudget::new(100_000), &replay),
+        Err(archive::journal::rollover::SwitchSelectionError::Ambiguous)
+    ));
+    let selected = archive::journal::rollover::select_successor_switch(predecessor, &mut candidates[..2], &mut WorkBudget::new(100_000), &replay)
+        .map_err(|e| format!("switch selection failed: {e:?}"))?.ok_or("first switch not selected")?;
+    assert_eq!(selected.index, 1);
+    assert_eq!(selected.observation, first_observation);
+    let no_match = archive::journal::rollover::SwitchPredecessor {confirmed:second_binding.confirmed, journal:first_binding.old_journal, keeper:first_heads.keeper, scope};
+    assert!(archive::journal::rollover::select_successor_switch(no_match, &mut candidates[..2], &mut WorkBudget::new(100_000), &replay)
+        .map_err(|e| format!("unmatched selection failed: {e:?}"))?.is_none());
+    let [second_switch_owner, first_switch_owner, _duplicate_switch] = candidates;
     let mut first = archive::journal::rollover::recover(
         old,
         middle,
-        switch(
-            "switch",
-            "switch-retainer",
-            first_switch,
-            ContentDigest::sha256(b"rollover switch custody"),
-        )?,
+        first_switch_owner,
         first_heads,
         &replay,
     )
@@ -1029,12 +1267,7 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
     let first = first
         .into_recovered_lineage(&replay)
         .map_err(|_| "first lineage replay refused")?;
-    let second_switch = switch(
-        "second-switch",
-        "second-retainer",
-        second_switch,
-        second_scope,
-    )?;
+    let second_switch = second_switch_owner;
     let stale = archive::journal::rollover::SuccessorHeads {
         journal: second_binding.old_journal,
         keeper: second_heads.keeper,

@@ -385,6 +385,23 @@ fn async_video_worker_scenario(rollover: bool, background: u8) -> TestResult {
                 if retirement.fenced || retirement.report.is_some() { return Err("retired worker requires reconciliation".into()); }
                 if rollover && retirement.rollover_custody.as_ref().is_none_or(|custody| custody.transition_count() != 1) { return Err("video rollover custody missing".into()); }
                 let mut parts = retirement.parts;
+                if let Some(custody) = retirement.rollover_custody {
+                    let limit = parts.work_limit;
+                    parts.work_limit = 0;
+                    let (mut refused_parts, custody) = match video_worker::Worker::from_recovered(parts, custody) {
+                        Err(owners) => owners,
+                        Ok(_) => return Err("invalid recovered video worker limit accepted".into()),
+                    };
+                    assert_eq!(custody.transition_count(), 1);
+                    refused_parts.work_limit = limit;
+                    let worker = video_worker::Worker::from_recovered(refused_parts, custody)
+                        .map_err(|_| "settled recovered video worker attachment refused")?;
+                    let recovered = worker.retire().map_err(|_| "recovered video worker busy")?;
+                    if recovered.fenced || recovered.rollover_custody.as_ref().is_none_or(|c| c.transition_count() != 1) {
+                        return Err("recovered video worker lost custody".into());
+                    }
+                    parts = recovered.parts;
+                }
                 let pins: Vec<_> = [Some(first.pin), Some(second.pin), third_pin].into_iter().flatten().collect();
                 let sequence_limits = archive::AvSequenceLimits { max_fragments: 8, max_bytes: 128 * 1024 * 1024 };
                 let sequence = archive::read_unknown_time_video_sequence(&mut parts.deployment, &pins, access.as_ref(), archive::Limits::default(), sequence_limits, &mut WorkBudget::new(100_000_000_000), &parts.replay).map_err(|e| e.to_string())?;
@@ -6678,6 +6695,54 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8) -> Tes
                         _ => return Err("pending archive refused".into()),
                     };
                     pins.push(third);
+                    // Exercise the same attachment used by recovered bootstrap:
+                    // refusal must preserve both the worker parts and the
+                    // complete rollover chain for an exact retry.
+                    let retired = worker.retire().map_err(|_| "reattachment worker busy")?;
+                    if retired.fenced || retired.parts.sink.has_pending() {
+                        return Err("reattachment fixture was not settled".into());
+                    }
+                    let parts = retired.parts;
+                    let custody = retired.rollover_custody.ok_or("reattachment lost custody")?;
+                    assert_eq!(custody.transition_count(), 1);
+                    let av_worker::UnknownTimeParts { sink, mut deployment, journal, keeper, replay, authority, limits, work_limit } = parts;
+                    let heads = (journal.anchor(), keeper.anchor());
+                    let current = archive::journal::rollover::Previous { journal, keeper };
+                    let mut lineage = archive::journal::rollover::RecoveredLineage::from_worker_parts(current, custody, &replay)
+                        .map_err(|_| "settled lineage reconstruction refused")?;
+                    assert!(matches!(
+                        lineage.verify_confirmed_av(&mut deployment, &Deny, access.as_ref(), limits, objects, &mut WorkBudget::new(4_000_000_000), &replay),
+                        Err(archive::journal::rollover::SettledAvError::Verification(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied)))
+                    ));
+                    struct RevokeAfterGraph(std::cell::Cell<usize>);
+                    impl archive::RetainAuthority for RevokeAfterGraph {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                            let count = self.0.get();
+                            self.0.set(count + 1);
+                            count < 2
+                        }
+                    }
+                    let revoke = RevokeAfterGraph(std::cell::Cell::new(0));
+                    assert!(matches!(
+                        lineage.verify_confirmed_av(&mut deployment, access.as_ref(), &revoke, limits, objects, &mut WorkBudget::new(4_000_000_000), &replay),
+                        Err(archive::journal::rollover::SettledAvError::Verification(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied)))
+                    ));
+                    assert_eq!(revoke.0.get(), 3);
+                    let checked = lineage.verify_confirmed_av(&mut deployment, access.as_ref(), access.as_ref(), limits, objects, &mut WorkBudget::new(4_000_000_000), &replay)?;
+                    assert_eq!(checked, third);
+                    let (current, custody) = lineage.into_parts();
+                    assert_eq!((current.journal.anchor(), current.keeper.anchor()), heads);
+                    let mut parts = av_worker::UnknownTimeParts { sink, deployment, journal: current.journal, keeper: current.keeper, replay, authority, limits, work_limit };
+                    let saved_limit = parts.work_limit;
+                    parts.work_limit = 0;
+                    let (mut parts, custody) = match av_worker::UnknownTimeWorker::from_recovered(parts, custody) {
+                        Err(owners) => owners,
+                        Ok(_) => return Err("invalid recovered worker limit accepted".into()),
+                    };
+                    assert_eq!(custody.transition_count(), 1);
+                    parts.work_limit = saved_limit;
+                    let mut worker = av_worker::UnknownTimeWorker::from_recovered(parts, custody)
+                        .map_err(|_| "settled recovered worker attachment refused")?;
                     worker.offer(fault_segment).map_err(|_| "second rollover pending segment refused")?;
                     let retired = worker.retire().map_err(|_| "first rollover worker busy")?;
                     let (resources, previous) = retired.into_rollover().map_err(|_| "second A/V detach refused")?;
@@ -6740,19 +6805,10 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8) -> Tes
                         retired.parts.deployment.publisher().visible_roots().count(),
                         3
                     );
-                    let insufficient = archive::read_unknown_time_av_sequence(
-                        &mut retired.parts.deployment,
-                        &pins,
-                        access.as_ref(),
-                        archive::Limits::default(),
-                        archive::AvSequenceLimits {
-                            max_fragments: 3,
-                            max_bytes: 8 * 1024 * 1024,
-                        },
-                        &mut WorkBudget::new(4_000_000_000),
-                        &retired.parts.replay,
-                    );
-                    assert!(matches!(insufficient, Err(archive::Error::Work(_))));
+                    // Measure the actual replay work after the indexed-length
+                    // read bound; a fixed four-billion-unit failure is no
+                    // longer expected for these small source objects.
+                    let mut sufficient = WorkBudget::new(4_000_000_000);
                     let sequence = archive::read_unknown_time_av_sequence(
                         &mut retired.parts.deployment,
                         &pins,
@@ -6762,9 +6818,24 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8) -> Tes
                             max_fragments: 3,
                             max_bytes: 8 * 1024 * 1024,
                         },
-                        &mut WorkBudget::new(100_000_000_000),
+                        &mut sufficient,
                         &retired.parts.replay,
                     )?;
+                    let required = sufficient.used();
+                    if required == 0 { return Err("sequence read charged no work".into()); }
+                    let insufficient = archive::read_unknown_time_av_sequence(
+                        &mut retired.parts.deployment,
+                        &pins,
+                        access.as_ref(),
+                        archive::Limits::default(),
+                        archive::AvSequenceLimits {
+                            max_fragments: 3,
+                            max_bytes: 8 * 1024 * 1024,
+                        },
+                        &mut WorkBudget::new(required - 1),
+                        &retired.parts.replay,
+                    );
+                    assert!(matches!(insufficient, Err(archive::Error::Work(fss_geometry::GeometryError::BudgetExhausted))));
                     assert_eq!(sequence.parts().len(), 3);
                     assert_eq!(sequence.parts()[2].video_samples, pending_samples);
                     let retired = match retired.into_rollover() {

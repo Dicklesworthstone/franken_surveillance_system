@@ -1658,6 +1658,8 @@ fn drive_owned_recording<'run, 'owner, 'scope, 'task, IO>(
     probe: Option<OwnedEventProbe<'run>>,
     camera_replay: bool,
     expect_video_only: bool,
+    expect_rollover_custody: bool,
+    minimum_av_segments: usize,
     read_authority: &'run dyn fss_reference::unifi_direct::archive::ReadAuthority,
     task: &'scope fss_runtime::execution::TaskCx<'task>,
     cx: &'scope asupersync::Cx,
@@ -1713,7 +1715,7 @@ where
         assert_eq!(observer.sequence,0);
         observer.enabled=true;
         let mut refused=false;
-        let mut pins=Vec::new();let mut av_pin=None;let mut offered=0;let mut paired=0;let mut syncs=0;let mut started=false;let mut queued=false;let mut archive_started=false;let mut event_replied=false;
+        let mut pins=Vec::new();let mut av_pin=None;let mut av_published=0;let mut offered=0;let mut paired=0;let mut syncs=0;let mut started=false;let mut queued=false;let mut archive_started=false;let mut event_replied=false;
         fn accept_sync(mut trace:conversation::TimeSyncTrace,effects:&EffectCoordinator)->Result<(),&'static str> {
             let operation=trace.operation().ok_or("owned recorder sync operation missing")?;
             if !trace.dispatch_started() || effects.journal().operation(operation).map(|entry|entry.state)!=Some(fss_core::EffectState::Committed){return Err("owned recorder sync trace or journal missing");}
@@ -1792,16 +1794,20 @@ where
                         started=true;
                     },
                     recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::SourceQueued))))=>queued=true,
+                    recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)) | supervisor::Step::Idle)))))=>(),
+                    recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Audio(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::UnconfiguredSample {..}))))=>(),
                     recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::ArchiveStarted)))=>archive_started=true,
                     recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Archive(completion)))))=>{
                         av_pin=Some(accept_av(completion)?);
-                        break Ok(());
+                        av_published+=1;
+                        if av_published>=minimum_av_segments { break Ok(()); }
                     },
                     recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Archive(unknown::Drive::Control {step,completion}))))=>{
                         match step {supervisor::Step::Idle=>(),supervisor::Step::TimeSyncWritten {trace}=>{accept_sync(trace,owner.effects)?;syncs+=1;},_=>return Err("owned recording control stopped")}
                         if let Some(completion)=completion {
                             av_pin=Some(accept_av(completion)?);
-                            break Ok(());
+                            av_published+=1;
+                            if av_published>=minimum_av_segments { break Ok(()); }
                         }
                     },
                     other=>{
@@ -1809,6 +1815,10 @@ where
                             recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(event))=>eprintln!("owned recorder unexpected driver {:?}",std::mem::discriminant(event)),
                             recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceArchive(source_handoff::Drive::Control {step,..}))=>eprintln!("owned recorder unexpected control {:?}",std::mem::discriminant(step)),
                             recording_session::Step::Bootstrap(event)=>eprintln!("owned recorder unexpected bootstrap {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(push)))))))=>eprintln!("owned recorder unexpected recording push {:?}",std::mem::discriminant(push)),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::Supervisor(supervisor::Step::Media(media))))))=>eprintln!("owned recorder unexpected media {:?}",std::mem::discriminant(media)),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(unknown::Step::Supervisor(event)))))=>eprintln!("owned recorder unexpected supervisor {:?}",std::mem::discriminant(event)),
+                            recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(unknown::Advance::Source(event))))=>eprintln!("owned recorder unexpected source {:?}",std::mem::discriminant(event)),
                             recording_session::Step::Recording(source_coordinator::Step::Session(unknown::SessionEvent::Advance(event)))=>eprintln!("owned recorder unexpected advance {:?}",std::mem::discriminant(event)),
                             recording_session::Step::Recording(event)=>eprintln!("owned recorder unexpected recording {:?}",std::mem::discriminant(event)),
                             _=>eprintln!("owned recorder unexpected session phase"),
@@ -1827,6 +1837,7 @@ where
         if shutdown.join_source().await.is_some() || shutdown.join_av().await.is_some(){return Err("owned recorder had an unexpected running archive".into());}
         let (coordinator,guard)=shutdown.finish().map_err(|_|"owned recorder shutdown did not finish")?;
         let retired=(*guard).retire().map_err(|_|"owned recorder guard retirement refused")?;
+        if retired.worker.rollover_custody.is_some() != expect_rollover_custody { return Err("owned recorder rollover custody mismatch".into()); }
         let mut parts=retired.worker.parts;
         if retired.held.is_some() || parts.sink.retire().pending.is_some(){return Err("owned recorder left an A/V source pending".into());}
         let av_pin=av_pin.ok_or("owned A/V pin missing")?;
@@ -2484,7 +2495,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let av_journal=archive::journal::UnknownTimeJournal::create(Box::new(store),ContentDigest::sha256(b"bootstrap av scope"),&av_replay)?;
                                         let store=FileEffectJournal::create(temp.0.join("bootstrap-av-anchor"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
                                         let av_keeper=archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store),&av_journal,&av_replay)?;
-                                        let mut av_resources=Box::new(unknown::BootstrapResources {deployment:av_deployment,journal:av_journal,keeper:av_keeper,replay:av_replay,authority:source_access.clone(),limits:archive::Limits::default(),work_limit:4_000_000_000});
+                                        let mut av_resources=Box::new(unknown::BootstrapResources {deployment:av_deployment,journal:av_journal,keeper:av_keeper,replay:av_replay,authority:source_access.clone(),limits:archive::Limits::default(),work_limit:4_000_000_000,rollover_custody:None});
                                         if late_audio_change==14 {
                                             use fss_reference::unifi_direct::recording_session;
                                             let mut session=Box::new(recording_session::Session::new(coordinator,driver,av_resources));
@@ -2542,7 +2553,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         if matches!(late_audio_change,12|13) {
                                             let probe=(late_audio_change==13).then_some(OwnedEventProbe {signal:&control_probe_tx,source_block:&source_access.block,conditions,operation:&operations[9]});
                                             let session=fss_reference::unifi_direct::recording_session::Session::new(coordinator,driver,av_resources);
-                                            let (coordinator,pins,_,_)=drive_owned_recording(session,&mut owner,&operations[6],stream_conditions,probe,camera_replay,false,source_access.as_ref(),task,cx,clock).await?;
+                                            let (coordinator,pins,_,_)=drive_owned_recording(session,&mut owner,&operations[6],stream_conditions,probe,camera_replay,false,false,1,source_access.as_ref(),task,cx,clock).await?;
                                             let retired=coordinator.into_worker().retire().map_err(|_|"owned source worker retirement refused")?;
                                             if retired.fenced || retired.pending.is_some(){return Err("owned source custody remained unresolved".into());}
                                             let mut parts=retired.parts;
@@ -2705,7 +2716,7 @@ fn conversation_scenario_with_worker_guard_mode(revoke_stream: bool, revoke_afte
                                         let access=Arc::new(Retention {block:AtomicBool::new(!matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33)), entered:AtomicBool::new(false), allow:AtomicBool::new(matches!(late_audio_change,15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33))});
                                         let _unblock=Unblock(Arc::clone(&access));
                                         let authority:Arc<dyn archive::RetainAuthority + Send + Sync>=access.clone();
-                                        let resources=unknown::BootstrapResources {deployment,journal,keeper,replay,authority,limits:archive::Limits::default(),work_limit:if cancel_archive {0} else {4_000_000_000}};
+                                        let resources=unknown::BootstrapResources {deployment,journal,keeper,replay,authority,limits:archive::Limits::default(),work_limit:if cancel_archive {0} else {4_000_000_000},rollover_custody:None};
                                         let mut guard=if cancel_archive {
                                             let (supervisor,mut parts,first_segment,origin)=match unknown::Guard::from_bootstrap(handoff,resources) {
                                                 Err(unknown::BootstrapRefusal::Worker {supervisor,parts,first_segment,origin})=>(supervisor,parts,first_segment,origin),
@@ -4615,6 +4626,11 @@ fn owned_session_camera_fixture_stack_control() -> Test {
 }
 
 #[test]
+fn owned_session_restarts_with_rolled_av_lineage() -> Test {
+    lean_owned_session_replay(media_fixture_with_count(include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),3,10)?,false,true,false,23)
+}
+
+#[test]
 fn owned_session_begin_refusal_returns_all_owners() -> Test {
     lean_owned_session_replay(media_fixture()?,true,true,false,0)
 }
@@ -4962,7 +4978,8 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
         configuration, source: wrong_key, inband: false, retention: ContentDigest::sha256(b"worker guard retention"),
         media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
     }).map_err(|_| "video sink construction failed")?;
-    let fss_reference::unifi_direct::av_unknown_worker_guard::BootstrapResources { deployment, journal, keeper, replay, authority, limits, work_limit } = *resources;
+    let fss_reference::unifi_direct::av_unknown_worker_guard::BootstrapResources { deployment, journal, keeper, replay, authority, limits, work_limit, rollover_custody } = *resources;
+    if rollover_custody.is_some() { return Err("unexpected recovered rollover custody".into()); }
     let video = video_worker::Worker::new(video_worker::Parts { sink, deployment, journal, keeper, replay, authority, limits, work_limit })
         .map_err(|_| "video worker construction failed")?;
     let refused = match video_session::Session::attach(supervisor, video, coordinator.into_worker(), wrong_key, ContentDigest::sha256(b"fixture camera")) {
@@ -5325,6 +5342,21 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                             let mut reopened=reopen.retire().map_err(|_|"automatic recovery still running")?;
                             let plan=reopened.take_ready().ok_or("automatic recovered plan missing")?;
                             if plan.head()!=Some(minimum) || plan.pending()!=Some(&second) {return Err("automatic recovery changed pending generation".into());}
+                            let inventory_replay=rollover_replay.clone();
+                            let mut inventory_worker=fss_runtime::drained_blocking::start(cx,move |_child| {
+                                let mut plan=plan;
+                                let inventory=plan.inventory_page(None,2,32,&mut fss_geometry::WorkBudget::new(100_000),&inventory_replay);
+                                (plan,inventory)
+                            }).map_err(|_|"automatic inventory worker refused")?;
+                            let receipt=inventory_worker.join().await.ok_or("automatic inventory did not drain")?;
+                            if receipt.runtime.is_err() {return Err("automatic inventory runtime failed".into());}
+                            let (plan,inventory)=match receipt.work {fss_runtime::drained_blocking::WorkOutcome::Finished(value)=>value,_=>return Err("automatic inventory did not finish".into())};
+                            let inventory=inventory.map_err(|_|"automatic inventory refused")?;
+                            if inventory.entries.len()!=2 || inventory.entries[0].identity.generation!=1 || inventory.entries[1].identity!=second
+                                || inventory.entries[0].disposition!=generation::InventoryDisposition::CreatorObserved
+                                || inventory.entries[1].disposition!=generation::InventoryDisposition::Pending || inventory.next.is_some() {
+                                return Err("automatic inventory changed creator observation or pending reservation".into());
+                            }
                             drop((auto,owners.bootstrap_retirement,retired,plan,reopened));
                             println!("automatic_creator_observation=recorded next_generation=2 second_creator_started=false same_process_reopen=verified");
                             return Ok::<bool, Box<dyn Error>>(true);
@@ -6027,7 +6059,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let root=temp.join("owned-storage");
     let storage_cfg=recording_storage::Configuration {
         root:&root,site_lineage:"site:owned-replay",source:SourceKey {connection:1,generation:1},
-        camera_claim:if video_session == 0 { management.camera } else { ContentDigest::sha256(b"fixture camera") },source_retention:ContentDigest::sha256(b"owned retention"),
+        camera_claim:if matches!(video_session, 0 | 23) { management.camera } else { ContentDigest::sha256(b"fixture camera") },source_retention:ContentDigest::sha256(b"owned retention"),
         source_scope:ContentDigest::sha256(b"owned source scope"),av_scope:ContentDigest::sha256(b"owned av scope"),
         source_deployment_limits:owned_source_limits(),av_deployment_limits:owned_av_limits(),
         source_history_limits:EffectJournalLimits {max_records:512,..EffectJournalLimits::default()},av_history_limits:EffectJournalLimits {max_records:if matches!(video_session, 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21) {5} else {256},..EffectJournalLimits::default()},
@@ -6078,7 +6110,7 @@ async fn lean_owned_session_task<'scope,'task>(
     };
     let retainers=recording_storage::Retainers {source_journal:retainer("source-journal")?,source_keeper:retainer("source-keeper")?,av_journal:retainer("av-journal")?,av_keeper:retainer("av-keeper")?};
     let storage=recording_storage::create_retained(task,cx,clock,storage_cfg,replay,av_replay,access.clone(),retainers)?;
-    if video_session != 0 {
+    if video_session != 0 && video_session != 23 {
         let supervisor=supervisor::Supervisor::new(session,pipeline,management);
         let recording_storage::Created {coordinator,av:resources}=storage;
         Box::pin(drive_video_only_session(supervisor, coordinator, resources, &expected, &mut owner, &operations[4], access.as_ref(), access.clone(), temp, Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?), task, cx, clock, if video_session >= 2 { video_session } else { 0 })).await?;
@@ -6114,7 +6146,7 @@ async fn lean_owned_session_task<'scope,'task>(
         selected.management=management;
         Session::begin_selected(selected).map_err(|_|"selected A/V session refused")?
     };
-    let (coordinator,pins,av_minimum,av_pin)=drive_owned_recording(owned,&mut owner,&operations[4],stream,None,true,initial_video_only,access.as_ref(),task,cx,clock).await?;
+    let (coordinator,pins,av_minimum,av_pin)=drive_owned_recording(owned,&mut owner,&operations[4],stream,None,true,initial_video_only,false,if video_session==23 {2} else {1},access.as_ref(),task,cx,clock).await?;
     let retired=coordinator.into_worker().retire().map_err(|_|"source worker retirement refused")?;
     if retired.fenced || retired.pending.is_some(){return Err("source custody unresolved".into());}
     let mut parts=retired.parts;
@@ -6193,6 +6225,10 @@ async fn lean_owned_session_task<'scope,'task>(
     assert_eq!(recovered.av.journal.replay_pin(),None);
     assert_eq!(recovered.av.journal.confirmed(),Some(av_pin));
     assert!(recovered.av.keeper_caught_up());
+    let av_heads=(recovered.av.journal.anchor(),recovered.av.keeper.anchor());
+    let checked=archive::verify_settled_unknown_time_av_anchored(&mut av_deployment,access.as_ref(),access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&recovered.av.replay,&recovered.av.journal,&recovered.av.keeper)?;
+    assert_eq!(checked,av_pin);
+    assert_eq!((recovered.av.journal.anchor(),recovered.av.keeper.anchor()),av_heads);
     assert!(matches!(archive::replay_confirmed_unknown_time_av_anchored(&mut av_deployment,access.as_ref(),access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&recovered.av.replay,&mut recovered.av.journal,&mut recovered.av.keeper),Err(archive::ConfirmedAvReplayError::History)));
     drop(av_deployment);
     let mut deployment=fss_reference::ReferenceDeployment::open_with_limits(&root.join("source"),"site:owned-replay",owned_source_limits(),&recovered.source.replay)?;
@@ -6225,8 +6261,43 @@ async fn lean_owned_session_task<'scope,'task>(
     let replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
     let av_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
     let reopened=recording_storage::recover_histories_retained(task,cx,clock,storage_cfg,source_after,av_minimum,replay,av_replay,retainers)?;
-    assert_eq!(reopened.av.journal.replay_pin(),Some(av_pin));
+    let reopened=if video_session==23 {
+        use fss_reference::unifi_direct::archive::journal::rollover::{Previous, RecoveredLineage, Staged};
+        use fss_runtime::effect_journal::PinRetainedEffectJournal;
+        let (old_source, mut av, prior_custody)=reopened.into_histories();
+        assert!(prior_custody.is_none());
+        drop(old_source);
+        let mut av_deployment=fss_reference::ReferenceDeployment::open_with_limits(&root.join("av"),"site:owned-replay",owned_av_limits(),&av.replay)?;
+        let receipt=archive::replay_confirmed_unknown_time_av_anchored(&mut av_deployment,access.as_ref(),access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&av.replay,&mut av.journal,&mut av.keeper)?;
+        assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);
+        let recording_storage::RecoveredHistory {journal,keeper,replay:av_replay}=av;
+        let make_store=|name:&str| -> Result<Box<dyn fss_runtime::effect_journal::EffectJournalStore>,Box<dyn std::error::Error>> {
+            let file=FileEffectJournal::create(root.join(name),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+            Ok(Box::new(PinRetainedEffectJournal::new(Box::new(file),retainer(name)?)?))
+        };
+        let staged=Staged::begin(Previous {journal,keeper},make_store("rolled-av-journal")?,make_store("rolled-av-keeper")?,&av_replay).map_err(|r|format!("rolled restart stage refused: {:?}; journal_sequence={} replay_pending={} keeper_caught_up={}",r.reason,r.previous.journal.anchor().sequence,r.previous.journal.replay_pin().is_some(),r.previous.keeper.target()==r.previous.journal.anchor()))?;
+        let switch_file=FileEffectJournal::create(root.join("rolled-av-switch"),EffectJournalLimits::default(),Arc::new(HostSpoolIo))?;
+        let switch=PinRetainedEffectJournal::new(Box::new(switch_file),retainer("rolled-av-switch")?)?;
+        let mut active=staged.commit(switch,&av_replay).map_err(|_|"rolled restart switch refused")?;
+        let receipt=active.replay_confirmed_av(&mut av_deployment,access.as_ref(),access.as_ref(),archive::Limits::default(),object_limits,&mut fss_geometry::WorkBudget::new(100_000_000_000),&av_replay)?;
+        assert_eq!(receipt.outcome,fss_publication::RootLedgerOutcome::AlreadyLedgered);
+        let lineage:RecoveredLineage=active.into_recovered_lineage(&av_replay).map_err(|_|"rolled restart lineage refused")?;
+        drop(av_deployment);
+        let source_replay=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+        let source=recording_storage::recover_source_retained(task,cx,clock,storage_cfg,source_after,source_replay,&av_replay,recording_storage::SourceRetainers {journal:open_retainer("source-journal")?,keeper:open_retainer("source-keeper")?})?;
+        let wrong_scope=recording_storage::Configuration {av_scope:ContentDigest::sha256(b"wrong av recovery scope"),..storage_cfg};
+        let refusal=match recording_storage::join_source_and_av_lineage(wrong_scope,source,lineage,av_replay) {Err(refusal)=>refusal,Ok(_)=>return Err("wrong lineage scope accepted".into())};
+        assert_eq!(refusal.reason,recording_storage::Error::Configuration);
+        let valid_av_replay=refusal.av_replay;
+        let cancelled=fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?;
+        cancelled.request_cancellation();
+        let refusal=match recording_storage::join_source_and_av_lineage(storage_cfg,refusal.source,refusal.lineage,cancelled) {Err(refusal)=>refusal,Ok(_)=>return Err("cancelled lineage join accepted".into())};
+        assert_eq!(refusal.reason,recording_storage::Error::Reconciliation);
+        recording_storage::join_source_and_av_lineage(storage_cfg,refusal.source,refusal.lineage,valid_av_replay).map_err(|_|"rolled restart join refused")?
+    } else { reopened };
+    assert_eq!(reopened.av.journal.replay_pin(),if video_session==23 {None} else {Some(av_pin)});
     assert!(reopened.av.keeper_caught_up());
+    let restart_av_head=reopened.av.journal.anchor();
     assert_eq!(reopened.source.journal.replay_pin(),reopened.source.journal.confirmed());
     let wrong_source_cfg=recording_storage::Configuration {source_deployment_limits:fss_reference::DeploymentLimits::standard(),..storage_cfg};
     assert!(matches!(recording_storage::readback_confirmed(task,cx,clock,wrong_source_cfg,&reopened,access.as_ref()),Err(recording_storage::Error::SourceReadbackOpen)));
@@ -6311,7 +6382,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let collector=av_bootstrap::Collector::new(Some([0x14,0x08]),boundary.av_root.retention,av_owned_sink::BootstrapPolicy {allow_initial_video_only: false, max_separation_ms:5_000,jitter_ms:5,max_epoch_frames:1_000_000,max_audio_frames:fss_container::Mp4Limits::default().max_samples,media_limits:fss_container::Mp4Limits::default(),evidence_limits:fss_reference::unifi_direct::evidence::Limits::default()});
     let recording_storage::Created {coordinator,av}=owners;
     let session=fss_reference::unifi_direct::recording_session::Session::begin(supervisor,collector,coordinator,av).map_err(|_|"resumed recording session refused")?;
-    let (coordinator,new_pins,new_av_minimum,new_av_pin)=drive_owned_recording(session,&mut owner,&restart_operations[4],restart_stream,None,true,false,access.as_ref(),task,cx,clock).await?;
+    let (coordinator,new_pins,new_av_minimum,new_av_pin)=drive_owned_recording(session,&mut owner,&restart_operations[4],restart_stream,None,true,false,video_session==23,1,access.as_ref(),task,cx,clock).await?;
     let mut retired=coordinator.into_worker().retire().map_err(|_|"resumed source retirement refused")?;
     if retired.fenced || retired.pending.is_some(){return Err("resumed source unresolved".into());}
     for pin in &new_pins {
@@ -6322,7 +6393,8 @@ async fn lean_owned_session_task<'scope,'task>(
     let source_final=recording_storage::HistoryMinimum {journal:retired.parts.journal.anchor(),keeper:retired.parts.keeper.anchor()};
     assert!(!new_pins.is_empty() && new_pins.iter().all(|pin|*pin!=boundary.source_root));
     assert_ne!(new_av_pin,boundary.av_root);
-    assert!(source_final.journal.sequence>source_after.journal.sequence && new_av_minimum.journal.sequence>av_minimum.journal.sequence);
+    assert!(source_final.journal.sequence>source_after.journal.sequence);
+    assert!(new_av_minimum.journal.sequence>restart_av_head.sequence);
     drop(retired);peer.join().map_err(|_|"restart peer panic")??;
     drop(custody);
     let wrong_head=fss_runtime::effect_journal::EffectJournalPin {sequence:custody_head.sequence,root:ContentDigest::sha256(b"wrong boundary custody head")};
@@ -6344,8 +6416,8 @@ async fn lean_owned_session_task<'scope,'task>(
     drop(cold);
     assert_eq!(retained("source-journal")?,source_final.journal);
     assert_eq!(retained("source-keeper")?,source_final.keeper);
-    assert_eq!(retained("av-journal")?,new_av_minimum.journal);
-    assert_eq!(retained("av-keeper")?,new_av_minimum.keeper);
+    assert_eq!(retained(if video_session==23 {"rolled-av-journal"} else {"av-journal"})?,new_av_minimum.journal);
+    assert_eq!(retained(if video_session==23 {"rolled-av-keeper"} else {"av-keeper"})?,new_av_minimum.keeper);
     if std::env::var("FSS_TEST_PRESERVE_BOUNDARY").as_deref()==Ok("1") {
         use std::os::unix::fs::OpenOptionsExt;
         let receipt_path=temp.join("boundary-test-receipt");
