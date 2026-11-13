@@ -116,6 +116,10 @@ filesystem lease.
 
 The default allowance is 256 MiB of metadata payload reads and 65,536 read
 attempts, including final verification. Native callers may narrow these limits.
+Read attempts include checks of absent or zero-byte metadata. The reader requires
+a positive byte balance before each attempt, so a byte ceiling derived from a
+previous response's consumed payload bytes needs admission headroom for any final
+zero-byte checks; that unused headroom is not reported as consumed bytes.
 The frontend applies a cooperative 60-second deadline. The complete native
 comparison and complete delivered response each have a 256 KiB ceiling, in
 addition to the chosen view's context limit. Exceeding any bound withholds the

@@ -19,6 +19,7 @@ use fss_reference::agent_event_changes::{
 };
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_orient::{OrientRequest, explain_event, orient_deployment};
+use fss_reference::reference_deployment::RELATIVE_PATH_EFFECTS;
 use fss_reference::{
     ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
@@ -530,21 +531,36 @@ fn finish_refuses_changed_predecessor_payload_publication_and_authority() -> Tes
 }
 
 #[test]
-fn cancellation_and_exact_aggregate_budgets_cover_finish_without_refills() -> Test {
+fn cancellation_and_exact_admission_budgets_cover_finish_without_refills() -> Test {
     let fixture = Fixture::new("budgets")?;
+    assert!(fs::read(fixture.root.join(RELATIVE_PATH_EFFECTS))?.is_empty());
+    let before = files(&fixture.root)?;
     let request = fixture.request()?;
     let limits = EventChangesLimits::default();
     let cx = context(&fixture.root, limits, false)?;
     let measured =
         explain_event_changes_in_deployment(&fixture.root, &request, limits, &cx, &|| false)?;
     let mut exact = limits;
-    exact.read.max_read_bytes = usize::try_from(measured.read_usage.read_bytes)?;
+    // Final authority verification probes the empty effect journal after consuming the last
+    // payload byte. That probe still needs positive byte credit and one read attempt; its
+    // unused byte credit is not charged as payload or replenished between prepare and finish.
+    exact.read.max_read_bytes = usize::try_from(measured.read_usage.read_bytes)?
+        .checked_add(1)
+        .ok_or("admission credit overflow")?;
     exact.read.max_read_objects = usize::try_from(measured.read_usage.read_objects)?;
     let exact_cx = context(&fixture.root, exact, false)?;
-    let answer =
-        explain_event_changes_in_deployment(&fixture.root, &request, exact, &exact_cx, &|| false)?;
+    let prepared =
+        prepare_event_changes_in_deployment(&fixture.root, &request, exact, &exact_cx, &|| false)?;
+    assert!(prepared.answer().read_usage.read_bytes < measured.read_usage.read_bytes);
+    assert!(prepared.answer().read_usage.read_objects < measured.read_usage.read_objects);
+    let answer = prepared.finish()?;
     assert_eq!(answer.report, measured.report);
     assert_eq!(answer.read_usage, measured.read_usage);
+    assert_eq!(
+        u64::try_from(exact.read.max_read_bytes)? - answer.read_usage.read_bytes,
+        1
+    );
+    assert_eq!(files(&fixture.root)?, before);
     for bytes in [true, false] {
         let mut narrow = exact;
         if bytes {
@@ -553,19 +569,36 @@ fn cancellation_and_exact_aggregate_budgets_cover_finish_without_refills() -> Te
             narrow.read.max_read_objects -= 1;
         }
         let bounded = context(&fixture.root, narrow, false)?;
-        assert!(
-            explain_event_changes_in_deployment(&fixture.root, &request, narrow, &bounded, &|| {
-                false
-            })
-            .is_err()
+        let prepared = prepare_event_changes_in_deployment(
+            &fixture.root,
+            &request,
+            narrow,
+            &bounded,
+            &|| false,
+        )?;
+        let error = prepared
+            .finish()
+            .err()
+            .ok_or("the final empty-journal probe must stay within the original allowance")?;
+        assert!(matches!(error.kind, EventChangesErrorKind::Source(_)));
+        let observed = error.observation.ok_or("observed bounded refusal")?;
+        assert_eq!(
+            observed.read_usage.read_bytes,
+            measured.read_usage.read_bytes
         );
+        assert_eq!(
+            observed.read_usage.read_objects + 1,
+            measured.read_usage.read_objects
+        );
+        assert!(observed.read_usage.read_bytes <= u64::try_from(narrow.read.max_read_bytes)?);
+        assert!(observed.read_usage.read_objects <= u64::try_from(narrow.read.max_read_objects)?);
+        assert_eq!(files(&fixture.root)?, before);
         bounded.drain_and_finalize();
     }
     let cancelled = AtomicBool::new(false);
     let guard = || cancelled.load(Ordering::SeqCst);
     let prepared =
         prepare_event_changes_in_deployment(&fixture.root, &request, limits, &cx, &guard)?;
-    let before = files(&fixture.root)?;
     cancelled.store(true, Ordering::SeqCst);
     assert!(prepared.finish().is_err());
     assert_eq!(files(&fixture.root)?, before);
