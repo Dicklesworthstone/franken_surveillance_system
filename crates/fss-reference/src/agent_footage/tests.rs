@@ -179,8 +179,10 @@ fn row_identity_binds_adapter_generation_and_declared_origin_without_source_read
     changed.declared_origin_digest = Some(ContentDigest::sha256(b"declared origin"));
     assert_ne!(changed.row_digest(), expected);
     assert!(result.epistemic().propositions.iter().any(|p| {
-        p.statement.contains("adapter_origin_verification=not_performed")
-            && p.statement.contains("declared_origin_digest=not_applicable")
+        p.statement
+            .contains("adapter_origin_verification=not_performed")
+            && p.statement
+                .contains("declared_origin_digest=not_applicable")
     }));
     Ok(())
 }
@@ -445,7 +447,10 @@ fn final_verification_spends_the_original_allowance_without_refilling() -> TestR
     let exact_page = query_footage(&root, &request, &exact, &mut |_| true)?;
     assert_eq!(exact_page.rows, measured.rows);
     assert_eq!(exact_page.metadata_bytes_read, measured.metadata_bytes_read);
-    assert_eq!(exact_page.metadata_objects_read, measured.metadata_objects_read);
+    assert_eq!(
+        exact_page.metadata_objects_read,
+        measured.metadata_objects_read
+    );
     let limits = FootageQueryLimits {
         max_metadata_bytes: measured.metadata_bytes_read as usize - 1,
         ..FootageQueryLimits::default()
@@ -527,7 +532,10 @@ fn last_admission_cannot_hide_changed_metadata_publication_or_tombstone() -> Tes
             "publication" => root
                 .join("objects")
                 .join(fss_publication::LOCAL_ROOTS_DIR)
-                .join(format!("fi-{identity}{}", fss_publication::ROOT_RECORD_SUFFIX)),
+                .join(format!(
+                    "fi-{identity}{}",
+                    fss_publication::ROOT_RECORD_SUFFIX
+                )),
             _ => root
                 .join("objects")
                 .join(fss_publication::LOCAL_TOMBSTONES_DIR)
@@ -539,7 +547,10 @@ fn last_admission_cannot_hide_changed_metadata_publication_or_tombstone() -> Tes
         };
         let replacement = b"changed by final caller admission";
         let mut expected = bytes(&root)?;
-        expected.insert(path.strip_prefix(&root)?.to_path_buf(), replacement.to_vec());
+        expected.insert(
+            path.strip_prefix(&root)?.to_path_buf(),
+            replacement.to_vec(),
+        );
         let mut changed = false;
         let mut failure = None;
         let result = query_footage(
@@ -558,7 +569,10 @@ fn last_admission_cannot_hide_changed_metadata_publication_or_tombstone() -> Tes
             return Err(error.into());
         }
         assert!(changed, "{kind} mutation was exercised");
-        assert!(result.is_err(), "{kind} changed after the earlier verification");
+        assert!(
+            result.is_err(),
+            "{kind} changed after the earlier verification"
+        );
         assert_eq!(bytes(&root)?, expected, "query must not repair {kind}");
     }
     Ok(())
@@ -604,8 +618,15 @@ fn incomplete_or_foreign_journal_suffixes_never_release_a_footage_page() -> Test
                     return Err(error.into());
                 }
                 assert!(changed, "journal suffix was exercised");
-                assert!(result.is_err(), "{relative} suffix must refuse; late={late}");
-                assert_eq!(bytes(&root)?, expected, "read must preserve the pending suffix");
+                assert!(
+                    result.is_err(),
+                    "{relative} suffix must refuse; late={late}"
+                );
+                assert_eq!(
+                    bytes(&root)?,
+                    expected,
+                    "read must preserve the pending suffix"
+                );
             }
         }
     }

@@ -80,7 +80,7 @@ impl Fixture {
         )?;
         Ok(())
     }
-    fn read(&self, reader: &mut PinnedClosureReader<'_>) -> Test<PinnedClosureUsage> {
+    fn read_children(&self, reader: &mut PinnedClosureReader<'_>) -> Test {
         let manifest = reader.manifest(&self.slot, self.manifest.root())?;
         for bytes in &self.children {
             assert_eq!(
@@ -88,6 +88,10 @@ impl Fixture {
                 *bytes
             );
         }
+        Ok(())
+    }
+    fn read(&self, reader: &mut PinnedClosureReader<'_>) -> Test<PinnedClosureUsage> {
+        self.read_children(reader)?;
         Ok(reader.finish_root()?)
     }
 }
@@ -279,6 +283,150 @@ fn cancellation_before_final_revalidation_never_releases_a_complete_closure() ->
         )))
     );
     assert_eq!(reader.usage().completed_roots, 0);
+    Ok(())
+}
+
+#[test]
+fn final_io_callback_cannot_revoke_authority_after_the_semantic_guard() -> Test {
+    let f = Fixture::new()?;
+    let calls = AtomicUsize::new(0);
+    let count = || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    let mut baseline = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &count)?;
+    f.read(&mut baseline)?;
+    let total = calls.load(Ordering::SeqCst);
+    assert!(total > 0);
+    drop(baseline);
+    calls.store(0, Ordering::SeqCst);
+
+    let revoked = AtomicBool::new(false);
+    let mutate = || {
+        if calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+            revoked.store(true, Ordering::SeqCst);
+        }
+        false
+    };
+    let mut reader = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &mutate)?;
+    f.read_children(&mut reader)?;
+    let result = reader.finish_root_with(&|| revoked.load(Ordering::SeqCst));
+    assert!(revoked.load(Ordering::SeqCst));
+    assert_eq!(
+        result,
+        Err(PinnedClosureError::Observation(PinnedMetadataError::Audit(
+            CustodyAuditError::Cancelled
+        )))
+    );
+    assert_eq!(reader.usage().completed_roots, 0);
+    assert_eq!(reader.finish(), Err(PinnedClosureError::Stopped));
+    Ok(())
+}
+
+#[test]
+fn final_semantic_guard_cannot_delete_source_after_physical_verification() -> Test {
+    let f = Fixture::new()?;
+    let calls = AtomicUsize::new(0);
+    let count = || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    let mut baseline = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &running)?;
+    f.read_children(&mut baseline)?;
+    baseline.finish_root_with(&count)?;
+    let total = calls.load(Ordering::SeqCst);
+    assert!(total > 0);
+    drop(baseline);
+    calls.store(0, Ordering::SeqCst);
+
+    let mut reader = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &running)?;
+    f.read_children(&mut reader)?;
+    let marker = f.root.join("tombstones").join(format!(
+        "{}.tomb",
+        ContentDigest::sha256(&f.children[0])
+            .to_text()
+            .replacen(':', "-", 1)
+    ));
+    let wrote = AtomicBool::new(false);
+    let mutate = || {
+        if calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+            wrote.store(
+                fs::write(&marker, b"late deletion").is_ok(),
+                Ordering::SeqCst,
+            );
+        }
+        false
+    };
+    let result = reader.finish_root_with(&mutate);
+    assert!(wrote.load(Ordering::SeqCst));
+    assert_eq!(
+        result,
+        Err(PinnedClosureError::Observation(
+            PinnedMetadataError::Tombstoned
+        ))
+    );
+    assert_eq!(reader.usage().completed_roots, 0);
+    Ok(())
+}
+
+#[test]
+fn cancellation_checks_resume_before_the_next_root_admission() -> Test {
+    let f = Fixture::new()?;
+    let stopped = AtomicBool::new(false);
+    let cancelled = || stopped.load(Ordering::SeqCst);
+    let mut reader = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &cancelled)?;
+    f.read(&mut reader)?;
+    stopped.store(true, Ordering::SeqCst);
+    assert_eq!(
+        reader.manifest(&f.slot, f.manifest.root()),
+        Err(PinnedClosureError::Observation(PinnedMetadataError::Audit(
+            CustodyAuditError::Cancelled
+        )))
+    );
+    assert_eq!(reader.usage().completed_roots, 1);
+    Ok(())
+}
+
+#[test]
+fn finalization_rechecks_layout_after_its_last_callback() -> Test {
+    let f = Fixture::new()?;
+    let calls = AtomicUsize::new(0);
+    let count = || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    let mut baseline = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &count)?;
+    f.read(&mut baseline)?;
+    calls.store(0, Ordering::SeqCst);
+    baseline.finalize()?;
+    let total = calls.load(Ordering::SeqCst);
+    assert!(total > 0);
+    drop(baseline);
+
+    let finalizing = AtomicBool::new(false);
+    let changed = AtomicBool::new(false);
+    calls.store(0, Ordering::SeqCst);
+    let mutate = || {
+        if finalizing.load(Ordering::SeqCst) && calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+            changed.store(
+                fs::remove_dir(f.root.join("tombstones")).is_ok(),
+                Ordering::SeqCst,
+            );
+        }
+        false
+    };
+    let mut reader = PinnedClosureReader::new(&HostSpoolIo, &f.root, limits(), &mutate)?;
+    f.read(&mut reader)?;
+    finalizing.store(true, Ordering::SeqCst);
+    let result = reader.finalize();
+    assert!(changed.load(Ordering::SeqCst));
+    assert_eq!(
+        result,
+        Err(PinnedClosureError::Observation(PinnedMetadataError::Audit(
+            CustodyAuditError::CatalogueInvalid
+        )))
+    );
+    assert_eq!(reader.usage().completed_roots, 1);
     Ok(())
 }
 

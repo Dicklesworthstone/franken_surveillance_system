@@ -22,9 +22,11 @@ use fss_reference::webhook::{
 };
 use fss_reference::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
-    ReferenceModelObservation, VirtualCameraSpec, execute_mock_model, run_reference_capture,
+    ReferenceModelObservation, ReplayAdmissionError, VirtualCameraSpec, execute_mock_model,
+    run_reference_capture,
 };
 
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -416,7 +418,7 @@ fn cold_inspector_charges_every_metadata_and_payload_read_before_admission() -> 
     let dir = Directory::new("wire-read-budget")?;
     retained_fixture(&dir.0, true)?;
     let id = OperationId::parse(OPERATION)?;
-    let (authority, cx) = read_context(&dir.0, 8192)?;
+    let (authority, cx) = read_context(&dir.0, 512)?;
     let complete = CountingIo::new(None);
     assert!(
         read_retained_webhook_evidence_from_root_with_io(&complete, &dir.0, &id, &authority, &cx,)?
@@ -426,6 +428,10 @@ fn cold_inspector_charges_every_metadata_and_payload_read_before_admission() -> 
     assert!(
         required > 32,
         "directory and file metadata must count as storage calls"
+    );
+    assert!(
+        required <= 512,
+        "the CLI storage allowance must cover every pass"
     );
     let (limited, limited_cx) = read_context(&dir.0, required - 1)?;
     let bounded = CountingIo::new(None);
@@ -459,5 +465,151 @@ fn changed_effect_history_during_final_reread_refuses_the_candidate() -> TestRes
     ));
     assert_eq!(fault.target_reads.load(Ordering::SeqCst), 2);
     assert_eq!(before, files(&dir.0)?);
+    Ok(())
+}
+
+#[test]
+fn final_retained_admission_cannot_release_changed_custody_or_history() -> TestResult {
+    for mutation in ["tombstone", "hold", "publication", "history"] {
+        let dir = Directory::new(&format!("wire-final-{mutation}"))?;
+        let digest = retained_fixture(&dir.0, true)?;
+        let id = OperationId::parse(OPERATION)?;
+        let (authority, cx) = read_context(&dir.0, 8192)?;
+        let retained = read_retained_webhook_evidence_from_root_with_io(
+            &HostJournalReadIo,
+            &dir.0,
+            &id,
+            &authority,
+            &cx,
+        )?
+        .ok_or("missing retained observation")?;
+        let path = match mutation {
+            "tombstone" => dir
+                .0
+                .join("objects")
+                .join(LOCAL_TOMBSTONES_DIR)
+                .join(format!(
+                    "{}{TOMBSTONE_RECORD_SUFFIX}",
+                    digest.to_text().replacen(':', "-", 1),
+                )),
+            "hold" => dir
+                .0
+                .join("objects/spool/holds")
+                .join(digest.to_text().trim_start_matches("sha256:")),
+            "publication" => dir
+                .0
+                .join("objects")
+                .join(fss_publication::LOCAL_ROOTS_DIR)
+                .join(format!(
+                    "{}{}",
+                    retained.slot(),
+                    fss_publication::ROOT_RECORD_SUFFIX,
+                )),
+            _ => dir.0.join("effects/journal.fssj"),
+        };
+        let replacement = b"changed by final retained admission";
+        let mut expected = files(&dir.0)?;
+        let relative = path.strip_prefix(&dir.0)?.to_path_buf();
+        if mutation == "hold" {
+            assert!(expected.remove(&relative).is_some());
+        } else {
+            expected.insert(relative, ContentDigest::sha256(replacement));
+        }
+        let changed = Cell::new(false);
+        let failure = RefCell::new(None);
+        let cx = cx.with_admission(|stage| {
+            if stage == "webhook_custody:retained" && !changed.replace(true) {
+                let result = if mutation == "hold" {
+                    fs::remove_file(&path)
+                } else {
+                    fs::write(&path, replacement)
+                };
+                if let Err(error) = result {
+                    *failure.borrow_mut() = Some(error);
+                    return Err(ReplayAdmissionError::Authority);
+                }
+            }
+            Ok(())
+        });
+        let result = read_retained_webhook_evidence_from_root_with_io(
+            &HostJournalReadIo,
+            &dir.0,
+            &id,
+            &authority,
+            &cx,
+        );
+        if let Some(error) = failure.borrow_mut().take() {
+            return Err(error.into());
+        }
+        assert!(changed.get(), "{mutation} admission was exercised");
+        assert!(matches!(result, Err(WebhookRetentionError::Custody)));
+        assert_eq!(
+            files(&dir.0)?,
+            expected,
+            "inspection must not repair {mutation}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn final_verification_never_returns_to_owner_admission() -> TestResult {
+    let dir = Directory::new("wire-final-callback-boundary")?;
+    retained_fixture(&dir.0, true)?;
+    let id = OperationId::parse(OPERATION)?;
+    let (authority, cx) = read_context(&dir.0, 8192)?;
+    let retained_admitted = Cell::new(false);
+    let observation_checks = Cell::new(0);
+    let cx = cx.with_admission(|stage| {
+        if retained_admitted.get() {
+            return Err(ReplayAdmissionError::Authority);
+        }
+        if stage == "webhook_custody:retained" {
+            retained_admitted.set(true);
+        } else if stage == "webhook_custody:observation" {
+            observation_checks.set(observation_checks.get() + 1);
+        }
+        Ok(())
+    });
+    let before = files(&dir.0)?;
+    assert!(
+        read_retained_webhook_evidence_from_root_with_io(
+            &HostJournalReadIo,
+            &dir.0,
+            &id,
+            &authority,
+            &cx,
+        )?
+        .is_some()
+    );
+    assert!(retained_admitted.get());
+    assert!(observation_checks.get() > 0);
+    assert_eq!(files(&dir.0)?, before);
+    Ok(())
+}
+
+#[test]
+fn final_retained_cancellation_discards_evidence_before_more_reads() -> TestResult {
+    let dir = Directory::new("wire-final-cancel")?;
+    retained_fixture(&dir.0, true)?;
+    let id = OperationId::parse(OPERATION)?;
+    let (authority, cx) = read_context(&dir.0, 8192)?;
+    let io = CountingIo::new(None);
+    let cancelled_after = Cell::new(None);
+    let cx = cx.with_admission(|stage| {
+        if stage == "webhook_custody:retained" {
+            cancelled_after.set(Some(io.calls.load(Ordering::SeqCst)));
+            Err(ReplayAdmissionError::Cancelled)
+        } else {
+            Ok(())
+        }
+    });
+    let before = files(&dir.0)?;
+    assert!(matches!(
+        read_retained_webhook_evidence_from_root_with_io(&io, &dir.0, &id, &authority, &cx),
+        Err(WebhookRetentionError::Cancelled)
+    ));
+    assert_eq!(cancelled_after.get(), Some(io.calls.load(Ordering::SeqCst)));
+    assert_eq!(files(&dir.0)?, before);
     Ok(())
 }

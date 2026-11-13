@@ -4,12 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use fss_core::{CanonicalEncode, ContentDigest};
-use fss_object::{
-    HostSpoolIo, ObjectManifest, RecordingSpoolIo, SpoolIoCall, encode_spool_object,
-};
+use fss_object::{HostSpoolIo, ObjectManifest, RecordingSpoolIo, SpoolIoCall, encode_spool_object};
 use fss_publication::custody_audit::pinned_metadata::{
     MetadataReadUsage, PinnedMetadataError, PinnedMetadataReader,
 };
@@ -88,7 +86,10 @@ impl Fixture {
             digest.to_text().replacen(':', "-", 1)
         ))
     }
-    fn observe(&self, limits: CustodyAuditLimits) -> Result<MetadataReadUsage, PinnedMetadataError> {
+    fn observe(
+        &self,
+        limits: CustodyAuditLimits,
+    ) -> Result<MetadataReadUsage, PinnedMetadataError> {
         let mut reader = PinnedMetadataReader::new(&HostSpoolIo, &self.root, limits, &|| false)?;
         let manifest = reader.manifest(&self.slot, self.manifest.root())?;
         reader.metadata(&manifest)?;
@@ -112,7 +113,8 @@ fn limits() -> CustodyAuditLimits {
 }
 
 #[test]
-fn exact_metadata_reads_ignore_absent_source_and_unrelated_corruption_without_mutation() -> TestResult {
+fn exact_metadata_reads_ignore_absent_source_and_unrelated_corruption_without_mutation()
+-> TestResult {
     let fixture = Fixture::new("read-only")?;
     fs::write(
         fixture.root.join("roots/unrelated.root.tmp"),
@@ -278,7 +280,9 @@ fn aggregate_byte_and_call_allowances_cover_both_passes_without_refill() -> Test
     ] {
         assert_eq!(
             fixture.observe(limit),
-            Err(PinnedMetadataError::Audit(CustodyAuditError::Limit(dimension)))
+            Err(PinnedMetadataError::Audit(CustodyAuditError::Limit(
+                dimension
+            )))
         );
     }
     Ok(())
@@ -312,6 +316,65 @@ fn cancellation_before_admission_during_reads_and_at_final_revalidation_returns_
             observation,
             Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled))
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn last_cancellation_callback_cannot_change_custody_after_final_verification() -> TestResult {
+    for change in ["tombstone", "slot", "metadata"] {
+        let fixture = Fixture::new(change)?;
+        let observe = |cancelled: &(dyn Fn() -> bool + Sync)| {
+            let mut reader =
+                PinnedMetadataReader::new(&HostSpoolIo, &fixture.root, limits(), cancelled)?;
+            let manifest = reader.manifest(&fixture.slot, fixture.manifest.root())?;
+            reader.metadata(&manifest)?;
+            reader.finish()
+        };
+        let calls = AtomicUsize::new(0);
+        let count = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            false
+        };
+        observe(&count)?;
+        let total = calls.load(Ordering::SeqCst);
+        assert!(total > 0);
+        calls.store(0, Ordering::SeqCst);
+
+        let replacement = root_record_bytes(
+            &fixture.slot,
+            ContentDigest::sha256(b"different current root"),
+            fixture.manifest.children().len(),
+        )?;
+        let wrote = AtomicBool::new(false);
+        let mutate = || {
+            if calls.fetch_add(1, Ordering::SeqCst) == total - 1 {
+                let result = match change {
+                    "tombstone" => fs::write(
+                        fixture.tombstone(fixture.source, ""),
+                        b"late selected-source deletion",
+                    ),
+                    "slot" => fs::write(fixture.root.join("roots/catalog.root"), &replacement),
+                    _ => fs::write(
+                        fixture.object(ContentDigest::sha256(&fixture.metadata)),
+                        b"late metadata corruption",
+                    ),
+                };
+                wrote.store(result.is_ok(), Ordering::SeqCst);
+            }
+            false
+        };
+        let result = observe(&mutate);
+        assert!(
+            wrote.load(Ordering::SeqCst),
+            "mutation did not run: {change}"
+        );
+        let expected = match change {
+            "tombstone" => PinnedMetadataError::Tombstoned,
+            "slot" => PinnedMetadataError::Changed,
+            _ => PinnedMetadataError::MetadataUnavailable,
+        };
+        assert_eq!(result, Err(expected), "last callback mutation: {change}");
     }
     Ok(())
 }

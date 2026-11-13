@@ -200,7 +200,11 @@ fn p6_rank_is_bounded_before_dimensions() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn p7_rank_boundaries_preserve_canonical_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let mut cases = 0;
-    for dims in [Vec::new(), vec![1; MAX_TENSOR_RANK], vec![0; MAX_TENSOR_RANK]] {
+    for dims in [
+        Vec::new(),
+        vec![1; MAX_TENSOR_RANK],
+        vec![0; MAX_TENSOR_RANK],
+    ] {
         let shape = Shape::new(dims)?;
         let payload = vec![42; shape.num_elements()?];
         let generation = Generation::from_u64(7);

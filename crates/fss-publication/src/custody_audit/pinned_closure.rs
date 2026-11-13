@@ -221,9 +221,10 @@ impl<'a> PinnedClosureReader<'a> {
         self.finish_root_with(&|| false)
     }
 
-    /// Complete a root while also checking the caller's current semantic authority around
-    /// every rehashed object and metadata stage. This probe need not be thread-safe; the
-    /// reader's original request cancellation independently gates every filesystem call.
+    /// Admit the original request cancellation, then the caller's current semantic authority,
+    /// before the bounded final revalidation. This probe need not be thread-safe. Neither
+    /// callback runs during that final pass; all reads retain their original byte/I/O limits.
+    /// Callback checks resume on the next phase, without running after this root's last read.
     pub fn finish_root_with(&mut self, cancelled: &dyn Fn() -> bool) -> Result<PinnedClosureUsage> {
         if self.stopped || self.finalized.is_some() {
             return Err(PinnedClosureError::Stopped);

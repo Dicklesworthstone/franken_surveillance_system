@@ -27,10 +27,11 @@ pub(super) fn run(options: &Options) -> RunResult<String> {
         capabilities: vec!["ADP-REPLAY-001".into(), CAP_ALERT_STATUS.into()],
         deadline: None,
         priority: 10,
-        // Both journals are bounded and reread to detect mixed snapshots. Metadata and each
-        // actual file read are charged by the strict inspector before invoking read-only I/O.
+        // Each journal is read initially, during cooperative revalidation, and once more
+        // after final admission. Reserve all three passes at their advertised input limits;
+        // the strict inspector charges every actual metadata and file read to this allowance.
         budgets: BudgetVector::builder()
-            .bytes(4 * MAX_CONTROL_JOURNAL_BYTES + 1024 * 1024)
+            .bytes(6 * MAX_CONTROL_JOURNAL_BYTES + 1024 * 1024)
             .storage_operations(512)
             .build()?,
         privacy_scope: "privacy:local-authorized-files".into(),

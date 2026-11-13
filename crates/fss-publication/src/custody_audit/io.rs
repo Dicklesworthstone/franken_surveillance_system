@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs::{DirEntry, File, FileType, Metadata, ReadDir, TryLockError};
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use super::{CustodyAuditError, CustodyAuditLimits};
 use fss_object::SpoolIo;
@@ -14,6 +14,7 @@ pub(super) struct AuditIo<'a, F: ?Sized> {
     inner: &'a dyn SpoolIo,
     cancelled: &'a F,
     limits: CustodyAuditLimits,
+    callbacks_suppressed: AtomicBool,
     failure: AtomicU8,
     calls: AtomicU64,
     bytes: AtomicU64,
@@ -35,6 +36,7 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> AuditIo<'a, F> {
             inner,
             cancelled,
             limits,
+            callbacks_suppressed: AtomicBool::new(false),
             failure: AtomicU8::new(0),
             calls: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
@@ -47,7 +49,7 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> AuditIo<'a, F> {
             .compare_exchange(0, reason, Ordering::SeqCst, Ordering::SeqCst);
     }
     pub(super) fn check(&self) -> Result<(), CustodyAuditError> {
-        if (self.cancelled)() {
+        if !self.callbacks_suppressed.load(Ordering::SeqCst) && (self.cancelled)() {
             self.fail(1);
         }
         match self.failure.load(Ordering::SeqCst) {
@@ -57,6 +59,24 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> AuditIo<'a, F> {
             3 => Err(CustodyAuditError::Limit("read_bytes")),
             _ => Err(CustodyAuditError::IoContract),
         }
+    }
+    // Only final bounded observations suppress caller callbacks. Syscalls still pass through
+    // this same capability, charge its original allowances and preserve every latched failure.
+    pub(super) fn without_callbacks<T>(&self, observe: impl FnOnce() -> T) -> T {
+        struct RestoreCallbacks<'a> {
+            suppressed: &'a AtomicBool,
+            previous: bool,
+        }
+        impl Drop for RestoreCallbacks<'_> {
+            fn drop(&mut self) {
+                self.suppressed.store(self.previous, Ordering::SeqCst);
+            }
+        }
+        let _restore = RestoreCallbacks {
+            suppressed: &self.callbacks_suppressed,
+            previous: self.callbacks_suppressed.swap(true, Ordering::SeqCst),
+        };
+        observe()
     }
     fn call(&self) -> io::Result<()> {
         self.check()

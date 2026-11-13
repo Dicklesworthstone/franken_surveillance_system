@@ -61,7 +61,8 @@ pub fn read_retained_webhook_evidence_from_root(
 /// Journal input is capped at 64 MiB each, wire input at 32 KiB, and actual cumulative reads
 /// consume the supplied context's finite byte/storage envelope. Every metadata and file-read
 /// call consumes one storage operation. A deadline-bearing context
-/// additionally requires live `ReplayCx::with_admission` checks around every I/O boundary.
+/// additionally requires live `ReplayCx::with_admission` checks around cooperative I/O and
+/// before the final bounded verification pass, which does not call back into caller code.
 pub fn read_retained_webhook_evidence_from_root_with_io(
     io: &dyn JournalReadIo,
     root: &Path,
@@ -95,6 +96,7 @@ pub fn read_retained_webhook_evidence_from_root_with_io(
         cx,
         bytes_left: authority.budgets.bytes,
         operations_left: authority.budgets.storage_operations,
+        final_verification: false,
         files: Vec::new(),
     };
     reader.directory(root)?;
@@ -251,10 +253,19 @@ struct Reader<'a, G: ReplayAdmission> {
     cx: &'a ReplayCx<G>,
     bytes_left: u64,
     operations_left: u64,
+    final_verification: bool,
     files: Vec<FileSnapshot>,
 }
 
 impl<G: ReplayAdmission> Reader<'_, G> {
+    fn admit_observation(&self) -> Result<(), WebhookRetentionError> {
+        if self.final_verification {
+            Ok(())
+        } else {
+            checkpoint(self.cx, STAGE_OBSERVATION)
+        }
+    }
+
     fn charge_operation(&mut self) -> Result<(), WebhookRetentionError> {
         self.operations_left = self
             .operations_left
@@ -268,9 +279,9 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         path: &Path,
     ) -> Result<Option<JournalFileMetadata>, WebhookRetentionError> {
         self.charge_operation()?;
-        checkpoint(self.cx, STAGE_OBSERVATION)?;
+        self.admit_observation()?;
         let observed = self.io.symlink_metadata(path);
-        checkpoint(self.cx, STAGE_OBSERVATION)?;
+        self.admit_observation()?;
         match observed {
             Ok(metadata) => Ok(Some(metadata)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -347,12 +358,12 @@ impl<G: ReplayAdmission> Reader<'_, G> {
             .checked_sub(bound as u64)
             .ok_or(WebhookRetentionError::Budget)?;
         self.charge_operation()?;
-        checkpoint(self.cx, STAGE_OBSERVATION)?;
+        self.admit_observation()?;
         let bytes = self
             .io
             .read_bounded(path, bound)
             .map_err(|_| WebhookRetentionError::Custody)?;
-        checkpoint(self.cx, STAGE_OBSERVATION)?;
+        self.admit_observation()?;
         if bytes.len() != length {
             return Err(WebhookRetentionError::Custody);
         }
@@ -415,8 +426,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(decoded.payload().to_vec())
     }
 
-    fn finish(mut self) -> Result<(), WebhookRetentionError> {
-        let files = std::mem::take(&mut self.files);
+    fn revalidate(&mut self, files: &[FileSnapshot]) -> Result<(), WebhookRetentionError> {
         for file in files {
             if file.absence_only {
                 self.check_absent(&file.path)?;
@@ -424,7 +434,17 @@ impl<G: ReplayAdmission> Reader<'_, G> {
                 return Err(WebhookRetentionError::Custody);
             }
         }
-        checkpoint(self.cx, STAGE_RETAINED)
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), WebhookRetentionError> {
+        let files = std::mem::take(&mut self.files);
+        self.revalidate(&files)?;
+        checkpoint(self.cx, STAGE_RETAINED)?;
+        // Admission may itself change already observed custody or history. Recheck every
+        // selected file and absence after the last callback, spending the original allowance.
+        self.final_verification = true;
+        self.revalidate(&files)
     }
 }
 

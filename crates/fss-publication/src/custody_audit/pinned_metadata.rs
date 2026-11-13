@@ -192,9 +192,7 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
         &mut self,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<MetadataReadUsage> {
-        let result = self.revalidate_guarded(cancelled);
-        self.io.check()?;
-        result?;
+        self.revalidate_for_release(cancelled)?;
         let usage = self.usage();
         self.bindings.clear();
         self.manifests.clear();
@@ -208,9 +206,7 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
         if !self.bindings.is_empty() || self.namespace.is_some() {
             return Err(PinnedMetadataError::MetadataInvalid);
         }
-        let result = self.revalidate();
-        self.io.check()?;
-        result?;
+        self.revalidate_for_release(&|| false)?;
         Ok(self.usage())
     }
 
@@ -238,10 +234,10 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
 
     /// Rehash admitted metadata and repeat every exact slot, tombstone and namespace observation.
     /// Consumes the capability so a caller cannot refill or reuse its request budget.
+    /// Cancellation is admitted immediately before this bounded final pass. No caller callback
+    /// runs during or after it; all reads still consume the original byte and I/O allowances.
     pub fn finish(self) -> Result<MetadataReadUsage> {
-        let result = self.revalidate();
-        self.io.check()?;
-        result?;
+        self.revalidate_for_release(&|| false)?;
         Ok(self.usage())
     }
 
@@ -390,20 +386,22 @@ impl<'a, F: Fn() -> bool + Sync + ?Sized> PinnedMetadataReader<'a, F> {
         Ok(manifest)
     }
 
-    fn revalidate(&self) -> Result<()> {
-        self.revalidate_guarded(&|| false)
+    fn revalidate_for_release(&self, cancelled: &dyn Fn() -> bool) -> Result<()> {
+        // The I/O callback can change semantic authority, so it must precede that guard.
+        // The guard can change custody, so the physical observation must follow both.
+        self.io.check()?;
+        self.io.without_callbacks(|| {
+            if cancelled() {
+                return Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled));
+            }
+            let result = self.revalidate();
+            self.io.check()?;
+            result
+        })
     }
 
-    // Current native semantic authority can be single-threaded. Check it around each selected
-    // object/metadata stage; the request's Sync I/O cancellation still gates every syscall.
-    fn revalidate_guarded(&self, cancelled: &dyn Fn() -> bool) -> Result<()> {
-        let admit = || {
-            if cancelled() {
-                Err(PinnedMetadataError::Audit(CustodyAuditError::Cancelled))
-            } else {
-                self.io.check().map_err(PinnedMetadataError::from)
-            }
-        };
+    fn revalidate(&self) -> Result<()> {
+        let admit = || self.io.check().map_err(PinnedMetadataError::from);
         admit()?;
         if let Some(Err(error)) = &self.namespace {
             return Err(error.clone());
