@@ -4,6 +4,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "model_ir_contract/deep_graph.rs"]
+mod deep_graph;
+
 use std::error::Error;
 use std::fs;
 use std::path::Path;

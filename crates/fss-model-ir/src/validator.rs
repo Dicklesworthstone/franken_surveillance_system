@@ -298,9 +298,9 @@ impl GraphValidator {
         graph: &'a ModelIrGraph,
         producer_map: &BTreeMap<&str, ProducerId<'a>>,
     ) -> Result<Vec<&'a GraphNode>, ModelIrError> {
-        // Detect cycles via DFS with cycle path reconstruction
+        // Detect cycles with an explicit stack: graph depth must not consume the call stack.
         let mut state: BTreeMap<&'a str, u8> = BTreeMap::new(); // 0: unvisited, 1: visiting, 2: visited
-        let mut path: Vec<&'a str> = Vec::new();
+        let mut stack: Vec<(&'a str, usize)> = Vec::new();
         let mut node_map: BTreeMap<&'a str, &'a GraphNode> = BTreeMap::new();
         for node in graph.nodes() {
             node_map.insert(node.id(), node);
@@ -324,7 +324,7 @@ impl GraphValidator {
 
         for node in graph.nodes() {
             if *state.get(node.id()).unwrap_or(&0) == 0 {
-                Self::dfs_cycle_check(node.id(), &deps, &mut state, &mut path)?;
+                Self::dfs_cycle_check(node.id(), &deps, &mut state, &mut stack)?;
             }
         }
 
@@ -385,23 +385,37 @@ impl GraphValidator {
     }
 
     fn dfs_cycle_check<'a>(
-        current_id: &'a str,
+        start_id: &'a str,
         deps: &BTreeMap<&'a str, Vec<&'a str>>,
         state: &mut BTreeMap<&'a str, u8>,
-        path: &mut Vec<&'a str>,
+        stack: &mut Vec<(&'a str, usize)>,
     ) -> Result<(), ModelIrError> {
-        state.insert(current_id, 1);
-        path.push(current_id);
+        // One frame per active node stores the next predecessor to visit. This preserves
+        // recursive DFS's cycle witness order while bounding traversal storage by graph size.
+        stack.push((start_id, 0));
+        state.insert(start_id, 1);
 
-        if let Some(predecessors) = deps.get(current_id) {
-            for &pred_id in predecessors {
-                let pred_state = *state.get(pred_id).unwrap_or(&0);
-                if pred_state == 1 {
-                    // Back-edge found: pred_id is already on path
-                    let cycle_start = path.iter().position(|&x| x == pred_id).unwrap_or(0);
-                    let mut cycle_path: Vec<String> = path[cycle_start..]
+        while let Some((current_id, next_dependency)) = stack.pop() {
+            let Some(&pred_id) = deps
+                .get(current_id)
+                .and_then(|predecessors| predecessors.get(next_dependency))
+            else {
+                state.insert(current_id, 2);
+                continue;
+            };
+
+            // Resume this node after its predecessor has been completely explored.
+            stack.push((current_id, next_dependency + 1));
+            match state.get(pred_id).copied().unwrap_or(0) {
+                1 => {
+                    // Back-edge found: pred_id is already on the active path.
+                    let cycle_start = stack
                         .iter()
-                        .map(|s| (*s).to_string())
+                        .position(|&(node_id, _)| node_id == pred_id)
+                        .unwrap_or(0);
+                    let mut cycle_path: Vec<String> = stack[cycle_start..]
+                        .iter()
+                        .map(|&(node_id, _)| node_id.to_string())
                         .collect();
                     cycle_path.push(pred_id.to_string());
                     return Err(ModelIrError::CycleDetected {
@@ -409,14 +423,14 @@ impl GraphValidator {
                         cycle_path,
                     });
                 }
-                if pred_state == 0 {
-                    Self::dfs_cycle_check(pred_id, deps, state, path)?;
+                0 => {
+                    state.insert(pred_id, 1);
+                    stack.push((pred_id, 0));
                 }
+                _ => {}
             }
         }
 
-        path.pop();
-        state.insert(current_id, 2);
         Ok(())
     }
 }
