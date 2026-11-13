@@ -6,8 +6,8 @@ use asupersync::{
     runtime::RuntimeBuilder,
 };
 use fss_core::{
-    BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind, RootAuthoritySpec,
-    RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
+    BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
+    RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
 use fss_packet::dbus_handshake as wire;
 use fss_reference::unifi_direct::{
@@ -45,28 +45,60 @@ const WRITE_UUID: &str = "9280f26c-a56f-43ea-b769-d5d732e1ac67";
 
 // A synthetic journal for effect ownership tests. It provides no durability.
 #[derive(Debug, Default)]
-struct TestJournal { records: Vec<Vec<u8>>, pins: Vec<EffectJournalPin> }
+struct TestJournal {
+    records: Vec<Vec<u8>>,
+    pins: Vec<EffectJournalPin>,
+}
 impl EffectJournalStore for TestJournal {
-    fn head(&self) -> Option<EffectJournalPin> { self.pins.last().copied() }
-    fn records(&self) -> &[Vec<u8>] { &self.records }
-    fn contains(&self, pin: EffectJournalPin) -> bool { self.pins.contains(&pin) }
-    fn reserve_capacity(&mut self, _: usize, _: usize) -> Result<(), EffectPersistenceError> { Ok(()) }
-    fn append(&mut self, expected: Option<EffectJournalPin>, record: &[u8]) -> Result<EffectJournalPin, EffectPersistenceError> {
-        if expected != self.head() { return Err(EffectPersistenceError::PinMismatch); }
-        let pin = EffectJournalPin { sequence: self.pins.len() as u64 + 1, root: ContentDigest::sha256(record) };
+    fn head(&self) -> Option<EffectJournalPin> {
+        self.pins.last().copied()
+    }
+    fn records(&self) -> &[Vec<u8>] {
+        &self.records
+    }
+    fn contains(&self, pin: EffectJournalPin) -> bool {
+        self.pins.contains(&pin)
+    }
+    fn reserve_capacity(&mut self, _: usize, _: usize) -> Result<(), EffectPersistenceError> {
+        Ok(())
+    }
+    fn append(
+        &mut self,
+        expected: Option<EffectJournalPin>,
+        record: &[u8],
+    ) -> Result<EffectJournalPin, EffectPersistenceError> {
+        if expected != self.head() {
+            return Err(EffectPersistenceError::PinMismatch);
+        }
+        let pin = EffectJournalPin {
+            sequence: self.pins.len() as u64 + 1,
+            root: ContentDigest::sha256(record),
+        };
         self.records.push(record.to_vec());
         self.pins.push(pin);
         Ok(pin)
     }
 }
 
-struct ManagementPolicy { checks: Cell<usize>, allow: usize }
+struct ManagementPolicy {
+    checks: Cell<usize>,
+    allow: usize,
+}
 impl bluez_bus::GattManagementAuthority for ManagementPolicy {
-    fn permits(&self, plan: &management::Plan, current: management::Preconditions, _: &CommittedEffect) -> bool {
+    fn permits(
+        &self,
+        plan: &management::Plan,
+        current: management::Preconditions,
+        _: &CommittedEffect,
+    ) -> bool {
         let count = self.checks.get() + 1;
         self.checks.set(count);
-        count <= self.allow && plan.check_current(current).is_ok()
-            && plan.message_bytes().windows(3).any(|part| part == [0x11, 0x22, 0x33])
+        count <= self.allow
+            && plan.check_current(current).is_ok()
+            && plan
+                .message_bytes()
+                .windows(3)
+                .any(|part| part == [0x11, 0x22, 0x33])
     }
 }
 
@@ -228,34 +260,6 @@ fn run_case(
         budget,
         TimestampNs(1),
     )?;
-    let management_action = matches!(action, WatchAction::ManagementWrite | WatchAction::ManagementWriteCancelled | WatchAction::ManagementWriteWrongReply | WatchAction::ManagementWriteRevoked);
-    let mut management_effects = None;
-    let mut prepared_management = None;
-    let management_operation = OperationId::parse("operation:synthetic-gatt-management")?;
-    if management_action {
-        let mut effects = EffectCoordinator::with_journal(Box::new(TestJournal::default()))?;
-        let mut leases = LeaseRegistry::new();
-        let camera = ContentDigest::sha256(b"synthetic camera identity");
-        let resource = format!("camera:{}", camera.to_text());
-        let lease = leases.acquire(&resource, owner.region().as_str(), None, TimestampNs(2))?;
-        let current = management::Preconditions { camera, peer_admission: ContentDigest::sha256(b"synthetic admission"), session_generation: 1, lease_fence: lease.fence };
-        let plan = management::Plan::new(10, ":1.42", DEVICE, WRITE_PATH, fss_packet::dbus_object_manager::GattWriteMode::Request, &[0x11, 0x22, 0x33], current)?;
-        let prepared = effects.prepare(&owner, &mut tree, &mut leases, PrepareSpec {
-            operation: &management_operation,
-            idempotency_key: IdempotencyKey::parse(management_operation.as_str())?,
-            request_digest: plan.request_digest(),
-            precondition_digest: plan.precondition_digest(),
-            resource: &resource,
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::CameraManagementPrepare,
-            commit_grant: RuntimeGrant::CameraManagementCommit,
-            terminal_predicate: "independent management observation or reconciliation",
-        }, TimestampNs(3))?;
-        let approval = CommitApproval { prepared_digest: prepared.digest(), current_precondition_digest: plan.precondition_digest() };
-        let permit = effects.commit(&owner, &tree, &mut leases, prepared, TimestampNs(4), approval)?;
-        prepared_management = Some((plan, current, permit));
-        management_effects = Some(effects);
-    }
     let runtime = RuntimeBuilder::current_thread().build()?;
     let written = Rc::new(RefCell::new(Vec::new()));
     let dropped = Rc::new(Cell::new(false));
@@ -269,19 +273,19 @@ fn run_case(
         device_connect_checks: Cell::new(0),
         deny_notify_path: false,
     };
-    let result = runtime.block_on(async {
+    runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let result = run_owned_async(
             &mut owner,
             &mut tree,
             TaskSpec {
                 task_id: TaskId::new("task:bluez-bus")?,
-                started_at: TimestampNs(if management_action { 5 } else { 2 }),
+                started_at: TimestampNs(2),
             },
             &cx,
             async |task, cx| {
                 let output: TestResult = async {
-                    let clock = MeteredClock::new(task, cx, TimestampNs(if management_action { 6 } else { 3 }))?;
+                    let clock = MeteredClock::new(task, cx, TimestampNs(3))?;
                     let io = MeteredIo::with_clock(
                         Fixture {
                             input,
@@ -833,6 +837,69 @@ fn run_watch_action(
         budget,
         TimestampNs(1),
     )?;
+    let management_action = matches!(
+        action,
+        WatchAction::ManagementWrite
+            | WatchAction::ManagementWriteCancelled
+            | WatchAction::ManagementWriteWrongReply
+            | WatchAction::ManagementWriteRevoked
+    );
+    let mut management_effects = None;
+    let mut prepared_management = None;
+    let management_operation = OperationId::parse("operation:synthetic-gatt-management")?;
+    if management_action {
+        let mut effects = EffectCoordinator::with_journal(Box::new(TestJournal::default()))?;
+        let mut leases = LeaseRegistry::new();
+        let camera = ContentDigest::sha256(b"synthetic camera identity");
+        let resource = format!("camera:{}", camera.to_text());
+        let lease = leases.acquire(&resource, owner.region().as_str(), None, TimestampNs(2))?;
+        let current = management::Preconditions {
+            camera,
+            peer_admission: ContentDigest::sha256(b"synthetic admission"),
+            session_generation: 1,
+            lease_fence: lease.fence,
+        };
+        let plan = management::Plan::new(
+            10,
+            ":1.42",
+            DEVICE,
+            WRITE_PATH,
+            fss_packet::dbus_object_manager::GattWriteMode::Request,
+            &[0x11, 0x22, 0x33],
+            current,
+        )?;
+        let prepared = effects.prepare(
+            &owner,
+            &mut tree,
+            &mut leases,
+            PrepareSpec {
+                operation: &management_operation,
+                idempotency_key: IdempotencyKey::parse(management_operation.as_str())?,
+                request_digest: plan.request_digest(),
+                precondition_digest: plan.precondition_digest(),
+                resource: &resource,
+                fence: lease.fence,
+                prepare_grant: RuntimeGrant::CameraManagementPrepare,
+                commit_grant: RuntimeGrant::CameraManagementCommit,
+                terminal_predicate: "independent management observation or reconciliation",
+            },
+            TimestampNs(3),
+        )?;
+        let approval = CommitApproval {
+            prepared_digest: prepared.digest(),
+            current_precondition_digest: plan.precondition_digest(),
+        };
+        let permit = effects.commit(
+            &owner,
+            &tree,
+            &mut leases,
+            prepared,
+            TimestampNs(4),
+            approval,
+        )?;
+        prepared_management = Some((plan, current, permit));
+        management_effects = Some(effects);
+    }
     let runtime = RuntimeBuilder::current_thread().build()?;
     let dropped = Rc::new(Cell::new(false));
     let policy = Policy {
@@ -845,19 +912,19 @@ fn run_watch_action(
         device_connect_checks: Cell::new(0),
         deny_notify_path: matches!(action, WatchAction::NotifyPathDenied),
     };
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let result = run_owned_async(
             &mut owner,
             &mut tree,
             TaskSpec {
                 task_id: TaskId::new("task:bluez-watch")?,
-                started_at: TimestampNs(2),
+                started_at: TimestampNs(if management_action { 5 } else { 2 }),
             },
             &cx,
             async |task, cx| {
                 let output: TestResult = async {
-                    let clock = MeteredClock::new(task, cx, TimestampNs(3))?;
+                    let clock = MeteredClock::new(task, cx, TimestampNs(if management_action { 6 } else { 3 }))?;
                     let writes = Rc::new(RefCell::new(Vec::new()));
                     let io = MeteredIo::with_clock(
                         Fixture {
@@ -1021,6 +1088,64 @@ fn run_watch_action(
                             assert_eq!(watch.device_link_state(), bluez_bus::DeviceLinkState::Uncertain);
                             assert_eq!(watch.device_link_path(), Some(DEVICE));
                             assert!(matches!(watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await, Err(BusError::DeviceUncertain)));
+                            drop(watch);
+                            Ok(())
+                        }
+                        Ok(mut watch) if management_action => {
+                            let (plan, current, mut permit) = prepared_management.take().ok_or("missing management permit")?;
+                            watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                            let endpoints = watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await?;
+                            watch.start_notify(&endpoints, Duration::from_secs(1)).await?;
+                            assert_eq!(watch.next_gatt_serial(), 10);
+                            let policy = ManagementPolicy { checks: Cell::new(0), allow: usize::MAX };
+                            if matches!(action, WatchAction::ManagementWrite) {
+                                let denied = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &ManagementPolicy { checks: Cell::new(0), allow: 0 }, Duration::from_secs(1)).await.expect_err("denied authority");
+                                assert_eq!(denied.reason, bluez_bus::GattManagementRefusalReason::Denied);
+                                permit = denied.permit;
+                                let bad_current = management::Preconditions { session_generation: 2, ..current };
+                                let stale = watch.dispatch_gatt_management(&endpoints, &plan, bad_current, permit, &policy, Duration::from_secs(1)).await.expect_err("stale claim");
+                                assert_eq!(stale.reason, bluez_bus::GattManagementRefusalReason::Denied);
+                                permit = stale.permit;
+                                let different = management::Plan::new(10, ":1.42", DEVICE, WRITE_PATH, fss_packet::dbus_object_manager::GattWriteMode::Request, &[0x11, 0x22, 0x34], current)?;
+                                let mismatch = watch.dispatch_gatt_management(&endpoints, &different, current, permit, &policy, Duration::from_secs(1)).await.expect_err("different request");
+                                assert_eq!(mismatch.reason, bluez_bus::GattManagementRefusalReason::PermitMismatch);
+                                permit = mismatch.permit;
+                                assert!(!writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue"));
+                            }
+                            if matches!(action, WatchAction::ManagementWriteCancelled) {
+                                let mut attempt = Box::pin(watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &policy, Duration::from_secs(1)));
+                                let mut polls = 0;
+                                poll_fn(|cx| match attempt.as_mut().poll(cx) {
+                                    Poll::Pending if writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue") => Poll::Ready(()),
+                                    Poll::Pending => { polls += 1; assert!(polls <= 2048); cx.waker().wake_by_ref(); Poll::Pending },
+                                    Poll::Ready(_) => panic!("write unexpectedly completed before cancellation"),
+                                }).await;
+                                drop(attempt);
+                                assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
+                                assert!(matches!(watch.next_notify_change(&endpoints, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
+                            } else {
+                                let revoking = ManagementPolicy { checks: Cell::new(0), allow: 1 };
+                                let authority = if matches!(action, WatchAction::ManagementWriteRevoked) { &revoking } else { &policy };
+                                let outcome = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, authority, Duration::from_secs(1)).await.map_err(|_| "management dispatch refused")?;
+                                match outcome {
+                                    bluez_bus::GattManagementWrite::Acknowledged { mut permit } if matches!(action, WatchAction::ManagementWrite) => {
+                                        assert!(!permit.try_claim_dispatch());
+                                        assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
+                                        assert_eq!(watch.pending_changes(), 1);
+                                        let frame = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("missing interleaved notification")?;
+                                        frame.decode(watch.owner())?;
+                                        watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                        watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                    }
+                                    bluez_bus::GattManagementWrite::Indeterminate { mut permit } if matches!(action, WatchAction::ManagementWriteWrongReply | WatchAction::ManagementWriteRevoked) => {
+                                        assert!(!permit.try_claim_dispatch());
+                                        assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
+                                        assert!(matches!(watch.next_notify_change(&endpoints, Duration::from_secs(1)).await, Err(BusError::NotificationUncertain)));
+                                        if matches!(action, WatchAction::ManagementWriteRevoked) { assert!(!writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue")); }
+                                    }
+                                    _ => return Err("unexpected management outcome".into()),
+                                }
+                            }
                             drop(watch);
                             Ok(())
                         }
@@ -1295,7 +1420,14 @@ fn run_watch_action(
         result.output
     });
     if let Some(effects) = management_effects {
-        assert_eq!(effects.journal().operation(&management_operation).ok_or("missing effect")?.state, fss_core::EffectState::Committed);
+        assert_eq!(
+            effects
+                .journal()
+                .operation(&management_operation)
+                .ok_or("missing effect")?
+                .state,
+            fss_core::EffectState::Committed
+        );
     }
     result
 }
@@ -1670,6 +1802,38 @@ fn gatt_topology_change_fences_further_reads_but_allows_session_stop() -> TestRe
         run_watch_action(case, None, Ok(()), WatchAction::NotifyTopology)?;
     }
     Ok(())
+}
+
+#[test]
+fn gatt_management_dispatch_is_bound_to_one_committed_effect() -> TestResult {
+    let mut base = watch_input(None, ":1.42");
+    base.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    base.extend_from_slice(&owned_inventory_reply_body(
+        8,
+        ":1.42",
+        &gatt_inventory_body(),
+    ));
+    base.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    let mut success = base.clone();
+    success.extend_from_slice(&gatt_value_frame(&[0x44]));
+    success.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+    success.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+    success.extend_from_slice(&owned_empty_reply(12, ":1.42"));
+    run_watch_action(success, None, Ok(()), WatchAction::ManagementWrite)?;
+    run_watch_action(
+        base.clone(),
+        None,
+        Ok(()),
+        WatchAction::ManagementWriteCancelled,
+    )?;
+    run_watch_action(
+        base.clone(),
+        None,
+        Ok(()),
+        WatchAction::ManagementWriteRevoked,
+    )?;
+    base.extend_from_slice(&owned_empty_reply(10, ":1.99"));
+    run_watch_action(base, None, Ok(()), WatchAction::ManagementWriteWrongReply)
 }
 
 #[test]
