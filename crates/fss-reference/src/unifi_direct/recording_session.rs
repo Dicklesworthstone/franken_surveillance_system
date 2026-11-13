@@ -19,7 +19,7 @@ use super::{
     av_unknown_worker_guard::{self, Advance, Guard, SessionEvent},
     av_worker, conversation, events, intent, management,
     metered::MeteredClock,
-    motion, pipeline, receive,
+    motion, pipeline, receive, recording_storage,
     source_coordinator::{self, ArchiveAdmission, Coordinator},
     source_worker, supervisor,
 };
@@ -203,6 +203,31 @@ pub enum BeginRefusal<'scope, 'task, IO> {
     },
 }
 
+/// Selected controller, media and storage owners for a fresh A/V session.
+/// The camera and source identities are caller claims, not authentication.
+#[must_use = "attach or retain every selected recording owner"]
+pub struct SelectedRecording<'scope, 'task, IO> {
+    /// Controller associated with the selected source by the caller.
+    pub session: receive::Session<'scope, 'task, IO>,
+    /// Selected source pipeline, including any buffered prefix.
+    pub pipeline: pipeline::Pipeline,
+    /// Caller-bound camera, peer and lease preconditions.
+    pub management: management::Preconditions,
+    /// Separate source and A/V storage owners.
+    pub storage: recording_storage::Created,
+    /// Bounded collector and caller-selected A/V bootstrap policy.
+    pub collector: av_bootstrap::Collector,
+}
+
+/// A selected A/V attachment refusal returns all owners at the refusal stage.
+#[must_use = "recover and reconcile the returned owners"]
+pub enum SelectedRefusal<'scope, 'task, IO> {
+    /// Invalid preconditions or a source/camera binding mismatch; no owner changed.
+    Binding(SelectedRecording<'scope, 'task, IO>),
+    /// The selected owners were assembled but audio bootstrap admission refused.
+    Begin(BeginRefusal<'scope, 'task, IO>),
+}
+
 /// Exclusive, control-only access to the session's existing supervisor.
 /// Preparing a request performs no write; dispatch still requires its exact
 /// committed effect and the supervisor's current authority checks.
@@ -348,6 +373,25 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Control<'_, '_, '_, IO> {
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, IO> {
+    /// Attach a selected stream to matching source and A/V owners without I/O.
+    /// This does not authenticate the camera or establish recording continuity.
+    pub fn begin_selected(
+        selected: SelectedRecording<'scope, 'task, IO>,
+    ) -> Result<Self, SelectedRefusal<'scope, 'task, IO>> {
+        if selected.management.validate().is_err()
+            || !selected.storage.coordinator.matches_binding(
+                selected.pipeline.source_key(),
+                selected.management.camera,
+            )
+        {
+            return Err(SelectedRefusal::Binding(selected));
+        }
+        let SelectedRecording { session, pipeline, management, storage, collector } = selected;
+        let supervisor = supervisor::Supervisor::new(session, pipeline, management);
+        Self::begin(supervisor, collector, storage.coordinator, storage.av)
+            .map_err(SelectedRefusal::Begin)
+    }
+
     /// Attach a fresh supervisor before consuming any media.
     ///
     /// The caller supplies the exact controller, collector, separate-source

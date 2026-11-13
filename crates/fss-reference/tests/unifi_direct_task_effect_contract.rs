@@ -6017,7 +6017,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let recorder=if video_session == 4 { recording::Recorder::new_inband(SourceKey {connection:1,generation:1},recording::Limits::default())? } else { recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())? };
     let mut trace=listener::StartTrace::default();
     let started=listener::start_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace).await?;
-    let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,management);
+    let pipeline=started.pipeline;
     let collector=av_bootstrap::Collector::new(Some([0x14,0x08]),ContentDigest::sha256(b"worker guard retention"),av_owned_sink::BootstrapPolicy {allow_initial_video_only: initial_video_only, max_separation_ms:5_000,jitter_ms:5,max_epoch_frames:1_000_000,max_audio_frames:fss_container::Mp4Limits::default().max_samples,media_limits:fss_container::Mp4Limits::default(),evidence_limits:fss_reference::unifi_direct::evidence::Limits::default()});
     let replay_authority=fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {trace_id:"trace:owned-replay-storage".into(),operation_id:OperationId::parse("operation:owned-replay-storage")?,principal:"principal:fixture".into(),capabilities:vec!["ADP-REPLAY-001".into()],deadline:None,priority:1,budgets:BudgetVector::builder().bytes(64*1024*1024).build()?,privacy_scope:"privacy:test".into(),retention_scope:"retention:test".into(),anchor_universe:ContentDigest::sha256(b"site:owned-replay"),generation:1})?;
     let access=Arc::new(Retention);
@@ -6026,7 +6026,7 @@ async fn lean_owned_session_task<'scope,'task>(
     let root=temp.join("owned-storage");
     let storage_cfg=recording_storage::Configuration {
         root:&root,site_lineage:"site:owned-replay",source:SourceKey {connection:1,generation:1},
-        camera_claim:ContentDigest::sha256(b"fixture camera"),source_retention:ContentDigest::sha256(b"owned retention"),
+        camera_claim:if video_session == 0 { management.camera } else { ContentDigest::sha256(b"fixture camera") },source_retention:ContentDigest::sha256(b"owned retention"),
         source_scope:ContentDigest::sha256(b"owned source scope"),av_scope:ContentDigest::sha256(b"owned av scope"),
         source_deployment_limits:owned_source_limits(),av_deployment_limits:owned_av_limits(),
         source_history_limits:EffectJournalLimits {max_records:512,..EffectJournalLimits::default()},av_history_limits:EffectJournalLimits {max_records:if matches!(video_session, 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21) {5} else {256},..EffectJournalLimits::default()},
@@ -6076,13 +6076,15 @@ async fn lean_owned_session_task<'scope,'task>(
         Ok(Box::new(fss_object::effect_journal::FileTrustedRootPinRetainer::create(witness.join(name),EffectJournalLimits::default(),Arc::new(HostSpoolIo),scope(name))?))
     };
     let retainers=recording_storage::Retainers {source_journal:retainer("source-journal")?,source_keeper:retainer("source-keeper")?,av_journal:retainer("av-journal")?,av_keeper:retainer("av-keeper")?};
-    let recording_storage::Created {coordinator,av:resources}=recording_storage::create_retained(task,cx,clock,storage_cfg,replay,av_replay,access.clone(),retainers)?;
+    let storage=recording_storage::create_retained(task,cx,clock,storage_cfg,replay,av_replay,access.clone(),retainers)?;
     if video_session != 0 {
+        let supervisor=supervisor::Supervisor::new(session,pipeline,management);
+        let recording_storage::Created {coordinator,av:resources}=storage;
         Box::pin(drive_video_only_session(supervisor, coordinator, resources, &expected, &mut owner, &operations[4], access.as_ref(), access.clone(), temp, Arc::new(fss_reference::ReplayCx::from_context_authority(&replay_authority,temp.to_path_buf())?), task, cx, clock, if video_session >= 2 { video_session } else { 0 })).await?;
         peer.join().map_err(|_|"video session peer panicked")??;
         return Ok(());
     }
-    assert_eq!(*resources.deployment.limits(),owned_av_limits());
+    assert_eq!(*storage.av.deployment.limits(),owned_av_limits());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -6093,13 +6095,23 @@ async fn lean_owned_session_task<'scope,'task>(
     assert!(matches!(recording_storage::create(task,cx,clock,storage_cfg,retry_source,retry_av,access.clone()),Err(recording_storage::Error::Root)));
     let owned=if test_refusal {
         use fss_reference::unifi_direct::recording_session::{BeginRefusal,Session};
+        let mut supervisor=supervisor::Supervisor::new(session,pipeline,management);
+        let recording_storage::Created {coordinator,av:resources}=storage;
         supervisor.enable_audio_tracking()?;
         let refusal=match Session::begin(supervisor,collector,coordinator,resources) {Err(refusal)=>refusal,Ok(_)=>return Err("duplicate audio setup unexpectedly accepted".into())};
         let BeginRefusal::Audio {supervisor,collector,coordinator,resources,error:pipeline::AudioSetupError::AlreadyEnabled}=refusal else {return Err("wrong begin refusal".into());};
         let driver=av_bootstrap_driver::Driver::attach(supervisor,collector).map_err(|_|"recovered bootstrap driver refused")?;
         Session::new(coordinator,Box::new(driver),resources)
     } else {
-        fss_reference::unifi_direct::recording_session::Session::begin(supervisor,collector,coordinator,resources).map_err(|_|"fresh recording session refused")?
+        use fss_reference::unifi_direct::recording_session::{SelectedRecording, SelectedRefusal, Session};
+        let selected=SelectedRecording { session, pipeline, management:Preconditions {camera:ContentDigest::sha256(b"wrong selected camera"),..management}, storage, collector };
+        let mut selected=match Session::begin_selected(selected) {
+            Err(SelectedRefusal::Binding(selected))=>selected,
+            _=>return Err("selected A/V accepted wrong camera binding".into()),
+        };
+        if selected.pipeline.source_key()!=storage_cfg.source {return Err("selected A/V lost its source".into());}
+        selected.management=management;
+        Session::begin_selected(selected).map_err(|_|"selected A/V session refused")?
     };
     let (coordinator,pins,av_minimum,av_pin)=drive_owned_recording(owned,&mut owner,&operations[4],stream,None,true,initial_video_only,access.as_ref(),task,cx,clock).await?;
     let retired=coordinator.into_worker().retire().map_err(|_|"source worker retirement refused")?;
