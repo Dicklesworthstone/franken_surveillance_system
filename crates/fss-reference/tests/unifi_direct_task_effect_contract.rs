@@ -1739,6 +1739,7 @@ where
                     recording_session::SliceStop::Halted(step)=>{
                         match &*step {
                             recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceStartRefused(error))=>eprintln!("owned recorder source start refused {error:?}"),
+                            recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(av_bootstrap_driver::Step::Supervisor(event)))=>eprintln!("owned recorder halted supervisor {:?}",std::mem::discriminant(event)),
                             recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::Driver(event))=>eprintln!("owned recorder halted driver {:?}",std::mem::discriminant(event)),
                             recording_session::Step::Bootstrap(event)=>eprintln!("owned recorder halted bootstrap {:?}",std::mem::discriminant(event)),
                             recording_session::Step::Recording(event)=>eprintln!("owned recorder halted recording {:?}",std::mem::discriminant(event)),
@@ -4928,7 +4929,7 @@ async fn drive_video_only_session<'scope, 'task, IO: asupersync::io::AsyncRead +
                             if !matches!(trace.take_written(), Some(ManagementWrite::Written { permit }) if permit.journal_backed()) { return Err("bootstrap clock receipt missing".into()); }
                             syncs += 1;
                         },
-                        _ => return Err("video bootstrap control stopped".into()),
+                        other => { eprintln!("video bootstrap stopped supervisor {:?}",std::mem::discriminant(&other)); return Err("video bootstrap control stopped".into()); },
                     }
                 }
                 if let Some(completion) = completion {
