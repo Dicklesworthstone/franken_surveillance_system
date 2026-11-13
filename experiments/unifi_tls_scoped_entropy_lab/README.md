@@ -203,6 +203,13 @@ reconciliation, and resolution of the prior indeterminate camera handoff.
 
 ## Prepare an isolated test workspace
 
+The preparation script checks its source copy list before creating the target
+directory. It includes the prepared setup, prepared camera, and camera factory
+modules declared by the lab library. The check catches missing listed files,
+duplicates, simple external module declarations (including `#[path]`), and
+literal `include_bytes!` and `include_str!` inputs. It is a lexical check, not
+a Rust parser, full dependency analysis, build, or runtime qualification.
+
 `prepare.py` accepts a **new absolute directory outside the project checkout**
 and a locally cached `rustls-0.23.46.crate`. It verifies SHA-256
 `48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf`, extracts

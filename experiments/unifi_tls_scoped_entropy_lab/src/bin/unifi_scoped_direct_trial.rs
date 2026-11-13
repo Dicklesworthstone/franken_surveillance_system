@@ -68,12 +68,29 @@ use trial_run_id::TrialRunId;
 use fss_unifi_scoped_tls_entropy_lab::{camera_tls_owned, owned, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
 const MAX_IO_WAIT: Duration = Duration::from_secs(30);
+const MAX_PIN_PROBES: usize = 16;
+
+fn discovery_targets(bind: Ipv4Addr, prefix: u8, port: u16, hint: Option<Ipv4Addr>) -> Result<Vec<SocketAddrV4>, &'static str> {
+    if !(1..=32).contains(&prefix) || port == 0 {
+        return Err("invalid discovery scope");
+    }
+    let host_mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
+    let directed = SocketAddrV4::new(Ipv4Addr::from(u32::from(bind) | host_mask), port);
+    let limited = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
+    let mut targets = vec![directed];
+    if limited != directed { targets.push(limited); }
+    if let Some(address) = hint {
+        let target = SocketAddrV4::new(address, port);
+        if !targets.contains(&target) { targets.push(target); }
+    }
+    Ok(targets)
+}
 
 // The rustls hooks must never fall back to ambient random or key exchange.
 // Each connection gets an explicitly acquired, single-use task-bound lease.
@@ -122,6 +139,56 @@ async fn acquire_entropy<'scope, 'task>(
     }
 }
 
+// Discover an already pinned camera without requiring its MAC or IP as input.
+// No credential is read or sent during these bounded TLS-only probes. A match
+// establishes possession of the pinned key, not ownership of the physical camera.
+async fn find_pinned_candidate<'scope, 'task>(
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    report: &discovery::Report,
+    pin: &[u8],
+    port: u16,
+) -> ResultBox<usize> {
+    let mut candidates = Vec::new();
+    for (index, candidate) in report.cameras.iter().enumerate() {
+        let Some(mac) = candidate.mac() else { continue };
+        match report.select_mac_claim(mac) {
+            Ok(found) if found == index => candidates.push((index, mac, *candidate.source().ip())),
+            Err(discovery::SelectionError::IncompleteReport) => return Err("incomplete discovery report".into()),
+            _ => continue,
+        }
+    }
+    if candidates.is_empty() || candidates.len() > MAX_PIN_PROBES {
+        return Err("no unconflicted candidates or pin probe limit exceeded".into());
+    }
+    let mut matched = None;
+    for (index, mac, address) in candidates.iter().copied() {
+        let mut binding = Vec::from(mac);
+        binding.extend_from_slice(&address.octets());
+        let resource = format!("camera:{}", ContentDigest::sha256(&binding).to_text());
+        let entropy = acquire_entropy(task, cx, clock, &resource).await?;
+        match camera_tls_owned::connect_with_lease(
+            cx, task, clock, SocketAddrV4::new(address, port), pin, &resource,
+            Duration::from_secs(3), Arc::new(scoped_provider(true)), entropy,
+        ).await {
+            Ok(connection) => {
+                drop(connection);
+                if matched.replace(index).is_some() {
+                    return Err("multiple candidates matched the camera pin".into());
+                }
+            }
+            Err(camera_tls_owned::Error::Authority | camera_tls_owned::Error::Configuration) => {
+                return Err("camera pin probe authority or configuration refused".into());
+            }
+            Err(_) => {}
+        }
+    }
+    let index = matched.ok_or("no discovered candidate matched the camera pin")?;
+    println!("trial_pin_discovery=matched candidates={} credentials_sent=false identity=pin_claim", candidates.len());
+    Ok(index)
+}
+
 struct Options {
     listen: SocketAddrV4,
     camera: Option<Ipv4Addr>,
@@ -129,7 +196,7 @@ struct Options {
     discovery_hint: Option<Ipv4Addr>,
     observe_only: bool,
     observe_snapshot: bool,
-    mac: [u8; 6],
+    mac: Option<[u8; 6]>,
     cert: PathBuf,
     key: PathBuf,
     journal: PathBuf,
@@ -417,14 +484,22 @@ fn options() -> ResultBox<Options> {
     if lab_segments > 8 && (!lab_video_only_archive || !lab_managed_archive || !lab_decode_owned) {return Err("more than eight segments require managed video-only archive and owned decode".into());}
     if lab_video_still.is_some() && (!lab_video_only_archive || !lab_decode_owned) {return Err("video still requires video-only archive and owned decode".into());}
     if lab_save_still.as_ref().is_some_and(|path| lab_video_still.is_none() || !path.is_absolute() || path.file_name().is_none() || !path.components().all(|part| matches!(part,std::path::Component::RootDir|std::path::Component::Normal(_)))) {return Err("still export requires a still and an absolute normal path".into());}
-    let raw = args[2].as_bytes();
-    if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
-        return Err("MAC must be twelve hexadecimal digits".into());
-    }
-    let mut mac = [0u8; 6];
-    for (index, byte) in mac.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&args[2][index * 2..index * 2 + 2], 16)?;
-    }
+    let mac = if args[2] == "auto" {
+        if !observe_only || camera.is_some() || discovery_prefix.is_none() {
+            return Err("automatic MAC selection requires read-only automatic discovery".into());
+        }
+        None
+    } else {
+        let raw = args[2].as_bytes();
+        if raw.len() != 12 || !raw.iter().all(u8::is_ascii_hexdigit) {
+            return Err("MAC must be twelve hexadecimal digits or auto".into());
+        }
+        let mut mac = [0u8; 6];
+        for (index, byte) in mac.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&args[2][index * 2..index * 2 + 2], 16)?;
+        }
+        Some(mac)
+    };
     let cert = PathBuf::from(&args[3]);
     let key = PathBuf::from(&args[4]);
     let journal = PathBuf::from(&args[5]);
@@ -865,17 +940,20 @@ fn run(args: Options) -> ResultBox<()> {
                     config.send_tls13_tickets=0;
                     Some(Arc::new(config))
                 };
+                let camera_pin=match &args.setup {Some(setup)=>Some(bounded_read(&setup.cert,false)?),None=>None};
                 #[cfg(target_os="linux")]
                 let discovered=if let Some(prefix)=args.discovery_prefix {
                     let setup_args=args.setup.as_ref().ok_or("automatic discovery requires setup")?;
-                    let broadcast=Ipv4Addr::from(u32::from(*args.listen.ip()) | (u32::MAX >> prefix));
-                    let mut targets=vec![SocketAddrV4::new(broadcast,setup_args.discovery_port),SocketAddrV4::new(Ipv4Addr::BROADCAST,setup_args.discovery_port)];
-                    if let Some(hint)=args.discovery_hint {targets.push(SocketAddrV4::new(hint,setup_args.discovery_port));}
+                    let targets=discovery_targets(*args.listen.ip(),prefix,setup_args.discovery_port,args.discovery_hint)?;
                     let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,&targets,"unifi:discovery",Duration::from_secs(2),64)?;
                     let report=discovery::discover(task,cx,clock.now()?,&cfg).await?;
-                    let index=report.select_mac_claim(args.mac)?;
+                    let index=match args.mac {
+                        Some(mac)=>report.select_mac_claim(mac)?,
+                        None=>find_pinned_candidate(task,cx,clock,&report,camera_pin.as_deref().ok_or("missing camera certificate pin")?,setup_args.https_port).await?,
+                    };
                     Some((report,index))
                 } else { None };
+                let mac=args.mac.or_else(||discovered.as_ref().and_then(|(report,index)|report.cameras.get(*index).and_then(|candidate|candidate.mac()))).ok_or("camera MAC unavailable")?;
                 #[cfg(target_os="linux")]
                 let camera_address=args.camera.or_else(|| discovered.as_ref().map(|(report,index)| *report.cameras[*index].source().ip())).ok_or("camera address unavailable")?;
                 #[cfg(not(target_os="linux"))]
@@ -885,7 +963,7 @@ fn run(args: Options) -> ResultBox<()> {
                     for path in [&args.journal,keeper,root] {
                         task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&BudgetVector::ZERO)?;
                     }
-                    let journal=trial_checkpoint::create(&args.journal,keeper,root,&args.uuid,args.mac)?;
+                    let journal=trial_checkpoint::create(&args.journal,keeper,root,&args.uuid,mac)?;
                     println!("trial_journal=anchored root_trust=operator_selected independence=unverified");
                     journal
                 } else {
@@ -893,22 +971,21 @@ fn run(args: Options) -> ResultBox<()> {
                 };
                 EffectCoordinator::with_journal(journal)?
                 };
-                let mut binding=Vec::from(args.mac); binding.extend_from_slice(&camera_address.octets());
+                let mut binding=Vec::from(mac); binding.extend_from_slice(&camera_address.octets());
                 let camera=ContentDigest::sha256(&binding); let resource=format!("camera:{}",camera.to_text());
                 let mut leases=LeaseRegistry::new();
                 let fence=leases.acquire(&resource,"region:unifi-direct-trial",None,clock.now()?)?.fence;
                 let leases=RefCell::new(leases);
-                let camera_pin=match &args.setup {Some(setup)=>Some(bounded_read(&setup.cert,false)?),None=>None};
                 let admission=match &camera_pin {Some(pin)=>ContentDigest::sha256(pin),None=>ContentDigest::sha256(b"owner-selected network address and camera MAC; not cryptographic identity")};
                 let management=management::Preconditions {camera,peer_admission:admission,session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
                 let stream_conditions=intent::Preconditions {camera,peer_admission:admission,stream_generation:1,previous_settings:None,lease_fence:fence};
-                let policy=Policy {local:*args.listen.ip(),camera:camera_address,mac:args.mac};
+                let policy=Policy {local:*args.listen.ip(),camera:camera_address,mac};
                 let mut controller_listener=if args.observe_only {None} else {
                     let listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
                     println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                     Some(listener)
                 };
-                let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events,reply_startup_requests:args.reply_startup_requests};
+                let guard=Guard {leases:&leases,clock,mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events,reply_startup_requests:args.reply_startup_requests};
                 let wall=Wall {task,clock};
                 #[cfg(target_os="linux")]
                 let mut selected_video_channel=args.video_channel.unwrap_or(VideoChannel::Video2);
@@ -918,7 +995,7 @@ fn run(args: Options) -> ResultBox<()> {
                         if prefix==0 {return Err("camera and listener are outside the scoped discovery network".into());}
                         let discovery_config=discovery::Config::new(*args.listen.ip(),prefix,SocketAddrV4::new(camera_address,setup_args.discovery_port),"unifi:discovery",Duration::from_secs(2),64)?;
                         let report=discovery::discover(task,cx,clock.now()?,&discovery_config).await?;
-                        let index=report.select_mac_claim(args.mac)?;
+                        let index=report.select_mac_claim(mac)?;
                         if *report.cameras[index].source().ip()!=camera_address {return Err("selected discovery address mismatch".into());}
                         (report,index)
                     };
@@ -950,6 +1027,10 @@ fn run(args: Options) -> ResultBox<()> {
                         let observed=setup_owner.observe(&mut http,&setup_config).await?;
                         if setup_owner.effects.journal().operations().next().is_some() {return Err("read-only observation unexpectedly prepared an effect".into());}
                         println!("trial_observation=complete settings_consistent=true controller_port={:?} controller_claim={:?} identity=network_claim journal=none",observed.status.controller_port,observed.settings.controller);
+                        if let Some(limits)=auto_profile_limits {
+                            let selection=observed.select_reported_video(limits)?;
+                            println!("trial_reported_video={:?} provenance=camera_claim delivery=unverified",selection.selected);
+                        }
                         if args.observe_snapshot {
                             task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
                             let snapshot=http.snapshot(Duration::from_secs(10)).await?;
@@ -1159,7 +1240,7 @@ fn run(args: Options) -> ResultBox<()> {
                     println!("trial_mode=owned_archive bounded=true identity=network_claim capture_bounds=unknown");
                     if args.lab_inband_avc {println!("trial_owned_avc_profile=avc3");}
                     let source=source_key;
-                    let claim=ContentDigest::sha256(&args.mac);
+                    let claim=ContentDigest::sha256(&mac);
                     let result=Box::pin(trial_owned_archive::run(supervisor,&mut owner,&run_id,task,cx,clock,&args.output,source,claim,args.lab_aac_config,args.wait,args.lab_segments,management,args.reply_events,startup_answered,args.lab_anchor_root.as_deref(),args.lab_decode_owned,args.lab_video_still,args.lab_save_still.as_deref(),args.lab_managed_archive,args.lab_av_history_records,args.lab_video_only_archive,args.lab_inband_avc,args.lab_renew_batch,args.lab_retained_video_generations,args.lab_stop_after_retained_reservation,args.lab_auto_retained_generations)).await;
                     return match result {
                         Ok(segments)=>{println!("trial_complete archive=published segments={segments} continuous_recording=false identity=network_claim capture_bounds=unknown");Ok(())},
@@ -1452,5 +1533,25 @@ fn main() {
     if let Err(error) = result {
         eprintln!("trial stopped: {error}; effect journal may require reconciliation");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod discovery_target_tests {
+    use super::*;
+
+    #[test]
+    fn handles_full_width_scope_and_deduplicates_targets() {
+        let local = Ipv4Addr::new(127, 0, 0, 1);
+        let targets = discovery_targets(local, 32, 10001, Some(local)).unwrap();
+        assert_eq!(targets, vec![SocketAddrV4::new(local, 10001), SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001)]);
+
+        let private = Ipv4Addr::new(192, 168, 4, 1);
+        assert_eq!(discovery_targets(private, 1, 10001, Some(Ipv4Addr::BROADCAST)).unwrap(), vec![SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001)]);
+        let directed = Ipv4Addr::new(192, 168, 4, 255);
+        assert_eq!(discovery_targets(private, 24, 10001, Some(directed)).unwrap(), vec![SocketAddrV4::new(directed, 10001), SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001)]);
+        assert!(discovery_targets(local, 0, 10001, None).is_err());
+        assert!(discovery_targets(local, 33, 10001, None).is_err());
+        assert!(discovery_targets(local, 24, 0, None).is_err());
     }
 }

@@ -788,8 +788,8 @@ fn parallel_fleet_upgrade_scenario(
                         let event = match provisioning.step(&mut owner, &op, Duration::from_millis(100), task, cx, clock, admission, admission, &BudgetVector::ZERO).await {
                             recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Session(event)))) => event,
                             recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Recording(recording_session::AudioAllowanceStep::Renewed { .. }))) => continue,
-                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::PreflightStarted)) if rollover && rollover_need.is_some() => continue,
-                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::RolloverStarted))) if rollover && rollover_need.is_some() => continue,
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::PreflightStarted)) if rollover && rollover_need.is_some() => { eprintln!("automatic_av_rollover=preflight_started"); continue; },
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::RolloverStarted))) if rollover && rollover_need.is_some() => { eprintln!("automatic_av_rollover=switch_started"); continue; },
                             recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Rollover(recording_rollover::AutomaticStep::Control(control)))) if rollover && rollover_need.is_some() => {
                                 if control_event(control)? { return Err("A/V control ended during rollover".into()); }
                                 continue;
@@ -798,9 +798,41 @@ fn parallel_fleet_upgrade_scenario(
                                 let need = rollover_need.ok_or("A/V resumed without a capacity boundary")?;
                                 if receipt.root != need.confirmed.root || format!("{:?}", receipt.outcome) != "AlreadyLedgered" { return Err("A/V rollover replay receipt mismatch".into()); }
                                 rollover_resumed = true;
+                                eprintln!("automatic_av_rollover=resumed");
                                 continue;
                             }
-                            _ => return Err("automatic A/V provisioning requires reconciliation".into()),
+                            recording_retained_provision::Step::Session(recording_provision::Step::Managed(recording_rollover::ManagedStep::Halted)) if rollover => {
+                                let owners = provisioning.into_parts().inner.into_parts();
+                                let (managed, _, _) = owners.managed.into_parts();
+                                let Some(recording_rollover::ManagedOwners::Halted(transition)) = managed else {
+                                    return Err("A/V halted without retained transition".into());
+                                };
+                                let reason = match *transition {
+                                    recording_rollover::AutomaticOwners::Finished(recording_rollover::Finished::Unresolved { rollover, .. }) => {
+                                        let retired = rollover.retire();
+                                        match &retired.completion.outcome {
+                                            fss_reference::unifi_direct::av_rollover_worker::Outcome::ReplayRefused { error, .. } => format!("replay_refused={error:?}"),
+                                            outcome => format!("transition={:?}", std::mem::discriminant(outcome)),
+                                        }
+                                    }
+                                    other => format!("owner={:?}", std::mem::discriminant(&other)),
+                                };
+                                return Err(format!("automatic A/V rollover halted: {reason}").into());
+                            }
+                            other => {
+                                let reason = match &other {
+                                    recording_retained_provision::Step::AutomaticExhausted(_) => "automatic_exhausted".into(),
+                                    recording_retained_provision::Step::AutomaticStopped => "automatic_stopped".into(),
+                                    recording_retained_provision::Step::Session(recording_provision::Step::Managed(managed)) => match managed {
+                                        recording_rollover::ManagedStep::Rollover(stage) => format!("rollover_stage={:?}", std::mem::discriminant(stage)),
+                                        recording_rollover::ManagedStep::StartRefused(error) => format!("start_refused={:?}", std::mem::discriminant(error)),
+                                        _ => format!("managed={:?}", std::mem::discriminant(managed)),
+                                    },
+                                    recording_retained_provision::Step::Session(step) => format!("provision={:?}", std::mem::discriminant(step)),
+                                    _ => format!("retained={:?}", std::mem::discriminant(&other)),
+                                };
+                                return Err(format!("automatic A/V provisioning requires reconciliation: {reason}").into());
+                            }
                         };
                         match event {
                             recording_session::Step::Bootstrap(source_coordinator::BootstrapStep::SourceOffered(source_handoff::BootstrapResult::Accepted { .. })
@@ -835,6 +867,7 @@ fn parallel_fleet_upgrade_scenario(
                                     av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused { reason: av_worker::FailureReason::JournalCapacity, pending: None, receipt: None, rollover: Some(need), .. }) if rollover && rollover_need.is_none() => {
                                         if pins.last() != Some(&need.confirmed) { return Err("A/V rollover predecessor mismatch".into()); }
                                         rollover_need = Some(need);
+                                        eprintln!("automatic_av_rollover=capacity_boundary");
                                     }
                                     _ => return Err("A/V archive requires reconciliation".into()),
                                 }
@@ -850,6 +883,7 @@ fn parallel_fleet_upgrade_scenario(
                                         av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused { reason: av_worker::FailureReason::JournalCapacity, pending: None, receipt: None, rollover: Some(need), .. }) if rollover && rollover_need.is_none() => {
                                             if pins.last() != Some(&need.confirmed) { return Err("A/V rollover predecessor mismatch".into()); }
                                             rollover_need = Some(need);
+                                            eprintln!("automatic_av_rollover=capacity_boundary");
                                         }
                                         _ => return Err("A/V archive requires reconciliation".into()),
                                     }
@@ -3084,7 +3118,7 @@ fn parallel_fleet_upgrade_scenario(
                         let media = AutoMedia { index: 1, cx, task, clock, effects: Some(auto_effects), leases: &leases,
                             policy: &policy, resource: &resources[1], peer, camera: cameras[1],
                             admission: admissions[1], fence: fences[1], full_resolution,
-                            archive_base: None, archive_budget: budget, abort_source: false, audio: false, candidate_hold, candidate_proceed };
+                            archive_base: None, archive_budget: budget, abort_source: false, audio: false, rollover: false, candidate_hold, candidate_proceed };
                         let mut make_stream = auto_media_factory(media, made.clone(), polled.clone(), release.clone());
                         let mut auto_lease_installed = false;
                         let mut renewed_auto_stall = false;

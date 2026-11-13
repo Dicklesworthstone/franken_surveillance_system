@@ -7,12 +7,64 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+import posixpath
+import re
 import shutil
 import subprocess
 import tarfile
 
 EXPECTED = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 ROOT = Path(__file__).resolve().parent
+COPY_FILES = (
+    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_pin_discovery_fixture.py", "trial_media_fixture.py", "src/lib.rs",
+    "src/server.rs", "src/owned.rs", "src/owned/client.rs", "src/owned/offload.rs", "src/client_handshake.rs",
+    "src/camera_tls.rs", "src/camera_tls_owned.rs", "src/camera_tls_client.rs", "src/camera_setup.rs", "src/snapshot_auth.rs", "src/bin/live_tls_probe.rs", "src/bin/live_snapshot_probe.rs",
+    "src/bin/unifi_scoped_direct_trial.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_run_id/mod.rs",
+    "src/bin/trial_owned_archive/mod.rs", "src/bin/trial_owned_archive/video.rs", "src/bin/trial_owned_archive/still_export.rs",
+    "src/fleet_transport.rs", "src/fleet_leased.rs", "src/prepared_setup.rs", "src/prepared_camera.rs", "src/camera_factory.rs", "src/setup_upgrade.rs",
+    "tests/scoped_entropy.rs", "tests/owned_entropy.rs", "tests/client_scoped_entropy.rs",
+    "tests/owned_client.rs", "tests/fleet_route.rs", "tests/pinned_client.rs", "tests/support/stream.rs", "tests/support/baseline.264", "tests/support/synthetic_g4_resolution.264",
+)
+
+
+def validate_copy_manifest(root, files):
+    """Check simple Rust module and literal include paths before creating a workspace."""
+    if len(set(files)) != len(files):
+        raise ValueError("duplicate workspace source")
+    missing = [path for path in files if not (root / path).is_file()]
+    if missing:
+        raise ValueError("workspace source missing: " + ", ".join(missing))
+    manifest = set(files)
+    for source in files:
+        if not source.endswith(".rs"):
+            continue
+        path = PurePosixPath(source)
+        lines = (root / source).read_text().splitlines()
+        for index, line in enumerate(lines):
+            module = re.fullmatch(r"\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;\s*", line)
+            if module:
+                attributes = []
+                for previous in reversed(lines[:index]):
+                    if not previous.strip() or previous.lstrip().startswith("#["):
+                        attributes.append(previous)
+                    else:
+                        break
+                explicit = [value for attr in attributes
+                            for value in re.findall(r'#\[path\s*=\s*"([^"\n]+)"\]', attr)]
+                if len(explicit) > 1:
+                    raise ValueError("multiple module paths in " + source)
+                if explicit:
+                    options = [posixpath.normpath(str(path.parent / explicit[0]))]
+                else:
+                    directory = path.parent if path.name in ("lib.rs", "main.rs", "mod.rs") else path.with_suffix("")
+                    options = [str(directory / (module.group(1) + ".rs")),
+                               str(directory / module.group(1) / "mod.rs")]
+                if not any(option in manifest for option in options):
+                    raise ValueError("workspace module omitted in " + source + ": " + module.group(1))
+            for include in re.findall(r'include_(?:bytes|str)!\s*\(\s*"([^"\n]+)"\s*\)', line):
+                included = posixpath.normpath(str(path.parent / include))
+                if included not in manifest:
+                    raise ValueError("workspace include omitted in " + source + ": " + included)
 
 
 def main():
@@ -26,6 +78,7 @@ def main():
     parent = args.workspace.parent.resolve()
     if parent == project or project in parent.parents:
         raise ValueError("workspace must be outside the project checkout")
+    validate_copy_manifest(ROOT, COPY_FILES)
     with args.crate.open("rb") as source:
         data = source.read(4_000_001)
     if len(data) > 4_000_000 or hashlib.sha256(data).hexdigest() != EXPECTED:
@@ -56,14 +109,7 @@ def main():
                 raise ValueError("unexpected archive member")
             with destination.open("xb") as output:
                 shutil.copyfileobj(content, output)
-    for rel in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_media_fixture.py", "src/lib.rs",
-                "src/server.rs", "src/owned.rs", "src/owned/client.rs", "src/owned/offload.rs", "src/client_handshake.rs",
-                "src/camera_tls.rs", "src/camera_tls_owned.rs", "src/camera_tls_client.rs", "src/camera_setup.rs", "src/snapshot_auth.rs", "src/bin/live_tls_probe.rs", "src/bin/live_snapshot_probe.rs",
-                "src/bin/unifi_scoped_direct_trial.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_run_id/mod.rs",
-                "src/bin/trial_owned_archive/mod.rs", "src/bin/trial_owned_archive/video.rs", "src/bin/trial_owned_archive/still_export.rs",
-                "src/fleet_transport.rs", "src/fleet_leased.rs", "src/setup_upgrade.rs",
-                "tests/scoped_entropy.rs", "tests/owned_entropy.rs", "tests/client_scoped_entropy.rs",
-                "tests/owned_client.rs", "tests/fleet_route.rs", "tests/pinned_client.rs", "tests/support/stream.rs", "tests/support/baseline.264", "tests/support/synthetic_g4_resolution.264"):
+    for rel in COPY_FILES:
         destination = args.workspace / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
         content = (ROOT / rel).read_bytes()
