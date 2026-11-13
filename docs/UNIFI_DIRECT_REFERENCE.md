@@ -15773,3 +15773,184 @@ G4 capture, unattended production operation or retention. The fixture still
 uses the experimental TLS laboratory and caller-supplied setup and storage
 owners. The existing recorder and fallback timer were active afterward; no
 physical camera was contacted by these tests.
+
+### Selected A/V session with a generation plan (2026-11-13 UTC)
+
+The A/V provisioning owner can now bind a selected recording, a caller-owned
+audio allowance and a finite generation plan without I/O. Refusal returns the
+recording refusal, original allowance and unadvanced plan. A zero wait or a
+wait over 30 seconds now returns a configuration outcome before polling the
+camera or planning, starting, joining or installing storage work.
+
+The automatic fleet fixture exercised that constructor for ordinary and
+full-resolution synthetic A/V: it refused a wrong camera claim without
+advancing the plan, refused both invalid waits, planned generation one without
+creating its paths, refused a zero wait with the creator staged, then started,
+joined and installed its supplies. It retained the supplied stores and their
+custody while recovering the managed recording session for A/V archive
+readback. The test does not drive a later rollover through this composition.
+
+Strict-remote no-run job `j-30107138793668717` compiled base
+`e71f423651a7cdc27bda73769e3453b06bd65d02` with the provisioning and laboratory
+test overlays and the patched TLS vendor. Its wrapper returned 102 on the
+Linux-to-macOS artifact check; terminal acknowledgement and source and pair
+release were observed. Its exact Linux binary, SHA-256
+`1b6431ab0da7f6d7b7d0d083a2cf59d4c09272df0018153e49caaf677190a0bd`,
+matched on ts1 and the isolated omarchy host before execution and matched
+afterward. Separate direct isolated runs passed the ordinary and full-resolution
+automatic A/V fixtures (each 1 passed, 5 filtered). The latter decoded a
+2688 x 1512 synthetic video frame and checked a synthetic AAC frame following
+an explicitly video-only initial fragment. These runs do not prove playable
+audio, G4 capture, unattended service, durable generation reservation,
+restart recovery or 30-day retention. The first trj request timed out before
+admission and ran no build. The existing recorder and fallback timer were
+active afterward; no physical camera was contacted by the tests.
+
+### A/V capture while provisioning remains owned (2026-11-13 UTC)
+
+The automatic A/V fixture now continues polling the same provisioning owner
+through bootstrap, recording, source publication and A/V archive readback;
+it extracts the managed session, preinstalled supplies and custody only for
+shutdown. This does not exercise a capacity rollover or establish unattended
+operation. The test remains synthetic and uses the experimental TLS lab.
+
+Strict-remote no-run `j-30107138793668725` compiled base
+`518798fbe4e98a780f3e55e089ddeff4e1e05390` with the lab test and patched TLS
+vendor overlays. Its wrapper returned 102 on Linux-to-macOS artifact transfer;
+terminal acknowledgement and source and pair release were observed. Its
+exact Linux binary, SHA-256
+`7b445aab6a59e3849a8183711a36eb1cd19dff906022146c6fdb02de71c77bb3`,
+matched on ts1 and the isolated omarchy host. A direct ordinary-resolution
+test passed (1 passed, 5 filtered), reading back three video samples and two
+synthetic AAC frames. Two separate full-resolution executions failed (each
+0 passed, 5 filtered): the first read back 2K A/V but later received an
+unmatched listener deadline while checking unresolved stream admission; the
+second stopped earlier on a generic third-setup event.
+
+The fixture now reports payload-free categories for that generic event; it
+does not treat any additional event as success. Strict-remote no-run
+`j-30107138793668738` built the diagnostic revision on the same base and
+overlays, returned 102 at artifact transfer, and acknowledged release. Its
+exact Linux binary, SHA-256
+`5939d09fb9db856765fcd9bcfca10ca1b867b700b320d04d9856d7f6eb27a614`,
+matched on ts1 and omarchy before execution and on omarchy afterward. A direct
+full-resolution test passed (1 passed, 5 filtered), with a decoded 2688 x 1512
+synthetic frame and AAC readback. A separate ordinary-resolution run failed
+(0 passed, 5 filtered) before recording at listener admission with
+`Setup(Setup(ControllerUnavailable))`; listener readiness combines endpoint,
+clock, task and policy checks, and the failing check has not been isolated.
+The successful run does not explain or erase any of the three failures. These
+results do not prove physical-camera capture, playable audio, continuity,
+rollover, restart recovery or retention. The existing recorder and fallback
+timer were active afterward; no physical camera was contacted by the tests.
+
+### Listener readiness refusal diagnostics (2026-11-13 UTC)
+
+The listener's existing ordered readiness checks now return a payload-free
+reason internally. The caller-owned setup trace records the latest refusal
+before setup starts and clears it on a successful readiness check; the public
+setup error and the admission checks are unchanged. The reasons distinguish
+endpoint, task, context, clock, live listener and camera policy, and listener
+and camera authority. The lab fixture includes that reason when its initial
+setup-and-upgrade fails. These local observations do not identify a camera or
+prove network reachability, and no reason can be assigned retrospectively to
+the earlier `ControllerUnavailable` result.
+
+Strict-remote no-run jobs `j-30107138793668746` and `j-30107138793668747`
+compiled the contract fixture and TLS lab respectively from base
+`518798fbe4e98a780f3e55e089ddeff4e1e05390` with their explicit source
+overlays. Both wrappers returned 102 because Linux artifacts were rejected
+for macOS transfer; both terminal acknowledgements and source and pair
+releases were observed. The exact Linux contract executable, SHA-256
+`97652d6d39cb35d5412945bc829c444799a2d64207a7f8f379bf9c372d7fc8ce`,
+matched on ts1 and isolated omarchy before execution and matched afterward.
+The isolated `discovered_setup_requires_current_bound_controller_listener`
+test passed (1 passed, 24 filtered): among its checks, zero port reported
+`Endpoint` and revoked policy reported `ListenerPolicy` while the camera
+HTTP fixture remained in its login phase. This is a synthetic test.
+On the same isolated host and executable, the contract suite also passed in
+two direct invocations: 19 ordinary tests passed with six ignored, and all
+six of those isolated-interface tests passed separately (19 filtered).
+These direct invocations are not RCH test passes.
+
+The lab executable SHA-256
+`8e62e3c081c86ff037c617bc128aedf210e572c5389402f032ef84b73fb116cc`
+matched on both hosts before execution and on omarchy afterward. In separate
+isolated invocations, the ordinary A/V test passed twice (each 1 passed,
+5 filtered; three video samples and two synthetic AAC frames read back), and
+the full-resolution A/V test passed twice (each 1 passed, 5 filtered; one
+2688 x 1512 synthetic video frame and one synthetic AAC frame read back).
+These runs did not reproduce the previous listener refusal or establish its
+cause; the earlier failed runs remain failures. They are not live G4 capture,
+audio playback, continuous recording, rollover, restart recovery, or
+retention proof. The existing recorder and fallback timer were active after
+the tests; no physical camera was contacted by them.
+
+### Retained A/V generation reservation (2026-11-13 UTC)
+
+The managed audio/video provisioning session can now use the same retained
+generation-reservation driver as the video-only session. The common driver
+keeps the original reservation, creator, cancellation, and custody handling;
+the two front ends recognize their respective capacity-wait outcomes. Both
+reject zero and over-30-second waits before starting or polling any of this
+work. These changes do not install a production recorder or prove independent
+custody, crash recovery, 30-day retention, or a physical camera handoff.
+
+Strict-remote no-run lab job `j-30107138793668753` compiled base
+`518798fbe4e98a780f3e55e089ddeff4e1e05390` with the specified source and
+laboratory TLS vendor overlays. The wrapper returned 102 because the Linux
+executable could not be transferred as a macOS artifact; terminal
+acknowledgement and source and pair release were observed. The Linux test
+executable, SHA-256
+`4b368fb3d29abc18b7b5d52d073b79385f48e433fde60627e651022d91382355`,
+matched on ts1 and isolated omarchy before execution and on omarchy after.
+Separate synthetic ordinary and full-resolution A/V tests each passed
+(1 passed, 5 filtered). They checked invalid waits performed no reservation
+I/O, a durable reservation preceded the creator, the creator's installed
+custody matched the reservation, and a local creator observation was retained.
+The ordinary case read back three video samples and two synthetic AAC frames;
+the full-resolution case read back a 2688 x 1512 synthetic video frame and
+one synthetic AAC frame following an initial video-only fragment. These are
+direct isolated test runs, not RCH test passes or physical-camera recordings.
+
+The video-only regression job `j-30107138793668754` was refused at ts1's
+disk-budget admission before Cargo started; it returned 120 and released its
+source and pair. A separate strict-remote request `j-30107138793668755` on
+trj passed `video_session_automatically_records_creator_and_reserves_next`
+(1 passed, 116 filtered), including a same-process reopen; its terminal
+acknowledgement, source release and pair release were observed. This is not
+an independent process restart test. The existing recorder and fallback timer
+remained active. After these runs, rustfmt changed only whitespace in the two
+small retained-provision front ends; the shared implementation and fixture
+were unchanged. A comparison with the tested copies confirmed this, and a
+rustfmt check on both front ends passed.
+
+### Reservation recovery across process exit (2026-11-13 UTC)
+
+The storage-capacity contract now exercises a retained A/V generation
+reservation across separate writer and reader processes. The writer returns
+the sequence-two head after reserving generation 20 and exits without starting
+its creator. The parent carries that head to a fresh reader. An incorrect head
+is refused; the correct reader recovers the pending identity, refuses to
+reserve again before reconciliation, records synthetic caller-assessed
+evidence, and reserves generation 21 without starting its creator. The pin is
+carried in the parent process for this fixture; this is not independent
+storage, a forced-crash test, or recovery of the recorder's media session.
+
+Strict-remote job `j-30107138793668759` passed the focused test (1 passed,
+10 filtered), and `j-30107138793668761` passed the complete storage-capacity
+suite (10 passed, 1 ignored helper). After adding the selected A/V handoff
+below, job `j-30107138793668762` passed the same suite again (10 passed,
+1 ignored). All three returned zero and their terminal acknowledgements and
+source and pair releases were observed. The fixture source SHA-256 was
+`e465933f93fb11bc28fa862a3da401743c141283d6667d85810397eb96d51b4e`.
+
+The A/V retained provisioning owner also has a direct selected-stream entry
+point. It checks bootstrap readiness before selection and returns the
+original selected or managed recording, audio allowance where applicable,
+and bootstrap on refusal. A synthetic TLS fleet fixture has been updated to
+exercise cancelled-bootstrap and wrong-camera refusals before successful
+selection; its current compile and end-to-end run are pending. No physical
+camera effect or recorder configuration change was made by these tests.
+The initial ts1 lab build request timed out in the queue before admission
+with exit 103; a separate request was then submitted to trj.
