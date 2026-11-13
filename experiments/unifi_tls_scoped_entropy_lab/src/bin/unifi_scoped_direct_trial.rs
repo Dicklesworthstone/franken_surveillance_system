@@ -11,6 +11,8 @@ mod auth;
 mod trial_checkpoint;
 #[path = "trial_run_id/mod.rs"]
 mod trial_run_id;
+#[path = "trial_setup_fence/mod.rs"]
+mod trial_setup_fence;
 #[path = "trial_owned_archive/mod.rs"]
 mod trial_owned_archive;
 use fss_container::{
@@ -20,7 +22,7 @@ use fss_container::{
     flv_avc::SourceKey,
 };
 use fss_core::{
-    BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
+    BudgetVector, CanonicalEncoder, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
     RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
 use fss_object::{
@@ -68,13 +70,19 @@ use trial_run_id::TrialRunId;
 use fss_unifi_scoped_tls_entropy_lab::{camera_tls_owned, owned, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
+const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
 const MAX_IO_WAIT: Duration = Duration::from_secs(30);
-const MAX_PIN_PROBES: usize = 16;
+// A packet-saturated report is incomplete and cannot select a camera. Leave
+// room for duplicate or malformed datagrams while allowing a completed window
+// containing 64 unconflicted candidates. Credentials are read only after
+// serial, authority-scoped candidate probing.
+const MAX_PIN_PROBES: usize = 64;
+const MAX_DISCOVERY_PACKETS: usize = 128;
 
 fn discovery_targets(bind: Ipv4Addr, prefix: u8, port: u16, hint: Option<Ipv4Addr>) -> Result<Vec<SocketAddrV4>, &'static str> {
     if !(1..=32).contains(&prefix) || port == 0 {
@@ -90,6 +98,25 @@ fn discovery_targets(bind: Ipv4Addr, prefix: u8, port: u16, hint: Option<Ipv4Add
         if !targets.contains(&target) { targets.push(target); }
     }
     Ok(targets)
+}
+
+// This is a stable local claim for an already supplied certificate, not proof
+// of physical identity. Certificate rotation deliberately changes the claim.
+fn pinned_camera_claim(pin: &[u8]) -> ContentDigest {
+    let mut input = b"fss.unifi-direct.pinned-camera-claim.v1\0".to_vec();
+    input.extend_from_slice(pin);
+    ContentDigest::sha256(&input)
+}
+
+fn camera_claim(mac: [u8; 6], address: Ipv4Addr, pin: Option<&[u8]>) -> ContentDigest {
+    match pin {
+        Some(pin) => pinned_camera_claim(pin),
+        None => {
+            let mut binding = Vec::from(mac);
+            binding.extend_from_slice(&address.octets());
+            ContentDigest::sha256(&binding)
+        }
+    }
 }
 
 // The rustls hooks must never fall back to ambient random or key exchange.
@@ -163,10 +190,8 @@ async fn find_pinned_candidate<'scope, 'task>(
         return Err("no unconflicted candidates or pin probe limit exceeded".into());
     }
     let mut matched = None;
-    for (index, mac, address) in candidates.iter().copied() {
-        let mut binding = Vec::from(mac);
-        binding.extend_from_slice(&address.octets());
-        let resource = format!("camera:{}", ContentDigest::sha256(&binding).to_text());
+    for (index, _mac, address) in candidates.iter().copied() {
+        let resource = format!("camera:{}", pinned_camera_claim(pin).to_text());
         let entropy = acquire_entropy(task, cx, clock, &resource).await?;
         match camera_tls_owned::connect_with_lease(
             cx, task, clock, SocketAddrV4::new(address, port), pin, &resource,
@@ -201,6 +226,7 @@ struct Options {
     key: PathBuf,
     journal: PathBuf,
     anchored_journal: Option<(PathBuf, PathBuf)>,
+    lab_setup_fence: Option<PathBuf>,
     output: PathBuf,
     uuid: String,
     wait: Duration,
@@ -331,6 +357,13 @@ fn options() -> ResultBox<Options> {
     if observe_snapshot { args.pop(); }
     let observe_only = args.last().is_some_and(|s| s == "--observe-only");
     if observe_only { args.pop(); }
+    let lab_setup_fence = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-setup-fence=")) {
+        let path = PathBuf::from(value);
+        args.pop();
+        Some(path)
+    } else { None };
+    let lab_auto_pinned_setup = args.last().is_some_and(|s| s == "--lab-auto-pinned-setup");
+    if lab_auto_pinned_setup { args.pop(); }
     let discovery_hint = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--discovery-hint=")) {
         let ip = value.parse::<Ipv4Addr>()?;
         args.pop();
@@ -468,6 +501,10 @@ fn options() -> ResultBox<Options> {
     if observe_snapshot && !observe_only {
         return Err("snapshot observation requires --observe-only".into());
     }
+    if lab_auto_pinned_setup != lab_setup_fence.is_some()
+        || (lab_auto_pinned_setup && (observe_only || anchored_journal.is_none() || setup.is_none() || discovery_prefix.is_none() || args.get(2).is_none_or(|mac| mac != "auto"))) {
+        return Err("automatic pinned setup requires auto discovery, auto MAC, camera setup, anchored journal and a persistent fence".into());
+    }
     if lab_owned_archive && observe_only {
         return Err("owned archive cannot be combined with read-only observation".into());
     }
@@ -485,8 +522,8 @@ fn options() -> ResultBox<Options> {
     if lab_video_still.is_some() && (!lab_video_only_archive || !lab_decode_owned) {return Err("video still requires video-only archive and owned decode".into());}
     if lab_save_still.as_ref().is_some_and(|path| lab_video_still.is_none() || !path.is_absolute() || path.file_name().is_none() || !path.components().all(|part| matches!(part,std::path::Component::RootDir|std::path::Component::Normal(_)))) {return Err("still export requires a still and an absolute normal path".into());}
     let mac = if args[2] == "auto" {
-        if !observe_only || camera.is_some() || discovery_prefix.is_none() {
-            return Err("automatic MAC selection requires read-only automatic discovery".into());
+        if (!observe_only && !lab_auto_pinned_setup) || camera.is_some() || discovery_prefix.is_none() {
+            return Err("automatic MAC selection requires read-only discovery or explicit anchored laboratory setup".into());
         }
         None
     } else {
@@ -512,6 +549,17 @@ fn options() -> ResultBox<Options> {
     }
     if output.exists() || journal.exists() {
         return Err("output and journal paths must not exist".into());
+    }
+    if let Some(path) = &lab_setup_fence {
+        let metadata = fs::symlink_metadata(path)?;
+        if !path.is_absolute()
+            || !path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)))
+            || !metadata.file_type().is_dir() || metadata.mode() & 0o077 != 0
+            || [&cert, &key, &journal, &output].iter().any(|other| path.starts_with(other) || other.starts_with(path))
+            || anchored_journal.as_ref().is_some_and(|(keeper, root)| [keeper, root].iter().any(|other| path.starts_with(other) || other.starts_with(path)))
+        {
+            return Err("setup fence must be a private existing directory distinct from journal and output paths".into());
+        }
     }
     if let Some(anchor)=&lab_anchor_root {
         if !anchor.is_absolute() || std::fs::symlink_metadata(anchor).is_ok() || [&cert,&key,&journal,&output].iter().any(|other|anchor.starts_with(other) || other.starts_with(anchor)) {
@@ -557,6 +605,7 @@ fn options() -> ResultBox<Options> {
         key,
         journal,
         anchored_journal,
+        lab_setup_fence,
         output,
         uuid: args[7].clone(),
         wait: Duration::from_secs(wait_seconds),
@@ -871,7 +920,7 @@ fn run(args: Options) -> ResultBox<()> {
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 128 * 1024 * 1024;
     budget.bytes = 128 * 1024 * 1024;
-    budget.storage_operations = if args.lab_owned_archive { 256 } else { 5 };
+    budget.storage_operations = if args.lab_owned_archive { 256 } else if args.lab_setup_fence.is_some() { 8 } else { 5 };
     let mut caps = vec![
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
@@ -945,7 +994,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let discovered=if let Some(prefix)=args.discovery_prefix {
                     let setup_args=args.setup.as_ref().ok_or("automatic discovery requires setup")?;
                     let targets=discovery_targets(*args.listen.ip(),prefix,setup_args.discovery_port,args.discovery_hint)?;
-                    let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,&targets,"unifi:discovery",Duration::from_secs(2),64)?;
+                    let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,&targets,"unifi:discovery",Duration::from_secs(2),MAX_DISCOVERY_PACKETS)?;
                     let report=discovery::discover(task,cx,clock.now()?,&cfg).await?;
                     let index=match args.mac {
                         Some(mac)=>report.select_mac_claim(mac)?,
@@ -958,6 +1007,40 @@ fn run(args: Options) -> ResultBox<()> {
                 let camera_address=args.camera.or_else(|| discovered.as_ref().map(|(report,index)| *report.cameras[*index].source().ip())).ok_or("camera address unavailable")?;
                 #[cfg(not(target_os="linux"))]
                 let camera_address=args.camera.ok_or("camera address unavailable")?;
+                if let Some(root)=&args.lab_setup_fence {
+                    let pin=camera_pin.as_deref().ok_or("missing camera certificate pin")?;
+                    let (keeper,trusted_root)=args.anchored_journal.as_ref().ok_or("missing anchored journal")?;
+                    let claim=pinned_camera_claim(pin);
+                    let marker=root.join(format!("{}.fence",claim.to_text()));
+                    let mut encoder=CanonicalEncoder::new();
+                    encoder.text("fss.unifi-direct.lab-setup-fence.v1");
+                    encoder.bytes(&claim.bytes());
+                    encoder.text(run_id.as_str());
+                    encoder.text(&args.uuid);
+                    encoder.bytes(&mac);
+                    for path in [&args.journal,keeper,trusted_root] {
+                        encoder.text(path.to_str().ok_or("non-UTF8 journal path")?);
+                    }
+                    let bytes=encoder.finish_checked()?;
+                    let mut cost=BudgetVector::ZERO; cost.bytes=u64::try_from(bytes.len())?; cost.storage_operations=3;
+                    task.checkpoint_for(RuntimeGrant::ObjectStage,&marker.to_string_lossy(),clock.now()?,&cost)?;
+                    let metadata=fs::symlink_metadata(root)?;
+                    if !metadata.file_type().is_dir() || metadata.mode() & 0o077 != 0 {return Err("setup fence directory changed".into());}
+                    let directory=fs::File::open(root)?;
+                    let opened=directory.metadata()?;
+                    if !opened.is_dir() || (opened.dev(),opened.ino()) != (metadata.dev(),metadata.ino()) {return Err("setup fence directory changed".into());}
+                    let mut file=match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&marker) {
+                        Ok(file)=>file,
+                        Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>return Err("setup fence exists; reconcile the previous attempt before retry".into()),
+                        Err(error)=>return Err(error.into()),
+                    };
+                    file.write_all(&bytes)?;
+                    file.sync_all()?;
+                    directory.sync_all()?;
+                    let current=fs::symlink_metadata(root)?;
+                    if !current.file_type().is_dir() || (opened.dev(),opened.ino()) != (current.dev(),current.ino()) {return Err("setup fence directory changed after creation".into());}
+                    println!("trial_setup_fence=created custody=operator_selected reconciliation_required=true");
+                }
                 let mut effects=if args.observe_only {EffectCoordinator::new()} else {
                 let journal:Box<dyn fss_runtime::effect_journal::EffectJournalStore>=if let Some((keeper,root))=&args.anchored_journal {
                     for path in [&args.journal,keeper,root] {
@@ -971,8 +1054,11 @@ fn run(args: Options) -> ResultBox<()> {
                 };
                 EffectCoordinator::with_journal(journal)?
                 };
-                let mut binding=Vec::from(mac); binding.extend_from_slice(&camera_address.octets());
-                let camera=ContentDigest::sha256(&binding); let resource=format!("camera:{}",camera.to_text());
+                let claim_pin=if args.mac.is_none() {
+                    Some(camera_pin.as_deref().ok_or("missing camera certificate pin")?)
+                } else { None };
+                let camera=camera_claim(mac,camera_address,claim_pin);
+                let resource=format!("camera:{}",camera.to_text());
                 let mut leases=LeaseRegistry::new();
                 let fence=leases.acquire(&resource,"region:unifi-direct-trial",None,clock.now()?)?.fence;
                 let leases=RefCell::new(leases);
@@ -1523,7 +1609,9 @@ fn inspect_owned_archive(args:&[String])->ResultBox<()> {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let result = if args.first().is_some_and(|arg| arg == "--inspect-anchored") {
+    let result = if args.first().is_some_and(|arg| arg == "--inspect-setup-fence") {
+        trial_setup_fence::inspect(&args)
+    } else if args.first().is_some_and(|arg| arg == "--inspect-anchored") {
         inspect_anchored_journal(&args)
     } else if args.first().is_some_and(|arg| matches!(arg.as_str(), "--inspect-owned-archive" | "--verify-owned-archive")) {
         inspect_owned_archive(&args)
@@ -1539,6 +1627,19 @@ fn main() {
 #[cfg(test)]
 mod discovery_target_tests {
     use super::*;
+
+    #[test]
+    fn pinned_claim_survives_address_changes_but_changes_on_pin_rotation() {
+        let pin = b"synthetic-certificate-one";
+        let old_mac = [1, 2, 3, 4, 5, 6];
+        let new_mac = [6, 5, 4, 3, 2, 1];
+        let old_address = Ipv4Addr::new(192, 0, 2, 1);
+        let new_address = Ipv4Addr::new(192, 0, 2, 2);
+        let claim = camera_claim(old_mac, old_address, Some(pin));
+        assert_eq!(claim, camera_claim(new_mac, new_address, Some(pin)));
+        assert_ne!(claim, camera_claim(old_mac, old_address, Some(b"synthetic-certificate-two")));
+        assert_ne!(camera_claim(old_mac, old_address, None), camera_claim(old_mac, new_address, None));
+    }
 
     #[test]
     fn handles_full_width_scope_and_deduplicates_targets() {
