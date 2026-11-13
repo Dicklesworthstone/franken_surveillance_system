@@ -16816,3 +16816,11 @@ hostile concurrent replacement of path ancestors is not qualified. It does
 not retroactively fence or reconcile the older physical G4 effects. No G4
 setting was changed during this work; the existing recorder and fallback
 timer were active afterward with restart count 2.
+
+At a later read-only re-inventory on 2026-11-13 UTC, the original physical G4
+forward-handoff journal on trj and time-sync journal on ts1 each still had
+five regular files. Their sorted relative-path, byte-length and SHA-256
+manifest digests remained `fa94566200090a7d4b58b5c49733b6906ed5935e0a682e1d25a87fe2087bfeac`
+and `8484cb6be55fd66bc8ea6287ebcb0db3a31b14d09f8091afc49ff713e7aaf251`,
+respectively. These match the earlier late observations, not independent
+pre-effect checkpoints; they do not settle either historical effect.
