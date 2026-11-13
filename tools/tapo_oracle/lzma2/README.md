@@ -29,3 +29,9 @@ framing, props or dictionary continuity (all three ruled out).
 
 `LzmaDecU.c` and `Lzma2Dec.c` are the 19.00 SDK files with the vendor rules applied; every patch is
 commented in place.
+
+## Current best (vendor) build
+
+`LzmaDec_rev.c` (reversed distance-slot tree, 5-bit table) + `Lzma2Dec_rev2.c` (no straddle extension,
+two-byte chunk trailer). Result: 1,564,644 bytes, zeros 6.9 %, 2,844 ASCII runs. `LzmaDec_5bit.c` is
+the same table without the reversal (86 % zeros) and is the control.
