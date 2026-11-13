@@ -97,6 +97,12 @@ impl ReadAuthority<'_> {
     fn object(&mut self, digest: ContentDigest) -> Result<Vec<u8>, FootageQueryError> {
         self.check("footage:metadata")?;
         self.deny_deleted(digest)?;
+        let bytes = self.read_metadata_object(digest)?;
+        self.metadata.insert(digest);
+        Ok(bytes)
+    }
+    // No caller callback: used after the final cooperative admission.
+    fn read_metadata_object(&self, digest: ContentDigest) -> Result<Vec<u8>, FootageQueryError> {
         let max = self
             .budget
             .allowance(self.limits.snapshot.max_object_bytes)
@@ -118,7 +124,6 @@ impl ReadAuthority<'_> {
         if ContentDigest::sha256(&bytes) != digest {
             return invalid();
         }
-        self.metadata.insert(digest);
         Ok(bytes)
     }
     fn manifest(&mut self, digest: ContentDigest) -> Result<ObjectManifest, FootageQueryError> {
@@ -137,19 +142,29 @@ impl ReadAuthority<'_> {
         count: usize,
     ) -> Result<(), FootageQueryError> {
         self.check("footage:publication")?;
+        self.verify_publication(slot, root, count)?;
+        if self
+            .publications
+            .insert(slot.clone(), (root, count))
+            .is_some_and(|old| old != (root, count))
+        {
+            return invalid();
+        }
+        Ok(())
+    }
+    // No caller callback: a pending replacement cannot escape final custody verification.
+    fn verify_publication(
+        &self,
+        slot: &SlotName,
+        root: ContentDigest,
+        count: usize,
+    ) -> Result<(), FootageQueryError> {
         let bytes = self
             .history
             .wait_read_publication(slot, fss_publication::MAX_ROOT_RECORD_BYTES as usize)
             .map_err(history_error)?;
         if root_record_bytes(slot, root, count).map_err(|_| FootageQueryError::InvalidRecord)?
             != bytes
-        {
-            return invalid();
-        }
-        if self
-            .publications
-            .insert(slot.clone(), (root, count))
-            .is_some_and(|old| old != (root, count))
         {
             return invalid();
         }
@@ -172,6 +187,22 @@ impl ReadAuthority<'_> {
         let custody: Vec<_> = self.custody.iter().copied().collect();
         for digest in custody {
             self.deny_deleted(digest)?;
+        }
+        Ok(())
+    }
+    // Call only after all cooperative admissions. Re-read the complete selected metadata and
+    // publication set under the same nonrenewing allowance, without returning to caller code.
+    fn revalidate_after_admission(&self) -> Result<(), FootageQueryError> {
+        for digest in &self.metadata {
+            self.read_metadata_object(*digest)?;
+        }
+        for (slot, (root, count)) in &self.publications {
+            self.verify_publication(slot, *root, *count)?;
+        }
+        for digest in &self.custody {
+            self.history
+                .wait_check_tombstone(*digest)
+                .map_err(history_error)?;
         }
         Ok(())
     }
@@ -574,6 +605,9 @@ pub(super) fn query(
     let budget = MetadataReadBudget::new(limits.max_metadata_bytes, limits.max_metadata_objects);
     let history =
         DeploymentHistory::read_metadata(root, &limits.snapshot, &budget).map_err(history_error)?;
+    if history.has_uncommitted_tail() {
+        return invalid();
+    }
     checkpoint(check, "footage:snapshot")?;
     let snapshot = history.snapshot_at(history.head()).map_err(history_error)?;
     budget
@@ -631,10 +665,19 @@ pub(super) fn query(
         other_adapter_imports,
     )?;
     reader.revalidate()?;
-    // No cursor/page leaves the boundary until a second independently replayed head agrees.
+    // Finish every caller checkpoint before observing final custody and authority. A callback
+    // may itself change the deployment; it is an admission, never a completion notification.
     reader.check("footage:final_head")?;
+    for _ in 0..reader.custody.len() {
+        reader.check("footage:tombstone_final")?;
+    }
+    reader.check("footage:complete")?;
+    // No caller code runs after this point. Both passes spend the original read allowance.
     let final_history =
         DeploymentHistory::read_metadata(root, &limits.snapshot, &budget).map_err(history_error)?;
+    if final_history.has_uncommitted_tail() {
+        return Err(FootageQueryError::AnchorChanged);
+    }
     let final_snapshot = final_history
         .snapshot_at(final_history.head())
         .map_err(history_error)?;
@@ -647,14 +690,9 @@ pub(super) fn query(
     {
         return Err(FootageQueryError::AnchorChanged);
     }
-    // Recheck local deletion markers after the final journal read, too.
-    for digest in reader.custody.iter().copied() {
-        checkpoint(reader.check, "footage:tombstone_final")?;
-        final_history
-            .wait_check_tombstone(digest)
-            .map_err(history_error)?;
-    }
-    checkpoint(reader.check, "footage:complete")?;
+    // Caller admissions may also have changed metadata bytes or publication records without
+    // advancing the authority head. Rehash them and recheck local deletion markers last.
+    reader.revalidate_after_admission()?;
     (result.metadata_bytes_read, result.metadata_objects_read) = budget.consumed();
     Ok(result)
 }

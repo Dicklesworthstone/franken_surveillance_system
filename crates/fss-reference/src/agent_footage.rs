@@ -345,6 +345,9 @@ fn checkpoint(
 
 /// Reads and verifies one native capsule-metadata page without recovery, writes or media reads.
 /// `checkpoint` returns true to continue; cancellation discards the entire pending result.
+/// Checkpoints are cooperative admissions, including the one named `footage:complete`.
+/// The final bounded custody/history verification runs without caller callbacks and consumes
+/// the original allowance. Torn or foreign journal suffixes refuse without recovery or repair.
 pub fn query_footage(
     root: &Path,
     request: &FootageQueryRequest,

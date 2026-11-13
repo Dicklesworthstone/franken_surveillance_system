@@ -364,34 +364,43 @@ fn shared_budgets_cancellation_and_local_tombstone_races_fail_closed() -> TestRe
 
 #[test]
 fn authority_advance_during_read_refuses_the_pending_page() -> TestResult {
-    let (root, _) = fixture("head-race")?;
-    let mut changed = false;
-    let mut failure = None;
-    let result = query_footage(
-        &root,
-        &request()?,
-        &FootageQueryLimits::default(),
-        &mut |stage| {
-            if stage == "footage:final_head" && !changed {
-                let edit = (|| -> TestResult {
-                    let context = cx(&root)?;
-                    let mut deployment = ReferenceDeployment::open(&root, SITE, &context)?;
-                    let mut another = input()?;
-                    another.sensor_id = SensorId::parse("sensor:race")?;
-                    FileIngestAdapter::ingest(another, &context, &mut deployment)?;
-                    Ok(())
-                })();
-                failure = edit.err();
-                changed = true;
-            }
-            true
-        },
-    );
-    if let Some(error) = failure {
-        return Err(error);
+    for (index, target) in [
+        "footage:final_head",
+        "footage:tombstone_final",
+        "footage:complete",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (root, _) = fixture(&format!("head-race-{index}"))?;
+        let mut changed = false;
+        let mut failure = None;
+        let result = query_footage(
+            &root,
+            &request()?,
+            &FootageQueryLimits::default(),
+            &mut |stage| {
+                if stage == target && !changed {
+                    let edit = (|| -> TestResult {
+                        let context = cx(&root)?;
+                        let mut deployment = ReferenceDeployment::open(&root, SITE, &context)?;
+                        let mut another = input()?;
+                        another.sensor_id = SensorId::parse("sensor:race")?;
+                        FileIngestAdapter::ingest(another, &context, &mut deployment)?;
+                        Ok(())
+                    })();
+                    failure = edit.err();
+                    changed = true;
+                }
+                true
+            },
+        );
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        assert!(changed);
+        assert!(matches!(result, Err(FootageQueryError::AnchorChanged)));
     }
-    assert!(changed);
-    assert!(matches!(result, Err(FootageQueryError::AnchorChanged)));
     Ok(())
 }
 
@@ -428,6 +437,15 @@ fn final_verification_spends_the_original_allowance_without_refilling() -> TestR
     let (root, _) = fixture("shared-allowance")?;
     let request = request()?;
     let measured = query(&root, &request)?;
+    let exact = FootageQueryLimits {
+        max_metadata_bytes: measured.metadata_bytes_read as usize,
+        max_metadata_objects: measured.metadata_objects_read as usize,
+        ..FootageQueryLimits::default()
+    };
+    let exact_page = query_footage(&root, &request, &exact, &mut |_| true)?;
+    assert_eq!(exact_page.rows, measured.rows);
+    assert_eq!(exact_page.metadata_bytes_read, measured.metadata_bytes_read);
+    assert_eq!(exact_page.metadata_objects_read, measured.metadata_objects_read);
     let limits = FootageQueryLimits {
         max_metadata_bytes: measured.metadata_bytes_read as usize - 1,
         ..FootageQueryLimits::default()
@@ -449,41 +467,166 @@ fn final_verification_spends_the_original_allowance_without_refilling() -> TestR
 
 #[test]
 fn committed_deletion_during_final_replay_cannot_release_the_old_page() -> TestResult {
-    let (root, receipt) = fixture("deletion-race")?;
-    let mut changed = false;
-    let mut failure = None;
-    let result = query_footage(
-        &root,
-        &request()?,
-        &FootageQueryLimits::default(),
-        &mut |stage| {
-            if stage == "footage:final_head" && !changed {
-                let edit = (|| -> TestResult {
-                    let context = cx(&root)?;
-                    let mut deployment = ReferenceDeployment::open(&root, SITE, &context)?;
-                    let plan = plan_deletion(&deployment, receipt.import_identity, &context)?;
-                    let digest = plan.digest()?;
-                    let approval = approval_digest(digest, SITE, "operator:footage-query")?;
-                    commit_deletion(
-                        &mut deployment,
-                        digest,
-                        approval,
-                        "operator:footage-query",
-                        &context,
-                    )?;
-                    Ok(())
-                })();
-                failure = edit.err();
-                changed = true;
-            }
-            true
-        },
-    );
-    if let Some(error) = failure {
-        return Err(error);
+    for (index, target) in [
+        "footage:final_head",
+        "footage:tombstone_final",
+        "footage:complete",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (root, receipt) = fixture(&format!("deletion-race-{index}"))?;
+        let mut changed = false;
+        let mut failure = None;
+        let result = query_footage(
+            &root,
+            &request()?,
+            &FootageQueryLimits::default(),
+            &mut |stage| {
+                if stage == target && !changed {
+                    let edit = (|| -> TestResult {
+                        let context = cx(&root)?;
+                        let mut deployment = ReferenceDeployment::open(&root, SITE, &context)?;
+                        let plan = plan_deletion(&deployment, receipt.import_identity, &context)?;
+                        let digest = plan.digest()?;
+                        let approval = approval_digest(digest, SITE, "operator:footage-query")?;
+                        commit_deletion(
+                            &mut deployment,
+                            digest,
+                            approval,
+                            "operator:footage-query",
+                            &context,
+                        )?;
+                        Ok(())
+                    })();
+                    failure = edit.err();
+                    changed = true;
+                }
+                true
+            },
+        );
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        assert!(changed);
+        assert!(matches!(result, Err(FootageQueryError::AnchorChanged)));
+        assert!(query(&root, &request()?)?.rows.is_empty());
     }
-    assert!(changed);
-    assert!(matches!(result, Err(FootageQueryError::AnchorChanged)));
-    assert!(query(&root, &request()?)?.rows.is_empty());
+    Ok(())
+}
+
+#[test]
+fn last_admission_cannot_hide_changed_metadata_publication_or_tombstone() -> TestResult {
+    for kind in ["metadata", "publication", "tombstone"] {
+        let (root, _) = fixture(&format!("late-{kind}"))?;
+        let row = query(&root, &request()?)?.rows.remove(0);
+        let identity = row.import_identity.to_text();
+        let (_, identity) = identity.split_once(':').ok_or("import identity")?;
+        let path = match kind {
+            "metadata" => spool_path(&root, row.capsule_digest),
+            "publication" => root
+                .join("objects")
+                .join(fss_publication::LOCAL_ROOTS_DIR)
+                .join(format!("fi-{identity}{}", fss_publication::ROOT_RECORD_SUFFIX)),
+            _ => root
+                .join("objects")
+                .join(fss_publication::LOCAL_TOMBSTONES_DIR)
+                .join(format!(
+                    "{}{}",
+                    row.capsule_digest.to_text().replacen(':', "-", 1),
+                    fss_publication::TOMBSTONE_RECORD_SUFFIX,
+                )),
+        };
+        let replacement = b"changed by final caller admission";
+        let mut expected = bytes(&root)?;
+        expected.insert(path.strip_prefix(&root)?.to_path_buf(), replacement.to_vec());
+        let mut changed = false;
+        let mut failure = None;
+        let result = query_footage(
+            &root,
+            &request()?,
+            &FootageQueryLimits::default(),
+            &mut |stage| {
+                if stage == "footage:complete" && !changed {
+                    failure = fs::write(&path, replacement).err();
+                    changed = true;
+                }
+                true
+            },
+        );
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        assert!(changed, "{kind} mutation was exercised");
+        assert!(result.is_err(), "{kind} changed after the earlier verification");
+        assert_eq!(bytes(&root)?, expected, "query must not repair {kind}");
+    }
+    Ok(())
+}
+
+#[test]
+fn incomplete_or_foreign_journal_suffixes_never_release_a_footage_page() -> TestResult {
+    use crate::reference_deployment::{RELATIVE_PATH_EFFECTS, RELATIVE_PATH_LEDGER};
+
+    for (journal_index, relative) in [RELATIVE_PATH_LEDGER, RELATIVE_PATH_EFFECTS]
+        .into_iter()
+        .enumerate()
+    {
+        for (tail_index, tail) in [b"FSSJRN01".as_slice(), b"foreign journal suffix".as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            for late in [false, true] {
+                let (root, _) = fixture(&format!("tail-{journal_index}-{tail_index}-{late}"))?;
+                let path = root.join(relative);
+                let mut pending = fs::read(&path)?;
+                pending.extend_from_slice(tail);
+                let mut expected = bytes(&root)?;
+                expected.insert(path.strip_prefix(&root)?.to_path_buf(), pending.clone());
+                if !late {
+                    fs::write(&path, &pending)?;
+                }
+                let mut changed = !late;
+                let mut failure = None;
+                let result = query_footage(
+                    &root,
+                    &request()?,
+                    &FootageQueryLimits::default(),
+                    &mut |stage| {
+                        if late && stage == "footage:complete" && !changed {
+                            failure = fs::write(&path, &pending).err();
+                            changed = true;
+                        }
+                        true
+                    },
+                );
+                if let Some(error) = failure {
+                    return Err(error.into());
+                }
+                assert!(changed, "journal suffix was exercised");
+                assert!(result.is_err(), "{relative} suffix must refuse; late={late}");
+                assert_eq!(bytes(&root)?, expected, "read must preserve the pending suffix");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn final_admission_cancellation_discards_the_page_without_mutation() -> TestResult {
+    let (root, _) = fixture("final-cancel")?;
+    let before = bytes(&root)?;
+    for cancelled_at in ["footage:tombstone_final", "footage:complete"] {
+        assert!(matches!(
+            query_footage(
+                &root,
+                &request()?,
+                &FootageQueryLimits::default(),
+                &mut |stage| stage != cancelled_at,
+            ),
+            Err(FootageQueryError::Cancelled)
+        ));
+        assert_eq!(bytes(&root)?, before);
+    }
     Ok(())
 }

@@ -125,9 +125,19 @@ source reconstruction. Corrupt or missing *required metadata*, a missing declare
 origin membership, or a deletion marker refuses the result.
 
 The owner revalidates metadata custody and the authority/effect prefix before
-returning a page. An incomplete import, unreadable required metadata, corrupt root,
-changed custody, exhausted budget or invalid continuation cannot become an empty
-successful result. Full spool doctor scanning is deliberately not part of this
+returning a page. All caller checkpoints, including the final cooperative
+admission, finish before the last verification window. That window replays
+authority and rechecks selected metadata, publication records and deletion markers
+without invoking caller code; it spends the same byte/object allowance. Cancellation
+is cooperative and cannot preempt that bounded window or a blocking filesystem
+call. These are verified observations, not an atomic filesystem snapshot.
+
+A torn or foreign suffix in either journal refuses the query even when its
+committed prefix still has the expected anchor. The read leaves the suffix
+untouched for the existing recovery owner. An incomplete but cleanly committed
+import remains excluded from results. Unreadable required metadata, corrupt roots,
+changed custody, exhausted budgets and invalid continuations also refuse without
+publishing a page. Full spool doctor scanning is deliberately not part of this
 metadata read, so the query does not report a healthy storage root.
 
 Optional model-receipt hydration is also excluded: a bare receipt digest is not
