@@ -16761,9 +16761,13 @@ anchored journal for reconciliation. The synthetic camera did not receive
 application data during pin probing. The successful path requested Video1,
 produced a clip with six 2688 x 1512 frames, and decoded it with FFmpeg as an
 independent laboratory oracle. Reopening its journal showed five operations,
-all unresolved; the trial reported its effect outcome as unsettled. This
-fixture does not prove device receipt or safe automatic replay. Its retained
-private synthetic files are on ts1 under `fss-auto-final-4b9da1b38829`.
+all unresolved. A later source review found that the fixture's assertions for
+the successful run's fence, journal and task-outcome messages were placed
+inside a different failure-case branch, so this run did not actually verify
+those messages. Those assertions were moved to the success path in a later
+fixture revision. This fixture does not prove device receipt or safe automatic
+replay. Its retained private synthetic files are on ts1 under
+`fss-auto-final-4b9da1b38829`.
 
 The same executable also passed the eight previously documented synthetic
 pinned-discovery cases. An exact copy ran once against the real G4 in the
@@ -16824,3 +16828,343 @@ manifest digests remained `fa94566200090a7d4b58b5c49733b6906ed5935e0a682e1d25a87
 and `8484cb6be55fd66bc8ea6287ebcb0db3a31b14d09f8091afc49ff713e7aaf251`,
 respectively. These match the earlier late observations, not independent
 pre-effect checkpoints; they do not settle either historical effect.
+
+### Inspecting a retained laboratory setup fence (2026-11-13 UTC)
+
+The scoped trial now has `--inspect-setup-fence`, which accepts an
+operator-selected fence directory, certificate and private journal scope. It
+opens the certificate and marker without following path-component symlinks,
+checks the marker's canonical encoding and certificate-derived claim, bounds
+the marker read, and refuses journal paths outside the supplied scope. It
+reopens the referenced anchored journal in reconciliation-only mode and
+reports counts by effect state. It does not contact a camera, settle an
+effect, remove a fence or grant restart authority. Opening the journal takes
+its existing locks and may synchronize directories; the synthetic check
+compared file content before and after and found no change.
+
+A fault check exposed a run-binding error in the first version: a synthetic
+marker with a different run ID still opened the previous journal. The revised
+inspector checks that every recovered operation belongs to the marker's run
+and refuses the mismatched marker. Two simultaneous inspections of the same
+synthetic history also produced an expected journal-lock refusal; the valid
+inspection succeeded when run separately. On that retained example it reported
+five committed, unresolved effects and no accepted, observed or terminal
+effects. A committed state does not prove that an external write did or did
+not occur.
+
+Strict-remote build `j-30097323753213078`, from paired source commits
+`e36ba1e4c08c2edc84a71e9ef6853f3b99a32ee9` and
+`3b4e78245b6042cc427f6a8230a69ff3ecf875a5`, returned Cargo and wrapper exit
+0 and released the source and pair. The recovered executable SHA-256 was
+`35ea3c97723ac6e295856b18b9533aff8bfc5f688fd5ef012e5444b5bd85ec2d`;
+the inspection module SHA-256 was
+`1e5da6d1a00005a748cc1e7bb966a079f705d8465e6a5c2cce576ff714ee2152`.
+The fixture SHA-256 was
+`b0d5a020d1b6e7944ebb102a4943f10c2bdd652165cbb378ad17c93ac81d9c77`.
+Twelve named synthetic checks passed in an isolated network, including
+high-resolution media, a restart fence, concurrent attempts, valid inspection,
+and refusal of a wrong certificate, wrong scope, truncated, trailing, empty,
+non-private or symlink marker, wrong run and missing journal history. The
+fixture verified that missing journal directories were not created and that
+the original marker and journal file contents remained unchanged. Its private
+synthetic data remains on ts1 under `fss-auto-runbound-4b9da1b38829`.
+
+The fence and journal root are still operator-selected trust boundaries, not
+independent proof of physical device identity or protection against rollback
+and hostile replacement of the whole namespace. This lab inspection is
+synchronous and is not a production recovery service. The older physical G4
+journals lack the independently retained pre-effect pins and remain
+indeterminate. The recorder and fallback timer were active with restart count
+2 at the later check; recent archive activity is not proof of gap-free
+recording or 30-day retention.
+
+### Automatic setup replay using saved G4 high-resolution media (2026-11-13 UTC)
+
+The pinned-discovery and journaled setup trial was exercised on trj with the
+previously saved five-second G4 high-profile clip, whose SHA-256 was
+`2ce702b355fa7d8a56780a5dc881d3c0e68b5a21d2e9db7d0bd8b0cef6b55361`.
+The controller and camera setup peer were synthetic and ran in a private
+network namespace; the physical camera was not contacted. FFmpeg stream-copied
+the saved video twice into an in-memory FLV input. The test advanced two
+duplicate millisecond timestamps by one while preserving video sample bytes;
+the input had 302 video samples and four IDRs and carried no audio. The input
+was originally captured through Scrypted, but this replay used no Scrypted
+service or Docker transport.
+
+The first attempt reached media reception but refused `Mux(UnsupportedFormat)`
+without the in-band AVC option. This is consistent with the earlier analysis
+of matching in-band G4 parameter sets, but that single refusal did not isolate
+the exact branch. A second attempt enabled in-band video-only archival but its
+test sender hit a five-second socket timeout. A third attempt, with a longer
+sender timeout, published two segments and crossed a journal rollover before
+stopping with a reconciliation-required result; the exact stop reason was not
+retained in the displayed output. The final isolated attempt also increased
+the trial's bounded capture window from 20 to 90 seconds. It passed: automatic
+pinned discovery and synthetic handoff selected Video1, published three
+source-checked video-only segments across two generations, and Rust read back
+and decoded 151 frames at 2688 x 1512. This does not establish that changing
+the deadline alone caused the earlier stop, or that all 302 input samples were
+published and decoded.
+
+The binary SHA-256 was
+`35ea3c97723ac6e295856b18b9533aff8bfc5f688fd5ef012e5444b5bd85ec2d`;
+the final replay helper was
+`a986f0af91ec4549bc8f1a16fc95b8a285d06be98bc8cd732a3214963d27a02b`,
+and the profile fixture was
+`2b8634b56860fb2730c7449875fef816f3f338bd64f1200316aa93fa4b244726`.
+The source and executable hashes matched before and after the successful run.
+The private replay archive and synthetic journals are under the approved
+`/bulk/unifi_camera_recordings/verification/fss-auto-real-replay-v4-4b9da1b38829`
+directory on trj; the earlier failed attempts remain separately retained.
+The revised profile fixture and exact executable also passed the twelve named
+synthetic setup, restart-fence and recovery-inspection checks on trj in a
+separate isolated network; the synthetic fixture SHA-256 was
+`b0d5a020d1b6e7944ebb102a4943f10c2bdd652165cbb378ad17c93ac81d9c77`.
+Reopening the final synthetic setup fence showed five committed, unresolved
+effects and no restart authority. The existing G4 recorder and fallback timer
+were active before and afterward, with restart count 2.
+
+This demonstrates camera-derived media through the new automatic setup and
+archive composition with a simulated controller. It is not a direct live G4
+stream, proof of physical identity, uninterrupted coverage, audio capture,
+safe automatic recovery, or 30-day retention. The earlier physical handoff
+and time-sync effects remain indeterminate.
+
+### Automatic in-band AVC selection (2026-11-13 UTC)
+
+The experimental scoped trial now selects `avc3` automatically when pinned
+automatic setup, managed archival and video-only archival are all enabled. It
+continues to reject changed in-band AVC configuration. Other modes still
+require their prior explicit format choice. This is laboratory behavior, not
+automatic enrollment or a production recorder.
+
+As a negative control, the previous executable rejected the saved G4 clip
+with `Mux(UnsupportedFormat)` when the explicit in-band option was omitted.
+Strict-remote build `j-30097323753213109`, using paired source commits
+`2c03d5ea73ba60845c3fd5e88b5ba411a9878576` and
+`f02fe2e7eb18a7910391794132e3f49f19edae71`, returned Cargo and wrapper exit
+zero. The resulting executable SHA-256 was
+`1ecb4099abe0861aa138f9a4d71a9e4daa36e71a4fc578e0fe2f36400c7455fb`.
+The earlier attempt to build on the same worker timed out in admission; a
+separate retry initially refused a noncanonical project path before the
+project root was explicitly supplied. Neither refusal was a build pass.
+
+In a separate ts1 network namespace the revised fixtures passed the twelve
+named setup and fence checks, automatic in-band archive readback at
+2688 x 1512, and refusal of a deliberately changed in-band parameter set.
+Fixture SHA-256 values were
+`181f45777a1edf1a791b846ac7e8f109308742a79d048a3c753bbb3548c4ee8f`
+and `e0eb63639f52861470bc649684a69ec891f1ddf642c1320b77b033f2b7979222`
+for the setup and profile fixtures respectively.
+
+On trj, a fresh isolated replay of the same saved real G4 footage described
+above passed without an explicit in-band flag. It selected Video1, archived
+three segments across two generations, and Rust read back and decoded 151
+frames at 2688 x 1512. The source video and executable hashes were unchanged.
+The replay helper SHA-256 was
+`37fa4b0586cbc7a21a0cf741c991f25024e1e6ba86e72a2f14d5ab9c08990a56`.
+The private result is retained under
+`/bulk/unifi_camera_recordings/verification/fss-auto-real-avc-after-4b9da1b38829`.
+Its synthetic fence still reports five committed, unresolved effects and no
+restart authority. The existing recorder and fallback timer were active, with
+recorder restart count 2. This test used a simulated setup peer and prior
+Scrypted footage; it establishes neither live Rust capture nor uninterrupted
+or 30-day retention, audio, complete sample coverage, or settled physical
+camera effects.
+
+### Video-only recovery integration (2026-11-13 UTC)
+
+The prior `resume_confirmed` path reads A/V evidence roots, while the
+video-only owned recorder publishes a different video evidence kind. The
+working tree adds an explicit `resume_confirmed_video` path and a settled
+video-graph check, sharing the existing custody, read, retention and
+restart-boundary checks. Format selection is explicit: an A/V read refusal
+does not trigger a video fallback. The path still requires the caller to
+select and recover the right retained lineage and to settle camera effects.
+
+The first strict-remote test job `j-30097323753213125` compiled the library
+but failed to compile the new test because its closure propagated an error
+with the wrong type. The local test was corrected. Retry
+`j-30097323753213139` was refused before Cargo execution by the worker's
+disk-reservation admission check. Both jobs acknowledged termination and
+released source and pair; neither is a test pass.
+
+Corrected strict-remote job `j-30097323753213141` passed the focused synthetic
+test (1 passed, 118 filtered): after publishing video-only media it reopened
+retained source and video journals, refused the A/V profile and a denied read,
+and revalidated the video graph to return the expected new connection
+boundary. This test does not archive media on the new connection, exercise
+video-only rollover custody, or prove a process-crash restart. The source
+snapshot was `ac80ca841029b0c2c6b71d232c42e28a59b40988`; the wrapper and
+Cargo exited zero, and the job acknowledged termination and released source
+and pair. The isolated copy preserves fixture files; its three recovery source
+files match the working tree, and the test source differs only by disabling
+fixture cleanup.
+
+Direct execution of that same test executable separately passed the existing
+video-initial A/V restart and rolled A/V lineage restart cases (1 passed, 118
+filtered each). Those are direct executions, not separate RCH job passes; the
+executable SHA-256 remained
+`71454bf95ed28c8351c2b8bce9f7dbfe21138b6e3ff973e2c5c7475db35a37b6`.
+The existing recorder and fallback timer were active, with restart count 2.
+No physical camera effect was attempted. Latest-lineage discovery, settled
+camera effects, a live direct stream and unattended 30-day recording remain
+open.
+
+### Video recording after a recovered connection (2026-11-13 UTC)
+
+The video-only restart fixture now publishes and verifies the retained
+restart boundary, negotiates a second synthetic controller session, and
+archives and reads back original source records and new video under the new
+connection claim. It does not pretend that the synthetic controller effects
+are settled. The first build attempt, `j-30097323753213156`, failed because
+the new test's admission-policy borrow was too short-lived. The fixture was
+corrected to reuse its existing scoped admission policy; that failure remains
+part of the record.
+
+Strict-remote job `j-30097323753213157` passed the extended synthetic test
+(1 passed, 118 filtered). Direct executions of that executable separately
+passed the existing video-only recording, video rollover, and rolled A/V
+restart tests (1 passed, 118 filtered each). Those direct executions are not
+additional RCH job passes; their executable SHA-256 was
+`4fafb757c1f0b839c98ca6f77dec3d3a4d2113d79527148df2fe84211427f2d5`.
+The test was then extended with an ignored, bounded private-camera-input
+variant. Strict-remote job `j-30097323753213159` passed the ordinary synthetic
+restart (1 passed, 119 filtered) on the final test revision. The failed and
+both successful jobs acknowledged termination and released source and pair.
+The isolated test copy preserved fixture files; the final fixture matched the
+working-tree test except for disabling its cleanup. The working-tree fixture
+SHA-256 was
+`813d7e9d8de47dd0038ca7770a41a2b62be208eb36b3be09794dd9f4f1fed8dc`.
+
+The hash-matched final test executable was copied to trj and the ignored test
+was run there in a private loopback network namespace against the same saved
+G4 high-profile clip documented above. FFmpeg stream-copied the prior
+Scrypted capture twice into an in-memory 6,936,294-byte FLV; two duplicate
+millisecond timestamps were advanced by one, without changing sample bytes.
+The test used simulated camera sessions, first archived two video-only
+segments, reopened and checked retained source and video journals, published
+the restart boundary, and archived a new-connection video segment. Rust read
+back three frames at 2688 x 1512 from the latter. This private-input test
+passed (1 passed, 119 filtered); its source clip and executable hashes were
+unchanged. The executable SHA-256 was
+`be6cf0008a3e642cc87fb9b96d94ae8a3618cc5b23b36c80973d07c310e564cf`.
+Its private test data remains under
+`/bulk/unifi_camera_recordings/verification/fss-private-video-restart-4b9da1b38829`.
+The existing recorder and fallback timer remained active with restart count 2.
+
+This is camera-derived media, not a live physical-camera connection, a cold
+process-crash recovery, automatic latest-lineage selection, settled camera
+control, audio, complete sample coverage, or 30-day recording proof.
+
+### Video restart after a retained journal switch (2026-11-13 UTC)
+
+The video-only restart fixture now also exercises a retained rollover lineage.
+It archives two video segments, reopens and replays the original video root,
+commits a successor journal and keeper through a retained switch, replays the
+successor's exact video root, joins the lineage to the separately reopened
+source history, and runs `resume_confirmed_video`. It publishes and verifies
+the restart boundary before accepting a second synthetic controller session
+and archiving new video. The A/V profile and a denied read are separately
+refused. The test constructs the rollover after reopening the original
+journals in the same process; it does not find the latest lineage by itself
+or demonstrate a cold process-crash recovery.
+
+Strict-remote job `j-30097323753213167` passed the synthetic test (1 passed,
+121 filtered), using isolated snapshot
+`f25ce12179df0385a115fd514dba261f074dc83b`. Cargo and wrapper exited zero;
+the terminal result was acknowledged and the source and pair were released.
+The isolated fixture preserves test files; the working-tree fixture SHA-256
+was `5280864d1ce0f0bf072b5be9e112e4264714ea613de44d1034932ceeeee09d77`.
+
+On trj, the exact executable ran the ignored private-input variant in an
+isolated loopback network (1 passed, 121 filtered). It used the same saved G4
+clip and in-memory stream-copy and timestamp adjustments described above.
+After the retained journal switch and recovery, the second synthetic session
+archived a video segment and Rust decoded three frames at 2688 x 1512. The
+source and executable hashes were unchanged; the executable SHA-256 was
+`872bbe2ca2f1368d0f8dcb55cb39daa8efc827fe0b707b15e2015cd1a6fd0d38`.
+The private test data remains under
+`/bulk/unifi_camera_recordings/verification/fss-private-rolled-video-4b9da1b38829`.
+The existing recorder and fallback timer were active afterward with restart
+count 2. This is not live direct G4 capture, independent physical identity,
+settled camera-control effects, audio, uninterrupted coverage, or 30-day
+retention proof.
+
+### Fresh G4 footage through rolled Rust recovery (2026-11-13 UTC)
+
+Before this check, the recorder and bulk fallback timer were active with
+restart count 2. A read-only authenticated camera settings request using the
+previously network-observed certificate pin reported a null destination for
+video1 and one TCP destination for video2. The first inspection mistakenly
+looked for the video object at the JSON root; a second session inspected the
+actual `av.video` path. Neither request wrote settings. These logins may leave
+camera sessions of unknown expiry, and the network-observed pin does not
+independently authenticate the physical device.
+
+The existing controller's previously hash-verified high-track helper was
+then invoked once and reported a high relay route. This is a real
+camera-setting effect through Scrypted, not a Rust controller handoff. The
+first capture failed because the relay was addressed from a fresh network
+namespace; a second host-namespace capture also failed, with its detailed
+stderr suppressed. Neither attempt produced a replay. Entering the running
+controller's network namespace allowed the relay capture, but a nine-second
+bounded capture did not contain the three required IDRs. A separate fresh
+capture contained 1,912,936 bytes, 109 video samples and one IDR. Its video
+sample tags were repeated three times in memory, with per-copy timestamp
+offsets and no additional duplicate-timestamp corrections. Encoded NAL bytes
+were preserved; repeated frames are not additional live observations.
+
+The hash-matched Rust executable from the rolled-history test processed that
+5,738,158-byte camera-derived input in an isolated loopback network. It
+passed the ignored test (1 passed, 121 filtered): after a retained journal
+switch and recovery, a second synthetic session archived a new video segment,
+and Rust decoded three frames at 2688 x 1512. The executable hash remained
+`872bbe2ca2f1368d0f8dcb55cb39daa8efc827fe0b707b15e2015cd1a6fd0d38`.
+The private archive and test journals are under
+`/bulk/unifi_camera_recordings/verification/fss-live-rolled-video-4b9da1b38829`.
+The source capture used the existing Scrypted RTSP relay and FFmpeg stream
+copy; the Rust test itself used simulated camera sessions, no live device
+handoff, and no audio. This is fresh G4-derived media, not direct live Rust
+camera control or full-duration coverage.
+
+Afterward the recorder and fallback timer were active, the restart count was
+still 2, and six MP4 files under the bulk recordings directory had been
+modified within five minutes. A further pinned settings read reported one TCP
+destination each for video1 and video2, and null for video3. Thus the requested
+high track remained enabled after the test alongside the medium recording
+track; it was not reset because the controller's reset path can affect other
+tracks. The controller repair address remained at its baseline. This is a
+point-in-time observation, not proof of uninterrupted recording or a proven
+restoration of the high track's former null setting.
+
+### Bounded independent push diagnostic (work in progress)
+
+`live_media_probe` is an experimental task-scoped Rust listener for testing an
+independently arranged media push. It requires explicit owner authorization,
+checks the peer's source address, bounds its input and wait, and reports one
+decoded picture without retaining the source. The address check does not
+authenticate the camera. It does not arrange a route, change camera settings,
+or record continuously. `trial_live_media_probe.py` supplies synthetic media
+and checks missing authorization, a rejected peer, and a 2688 x 1512 decode
+inside an isolated loopback network.
+
+The research workspace manifest now includes the previously omitted
+`trial_setup_fence` module as well as this probe and its test fixture; the
+manifest validator passes. The probe has not yet been compiled or exercised.
+The pinned strict-remote attempt for source snapshot
+`8a699be14d07b981abe1e6c5456076240d5e2916` timed out in queue
+`9253469360607986176` before admission (exit 103). A subsequent pool-selected
+build was admitted as job `30097323753213218` on `hz4` and remains in flight.
+Neither outcome is a camera-to-Rust stream result.
+
+The preparation manifest also includes `trial_auto_setup_fixture.py` so a
+fresh research workspace can run the synthetic automatic-setup cases. Its
+validator now checks statically named same-directory Python imports as well
+as Rust modules and literal includes. The complete manifest passed, and an
+omitted `trial_profile_fixture` dependency was rejected. This static check
+does not prove dynamic imports, external helpers, or automatic camera setup.
+One fresh workspace was prepared successfully, and its copies of the setup
+fence module, push probe, probe fixture, and automatic-setup fixture matched
+the source files byte for byte. No Rust runtime test was implied by that copy
+check.
