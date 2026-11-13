@@ -803,6 +803,7 @@ enum WatchAction {
     ManagementWriteCancelled,
     ManagementWriteWrongReply,
     ManagementWriteRevoked,
+    ManagementWriteUnjournaled,
 }
 
 fn run_watch_action(
@@ -843,12 +844,17 @@ fn run_watch_action(
             | WatchAction::ManagementWriteCancelled
             | WatchAction::ManagementWriteWrongReply
             | WatchAction::ManagementWriteRevoked
+            | WatchAction::ManagementWriteUnjournaled
     );
     let mut management_effects = None;
     let mut prepared_management = None;
     let management_operation = OperationId::parse("operation:synthetic-gatt-management")?;
     if management_action {
-        let mut effects = EffectCoordinator::with_journal(Box::new(TestJournal::default()))?;
+        let mut effects = if matches!(action, WatchAction::ManagementWriteUnjournaled) {
+            EffectCoordinator::new()
+        } else {
+            EffectCoordinator::with_journal(Box::new(TestJournal::default()))?
+        };
         let mut leases = LeaseRegistry::new();
         let camera = ContentDigest::sha256(b"synthetic camera identity");
         let resource = format!("camera:{}", camera.to_text());
@@ -1098,6 +1104,15 @@ fn run_watch_action(
                             watch.start_notify(&endpoints, Duration::from_secs(1)).await?;
                             assert_eq!(watch.next_gatt_serial(), 10);
                             let policy = ManagementPolicy { checks: Cell::new(0), allow: usize::MAX };
+                            if matches!(action, WatchAction::ManagementWriteUnjournaled) {
+                                let refusal = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &policy, Duration::from_secs(1)).await.expect_err("unjournaled effect");
+                                assert_eq!(refusal.reason, bluez_bus::GattManagementRefusalReason::JournalRequired);
+                                assert!(!writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue"));
+                                watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                                watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                                drop(watch);
+                                return Ok(());
+                            }
                             if matches!(action, WatchAction::ManagementWrite) {
                                 let denied = watch.dispatch_gatt_management(&endpoints, &plan, current, permit, &ManagementPolicy { checks: Cell::new(0), allow: 0 }, Duration::from_secs(1)).await.expect_err("denied authority");
                                 assert_eq!(denied.reason, bluez_bus::GattManagementRefusalReason::Denied);
@@ -1831,6 +1846,15 @@ fn gatt_management_dispatch_is_bound_to_one_committed_effect() -> TestResult {
         None,
         Ok(()),
         WatchAction::ManagementWriteRevoked,
+    )?;
+    let mut unjournaled = base.clone();
+    unjournaled.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+    unjournaled.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+    run_watch_action(
+        unjournaled,
+        None,
+        Ok(()),
+        WatchAction::ManagementWriteUnjournaled,
     )?;
     base.extend_from_slice(&owned_empty_reply(10, ":1.99"));
     run_watch_action(base, None, Ok(()), WatchAction::ManagementWriteWrongReply)
