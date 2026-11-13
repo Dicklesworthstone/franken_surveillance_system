@@ -16,6 +16,8 @@ pub const MAX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_NAME_PREFIX_BYTES: usize = 256 * 1024;
 /// Maximum structurally framed tags inspected in one initial claim search.
 pub const MAX_NAME_PREFIX_TAGS: usize = 32;
+/// Maximum work units assigned to one connection-local name-probe owner.
+pub const MAX_NAME_PROBE_WORK: u64 = 64 * 1024 * 1024;
 
 /// Result of a bounded non-consuming startup metadata inspection.
 /// A match is an untrusted sender claim, not authentication or stream identity.
@@ -49,6 +51,8 @@ pub enum NameProbeError {
     WorkLimit,
     /// An earlier incomplete candidate prevents a stable structural claim.
     Provisional,
+    /// Bounded allocation for the caller's expectations failed.
+    Allocation,
     /// FLV framing refused the retained bytes.
     Framing(Error),
     /// A script tag was invalid or outside the supported AMF0 profile.
@@ -60,6 +64,50 @@ impl fmt::Display for NameProbeError {
     }
 }
 impl std::error::Error for NameProbeError {}
+
+/// Connection-local expectations and remaining work for a startup name probe.
+/// A caller owns this value across pending operations and cancellation. Debug
+/// output omits the event and stream name, neither of which authenticates a peer.
+pub struct NameProbeOwner {
+    event: String,
+    name: String,
+    byte_limit: usize,
+    tag_limit: usize,
+    work_remaining: u64,
+}
+impl fmt::Debug for NameProbeOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NameProbeOwner")
+            .field("byte_limit", &self.byte_limit)
+            .field("tag_limit", &self.tag_limit)
+            .field("work_remaining", &self.work_remaining)
+            .finish_non_exhaustive()
+    }
+}
+impl NameProbeOwner {
+    /// Bind explicit expectations and a finite cumulative work allowance.
+    pub fn new(event: &str, name: &str, byte_limit: usize, tag_limit: usize, work: u64) -> Result<Self, NameProbeError> {
+        validate_name_expectations(event, name, byte_limit, tag_limit)?;
+        if work == 0 || work > MAX_NAME_PROBE_WORK {
+            return Err(NameProbeError::Configuration);
+        }
+        let mut event_copy = String::new();
+        event_copy.try_reserve_exact(event.len()).map_err(|_| NameProbeError::Allocation)?;
+        event_copy.push_str(event);
+        let mut name_copy = String::new();
+        name_copy.try_reserve_exact(name.len()).map_err(|_| NameProbeError::Allocation)?;
+        name_copy.push_str(name);
+        Ok(Self { event: event_copy, name: name_copy, byte_limit, tag_limit, work_remaining: work })
+    }
+    /// Inspect without changing the framer; cumulative work cannot be reset.
+    pub fn inspect(&mut self, framer: &Framer) -> Result<NameProbe, NameProbeError> {
+        framer.inspect_initial_name(&self.event, &self.name, self.byte_limit, self.tag_limit, &mut self.work_remaining)
+    }
+    /// Bound on the source prefix this owner may inspect.
+    pub const fn byte_limit(&self) -> usize { self.byte_limit }
+    /// Remaining cumulative inspection work; this is not a runtime grant.
+    pub const fn work_remaining(&self) -> u64 { self.work_remaining }
+}
 
 /// Payload-free framing and accounting refusals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -454,19 +502,10 @@ impl Framer {
         tag_limit: usize,
         work_remaining: &mut u64,
     ) -> Result<NameProbe, NameProbeError> {
-        if self.phase != Phase::Header
-            || self.base != 0
-            || expected_event.is_empty()
-            || expected_event.len() > 128
-            || expected_name.len() != 16
-            || !expected_name
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || !(13..=MAX_NAME_PREFIX_BYTES).contains(&byte_limit)
-            || !(1..=MAX_NAME_PREFIX_TAGS).contains(&tag_limit)
-        {
+        if self.phase != Phase::Header || self.base != 0 {
             return Err(NameProbeError::Configuration);
         }
+        validate_name_expectations(expected_event, expected_name, byte_limit, tag_limit)?;
         name_probe_charge(work_remaining, 1)?;
         let all = &self.buffer[self.head..];
         let input = &all[..all.len().min(byte_limit)];
@@ -662,6 +701,18 @@ impl Framer {
             bytes: self.buffer,
         }
     }
+}
+
+fn validate_name_expectations(event: &str, name: &str, byte_limit: usize, tag_limit: usize) -> Result<(), NameProbeError> {
+    if event.is_empty() || event.len() > 128
+        || name.len() != 16
+        || !name.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !(13..=MAX_NAME_PREFIX_BYTES).contains(&byte_limit)
+        || !(1..=MAX_NAME_PREFIX_TAGS).contains(&tag_limit)
+    {
+        return Err(NameProbeError::Configuration);
+    }
+    Ok(())
 }
 
 fn name_probe_charge(work_remaining: &mut u64, cost: usize) -> Result<(), NameProbeError> {
