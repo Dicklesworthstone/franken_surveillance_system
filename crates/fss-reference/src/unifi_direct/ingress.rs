@@ -75,6 +75,50 @@ pub enum HeaderProbe {
     Incomplete,
 }
 
+/// One non-consuming, bounded startup stream-name probe step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NameProbeStep {
+    /// Additional source bytes were retained; inspect again with the same owner.
+    Progress {
+        /// Source bytes appended to the non-consuming prefix.
+        appended: usize,
+    },
+    /// An untrusted event and stream-name claim matched.
+    Matched {
+        /// Zero-based index of the claimed metadata tag.
+        tag_index: usize,
+    },
+    /// The expected event claimed a different stream name.
+    Mismatched {
+        /// Zero-based index of the conflicting metadata tag.
+        tag_index: usize,
+    },
+    /// The prefix or tag bound was reached without a matching claim.
+    LimitReached {
+        /// Complete tags inspected before the bound was reached.
+        tags_scanned: usize,
+    },
+    /// The peer closed before sending source bytes.
+    Empty,
+    /// A nonempty prefix ended or hit the transport limit before a result.
+    Incomplete,
+}
+
+/// A name-probe refusal; the caller still owns the ingress and all its bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NameProbeError {
+    /// Task, transport, framing, or source ownership refused progress.
+    Ingress(Error),
+    /// The bounded metadata inspection refused the retained prefix.
+    Inspect(stream::NameProbeError),
+}
+impl fmt::Display for NameProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi source name probe refused: {self:?}")
+    }
+}
+impl std::error::Error for NameProbeError {}
+
 /// A socket chunk partly copied into the framer. Prefix bytes may overlap
 /// framer records or its remainder; the suffix has not been appended.
 #[must_use]
@@ -238,6 +282,52 @@ impl DirectIngress {
             }
             Err(error) => Err(Error::Framing(error)),
         }
+    }
+
+    /// Advance a connection-local name probe by at most one source chunk.
+    /// The supplied probe owner retains its immutable expectations and work
+    /// allowance across waits. No source record is consumed or authenticated.
+    pub async fn probe_name_step(
+        &mut self,
+        owner: &TaskCx<'_>,
+        runtime_cx: &Cx,
+        now: TimestampNs,
+        probe: &mut stream::NameProbeOwner,
+    ) -> Result<NameProbeStep, NameProbeError> {
+        runtime_cx.checkpoint().map_err(|_| NameProbeError::Ingress(Error::CancelledOrUnauthorized))?;
+        owner.checkpoint(now, &BudgetVector::ZERO).map_err(|_| NameProbeError::Ingress(Error::CancelledOrUnauthorized))?;
+        match probe.inspect(&self.framer).map_err(NameProbeError::Inspect)? {
+            stream::NameProbe::Matched { tag_index } => return Ok(NameProbeStep::Matched { tag_index }),
+            stream::NameProbe::Mismatched { tag_index } => return Ok(NameProbeStep::Mismatched { tag_index }),
+            stream::NameProbe::LimitReached { tags_scanned } => return Ok(NameProbeStep::LimitReached { tags_scanned }),
+            stream::NameProbe::NeedMore => (),
+        }
+        if self.buffered.is_none() && self.source.pending_bytes().is_some() {
+            self.buffered = self.source.take_chunk().map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
+                .map(|source| BufferedChunk { source, appended: 0 });
+        }
+        if self.buffered.is_none() {
+            match self.source.receive(owner, runtime_cx, now).await.map_err(|e| NameProbeError::Ingress(Error::Source(e)))? {
+                Receive::Data { .. } => {
+                    self.buffered = self.source.take_chunk().map_err(|e| NameProbeError::Ingress(Error::Source(e)))?
+                        .map(|source| BufferedChunk { source, appended: 0 });
+                }
+                Receive::Eof if self.framer.next_offset() == 0 => return Ok(NameProbeStep::Empty),
+                Receive::Eof | Receive::LimitReached => return Ok(NameProbeStep::Incomplete),
+            }
+        }
+        let buffered = self.buffered.as_mut().ok_or(NameProbeError::Ingress(Error::Source(tcp_ingress::IngressError::PendingChunk)))?;
+        let remaining = &buffered.source.bytes()[buffered.appended..];
+        let inspected = usize::try_from(self.framer.next_offset()).map_err(|_| NameProbeError::Ingress(Error::OffsetOverflow))?;
+        let prefix_space = probe.byte_limit().checked_sub(inspected).ok_or(NameProbeError::Ingress(Error::OffsetOverflow))?;
+        let appended = remaining.len().min(self.framer.remaining_capacity()).min(prefix_space);
+        if appended == 0 { return Err(NameProbeError::Ingress(Error::Framing(stream::Error::BufferLimit))); }
+        let offset = buffered.source.offset().checked_add(buffered.appended as u64)
+            .ok_or(NameProbeError::Ingress(Error::OffsetOverflow))?;
+        self.framer.append(offset, &remaining[..appended]).map_err(|e| NameProbeError::Ingress(Error::Framing(e)))?;
+        buffered.appended += appended;
+        if buffered.appended == buffered.source.bytes().len() { self.buffered = None; }
+        Ok(NameProbeStep::Progress { appended })
     }
 
     /// Advance at most one socket read and one buffered-chunk append.

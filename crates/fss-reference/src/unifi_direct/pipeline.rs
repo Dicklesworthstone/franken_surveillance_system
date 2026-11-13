@@ -55,6 +55,23 @@ pub enum ProbeError {
     /// Source admission or I/O failed.
     Ingress(ingress::Error),
 }
+
+/// Payload-free refusal while probing a connection-local name claim.
+#[derive(Debug)]
+pub enum NameProbeError {
+    /// The pipeline is stopped or no longer in its startup probe phase.
+    NotFresh,
+    /// No connection-local name-probe owner was installed.
+    NotConfigured,
+    /// The source or metadata inspection refused progress.
+    Ingress(ingress::NameProbeError),
+}
+impl fmt::Display for NameProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi name probe refused: {self:?}")
+    }
+}
+impl std::error::Error for NameProbeError {}
 impl fmt::Display for ProbeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "UniFi first-byte probe refused: {self:?}")
@@ -122,6 +139,7 @@ pub struct Pipeline {
     probing: bool,
     first_byte_only: bool,
     stopped: bool,
+    name_probe: Option<extended_flv::stream::NameProbeOwner>,
 }
 impl Pipeline {
     pub(crate) fn is_fresh(&self) -> bool {
@@ -145,6 +163,7 @@ impl Pipeline {
             probing: false,
             first_byte_only: false,
             stopped: false,
+            name_probe: None,
         }
     }
 
@@ -206,7 +225,7 @@ impl Pipeline {
         cx: &Cx,
         now: TimestampNs,
     ) -> Result<ingress::FirstByte, ProbeError> {
-        if self.stopped || (self.started && !self.probing) {
+        if self.name_probe.is_some() || self.stopped || (self.started && !self.probing) {
             return Err(ProbeError::NotFresh);
         }
         self.started = true;
@@ -239,7 +258,7 @@ impl Pipeline {
         cx: &Cx,
         now: TimestampNs,
     ) -> Result<ingress::HeaderProbe, ProbeError> {
-        if self.stopped || (self.started && !self.probing) {
+        if self.name_probe.is_some() || self.stopped || (self.started && !self.probing) {
             return Err(ProbeError::NotFresh);
         }
         self.started = true;
@@ -260,6 +279,67 @@ impl Pipeline {
                 self.probing = false;
                 self.stopped = true;
                 Err(ProbeError::Ingress(error))
+            }
+        }
+    }
+
+    /// Install immutable expectations and a cumulative work budget before
+    /// probing or recording begins. Refusal returns the caller's owner.
+    pub fn begin_name_probe(
+        &mut self,
+        probe: extended_flv::stream::NameProbeOwner,
+    ) -> Result<(), extended_flv::stream::NameProbeOwner> {
+        if self.started || self.stopped || self.name_probe.is_some() {
+            return Err(probe);
+        }
+        self.name_probe = Some(probe);
+        Ok(())
+    }
+
+    /// Transfer the current name-probe owner and its remaining work to the
+    /// caller. Taking it abandons this optional probe; original source remains
+    /// in the ingress until ordinary processing or retirement.
+    pub fn take_name_probe(&mut self) -> Option<extended_flv::stream::NameProbeOwner> {
+        self.name_probe.take()
+    }
+
+    /// Remaining work in the installed probe, if any; this is not authority.
+    pub fn name_probe_work_remaining(&self) -> Option<u64> {
+        self.name_probe.as_ref().map(extended_flv::stream::NameProbeOwner::work_remaining)
+    }
+
+    /// Advance an installed connection-local probe without consuming source.
+    /// Dropping a pending wait retains both the expectations and source bytes.
+    /// An explicit ordinary `step` can abandon probing; callers must enforce
+    /// their own selection policy and account for the retained source.
+    pub async fn probe_name_step(
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<ingress::NameProbeStep, NameProbeError> {
+        if self.stopped || (self.started && !self.probing) {
+            return Err(NameProbeError::NotFresh);
+        }
+        let probe = self.name_probe.as_mut().ok_or(NameProbeError::NotConfigured)?;
+        self.started = true;
+        self.probing = true;
+        match self.ingress.probe_name_step(task, cx, now, probe).await {
+            Ok(ingress::NameProbeStep::Progress { appended }) => Ok(ingress::NameProbeStep::Progress { appended }),
+            Ok(result @ ingress::NameProbeStep::Matched { .. }) => {
+                self.probing = false;
+                self.first_byte_only = true;
+                Ok(result)
+            }
+            Ok(result) => {
+                self.probing = false;
+                self.stopped = true;
+                Ok(result)
+            }
+            Err(error) => {
+                self.probing = false;
+                self.stopped = true;
+                Err(NameProbeError::Ingress(error))
             }
         }
     }
@@ -286,6 +366,7 @@ impl Pipeline {
         self.started = true;
         self.probing = false;
         self.first_byte_only = false;
+        self.name_probe = None;
         let source = match self.ingress.step(task, cx, now).await {
             Ok(source) => source,
             Err(error) => {
