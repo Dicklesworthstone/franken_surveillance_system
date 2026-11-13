@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use fss_core::json_input;
 use fss_core::{
-    ContentDigest, ContextAuthority, OperationId, PrincipalId, RootAuthoritySpec, RuntimeGrant,
-    TimestampNs,
+    CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, PrincipalId, RootAuthoritySpec,
+    RuntimeGrant, TimestampNs,
 };
 use fss_reference::ReferenceDeployment;
 use fss_reference::agent_follow::AnchorToken;
@@ -102,6 +102,24 @@ fn canonical_query_preserves_native_bytes_identities_complete_rows_and_unresolve
         query.report.source().digest().to_text(),
         query.report.source().provenance_root().to_text(),
     ];
+    let companion = json_input::parse(query.report.lane_traversals().to_json())?;
+    let companion = companion.object().ok_or("companion object")?;
+    let companion_handles = vec![
+        query.report.lane_traversals().digest().to_text(),
+        query.report.digest().to_text(),
+        query.report.source().digest().to_text(),
+        query.report.source().provenance_root().to_text(),
+    ];
+    assert_eq!(
+        query.report.lane_traversals().digest(),
+        ContentDigest::sha256(query.report.lane_traversals().encoded())
+    );
+    assert_eq!(
+        companion
+            .get("source_qsr_report")
+            .and_then(|value| value.text()),
+        Some(query.report.digest().to_text().as_str())
+    );
     let mut identities = BTreeSet::new();
     for proposition in &query.epistemic.propositions {
         assert!(
@@ -109,16 +127,25 @@ fn canonical_query_preserves_native_bytes_identities_complete_rows_and_unresolve
             "duplicate projected row"
         );
         assert_eq!(proposition.provenance, "derived");
-        assert_eq!(proposition.evidence, expected_handles);
+        let (selected, handles, row) = if let Some(row) = proposition.id.strip_prefix("claim:qsr:")
+        {
+            (native, &expected_handles, row)
+        } else {
+            (
+                companion,
+                &companion_handles,
+                proposition
+                    .id
+                    .strip_prefix("claim:qsr-lane:")
+                    .ok_or("QSR companion identity")?,
+            )
+        };
+        assert_eq!(&proposition.evidence, handles);
         assert!(
             !proposition
                 .statement
                 .contains(fixture.source.root.to_str().ok_or("root")?)
         );
-        let row = proposition
-            .id
-            .strip_prefix("claim:qsr:")
-            .ok_or("QSR row identity")?;
         let encoded = proposition
             .statement
             .split_once(": ")
@@ -128,21 +155,41 @@ fn canonical_query_preserves_native_bytes_identities_complete_rows_and_unresolve
         match row.split_once(':') {
             Some((section, ordinal)) => {
                 let ordinal: usize = ordinal.parse()?;
-                let expected = native
+                let expected = selected
                     .get(section)
                     .and_then(|value| value.array())
                     .and_then(|values| values.get(ordinal))
                     .ok_or("native array row")?;
                 assert_eq!(&value, expected);
             }
-            None => assert_eq!(Some(&value), native.get(row)),
+            None => assert_eq!(Some(&value), selected.get(row)),
         }
     }
     let expected_rows: usize = native
         .values()
         .map(|value| value.array().map_or(1, |rows| rows.len().max(1)))
         .sum();
-    assert_eq!(query.epistemic.propositions.len(), expected_rows);
+    let companion_rows = companion.len() - 1
+        + companion
+            .get("traversals")
+            .and_then(|value| value.array())
+            .ok_or("traversals")?
+            .len()
+            .max(1);
+    assert_eq!(
+        query.epistemic.propositions.len(),
+        expected_rows + companion_rows
+    );
+    let mut decision = CanonicalEncoder::new();
+    decision.text("fss.agent_qsr_query.lane_decision.v1");
+    decision.digest(query.request_digest);
+    decision.digest(query.report.digest());
+    decision.digest(query.report.lane_traversals().digest());
+    decision.digest(query.plan.plan_digest());
+    assert_eq!(
+        query.decision_digest,
+        ContentDigest::sha256(&decision.finish_checked()?)
+    );
     assert_eq!(fixture.source.journals()?, before);
     assert_eq!(
         fs::read(&temporary)?,

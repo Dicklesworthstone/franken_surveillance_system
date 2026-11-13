@@ -13,6 +13,11 @@ use crate::ingest::package_zones::{
 
 type CellIndex<'a> = BTreeMap<(ContentDigest, usize, usize), &'a PackageZoneCell>;
 
+pub(super) struct Derived {
+    pub(super) observations: QsrObservations,
+    pub(super) lane_traversals: Vec<QsrLaneTraversal>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn derive(
     config: &QsrConfig,
@@ -24,7 +29,7 @@ pub(super) fn derive(
     health: &[bool],
     masked: &[bool],
     mut checkpoint: impl FnMut() -> Result<()>,
-) -> Result<QsrObservations> {
+) -> Result<Derived> {
     let zones = config.zone_roles.len();
     if frames.is_empty()
         || frames.len() > 64
@@ -183,6 +188,7 @@ pub(super) fn derive(
         lane_transitions: Vec::new(),
         lane_interruptions: Vec::new(),
     };
+    let mut lane_traversals = Vec::new();
     if !config.lane_stages.is_empty() {
         let lane: Vec<_> = config
             .lane_stages
@@ -206,10 +212,14 @@ pub(super) fn derive(
                 health,
                 masked,
                 &mut result,
+                &mut lane_traversals,
             )?;
         }
     }
-    Ok(result)
+    Ok(Derived {
+        observations: result,
+        lane_traversals,
+    })
 }
 
 fn interrupt(
@@ -218,7 +228,9 @@ fn interrupt(
     active: &mut Option<(usize, usize)>,
     at_frame: usize,
     reason: QsrLaneInterruptionReason,
-) {
+    traversals: &mut super::traversals::Reducer<'_>,
+) -> Result<()> {
+    traversals.interrupt(at_frame, reason)?;
     if let Some((from_stage, from_frame)) = active.take() {
         result.lane_interruptions.push(QsrLaneInterruption {
             track,
@@ -228,6 +240,7 @@ fn interrupt(
             reason,
         });
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -240,13 +253,23 @@ fn lane_track(
     health: &[bool],
     masked: &[bool],
     result: &mut QsrObservations,
+    lane_traversals: &mut Vec<QsrLaneTraversal>,
 ) -> Result<()> {
     use QsrLaneInterruptionReason as Why;
     let mut active = None;
     let mut previous: Option<usize> = None;
+    let mut traversals =
+        super::traversals::Reducer::new(track, lane.len(), frames, lane_traversals);
     for (position, frame) in frames.iter().enumerate() {
         if frame.source_boundary {
-            interrupt(result, track, &mut active, position, Why::SourceBoundary);
+            interrupt(
+                result,
+                track,
+                &mut active,
+                position,
+                Why::SourceBoundary,
+                &mut traversals,
+            )?;
             previous = None;
         }
         let cell = index
@@ -272,7 +295,14 @@ fn lane_track(
             None
         };
         if let Some(reason) = unavailable {
-            interrupt(result, track, &mut active, position, reason);
+            interrupt(
+                result,
+                track,
+                &mut active,
+                position,
+                reason,
+                &mut traversals,
+            )?;
             previous = None;
             continue;
         }
@@ -284,7 +314,14 @@ fn lane_track(
                 ));
             }
             if frame.capture.latest.0.abs_diff(earlier.earliest.0) > u128::from(maximum_gap_ns) {
-                interrupt(result, track, &mut active, position, Why::SampleGap);
+                interrupt(
+                    result,
+                    track,
+                    &mut active,
+                    position,
+                    Why::SampleGap,
+                    &mut traversals,
+                )?;
             }
         }
         previous = Some(position);
@@ -302,15 +339,24 @@ fn lane_track(
             }
         }
         if ambiguous {
-            interrupt(result, track, &mut active, position, Why::AmbiguousStage);
+            interrupt(
+                result,
+                track,
+                &mut active,
+                position,
+                Why::AmbiguousStage,
+                &mut traversals,
+            )?;
             previous = None;
             continue;
         }
         let Some(stage) = inside else {
+            traversals.observe(position, None)?;
             continue;
         };
         if let Some((prior_stage, first)) = active {
             if stage == prior_stage {
+                traversals.observe(position, Some(stage))?;
                 continue;
             }
             if stage == prior_stage + 1 {
@@ -339,10 +385,12 @@ fn lane_track(
                     } else {
                         Why::SkippedStage
                     },
-                );
+                    &mut traversals,
+                )?;
             }
         }
         active = Some((stage, position));
+        traversals.observe(position, Some(stage))?;
     }
-    Ok(())
+    traversals.finish()
 }

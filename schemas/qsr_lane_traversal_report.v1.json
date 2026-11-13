@@ -1,0 +1,401 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fss.local/schemas/qsr_lane_traversal_report.v1.json",
+  "title": "Whole sampled QSR lane sequences and observed endpoint separations",
+  "description": "Independent companion to the unchanged source QSR report, bounded to 8 MiB. Complete means every declared stage was observed in adjacent order within one uninterrupted sequence. Partial suffixes and report-end censoring remain incomplete; masking, missing assignments and uncertainty remain interruptions. No physical identity, continuous trip, service duration, queue wait or effect authority is established.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "report_digest",
+    "policy_digest",
+    "source_qsr_report",
+    "source_zone_report",
+    "provenance_root",
+    "sampled_frames",
+    "maximum_sample_gap_ns",
+    "lane_stages",
+    "interpretation",
+    "summary",
+    "traversals"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.qsr_lane_traversal_report.v1"
+    },
+    "operation": {
+      "const": "read_verified"
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_qsr_report": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_zone_report": {
+      "$ref": "#/$defs/digest"
+    },
+    "provenance_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "sampled_frames": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "maximum_sample_gap_ns": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "pattern": "^(?:[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
+      "description": "Exact positive native u64 sample-gap policy, in nanoseconds; no floating-point conversion."
+    },
+    "lane_stages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "maxItems": 16,
+      "uniqueItems": true,
+      "not": {
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "description": "Zero stages disables lane traversal; otherwise two through sixteen exact source-zone IDs in intended order."
+    },
+    "interpretation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "duration_unit",
+        "duration_basis",
+        "physical_identity_established",
+        "continuous_traversal_established",
+        "service_or_wait_duration_established",
+        "effects_authorized"
+      ],
+      "properties": {
+        "duration_unit": {
+          "const": "nanoseconds"
+        },
+        "duration_basis": {
+          "const": "observed_endpoint_separation"
+        },
+        "physical_identity_established": {
+          "const": false
+        },
+        "continuous_traversal_established": {
+          "const": false
+        },
+        "service_or_wait_duration_established": {
+          "const": false
+        },
+        "effects_authorized": {
+          "const": false
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed",
+        "incomplete",
+        "interrupted"
+      ],
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "incomplete": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "interrupted": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
+      }
+    },
+    "traversals": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/traversal"
+      },
+      "description": "Complete bounded inventory, ordered by track and source frame. Summary counts are exact native reductions, not population or customer counts."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lane_stages": {
+            "maxItems": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "traversals": {
+            "maxItems": 0
+          },
+          "summary": {
+            "properties": {
+              "completed": {
+                "const": 0
+              },
+              "incomplete": {
+                "const": 0
+              },
+              "interrupted": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "frameIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63
+    },
+    "elapsedNs": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 39,
+      "pattern": "^(?:0|[1-9][0-9]{0,37}|[1-2][0-9]{38}|3[0-3][0-9]{37}|340[0-1][0-9]{35}|3402[0-7][0-9]{34}|34028[0-1][0-9]{33}|340282[0-2][0-9]{32}|3402823[0-5][0-9]{31}|34028236[0-5][0-9]{30}|340282366[0-8][0-9]{29}|3402823669[0-1][0-9]{28}|340282366920[0-8][0-9]{26}|3402823669209[0-2][0-9]{25}|34028236692093[0-7][0-9]{24}|340282366920938[0-3][0-9]{23}|3402823669209384[0-5][0-9]{22}|34028236692093846[0-2][0-9]{21}|340282366920938463[0-3][0-9]{20}|3402823669209384634[0-5][0-9]{19}|34028236692093846346[0-2][0-9]{18}|340282366920938463463[0-2][0-9]{17}|3402823669209384634633[0-6][0-9]{16}|34028236692093846346337[0-3][0-9]{15}|340282366920938463463374[0-5][0-9]{14}|34028236692093846346337460[0-6][0-9]{12}|340282366920938463463374607[0-3][0-9]{11}|3402823669209384634633746074[0-2][0-9]{10}|340282366920938463463374607430[0-9]{9}|340282366920938463463374607431[0-6][0-9]{8}|3402823669209384634633746074317[0-5][0-9]{7}|34028236692093846346337460743176[0-7][0-9]{6}|340282366920938463463374607431768[0-1][0-9]{5}|34028236692093846346337460743176820[0-9]{4}|340282366920938463463374607431768210[0-9]{3}|340282366920938463463374607431768211[0-3][0-9]{2}|3402823669209384634633746074317682114[0-4][0-9]{1}|34028236692093846346337460743176821145[0-4]|340282366920938463463374607431768211455)$",
+      "description": "Exact nonnegative native u128 separation in nanoseconds, at most 340282366920938463463374607431768211455. No null or guessed endpoint replaces unavailable time."
+    },
+    "stageObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "frame"
+      ],
+      "properties": {
+        "stage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "frame": {
+          "$ref": "#/$defs/frameIndex"
+        }
+      }
+    },
+    "traversal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "track",
+        "status",
+        "stages",
+        "from_frame",
+        "last_observed_frame",
+        "at_frame",
+        "termination",
+        "missing_initial_stages",
+        "remaining_stages",
+        "minimum_elapsed_ns",
+        "maximum_elapsed_ns"
+      ],
+      "properties": {
+        "track": {
+          "$ref": "#/$defs/digest"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "incomplete",
+            "interrupted"
+          ]
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/stageObservation"
+          },
+          "description": "First admitted observation in each adjacent declared stage. Native verification enforces increasing adjacent stages, source-frame order and a first stage index equal to missing_initial_stages."
+        },
+        "from_frame": {
+          "$ref": "#/$defs/frameIndex"
+        },
+        "last_observed_frame": {
+          "$ref": "#/$defs/frameIndex"
+        },
+        "at_frame": {
+          "$ref": "#/$defs/frameIndex"
+        },
+        "termination": {
+          "enum": [
+            "last_stage_observed",
+            "source_sample_ended",
+            "source_boundary",
+            "historical_screening",
+            "masked_stage",
+            "unreliable_time",
+            "missing_observation",
+            "sample_gap",
+            "ambiguous_stage",
+            "skipped_stage",
+            "reversed_stage"
+          ]
+        },
+        "missing_initial_stages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "remaining_stages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "minimum_elapsed_ns": {
+          "$ref": "#/$defs/elapsedNs"
+        },
+        "maximum_elapsed_ns": {
+          "$ref": "#/$defs/elapsedNs"
+        }
+      },
+      "description": "One finite sequence of admitted actual assignments on an anonymous analysis-local track. Endpoint separations describe observations; at_frame may be a later interruption or censoring sample. A single observed endpoint has zero minimum and maximum separation. Native verification enforces frame order, stage completeness and minimum <= maximum.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "termination": {
+                "const": "last_stage_observed"
+              },
+              "missing_initial_stages": {
+                "const": 0
+              },
+              "remaining_stages": {
+                "const": 0
+              },
+              "stages": {
+                "minItems": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "interrupted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "termination": {
+                "enum": [
+                  "source_boundary",
+                  "historical_screening",
+                  "masked_stage",
+                  "unreliable_time",
+                  "missing_observation",
+                  "sample_gap",
+                  "ambiguous_stage",
+                  "skipped_stage",
+                  "reversed_stage"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "termination": {
+                "enum": [
+                  "last_stage_observed",
+                  "source_sample_ended"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              },
+              "termination": {
+                "const": "last_stage_observed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "missing_initial_stages": {
+                "minimum": 1
+              },
+              "remaining_stages": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "termination": {
+                "const": "source_sample_ended"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              },
+              "remaining_stages": {
+                "minimum": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

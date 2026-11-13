@@ -386,7 +386,7 @@ fn response(
         contradictions: orientation.contradictions.clone(),
         degradation: vec!["CPU time, full output tokens and elapsed latency are not metered. The 60-second deadline is cooperative. Byte and object counters share one payload-read balance across history, source verification and final revalidation; they are not filesystem syscall counters.".to_owned()],
         budgets_json: agent_json::budget_summary(&requested, &consumed),
-        proof_pointers: vec![query.plan.plan_digest().to_text(), query.admission.receipt_digest().to_text(), query.source_permit_digest.to_text(), query.report.digest().to_text(), source.digest().to_text(), source.provenance_root().to_text(), frame_digest.to_text()],
+        proof_pointers: vec![query.plan.plan_digest().to_text(), query.admission.receipt_digest().to_text(), query.source_permit_digest.to_text(), query.report.digest().to_text(), query.report.lane_traversals().digest().to_text(), source.digest().to_text(), source.provenance_root().to_text(), frame_digest.to_text()],
         affordances: action_ids, affordance_objects: action_objects, decision_fingerprint: decision,
         compression_receipt_id: None, continuation: None, recovery_class: "safe_read_retry", safe_retry: ResponseSafeRetry::YesSameRequest,
         boundary: read_only_boundary("Verified one retained screened QSR report with an explicit source-read grant and one immutable budget; revalidated source custody, publication, deletion and authority without publisher locks, recovery, model execution, media disclosure or writes.".to_owned()),

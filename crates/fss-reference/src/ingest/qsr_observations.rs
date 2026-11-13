@@ -17,8 +17,14 @@ use crate::{ReferenceDeployment, ReplayCx};
 
 mod derive;
 mod existing;
+mod traversals;
 mod types;
 mod wire;
+pub use traversals::{
+    MAX_QSR_LANE_TRAVERSALS, QSR_LANE_TRAVERSAL_POLICY, QSR_LANE_TRAVERSAL_SCHEMA,
+    QsrLaneStageObservation, QsrLaneTraversal, QsrLaneTraversalReport, QsrLaneTraversalStatus,
+    QsrLaneTraversalTermination,
+};
 pub use types::*;
 #[cfg(test)]
 mod tests;
@@ -74,6 +80,7 @@ pub struct QsrObservationReport {
     source: PackageZoneReport,
     config: QsrConfig,
     observations: QsrObservations,
+    lane_traversals: QsrLaneTraversalReport,
     bytes: Vec<u8>,
     digest: ContentDigest,
     json: String,
@@ -135,7 +142,7 @@ impl QsrObservationReport {
             .iter()
             .map(|track| track.identity)
             .collect();
-        let observations = derive::derive(
+        let derived = derive::derive(
             &config,
             source.config().maximum_sample_gap_ns,
             source.frames(),
@@ -146,12 +153,25 @@ impl QsrObservationReport {
             &masked,
             || cx.checkpoint("qsr:derive").map_err(|_| QsrError::Cancelled),
         )?;
+        let observations = derived.observations;
         let bytes = wire::encode(&source, &config, &observations)?;
         let digest = ContentDigest::sha256(&bytes);
+        cx.checkpoint("qsr:lane_companion")
+            .map_err(|_| QsrError::Cancelled)?;
+        let lane_traversals = QsrLaneTraversalReport::build(
+            digest,
+            source.digest(),
+            source.provenance_root(),
+            source.frames().len(),
+            source.config().maximum_sample_gap_ns,
+            &config.lane_stages,
+            derived.lane_traversals,
+        )?;
         let mut report = Self {
             source,
             config,
             observations,
+            lane_traversals,
             bytes,
             digest,
             json: String::new(),
@@ -179,6 +199,11 @@ impl QsrObservationReport {
     /// Every derived sample, dwell span, lane transition and interruption.
     pub fn observations(&self) -> &QsrObservations {
         &self.observations
+    }
+    /// Independently identified whole observed sequences, including incomplete and interrupted
+    /// samples. Construction shares the original read's source/cancellation/final-check owner.
+    pub fn lane_traversals(&self) -> &QsrLaneTraversalReport {
+        &self.lane_traversals
     }
     /// Complete canonical read-result bytes, not an authority record or retention promise.
     pub fn encoded(&self) -> &[u8] {

@@ -72,6 +72,13 @@ sections and empty arrays use `claim:qsr:<section>`. The native QSR digest and
 source/provenance handles remain explicit. Unknown samples are never converted to
 zero, and all selected rows must fit the 256 KiB complete response or it refuses.
 
+The same query also returns the independently identified lane-traversal companion.
+Its complete values use `claim:qsr-lane:<section>:<ordinal>`, with non-array and
+empty sections using `claim:qsr-lane:<section>`. Each row cites the companion,
+original QSR report, source zone report and provenance root. Its digest is also in
+the outer proof pointers and native query decision. The companion has an explicit
+empty lane/stage inventory when no lane was requested.
+
 The default cumulative allowance is 1 GiB of payload reads and 1,000,000 read
 attempts, including final source and authority revalidation. CLI options
 `--max-query-read-bytes` and `--max-query-read-objects` can select smaller bounds
@@ -157,6 +164,48 @@ instead of choosing an order. A jump from order to present records
 may start another partial sequence. No record fills in a missed stage or asserts a
 completed customer journey.
 
+## Complete and partial observed lane sequences
+
+The canonical CLI/MCP query derives a `fss.qsr_lane_traversal_report.v1` companion
+from the exact same admitted samples and interruption barriers as the adjacent
+stage observations. It records the first observed frame of every visited stage,
+the first and last supported sample, the termination frame and reason, and the
+number of missing initial and remaining stages. A sequence has one of three states:
+
+| Status | Meaning |
+| --- | --- |
+| `completed` | This analysis-local track was observed in every declared stage, from first through last, in adjacent order without a continuity interruption. The cognitive proposition is `estimated`. |
+| `incomplete` | The retained sample ended before the last stage, or the last stage was reached after starting at an intermediate stage. The proposition is `unknown`; missing stages remain explicit. |
+| `interrupted` | An existing source, health, observability, timing or ordering barrier ended the sequence. The proposition is `unknown` and retains the exact reason and last supported observation. |
+
+Repeated sightings in the last stage do not manufacture new completions. A later
+first-stage sighting can begin a new sequence, but an interruption cannot be
+bridged. Ending the recording produces `source_sample_ended`, rather than silently
+dropping an unfinished sequence or inferring an exit.
+
+`minimum_elapsed_ns` and `maximum_elapsed_ns` bound separation of the first and
+last observed capture endpoints. They are exact unsigned decimal strings. For
+capture bounds `[100,102]`, `[130,132]` and `[150,152]` nanoseconds across three
+stages, the complete observed sequence spans `[48,52]` nanoseconds. Adding the two
+adjacent intervals would instead give `[46,54]` and unnecessarily count the middle
+sample's uncertainty twice. For interrupted or censored runs, the last endpoint
+is the last supported actual observation, which may be between declared stages.
+A sequence containing one source frame has the correlated interval `[0,0]`.
+
+Completion describes the finite sampled stage sequence. Physical identity,
+continuous travel, queue wait and service duration remain unestablished. The
+companion fixes each of those interpretation claims, and effect authority, to
+false. It performs no additional source reads or inference and spends the same
+existing read allowance and final custody checks.
+
+The original `fss.qsr_observation_report.v1` schema, reducer policy, canonical bytes
+and native `fss-event qsr` JSON remain unchanged. Rust callers access the companion
+with `QsrObservationReport::lane_traversals()`. Its separate `FSSQRL01` encoding
+binds the original QSR digest, exact traversal policy, declared stage order and
+every complete traversal row. Canonical agent decisions use
+`fss.agent_qsr_query.lane_decision.v1` to bind both result digests and the admitted
+query plan. Neither digest is a new retained publication or an authority grant.
+
 ## Source, policy and coverage bindings
 
 The native `fss-event qsr` command uses `QsrObservationReport::open_existing`, which keeps its deployment
@@ -200,6 +249,9 @@ The source owner bounds the input to 16 zones, 64 frames and 8,192 complete
 track × zone × frame cells. QSR preserves these bounds, emits every selected sample
 and interruption, and refuses complete JSON output above 8 MiB. It never ranks away
 unknown samples or truncates the observations to make a result fit.
+The separate lane companion also has an 8 MiB ceiling and at most 4,096 sequences,
+with at most 16 stage references per sequence. The canonical agent query must fit
+both reports and its protected context within the same 256 KiB response ceiling.
 
 The complete canonical result and JSON are constructed before a final native revalidation
 of source custody, current privacy/deletion, the principal, durable ledger head and retained
@@ -241,5 +293,7 @@ cargo test --locked --offline -p fss-cli --bin fss-mcp qsr
 
 The machine projection is defined in
 [`qsr_observation_report.v1.json`](../schemas/qsr_observation_report.v1.json).
+The separate traversal projection is defined in
+[`qsr_lane_traversal_report.v1.json`](../schemas/qsr_lane_traversal_report.v1.json).
 The observation definitions and limits are registered in
 [`QSR_OBSERVATIONS.md`](../registries/QSR_OBSERVATIONS.md).
