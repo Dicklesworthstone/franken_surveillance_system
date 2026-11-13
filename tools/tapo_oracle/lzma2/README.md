@@ -35,3 +35,8 @@ commented in place.
 `LzmaDec_rev.c` (reversed distance-slot tree, 5-bit table) + `Lzma2Dec_rev2.c` (no straddle extension,
 two-byte chunk trailer). Result: 1,564,644 bytes, zeros 6.9 %, 2,844 ASCII runs. `LzmaDec_5bit.c` is
 the same table without the reversal (86 % zeros) and is the control.
+
+`Lzma2Dec_best.c` = no straddle extension + two-byte trailer skip; with a large cap it reads 1,564,644
+bytes at 4.1 % zeros and stops on an undrained straddling match (`remain=41`). Adding the extension
+re-breaks the boundary, and extension plus a scan resync does not compose either — the drain needs
+more output than the caller offers, which is the open problem.
