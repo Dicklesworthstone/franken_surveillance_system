@@ -1242,6 +1242,257 @@ impl fmt::Debug for GattEndpoints {
     }
 }
 
+/// Local lifecycle of one fragmented management-negotiation packet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FramedManagementState {
+    /// The next fragment may be prepared.
+    Ready,
+    /// A fragment plan awaits its separately committed permit.
+    Prepared,
+    /// Dispatch was armed; dropping its future requires reconciliation.
+    InFlight,
+    /// Every fragment was acknowledged locally, not verified by the camera.
+    Complete,
+    /// A result or cursor state is uncertain; do not continue this packet.
+    Fenced,
+}
+
+/// Payload-free refusal while preparing a fragmented negotiation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FramedManagementError {
+    /// Watch, endpoint, session, mode or authority is no longer current.
+    Scope,
+    /// A BlueZ change must be examined before another fragment is prepared.
+    QueuedChange,
+    /// The local packet lifecycle does not permit this operation.
+    State,
+    /// Task or bounded allocation budget refused the work.
+    Budget,
+    /// The supplied frame or cursor state was invalid.
+    Cursor(fss_packet::unifi_ble::WriteError),
+    /// Exact request or precondition encoding failed.
+    Plan(gatt_management::Error),
+}
+impl fmt::Display for FramedManagementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "BlueZ framed management refused: {self:?}")
+    }
+}
+impl std::error::Error for FramedManagementError {}
+
+/// Preserved packet, pending plan and operation after an explicit retirement.
+#[must_use]
+pub struct FramedManagementRetirement<'frame> {
+    /// Original frame and acknowledged/pending byte ranges.
+    pub cursor: fss_packet::unifi_ble::WriteRetirement<'frame>,
+    /// Exact unconsumed fragment plan, if one was prepared.
+    pub plan: Option<gatt_management::Plan>,
+    /// Last operation armed for dispatch, including a dropped future.
+    pub operation: Option<OperationId>,
+    /// Whether continuation or reconciliation is required.
+    pub state: FramedManagementState,
+}
+
+/// Task-owned fragment coordinator for one already-framed negotiation packet.
+///
+/// Each fragment requires its own journal-backed, one-use management permit.
+/// The caller must independently validate the packet's semantics and device
+/// identity. This does not authorize Wi-Fi credentials, arbitrary settings,
+/// retry an uncertain write, or prove the peer received the complete packet.
+pub struct FramedManagement<'frame> {
+    epoch: Arc<()>,
+    cursor: fss_packet::unifi_ble::WriteCursor<'frame>,
+    frame_digest: ContentDigest,
+    total: usize,
+    offset: usize,
+    pending_len: usize,
+    current: gatt_management::Preconditions,
+    plan: Option<gatt_management::Plan>,
+    operation: Option<OperationId>,
+    state: FramedManagementState,
+}
+impl<'frame> FramedManagement<'frame> {
+    /// Bind a bounded, non-secret frame to this active write-with-response
+    /// notification session. The payload limit is caller-established, not an
+    /// automatically negotiated ATT MTU. No device I/O is performed.
+    pub fn new<IO>(
+        watch: &Watch<'_, '_, '_, IO>,
+        endpoints: &GattEndpoints,
+        frame: &'frame [u8],
+        maximum_chunk: usize,
+        current: gatt_management::Preconditions,
+    ) -> Result<Self, FramedManagementError> {
+        let epoch = watch.notification_epoch.as_ref().ok_or(FramedManagementError::Scope)?;
+        if watch.notification_state != NotificationState::Active
+            || watch.device_state != DeviceLinkState::ConnectAcknowledged
+            || watch.gatt_stale
+            || watch.gatt_binding.as_ref() != Some(endpoints)
+            || endpoints.mode != object_manager::GattWriteMode::Request
+            || maximum_chunk > 512
+            || watch.cx.checkpoint().is_err()
+            || !watch.admission.permits(&endpoints.write, Stage::BluezManagementWrite)
+        {
+            return Err(FramedManagementError::Scope);
+        }
+        let cursor = fss_packet::unifi_ble::WriteCursor::new(frame, maximum_chunk)
+            .map_err(FramedManagementError::Cursor)?;
+        let mut cost = BudgetVector::ZERO;
+        cost.bytes = u64::try_from(frame.len()).map_err(|_| FramedManagementError::Budget)?;
+        let now = watch.clock.now().map_err(|_| FramedManagementError::Budget)?;
+        watch.task.checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.write, now, &cost)
+            .map_err(|_| FramedManagementError::Budget)?;
+        Ok(Self {
+            epoch: Arc::clone(epoch),
+            cursor,
+            frame_digest: ContentDigest::sha256(frame),
+            total: frame.len(),
+            offset: 0,
+            pending_len: 0,
+            current,
+            plan: None,
+            operation: None,
+            state: FramedManagementState::Ready,
+        })
+    }
+
+    /// Current local progress; acknowledgment is not remote verification.
+    pub fn state(&self) -> FramedManagementState {
+        self.state
+    }
+
+    fn current<IO>(&self, watch: &Watch<'_, '_, '_, IO>, endpoints: &GattEndpoints) -> bool {
+        watch.notification_state == NotificationState::Active
+            && watch.device_state == DeviceLinkState::ConnectAcknowledged
+            && !watch.gatt_stale
+            && watch.gatt_binding.as_ref() == Some(endpoints)
+            && endpoints.mode == object_manager::GattWriteMode::Request
+            && watch.notification_epoch.as_ref().is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
+    }
+
+    /// Prepare one exact fragment plan for the caller's effect coordinator.
+    /// Drain queued BlueZ changes before preparing a further fragment.
+    pub fn prepare<IO>(
+        &mut self,
+        watch: &Watch<'_, '_, '_, IO>,
+        endpoints: &GattEndpoints,
+    ) -> Result<Option<&gatt_management::Plan>, FramedManagementError> {
+        if self.state == FramedManagementState::Complete {
+            return Ok(None);
+        }
+        if self.state != FramedManagementState::Ready {
+            return Err(FramedManagementError::State);
+        }
+        if !self.current(watch, endpoints) {
+            self.state = FramedManagementState::Fenced;
+            return Err(FramedManagementError::Scope);
+        }
+        if !watch.queued.is_empty() {
+            return Err(FramedManagementError::QueuedChange);
+        }
+        if watch.cx.checkpoint().is_err()
+            || !watch.admission.permits(&endpoints.write, Stage::BluezManagementWrite)
+        {
+            return Err(FramedManagementError::Scope);
+        }
+        let now = watch.clock.now().map_err(|_| FramedManagementError::Budget)?;
+        let mut cost = BudgetVector::ZERO;
+        cost.bytes = 8192;
+        watch.task.checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.write, now, &cost)
+            .map_err(|_| FramedManagementError::Budget)?;
+        let Some(chunk) = self.cursor.prepare().map_err(FramedManagementError::Cursor)? else {
+            self.state = FramedManagementState::Complete;
+            return Ok(None);
+        };
+        let end = self.offset.checked_add(chunk.len()).ok_or(FramedManagementError::State)?;
+        let device = watch.device_path.as_deref().ok_or(FramedManagementError::Scope)?;
+        let plan = gatt_management::Plan::new(
+            watch.next_serial, &watch.owner, device, &endpoints.write,
+            object_manager::GattWriteMode::Request, chunk, self.current,
+        ).and_then(|plan| plan.bind_fragment(self.frame_digest, self.total, self.offset..end));
+        match plan {
+            Ok(plan) => {
+                self.pending_len = chunk.len();
+                self.plan = Some(plan);
+                self.state = FramedManagementState::Prepared;
+                Ok(self.plan.as_ref())
+            }
+            Err(error) => {
+                self.cursor.resolve(fss_packet::unifi_ble::WriteOutcome::DefinitelyNotSubmitted)
+                    .map_err(FramedManagementError::Cursor)?;
+                Err(FramedManagementError::Plan(error))
+            }
+        }
+    }
+
+    /// Arm one fragment before returning its dispatch future. Dropping the
+    /// future even before its first poll leaves the operation and range in
+    /// `InFlight`; the caller must reconcile the journal rather than retry.
+    pub fn dispatch<'a, 'scope, 'task, 'policy, IO>(
+        &'a mut self,
+        watch: &'a mut Watch<'scope, 'task, 'policy, IO>,
+        endpoints: &'a GattEndpoints,
+        permit: CommittedEffect,
+        authority: &'a dyn GattManagementAuthority,
+        wait: Duration,
+    ) -> Result<impl Future<Output = Result<GattManagementWrite, GattManagementRefusal>> + 'a, GattManagementRefusal>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + 'a,
+        'frame: 'a,
+        'scope: 'a,
+        'task: 'a,
+        'policy: 'a,
+    {
+        if self.state != FramedManagementState::Prepared
+            || self.plan.is_none()
+            || !self.current(watch, endpoints)
+        {
+            return Err(GattManagementRefusal { reason: GattManagementRefusalReason::Session, permit });
+        }
+        self.operation = Some(permit.operation().clone());
+        self.state = FramedManagementState::InFlight;
+        Ok(async move {
+            let Some(plan) = self.plan.as_ref() else {
+                self.state = FramedManagementState::Fenced;
+                return Err(GattManagementRefusal { reason: GattManagementRefusalReason::Session, permit });
+            };
+            match watch.dispatch_gatt_management(endpoints, plan, self.current, permit, authority, wait).await {
+                Err(refusal) => {
+                    self.operation = None;
+                    self.state = FramedManagementState::Prepared;
+                    Err(refusal)
+                }
+                Ok(GattManagementWrite::Acknowledged { permit }) => {
+                    if self.cursor.resolve(fss_packet::unifi_ble::WriteOutcome::Acknowledged).is_err() {
+                        self.state = FramedManagementState::Fenced;
+                        return Ok(GattManagementWrite::Indeterminate { permit });
+                    }
+                    self.offset += self.pending_len;
+                    self.pending_len = 0;
+                    self.plan = None;
+                    self.operation = None;
+                    self.state = if self.offset == self.total { FramedManagementState::Complete } else { FramedManagementState::Ready };
+                    Ok(GattManagementWrite::Acknowledged { permit })
+                }
+                Ok(GattManagementWrite::Indeterminate { permit }) => {
+                    let _ = self.cursor.resolve(fss_packet::unifi_ble::WriteOutcome::Indeterminate);
+                    self.state = FramedManagementState::Fenced;
+                    Ok(GattManagementWrite::Indeterminate { permit })
+                }
+            }
+        })
+    }
+
+    /// Preserve the original frame, local range and any armed operation.
+    pub fn retire(self) -> FramedManagementRetirement<'frame> {
+        FramedManagementRetirement {
+            cursor: self.cursor.retire(),
+            plan: self.plan,
+            operation: self.operation,
+            state: self.state,
+        }
+    }
+}
+
 /// An acquired adapter scan. The owner must explicitly stop it on the same
 /// connection. If this is dropped or cancellation prevents an acknowledged
 /// stop, cleanup remains uncertain even though the bus connection closes.
