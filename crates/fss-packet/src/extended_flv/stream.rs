@@ -12,6 +12,54 @@ use super::{Error as ParseError, Header, Limits, Parse, Tag, find_next, find_nex
 
 /// Maximum resident input bytes accepted by one framer.
 pub const MAX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum source prefix inspected for an optional initial stream-name claim.
+pub const MAX_NAME_PREFIX_BYTES: usize = 256 * 1024;
+/// Maximum structurally framed tags inspected in one initial claim search.
+pub const MAX_NAME_PREFIX_TAGS: usize = 32;
+
+/// Result of a bounded non-consuming startup metadata inspection.
+/// A match is an untrusted sender claim, not authentication or stream identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NameProbe {
+    /// More input may contain the requested claim within the remaining bounds.
+    NeedMore,
+    /// A matching event and stream-name claim was observed at this zero-based tag index.
+    Matched {
+        /// Zero-based position among inspected source tags.
+        tag_index: usize,
+    },
+    /// A matching event claimed a different stream name at this zero-based tag index.
+    Mismatched {
+        /// Zero-based position among inspected source tags.
+        tag_index: usize,
+    },
+    /// The configured source-prefix or tag count bound was reached.
+    LimitReached {
+        /// Complete tags inspected before the bound was reached.
+        tags_scanned: usize,
+    },
+}
+
+/// Payload-free failure while inspecting a retained startup prefix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NameProbeError {
+    /// Invalid expected values, bounds, or framer state.
+    Configuration,
+    /// The caller's explicit work allowance was exhausted.
+    WorkLimit,
+    /// An earlier incomplete candidate prevents a stable structural claim.
+    Provisional,
+    /// FLV framing refused the retained bytes.
+    Framing(Error),
+    /// A script tag was invalid or outside the supported AMF0 profile.
+    Metadata(super::metadata::Error),
+}
+impl fmt::Display for NameProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "extended FLV name inspection refused: {self:?}")
+    }
+}
+impl std::error::Error for NameProbeError {}
 
 /// Payload-free framing and accounting refusals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -391,6 +439,112 @@ impl Framer {
         }
     }
 
+    /// Inspect a bounded initial prefix for a named AMF0 event and stream claim.
+    ///
+    /// This does not consume, copy, or persist source bytes. The caller owns
+    /// the source, supplies fresh connection-specific expectations, meters
+    /// repeated calls through `work_remaining`, and decides whether to act on
+    /// the result. Even a match is neither camera authentication nor proof of
+    /// a stream's identity. Incomplete or unsupported input never matches.
+    pub fn inspect_initial_name(
+        &self,
+        expected_event: &str,
+        expected_name: &str,
+        byte_limit: usize,
+        tag_limit: usize,
+        work_remaining: &mut u64,
+    ) -> Result<NameProbe, NameProbeError> {
+        if self.phase != Phase::Header
+            || self.base != 0
+            || expected_event.is_empty()
+            || expected_event.len() > 128
+            || expected_name.len() != 16
+            || !expected_name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !(13..=MAX_NAME_PREFIX_BYTES).contains(&byte_limit)
+            || !(1..=MAX_NAME_PREFIX_TAGS).contains(&tag_limit)
+        {
+            return Err(NameProbeError::Configuration);
+        }
+        name_probe_charge(work_remaining, 1)?;
+        let all = &self.buffer[self.head..];
+        let input = &all[..all.len().min(byte_limit)];
+        let at_bound = all.len() >= byte_limit;
+        let waiting = |tags_scanned| {
+            if at_bound {
+                NameProbe::LimitReached { tags_scanned }
+            } else {
+                NameProbe::NeedMore
+            }
+        };
+        let prefix_len = input.len().min(3);
+        if input[..prefix_len] != b"FLV"[..prefix_len] || (input.len() >= 4 && input[3] != 1) {
+            return Err(NameProbeError::Framing(Error::Parse(
+                ParseError::InvalidHeader,
+            )));
+        }
+        name_probe_charge(work_remaining, input.len().min(self.limits.max_header + 4))?;
+        let header = match Header::parse(input, self.limits)
+            .map_err(|error| NameProbeError::Framing(Error::Parse(error)))?
+        {
+            Parse::NeedMore => return Ok(waiting(0)),
+            Parse::Complete(header) => header,
+        };
+        let mut position = header.wire_bytes().len();
+        let mut previous_kind = None;
+        for index in 0..tag_limit {
+            let rest = &input[position..];
+            let tag = if index == 0 {
+                name_probe_charge(work_remaining, rest.len().min(15))?;
+                if self.mode == SearchMode::ZeroStreamId
+                    && rest.len() >= 11
+                    && rest[8..11] != [0; 3]
+                {
+                    return Err(NameProbeError::Framing(Error::StreamIdMismatch));
+                }
+                match Tag::parse(rest, self.limits)
+                    .map_err(|error| NameProbeError::Framing(Error::Parse(error)))?
+                {
+                    Parse::NeedMore => return Ok(waiting(index)),
+                    Parse::Complete(tag) => tag,
+                }
+            } else {
+                name_probe_charge(work_remaining, rest.len().min(self.limits.max_trailer + 1))?;
+                match successor(rest, self.limits, self.mode, previous_kind)
+                    .map_err(NameProbeError::Framing)?
+                {
+                    Parse::NeedMore => return Ok(waiting(index)),
+                    Parse::Complete(candidate) if candidate.earlier_incomplete => {
+                        return Err(NameProbeError::Provisional);
+                    }
+                    Parse::Complete(candidate) => {
+                        position += candidate.trailer.len();
+                        candidate.tag
+                    }
+                }
+            };
+            if tag.kind() == 18 {
+                name_probe_charge(work_remaining, tag.payload().len())?;
+                let claim = super::metadata::parse(tag).map_err(NameProbeError::Metadata)?;
+                if claim.event() == expected_event {
+                    if let Some(name) = claim.stream_name() {
+                        return Ok(if name == expected_name {
+                            NameProbe::Matched { tag_index: index }
+                        } else {
+                            NameProbe::Mismatched { tag_index: index }
+                        });
+                    }
+                }
+            }
+            position += tag.wire_bytes().len();
+            previous_kind = Some(tag.kind());
+        }
+        Ok(NameProbe::LimitReached {
+            tags_scanned: tag_limit,
+        })
+    }
+
     /// Copy one entire contiguous input slice. On refusal no input is accepted.
     /// The caller retains the input and may retry a smaller prefix after draining.
     pub fn append(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
@@ -448,24 +602,8 @@ impl Framer {
                     Phase::Successor,
                 ),
             },
-            Phase::Successor => match match self.mode {
-                SearchMode::Conservative => find_next(input, self.limits).map_err(Error::Parse),
-                SearchMode::Provisional => {
-                    find_next_provisional(input, self.limits).map_err(Error::Parse)
-                }
-                SearchMode::StructuredTrailer16 => structured_trailer_16(input, self.limits, None),
-                SearchMode::StructuredTrailer16AvFlag => {
-                    let flag = match self.last_tag_kind {
-                        Some(8) => 0,
-                        Some(9 | 18) => 1,
-                        _ => return Err(Error::TrailerPolicyMismatch),
-                    };
-                    structured_trailer_16(input, self.limits, Some(flag))
-                }
-                SearchMode::ZeroStreamId => {
-                    super::find_next_zero_stream_id(input, self.limits).map_err(Error::Parse)
-                }
-            }? {
+            Phase::Successor => match successor(input, self.limits, self.mode, self.last_tag_kind)?
+            {
                 Parse::NeedMore => return Ok(Next::NeedMore),
                 Parse::Complete(candidate) => (
                     candidate.trailer.len() + candidate.tag.wire_bytes().len(),
@@ -522,6 +660,38 @@ impl Framer {
             phase: self.phase,
             provisional: self.provisional,
             bytes: self.buffer,
+        }
+    }
+}
+
+fn name_probe_charge(work_remaining: &mut u64, cost: usize) -> Result<(), NameProbeError> {
+    let cost = u64::try_from(cost).map_err(|_| NameProbeError::WorkLimit)?;
+    *work_remaining = work_remaining
+        .checked_sub(cost)
+        .ok_or(NameProbeError::WorkLimit)?;
+    Ok(())
+}
+
+fn successor(
+    input: &[u8],
+    limits: Limits,
+    mode: SearchMode,
+    previous_kind: Option<u8>,
+) -> Result<Parse<super::Candidate<'_>>, Error> {
+    match mode {
+        SearchMode::Conservative => find_next(input, limits).map_err(Error::Parse),
+        SearchMode::Provisional => find_next_provisional(input, limits).map_err(Error::Parse),
+        SearchMode::StructuredTrailer16 => structured_trailer_16(input, limits, None),
+        SearchMode::StructuredTrailer16AvFlag => {
+            let flag = match previous_kind {
+                Some(8) => 0,
+                Some(9 | 18) => 1,
+                _ => return Err(Error::TrailerPolicyMismatch),
+            };
+            structured_trailer_16(input, limits, Some(flag))
+        }
+        SearchMode::ZeroStreamId => {
+            super::find_next_zero_stream_id(input, limits).map_err(Error::Parse)
         }
     }
 }

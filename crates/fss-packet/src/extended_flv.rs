@@ -18,6 +18,8 @@ pub mod aac_adts;
 pub mod aac_clock;
 /// Connection-relative AAC configuration epochs and access-unit source spans.
 pub mod aac_track;
+/// Bounded AMF0 script-data claims; they do not authenticate a sender.
+pub mod metadata;
 /// Borrowed AVC configuration and NAL views over original extended-FLV tags.
 pub mod avc;
 /// Incremental framing that returns original bytes and stream-relative ranges.
