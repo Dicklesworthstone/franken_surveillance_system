@@ -633,6 +633,35 @@ impl Worker {
         })
     }
 
+    /// Reattach an already replayed rollover lineage to a fresh video sink.
+    /// Refusal returns the original parts and the complete custody chain.
+    pub fn from_recovered(
+        parts: Parts,
+        mut custody: archive::journal::rollover::WorkerCustody,
+    ) -> Result<Self, (Parts, archive::journal::rollover::WorkerCustody)> {
+        if !(1..=100_000_000_000).contains(&parts.work_limit)
+            || parts.sink.has_pending()
+            || parts
+                .journal
+                .confirmed()
+                .is_none_or(|pin| pin.retention != parts.sink.retention())
+            || custody
+                .check(&parts.journal, &parts.keeper, &parts.replay)
+                .is_err()
+        {
+            return Err((parts, custody));
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(State {
+                parts,
+                report: None,
+                rollover_custody: Some(custody),
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
+
     /// Admit one source without blocking on a running attempt.
     pub fn offer(&mut self, segment: recording::Segment) -> Result<(), OfferRefusal> {
         if self.fenced {

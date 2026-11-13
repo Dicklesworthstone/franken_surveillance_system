@@ -77,6 +77,13 @@ pub enum Step {
     ConfigurationRefused(video_owned_sink::ConstructionRefusal),
     /// Video worker construction refused and returned its owners.
     WorkerRefused(video_worker::Parts),
+    /// Recovered worker attachment refused and retained the whole chain.
+    RecoveredWorkerRefused {
+        /// Original worker parts, including the new video sink.
+        parts: video_worker::Parts,
+        /// Original rollover custody.
+        custody: super::archive::journal::rollover::WorkerCustody,
+    },
     /// A source archive attempt started.
     SourceStarted,
     /// Starting the source failed; retry requires explicit authorization.
@@ -598,12 +605,13 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
                         authority,
                         limits,
                         work_limit,
+                        rollover_custody,
                     } = *self
                         .parts
                         .resources
                         .take()
                         .expect("resources precede configuration");
-                    let video = match video_worker::Worker::new(video_worker::Parts {
+                    let parts = video_worker::Parts {
                         sink,
                         deployment,
                         journal,
@@ -612,12 +620,22 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
                         authority,
                         limits,
                         work_limit,
-                    }) {
-                        Ok(video) => video,
-                        Err(parts) => {
-                            self.parts.halted = true;
-                            return Step::WorkerRefused(parts);
-                        }
+                    };
+                    let video = match rollover_custody {
+                        Some(custody) => match video_worker::Worker::from_recovered(parts, custody) {
+                            Ok(video) => video,
+                            Err((parts, custody)) => {
+                                self.parts.halted = true;
+                                return Step::RecoveredWorkerRefused { parts, custody };
+                            }
+                        },
+                        None => match video_worker::Worker::new(parts) {
+                            Ok(video) => video,
+                            Err(parts) => {
+                                self.parts.halted = true;
+                                return Step::WorkerRefused(parts);
+                            }
+                        },
                     };
                     self.parts.video = Some(video);
                     match self.parts.source.offer(source_worker::Input::Original {

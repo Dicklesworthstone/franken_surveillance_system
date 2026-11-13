@@ -87,6 +87,14 @@ pub struct Retainers {
     pub av_keeper: Box<dyn EffectPinRetainer>,
 }
 
+/// Separately retained source journal and keeper, without opening an A/V predecessor.
+pub struct SourceRetainers {
+    /// Custody for the source journal prefix.
+    pub journal: Box<dyn EffectPinRetainer>,
+    /// Custody for the source keeper prefix.
+    pub keeper: Box<dyn EffectPinRetainer>,
+}
+
 /// Separately retained minimum prefixes for one journal and its keeper.
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryMinimum {
@@ -123,6 +131,47 @@ pub struct Recovered {
     /// A/V archive history.
     pub av: RecoveredHistory,
     retained: bool,
+    av_rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
+}
+
+/// A source history reopened with both caller-supplied pin custodians.
+#[must_use = "reconcile or transfer the retained source history"]
+pub struct RetainedSourceHistory {
+    history: RecoveredHistory,
+}
+
+/// A failed join returns the source, lineage, and A/V replay authority.
+#[must_use = "retain or reconcile all returned owners"]
+pub struct LineageJoinRefusal {
+    /// Payload-free refusal classification.
+    pub reason: Error,
+    /// Original independently retained source owner.
+    pub source: RetainedSourceHistory,
+    /// Original A/V lineage.
+    pub lineage: archive::journal::rollover::RecoveredLineage,
+    /// Original A/V replay authority.
+    pub av_replay: ReplayCx,
+}
+
+impl std::fmt::Debug for LineageJoinRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LineageJoinRefusal").field("reason", &self.reason).finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for LineageJoinRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UniFi source and rollover lineage join refused: {:?}", self.reason)
+    }
+}
+impl std::error::Error for LineageJoinRefusal {}
+
+impl Recovered {
+    /// Recover every archive owner, including any rollover chain.
+    /// Retainer provenance must be established again before using these as a
+    /// retained restart input.
+    pub fn into_histories(self) -> (RecoveredHistory, RecoveredHistory, Option<archive::journal::rollover::WorkerCustody>) {
+        (self.source, self.av, self.av_rollover_custody)
+    }
 }
 
 /// Boundary between the verified prior connection and a newly selected one.
@@ -401,6 +450,7 @@ fn create_inner<'task>(
             authority,
             limits: cfg.limits,
             work_limit: cfg.work_limit,
+            rollover_custody: None,
         }),
     })
 }
@@ -481,6 +531,71 @@ pub fn recover_histories_retained<'task>(
     )
 }
 
+/// Reopen only the separately retained source history. This avoids opening
+/// the A/V predecessor a second time while a recovered lineage owns it.
+/// On I/O failure, reopen the exact source histories and custodians again;
+/// no network operation or recording session is started.
+pub fn recover_source_retained<'task>(
+    task: &TaskCx<'task>,
+    cx: &Cx,
+    clock: MeteredClock<'_, 'task>,
+    cfg: Configuration<'_>,
+    minimum: HistoryMinimum,
+    source_replay: ReplayCx,
+    av_replay: &ReplayCx,
+    retainers: SourceRetainers,
+) -> Result<RetainedSourceHistory, Error> {
+    if !valid_configuration(&cfg, &source_replay, av_replay) {
+        return Err(Error::Configuration);
+    }
+    if !clock.matches(task, cx) {
+        return Err(Error::Admission);
+    }
+    let resource = cfg.root.to_str().ok_or(Error::Configuration)?;
+    admit(task, cx, clock, resource, &source_replay)?;
+    if !std::fs::symlink_metadata(cfg.root).map_err(|_| Error::Recovery)?.is_dir() {
+        return Err(Error::Recovery);
+    }
+    let history = recover_one(
+        task, cx, clock, cfg.root, "source", cfg.source_scope,
+        cfg.source_history_limits, minimum, source_replay,
+        Some(retainers.journal), Some(retainers.keeper),
+    )?;
+    Ok(RetainedSourceHistory { history })
+}
+
+/// Join a retained source owner to an already replayed A/V rollover lineage.
+/// The selected lineage is caller supplied; this does not establish that it
+/// is the latest one, authenticate a camera, or start a session.
+pub fn join_source_and_av_lineage(
+    cfg: Configuration<'_>,
+    source: RetainedSourceHistory,
+    mut lineage: archive::journal::rollover::RecoveredLineage,
+    av_replay: ReplayCx,
+) -> Result<Recovered, LineageJoinRefusal> {
+    let reason = if !valid_configuration(&cfg, &source.history.replay, &av_replay)
+        || source.history.journal.scope() != cfg.source_scope
+    {
+        Some(Error::Configuration)
+    } else {
+        match lineage.checked_scope(&av_replay) {
+            Ok(scope) if scope == cfg.av_scope => None,
+            Ok(_) => Some(Error::Configuration),
+            Err(_) => Some(Error::Reconciliation),
+        }
+    };
+    if let Some(reason) = reason {
+        return Err(LineageJoinRefusal { reason, source, lineage, av_replay });
+    }
+    let (current, custody) = lineage.into_parts();
+    Ok(Recovered {
+        source: source.history,
+        av: RecoveredHistory { journal: current.journal, keeper: current.keeper, replay: av_replay },
+        retained: true,
+        av_rollover_custody: Some(custody),
+    })
+}
+
 fn recover_histories_inner<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -544,6 +659,7 @@ fn recover_histories_inner<'task>(
         source,
         av,
         retained,
+        av_rollover_custody: None,
     })
 }
 
@@ -674,20 +790,37 @@ pub fn resume_confirmed<'task>(
         if source_receipt.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered {
             return Err(Error::Reconciliation);
         }
-        let av_receipt = archive::replay_confirmed_unknown_time_av_anchored(
-            &mut av_deployment,
-            read_authority,
-            retain_authority.as_ref(),
-            cfg.limits,
-            object_limits,
-            &mut fss_geometry::WorkBudget::new(cfg.work_limit),
-            &histories.av.replay,
-            &mut histories.av.journal,
-            &mut histories.av.keeper,
-        )
-        .map_err(|_| Error::Reconciliation)?;
-        if av_receipt.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered {
-            return Err(Error::Reconciliation);
+        if let Some(custody) = &mut histories.av_rollover_custody {
+            let checked = custody.verify_settled_av(
+                &histories.av.journal,
+                &histories.av.keeper,
+                &mut av_deployment,
+                read_authority,
+                retain_authority.as_ref(),
+                cfg.limits,
+                object_limits,
+                &mut fss_geometry::WorkBudget::new(cfg.work_limit),
+                &histories.av.replay,
+            ).map_err(|_| Error::Reconciliation)?;
+            if checked != av_pin {
+                return Err(Error::Reconciliation);
+            }
+        } else {
+            let av_receipt = archive::replay_confirmed_unknown_time_av_anchored(
+                &mut av_deployment,
+                read_authority,
+                retain_authority.as_ref(),
+                cfg.limits,
+                object_limits,
+                &mut fss_geometry::WorkBudget::new(cfg.work_limit),
+                &histories.av.replay,
+                &mut histories.av.journal,
+                &mut histories.av.keeper,
+            )
+            .map_err(|_| Error::Reconciliation)?;
+            if av_receipt.outcome != fss_publication::RootLedgerOutcome::AlreadyLedgered {
+                return Err(Error::Reconciliation);
+            }
         }
         Ok((
             source_deployment,
@@ -709,6 +842,7 @@ pub fn resume_confirmed<'task>(
         source,
         av,
         retained,
+        av_rollover_custody,
     } = histories;
     let parts = source_worker::Parts {
         deployment: source_deployment,
@@ -735,6 +869,7 @@ pub fn resume_confirmed<'task>(
                     source,
                     av,
                     retained,
+                    av_rollover_custody,
                 },
             });
         }
@@ -751,6 +886,7 @@ pub fn resume_confirmed<'task>(
                 authority: retain_authority,
                 limits: cfg.limits,
                 work_limit: cfg.work_limit,
+                rollover_custody: av_rollover_custody,
             }),
         },
     })

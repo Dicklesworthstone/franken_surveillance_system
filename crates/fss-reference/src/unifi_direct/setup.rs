@@ -409,6 +409,17 @@ pub struct Observation {
     /// The matching camera-local controller claim and session binding.
     pub settings: camera_api::SettingsObservation,
 }
+impl Observation {
+    /// Rank the profiles in the two matching settings reads under caller limits.
+    /// These are untrusted camera claims; selection neither authorizes a stream
+    /// nor proves its actual dimensions, codec, or delivery.
+    pub fn select_reported_video(
+        &self,
+        limits: camera_api::VideoProfileLimits,
+    ) -> Result<camera_api::VideoProfileSelection, camera_api::Error> {
+        camera_api::select_reported_video_profile(self.settings.video_profiles, limits)
+    }
+}
 
 /// Task resources and policies for the setup attempt.
 pub struct Owner<'a, 'scope, 'task> {
@@ -1274,6 +1285,17 @@ mod profile_tests {
             controller: true,
             controller_port: ControllerPort::Reported(7442),
         };
+        let read_only = Observation { status, settings: observation };
+        let selected = read_only.select_reported_video(limits).unwrap();
+        assert_eq!(selected.selected, Some((super::super::VideoChannel::Video1, high)));
+        let constrained = camera_api::VideoProfileLimits { max_width: 1280, ..limits };
+        assert_eq!(
+            read_only.select_reported_video(constrained).unwrap().selected,
+            Some((super::super::VideoChannel::Video2, low))
+        );
+        assert!(read_only.select_reported_video(camera_api::VideoProfileLimits {
+            max_width: 0, ..limits
+        }).is_err());
         let outcome = Outcome::AlreadyAssociated {
             status,
             observation,
