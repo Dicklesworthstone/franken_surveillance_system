@@ -27,7 +27,7 @@ BB=/tmp/Upgrade/busybox
 # used (not $BB) because the beacons must work before the static one is proven.
 # `stage=` in /tmp/fss_beacons.log then names the exact line that died.
 BEACON_HOST=192.168.4.160
-beacon() { /bin/busybox wget -q -O /dev/null "http://$BEACON_HOST:8080/fss-ran?stage=$1&uid=$(/bin/busybox id -u 2>/dev/null)" 2>/dev/null; }
+beacon() { /bin/busybox wget -q -O /dev/null "http://$BEACON_HOST:8080/fss-ran?stage=$1&uid=$(/bin/busybox id -u 2>/dev/null)" 2>/dev/null || true; }
 
 log() { echo "[fss-ota] $*"; }
 die() { log "FATAL: $*"; beacon "fail:$1"; exit 1; }
