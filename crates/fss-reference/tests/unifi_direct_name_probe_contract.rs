@@ -134,9 +134,10 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
                     let peer = std::thread::spawn(move || -> std::io::Result<()> {
                         let mut socket =
                             std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        socket.write_all(&sent[..13])?;
                         rx.recv_timeout(Duration::from_secs(5))
                             .map_err(std::io::Error::other)?;
-                        socket.write_all(&sent)
+                        socket.write_all(&sent[13..])
                     });
                     let (framer, recorder) = parts(1)?;
                     let mut pipeline = listener
@@ -156,6 +157,14 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
                     pipeline
                         .begin_name_probe(probe)
                         .map_err(|_| "probe refused")?;
+                    let mut retained_header = 0;
+                    while retained_header < 13 {
+                        match pipeline.probe_name_step(task, cx, clock.now()?).await? {
+                            ingress::NameProbeStep::Progress { appended } => retained_header += appended,
+                            other => return Err(format!("unexpected partial header: {other:?}").into()),
+                        }
+                    }
+                    assert_eq!(retained_header, 13);
                     let mut pending = Box::pin(pipeline.probe_name_step(task, cx, clock.now()?));
                     poll_fn(|cx| match pending.as_mut().poll(cx) {
                         Poll::Pending => Poll::Ready(()),
@@ -243,6 +252,41 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
                     assert!(pipeline.take_name_probe().is_some());
                     let retired = pipeline.retire();
                     assert_eq!(retired.ingress.framing.bytes(), media("ffffffffffffffff"));
+
+                    let peer = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut socket =
+                            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        socket.write_all(&media("0123456789abcdef"))
+                    });
+                    let (framer, recorder) = parts(3)?;
+                    let mut pipeline = listener
+                        .accept_next(framer, recorder, 4096, 100_000, Duration::from_secs(5))
+                        .await?;
+                    pipeline
+                        .begin_name_probe(NameProbeOwner::new(
+                            "event1", "0123456789abcdef", 13, 4, 1_000_000,
+                        )?)
+                        .map_err(|_| "probe refused")?;
+                    peer.join().map_err(|_| "peer panicked")??;
+                    let mut bounded = false;
+                    for _ in 0..16 {
+                        match pipeline.probe_name_step(task, cx, clock.now()?).await? {
+                            ingress::NameProbeStep::Progress { .. } => (),
+                            ingress::NameProbeStep::LimitReached { tags_scanned: 0 } => {
+                                bounded = true;
+                                break;
+                            }
+                            other => return Err(format!("unexpected bound result: {other:?}").into()),
+                        }
+                    }
+                    assert!(bounded);
+                    let retired = pipeline.retire();
+                    assert_eq!(retired.ingress.framing.bytes(), &media("0123456789abcdef")[..13]);
+                    if let Some(chunk) = retired.ingress.buffered {
+                        let start = chunk.source.offset() as usize;
+                        assert_eq!(&chunk.source.bytes()[..chunk.appended],
+                            &media("0123456789abcdef")[start..start + chunk.appended]);
+                    }
                     Ok(())
                 }
                 .await;
