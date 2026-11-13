@@ -16481,8 +16481,8 @@ multiple matching peers. These probes establish only possession of the pinned
 key; a network-observed pin does not independently establish physical identity.
 Unreachable or failed handshakes do not establish that no other matching camera
 exists. This does not provision Wi-Fi, create a credential, perform a handoff,
-or start video. The pending initial compiler check is job
-`j-30097323753212765` using the retained snapshots under
+or start video. The initial compiler check, job
+`j-30097323753212765`, passed with exit 0 using the retained snapshots under
 `/home/ubuntu/projects/fss-pinscan-0ac121d6f861`; its source predates the later
 discovery-target edge-case fix and its test. Neither revision has been
 qualified by a real-device or synthetic multi-camera run yet. A separate
@@ -16493,5 +16493,9 @@ helper also has a pure regression test for a /32 scope, duplicate broadcasts and
 invalid bounds, which has not yet run. A newer prepared source pair, including
 these changes, is retained under `/home/ubuntu/projects/fss-pinscan2-1c603a0b6470`
 with source commit `c61a3d887b3e3a5ea15e96f182374701d1d17b29` and lab commit
-`f24cec1197b3ddd25577bcf254794f095a2aa9c2`. These snapshots have not yet been
-compiled or executed.
+`f24cec1197b3ddd25577bcf254794f095a2aa9c2`. Strict-remote unit-test job
+`j-30097323753212773` exited 101 before compiling because its worker lacked
+the offline `x509-cert` dependency; no test ran. A retry on the earlier
+compiler's worker, `j-30097323753212777`, is running. Both prior terminal
+results were acknowledged and released their sources and pairs. The loopback
+fixture has not been executed.
