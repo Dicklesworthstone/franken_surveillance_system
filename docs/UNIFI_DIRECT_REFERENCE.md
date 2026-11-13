@@ -15659,3 +15659,37 @@ older than ten minutes was used instead. The recorder service and fallback
 timer were active after the synthetic tests. This point-in-time observation
 does not prove uninterrupted recording, a full-resolution camera capture, or
 30-day retention.
+
+### Recording handoff into retained provisioning (2026-11-13 UTC)
+
+The managed recording owner can now transfer a live recording into a
+caller-supplied retained-generation bootstrap without performing I/O. A
+stopped owner, unavailable controller, or inadmissible bootstrap returns
+both original owners; a successful transfer retains the recording controller
+and the managed rollover state. This is a caller-driven video-only bridge,
+not an unattended recorder or automatic physical-camera enrollment.
+
+Strict-remote job `j-30107138793668640` passed the automatic creator and
+next-reservation fixture (1 passed, 116 filtered) on base
+`06e63f038947cc6a3844a27f435cf9ea796d98a5` with overlay fingerprint
+`f85119459c18472b32aece9dd1efa75f907f44ffe6fe5aecd2b8cdf0332333a9`.
+That snapshot preceded the additional stopped-controller guard. Subsequent
+strict-remote job `j-30107138793668651` compiled the guard and its new
+cancellation fixture but failed (0 passed, 116 filtered) during earlier
+synthetic video bootstrap with the generic `video bootstrap control stopped`
+result. Terminal acknowledgement and source and pair release were observed.
+The precise control event remains unknown; the failure is not erased by the
+following separate executions.
+
+The final Linux binary from that failed job, SHA-256
+`eee926d44e8848afaa4b77076d6b190ced469c2fde06002e2a7102ffb77b4443`,
+matched on the worker and the isolated omarchy host before execution and
+matched again afterward. There, separate direct runs passed the stopped
+recording/cancelled creator test and the automatic creator and next-reservation
+test (each 1 passed, 116 filtered). The first verified that a stopped managed
+recording refuses the handoff without starting a fresh bootstrap; the second
+verified refusal of a cancelled bootstrap, preservation of the recording
+controller, and a subsequent explicit fresh bootstrap and reservation. These
+are synthetic direct Linux results, not a passing second RCH job, physical G4
+recording, restart recovery, audio integration, or retention proof. The
+existing recorder and fallback timer were active after these checks.
