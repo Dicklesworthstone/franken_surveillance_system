@@ -17307,3 +17307,95 @@ mismatched names, exhausted work, unsupported metadata and provisional
 boundaries. This is a synchronous packet-layer facility: it is not yet wired
 into the Asupersync listener or automatic candidate selection, and no G4
 connection-start metadata or direct live camera handoff was tested here.
+
+The worktree subsequently added a connection-owned probe budget and a
+task-scoped TCP ingress/pipeline step. A pending wait retains its expectations,
+remaining work and original source; a mismatch stops that optional probe's
+pipeline, and the caller can transfer the owner. Explicit ordinary processing
+can abandon the optional probe, so the caller remains responsible for its
+selection policy. Strict-remote job `30097323753213259` passed one synthetic
+loopback test of pending-read resumption, byte retention and mismatch. A later
+expanded test covering cancellation after a partial header and a 13-byte prefix
+limit was refused before Cargo started by worker disk-monitor timeout in job
+`30097323753213264`; its source and pair were released. A pool-selected retry,
+job `30097323753213265`, passed the expanded loopback test, exited zero,
+acknowledged termination, and released source and pair. Its source commit was
+`289d84d21f4847c218e016fd837f280b68ec6534`. The final test checked a dropped
+wait after a partial header, retained work and source, a matching claim, a
+mismatched claim, and the prefix limit with a partly retained TCP chunk.
+The packet framer, ingress, pipeline and test source SHA-256 values were
+`13a6f36adf7bb91c23dec177ba478d4f847e037d044da8e3825e784909dff069`,
+`5a157af54f3815362c6182aab983c0664b1b21e3b1d0b68653a29783420a9b33`,
+`ec6997b1f0a2bd02169444ca4a3a372a042099f3dcdf7b84ef32289d347ea773`, and
+`614526444ddf2d008d5ae8035e65c3cbbd916fde829e72e491833bf7b1187fbd`.
+These tests do not contact the camera or automatically select a connection.
+The same source snapshot also passed 12 packet metadata tests and 14 existing
+framing tests in strict-remote job `30097323753213269`, with one private-input
+test ignored. That job exited zero, acknowledged termination, and released
+source and pair. The packet test SHA-256 was
+`639be435edf3ffeb1f72f95a8c3ecdb677828ab1ab20bea070826168c218a075`.
+The existing listener/reconnect contract also passed its single test in
+strict-remote job `30097323753213272` at the same snapshot, with terminal
+acknowledgment and source and pair release. The G4 recorder and fallback timer
+remained active at the later check, with restart count 2.
+The existing audio-pipeline contract passed four synthetic tests, with one
+owner-camera replay ignored, in job `30097323753213274` at the same snapshot;
+its terminal result was acknowledged and source and pair were released. This
+is regression coverage, not a new physical-camera audio result.
+
+The parallel media selector now offers an explicit, bounded stream-name policy.
+Each candidate gets its own probe budget; mismatching or exhausted candidates
+retain their received source bytes, and name selection never falls back to the
+header-only policy. A strict-remote loopback integration test at source commit
+`0ccb99e6b9de721969c947133efc4d721efb0993` passed in job
+`30097323753213282` (one test, zero failures). It covered a rejected candidate
+followed by a matching candidate, retained bytes, exhausted candidates, and
+refusal to downgrade the policy. The job exited zero, acknowledged its
+terminal result, and released its source and pair. The first worker refused
+admission before execution; the build system retried on another worker.
+The selector and test sources had SHA-256
+`0453a73f881b6b6ff02e22131d07e7c280b3bd5c6b9487654cc8fa8dc446ee8f` and
+`e91a7a0e7118b71ed35f9674e17b10ca6c275adb728df64e0241b1009145175e`.
+At the same source snapshot the existing listener/reconnect contract passed
+one test in strict-remote job `30097323753213289`, which exited zero,
+acknowledged its terminal result, and released source and pair.
+This policy remains opt-in: the actual G4 connection-start metadata and an
+independent association to the requested camera have not been established.
+The synthetic name claim is not authentication, a direct physical handoff,
+automatic setup, native recording, or proof of 30-day retention.
+
+An eight-minute passive watch on trj subsequently filtered camera-originated
+TCP on the selected interface while the existing recorder ran. It reported no
+new SYN and no complete new FLV header in that window, so it could not inspect
+startup metadata or original AVC configuration. The camera and recorder were
+not reconfigured. This is one bounded observation, not evidence that reconnects
+do not happen or that a startup claim is absent. The local and remote observer
+copies had SHA-256
+`ffcb895598911069d7cc1bcbc7a67f700c5b363bee746a98cf0942849f22a9f7`.
+The recorder and fallback timer were active afterward with restart count 2.
+
+The retained-listener startup owner now keeps the locally dispatched stream
+name private and transfers it to validated media selection. The optional name
+policy takes its expected name from that owner instead of another caller-supplied
+string. Splitting the retained owner for disposition discards the binding.
+The event name remains caller-selected, and the metadata claim remains
+unauthenticated. A synthetic controller integration test observed the requested
+name on the control request, supplied matching media metadata, and completed
+the supervised selection and recording pipeline. Strict-remote job
+`30097323753213301` passed the single selected test at source snapshot
+`4c8679bf0af4da3eb99d9b043d5338a784442731` with a 16 MiB test-thread stack;
+it exited zero, acknowledged termination, and released source and pair.
+The preceding job `30097323753213299` overflowed the default test-thread stack
+and exited 101; this does not qualify default-stack or production operation.
+An earlier job `30097323753213295` failed compilation because its isolated
+snapshot lacked newer video-recovery APIs; it was refreshed before retry.
+Both failed jobs acknowledged termination and released source and pair.
+The listener and test source SHA-256 values were
+`a0831c6a9d50fb23db007d033f43de9b874487e1a42047fe38e4109f5ef06d7e`
+and `c021fa1224693a72fa06b4c8ee62960be88b1e3946c67d7d47040d4c6fa3d98f`.
+The lower-level name-probe contract also passed its single synthetic test at
+the same snapshot in job `30097323753213302`; its successful terminal result
+was acknowledged and source and pair were released.
+The test peer is synthetic and the G4's original startup metadata is still
+unobserved; neither this binding nor a matching name authorizes a handoff or
+proves camera identity, live native capture or unattended recording.
