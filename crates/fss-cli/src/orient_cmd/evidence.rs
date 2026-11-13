@@ -7,8 +7,8 @@
 
 use fss_core::{
     AgentCognitiveEnvelope, AgentView, BudgetVector, Completeness, ContentDigest, EnvelopeBudget,
-    EnvelopeProposition, ExplainQuestion, ExplainReceipt, KnowledgeState, LedgerAnchor,
-    ResponseOutcome, ResponseSafeRetry,
+    EnvelopeProposition, ExplainReceipt, KnowledgeState, LedgerAnchor, ResponseOutcome,
+    ResponseSafeRetry,
 };
 use fss_graph_algorithms::GraphError;
 use fss_graph_algorithms::certified::Budget;
@@ -292,7 +292,7 @@ fn compose(
     token_limit: u64,
 ) -> Result<SupportReview, EvidenceProjectionError> {
     let receipt = ExplainReceipt::compile(
-        ExplainQuestion::Why,
+        explanation.receipt.question(),
         explanation.event.revision_digest,
         vec![
             explanation.event.event_root,

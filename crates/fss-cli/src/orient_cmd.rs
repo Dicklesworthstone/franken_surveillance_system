@@ -21,6 +21,8 @@ mod fusion;
 pub(crate) mod history;
 #[path = "orient_cmd/learning_explain.rs"]
 mod learning_explain;
+#[path = "orient_cmd/what_changed.rs"]
+mod what_changed;
 
 use std::path::PathBuf;
 
@@ -74,6 +76,15 @@ pub struct OrientArgs {
 pub enum ExplainTarget {
     /// A committed event, optionally at an explicitly selected historical anchor.
     Event(EventId),
+    /// One exact current event revision and its immediately preceding committed revision.
+    EventComparison {
+        /// Event whose adjacent revision pair is selected.
+        event_id: EventId,
+        /// Exact digest of the immediately preceding committed revision.
+        from_revision_digest: ContentDigest,
+        /// Exact digest of the current committed revision.
+        to_revision_digest: ContentDigest,
+    },
     /// One immutable captured-learning graph under current session authority.
     Learning {
         /// Session whose retained capture is being inspected.
@@ -352,6 +363,9 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
             "--budget-tokens",
             "--score-calibration",
             "--fusion-policy",
+            "--question",
+            "--from-revision-digest",
+            "--to-revision-digest",
         ],
     )?;
     let (view, budget_tokens) = explain_options::parse(&values)?;
@@ -364,13 +378,73 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
             command: Some("explain".to_owned()),
             index,
         };
-    let target = if let Some((_, raw, index)) = take(&values, "--learning-root") {
+    let question = match take(&values, "--question") {
+        None => "why",
+        Some((_, value, _)) if matches!(value.as_str(), "why" | "what_changed") => value.as_str(),
+        Some((_, value, index)) => {
+            return Err(malformed(
+                "--question",
+                value,
+                *index,
+                "explain admits why or exact adjacent-revision what_changed",
+            ));
+        }
+    };
+    let target = if question == "what_changed" {
+        for option in [
+            "--at",
+            "--session",
+            "--learning-root",
+            "--custody",
+            "--score-calibration",
+            "--fusion-policy",
+        ] {
+            if let Some((_, value, index)) = take(&values, option) {
+                return Err(malformed(
+                    option,
+                    value,
+                    *index,
+                    "what_changed verifies exact current adjacent metadata and cannot combine with historical, learning, custody or fusion options",
+                ));
+            }
+        }
+        let (_, raw, index) =
+            take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
+                option: "--event-id".to_owned(),
+                command: Some("explain".to_owned()),
+                expected: "the event whose adjacent revisions are being compared".to_owned(),
+            })?;
+        let event_id = EventId::parse(raw.clone()).map_err(|_| {
+            malformed(
+                "--event-id",
+                raw,
+                *index,
+                "expected an exact event identity",
+            )
+        })?;
+        let exact_digest = |option: &str| -> Result<ContentDigest, CliError> {
+            let (_, raw, index) = take(&values, option).ok_or_else(|| CliError::MissingValue {
+                option: option.to_owned(),
+                command: Some("explain".to_owned()),
+                expected: "an exact nonzero canonical SHA-256 event revision digest".to_owned(),
+            })?;
+            ContentDigest::parse(raw).ok().filter(|digest| digest.algorithm() == fss_core::DigestAlgorithm::Sha256 && digest.to_text() == *raw && digest.bytes().iter().any(|byte| *byte != 0))
+                .ok_or_else(|| malformed(option, "[redacted]", *index, "expected an exact nonzero canonical sha256:<64 lowercase hex> revision digest"))
+        };
+        ExplainTarget::EventComparison {
+            event_id,
+            from_revision_digest: exact_digest("--from-revision-digest")?,
+            to_revision_digest: exact_digest("--to-revision-digest")?,
+        }
+    } else if let Some((_, raw, index)) = take(&values, "--learning-root") {
         for option in [
             "--event-id",
             "--at",
             "--custody",
             "--score-calibration",
             "--fusion-policy",
+            "--from-revision-digest",
+            "--to-revision-digest",
         ] {
             if let Some((_, value, at)) = take(&values, option) {
                 return Err(malformed(
@@ -407,6 +481,16 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
             publication_root,
         }
     } else {
+        for option in ["--from-revision-digest", "--to-revision-digest"] {
+            if let Some((_, raw, index)) = take(&values, option) {
+                return Err(malformed(
+                    option,
+                    raw,
+                    *index,
+                    "revision comparison pins require --question what_changed",
+                ));
+            }
+        }
         if let Some((_, raw, index)) = take(&values, "--session") {
             return Err(malformed(
                 "--session",
@@ -2295,6 +2379,18 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             return learning_explain::execute(args, session, *publication_root);
         }
         ExplainTarget::Event(event_id) => event_id,
+        ExplainTarget::EventComparison {
+            event_id,
+            from_revision_digest,
+            to_revision_digest,
+        } => {
+            return what_changed::execute(
+                args,
+                event_id,
+                *from_revision_digest,
+                *to_revision_digest,
+            );
+        }
     };
     let Some(token_limit) = explain_options::limit(args.view, args.budget_tokens) else {
         return internal_failure("explain", &args.root);

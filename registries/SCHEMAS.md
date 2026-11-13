@@ -461,3 +461,9 @@ and deleted evidence cannot be restored by cold open or exact retention retry.
 | ID | Schema | Source | Plane | Contract |
 | --- | --- | --- | --- | --- |
 | `SCHEMA-AGENT-RETAINED-RECORDING-REPLAY-QUERY-001` | `fss.agent_retained_recording_replay_query.v1` | `schemas/agent_retained_recording_replay_query.v1.json` | explicit read intent / derived cognition | AOP-005 recordings selector for one exact completed destination import plus independently pinned original AVC/HEVC receipt, request, scope, NTP era and UTC interval. Operator-bound deployment/principal and separate source-verification grant; no archive path needed. One cumulative payload-byte/read-attempt budget includes current history, original packets and final custody/deletion/authority revalidation. Complete ordinary protected envelopes, no media disclosure, mixed selectors, archive syscall quota, clock upgrade or absence claim. |
+
+## Exact adjacent event revision explanations
+
+| ID | Schema | Source | Plane | Contract |
+| --- | --- | --- | --- | --- |
+| `SCHEMA-EVENT-REVISION-COMPARISON-001` | `fss.event_revision_comparison.v1` | `schemas/event_revision_comparison.v1.json` | derived/cognition | Owner: fss-reference::agent_event_changes. Complete native before/after event metadata, both exact committed publication roots and sequences, every changed field, policy and comparison digests, and current authority/effect token. The selected to revision is the current head and from is its immediate predecessor. Full evidence-edge attributes remain visible even when object digests match. One immutable metadata allowance and final custody revalidation; no original media, historical permission restoration, physical-causation inference, durable write or effect grant. Existing AOP-011 cognitive projection preserves complete named values, current uncertainty, worlds and obligations; whole-result refusal on overflow. |
