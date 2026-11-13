@@ -22,7 +22,7 @@ use fss_object::{SpoolIo, effect_journal::EffectJournalLimits};
 use fss_runtime::execution::TaskCx;
 
 use super::{
-    av_rollover_generation, av_rollover_supplies, conversation,
+    av_rollover_generation, av_rollover_supplies, conversation, recording_session,
     metered::MeteredClock,
     recording_rollover::{ManagedSession, ManagedStep},
     source_coordinator::ArchiveAdmission,
@@ -60,9 +60,23 @@ pub struct ProvisioningSession<'scope, 'task, IO> {
     aborted: Cell<bool>,
 }
 
+/// Refused selected-stream provisioning retains the complete recording,
+/// audio allowance and generation plan without starting storage work.
+#[must_use = "recover all returned recording and provisioning owners"]
+pub struct SelectedRefusal<'scope, 'task, IO> {
+    /// Selected recording owners and exact refusal stage.
+    pub recording: recording_session::SelectedRefusal<'scope, 'task, IO>,
+    /// Unused, caller-authorized audio allowance.
+    pub audio: recording_session::AudioAllowancePolicy,
+    /// Unused, caller-authorized storage generation plan.
+    pub plan: av_rollover_generation::Plan,
+}
+
 /// One camera, storage admission, or completed-creation outcome.
 #[must_use = "account for the complete control and storage outcomes"]
 pub enum Step {
+    /// The wait bound is invalid; no camera or provisioning work was polled.
+    Configuration,
     /// Cancellation was requested; drain and recover all retained owners.
     /// No new camera, rollover, or creation work is started by this driver.
     Aborted,
@@ -114,6 +128,40 @@ pub struct Owners<'scope, 'task, IO> {
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'scope, 'task, IO> {
+    /// Bind a managed recording to a finite generation plan without I/O.
+    pub fn from_plan(
+        managed: ManagedSession<'scope, 'task, IO>,
+        plan: av_rollover_generation::Plan,
+    ) -> Self {
+        Self {
+            managed,
+            worker: None,
+            started: false,
+            start_refused: false,
+            completion: None,
+            ready: None,
+            failed: None,
+            custody: None,
+            plan: Some(plan),
+            plan_stopped: false,
+            aborted: Cell::new(false),
+        }
+    }
+
+    /// Bind a selected A/V stream and caller-authorized generation plan.
+    /// This performs no I/O or device authentication; all owners are returned
+    /// unchanged at the stage where selected-stream admission refuses.
+    pub fn begin_selected(
+        selected: recording_session::SelectedRecording<'scope, 'task, IO>,
+        audio: recording_session::AudioAllowancePolicy,
+        plan: av_rollover_generation::Plan,
+    ) -> Result<Self, SelectedRefusal<'scope, 'task, IO>> {
+        match recording_session::Session::begin_selected(selected) {
+            Ok(session) => Ok(Self::from_plan(ManagedSession::new(session, audio), plan)),
+            Err(recording) => Err(SelectedRefusal { recording, audio, plan }),
+        }
+    }
+
     /// Bind an unstarted creator and the existing managed session without I/O.
     pub fn new(
         managed: ManagedSession<'scope, 'task, IO>,
@@ -283,6 +331,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
         source_archive: ArchiveAdmission<'_>,
         supply_cost: &BudgetVector,
     ) -> Step {
+        if wait.is_zero() || wait > Duration::from_secs(30) {
+            return Step::Configuration;
+        }
         let context_valid = owner.cx.checkpoint().is_ok()
             && owner.clock.matches(owner.task, owner.cx)
             && owner.clock.matches(task, cx)
