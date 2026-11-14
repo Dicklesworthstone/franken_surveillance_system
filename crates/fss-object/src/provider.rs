@@ -9,9 +9,11 @@
 //! ```
 //!
 //! — and retrievability is a *witnessed probe*, not an assumed property.
-//! Root manifests activate LAST (an active root never references an object
-//! below `Durable`), retirement requires that no active root reference the
-//! object, and no transition ever moves backwards. These rules are the
+//! Canonical [`crate::ObjectManifest`] roots activate LAST: the root body and
+//! every object in its declared, registered closure must already be `Durable`.
+//! Root bindings are immutable, including across deactivation. Retirement requires
+//! that no active root contain the object, including the root itself and descendants
+//! of previously activated sub-manifests. No transition ever moves backwards. These rules are the
 //! Rust projection of the TLC-checked `RootLastPublication` model
 //! (`proofs/tla/`): R1 root-last, R2 monotonicity, R3 deletion closure,
 //! R5 referential integrity.
@@ -145,6 +147,29 @@ pub enum ProviderError {
         /// The child's current state.
         child_state: PublicationState,
     },
+    /// The manifest body itself has not reached durable custody.
+    RootNotDurable {
+        /// The root whose activation was refused.
+        root: ContentDigest,
+        /// The body's current provider state.
+        state: PublicationState,
+    },
+    /// Retained root bytes are not an exact canonical object manifest.
+    InvalidRootManifest {
+        /// The root whose activation was refused.
+        root: ContentDigest,
+    },
+    /// The supplied child list is oversized, duplicated, self-referential, or differs
+    /// from the exact retained manifest, including its metadata dependency.
+    RootChildrenMismatch {
+        /// The immutable manifest root.
+        root: ContentDigest,
+    },
+    /// A newly declared manifest would introduce a cycle through registered roots.
+    RootCycle {
+        /// The root whose activation was refused.
+        root: ContentDigest,
+    },
     /// Retirement was attempted while an active root still references the
     /// object.
     ActiveRootReference {
@@ -189,6 +214,20 @@ impl std::fmt::Display for ProviderError {
                 "root {root:?} refused: child {child:?} is only {}",
                 child_state.as_str()
             ),
+            Self::RootNotDurable { root, state } => write!(
+                f,
+                "root {root:?} refused: its manifest body is only {}",
+                state.as_str()
+            ),
+            Self::InvalidRootManifest { root } => {
+                write!(f, "root {root:?} is not a canonical retained manifest")
+            }
+            Self::RootChildrenMismatch { root } => {
+                write!(f, "root {root:?} child list differs from its immutable manifest")
+            }
+            Self::RootCycle { root } => {
+                write!(f, "root {root:?} would introduce a manifest cycle")
+            }
             Self::ActiveRootReference { digest, root } => {
                 write!(
                     f,
@@ -240,21 +279,29 @@ pub trait ObjectStoreProvider {
         to: PublicationState,
     ) -> Result<PublicationState, ProviderError>;
 
-    /// Activates a manifest root LAST: every child must be at least
-    /// `Durable`. Refusal names the offending child.
+    /// Activates an exact canonical [`crate::ObjectManifest`] root LAST.
+    ///
+    /// The root's retained body and declared, registered closure must be at least `Durable`
+    /// and reverify against their content identities. `children` must be bounded, unique,
+    /// and exactly match the retained manifest, including metadata; input order is immaterial.
+    /// Previously activated sub-manifests retain their bindings even while inactive. A
+    /// never-activated child stays opaque; parsing as a manifest does not confer graph authority.
+    /// Exact retries are idempotent, while changing a root's child set always refuses.
     fn activate_root(
         &mut self,
         root: ContentDigest,
         children: &[ContentDigest],
     ) -> Result<(), ProviderError>;
 
-    /// Deactivates a root (its child references stop pinning objects).
+    /// Deactivates this root's independent pin, preserving its immutable manifest binding.
+    /// An active ancestor continues to pin the root and its declared, registered closure.
     fn deactivate_root(&mut self, root: ContentDigest) -> Result<(), ProviderError>;
 
-    /// Retires an object terminally. Refused while any active root still
-    /// references it, and refused without a deletion-authority witness: the
+    /// Retires an object terminally. Refused while any active root's registered closure
+    /// contains it (including the active root itself), and refused without a deletion
+    /// authority witness: the
     /// digest of the owner-authorized deletion record, which must itself be
-    /// a retained, verified object in this provider's custody. Retirement
+    /// a distinct retained, verified object in this provider's custody. Retirement
     /// is an authority-bearing act, not a bookkeeping convenience.
     fn retire(
         &mut self,
