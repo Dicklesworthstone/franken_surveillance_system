@@ -4,6 +4,36 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Full localization inspection coexists with active ingest — 2026-11-14
+
+`fss-file read-localization` now routes directly to immutable retained custody
+before creating a writable deployment owner. Operators can inspect and export
+an exact retained localization receipt while ingest keeps its publisher open.
+All three caller pins, canonical recipe/receipt source bindings, current privacy,
+complete twin/atlas payload custody and exact publication closure remain required.
+Missing original media or luma can leave inspection available; missing or corrupt
+archives cannot. Native perception remains the separate explicit
+`verify-localization` path.
+
+One default/hard 256 MiB / 65536-read allowance covers opening history, package
+and archive reads and final protected-metadata, payload, publication and authority
+rereads. Read-only `--max-read-bytes` / `--max-read-objects` narrow it; neither is
+accepted on the perception path. The existing independent geometry reservation
+is unchanged. Native metadata traversal now refuses beyond 65536 objects,
+batches or closure digests. Complete status is buffered, and private create-only
+outside-deployment receipt export follows final validation within a cooperative
+60-second deadline. No writer lock, initialization, recovery, source decoding,
+calibration adoption or coverage claim is introduced.
+
+Eight native immutable contracts and four real CLI process contracts cover
+live writers, all native outcomes, missing media versus mandatory archives,
+exact final-read allowances, current privacy, cancellation, payload/publication/
+authority drift, torn journals, wrong pins and create-only exports. The shared
+fixture's `ImageIdentity` import was corrected to its public owner module.
+Pinned formatting and independent source/API review passed; native runtime
+execution remains pending in the focused supplementary workflow. See
+[full localization inspection](docs/retained_localization.md).
+
 ## Canonical retained-localization discovery — 2026-11-14
 
 `fss query --target localizations`, MCP `query` and the shared native

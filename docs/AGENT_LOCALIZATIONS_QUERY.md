@@ -127,8 +127,11 @@ filesystem syscall counts are not represented as measured costs.
 Use `package_identity`, `publication_root` and `receipt_digest` as the three exact
 pins for the existing `fss-file read-localization` or `verify-localization`
 commands. Full inspection separately requires receipt and twin/atlas byte
-custody. Explicit native verification additionally decodes retained source media
-and reconstructs the candidate receipt; discovery grants neither operation.
+custody and now also uses an immutable owner while ingest remains active. Its
+complete status and create-only receipt export follow final revalidation under
+one byte/read allowance. Explicit native verification additionally decodes
+retained source media and reconstructs the candidate receipt; discovery grants
+neither operation.
 See [retained localization and replay](retained_localization.md).
 
 The genuine-producer native and real-process CLI/MCP tests are

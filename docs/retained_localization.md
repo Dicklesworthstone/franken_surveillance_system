@@ -88,6 +88,32 @@ fss-file read-localization --root deployment --site site:property \
   --expected-receipt sha256:RECEIPT --receipt-out retained.receipt
 ```
 
+Inspection uses the sealed immutable retained-source owner. It can run while
+ingest holds the publisher lock and never initializes a deployment, recovers a
+journal or repairs a damaged object. It still requires complete receipt and
+both archive payloads; missing encoded source media or decoded luma is permitted
+because inspection executes no source decoding. All three exact caller pins
+remain required.
+
+`--max-read-bytes` (default and maximum 268435456) and `--max-read-objects`
+(default and maximum 65536) optionally narrow one shared allowance. Opening
+history, selected package/archive reads and final protected-metadata, payload,
+publication and authority checks all consume that same allowance. Each value
+must be a canonical positive decimal integer. The immutable native metadata
+closure additionally admits at most 65536 ledger objects, batches and closure
+digests; larger histories refuse rather than widening the traversal implicitly.
+The independent conservative `--geometry-work-units` bound is unchanged.
+
+The complete status is buffered, and status/receipt export occurs only after
+final validation within a cooperative 60-second deadline. Wrong pins, changed
+privacy, torn journals, corruption, cancellation or an exhausted final-read
+allowance release neither status nor a new export. Receipt exports are private,
+create-only files outside the deployment; existing files are never overwritten.
+A late export I/O failure can leave an incomplete newly created destination for
+inspection. Revalidation is a bounded observation sequence, not an atomic read
+lease. The byte/read limits cover native payload reads, not path metadata,
+physical syscalls, CPU or export writes.
+
 It reports `native_replay_verified=false`. Native verification is a separate explicit action:
 
 ```sh

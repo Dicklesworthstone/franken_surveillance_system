@@ -12,10 +12,10 @@ pub use metadata::RecordedLocalizationMetadata;
 
 use super::*;
 use crate::retained_source::RetainedSource;
-use fss_core::{DigestAlgorithm, Plane};
+use fss_core::DigestAlgorithm;
 use fss_geometry::GeometryBasis;
 use fss_object::ObjectManifest;
-use fss_publication::{LocalPublicationState, SlotName};
+use fss_publication::SlotName;
 use fss_twin::atlas_archive::{ArchiveExpectation, MAX_ATLAS_BYTES, decode_atlas};
 use fss_twin::{ImportExpectation, ImportLimits, import_twin};
 
@@ -116,7 +116,7 @@ fn manifest(identity: ContentDigest, recipe: &Recipe) -> Result<ObjectManifest> 
 }
 
 fn read(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
     maximum: usize,
     budget: &mut WorkBudget<'_>,
@@ -127,9 +127,7 @@ fn read(
     // This intentionally conservative bound is separate from the localizer's receipt work.
     budget.charge(maximum as u64)?;
     deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, maximum)
+        .read_object_bounded(digest, maximum)
         .map_err(RecordedDecodeError::from)
         .map_err(Into::into)
 }
@@ -184,51 +182,18 @@ fn admit_source(
 }
 
 fn check_publication(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     slot: &SlotName,
     expected: &ObjectManifest,
     capture: fss_core::CaptureInterval,
+    source_anchor: &LedgerAnchor,
+    cx: &ReplayCx,
 ) -> Result<()> {
-    let publisher = deployment.publisher();
-    let visible = publisher
-        .root(slot)
-        .ok_or(RecordedLocalizationError::RetainedPackage)?;
-    if visible.state != LocalPublicationState::Durable || visible.root != expected.root() {
-        return Err(RecordedLocalizationError::RetainedPackage);
-    }
-    let object = format!("object:local-root:{}", slot.as_str());
-    let (batch, delta) = deployment
-        .ledger()
-        .batches()
-        .iter()
-        .rev()
-        .find_map(|batch| {
-            batch
-                .deltas
-                .iter()
-                .find(|delta| delta.object_id.as_str() == object)
-                .map(|delta| (batch, delta))
-        })
-        .ok_or(RecordedLocalizationError::RetainedPackage)?;
-    let mut closure: Vec<_> = publisher
-        .root_closure(slot)
-        .ok_or(RecordedLocalizationError::RetainedPackage)?
-        .into_iter()
-        .filter(|digest| *digest != expected.root())
-        .collect();
-    closure.sort_unstable();
-    if batch.batch_id.as_str() != format!("batch:local-root:{}", slot.as_str())
-        || batch.deltas.len() != 1
-        || delta.family != "local_root_reachability"
-        || delta.delta_id != format!("delta:local-root:{}", slot.as_str())
-        || delta.plane != Plane::Authority
-        || delta.prior_generation.is_some()
-        || delta.new_generation != 1
-        || delta.payload_digest != expected.root()
-        || delta.witness_digest.is_some()
-        || delta.operation_id.is_some()
-        || delta.validity != capture
-        || batch.children != closure
+    let batch = metadata::publication(deployment, slot, expected)?;
+    if batch.deltas[0].validity != capture
+        || source_anchor.site_lineage != deployment.site_lineage()
+        || source_anchor.commit_sequence >= batch.new_anchor.commit_sequence
+        || batch.children != metadata::metadata_closure(deployment, expected, cx)?
     {
         return Err(RecordedLocalizationError::RetainedPackage);
     }
@@ -265,26 +230,26 @@ impl RetainedLocalization {
         sha(self.recipe.atlas.package)
     }
 
-    /// Open by immutable identity using only deployment custody. Bounds are admitted before
-    /// allocation. Exact root/ledger closure, all package objects and current source/privacy
-    /// bindings are checked. No archive authoring file or reference photograph is needed.
+    /// Open by immutable identity through the sealed retained source, without a writer owner.
+    /// Bounds are admitted before allocation. Exact current root/ledger closure, complete
+    /// recipe/receipt/twin/atlas bytes and current source/privacy metadata are checked. Source
+    /// media, decoded pixels and archive authoring files are not hydrated or replayed.
+    ///
+    /// Immutable callers share one aggregate allowance through final snapshot/owner
+    /// revalidation before releasing this material. The independent geometry budget retains
+    /// its original conservative per-payload reservations; it is not a replacement I/O budget.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         identity: ContentDigest,
         read_limits: RetainedReadLimits,
         budget: &mut WorkBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_localization:open")?;
-        let slot = slot(identity)?;
-        let visible = deployment
-            .publisher()
-            .root(&slot)
-            .ok_or(RecordedLocalizationError::RetainedPackage)?;
-        if visible.state != LocalPublicationState::Durable {
-            return Err(RecordedLocalizationError::RetainedPackage);
+        if deployment.root() != cx.root_dir() {
+            return Err(RecordedLocalizationError::InvalidRequest);
         }
-        let root = visible.root;
+        let slot = slot(identity)?;
         let encoded = read(deployment, identity, MAX_PACKAGE_BYTES, budget, cx)?;
         let recipe = wire::decode(&encoded)?;
         let original = recipe.source.limits();
@@ -296,15 +261,22 @@ impl RetainedLocalization {
         }
         let capsule = source_binding(deployment, &recipe, cx)?;
         let expected = manifest(identity, &recipe)?;
-        check_publication(deployment, &slot, &expected, capsule.capture)?;
-        if root != expected.root()
-            || read(deployment, root, MAX_PACKAGE_BYTES, budget, cx)? != expected.canonical_bytes()
-        {
-            return Err(RecordedLocalizationError::RetainedPackage);
-        }
+        // Reserve the same bounded root read as the original full custody inspection. The
+        // shared native metadata owner performs the actual exact-manifest verification.
+        budget.charge(MAX_PACKAGE_BYTES as u64)?;
+        check_publication(
+            deployment,
+            &slot,
+            &expected,
+            capsule.capture,
+            &recipe.source_anchor,
+            cx,
+        )?;
+        let root = expected.root();
         let receipt = read(deployment, recipe.receipt, MAX_RECEIPT_BYTES, budget, cx)?;
-        // Verify complete archive custody even for a metadata-only read. Semantic import and
-        // native decoding remain explicit work in verify_by_replay.
+        metadata::receipt_binding(&receipt, &recipe, &capsule)?;
+        // Full inspection verifies both archive payloads, independently of metadata-only
+        // discovery. Semantic import and native decoding remain explicit verify_by_replay work.
         read(deployment, sha(recipe.twin), MAX_TWIN_BYTES, budget, cx)?;
         read(
             deployment,
