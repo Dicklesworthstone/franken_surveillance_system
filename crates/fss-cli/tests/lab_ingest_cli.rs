@@ -155,12 +155,15 @@ fn assert_clean_media_report(output: &Output, seg_count: &str) -> TestResult {
     // continuity); the history carries the real state-kind names.
     assert_eq!(field(output, "acquisition_terminal")?, "cancelled");
     assert_eq!(field(output, "acquisition_ending")?, "end_of_file_source");
+    // A file import never claims `first_frame_observed`: the core witness needs a verified decode and
+    // the importer retains bytes undecoded, so it degrades with `first_frame_decode_not_attempted`
+    // instead (see crates/fss-reference/src/ingest/file_session.rs).
     let history = field(output, "acquisition_history")?;
     for kind in [
         "requested",
         "authenticated",
         "adapter_accepted",
-        "first_frame_observed",
+        "degraded",
         "cancelled",
     ] {
         assert!(
