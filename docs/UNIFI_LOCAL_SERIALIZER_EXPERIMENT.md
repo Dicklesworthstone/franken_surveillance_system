@@ -195,7 +195,8 @@ session without requiring the old session generation, distinguishes changes
 to other tracks, and compares the requested fields. Camera and certificate
 arguments are claims supplied by the caller, not authentication. The older
 v13 build was admitted from queue `9253469360607986717` as job
-`30097323753214384`; its source does not include this comparison. Neither
+`30097323753214384` and compiled successfully; its tests were not run and its
+source does not include this comparison. Neither
 candidate reopens or reconciles the original
 journal, and neither constructs or dispatches a post-restart restore.
 
@@ -268,14 +269,39 @@ value before the one-use permit is claimed; a missing or mismatched value is
 refused before transport polling. The staged receipt does not guarantee future
 object availability, independently retain the key or scope, or anchor the
 effect journal. The helper performs synchronous I/O and requires an owned,
-bounded blocking caller. Its strict-remote build is queued as
-`9253469360607986756`, and its tests are pending. The
+bounded blocking caller. Its strict-remote build was admitted from queue
+`9253469360607986756` as job `30097323753214396`; its tests are pending. The
 four source SHA-256 values (checkpoint, camera API, HTTP owner and fixture) are
 `507ef345ff289f2eb752db1487eec791f1508ea5020476c75047dbb601b7a8ff`,
 `37e5b6d4254d4536c70c7a7901e86589ecfb6eef44b08855252a09a8a091479e`,
 `2bb2591d03d896a4be434e69b92ddc2924177223efe6978c3418845254d28df7`, and
 `2aa208e59292580904d0e2736cc597e57ac75d5b3c0cf276d9b3f9c159464884`.
 No physical camera has been changed by this candidate.
+
+Key-custody source review found an existing Linux private-credential lease in
+`crates/fss-cli/src/bin/fss-capture-rtsp/authentication.rs`. It uses a bounded
+read, no-follow/nonblocking open, regular-file and link/mode checks, file and
+path fingerprint revalidation, and scoped checks around I/O. Its Linux entropy
+boundary checks `/dev/urandom` as the expected character device. These are
+useful existing patterns for a UniFi checkpoint key provider. The lease is
+private to the RTSP CLI, reads an existing username/password format, does not
+create or retain checkpoint keys, and has not been wired into this candidate;
+its source and test cases alone do not establish UniFi key custody.
+
+The v19 candidate adds a Linux-only private-file key lease based on that
+pattern. It exclusively creates a mode-0600 key file with Linux OS entropy,
+syncs the file and private parent directory, and reopens and revalidates file
+identity before and after key use. The parent and its ancestors are explicit
+caller-trusted boundaries; filesystem permissions do not protect against the
+owner, privileged users, rollback, or loss of the device. Failures after file
+creation can leave partial files, which are never overwritten or deleted by
+the helper. It can feed checkpoint staging, but it does not independently
+retain the scope or journal anchors and is not yet mandatory for dispatch.
+No real key file was created. The v19 source snapshot is being built remotely
+as job `30097323753214397`;
+its tests have not yet run. Checkpoint and keyfile source SHA-256 values are
+`8a62fac73928e736f24e79b4711f89c7c92c30d0044b9742631ba409ad2816d7` and
+`450601a5215fd48a275a5a4d14587a52000628e9ea5fa49f73b647361b06ce10`.
 
 ## Live qualification still required
 

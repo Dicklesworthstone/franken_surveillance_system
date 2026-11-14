@@ -20,6 +20,10 @@ use fss_core::{
 use std::{fmt, net::Ipv4Addr};
 use zeroize::Zeroize;
 
+/// Linux private-file custody for an independently retained checkpoint key.
+#[cfg(target_os = "linux")]
+pub mod keyfile;
+
 const SCOPE_DOMAIN: &str = "fss.unifi-direct.serializer-checkpoint-scope.v1";
 const MAGIC: &[u8; 8] = b"FSSUSC01";
 const NONCE_BYTES: usize = 24;
@@ -232,6 +236,12 @@ pub enum Action {
     Stage,
     /// Verify and hold the staged ciphertext in the object store.
     Verify,
+    /// Create an exclusive private checkpoint-key file.
+    KeyCreate,
+    /// Read or revalidate an existing private checkpoint-key file.
+    KeyRead,
+    /// Use an admitted checkpoint key in memory.
+    KeyUse,
 }
 /// Live caller authority. For `Entropy`, the implementation must ensure the
 /// context supplies cryptographically secure random bytes and nonce uniqueness
@@ -298,6 +308,27 @@ impl fmt::Debug for Stored {
     }
 }
 impl Stored {
+    /// Stage using a separately retained private Linux key file. Its parent
+    /// and ancestors are caller-trusted; the scope and journal pins still need
+    /// independent retention. This does not replace live device admission.
+    #[cfg(target_os = "linux")]
+    pub fn capture_with_keyfile(
+        cx: &Cx,
+        authority: &dyn Authority,
+        scope: Scope,
+        lease: &keyfile::KeyLease,
+        plan: &Plan,
+        baseline: &VideoSerializers,
+        spool: &mut fss_object::StagingSpool,
+    ) -> Result<Self, Error> {
+        if !lease.matches_scope(scope) {
+            return Err(Error::Invalid);
+        }
+        lease.with_key(cx, authority, |key| {
+            Self::capture_and_stage(cx, authority, scope, key, plan, baseline, spool)
+        })?
+    }
+
     /// Capture before dispatch, stage ciphertext, re-read it and install the
     /// spool's durable verification hold. Any refusal after staging may leave
     /// an object or hold behind; inspect the spool before retrying. This is
