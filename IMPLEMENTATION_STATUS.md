@@ -4,6 +4,26 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Calibrated explanations preserve missing evidence — 2026-11-14
+
+Opt-in `fss explain --score-calibration` now requires an explicit score for every
+contributing declared failure domain. It refuses missing, unused, positional and
+duplicate-alias mappings instead of inventing bin-midpoint scores from support or
+contradiction labels. One supplied calibration remains a shared failure domain;
+event metadata does not manufacture distinct physical sensor identities. Coverage
+stays an explicit gap without a current witness, and a below-threshold result no
+longer says that no activity occurred.
+
+The output identifies caller assumptions and binds their exact raw ppm values,
+event revision and verified calibration into its receipt, including different
+scores inside the same calibration bin. Ordinary explanations without this opt-in
+retain their existing behavior. Added native CLI contracts cover success/refusal
+immutability, shared calibration, absent and conflicting mappings, low scores,
+calibration tampering, complete-output budgets and raw-score receipt identity.
+These changes are independently source reviewed; their native execution is pending
+after the compute workspace disconnected. No physical coverage, detector quality
+or release qualification is claimed.
+
 ## Canonical scalar model-run discovery — 2026-11-14
 
 `fss query --target reports` and MCP `query` now discover completed native scalar

@@ -35,6 +35,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify explicit calibrated explanation assumptions
+        if: success() || failure()
+        run: |
+          explanation_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test explain_fusion_cli_contract || explanation_exit=1
+          exit "$explanation_exit"
       - name: Verify durable event metadata hydration
         if: success() || failure()
         run: |

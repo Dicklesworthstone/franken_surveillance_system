@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-//! Real retained scene -> approved candidate -> AOP-011 explanation with calibrated posterior LLR
-//! and minimal-flip counterfactuals (`fss-3bm2k`, `fss-zr43b`).
+//! Retained event explanations require explicit score assumptions and preserve common causes.
+//! Model-free source relations cannot manufacture scores, physical independence or coverage.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fss_cli::json_input::{Value, parse};
-use fss_core::ContentDigest;
+use fss_core::{ContentDigest, EvidenceEdgeRelation};
+use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_fusion::ScoreCalibration;
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 
@@ -36,19 +37,6 @@ impl Drop for Directory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-fn emit_test_log(
-    scenario_id: &str,
-    fusion_digest: &str,
-    posterior_lo: i64,
-    posterior_hi: i64,
-    counterfactual_count: usize,
-    outcome: &str,
-) {
-    eprintln!(
-        "{{\"bead_id\":\"fss-zr43b\",\"scenario_id\":\"{scenario_id}\",\"fusion_digest\":\"{fusion_digest}\",\"posterior_llr_lo\":{posterior_lo},\"posterior_llr_hi\":{posterior_hi},\"counterfactual_count\":{counterfactual_count},\"outcome\":\"{outcome}\"}}"
-    );
 }
 
 fn get<'a>(value: &'a Value, key: &str) -> TestResult<&'a Value> {
@@ -92,7 +80,7 @@ fn report_field(output: &Output, key: &str) -> TestResult<String> {
 fn write_score_calibration(
     dir: &Path,
     name: &str,
-    domain_scores: Option<&[(&str, u32)]>,
+    domain_scores: Option<&[(String, u32)]>,
 ) -> TestResult<PathBuf> {
     let edges = [0_u32, 300_000, 700_000];
     let counts = [(5_u64, 95_u64), (50_u64, 50_u64), (95_u64, 5_u64)];
@@ -105,7 +93,7 @@ fn write_score_calibration(
                 if idx > 0 {
                     map.push(',');
                 }
-                map.push_str(&format!("\"{cam}\":{score}"));
+                map.push_str(&format!("\"{}\":{score}", fss_cli::escape_json_str(cam)));
             }
             format!(",\"domain_scores_ppm\":{{{map}}}")
         }
@@ -273,290 +261,298 @@ fn tree(root: &Path) -> TestResult<BTreeMap<PathBuf, ContentDigest>> {
     Ok(result)
 }
 
-#[test]
-fn explain_corroborated_event_with_score_calibration_emits_posterior_llr_clusters_and_counterfactuals()
--> TestResult {
-    let (directory, root, event_id) = published_corroborated("corroborated", false)?;
-    let cal_path = write_score_calibration(&directory.0, "cal.json", None)?;
-    let before = tree(&root)?;
-
-    let baseline = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root)
-        .args(["--event-id", &event_id, "--view", "forensic"])
-        .output()?;
-    success(&baseline);
-    let baseline_second = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root)
-        .args(["--event-id", &event_id, "--view", "forensic"])
-        .output()?;
-    success(&baseline_second);
-    assert_eq!(baseline.stdout, baseline_second.stdout);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root)
-        .args([
-            "--event-id",
-            &event_id,
-            "--view",
-            "forensic",
-            "--score-calibration",
-        ])
-        .arg(&cal_path)
-        .output()?;
-    success(&output);
-    assert_eq!(before, tree(&root)?, "explain must never mutate root");
-
-    let document = parse(std::str::from_utf8(&output.stdout)?)?;
-    assert_eq!(text(get(&document, "outcome")?)?, "ok");
-    assert_eq!(text(get(&document, "operationId")?)?, "AOP-011");
-    let payload = get(&document, "payload")?;
-    let rows = array(get(get(payload, "epistemic")?, "propositions")?)?;
-
-    let posterior_row = rows
+fn score_assumptions(
+    root: &Path,
+    event_id: &str,
+    score: u32,
+) -> TestResult<Vec<(String, u32)>> {
+    let snapshot = read_deployment(root, &OrientLimits::default())?;
+    let retained = snapshot
+        .events
         .iter()
+        .find(|retained| retained.event.event_id.as_str() == event_id)
+        .ok_or("fixture event was not retained")?;
+    let mut domains = BTreeMap::new();
+    for edge in &retained.event.evidence {
+        if matches!(
+            edge.relation,
+            EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts
+        ) {
+            assert!(!edge.failure_domain.is_empty());
+            domains.insert(edge.failure_domain.clone(), score);
+        }
+    }
+    if domains.is_empty() {
+        return Err("fixture has no scored evidence domains".into());
+    }
+    Ok(domains.into_iter().collect())
+}
+
+fn explain(root: &Path, event_id: &str, calibration: Option<&Path>) -> TestResult<Output> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fss"));
+    command
+        .args(["explain", "--json", "--root"])
+        .arg(root)
+        .args(["--event-id", event_id, "--view", "forensic"]);
+    if let Some(path) = calibration {
+        command.arg("--score-calibration").arg(path);
+    }
+    Ok(command.output()?)
+}
+
+fn propositions(value: &Value) -> TestResult<&[Value]> {
+    array(get(get(get(value, "payload")?, "epistemic")?, "propositions")?)
+}
+
+fn posterior(rows: &[Value]) -> TestResult<&Value> {
+    rows.iter()
         .find(|row| {
             row.object()
-                .and_then(|o| o.get("id"))
+                .and_then(|object| object.get("id"))
                 .and_then(Value::text)
-                .is_some_and(|id| id.starts_with("claim:event-fusion:") && id.ends_with(":posterior-llr"))
+                .is_some_and(|id| {
+                    id.starts_with("claim:event-fusion:") && id.ends_with(":posterior-llr")
+                })
         })
-        .ok_or("missing posterior-llr proposition")?;
-    let statement = text(get(posterior_row, "statement")?)?;
-    assert!(
-        statement.contains("disposition=AlertWarranted"),
-        "expected AlertWarranted in {statement}"
-    );
-    assert!(
-        statement.contains("supporting_clusters=2"),
-        "expected supporting_clusters=2 in {statement}"
-    );
-    assert_eq!(text(get(posterior_row, "state")?)?, "estimated");
+        .ok_or_else(|| "missing posterior proposition".into())
+}
 
-    let cluster_rows: Vec<&Value> = rows
+
+fn caller_assumptions(rows: &[Value]) -> TestResult<&Value> {
+    rows.iter()
+        .find(|row| {
+            row.object()
+                .and_then(|object| object.get("id"))
+                .and_then(Value::text)
+                .is_some_and(|id| {
+                    id.starts_with("claim:event-fusion:") && id.ends_with(":caller-assumptions")
+                })
+        })
+        .ok_or_else(|| "missing caller assumptions proposition".into())
+}
+
+fn assert_unknown_coverage(rows: &[Value]) -> TestResult {
+    let claim = caller_assumptions(rows)?;
+    let statement = text(get(claim, "statement")?)?;
+    assert!(statement.contains("coverage=gap"), "{statement}");
+    assert!(statement.contains("caller-declared scores"), "{statement}");
+    assert!(
+        statement.contains("no current physical coverage witness was supplied"),
+        "{statement}"
+    );
+    assert_eq!(text(get(claim, "state")?)?, "estimated");
+    assert_eq!(text(get(claim, "provenance")?)?, "derived");
+    Ok(())
+}
+
+fn refusal(output: &Output, error: &str) -> TestResult {
+    assert!(
+        !output.status.success(),
+        "unexpected success: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let document = parse(std::str::from_utf8(&output.stdout)?)?;
+    assert_eq!(text(get(&document, "outcome")?)?, "refused");
+    assert_eq!(text(get(&document, "errorId")?)?, error);
+    assert!(matches!(get(&document, "payload")?, Value::Null));
+    Ok(())
+}
+
+#[test]
+fn explicit_scores_preserve_shared_calibration_and_unknown_coverage() -> TestResult {
+    let (directory, root, event_id) = published_corroborated("explicit", false)?;
+    let assumptions = score_assumptions(&root, &event_id, 900_000)?;
+    assert!(assumptions.len() >= 2, "fixture must declare distinct domains");
+    let calibration =
+        write_score_calibration(&directory.0, "explicit.json", Some(&assumptions))?;
+    let before = tree(&root)?;
+
+    let baseline = explain(&root, &event_id, None)?;
+    success(&baseline);
+    assert_eq!(baseline.stdout, explain(&root, &event_id, None)?.stdout);
+
+    let output = explain(&root, &event_id, Some(&calibration))?;
+    success(&output);
+    let document = parse(std::str::from_utf8(&output.stdout)?)?;
+    assert_eq!(text(get(&document, "operationId")?)?, "AOP-011");
+    assert_eq!(text(get(&document, "outcome")?)?, "ok");
+    let rows = propositions(&document)?;
+    let claim = posterior(rows)?;
+    let statement = text(get(claim, "statement")?)?;
+    assert!(statement.contains("supporting_clusters=1"), "{statement}");
+    assert!(!statement.contains("AlertWarranted"), "{statement}");
+    assert_unknown_coverage(rows)?;
+    let clusters: Vec<_> = rows
         .iter()
         .filter(|row| {
             row.object()
-                .and_then(|o| o.get("id"))
+                .and_then(|object| object.get("id"))
                 .and_then(Value::text)
                 .is_some_and(|id| id.contains(":cluster:"))
         })
         .collect();
-    assert_eq!(cluster_rows.len(), 2);
-
-    let cf_rows: Vec<&Value> = rows
-        .iter()
-        .filter(|row| {
-            row.object()
-                .and_then(|o| o.get("id"))
-                .and_then(Value::text)
-                .is_some_and(|id| id.contains(":counterfactual:"))
-        })
-        .collect();
-    assert_eq!(cf_rows.len(), 2);
-    for cf_row in &cf_rows {
-        let cf_stmt = text(get(cf_row, "statement")?)?;
-        assert!(
-            cf_stmt.contains("flips_decision=true"),
-            "expected flips_decision=true in {cf_stmt}"
-        );
-    }
-
-    emit_test_log(
-        "explain_corroborated_independent",
-        text(get(posterior_row, "id")?)?,
-        1043,
-        1490,
-        cf_rows.len(),
-        "AlertWarranted",
+    assert_eq!(clusters.len(), 1, "one calibration is one shared failure domain");
+    assert!(
+        text(get(clusters[0], "statement")?)?.contains("calibration:"),
+        "shared calibration provenance must survive projection"
     );
+    assert_eq!(before, tree(&root)?, "explanation must not mutate retained state");
     Ok(())
 }
 
 #[test]
-fn explain_shared_failure_domain_and_conflicted_domains_reflect_fusion_semantics() -> TestResult {
-    let (directory, root, event_id) = published_corroborated("shared", true)?;
-    let cal_path = write_score_calibration(&directory.0, "cal.json", None)?;
+fn missing_unused_numeric_and_conflicting_score_mappings_refuse_without_writes() -> TestResult {
+    let (directory, root, event_id) = published_corroborated("mapping-refusals", false)?;
+    let assumptions = score_assumptions(&root, &event_id, 900_000)?;
+    let before = tree(&root)?;
+    let missing = write_score_calibration(&directory.0, "missing.json", None)?;
+    refusal(
+        &explain(&root, &event_id, Some(&missing))?,
+        "ERR-FUSION-INPUT-INVALID-001",
+    )?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root)
-        .args([
-            "--event-id",
-            &event_id,
-            "--view",
-            "forensic",
-            "--score-calibration",
-        ])
-        .arg(&cal_path)
-        .output()?;
+    let incomplete = write_score_calibration(
+        &directory.0,
+        "incomplete.json",
+        Some(&assumptions[1..]),
+    )?;
+    refusal(
+        &explain(&root, &event_id, Some(&incomplete))?,
+        "ERR-FUSION-INPUT-INVALID-001",
+    )?;
+
+    let mut unused = assumptions.clone();
+    unused.push(("not-a-retained-domain".to_owned(), 900_000));
+    let unused = write_score_calibration(&directory.0, "unused.json", Some(&unused))?;
+    refusal(
+        &explain(&root, &event_id, Some(&unused))?,
+        "ERR-FUSION-INPUT-INVALID-001",
+    )?;
+
+    let positional: Vec<_> = assumptions
+        .iter()
+        .enumerate()
+        .map(|(index, (_, score))| (index.to_string(), *score))
+        .collect();
+    let positional =
+        write_score_calibration(&directory.0, "positional.json", Some(&positional))?;
+    refusal(
+        &explain(&root, &event_id, Some(&positional))?,
+        "ERR-FUSION-INPUT-INVALID-001",
+    )?;
+
+    let valid = write_score_calibration(&directory.0, "valid.json", Some(&assumptions))?;
+    let original = fs::read_to_string(valid)?;
+    for (name, score) in [("conflicting-alias", 100_000), ("duplicate-alias", 900_000)] {
+        let path = directory.0.join(format!("{name}.json"));
+        let head = original.trim_end().strip_suffix('}').ok_or("calibration shape")?;
+        fs::write(
+            &path,
+            format!(
+                "{head},\"camera_scores_ppm\":{{\"{}\":{score}}}}}\n",
+                fss_cli::escape_json_str(&assumptions[0].0)
+            ),
+        )?;
+        refusal(
+            &explain(&root, &event_id, Some(&path))?,
+            "ERR-FUSION-INPUT-INVALID-001",
+        )?;
+    }
+    assert_eq!(before, tree(&root)?, "refused explanations must not mutate retained state");
+    Ok(())
+}
+
+#[test]
+fn low_caller_scores_never_assert_physical_absence_or_create_independence() -> TestResult {
+    let (directory, root, event_id) = published_corroborated("low-scores", true)?;
+    let assumptions = score_assumptions(&root, &event_id, 100_000)?;
+    let calibration =
+        write_score_calibration(&directory.0, "low.json", Some(&assumptions))?;
+    let before = tree(&root)?;
+    let output = explain(&root, &event_id, Some(&calibration))?;
     success(&output);
     let document = parse(std::str::from_utf8(&output.stdout)?)?;
-    assert_eq!(text(get(&document, "outcome")?)?, "ok");
-    let rows = array(get(get(get(&document, "payload")?, "epistemic")?, "propositions")?)?;
-    let posterior_row = rows
-        .iter()
-        .find(|row| {
-            row.object()
-                .and_then(|o| o.get("id"))
-                .and_then(Value::text)
-                .is_some_and(|id| id.ends_with(":posterior-llr"))
-        })
-        .ok_or("missing posterior-llr proposition")?;
-    let statement = text(get(posterior_row, "statement")?)?;
-    assert!(
-        statement.contains("disposition=SingleSourceOnly"),
-        "expected SingleSourceOnly in {statement}"
-    );
-    assert!(
-        statement.contains("insufficient_independent_support"),
-        "expected insufficient_independent_support in {statement}"
-    );
-    assert_eq!(text(get(posterior_row, "state")?)?, "indeterminate");
-    emit_test_log(
-        "explain_shared_failure_domain",
-        text(get(posterior_row, "id")?)?,
-        0,
-        0,
-        0,
-        "SingleSourceOnly",
-    );
-
-    // Conflicted domains on independent event:
-    let (dir_conflict, root_conflict, event_conflict) =
-        published_corroborated("conflict", false)?;
-    let conflict_cal = write_score_calibration(
-        &dir_conflict.0,
-        "conflict_cal.json",
-        Some(&[("0", 900_000), ("1", 100_000)]),
-    )?;
-    let conflict_out = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root_conflict)
-        .args([
-            "--event-id",
-            &event_conflict,
-            "--view",
-            "forensic",
-            "--score-calibration",
-        ])
-        .arg(&conflict_cal)
-        .output()?;
-    success(&conflict_out);
-    let conflict_doc = parse(std::str::from_utf8(&conflict_out.stdout)?)?;
-    let conflict_rows = array(get(
-        get(get(&conflict_doc, "payload")?, "epistemic")?,
-        "propositions",
-    )?)?;
-    let conflict_posterior = conflict_rows
-        .iter()
-        .find(|row| {
-            row.object()
-                .and_then(|o| o.get("id"))
-                .and_then(Value::text)
-                .is_some_and(|id| id.ends_with(":posterior-llr"))
-        })
-        .ok_or("missing conflict posterior-llr")?;
-    let conflict_stmt = text(get(conflict_posterior, "statement")?)?;
-    assert!(
-        conflict_stmt.contains("disposition=Conflicted"),
-        "expected Conflicted in {conflict_stmt}"
-    );
-    assert_eq!(text(get(conflict_posterior, "state")?)?, "conflicted");
-    emit_test_log(
-        "explain_cross_domain_conflict",
-        text(get(conflict_posterior, "id")?)?,
-        -600,
-        600,
-        0,
-        "Conflicted",
-    );
+    let rows = propositions(&document)?;
+    let claim = posterior(rows)?;
+    let statement = text(get(claim, "statement")?)?;
+    assert!(!statement.contains("NoActivity"), "{statement}");
+    assert_unknown_coverage(rows)?;
+    assert_ne!(text(get(claim, "state")?)?, "known");
+    assert_eq!(before, tree(&root)?);
     Ok(())
 }
 
 #[test]
-fn explain_fusion_refuses_tampered_calibration_and_tight_context_budget() -> TestResult {
-    let (directory, root, event_id) = published_corroborated("refusals", false)?;
-    let valid_cal = write_score_calibration(&directory.0, "valid_cal.json", None)?;
-    let tampered_cal = directory.0.join("tampered_cal.json");
-    let raw = fs::read_to_string(&valid_cal)?;
-    fs::write(
-        &tampered_cal,
-        raw.replace("\"true_positives\":95", "\"true_positives\":94"),
+fn calibration_count_tampering_and_insufficient_complete_output_budget_refuse() -> TestResult {
+    let (directory, root, event_id) = published_corroborated("bounds", false)?;
+    let assumptions = score_assumptions(&root, &event_id, 900_000)?;
+    let valid =
+        write_score_calibration(&directory.0, "valid.json", Some(&assumptions))?;
+    let raw = fs::read_to_string(&valid)?;
+    let tampered = directory.0.join("tampered.json");
+    fs::write(&tampered, raw.replace("\"true_positives\":95", "\"true_positives\":94"))?;
+    let before = tree(&root)?;
+    refusal(
+        &explain(&root, &event_id, Some(&tampered))?,
+        "ERR-FUSION-INPUT-INVALID-001",
     )?;
 
-    let tampered_out = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root)
-        .args([
-            "--event-id",
-            &event_id,
-            "--view",
-            "forensic",
-            "--score-calibration",
-        ])
-        .arg(&tampered_cal)
-        .output()?;
-    assert!(!tampered_out.status.success());
-    let tampered_doc = parse(std::str::from_utf8(&tampered_out.stdout)?)?;
-    assert_eq!(text(get(&tampered_doc, "outcome")?)?, "refused");
-    assert_eq!(
-        text(get(&tampered_doc, "errorId")?)?,
-        "ERR-FUSION-INPUT-INVALID-001"
-    );
-    emit_test_log(
-        "explain_tampered_calibration",
-        "sha256:0000",
-        0,
-        0,
-        0,
-        "ERR-FUSION-INPUT-INVALID-001",
-    );
-
-    // Measure baseline consumed tokens without --score-calibration, then set budget_tokens
-    // strictly between baseline and fusion-augmented so fusion triggers ERR-AGENT-CONTEXT-INCOMPLETE-001.
-    let baseline = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"])
-        .arg(&root)
-        .args(["--event-id", &event_id, "--view", "forensic"])
-        .output()?;
+    let baseline = explain(&root, &event_id, None)?;
     success(&baseline);
-    let base_doc = parse(std::str::from_utf8(&baseline.stdout)?)?;
-    let base_consumed = get(get(&base_doc, "budgets")?, "consumed")?;
-    let base_tokens = get(base_consumed, "tokens")?
+    let document = parse(std::str::from_utf8(&baseline.stdout)?)?;
+    let tokens = get(get(get(&document, "budgets")?, "consumed")?, "tokens")?
         .integer()
-        .ok_or("missing tokens")?;
-
-    let tight_out = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .ok_or("missing consumed tokens")?;
+    let tight = Command::new(env!("CARGO_BIN_EXE_fss"))
         .args(["explain", "--json", "--root"])
         .arg(&root)
         .args([
-            "--event-id",
-            &event_id,
-            "--view",
-            "forensic",
-            "--budget-tokens",
-            &(base_tokens + 10).to_string(),
-            "--score-calibration",
+            "--event-id", &event_id, "--view", "forensic",
+            "--budget-tokens", &(tokens + 10).to_string(), "--score-calibration",
         ])
-        .arg(&valid_cal)
+        .arg(&valid)
         .output()?;
-    assert!(!tight_out.status.success());
-    let tight_doc = parse(std::str::from_utf8(&tight_out.stdout)?)?;
-    assert_eq!(text(get(&tight_doc, "outcome")?)?, "refused");
-    assert_eq!(
-        text(get(&tight_doc, "errorId")?)?,
-        "ERR-AGENT-CONTEXT-INCOMPLETE-001"
+    refusal(&tight, "ERR-AGENT-CONTEXT-INCOMPLETE-001")?;
+    assert_eq!(before, tree(&root)?);
+    Ok(())
+}
+
+#[test]
+fn raw_assumptions_bind_receipts_while_map_order_is_semantically_irrelevant() -> TestResult {
+    let (directory, root, event_id) = published_corroborated("assumption-identity", false)?;
+    let assumptions = score_assumptions(&root, &event_id, 900_000)?;
+    let before = tree(&root)?;
+    let path = write_score_calibration(&directory.0, "identity.json", Some(&assumptions))?;
+    let first = explain(&root, &event_id, Some(&path))?;
+    success(&first);
+
+    let mut reversed = assumptions.clone();
+    reversed.reverse();
+    write_score_calibration(&directory.0, "identity.json", Some(&reversed))?;
+    let reordered = explain(&root, &event_id, Some(&path))?;
+    success(&reordered);
+    assert_eq!(first.stdout, reordered.stdout, "map order cannot change a semantic receipt");
+
+    // The two scores occupy the same calibrated bin, so this specifically checks that the
+    // original assumptions remain bound even when the numerical fusion inputs do not change.
+    let calibration = ScoreCalibration::from_counts(
+        "cal:explain:v1",
+        &[0, 300_000, 700_000],
+        &[(5, 95), (50, 50), (95, 5)],
+    )?;
+    assert_eq!(calibration.calibrate(900_000), calibration.calibrate(850_000));
+    let mut changed = assumptions;
+    changed[0].1 = 850_000;
+    write_score_calibration(&directory.0, "identity.json", Some(&changed))?;
+    let changed_output = explain(&root, &event_id, Some(&path))?;
+    success(&changed_output);
+    let first_document = parse(std::str::from_utf8(&first.stdout)?)?;
+    let changed_document = parse(std::str::from_utf8(&changed_output.stdout)?)?;
+    assert_ne!(
+        text(get(&first_document, "decisionFingerprint")?)?,
+        text(get(&changed_document, "decisionFingerprint")?)?,
+        "different original score assumptions require different receipts"
     );
-    emit_test_log(
-        "explain_tight_budget_refusal",
-        "sha256:0000",
-        0,
-        0,
-        0,
-        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
-    );
+    assert_eq!(before, tree(&root)?);
     Ok(())
 }

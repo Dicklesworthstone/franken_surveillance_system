@@ -1,19 +1,17 @@
 #![forbid(unsafe_code)]
-//! Opt-in calibrated sequential evidence fusion (`fss-fusion`) and counterfactual minimal-flip
-//! explanations inside AOP-011 (`fss explain`).
+//! Opt-in hypothetical score sensitivity inside AOP-011 (`fss explain`).
 //!
-//! When `--score-calibration <FILE>` is supplied to `fss explain`, the committed event's evidence
-//! edges and failure domains are evaluated through [`fss_fusion::fuse`] under the verified
-//! [`ScoreCalibration`] artifact. Exact integer-milliban LLR intervals, Fréchet-Hoeffding
-//! common-cause failure-domain hulls, and minimal-flip counterfactual witnesses are surfaced as
-//! derived propositions and invalidators in the `AgentCognitiveEnvelope` while keeping default
-//! `fss explain` invocations (without `--score-calibration`) 100% byte-identical.
+//! Caller-declared numeric scores and a reconstructed [`ScoreCalibration`] are assumptions,
+//! not measurements extracted from an event's support/contradiction labels. Every contributing
+//! declared domain needs an explicit score; a shared calibration is a common failure domain.
+//! No physical sensor identity or complete coverage is inferred from retained metadata.
+//! Ordinary explanations without `--score-calibration` retain their existing behavior.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use fss_core::{
-    AgentCognitiveEnvelope, Completeness, ContentDigest, EnvelopeProposition,
+    AgentCognitiveEnvelope, CanonicalEncoder, Completeness, ContentDigest, EnvelopeProposition,
     EvidenceEdgeRelation, ExplainQuestion, ExplainReceipt, KnowledgeState, ResponseOutcome,
     ResponseSafeRetry,
 };
@@ -29,6 +27,7 @@ use crate::json_input::{Value, read_document};
 
 pub(super) const ERR_FUSION_INPUT_INVALID: &str = "ERR-FUSION-INPUT-INVALID-001";
 const DEFAULT_POLICY_GENERATION: &str = "fss.explain.fusion_policy.v1";
+const SCORE_ASSUMPTIONS_DOMAIN: &str = "fss.agent_explain.score_assumptions.v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FusionExplainError {
@@ -248,7 +247,16 @@ fn load_score_calibration(path: &Path) -> Result<LoadedCalibration, FusionExplai
                         "score_ppm entry exceeds 1000000 ppm",
                     ));
                 }
-                domain_scores_ppm.insert(k.clone(), ppm);
+                if k.is_empty() || k.len() > 256 || k.chars().any(char::is_control) {
+                    return Err(FusionExplainError::InvalidCalibration(
+                        "score mapping requires a bounded declared failure-domain identity",
+                    ));
+                }
+                if domain_scores_ppm.insert(k.clone(), ppm).is_some() {
+                    return Err(FusionExplainError::InvalidCalibration(
+                        "a failure-domain score is duplicated across score maps",
+                    ));
+                }
             }
         }
     }
@@ -267,15 +275,15 @@ fn disposition_label(outcome: &FusionOutcome) -> &'static str {
         outcome.decision,
         Decision::Alert | Decision::AlertDegradedCoverage
     ) {
-        "AlertWarranted"
+        "AlertSuggestedByCallerScenario"
     } else if outcome.supporting_clusters == 1
         && outcome
             .reasons
             .contains(&Reason::InsufficientIndependentSupport)
     {
-        "SingleSourceOnly"
+        "SharedCalibrationOnly"
     } else if matches!(outcome.decision, Decision::Reject | Decision::RetainSilently) {
-        "NoActivity"
+        "BelowCallerThreshold"
     } else {
         "AbstainCorroborate"
     }
@@ -315,16 +323,39 @@ pub(super) fn augment(
     };
     let event = &explanation.event.event;
     let target = explanation.event.revision_digest;
-    let high_score = loaded
-        .calibration
-        .bins
-        .last()
-        .map_or(900_000, |b| b.lo_ppm.midpoint(b.hi_ppm));
-    let low_score = loaded
-        .calibration
-        .bins
-        .first()
-        .map_or(100_000, |b| b.lo_ppm.midpoint(b.hi_ppm));
+    let contributing_domains: BTreeSet<&str> = event
+        .evidence
+        .iter()
+        .filter(|edge| matches!(
+            edge.relation,
+            EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts
+        ))
+        .map(|edge| edge.failure_domain.as_str())
+        .collect();
+    if contributing_domains.is_empty()
+        || contributing_domains.iter().any(|domain| !loaded.domain_scores_ppm.contains_key(*domain))
+        || loaded.domain_scores_ppm.keys().any(|domain| !contributing_domains.contains(domain.as_str()))
+    {
+        return Err(FusionExplainError::InvalidCalibration(
+            "every contributing failure domain requires one explicit score and no extra mappings",
+        ));
+    }
+    // Bind the exact raw ppm assumptions, including values that calibrate into the same bin.
+    let mut assumptions = CanonicalEncoder::new();
+    assumptions.text(SCORE_ASSUMPTIONS_DOMAIN);
+    assumptions.digest(target);
+    assumptions.digest(loaded.calibration.digest);
+    assumptions.u32(loaded.domain_scores_ppm.len() as u32);
+    for (domain, score) in &loaded.domain_scores_ppm {
+        assumptions.text(domain);
+        assumptions.u32(*score);
+    }
+    let assumptions_digest = ContentDigest::sha256(
+        &assumptions.finish_checked().map_err(|_| {
+            FusionExplainError::InvalidCalibration("score-assumption encoding bounds exceeded")
+        })?,
+    );
+    let shared_calibration = format!("calibration:{}", loaded.calibration.digest);
     let mut evidence_items = Vec::new();
     for (idx, edge) in event.evidence.iter().enumerate() {
         if !matches!(
@@ -333,26 +364,17 @@ pub(super) fn augment(
         ) {
             continue;
         }
-        let domain = if edge.failure_domain.is_empty() {
-            format!("edge-{idx}")
-        } else {
-            edge.failure_domain.clone()
-        };
-        let score_ppm = loaded
-            .domain_scores_ppm
-            .get(&domain)
-            .or_else(|| loaded.domain_scores_ppm.get(&idx.to_string()))
-            .copied()
-            .unwrap_or(match edge.relation {
-                EvidenceEdgeRelation::Supports => high_score,
-                EvidenceEdgeRelation::Contradicts => low_score,
-                _ => high_score,
-            });
+        let domain = edge.failure_domain.clone();
+        let score_ppm = loaded.domain_scores_ppm.get(&domain).copied().ok_or(
+            FusionExplainError::InvalidCalibration("explicit failure-domain score missing"),
+        )?;
         evidence_items.push(EvidenceItem {
             id: format!("edge:{idx}:{}", edge.digest),
-            sensor: domain.clone(),
-            failure_domains: BTreeSet::from([domain]),
+            // A single synthetic grouping: event metadata supplies no physical sensor identity.
+            sensor: "event-evidence-projection".to_owned(),
+            failure_domains: BTreeSet::from([domain, shared_calibration.clone()]),
             calibration: loaded.calibration.calibrate(score_ppm),
+            // Available only as an assumption of this numerical scenario, never source custody.
             observability: Observability::Observed,
         });
     }
@@ -361,7 +383,9 @@ pub(super) fn augment(
         kind: event.kind.as_str().to_owned(),
         prior: loaded.calibration.prior,
         evidence: evidence_items,
-        coverage: Coverage::Complete,
+        coverage: Coverage::Gap {
+            reason: "event metadata supplies no current physical coverage witness".to_owned(),
+        },
         opportunities: Vec::new(),
         probes: Vec::new(),
         severity: Severity {
@@ -383,6 +407,7 @@ pub(super) fn augment(
         vec![
             support.receipt.receipt_digest(),
             loaded.calibration.digest,
+            assumptions_digest,
             outcome.query_digest,
             outcome.decision_digest,
         ],
@@ -402,10 +427,21 @@ pub(super) fn augment(
     } else {
         KnowledgeState::Indeterminate
     };
+    let raw_scores = loaded.domain_scores_ppm.iter().map(|(domain, score)| {
+        format!("{}:{score}", crate::json_output::string(domain))
+    }).collect::<Vec<_>>().join(",");
     let mut new_propositions = vec![EnvelopeProposition {
+        id: format!("claim:event-fusion:{target}:caller-assumptions"),
+        statement: format!(
+            "Hypothetical numerical sensitivity from caller-declared scores: {{{raw_scores}}}. Support/contradiction labels did not supply measured scores. The one supplied calibration is a shared failure domain and the sensor field is one synthetic event-evidence grouping, not a physical sensor identity. coverage=gap: no current physical coverage witness was supplied. This is not replay of the original event decision, current custody verification or evidence of physical absence."
+        ),
+        state: KnowledgeState::Estimated,
+        provenance: "derived".to_owned(),
+        evidence: vec![target.to_text(), loaded.calibration.digest.to_text(), assumptions_digest.to_text()],
+    }, EnvelopeProposition {
         id: format!("claim:event-fusion:{target}:posterior-llr"),
         statement: format!(
-            "Calibrated fusion assessment (generation {}, digest {}): posterior_llr_mban=[{}, {}], probability_ppm=[{}, {}], disposition={}, decision={}, supporting_clusters={}, contradicting_clusters={}, reasons=[{}].",
+            "Hypothetical calibrated assessment from caller-declared scores (generation {}, digest {}): posterior_llr_mban=[{}, {}], probability_ppm=[{}, {}], disposition={}, decision={}, supporting_clusters={}, contradicting_clusters={}, reasons=[{}].",
             loaded.calibration.generation,
             loaded.calibration.digest,
             outcome.posterior.lo(),
@@ -422,6 +458,7 @@ pub(super) fn augment(
         provenance: "derived".to_owned(),
         evidence: vec![
             loaded.calibration.digest.to_text(),
+            assumptions_digest.to_text(),
             outcome.query_digest.to_text(),
             outcome.decision_digest.to_text(),
         ],
@@ -494,6 +531,7 @@ pub(super) fn augment(
     let pointers = [
         receipt.receipt_digest().to_text(),
         loaded.calibration.digest.to_text(),
+        assumptions_digest.to_text(),
         outcome.query_digest.to_text(),
         outcome.decision_digest.to_text(),
     ];
