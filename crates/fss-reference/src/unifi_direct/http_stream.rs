@@ -9,8 +9,6 @@
 
 /// Authenticated encryption for a retained pre-change serializer snapshot.
 pub mod checkpoint;
-/// Bounded HTTP serializer startup into a native owned media listener.
-pub mod media;
 
 use super::{
     AudioCodec, StreamStart, VideoCodec, camera_api::VideoSerializers, handoff::Framing, intent,
