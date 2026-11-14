@@ -26,6 +26,7 @@ pub mod agent_event_hydration;
 /// Exact adjacent event-revision changes under current immutable metadata authority.
 pub mod agent_event_changes;
 pub mod agent_footage;
+pub mod agent_localizations;
 /// Canonical read-only ONVIF vendor-claim interpretation over exact retained sources.
 pub mod agent_onvif;
 /// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).

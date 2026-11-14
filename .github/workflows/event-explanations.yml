@@ -31,6 +31,10 @@ on:
       - 'crates/fss-reference/src/agent_orient/**'
       - 'crates/fss-reference/src/agent_sources.rs'
       - 'crates/fss-reference/src/agent_sources/**'
+      - 'crates/fss-reference/src/agent_localizations.rs'
+      - 'crates/fss-reference/src/agent_localizations/**'
+      - 'crates/fss-reference/src/ingest/twin_localization/retained.rs'
+      - 'crates/fss-reference/src/ingest/twin_localization/retained/**'
       - 'crates/fss-reference/src/ingest/long_event_replay.rs'
       - 'crates/fss-reference/src/ingest/long_event_replay/**'
       - 'crates/fss-reference/src/ingest/recorded_corroboration/streaming/geometry.rs'
@@ -38,6 +42,8 @@ on:
       - 'crates/fss-reference/tests/agent_report_catalog_contract.rs'
       - 'crates/fss-reference/tests/agent_sources_contract.rs'
       - 'crates/fss-reference/tests/agent_sources_contract/**'
+      - 'crates/fss-reference/tests/agent_localizations_contract.rs'
+      - 'crates/fss-reference/tests/twin_localization_query_support/**'
       - 'crates/fss-reference/tests/long_event_replay_immutable_contract.rs'
       - 'crates/fss-reference/tests/long_event_replay_immutable_contract/**'
       - 'crates/fss-fusion/**'
@@ -71,6 +77,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify retained localization custody and discovery
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_localizations_contract --test recorded_twin_localization_contract
       - name: Verify source-loss mathematics and complete artifact projection
         if: success() || failure()
         run: |

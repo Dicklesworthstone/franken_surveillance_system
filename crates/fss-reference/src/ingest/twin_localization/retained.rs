@@ -5,9 +5,13 @@
 //! receipt and a frozen input recipe. Authoring scenes and atlas-reference photographs are
 //! identified by their archives, not claimed to be retained or authenticated here.
 
+mod metadata;
 mod wire;
 
+pub use metadata::RecordedLocalizationMetadata;
+
 use super::*;
+use crate::retained_source::RetainedSource;
 use fss_core::{DigestAlgorithm, Plane};
 use fss_geometry::GeometryBasis;
 use fss_object::ObjectManifest;
@@ -131,7 +135,7 @@ fn read(
 }
 
 fn source_binding(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     recipe: &Recipe,
     cx: &ReplayCx,
 ) -> Result<SensorCapsule> {
@@ -155,7 +159,7 @@ fn source_binding(
 }
 
 fn admit_source(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     source: &RecordedLocalizationSource,
     cx: &ReplayCx,
 ) -> Result<RetainedFileImport> {

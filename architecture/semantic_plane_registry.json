@@ -1046,7 +1046,13 @@
     "crates/fss-cli/src/event_counterfactual.rs": "cognition",
     "crates/fss-cli/src/event_counterfactual/tests.rs": "support",
     "crates/fss-cli/src/orient_cmd/what_if.rs": "ambiguous",
-    "crates/fss-cli/tests/event_counterfactual_cli_contract.rs": "support"
+    "crates/fss-cli/tests/event_counterfactual_cli_contract.rs": "support",
+    "crates/fss-reference/src/agent_localizations.rs": "ambiguous",
+    "crates/fss-reference/src/agent_localizations/read.rs": "cognition",
+    "crates/fss-reference/src/agent_localizations/result.rs": "cognition",
+    "crates/fss-reference/src/ingest/twin_localization/retained/metadata.rs": "support",
+    "crates/fss-reference/tests/agent_localizations_contract.rs": "support",
+    "crates/fss-reference/tests/twin_localization_query_support/mod.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

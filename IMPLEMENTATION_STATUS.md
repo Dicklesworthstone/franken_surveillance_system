@@ -4,6 +4,42 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native retained-localization discovery — 2026-11-14
+
+`agent_localizations::query_localizations` now discovers completed native
+recorded-localization packages through the canonical AOP-005 query plan and
+immutable retained-source owner. Exact sensor, stream, import and twin filters
+apply only after verification of the complete bounded index. Native continuation
+binds the index, full authority/effect prefix, principal, predicates, page size
+and all read/snapshot limits. Existing publication and receipt formats remain
+unchanged; authority root-reachability records are not recast as cognition reports.
+
+The owner verifies canonical recipe bytes, receipt source/parameter bindings,
+exact publication and source custody, current privacy and deletion restrictions.
+Opening history, selected metadata and final payload/publication/head checks
+share one nonrenewing byte/read-attempt allowance. It neither opens a writer nor
+reads original media, cached pixels or twin/atlas payloads. Source/archive
+availability, native replay, adoption, current physical camera calibration,
+coverage and absence are explicitly unestablished. All original native outcomes
+remain discoverable as receipt metadata without interpreting their pose results.
+
+Twelve genuine-producer native contracts exercise all three outcome classes,
+current privacy/tombstones, exact filters and cursors, live-writer/no-recovery
+reads, missing replay assets, excluded corrupt metadata, exact final-read
+budgets, cancellation and final publication/payload/head drift. Source review
+and pinned formatting are complete; native execution is pending in the focused
+supplementary workflow. CLI/MCP exposure is a separate integration increment.
+
+## Confirmed focused execution at `29e61253` — 2026-11-14
+
+[Supplementary run 43623392621](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43623392621/job/132533823696)
+completed all 18 focused invocations successfully: **315 tests passed**, including
+73 alert, 14 orientation/read-budget, 22 native long-event replay, 12 source
+inventory, seven immutable whole-recording, 11 whole-recording CLI, three source
+CLI/MCP and 108 MCP unit tests. The stale-alert and exact-byte regressions below
+are resolved in that execution. Repository-owned qualification still stops at
+separate registry/dependency/policy findings; this is not release qualification.
+
 ## Stale alert cleanup survives regressed dispatch time — 2026-11-14
 
 Reference alert dispatch no longer leaves a superseded prepared operation and
@@ -18,10 +54,10 @@ retain their unchanged-journal refusal.
 The in-memory regression exercises seven altered plans and boundary/extreme
 timestamp pairs. The durable regression proves cancellation after preparation
 and preservation of both terminal states after cold reopen. These changes are
-independently source reviewed and pinned-rustfmt checked. Native execution is
-pending after local compilation again stopped in Asupersync before project
-code, including a serialized metadata-only attempt. Existing hosted alert and
-effect-plane suites retain their original eligibility and malformed-plan checks.
+independently source reviewed and pinned-rustfmt checked. All 73 focused alert
+tests passed at `29e61253`, including the previously failing stale cleanup.
+Local compilation remains constrained inside Asupersync; hosted results do not
+replace repository-owned qualification.
 
 ## Exact read allowances and supplementary transport feedback — 2026-11-14
 
@@ -36,8 +72,8 @@ one-byte-short and one-read-short finalization refusals.
 Hosted feedback for `88e365d` confirms 108 MCP unit tests, 24 explanation CLI
 contracts and nine native report-catalog contracts passed. That run also
 identified the stale-alert cleanup failure above and an older lineage test that
-expected the artificial extra byte; both are addressed in this increment, with
-rerun results pending. This is focused supplementary evidence, not a green
+expected the artificial extra byte; both are addressed and their focused rerun
+passed at `29e61253`. This is focused supplementary evidence, not a green
 whole-repository or release-qualification claim.
 
 ## Whole-recording incident reads coexist with active ingest — 2026-11-14
@@ -63,11 +99,8 @@ Seven native immutable contracts and real-process CLI regressions cover live
 writers, watch/dwell/corroboration, retained trained AVC/HEVC dwell, exact budget
 boundaries, final cancellation, payload/publication and authority drift, dirty
 journals and exports. They are source reviewed and pinned-rustfmt checked;
-execution is pending after the local Asupersync dependency build was killed
-before reaching project tests. The existing supplementary workflow selects the
-new contract. Hosted feedback at `88e365d` also compiled the changed library and
-CLI and passed the transport suites above; the new immutable native target's
-execution still awaits its runner. See
+all seven immutable native contracts, 22 existing native long-event replay tests
+and 11 CLI contracts passed in the focused `29e61253` run. See
 [whole-recording inspection](docs/long_event_replay.md).
 
 ## Historical health reads coexist with active ingest — 2026-11-14
@@ -122,8 +155,8 @@ complete-index bounds, absent media, corrupt excluded metadata, changed protecte
 diagnostics, final authority changes, and aggregate final-read accounting. Closed
 MCP selector and schema-parity unit tests were also added. Source review and
 JavaScript checks of embedded-schema parity and all eight domain registrations
-completed; Rust execution for this head is pending in the pinned supplementary
-workflow while the local execution environment is unavailable. Pre-existing
+completed; all 12 native and three real CLI/MCP contracts passed at `29e61253`.
+The full MCP unit binary also passed all 108 tests. Pre-existing
 registry/policy qualification debt is not claimed resolved, and release
 qualification remains repository-owned.
 
