@@ -17812,3 +17812,519 @@ camera operation was performed. The existing recorder and fallback timer on
 trj remained active with restart count 2. The historical G4 handoff and clock
 effects remain indeterminate; real provisioning, native camera ownership,
 continuous recording and 30-day retention still require separate proof.
+
+### Fragmented BlueZ management negotiation
+
+`bluez_bus::FramedManagement` composes the bounded BLE packet write cursor
+with the task-owned BlueZ management dispatcher. It prepares one
+write-with-response fragment at a time. Each plan binds the complete packet
+digest, total length and exact fragment range into its effect preconditions;
+the caller supplies a separate matching journal-backed one-use permit for each
+fragment. Interleaved notification changes must be drained before the next
+fragment is prepared. The caller must supply and enforce independent device
+identity and negotiation semantics; this path does not authorize Wi-Fi
+credentials or arbitrary settings.
+
+One in-memory reservation on the watch prevents a second framed sender or a
+low-level management write from interleaving a packet. It is released after
+the whole packet is locally acknowledged, or when a pristine unused owner is
+retired. An interrupted or partially acknowledged packet keeps the reservation.
+Arming a dispatch records the operation ID before returning its future;
+dropping that future, including before its first poll, retains an in-flight
+range and requires reconciliation. An uncorrelated reply or already-claimed
+permit fences the packet. Retirement preserves the original frame, pending
+plan, acknowledged and uncertain ranges, and operation identity. The
+reservation does not span another watch, process or restart; those boundaries
+still require independent lease and journal recovery. A correlated BlueZ reply
+is a local acknowledgment, not proof that the camera accepted a packet or
+that any effect is terminal.
+
+Strict-remote job `30097323753213413` passed all 27 BlueZ bus integration
+tests on snapshot `087c11e`. The new synthetic test exercises two fragments,
+whole-packet binding, a wrong permit, direct-write and second-writer refusal,
+an interleaved notification, cancellation before first poll and while awaiting
+a reply, an uncorrelated second reply, and a previously claimed permit. Its
+effect journal is in-memory and does not prove durability or restart recovery.
+Earlier job `30097323753213408` passed 27 tests before the reservation and
+claimed-permit revisions. Both exited 0, were acknowledged, and released
+source and pair custody. These tests did not contact a physical camera. Native
+camera ownership, secure first-time Wi-Fi provisioning, uninterrupted recording
+and 30-day retention remain open.
+
+Job `30097323753213420` subsequently passed all 27 tests on snapshot
+`99dbcf6`, adding pre-arm checks for timeout, timer, queued changes, current
+serial and permit bindings. Its synthetic cancellation fixture additionally
+checks that an invalid timeout returns the permit without arming a write.
+The job exited 0, was acknowledged, and released source and pair. The earlier
+broader Clippy attempt, job `30097323753213415` on snapshot `087c11e`, exited
+101 with 30 errors and 795 warnings in the library; its displayed output was
+truncated, so the individual errors have not yet been classified. That job was
+acknowledged and released its resources; it is not a lint pass.
+
+A second Clippy invocation, job `30097323753213426` using the same lint rules
+and Rust files from `99dbcf6`, emitted 30 denied `clippy::expect_used` errors
+in twelve other reference-library files, including existing UniFi, RTSP and
+TUTK code. Those files were unchanged from base `11fe3ced`. The diagnostic
+also identified one `too_many_arguments` warning in the new internal BlueZ
+dispatcher; its options were grouped afterward, so that warning's correction
+requires a fresh check. The diagnostic counted 835 warnings across all compiler
+messages, exited 101, was acknowledged, and released source and pair. The
+full lint gate remains red; the passing integration tests do not change that.
+
+Job `30097323753213432` then passed all 27 BlueZ tests on snapshot `814fb95`
+after grouping the dispatch options. It exited 0. The later diagnostic Clippy
+rerun on that revision, job `30097323753213445`, exited 101 with no parsed
+compiler diagnostics; the helper discarded non-JSON output, so the cause and
+the status of the earlier BlueZ warning are unknown. The terminal result was
+acknowledged and its source and pair released. A
+read-only check at that time found the existing recorder and fallback timer
+active with restart count 2, and 16 files in the bulk recording directory
+modified in the preceding 15 minutes. This activity does not prove gap-free
+coverage or 30-day retention.
+
+A subsequent read-only observation on the test worker matched the checkout's
+BlueZ watch, management-plan, and bus-test SHA-256 values, respectively
+`30862c6528a2e4702209f6cc43c3e9235ce786a3bd1e88738a5e05736f92e1af`,
+`a5693f67566a4da63a61b01063fa4617ca791c88dcb1beab3f140168be5e033e`, and
+`b32ce5fb1d18bf7fbca57403fab6bb8a4281fc3af925911c6dd35e390a1997a8`.
+This was not an atomic test-time source receipt.
+
+### Checking decoded resolution before still export
+
+The owner-authorized live still diagnostic now accepts an optional exact
+`--expect-dimensions WIDTHxHEIGHT` requirement. It rejects invalid dimensions
+before listening and rejects a decoded picture with different dimensions
+before creating an output file. This checks an actual decoded picture, not
+only the camera's reported profile; it is not a sustained recording or
+source-identity assertion. The existing invocation remains available when no
+expected dimensions were supplied. The synthetic loopback fixture adds four
+invalid-input cases, a wrong-resolution refusal and a matching 2K case.
+
+Strict-remote build job `30097323753213443`, snapshot `78dfb0e`, exited zero
+on `vmi1149989`, acknowledged its terminal result and released its source and
+pair. The library emitted 75 warnings. The example SHA-256 is
+`9be7edb4b9e2fbc12810a2eceb56ccdfff6d66e581247121919c2c303bb148d3` and the
+fixture SHA-256 is
+`18d9a866456d7045c6963f72b125028a03fae994f610bd34f388e0846135e095`.
+The built executable SHA-256 was
+`dbe2218705c130cf52227b0d973cb6654e1ef1a5251e8bf84c6559b86764a796` on the
+worker, ts1 and trj. On ts1 the synthetic loopback fixture passed all eight
+checks in an isolated network namespace: missing authorization, four invalid
+dimension inputs, denied peer, dimension mismatch with no output, and matching
+2688 x 1512 output. The fixture used a 16 MiB stack and does not establish
+normal-stack behavior.
+
+The same binary then received a passive copy of the live G4 high-track push,
+decoded a 2688 x 1512 picture with the exact expected dimensions, and created
+the private JPEG `/bulk/unifi_camera_recordings/fss-still-dimensions-20261114/g4-high.jpg`
+on trj. Its SHA-256 is
+`190ed6094175f7929cdbbacd17dd423228ba566a363e9c314080dc58d015dcf7`.
+The receiver consumed 3,318,246 bytes after its initial buffer. Scrypted still
+owned the camera connection. Startup framing was synthetic and AVC
+configuration was obtained from the previously retained, hash-verified G4
+high-profile MP4; its relevance to the live codec epoch was not independently
+verified. Peer identity, color accuracy, audio, continuity and direct Rust
+camera ownership remain unverified. The passive helper SHA-256 is
+`f33b8222f71cd56a2c1bee106f0c3eaf3ce42f25380a3cb22eb616b52d4b19d5`;
+it made no camera setting or controller change.
+
+The selected camera still uses the existing Scrypted controller and the
+continuous recorder still requests the medium profile. At a later read-only
+check the recorder and fallback timer were active, the restart count was two,
+and 16 archive files had been modified in the preceding 15 minutes. The bulk
+filesystem reported 3.4 TB available and the staging filesystem 584 GB;
+the existing upload service removes a staging source only after both bulk and
+USB verification. These are point-in-time observations, not capacity,
+coverage or retention guarantees. No recorder or camera settings were changed.
+
+### Selected profile checked against media configuration
+
+The shared `recording::Recorder` can now be given one immutable display-size
+requirement before any source record is offered. It compares that requirement
+with the dimensions in the parsed AVC SPS before admitting the configuration
+to either the video-only or A/V recording path. A mismatch fences the recorder
+and returns the original configuration record; it is not a decoded-picture,
+frame-rate, camera-identity or continuity assertion. Without an explicit
+requirement, earlier behavior remains available.
+
+The scoped setup trial now carries the selected camera-reported dimensions
+into the first recorder and every later candidate's recorder. Its legacy
+retained-listener path uses the current `into_parts` API and does not claim
+the optional stream-name binding. The dedicated synthetic profile fixture
+covers a matching high-resolution stream and mismatches on both the first
+and a replacement media connection. After the revised build completed, the
+fixture passed all three cases in an isolated ts1 network namespace. The
+matching output was independently decoded as 2688 x 1512 with two frames;
+both mismatches stopped before a completed clip. The replacement case also
+checked that the rejected stream was the second candidate. This is synthetic
+setup and media, not a physical handoff or unattended recording.
+The fixture was then strengthened to assert both exact dimension claims,
+nonzero explicitly omitted configuration bytes and absence of an output file;
+all three cases passed again in a fresh isolated namespace and directory.
+As a negative control, an older trial executable (SHA-256
+`1ecb4099abe0861aa138f9a4d71a9e4daa36e71a4fc578e0fe2f36400c7455fb`)
+passed the fixture's 2688 x 1512 matching case but failed its first mismatch
+case: after selecting the synthetic 2688 x 1512 profile, the old binary wrote
+a clip that FFprobe measured at 160 x 128 with four frames. The test stopped
+before the replacement-connection case. An earlier fixture attempt had
+incorrectly required six decoded frames from the matching clip, which held
+two; the revised fixture requires two and retains the old six-frame default
+for existing callers. Neither run contacted a camera.
+
+Strict-remote job `30097323753213455` first failed before the recorder test ran
+because the new test discarded a must-use header result. After correcting the
+assertion, job `30097323753213463` passed the selected contract (1 passed,
+36 filtered) at snapshot `882a047`; both jobs were acknowledged and released
+source and pair. The test checks both AVC modes, matched and mismatched
+dimensions, source preservation, fencing, invalid requirements and late
+reconfiguration. It uses a 16 MiB stack and synthetic media.
+After both the test and the later example build, a read-only worker inventory
+matched the checkout's recorder, AVC muxer, recorder test and live example
+SHA-256 values `6ec0916a23695be08357216ff5764e969e0d6f3011d7c555f7c717079495919f`,
+`763c52a7d1edf27228419ce82da7ebe71c9a3ae7a901b5506ca04df1329385cf`,
+`83e951d9fdf0db7ed9acca16a70913df9dbcdf4e9222d1cf909543ea167a4ef9`, and
+`cc641b8131fd40f35561772b985ba1e7b8dde14ed1c7f30ee5e0c7eab3db3159`,
+respectively. This is a later observation, not an atomic test-time receipt.
+
+Job `30097323753213465` built the guarded live still example at snapshot
+`ad18e05` and exited zero with acknowledged terminal state and released
+source and pair. An isolated synthetic loopback fixture passed eight checks,
+including both a mismatch and matching 2688 x 1512 video. A passive real-G4
+high-stream run with that binary also succeeded: the SPS check passed, Rust
+decoded a 2688 x 1512 picture, and 3,005,070 input bytes arrived after the
+initial buffer. The private output on trj is
+`/bulk/unifi_camera_recordings/fss-profile-guard-live-20261114/g4-high.jpg`,
+SHA-256 `c34ba3147c4575d3c4b1b21c43a05be162c138fe79f2e2c9cbc012282d4315f1`.
+The binary SHA-256 was
+`bb4483b6aa67ec36255d9106debcaa5d55cf590d56b1f234b076d6dcc56c015e`,
+matched on worker, ts1 and trj. The passive helper SHA-256 was
+`2b3ee5e8382004ef3aa612fa5fd86e214fe6287d3af091659aabc3839b43c923`.
+As in the preceding observation, Scrypted owned the live camera connection;
+startup framing was synthesized and codec configuration came from the saved
+G4 clip, whose current live epoch and peer identity were not independently
+verified. No media source bytes were retained and no camera settings changed.
+
+The initial scoped-trial build, job `30097323753213458`, failed with three
+private-field errors after the listener API changed. The lab now uses the
+public owner-splitting API. Revised strict-remote build job `30097323753213479`
+at lab snapshot `4cb1e37` exited zero, was acknowledged, and released source
+and pair. The executable SHA-256
+`a6be3a3c24401ab9e6a36b0c4a694fcb1367b2a9515792336e77e97bd98d9f38`
+matched on worker and ts1. The separately run fixture and profile helper hashes
+were `7cde7b212a2a73c880e3bba661be329aec12c5fb66bde5bdd9f9d9cc0b2872a4`
+and `997f9a3e082cc9d189728faf4ae535d56f57ecf428e216a6f81c5419537da982`.
+The fixture files changed after the binary build and are not covered by its
+source snapshot; their hashes were compared separately. The recorder and
+fallback timer remained active, with restart count two. Native camera
+ownership, continuous native recording, automatic setup and 30-day native
+retention remain unverified.
+
+### Direct RTSP shortcut observation
+
+A bounded, owner-authorized read-only check selected the unique private peer
+of the existing high-track socket and attempted a TCP connection to ports 554,
+8554 and 7447. Each was refused; no application data or credentials were
+sent. This is a point-in-time observation of a network-address claim, not
+independent camera identity, a scan of other ports, or evidence that another
+configuration or protocol could not provide a direct stream. It does not
+change the recorder or settle the prior physical controller effects.
+
+### Profile admission through the managed archive
+
+The scoped archive trial now explicitly reports the byte count of an
+unaccepted source record when its recorder fails. This is an omission record,
+not retained source custody. Strict-remote build `30097323753213483` at
+snapshot `79f245e` exited zero, was acknowledged, and released its source and
+pair. The executable SHA-256
+`cfdbdcde92e5800954eb41cb7662648c8210d7738c20d12ac490489a227cb19b`
+matched on the worker and ts1. The archive-control source SHA-256 was
+`63b59195921009bc68be8d326520feacb4577aa3f5c19721fe761f0277dd9888`.
+
+The separately executed synthetic fixture passed three cases in an isolated
+ts1 network: matching 2688 x 1512 media produced three managed archive
+segments across two generations and two frames were read back and decoded
+in Rust; 160 x 128 media was refused after both the first connection and a
+replacement connection. Both refusals reported the exact requested and
+observed dimensions and a nonzero omitted-source byte count. The test used
+the 16 MiB stack and made no camera connection. A first run reached archive
+readback but the fixture's prior five-frame minimum rejected the two-frame
+synthetic clip; the corrected test explicitly uses a two-frame minimum while
+retaining the existing default for other cases. Its helper and driver SHA-256
+values were `854222b293b7de227e93b8ce30783a8e868aff4946d4910bef47ade272cf6a84`
+and `da1769160bd011718670b2a0852eac00e6b58735ad28ad0146fa17f9ce544f09`;
+those fixture files were separately copied after the binary build.
+With that same binary and helper revision, the three bounded clip-path cases
+also passed again: a matching 2K stream plus first- and second-connection
+mismatches. That run had the deletion guard enabled and observed no calls to
+the three guarded deletion syscalls.
+
+The fixture and descendants ran under a syscall guard that injected EPERM
+for `unlink`, `unlinkat`, and `rmdir`. The first run attempted seven such
+calls and the passing run eleven; all observed calls were denied. The
+retained test directories were not removed. These bounded synthetic results
+do not prove actual camera takeover, source continuity, power-loss recovery,
+unattended recording or 30-day retention. The existing Scrypted recorder and
+fallback timer were active afterward, with restart count two.
+
+### Experimental stream-name selection and passive startup watch
+
+A later, bounded passive startup watch observed no new media TCP connection
+and no complete startup header in its eight-minute window. It did not change
+camera settings. It therefore does not establish whether this G4 supplies a
+stream-name claim in a new connection's metadata.
+
+The scoped lab source now has an opt-in experimental stream-name selection
+path and a synthetic fixture. A matching name is an unauthenticated claim and
+must not be used to establish camera identity. When this option is enabled,
+the source derives the requested 16-character public name from the run nonce;
+collisions remain possible and this is not a secret or an identity proof.
+Physical metadata availability remains unknown.
+
+The first synthetic name-selection test exposed a configuration failure: the
+trial requested a metadata prefix and tag count above the parser's supported
+limits. The trial now uses the parser's exported limits. Strict-remote build
+`30097323753213501` at isolated lab snapshot `3d5fdb2` exited zero, was
+acknowledged, and released source and pair. Its binary SHA-256
+`450569349d1428c8e9044de7529c65b4dc041bb10ca897288d9e90e7cde389fc`
+matched on the worker and ts1. The trial source, synthetic name fixture and
+shared profile fixture SHA-256 values were respectively
+`e1a23a8f46bb47fb87749571ecad6cbdf3f7fc37a611fd96c479a8f9f62b773d`,
+`4c9f6f8bcdedfaa743c89fae39a1978b27b8a2f5c22b50ccd826587bf8fdaade`, and
+`32523d639147ef9fee948addc74eb07e411151cd2a691688f7cfc997a3cbb28c`.
+
+In an isolated ts1 network, the synthetic name fixture passed four cases:
+matching metadata, a wrong-name first connection, a missing-name first
+connection, and a matching name with a mismatched video resolution. The first
+three requested distinct run names; successful clips were independently
+decoded at 2688 x 1512. On the same binary, both the prior three-case clip
+and three-case managed-archive resolution fixtures also passed. The latter
+read back three segments across two generations and decoded two frames.
+All fixtures used disposable credentials and did not contact the camera.
+Their syscall guard denied all 11 attempted archive deletions; the other two
+fixtures made no observed deletion calls. The recorder and fallback timer
+remained active with restart count two. These tests do not establish camera
+identity, physical camera metadata, direct ownership, uninterrupted media,
+or unattended 30-day recording.
+
+### Standalone owner-scoped UniFi discovery
+
+An earlier revision of `crates/fss-reference/examples/unifi_discover.rs`
+exposed a bounded Asupersync discovery window independently of camera
+credentials and setup. It accepted an owner-selected interface and prefix,
+sent a limited broadcast, an applicable directed broadcast, and an optional
+in-scope unicast hint, and reported each candidate and conflict assessment.
+Camera-supplied strings were
+escaped in output. The report names its stop condition and does not establish
+identity, absence, setup authority, or complete network coverage. The command
+does not authenticate, enroll, or configure a device.
+
+Strict-remote build `30097323753213506` at isolated snapshot `00534ea` exited
+zero, was acknowledged, and released source and pair. The example source
+SHA-256 was `c51ea3b91496c5db7d80f61afec3ebafbbf98a10f5e0c052e73bd376bbc494db`;
+binary SHA-256 `8fee476b4eda21450781e8673067e396a5f38fc59485d29ac94d3745fefb6ba8`
+matched on worker, ts1, and trj. The separately executed synthetic fixture
+SHA-256 was `57cadbc3a232e282f7893fa60cc20d2a9a56727182aae1ce9cd06eef5b5a903d`.
+Its isolated namespace tests passed four cases: two distinct camera claims,
+two conflicting claims, missing owner authorization, and invalid network
+scope. Its deletion-syscall guard observed no deletion calls. No physical
+camera was contacted during these tests.
+
+The hash-matched executable was then run once on trj using the previously
+authorized G4 address as a unicast hint within the local owner scope, alongside
+broadcast queries. The three-second window consumed three datagrams, with no
+malformed or out-of-scope reports, and deduplicated them to one unconflicted
+candidate whose source address matched the prior G4 address claim. This is
+not independent physical-device authentication or proof that other cameras
+were absent. The aggregate-only runner SHA-256 was
+`a34fe2734dca874e7597119cde5be72a144b1155353309dc3cfec5fcdbf3dbce`.
+No credentials, login, settings write or media capture were used. Afterward
+the existing recorder and fallback timer were active, with restart count two.
+Automatic provisioning, direct camera ownership and continuous native
+recording remain unverified. The example was subsequently revised to require
+an operator-supplied principal and approval digest, scope its network grant,
+and use a measured task clock. The current source sends limited broadcast and
+an optional unicast hint; those later edits are not covered by the earlier
+build, fixture, or physical observation above. The repository already has a
+separate discovery CLI and a scheduled discovery service on trj.
+
+### Optional discovery claims for a setup coordinator
+
+The existing `fss-unifi-discover` working-tree source has an opt-in
+`--include-mac-claims` projection. Its v3 per-window output contains each
+reported MAC claim or `null`, alongside the existing conflict assessment and
+unverified identity marker. Default v2 output omits the claim as before;
+`--combined-v2` refuses the new option rather than silently changing that
+schema. In automatic multi-interface mode without `--combined-v2`, the
+existing wrapper can contain v3 per-window and combined reports. A MAC claim
+is not authentication, owner enrollment, a credential, or permission to
+change a camera. The installed discovery service has not been modified.
+Strict-remote build `30097323753213519` at isolated snapshot `6096ac9` exited
+zero, was acknowledged, and released source and pair. The source SHA-256 was
+`20f30d8145092de373b9ce54f0651bea9b1dbe2d59c6e2b1091c33c28da0c6b1`;
+the executable SHA-256
+`87932f5f1b9585436fc8a02e272be9441e00c5c21da3f89e885f64a3579ab69c`
+matched on the worker, ts1 and trj. A separately copied fixture at SHA-256
+`16e709e8f3095ec9803c1d9e4a51a021b381c565ab532e3b0142298470983c92`
+passed eight isolated cases, including default v2 non-disclosure, v3 MAC
+claims for two candidates, a missing claim and v2/v3 incompatibility. The
+fixture changed after the build snapshot, and a syscall guard observed no
+deletion calls. These are synthetic peers.
+
+One subsequent unicast v3 observation on trj, using an approval digest of
+the user's discovery-and-setup request as a caller claim, found one candidate
+at the previously authorized G4 address with an unconflicted MAC claim. It
+remains unauthenticated; the digest is not an independently signed approval.
+The aggregate-only runner SHA-256 was
+`4706a4f11830031da9ed0751537a3f1ffae75067c262d51351c47d4da40358fb`.
+It ran the CLI as the unprivileged local account, sent no login or settings
+write and captured no media. The existing recorder, fallback timer and
+discovery timer were active afterward, with recorder restart count two.
+This does not perform enrollment or setup, nor prove a device identity,
+direct camera video, or native continuous recording.
+
+### Bounded established-controller message observation
+
+A further passive observation attached short-lived eBPF uprobes to the
+existing UniFi Direct plugin process on trj, without restarting it or
+changing the camera. The probes exposed only counts, frame-type bits, and
+sizes; a later 40-second classifier passed masked 128-byte TLS-read prefixes
+through an in-memory pipe and emitted only allowlisted message categories.
+The classifier's own synthetic masked-clock and malformed-input checks passed
+2/2. It selected TLS objects observed making an eight-byte write, not a
+socket authenticated as the G4. In a separate 30-second window that
+selection produced five masked ping-like and six masked binary-like frame
+prefixes. In the later classifier window eight prefixes claimed the
+`EventSmartAudio` function; none claimed hello, agreement, clock, or video
+settings in the inspected prefix. Prefix matching is not full JSON or frame
+validation, and fragmented, omitted or other TLS traffic is not counted. The
+absence of a startup message in an already-established session cannot explain
+the earlier failed handoff. Neither peer identity nor event meaning is proved.
+
+No captured prefixes or payloads were written to disk or printed. The local
+observer SHA-256 was
+`4caf726ffe04ac5df1227ba177e424c0263eef3fcc1fbdac3f49ac22f08b0ca8`.
+The existing recorder, fallback timer and discovery timer were active
+afterward; the recorder restart count remained two. This diagnostic does not
+exercise Rust camera ownership, automatic onboarding or native recording.
+
+### Current scoped Rust trial against the G4 in observation mode
+
+The previously built scoped trial from strict-remote job
+`30097323753213501` was copied to trj; its SHA-256
+`450569349d1428c8e9044de7529c65b4dc041bb10ca897288d9e90e7cde389fc`
+matched before and after a single read-only run. A separate TLS observation
+first found that the saved network-observed certificate still matched the
+endpoint's presented certificate; this is not independent device identity.
+The trial used automatic network discovery with the authorized address as a
+hint, matched one candidate to that certificate before sending credentials,
+logged in, and read consistent camera settings. Its selected high profile was
+reported by the peer as 2688 x 1512 at 30 fps; delivery was not verified by
+that settings read. A first-party Rust decoder also decoded the endpoint's
+640 x 360 JPEG snapshot in memory.
+
+The run used `--observe-only --observe-snapshot`, made no controller or
+camera-settings write, and created no output, effect journal or saved image.
+The login can leave a camera session of unknown expiry. The aggregate-only
+runner SHA-256 was
+`a7671f9fc0aff588acdf1ecd49d930a65aa6eeaadf5356f1b52929d1def47f1d`.
+The recorder, fallback timer and discovery timer remained active afterward,
+and the recorder restart count was two. This verifies the current scoped
+Rust discovery-to-read-only-observation path on one network-identified peer,
+not independent physical identity, automatic adoption, direct Rust video,
+continuous native recording or resolution of historical effects.
+
+### Fresh controller events through the current Rust parser
+
+Strict-remote build `30097323753213538` compiled the existing laboratory
+event observer as an isolated example at snapshot `adf4fec`. It exited zero,
+was acknowledged, and released source and pair. The executable SHA-256
+`7c83551bf1d7fb713d3c57d0c980d5662aa727bc75aa4764879249f5b88d804d`
+matched on the worker, ts1 and trj, including after the live observation.
+The observer, event module and controller module source SHA-256 values were
+respectively
+`1153a2e82976d459f92acbff16d80ba8d4a7e893cb5d4dfdf367b290a73ae056`,
+`5133d26ff8233cb49d79bd0ee0ec52041b719bc91b3b8595d265c485b0c97b56`, and
+`ec9f2ddaff767af452d0f87d14912245024b07cda5fe9be53114d94056998628`;
+the latter two matched the local checkout and build snapshot. A separate
+one-envelope synthetic precheck passed before the physical-network sample.
+
+The existing bounded passive observer, SHA-256
+`4d4113a5d7864504e32d34742f9fec567b451fe6a11830b648d5b6fd915d43d3`,
+then selected six complete masked event envelopes from the running plugin
+process and supplied them to that Rust parser in memory. It parsed six of
+six as SmartAudio with structured fields, no unsupported or unknown fields,
+no requested replies and no refusals. The probe did not bind TLS reads to a
+specific socket, authenticate a camera, or measure all traffic; classification
+does not establish that an audible event occurred. No event payload or raw
+frame was intentionally saved or printed. The existing recorder, fallback
+timer and discovery timer remained active, and recorder restart count was two.
+Scrypted still owned the controller session; this is not native camera
+ownership, a direct Rust stream, persisted event coverage or a production
+service.
+
+### Event source archive work in progress
+
+The working tree adds an unknown-time event evidence candidate and an
+explicitly authorized, anchored archive publication and readback path. It
+binds the exact event bytes to caller-supplied connection, camera and
+retention claims; readback rechecks the source digest and event envelope.
+The source remains with the caller if preparation or publication is refused.
+Strict-remote jobs `30097323753213546` and `30097323753213549` compiled the
+fixture at isolated snapshots `bf45563` and `c91e7e0`, respectively; both
+exited zero, were acknowledged, and released source and pair. The latter
+executable SHA-256
+`1311be85229e9f40c9140b844c0bd6329aaf15a1113f573c08f4c1801172a30f`
+matched on worker and ts1. On ts1 its source-validation test passed (1/1),
+and its separately enabled storage test passed (1/1). The storage test
+retained and reopened a synthetic event, refused denied retention and read,
+then recovered an independently anchored staged event after reopening its
+journal and keeper, and completed publication of the same root. A syscall
+guard observed no deletion attempts in the source test and denied all three
+attempts in the storage test. Test files remain in a private directory.
+
+The event-evidence, archive, event parser, controller module and test source
+SHA-256 values were respectively
+`91f9ef79ae538a524c7346838a49e790f155dd28766973c8bc1397cf798f7f8f`,
+`b2fc09bd7988078c2c1c63316b414aa3256ce29b3e577c778cb11e5c9c4f6fa4`,
+`216dab90edadf3ff80bf7d7d651a60ddc59341d36548308f72e99fa57ad973ea`,
+`46b5440afd2a9a4f7cd5b499c1256b78039697564e7ea212d9e5bf15efb4e9b4`, and
+`b14b32527997311a6668c94295975ba5c747745145f383afb83ba1fc2af370ab`.
+As a regression check, strict-remote build `30097323753213550` compiled the
+existing standalone FLV source archive contract at the same `c91e7e0`
+snapshot, exited zero, was acknowledged, and released source and pair. The
+hash-matched executable
+`627d96f84659efef454f3c677d99a744372136131d71f95eeb79824d814adfcf`
+then passed its one denial, retry and cold-read test on ts1; its deletion
+guard denied all nine attempted deletion calls.
+These are synthetic storage results. The path is not yet connected to the
+recording supervisor or a deployed event service; camera identity, physical
+event time, detection meaning and coverage remain unverified.
+
+### Event publication worker: implementation in progress
+
+An event worker now holds at most one exact event source and transfers archive
+work to a task-owned blocking operation. Busy offers return their input;
+cancellation requires a drained join before storage owners can be retired.
+Failure classification carries an actual ledger receipt when publication
+succeeded but journal confirmation did not. The worker does not authenticate
+the source, implement journal rollover, or connect itself to the live camera
+supervisor.
+
+The first strict-remote compile exposed a non-Send archive error in the worker;
+the implementation now classifies that error before crossing the thread
+boundary, retaining any receipt. A corrected remote build and a test of
+cancellation, backpressure, retry, and exact synthetic-source readback are
+pending. These changes do not establish real-camera event recording or
+continuous native recording.
+
+### Scoped discovery example: final synthetic authority checks
+
+The scoped discovery example at source snapshot `d71cbeffee7527d810228d02fdc4898d3dfa2b89` completed its strict-remote build on hz2. The worker binary and independently copied ts1 binary matched SHA-256 `72a0b6729ae2b9190e86c91679983d6f6f2e247b475b008acdc28802ec982c4a`. In an isolated network namespace, the corrected fixture passed five checks: missing authorization, invalid network scope and a zero approval digest were refused; two-candidate advertisements were assessed correctly both with distinct identities and with conflicting MAC claims. The fixture contacted no physical camera; tracing observed zero deletion attempts. This is synthetic discovery and authority evidence, not camera authentication, setup, or live stream evidence.
+
+The subsequent source snapshot also adds an event handoff from both supervisor
+session paths to the event worker. It returns unrelated session steps unchanged,
+retains a refused original event and its session context, and preserves any
+paired A/V completion for the caller. The cancellation fixture now exercises
+those handoff paths, including startup-request passthrough. This handoff is not
+yet connected to the production service and remains unverified until its
+exact snapshot compiles and the synthetic fixture runs.
