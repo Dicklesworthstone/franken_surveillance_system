@@ -36,6 +36,18 @@ impl Default for Limits {
         }
     }
 }
+impl Limits {
+    /// Reject unsupported or zero evidence bounds before starting capture.
+    pub fn validate(self) -> Result<(), Error> {
+        if !(1..=256 * 1024 * 1024).contains(&self.max_bytes)
+            || !(1..=8_192).contains(&self.max_records)
+            || !(1..=65_536).contains(&self.max_nals)
+        {
+            return Err(Error::Limit);
+        }
+        Ok(())
+    }
+}
 
 /// Payload-free refusal to prepare an internally consistent evidence graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,10 +117,8 @@ impl<'a> Prepared<'a> {
         if capture.is_some_and(|v| v.earliest > v.latest) {
             return Err(Error::Mismatch);
         }
-        if !(1..=256 * 1024 * 1024).contains(&limits.max_bytes)
-            || !(1..=8_192).contains(&limits.max_records)
-            || !(1..=65_536).contains(&limits.max_nals)
-            || retention.algorithm() != DigestAlgorithm::Sha256
+        limits.validate()?;
+        if retention.algorithm() != DigestAlgorithm::Sha256
             || retention.bytes() == [0; 32]
             || retention.is_laboratory()
         {

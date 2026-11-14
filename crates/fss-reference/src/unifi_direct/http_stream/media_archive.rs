@@ -8,17 +8,22 @@
 
 use std::time::Duration;
 
-use asupersync::{Cx, time::timeout_at};
+use asupersync::{
+    Cx,
+    io::{AsyncRead, AsyncWrite},
+    time::timeout_at,
+};
 use fss_container::flv_avc::SourceKey;
-use fss_core::ContentDigest;
+use fss_core::{ContentDigest, DigestAlgorithm};
 use fss_packet::extended_flv::stream::SourceRecord;
-use fss_runtime::execution::TaskCx;
+use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 
 use super::media;
 use crate::unifi_direct::{
-    av_unknown_worker_guard::BootstrapResources, av_worker, metered::MeteredClock, pipeline,
-    recording, recording_storage, source_coordinator::ArchiveAdmission, source_worker,
-    video_bootstrap, video_owned_sink, video_worker,
+    av_unknown_worker_guard::BootstrapResources, av_worker, camera_http, listener,
+    metered::MeteredClock, pipeline, recording, recording_storage,
+    source_coordinator::ArchiveAdmission, source_worker, video_bootstrap, video_owned_sink,
+    video_worker,
 };
 
 /// All owners retained by the driver, including the unsettled camera effect.
@@ -127,6 +132,130 @@ pub struct AttachRefusal {
     pub camera_claim: ContentDigest,
 }
 
+/// Owners needed to start one HTTP-directed video archive.
+pub struct Start<'a> {
+    /// Exact camera setting and media-listener request.
+    pub request: media::Request<'a>,
+    /// Fresh source and video archive owners.
+    pub storage: recording_storage::Created,
+    /// Video archive configuration and retention decision.
+    pub policy: video_bootstrap::Policy,
+}
+
+/// Payload-free reason an archive cannot start before a camera write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartPreflight {
+    /// Runtime, task, clock, listener, source or archive bindings do not match.
+    Binding,
+    /// The runtime has no blocking pool for archive work.
+    MissingBlockingPool,
+    /// Retention or media bounds are invalid.
+    Policy,
+    /// Runtime cancellation was observed before any camera write.
+    Cancelled,
+}
+
+/// Every stopped start returns its remaining effect and archive owners.
+#[must_use = "retain or reconcile every returned owner and camera effect"]
+pub enum StartRefusal<'a> {
+    /// No request was sent; all original start inputs are returned.
+    Preflight {
+        /// Payload-free reason for refusal.
+        reason: StartPreflight,
+        /// Unconsumed request, storage and video policy.
+        inputs: Box<Start<'a>>,
+        /// Original unclaimed effect permit.
+        permit: CommittedEffect,
+    },
+    /// The media startup stopped; its effect may require reconciliation.
+    Media {
+        /// Exact media refusal and retained effect permit.
+        refusal: media::Refusal,
+        /// Unconsumed archive storage.
+        storage: recording_storage::Created,
+        /// Original video policy.
+        policy: video_bootstrap::Policy,
+    },
+    /// Media connected, but archive attachment refused all original owners.
+    Attach(AttachRefusal),
+}
+
+/// Check archive prerequisites, start the camera stream, then attach storage.
+/// No blocking pool, mismatched binding, invalid policy, or cancellation can
+/// trigger a camera request. A dropped in-flight write can still leave an
+/// indeterminate effect in the durable journal; reconcile before any retry.
+pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    http: &mut camera_http::Owner<'_, '_, '_, IO>,
+    listener: &mut listener::Listener<'_, '_, '_>,
+    inputs: Start<'a>,
+    permit: CommittedEffect,
+    authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
+) -> Result<Driver, StartRefusal<'a>> {
+    let key = inputs.request.recorder.source_key();
+    let camera = inputs.request.current.camera;
+    let retention = inputs.policy.retention;
+    let reason = if cx.checkpoint().is_err() {
+        Some(StartPreflight::Cancelled)
+    } else if !cx.has_timer()
+        || !clock.matches(task, cx)
+        || !http.matches_media_listener(listener)
+        || !listener.matches_camera_binding(&clock, &inputs.request.plan.resource())
+        || inputs.request.plan.operation() != super::Operation::Start
+        || inputs.request.current.listener != listener.local_addr()
+        || !listener::valid_accept_config(
+            inputs.request.chunk_bytes,
+            inputs.request.max_bytes,
+            inputs.request.wait,
+        )
+        || key.connection == 0
+        || key.generation == 0
+        || inputs.request.recorder.inband_mode() != inputs.policy.inband
+        || !inputs.storage.coordinator.matches_binding(key, camera)
+        || inputs.storage.coordinator.source_status() != source_worker::Status::Idle
+        || !(1..=100_000_000_000).contains(&inputs.storage.av.work_limit)
+    {
+        Some(StartPreflight::Binding)
+    } else if retention.algorithm() != DigestAlgorithm::Sha256
+        || retention.is_laboratory()
+        || retention.bytes() == [0; 32]
+        || inputs.policy.media_limits.validate().is_err()
+        || inputs.policy.evidence_limits.validate().is_err()
+    {
+        Some(StartPreflight::Policy)
+    } else if cx.blocking_pool_handle().is_none() {
+        Some(StartPreflight::MissingBlockingPool)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Err(StartRefusal::Preflight {
+            reason,
+            inputs: Box::new(inputs),
+            permit,
+        });
+    }
+    let Start {
+        request,
+        storage,
+        policy,
+    } = inputs;
+    let connected = match media::start(http, listener, request, permit, authorize_observation).await
+    {
+        Ok(connected) => connected,
+        Err(refusal) => {
+            return Err(StartRefusal::Media {
+                refusal,
+                storage,
+                policy,
+            });
+        }
+    };
+    Driver::attach(connected, storage, policy, camera).map_err(StartRefusal::Attach)
+}
+
 impl Driver {
     /// Attach fresh storage to the caller-bound stream without starting I/O.
     pub fn attach(
@@ -140,6 +269,7 @@ impl Driver {
             || key.generation == 0
             || !connected.pipeline.is_ready_for_recording()
             || connected.camera_claim() != camera_claim
+            || connected.pipeline.inband_mode() != policy.inband
             || connected.pipeline.audio_tracking_active()
             || connected.pipeline.has_pending_audio()
             || !storage.coordinator.matches_binding(key, camera_claim)

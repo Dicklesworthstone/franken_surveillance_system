@@ -255,6 +255,10 @@ impl Recorder {
         self.key
     }
 
+    pub(crate) fn inband_mode(&self) -> bool {
+        self.inband
+    }
+
     /// Start a bounded owner for a caller-selected connection and generation.
     pub fn new(key: SourceKey, limits: Limits) -> Result<Self, Error> {
         Self::new_with_inband(key, limits, false)

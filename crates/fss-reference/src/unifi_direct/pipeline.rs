@@ -158,6 +158,10 @@ impl Pipeline {
         self.ingress.is_bound_to_task(task)
     }
 
+    pub(crate) fn inband_mode(&self) -> bool {
+        self.recorder.inband_mode()
+    }
+
     /// Caller-supplied connection and generation claim; this does not authenticate the peer.
     pub fn source_key(&self) -> fss_container::flv_avc::SourceKey {
         self.recorder.source_key()

@@ -55,6 +55,90 @@ use std::{
 };
 
 type Test = Result<(), Box<dyn Error>>;
+
+struct ArchiveAccess;
+impl fss_reference::unifi_direct::archive::RetainAuthority for ArchiveAccess {
+    fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+        true
+    }
+}
+impl fss_reference::unifi_direct::archive::ReadAuthority for ArchiveAccess {
+    fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+        true
+    }
+}
+
+fn preflight_archive_storage<'scope, 'task>(
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    dir: &std::path::Path,
+    label: &str,
+    camera: ContentDigest,
+) -> Result<
+    (
+        fss_reference::unifi_direct::recording_storage::Created,
+        fss_reference::unifi_direct::video_bootstrap::Policy,
+    ),
+    Box<dyn Error>,
+> {
+    use fss_core::region::ContextAuthority;
+    use fss_reference::{
+        DeploymentLimits, ReplayCx,
+        unifi_direct::{archive, evidence, recording_storage, video_bootstrap},
+    };
+    let auth = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:preflight-archive".into(),
+        operation_id: OperationId::parse("operation:preflight-archive")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"preflight archive"),
+        generation: 1,
+    })?;
+    let root = dir.join(label);
+    let retention = ContentDigest::sha256(b"preflight retention");
+    let cfg = recording_storage::Configuration {
+        root: &root,
+        site_lineage: "site:preflight-archive",
+        source: SourceKey {
+            connection: 1,
+            generation: 1,
+        },
+        camera_claim: camera,
+        source_retention: retention,
+        source_scope: ContentDigest::sha256(b"preflight source"),
+        av_scope: ContentDigest::sha256(b"preflight video"),
+        source_deployment_limits: DeploymentLimits::standard(),
+        av_deployment_limits: DeploymentLimits::standard(),
+        source_history_limits: EffectJournalLimits::default(),
+        av_history_limits: EffectJournalLimits::default(),
+        limits: archive::Limits::default(),
+        max_source_bytes: 1024 * 1024,
+        work_limit: 4_000_000_000,
+    };
+    let storage = recording_storage::create(
+        task,
+        cx,
+        clock,
+        cfg,
+        ReplayCx::from_context_authority(&auth, dir.to_path_buf())?,
+        ReplayCx::from_context_authority(&auth, dir.to_path_buf())?,
+        Arc::new(ArchiveAccess),
+    )?;
+    let policy = video_bootstrap::Policy {
+        inband: false,
+        retention,
+        media_limits: fss_container::Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
+    };
+    Ok((storage, policy))
+}
+
 fn metadata_journal(
     dir: &std::path::Path,
     label: &str,
@@ -354,36 +438,41 @@ impl AsyncWrite for Sink {
 
 #[test]
 fn one_track_dispatch_requires_full_readback() -> Test {
-    exercise(false, false, false, false, false, false)
+    exercise(false, false, false, false, false, false, false)
 }
 #[test]
 fn partial_write_fences_and_leaves_effect_open() -> Test {
-    exercise(true, false, false, false, false, false)
+    exercise(true, false, false, false, false, false, false)
 }
 #[test]
 fn unsuccessful_response_fences_and_leaves_effect_open() -> Test {
-    exercise(false, true, false, false, false, false)
+    exercise(false, true, false, false, false, false, false)
 }
 #[test]
 fn owned_http_checks_policy_and_requires_private_readback() -> Test {
-    exercise(false, false, true, false, false, false)
+    exercise(false, false, true, false, false, false, false)
 }
 #[test]
 fn owned_http_observes_requested_fields_without_settling() -> Test {
-    exercise(false, false, true, true, false, false)
+    exercise(false, false, true, true, false, false, false)
 }
 #[test]
 fn owned_http_starts_native_media_listener() -> Test {
-    exercise(false, false, true, true, true, false)
+    exercise(false, false, true, true, true, false, false)
 }
 #[test]
 fn owned_http_refuses_unmatched_readback_before_media_accept() -> Test {
-    exercise(false, false, true, false, true, false)
+    exercise(false, false, true, false, true, false, false)
 }
 
 #[test]
 fn owned_http_media_publishes_and_reads_native_video() -> Test {
-    exercise(false, false, true, true, true, true)
+    exercise(false, false, true, true, true, true, false)
+}
+
+#[test]
+fn owned_http_archive_starts_media_with_preflight() -> Test {
+    exercise(false, false, true, true, true, false, true)
 }
 
 async fn archive_http_media<'scope, 'task>(
@@ -490,7 +579,15 @@ async fn archive_http_media<'scope, 'task>(
         Ok(_) => return Err("wrong camera archive binding accepted".into()),
     };
     let _other_storage = mismatch.storage;
-    let mut connected = mismatch.connected;
+    let mut incompatible_policy = policy;
+    incompatible_policy.inband = true;
+    let incompatible =
+        match Driver::attach(mismatch.connected, storage, incompatible_policy, camera) {
+            Err(refusal) => refusal,
+            Ok(_) => return Err("incompatible video format accepted".into()),
+        };
+    let storage = incompatible.storage;
+    let mut connected = incompatible.connected;
     connected
         .begin_name_probe(fss_packet::extended_flv::stream::NameProbeOwner::new(
             "event1",
@@ -686,7 +783,9 @@ async fn archive_http_media<'scope, 'task>(
             | Step::VideoRunning
             | Step::Media(_)
             | Step::Idle => (),
-            Step::StartRefused(error) => return Err(format!("archive start refused: {error:?}").into()),
+            Step::StartRefused(error) => {
+                return Err(format!("archive start refused: {error:?}").into());
+            }
             Step::SourceRefused(refusal) => {
                 let reason = match refusal {
                     source_worker::OfferRefusal::Busy(_) => "busy",
@@ -699,11 +798,15 @@ async fn archive_http_media<'scope, 'task>(
                 let reason = match refusal {
                     video_worker::OfferRefusal::Busy(_) => "busy".to_owned(),
                     video_worker::OfferRefusal::Fenced(_) => "fenced".to_owned(),
-                    video_worker::OfferRefusal::Sink(refusal) => format!("sink {:?}", refusal.reason),
+                    video_worker::OfferRefusal::Sink(refusal) => {
+                        format!("sink {:?}", refusal.reason)
+                    }
                 };
                 return Err(format!("video offer refused: {reason}").into());
             }
-            Step::ConfigurationRefused(refusal) => return Err(format!("video configuration refused: {:?}", refusal.reason).into()),
+            Step::ConfigurationRefused(refusal) => {
+                return Err(format!("video configuration refused: {:?}", refusal.reason).into());
+            }
             Step::MediaError(error) => return Err(format!("media error: {error:?}").into()),
             Step::SourceRetryRequired => return Err("source retry required".into()),
             Step::VideoRetryRequired => return Err("video retry required".into()),
@@ -712,9 +815,13 @@ async fn archive_http_media<'scope, 'task>(
             Step::Halted => return Err("archive halted".into()),
             Step::ConfigurationCopyRefused(_) => return Err("configuration copy refused".into()),
             Step::ConfigurationChanged(_) => return Err("configuration changed".into()),
-            Step::SegmentBeforeConfiguration(_) => return Err("segment before configuration".into()),
+            Step::SegmentBeforeConfiguration(_) => {
+                return Err("segment before configuration".into());
+            }
             Step::WorkerRefused(_) => return Err("video worker refused".into()),
-            Step::RecoveredWorkerRefused { .. } => return Err("recovered video worker refused".into()),
+            Step::RecoveredWorkerRefused { .. } => {
+                return Err("recovered video worker refused".into());
+            }
         }
     }
     let pin = pin.ok_or("no video archive publication")?;
@@ -762,16 +869,18 @@ fn exercise(
     match_request: bool,
     native_media: bool,
     archive_media: bool,
+    combined_start: bool,
 ) -> Test {
     let dir = std::env::temp_dir().join(format!(
-        "fss-http-serializer-{}-{}-{}-{}-{}-{}-{}",
+        "fss-http-serializer-{}-{}-{}-{}-{}-{}-{}-{}",
         std::process::id(),
         partial,
         bad_response,
         owned,
         match_request,
         native_media,
-        archive_media
+        archive_media,
+        combined_start
     ));
     std::fs::create_dir(&dir)?;
     let journal = FileEffectJournal::create(
@@ -951,7 +1060,7 @@ fn exercise(
     } else {
         None
     };
-    let runtime = if archive_media {
+    let runtime = if archive_media || combined_start {
         RuntimeBuilder::current_thread()
             .blocking_threads(1, 1)
             .build()?
@@ -1390,6 +1499,109 @@ fn exercise(
                                 assert!(!io_polled.get());
                                 permit = refusal.permit;
                             }
+                            {
+                                use fss_reference::unifi_direct::http_stream::media_archive;
+                                let (storage, mut archive_policy) = preflight_archive_storage(
+                                    task,
+                                    cx,
+                                    clock,
+                                    &dir,
+                                    "preflight-archive",
+                                    conditions.camera,
+                                )?;
+                                let expected = if archive_media || combined_start {
+                                    archive_policy.media_limits.max_samples = 0;
+                                    media_archive::StartPreflight::Policy
+                                } else {
+                                    media_archive::StartPreflight::MissingBlockingPool
+                                };
+                                let io_polled = Cell::new(false);
+                                let io = MeteredIo::with_clock(
+                                    NoIo(&io_polled),
+                                    clock,
+                                    &resource,
+                                    4096,
+                                )?;
+                                let mut fake_owner = camera_http::Owner::new(
+                                    io, task, cx, clock, &policy, peer, 1, &resource,
+                                )?;
+                                let request = media::Request {
+                                    plan: &plan,
+                                    current: conditions,
+                                    baseline: &observed,
+                                    checkpoint: &stored,
+                                    authority: &Guard(true),
+                                    wait: Duration::from_secs(5),
+                                    framer: Framer::new(FlvLimits::default(), 1024 * 1024)?,
+                                    recorder: recording::Recorder::new(
+                                        SourceKey {
+                                            connection: 1,
+                                            generation: 1,
+                                        },
+                                        recording::Limits::default(),
+                                    )?,
+                                    chunk_bytes: 4096,
+                                    max_bytes: 1024 * 1024,
+                                };
+                                let refusal = media_archive::start(
+                                    task,
+                                    cx,
+                                    clock,
+                                    &mut fake_owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    media_archive::Start {
+                                        request,
+                                        storage,
+                                        policy: archive_policy,
+                                    },
+                                    permit,
+                                    |p, g| p == peer && g == 1,
+                                )
+                                .await;
+                                let (mut returned_inputs, returned_permit) = match refusal {
+                                    Err(media_archive::StartRefusal::Preflight {
+                                        reason,
+                                        inputs,
+                                        permit: returned,
+                                    }) => {
+                                        assert_eq!(reason, expected);
+                                        assert!(!io_polled.get());
+                                        (*inputs, returned)
+                                    }
+                                    _ => return Err("archive preflight did not refuse".into()),
+                                };
+                                returned_inputs.policy.media_limits =
+                                    fss_container::Mp4Limits::default();
+                                returned_inputs.policy.inband = true;
+                                match media_archive::start(
+                                    task,
+                                    cx,
+                                    clock,
+                                    &mut fake_owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    returned_inputs,
+                                    returned_permit,
+                                    |p, g| p == peer && g == 1,
+                                )
+                                .await
+                                {
+                                    Err(media_archive::StartRefusal::Preflight {
+                                        reason,
+                                        inputs,
+                                        permit: returned,
+                                    }) => {
+                                        assert_eq!(reason, media_archive::StartPreflight::Binding);
+                                        assert!(!io_polled.get());
+                                        permit = returned;
+                                        let _retained_inputs = inputs;
+                                    }
+                                    _ => {
+                                        return Err(
+                                            "incompatible archive format was accepted".into()
+                                        );
+                                    }
+                                };
+                            }
                             let request = media::Request {
                                 plan: &plan,
                                 current: conditions,
@@ -1408,14 +1620,49 @@ fn exercise(
                                 chunk_bytes: 4096,
                                 max_bytes: 1024 * 1024,
                             };
-                            let result = media::start(
-                                &mut owner,
-                                native_listener.as_mut().ok_or("missing media listener")?,
-                                request,
-                                permit,
-                                |p, g| p == peer && g == 1,
-                            )
-                            .await;
+                            let result = if combined_start {
+                                use fss_reference::unifi_direct::http_stream::media_archive;
+                                let (storage, archive_policy) = preflight_archive_storage(
+                                    task,
+                                    cx,
+                                    clock,
+                                    &dir,
+                                    "combined-archive",
+                                    conditions.camera,
+                                )?;
+                                let driver = match media_archive::start(
+                                    task,
+                                    cx,
+                                    clock,
+                                    &mut owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    media_archive::Start {
+                                        request,
+                                        storage,
+                                        policy: archive_policy,
+                                    },
+                                    permit,
+                                    |p, g| p == peer && g == 1,
+                                )
+                                .await
+                                {
+                                    Ok(driver) => driver,
+                                    Err(_) => return Err("combined archive start refused".into()),
+                                };
+                                let parts = driver
+                                    .into_parts()
+                                    .map_err(|_| "new driver unexpectedly running")?;
+                                Ok(parts.connected)
+                            } else {
+                                media::start(
+                                    &mut owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    request,
+                                    permit,
+                                    |p, g| p == peer && g == 1,
+                                )
+                                .await
+                            };
                             if !match_request {
                                 let refusal = match result {
                                     Err(refusal) => refusal,
