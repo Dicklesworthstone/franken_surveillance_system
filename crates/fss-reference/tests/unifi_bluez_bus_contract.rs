@@ -1988,6 +1988,227 @@ fn gatt_management_dispatch_is_bound_to_one_committed_effect() -> TestResult {
     run_watch_action(base, None, Ok(()), WatchAction::ManagementWriteWrongReply)
 }
 
+struct FramedPolicy;
+impl bluez_bus::GattManagementAuthority for FramedPolicy {
+    fn permits(&self, plan: &management::Plan, current: management::Preconditions, _: &CommittedEffect) -> bool {
+        plan.check_current(current).is_ok()
+    }
+}
+
+// mode 0: two acknowledged fragments with an interleaved notification;
+// mode 1: drop before first poll; mode 2: drop while awaiting reply;
+// mode 3: second fragment receives an uncorrelated reply;
+// mode 4: a previously claimed permit fences the packet;
+// mode 5: an invalid wait is refused before arming.
+fn framed_management_case(mode: u8) -> TestResult {
+    use bluez_bus::{FramedManagement, FramedManagementError, FramedManagementState, GattManagementWrite, NotificationFrames, NotificationFramesStep};
+    const FRAME: [u8; 6] = [0, 6, 0x11, 0x22, 0x33, 0x44];
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = 131_072;
+    budget.network_bytes = 2_000_000;
+    let (mut owner, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:framed-gatt".into(),
+            operation_id: OperationId::parse("operation:framed-owner")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![RuntimeGrant::AdapterNet.as_str().into(), RuntimeGrant::ObserveStatus.as_str().into(), RuntimeGrant::CameraManagementPrepare.as_str().into(), RuntimeGrant::CameraManagementCommit.as_str().into()],
+            deadline: Some(TimestampNs(60_000_000_000)), priority: 1, budgets: budget,
+            privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"framed-gatt fixture"), generation: 1,
+        }, RegionId::new("region:framed-gatt")?, RegionKind::Process, budget, TimestampNs(1),
+    )?;
+    let mut effects = EffectCoordinator::with_journal(Box::new(TestJournal::default()))?;
+    let mut leases = LeaseRegistry::new();
+    let camera = ContentDigest::sha256(b"framed synthetic camera");
+    let resource = format!("camera:{}", camera.to_text());
+    let fence = leases.acquire(&resource, owner.region().as_str(), None, TimestampNs(2))?.fence;
+    let current = management::Preconditions { camera, peer_admission: ContentDigest::sha256(b"synthetic admission"), session_generation: 1, lease_fence: fence };
+    let operations = [OperationId::parse("operation:frame-part-0")?, OperationId::parse("operation:frame-part-1")?];
+    let mut permits = Vec::new();
+    let mut identities = Vec::new();
+    for index in 0..2 {
+        let plan = management::Plan::for_fragment(10 + index as u32, ":1.42", DEVICE, WRITE_PATH, &FRAME, index * 3..index * 3 + 3, current)?;
+        if index == 0 {
+            let mut different_frame = FRAME;
+            different_frame[5] ^= 1;
+            let other = management::Plan::for_fragment(10, ":1.42", DEVICE, WRITE_PATH, &different_frame, 0..3, current)?;
+            assert_eq!(plan.request_digest(), other.request_digest());
+            assert_ne!(plan.precondition_digest(), other.precondition_digest());
+        }
+        identities.push((plan.request_digest(), plan.precondition_digest()));
+        let prepared = effects.prepare(&owner, &mut tree, &mut leases, PrepareSpec {
+            operation: &operations[index], idempotency_key: IdempotencyKey::parse(operations[index].as_str())?,
+            request_digest: plan.request_digest(), precondition_digest: plan.precondition_digest(), resource: &resource,
+            fence, prepare_grant: RuntimeGrant::CameraManagementPrepare, commit_grant: RuntimeGrant::CameraManagementCommit,
+            terminal_predicate: "independent negotiation observation or reconciliation",
+        }, TimestampNs(3 + index as i128 * 2))?;
+        let approval = CommitApproval { prepared_digest: prepared.digest(), current_precondition_digest: plan.precondition_digest() };
+        permits.push(effects.commit(&owner, &tree, &mut leases, prepared, TimestampNs(4 + index as i128 * 2), approval)?);
+    }
+    let mut input = watch_input(None, ":1.42");
+    input.extend_from_slice(&owned_empty_reply(7, ":1.42"));
+    input.extend_from_slice(&owned_inventory_reply_body(8, ":1.42", &gatt_inventory_body()));
+    input.extend_from_slice(&owned_empty_reply(9, ":1.42"));
+    if mode == 0 {
+        input.extend_from_slice(&gatt_value_frame(&[0, 2]));
+        input.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+        input.extend_from_slice(&owned_empty_reply(11, ":1.42"));
+        input.extend_from_slice(&owned_empty_reply(12, ":1.42"));
+        input.extend_from_slice(&owned_empty_reply(13, ":1.42"));
+    } else if mode == 3 {
+        input.extend_from_slice(&owned_empty_reply(10, ":1.42"));
+        input.extend_from_slice(&owned_empty_reply(11, ":1.99"));
+    }
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let policy = Policy { deny: None, checks: Cell::new(0), revoke_adapter_watch: false, adapter_watch_checks: Cell::new(0), deny_device_path: false, revoke_device_connect: false, device_connect_checks: Cell::new(0), deny_notify_path: false, revoke_notify_read: false, notify_read_checks: Cell::new(0), deny_frame_read: Cell::new(false) };
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(&mut owner, &mut tree, TaskSpec { task_id: TaskId::new("task:framed-gatt")?, started_at: TimestampNs(8) }, &cx, async |task, cx| {
+            let output: TestResult = async {
+                let clock = MeteredClock::new(task, cx, TimestampNs(9))?;
+                let writes = Rc::new(RefCell::new(Vec::new()));
+                let io = MeteredIo::with_clock(Fixture { input, read_at: 0, written: writes.clone(), dropped: Rc::new(Cell::new(false)), pending_at_end: true, deferred_stop_reply: None }, clock, "fixture:system-bus", 8)?;
+                let mut watch = bluez_bus::open_watch(cx, task, clock, io, &policy, 1000, Duration::from_secs(1)).await?;
+                watch.connect_device(DEVICE, Duration::from_secs(1)).await?;
+                let endpoints = watch.select_gatt(SERVICE_UUID, NOTIFY_UUID, WRITE_UUID, fss_packet::dbus_object_manager::GattWriteMode::Request, Duration::from_secs(1)).await?;
+                watch.start_notify(&endpoints, Duration::from_secs(1)).await?;
+                let mut notifications = NotificationFrames::new(&watch, &endpoints, 64)?;
+                let malformed = [0, 2, 1];
+                assert!(matches!(FramedManagement::new(&mut watch, &endpoints, &malformed, 3, current), Err(FramedManagementError::Cursor(_))));
+                assert!(matches!(FramedManagement::new(&mut watch, &endpoints, &FRAME, 513, current), Err(FramedManagementError::Scope)));
+                let mut writer = FramedManagement::new(&mut watch, &endpoints, &FRAME, 3, current)?;
+                assert!(matches!(FramedManagement::new(&mut watch, &endpoints, &FRAME, 3, current), Err(FramedManagementError::Scope)));
+                let plan = writer.prepare(&watch, &endpoints)?.ok_or("first plan missing")?;
+                assert_eq!((plan.request_digest(), plan.precondition_digest()), identities[0]);
+                let mut first = permits.remove(0);
+                let mut second = permits.remove(0);
+                if mode == 0 {
+                    let before = writes.borrow().len();
+                    let bypass = watch.dispatch_gatt_management(&endpoints, plan, current, second, &FramedPolicy, Duration::from_secs(1)).await.expect_err("unrelated write bypassed frame reservation");
+                    assert_eq!(bypass.reason, bluez_bus::GattManagementRefusalReason::Session);
+                    second = bypass.permit;
+                    let refusal = match writer.dispatch(&mut watch, &endpoints, second, &FramedPolicy, Duration::from_secs(1)) {
+                        Err(refusal) => refusal,
+                        Ok(_) => return Err("wrong fragment permit accepted".into()),
+                    };
+                    assert_eq!(refusal.reason, bluez_bus::GattManagementRefusalReason::PermitMismatch);
+                    assert_eq!(writer.state(), FramedManagementState::Prepared);
+                    assert_eq!(writes.borrow().len(), before);
+                    second = refusal.permit;
+                }
+                let before = writes.borrow().len();
+                if mode == 5 {
+                    let refusal = match writer.dispatch(&mut watch, &endpoints, first, &FramedPolicy, Duration::ZERO) {
+                        Err(refusal) => refusal,
+                        Ok(_) => return Err("invalid wait armed a dispatch".into()),
+                    };
+                    assert_eq!(refusal.reason, bluez_bus::GattManagementRefusalReason::Session);
+                    assert_eq!(writer.state(), FramedManagementState::Prepared);
+                    assert_eq!(writes.borrow().len(), before);
+                    let retired = writer.retire(&mut watch);
+                    assert_eq!(retired.cursor.pending(), Some(0..3));
+                    assert!(retired.operation.is_none() && retired.reservation_retained);
+                    return Ok(());
+                }
+                if mode == 4 {
+                    assert!(first.try_claim_dispatch());
+                    let refusal = writer.dispatch(&mut watch, &endpoints, first, &FramedPolicy, Duration::from_secs(1)).map_err(|_| "arm claimed permit")?.await.expect_err("claimed permit accepted");
+                    assert_eq!(refusal.reason, bluez_bus::GattManagementRefusalReason::PermitUsed);
+                    assert_eq!(writes.borrow().len(), before);
+                    let retired = writer.retire(&mut watch);
+                    assert_eq!(retired.state, FramedManagementState::Fenced);
+                    assert!(retired.cursor.indeterminate() && retired.reservation_retained);
+                    assert_eq!(retired.operation.as_ref(), Some(&operations[0]));
+                    return Ok(());
+                }
+                let dispatch = writer.dispatch(&mut watch, &endpoints, first, &FramedPolicy, Duration::from_secs(1)).map_err(|_| "arm first")?;
+                if mode == 1 {
+                    drop(dispatch);
+                    assert_eq!(writes.borrow().len(), before);
+                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Active);
+                    let retired = writer.retire(&mut watch);
+                    assert_eq!(retired.state, FramedManagementState::InFlight);
+                    assert!(retired.reservation_retained);
+                    assert_eq!(retired.cursor.pending(), Some(0..3));
+                    assert_eq!(retired.operation.as_ref(), Some(&operations[0]));
+                    assert!(retired.plan.is_some());
+                    assert!(matches!(FramedManagement::new(&mut watch, &endpoints, &FRAME, 3, current), Err(FramedManagementError::Scope)));
+                    return Ok(());
+                }
+                if mode == 2 {
+                    let mut dispatch = Box::pin(dispatch);
+                    let mut polls = 0;
+                    poll_fn(|cx| match dispatch.as_mut().poll(cx) {
+                        Poll::Pending if writes.borrow().windows(b"WriteValue".len()).any(|part| part == b"WriteValue") => Poll::Ready(()),
+                        Poll::Pending => { polls += 1; assert!(polls < 2048); cx.waker().wake_by_ref(); Poll::Pending },
+                        Poll::Ready(_) => panic!("fragment completed before cancellation"),
+                    }).await;
+                    drop(dispatch);
+                    assert_eq!(watch.notification_state(), bluez_bus::NotificationState::Uncertain);
+                    let retired = writer.retire(&mut watch);
+                    assert_eq!(retired.state, FramedManagementState::InFlight);
+                    assert!(retired.reservation_retained);
+                    assert_eq!(retired.cursor.pending(), Some(0..3));
+                    assert_eq!(retired.operation.as_ref(), Some(&operations[0]));
+                    return Ok(());
+                }
+                let GattManagementWrite::Acknowledged { mut permit } = dispatch.await.map_err(|_| "first dispatch refused")? else { return Err("first fragment not acknowledged".into()); };
+                assert!(!permit.try_claim_dispatch());
+                if mode == 0 {
+                    assert!(matches!(writer.prepare(&watch, &endpoints), Err(FramedManagementError::QueuedChange)));
+                    let change = watch.next_notify_change(&endpoints, Duration::from_secs(1)).await?.ok_or("interleaved notification missing")?;
+                    notifications.submit(&watch, &endpoints, change).map_err(|_| "notification submit")?;
+                    let NotificationFramesStep::Packet(packet) = notifications.next(&watch, &endpoints)? else { return Err("notification packet missing".into()); };
+                    assert_eq!(packet.as_bytes(), &[0, 2]);
+                    assert!(matches!(notifications.next(&watch, &endpoints), Ok(NotificationFramesStep::Change(_))));
+                }
+                let plan = writer.prepare(&watch, &endpoints)?.ok_or("second plan missing")?;
+                assert_eq!((plan.request_digest(), plan.precondition_digest()), identities[1]);
+                let outcome = writer.dispatch(&mut watch, &endpoints, second, &FramedPolicy, Duration::from_secs(1)).map_err(|_| "arm second")?.await.map_err(|_| "second refused")?;
+                if mode == 3 {
+                    assert!(matches!(outcome, GattManagementWrite::Indeterminate { .. }));
+                    let retired = writer.retire(&mut watch);
+                    assert_eq!(retired.state, FramedManagementState::Fenced);
+                    assert!(retired.reservation_retained);
+                    assert_eq!(retired.cursor.acknowledged(), 3);
+                    assert_eq!(retired.cursor.pending(), Some(3..6));
+                    assert!(retired.cursor.indeterminate());
+                    assert_eq!(retired.operation.as_ref(), Some(&operations[1]));
+                    return Ok(());
+                }
+                assert!(matches!(outcome, GattManagementWrite::Acknowledged { .. }));
+                assert_eq!(writer.state(), FramedManagementState::Complete);
+                assert!(writer.prepare(&watch, &endpoints)?.is_none());
+                let retired = writer.retire(&mut watch);
+                assert!(!retired.reservation_retained);
+                assert_eq!(retired.cursor.frame(), &FRAME);
+                assert_eq!(retired.cursor.acknowledged(), FRAME.len());
+                assert!(retired.cursor.pending().is_none() && retired.operation.is_none());
+                let next = FramedManagement::new(&mut watch, &endpoints, &FRAME, 3, current)?;
+                assert!(!next.retire(&mut watch).reservation_retained);
+                watch.stop_notify(&endpoints, Duration::from_secs(1)).await?;
+                watch.disconnect_device(DEVICE, Duration::from_secs(1)).await?;
+                Ok(())
+            }.await;
+            TaskCompletion { outcome: if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("framed fixture failed".into()) }, output, completed_at: TimestampNs(59_000_000_000) }
+        }).await?;
+        result.receipt?;
+        result.output
+    })?;
+    for operation in &operations {
+        assert_eq!(effects.journal().operation(operation).ok_or("missing management obligation")?.state, fss_core::EffectState::Committed);
+    }
+    Ok(())
+}
+
+#[test]
+fn fragmented_management_preserves_effects_and_cancellation() -> TestResult {
+    for mode in 0..=5 {
+        framed_management_case(mode)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn cancelled_notification_start_or_read_fences_the_owned_watch() -> TestResult {
     let mut input = watch_input(None, ":1.42");

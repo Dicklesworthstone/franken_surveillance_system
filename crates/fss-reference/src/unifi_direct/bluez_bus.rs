@@ -23,7 +23,9 @@ use fss_packet::{
 use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 use std::{
     collections::VecDeque,
-    fmt, future::Future, io,
+    fmt,
+    future::Future,
+    io,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -809,6 +811,7 @@ pub struct Watch<'scope, 'task, 'policy, IO> {
     notification_state: NotificationState,
     notification_epoch: Option<Arc<()>>,
     next_notification_sequence: u64,
+    framed_management_reservation: Option<Arc<()>>,
 }
 
 /// Why a notification-frame owner stopped or refused an input.
@@ -1209,6 +1212,11 @@ pub enum GattManagementWrite {
     },
 }
 
+struct GattDispatchOptions<'a> {
+    wait: Duration,
+    reservation: Option<&'a Arc<()>>,
+}
+
 /// Caller-owned GATT endpoint claims from one correlated BlueZ snapshot.
 /// These paths are untrusted, can become stale, and confer no operation authority.
 #[derive(Eq, PartialEq)]
@@ -1291,6 +1299,8 @@ pub struct FramedManagementRetirement<'frame> {
     pub operation: Option<OperationId>,
     /// Whether continuation or reconciliation is required.
     pub state: FramedManagementState,
+    /// This watch remains reserved because the packet may be incomplete.
+    pub reservation_retained: bool,
 }
 
 /// Task-owned fragment coordinator for one already-framed negotiation packet.
@@ -1301,6 +1311,7 @@ pub struct FramedManagementRetirement<'frame> {
 /// retry an uncertain write, or prove the peer received the complete packet.
 pub struct FramedManagement<'frame> {
     epoch: Arc<()>,
+    reservation: Arc<()>,
     cursor: fss_packet::unifi_ble::WriteCursor<'frame>,
     frame_digest: ContentDigest,
     total: usize,
@@ -1316,21 +1327,27 @@ impl<'frame> FramedManagement<'frame> {
     /// notification session. The payload limit is caller-established, not an
     /// automatically negotiated ATT MTU. No device I/O is performed.
     pub fn new<IO>(
-        watch: &Watch<'_, '_, '_, IO>,
+        watch: &mut Watch<'_, '_, '_, IO>,
         endpoints: &GattEndpoints,
         frame: &'frame [u8],
         maximum_chunk: usize,
         current: gatt_management::Preconditions,
     ) -> Result<Self, FramedManagementError> {
-        let epoch = watch.notification_epoch.as_ref().ok_or(FramedManagementError::Scope)?;
+        let epoch = watch
+            .notification_epoch
+            .as_ref()
+            .ok_or(FramedManagementError::Scope)?;
         if watch.notification_state != NotificationState::Active
             || watch.device_state != DeviceLinkState::ConnectAcknowledged
             || watch.gatt_stale
             || watch.gatt_binding.as_ref() != Some(endpoints)
+            || watch.framed_management_reservation.is_some()
             || endpoints.mode != object_manager::GattWriteMode::Request
             || maximum_chunk > 512
             || watch.cx.checkpoint().is_err()
-            || !watch.admission.permits(&endpoints.write, Stage::BluezManagementWrite)
+            || !watch
+                .admission
+                .permits(&endpoints.write, Stage::BluezManagementWrite)
         {
             return Err(FramedManagementError::Scope);
         }
@@ -1338,11 +1355,20 @@ impl<'frame> FramedManagement<'frame> {
             .map_err(FramedManagementError::Cursor)?;
         let mut cost = BudgetVector::ZERO;
         cost.bytes = u64::try_from(frame.len()).map_err(|_| FramedManagementError::Budget)?;
-        let now = watch.clock.now().map_err(|_| FramedManagementError::Budget)?;
-        watch.task.checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.write, now, &cost)
+        let now = watch
+            .clock
+            .now()
             .map_err(|_| FramedManagementError::Budget)?;
+        watch
+            .task
+            .checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.write, now, &cost)
+            .map_err(|_| FramedManagementError::Budget)?;
+        let epoch = Arc::clone(epoch);
+        let reservation = Arc::new(());
+        watch.framed_management_reservation = Some(Arc::clone(&reservation));
         Ok(Self {
-            epoch: Arc::clone(epoch),
+            epoch,
+            reservation,
             cursor,
             frame_digest: ContentDigest::sha256(frame),
             total: frame.len(),
@@ -1366,7 +1392,14 @@ impl<'frame> FramedManagement<'frame> {
             && !watch.gatt_stale
             && watch.gatt_binding.as_ref() == Some(endpoints)
             && endpoints.mode == object_manager::GattWriteMode::Request
-            && watch.notification_epoch.as_ref().is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
+            && watch
+                .framed_management_reservation
+                .as_ref()
+                .is_some_and(|token| Arc::ptr_eq(token, &self.reservation))
+            && watch
+                .notification_epoch
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
     }
 
     /// Prepare one exact fragment plan for the caller's effect coordinator.
@@ -1389,26 +1422,56 @@ impl<'frame> FramedManagement<'frame> {
         if !watch.queued.is_empty() {
             return Err(FramedManagementError::QueuedChange);
         }
+        let device = watch
+            .device_path
+            .as_deref()
+            .ok_or(FramedManagementError::Scope)?;
+        if watch.next_serial.checked_add(1).is_none() {
+            self.state = FramedManagementState::Fenced;
+            return Err(FramedManagementError::Scope);
+        }
         if watch.cx.checkpoint().is_err()
-            || !watch.admission.permits(&endpoints.write, Stage::BluezManagementWrite)
+            || !watch
+                .admission
+                .permits(&endpoints.write, Stage::BluezManagementWrite)
         {
             return Err(FramedManagementError::Scope);
         }
-        let now = watch.clock.now().map_err(|_| FramedManagementError::Budget)?;
+        let now = watch
+            .clock
+            .now()
+            .map_err(|_| FramedManagementError::Budget)?;
         let mut cost = BudgetVector::ZERO;
         cost.bytes = 8192;
-        watch.task.checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.write, now, &cost)
+        watch
+            .task
+            .checkpoint_for(RuntimeGrant::AdapterNet, &endpoints.write, now, &cost)
             .map_err(|_| FramedManagementError::Budget)?;
-        let Some(chunk) = self.cursor.prepare().map_err(FramedManagementError::Cursor)? else {
+        let Some(chunk) = self
+            .cursor
+            .prepare()
+            .map_err(FramedManagementError::Cursor)?
+        else {
             self.state = FramedManagementState::Complete;
             return Ok(None);
         };
-        let end = self.offset.checked_add(chunk.len()).ok_or(FramedManagementError::State)?;
-        let device = watch.device_path.as_deref().ok_or(FramedManagementError::Scope)?;
+        let Some(end) = self.offset.checked_add(chunk.len()) else {
+            let _ = self
+                .cursor
+                .resolve(fss_packet::unifi_ble::WriteOutcome::DefinitelyNotSubmitted);
+            self.state = FramedManagementState::Fenced;
+            return Err(FramedManagementError::State);
+        };
         let plan = gatt_management::Plan::new(
-            watch.next_serial, &watch.owner, device, &endpoints.write,
-            object_manager::GattWriteMode::Request, chunk, self.current,
-        ).and_then(|plan| plan.bind_fragment(self.frame_digest, self.total, self.offset..end));
+            watch.next_serial,
+            &watch.owner,
+            device,
+            &endpoints.write,
+            object_manager::GattWriteMode::Request,
+            chunk,
+            self.current,
+        )
+        .and_then(|plan| plan.bind_fragment(self.frame_digest, self.total, self.offset..end));
         match plan {
             Ok(plan) => {
                 self.pending_len = chunk.len();
@@ -1417,7 +1480,8 @@ impl<'frame> FramedManagement<'frame> {
                 Ok(self.plan.as_ref())
             }
             Err(error) => {
-                self.cursor.resolve(fss_packet::unifi_ble::WriteOutcome::DefinitelyNotSubmitted)
+                self.cursor
+                    .resolve(fss_packet::unifi_ble::WriteOutcome::DefinitelyNotSubmitted)
                     .map_err(FramedManagementError::Cursor)?;
                 Err(FramedManagementError::Plan(error))
             }
@@ -1434,7 +1498,10 @@ impl<'frame> FramedManagement<'frame> {
         permit: CommittedEffect,
         authority: &'a dyn GattManagementAuthority,
         wait: Duration,
-    ) -> Result<impl Future<Output = Result<GattManagementWrite, GattManagementRefusal>> + 'a, GattManagementRefusal>
+    ) -> Result<
+        impl Future<Output = Result<GattManagementWrite, GattManagementRefusal>> + 'a,
+        GattManagementRefusal,
+    >
     where
         IO: AsyncRead + AsyncWrite + Unpin + 'a,
         'frame: 'a,
@@ -1445,24 +1512,104 @@ impl<'frame> FramedManagement<'frame> {
         if self.state != FramedManagementState::Prepared
             || self.plan.is_none()
             || !self.current(watch, endpoints)
+            || wait.is_zero()
+            || wait > MAX_WAIT
+            || !watch.cx.has_timer()
         {
-            return Err(GattManagementRefusal { reason: GattManagementRefusalReason::Session, permit });
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::Session,
+                permit,
+            });
+        }
+        let Some(plan) = self.plan.as_ref() else {
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::Session,
+                permit,
+            });
+        };
+        if !watch.queued.is_empty() {
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::Stale,
+                permit,
+            });
+        }
+        let Some(device) = watch.device_path.as_deref() else {
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::Session,
+                permit,
+            });
+        };
+        if !plan.matches(
+            watch.next_serial,
+            &watch.owner,
+            device,
+            &endpoints.write,
+            endpoints.mode,
+        ) {
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::Session,
+                permit,
+            });
+        }
+        if !permit.journal_backed() {
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::JournalRequired,
+                permit,
+            });
+        }
+        if permit.prepared().effect_class() != gatt_management::EFFECT_CLASS
+            || permit.prepared().request_digest() != plan.request_digest()
+            || permit.prepared().precondition_digest() != plan.precondition_digest()
+            || permit.resource() != plan.resource()
+            || permit.fence() != plan.fence()
+        {
+            return Err(GattManagementRefusal {
+                reason: GattManagementRefusalReason::PermitMismatch,
+                permit,
+            });
         }
         self.operation = Some(permit.operation().clone());
         self.state = FramedManagementState::InFlight;
         Ok(async move {
             let Some(plan) = self.plan.as_ref() else {
                 self.state = FramedManagementState::Fenced;
-                return Err(GattManagementRefusal { reason: GattManagementRefusalReason::Session, permit });
+                return Err(GattManagementRefusal {
+                    reason: GattManagementRefusalReason::Session,
+                    permit,
+                });
             };
-            match watch.dispatch_gatt_management(endpoints, plan, self.current, permit, authority, wait).await {
+            match watch
+                .dispatch_gatt_management_inner(
+                    endpoints,
+                    plan,
+                    self.current,
+                    permit,
+                    authority,
+                    GattDispatchOptions {
+                        wait,
+                        reservation: Some(&self.reservation),
+                    },
+                )
+                .await
+            {
                 Err(refusal) => {
-                    self.operation = None;
-                    self.state = FramedManagementState::Prepared;
+                    if refusal.reason == GattManagementRefusalReason::PermitUsed {
+                        let _ = self
+                            .cursor
+                            .resolve(fss_packet::unifi_ble::WriteOutcome::Indeterminate);
+                        self.state = FramedManagementState::Fenced;
+                    } else {
+                        self.operation = None;
+                        self.state = FramedManagementState::Prepared;
+                    }
                     Err(refusal)
                 }
                 Ok(GattManagementWrite::Acknowledged { permit }) => {
-                    if self.cursor.resolve(fss_packet::unifi_ble::WriteOutcome::Acknowledged).is_err() {
+                    if self
+                        .cursor
+                        .resolve(fss_packet::unifi_ble::WriteOutcome::Acknowledged)
+                        .is_err()
+                    {
                         self.state = FramedManagementState::Fenced;
                         return Ok(GattManagementWrite::Indeterminate { permit });
                     }
@@ -1470,11 +1617,17 @@ impl<'frame> FramedManagement<'frame> {
                     self.pending_len = 0;
                     self.plan = None;
                     self.operation = None;
-                    self.state = if self.offset == self.total { FramedManagementState::Complete } else { FramedManagementState::Ready };
+                    self.state = if self.offset == self.total {
+                        FramedManagementState::Complete
+                    } else {
+                        FramedManagementState::Ready
+                    };
                     Ok(GattManagementWrite::Acknowledged { permit })
                 }
                 Ok(GattManagementWrite::Indeterminate { permit }) => {
-                    let _ = self.cursor.resolve(fss_packet::unifi_ble::WriteOutcome::Indeterminate);
+                    let _ = self
+                        .cursor
+                        .resolve(fss_packet::unifi_ble::WriteOutcome::Indeterminate);
                     self.state = FramedManagementState::Fenced;
                     Ok(GattManagementWrite::Indeterminate { permit })
                 }
@@ -1483,12 +1636,26 @@ impl<'frame> FramedManagement<'frame> {
     }
 
     /// Preserve the original frame, local range and any armed operation.
-    pub fn retire(self) -> FramedManagementRetirement<'frame> {
+    pub fn retire<IO>(
+        self,
+        watch: &mut Watch<'_, '_, '_, IO>,
+    ) -> FramedManagementRetirement<'frame> {
+        let matches = watch
+            .framed_management_reservation
+            .as_ref()
+            .is_some_and(|token| Arc::ptr_eq(token, &self.reservation));
+        let release = matches
+            && (self.state == FramedManagementState::Complete
+                || (self.state == FramedManagementState::Ready && self.offset == 0));
+        if release {
+            watch.framed_management_reservation = None;
+        }
         FramedManagementRetirement {
             cursor: self.cursor.retire(),
             plan: self.plan,
             operation: self.operation,
             state: self.state,
+            reservation_retained: !release,
         }
     }
 }
@@ -1704,6 +1871,7 @@ pub async fn open_watch<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unp
         notification_state: NotificationState::Inactive,
         notification_epoch: None,
         next_notification_sequence: 0,
+        framed_management_reservation: None,
     })
 }
 
@@ -2081,10 +2249,34 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
         endpoints: &GattEndpoints,
         plan: &gatt_management::Plan,
         current: gatt_management::Preconditions,
-        mut permit: CommittedEffect,
+        permit: CommittedEffect,
         authority: &dyn GattManagementAuthority,
         wait: Duration,
     ) -> Result<GattManagementWrite, GattManagementRefusal> {
+        self.dispatch_gatt_management_inner(
+            endpoints,
+            plan,
+            current,
+            permit,
+            authority,
+            GattDispatchOptions {
+                wait,
+                reservation: None,
+            },
+        )
+        .await
+    }
+
+    async fn dispatch_gatt_management_inner(
+        &mut self,
+        endpoints: &GattEndpoints,
+        plan: &gatt_management::Plan,
+        current: gatt_management::Preconditions,
+        mut permit: CommittedEffect,
+        authority: &dyn GattManagementAuthority,
+        options: GattDispatchOptions<'_>,
+    ) -> Result<GattManagementWrite, GattManagementRefusal> {
+        let GattDispatchOptions { wait, reservation } = options;
         macro_rules! refuse {
             ($reason:expr) => {
                 return Err(GattManagementRefusal {
@@ -2092,6 +2284,13 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Watch<'scope, '
                     permit,
                 })
             };
+        }
+        if !match (&self.framed_management_reservation, reservation) {
+            (None, None) => true,
+            (Some(active), Some(token)) => Arc::ptr_eq(active, token),
+            _ => false,
+        } {
+            refuse!(GattManagementRefusalReason::Session);
         }
         if self.device_state != DeviceLinkState::ConnectAcknowledged
             || self.notification_state != NotificationState::Active
