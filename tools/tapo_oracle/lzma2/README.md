@@ -40,3 +40,13 @@ the same table without the reversal (86 % zeros) and is the control.
 bytes at 4.1 % zeros and stops on an undrained straddling match (`remain=41`). Adding the extension
 re-breaks the boundary, and extension plus a scan resync does not compose either — the drain needs
 more output than the caller offers, which is the open problem.
+
+## Rebuilding (the SDK headers are not in-tree)
+
+`l2d3.c` includes `lz19/C/Lzma2Dec.h`, so the toolchain headers must sit where that path resolves. The
+pristine headers were pruned from `/tmp/lz19`, but a copy lives in `/tmp/lz19dbg`; rebuild with:
+
+```
+mkdir -p /tmp/inc && ln -sfn /tmp/lz19dbg /tmp/inc/lz19
+cc -O1 -I/tmp/inc -o /tmp/l2d l2d3.c Lzma2Dec_<variant>.c LzmaDec_<variant>.c
+```
