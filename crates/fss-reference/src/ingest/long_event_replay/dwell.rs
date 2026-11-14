@@ -26,6 +26,7 @@ use crate::ingest::recorded_watch::{WatchOptions, WatchPlan};
 use crate::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
 use crate::ingest::sensor_health::{policy_bytes, policy_digest};
 use crate::ingest::zone_dwell::{DwellPolicy, MAX_DWELL_EPISODES};
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, EventHypothesis, EventState,
@@ -476,7 +477,7 @@ fn episode(bytes: &[u8], event: &EventHypothesis) -> Result<EpisodeBinding> {
 }
 
 pub(super) fn load(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventHypothesis,
     identity: ContentDigest,
     provenance_root: ContentDigest,
@@ -522,7 +523,7 @@ pub(super) fn load(
         objects.insert(child, bytes);
     }
     let analysis_digest = selected.ok_or(Error::InvalidRecord)?;
-    if published_root(deployment, &slot("ld-a", analysis_digest)?)? != analysis_root {
+    if published_root(deployment, &slot("ld-a", analysis_digest)?, reader, cx)? != analysis_root {
         return Err(Error::AuthorityChanged);
     }
     let (mut recipe, frames, inter) = decode(

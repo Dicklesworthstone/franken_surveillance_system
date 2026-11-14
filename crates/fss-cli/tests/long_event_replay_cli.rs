@@ -4,6 +4,8 @@
 
 #[path = "long_event_replay_cli/dwell.rs"]
 mod dwell;
+#[path = "long_event_replay_cli/immutable.rs"]
+mod immutable;
 
 use std::ffi::OsString;
 use std::fs;

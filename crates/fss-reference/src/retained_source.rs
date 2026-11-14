@@ -564,17 +564,19 @@ impl RetainedSource for ImmutableRetainedSource<'_> {
 /// Verify and retain one complete committed event lineage under this owner's read allowance.
 ///
 /// Only event manifests and canonical revision metadata are opened. Their declared model,
-/// evidence and source children remain metadata handles, without new read authority. Every
-/// selected payload and witness is registered for the caller's final `revalidate` pass.
+/// evidence and source children remain metadata handles, without new read authority.
+/// On an immutable owner, every selected payload and witness is registered for the caller's
+/// final `revalidate` pass; operational readers use the same canonical lineage checks.
 /// Returned rows are publication-root/commit-sequence pairs in canonical revision order.
 ///
 /// # Errors
 ///
 /// Refuses empty or invalid chains, unmatched committed declarations, changed canonical
 /// metadata, unavailable custody and exhausted read allowances. The caller must withhold
-/// derived output until `owner.revalidate()` succeeds under the same authority.
+/// derived output until the immutable owner's final revalidation succeeds under the same
+/// authority.
 pub fn verify_event_lineage(
-    owner: &ImmutableRetainedSource<'_>,
+    owner: &dyn RetainedSource,
     revisions: &[EventHypothesis],
     maximum: usize,
 ) -> Result<Vec<(ContentDigest, u64)>, FileIngestError> {
@@ -614,7 +616,9 @@ pub fn verify_event_lineage(
             receipts.sort_unstable();
             receipts.dedup();
             if manifest.kind() != "event-revision" || manifest.children() != receipts {
-                return Err(corrupt("event lineage manifest differs from declared metadata"));
+                return Err(corrupt(
+                    "event lineage manifest differs from declared metadata",
+                ));
             }
             let retained = owner.read_object_bounded(payload, maximum)?;
             if retained != revision.canonical_bytes() {

@@ -16,9 +16,16 @@ fss-event read \
   --event-id "${EVENT_ID:?supply a published whole-recording event ID}"
 ```
 
-The root must already be an existing deployment of the supplied site. The reader takes its
-normal exclusive locks and allows its normal restart recovery. It does not append event,
-import, verification or effect authority.
+The root must already be an existing deployment of the supplied site. Inspection uses the
+sealed immutable retained-source owner and works while the deployment writer is open. It
+does not take a writer lock, open a publisher, recover journals or change deployment bytes.
+Incomplete ledger/effect history is refused without repair.
+
+Opening history, selected metadata, publication records and final verification share one
+nonrenewing read allowance. The complete response and optional exports are held until the
+opening metadata, selected payloads, custody, durable publications and authority head have
+been checked again. A concurrent authority change requires a fresh read; it cannot produce
+a response assembled from different revisions.
 
 The complete JSON response includes:
 
@@ -70,6 +77,8 @@ fss-event verify \
 Both pins and the execution acknowledgement are mandatory. Changing an event revision or
 provenance root invalidates the selection. The command accepts no source path, saved report,
 threshold, zone, interpretation, health-policy or publication override.
+Explicit verification retains its existing operational deployment owner, including exclusive
+locks and normal restart recovery. It does not append event or verification authority.
 
 Verification opens the exact retained imports, applies current sensor privacy, decodes the
 selected MJPEG, H.264 or H.265 recording in native display order, and reruns the complete
@@ -171,6 +180,8 @@ loads that retained package under its separate explicit model-import reservation
 |---|---:|---:|
 | `--max-metadata-bytes` | 67,108,864 | 268,435,456 |
 | `--max-report-bytes` | 1,048,576 | 16,777,216 |
+| `--max-read-bytes` (inspection only) | 1,073,741,824 | 4,294,967,296 |
+| `--max-read-objects` (inspection only) | 1,000,000 | 4,000,000 |
 | `--source-read-bytes` | 536,870,912 | 536,870,912 |
 | `--pixel-budget` | 1,073,741,824 | 68,719,476,736 |
 | `--assignment-work` | 1,073,741,824 | 68,719,476,736 |
@@ -185,6 +196,13 @@ chosen limits. Lower ceilings can refuse replay; they cannot rewrite the retaine
 to make it fit. Metadata reads, whole-scan source reads and codec work have separate accounting.
 These limits do not claim total operating-system I/O, latency or memory accounting.
 
+For inspection, `--max-read-bytes` and `--max-read-objects` additionally bound the entire
+immutable read, including layout/history opening, selected metadata and custody, current
+privacy and calibration authority, and final rereads. They count payload bytes and bounded
+read attempts, including empty and absent reads; they do not replenish between phases.
+The reader also has a cooperative 60-second deadline. These options are not native execution
+authority and are therefore rejected by `verify` and omitted from its generated command.
+
 Optional `--event-out FILE` and `--report-out FILE` write complete create-only exports outside
 the deployment. Existing files are not overwritten. An export failure may leave a partial
 external file, but neither export success nor failure changes event authority.
@@ -195,6 +213,24 @@ analysis-root pin and output contract. Use the generic `fss-event read`/`verify`
 for native AVC/HEVC dwell replay; its second pin is the selected episode's `provenance_root`.
 
 ## Focused validation
+
+The immutable reader has a separate native integration target for live-writer watch/dwell
+inspection, absent source pixels, exact aggregate read allowances, late cancellation,
+payload/publication drift, changed event/privacy authority and incomplete journals. The
+real-process CLI suite additionally covers watch/corroboration exports and trained AVC/HEVC
+dwell inspection with a live writer, plus refusal without exports or deployment repair.
+These additions were independently reviewed and formatted with the pinned compiler. Their
+native execution is pending: the local dependency build was killed while compiling
+Asupersync, before any project tests ran. The existing supplementary workflow selects the
+new native contract; this is not release qualification.
+
+```sh
+cargo test -p fss-reference --test long_event_replay_immutable_contract
+cargo test -p fss-cli --bin fss-event replay::
+cargo test -p fss-cli --test long_event_replay_cli
+```
+
+### Earlier native replay validation
 
 New library and real-binary regression cases cover cold recovery, exact pins, complete native
 matching, shared causes, source damage, privacy drift, subranges, invalid bounds and create-only

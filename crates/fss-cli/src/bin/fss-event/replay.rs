@@ -11,6 +11,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use fss_cli::agent_json::{digests, evidence_anchor, object, string};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
@@ -19,6 +20,9 @@ use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, EventId, OperationI
 use fss_reference::ingest::long_event_replay::{
     LongEventReplayInspection, LongEventReplayLimits, LongEventReplayPins, LongEventReplayRecipe,
     inspect_long_event, replay_long_event,
+};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedSource,
 };
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
@@ -43,6 +47,9 @@ Every complete analysis and the committed event must match. No source file, save
 threshold, zone, model, screening override, publication approval or network is accepted.\n\
 Common bounds: --max-metadata-bytes N (default 64 MiB, maximum 256 MiB)\n\
   --max-report-bytes N (default 1 MiB, maximum 16 MiB) [--principal ID]\n\
+Read also accepts --max-read-bytes N and --max-read-objects N. Opening metadata,\n\
+selected custody and final rereads share one allowance (default 1 GiB/1,000,000\n\
+attempts, maximum 4 GiB/4,000,000), with a cooperative 60 s deadline.\n\
 Per-camera execution ceilings (also accepted by read to bind its verification command):\n\
   --source-read-bytes N --pixel-budget N --assignment-work N --trace-bytes N\n\
   --decode-work N --max-dimension N --max-pixels N --max-segment-bytes N\n\
@@ -50,8 +57,10 @@ Ceilings may refuse replay; they cannot change the retained computation recipe.\
 Optional create-only exports: --event-out FILE (event JSON), --report-out FILE (this JSON);\n\
 both must be outside the deployment. Missing custody, stale pins, changed privacy, reviewed\n\
 revisions, exhausted bounds and divergence fail closed with no success output.\n\
-Existing deployment open takes exclusive locks and may perform restart recovery. Inspection\n\
-and replay append no authority or effects. A match proves reproducibility, not physical\n\
+Read works alongside the deployment writer without locks, recovery or media decoding.\n\
+It withholds output and exports until metadata, custody and the opening head revalidate.\n\
+Verify opens the existing deployment with exclusive locks and normal restart recovery.\n\
+Neither operation appends event or effect authority. A match proves reproducibility, not physical\n\
 truth, detector accuracy, independent sensors, health, absence or alert delivery.\n";
 
 const COMMON: &[&str] = &[
@@ -86,6 +95,7 @@ struct Options {
     event: EventId,
     pins: Option<LongEventReplayPins>,
     limits: LongEventReplayLimits,
+    read_limits: ImmutableRetainedReadLimits,
     maximum_report_bytes: usize,
     event_out: Option<PathBuf>,
     report_out: Option<PathBuf>,
@@ -154,7 +164,8 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or("option names require UTF-8")?;
-        if !COMMON.contains(&key) && !(verify && VERIFY.contains(&key)) {
+        let read_bound = !verify && matches!(key, "--max-read-bytes" | "--max-read-objects");
+        if !COMMON.contains(&key) && !(verify && VERIFY.contains(&key)) && !read_bound {
             return Err(format!("unknown or inapplicable option {key}"));
         }
         let value = pair
@@ -275,6 +286,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         event,
         pins,
         limits,
+        read_limits: super::retained_read::parse_limits(&values)?,
         maximum_report_bytes: number(
             &values,
             "--max-report-bytes",
@@ -556,6 +568,9 @@ fn report(
     Ok(format!("{body}\n"))
 }
 fn run(options: Options) -> Run<String> {
+    if options.pins.is_none() {
+        return read_only(options);
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:long-event-replay-cli".into(),
         operation_id: OperationId::parse("operation:long-event-replay-cli")?,
@@ -598,6 +613,53 @@ fn run(options: Options) -> Run<String> {
                 finish(&options, &root, verified.inspection(), output, &cx)
             }
         }
+    })();
+    cx.drain_and_finalize();
+    result
+}
+
+fn read_only(options: Options) -> Run<String> {
+    // The immutable owner admits and budgets all layout/history bytes. This preflight only
+    // refuses paths that could otherwise create or redirect a deployment namespace.
+    if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
+        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
+            .file_type()
+            .is_file()
+    {
+        return Err("existing non-symlink deployment required".into());
+    }
+    let root = fs::canonicalize(&options.root)?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:long-event-replay-cli".into(),
+        operation_id: OperationId::parse("operation:long-event-replay-cli")?,
+        principal: options.principal.clone(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
+            .build()?,
+        privacy_scope: "privacy:current-deployment-policy".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
+        generation: 1,
+    })?;
+    authority.validate()?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
+    let started = Instant::now();
+    let cancelled = || started.elapsed() >= super::retained_read::DEADLINE;
+    let result = (|| -> Run<String> {
+        let deployment =
+            ImmutableRetainedSource::open_cancellable(&root, options.read_limits, &cx, &cancelled)?;
+        if deployment.site_lineage() != options.site {
+            return Err("deployment site does not match".into());
+        }
+        let inspection = inspect_long_event(&deployment, &options.event, &options.limits, &cx)?;
+        let output = report(&options, &root, &inspection, None)?;
+        deployment.revalidate_snapshot_metadata()?;
+        deployment.revalidate()?;
+        finish(&options, &root, &inspection, output, &cx)
     })();
     cx.drain_and_finalize();
     result

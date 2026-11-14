@@ -4,6 +4,33 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Whole-recording incident reads coexist with active ingest — 2026-11-14
+
+`fss-event read` now inspects retained long-watch, long-dwell and two-camera
+long-corroborated events through the sealed immutable source owner. Operators can
+read those incidents and create complete outside-deployment exports while the
+writer remains open. The path verifies exact original event lineage, source
+capsules, retained analyses/model recipes, current privacy and calibration
+adoption, and durable publication child counts without opening a publisher or
+running recovery. Native perception remains an explicit separately pinned
+`verify` operation.
+
+Opening history, selected custody and final protected-metadata, payload,
+publication and head checks share one byte/read-attempt allowance and a
+cooperative 60-second deadline. Changed authority, damaged custody, exhausted
+allowances or cancellation withhold output and exports. Inspection does not
+decode source pixels or upgrade retained findings into current-health, physical
+truth, absence or alert claims. Reviewed successor revisions continue to require
+their own current-event workflow rather than being replayed as original candidates.
+
+Seven native immutable contracts and real-process CLI regressions cover live
+writers, watch/dwell/corroboration, retained trained AVC/HEVC dwell, exact budget
+boundaries, final cancellation, payload/publication and authority drift, dirty
+journals and exports. They are source reviewed and pinned-rustfmt checked;
+execution is pending after the local Asupersync dependency build was killed
+before reaching project tests. The existing supplementary workflow selects the
+new contract. See [whole-recording inspection](docs/long_event_replay.md).
+
 ## Historical health reads coexist with active ingest — 2026-11-14
 
 `fss-event health read` now inspects retained diagnostic metadata through the

@@ -7,6 +7,7 @@ use super::{
     LongEventReplayRecipe, MAX_LONG_DWELL_FRAMES, MAX_LONG_EVENT_ANALYSIS_BYTES,
     MAX_MANIFEST_BYTES, MetadataReader, Result, SourceBinding, manifest, published_root, slot,
 };
+use crate::ReplayCx;
 use crate::ingest::RetainedFileImport;
 use crate::ingest::recorded_corroboration::CorroborationDependencyReport;
 use crate::ingest::recorded_corroboration::streaming::{
@@ -16,7 +17,7 @@ use crate::ingest::recorded_corroboration::streaming::{
 use crate::ingest::recorded_watch::{WatchPlan, WatchZone};
 use crate::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES;
 use crate::ingest::sensor_health::{policy_bytes, policy_digest};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::retained_source::RetainedSource;
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, EventEvidence,
     EventHypothesis, EventState, EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, SensorId,
@@ -155,7 +156,7 @@ struct CameraBinding {
 
 #[allow(clippy::too_many_arguments)]
 fn camera(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     index: usize,
     root: ContentDigest,
     recipe: &LongCorroborationRecipe,
@@ -187,7 +188,7 @@ fn camera(
         }
     }
     let analysis_digest = selected.ok_or(Error::InvalidRecord)?;
-    if published_root(deployment, &slot("lc-a", analysis_digest)?)? != root {
+    if published_root(deployment, &slot("lc-a", analysis_digest)?, reader, cx)? != root {
         return Err(Error::AuthorityChanged);
     }
     let analysis = objects.get(&analysis_digest).ok_or(Error::InvalidRecord)?;
@@ -516,7 +517,7 @@ fn dependencies(
 }
 
 pub(super) fn load(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventHypothesis,
     identity: ContentDigest,
     provenance_root: ContentDigest,

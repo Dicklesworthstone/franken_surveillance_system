@@ -13,7 +13,9 @@ use fss_geometry::{CameraGeneration, WorkBudget};
 use fss_twin::PropertyTwin;
 
 use super::{CorroborationDependencies, CorroborationError, CorroborationPlan, Result, checkpoint};
-use crate::ingest::calibration_adoption::{adopted_currency, retained_adoptions};
+use crate::ingest::calibration_adoption::{
+    AdoptionError, adopted_currency, retained_adoptions_from_batches,
+};
 use crate::ingest::calibration_coverage::{
     CALIBRATION_COVERAGE_POLICY, CalibrationCoverageInput, CalibrationSampleRelation,
     MAX_CALIBRATION_COVERAGE_WORK, assess_calibration_coverage, calibrated_camera_model,
@@ -27,6 +29,7 @@ use crate::ingest::privacy_mask::MaskBinding;
 use crate::ingest::recorded_corroboration::{FailureDomainDeclaration, hex, json_string};
 use crate::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
 use crate::ingest::site_calibration::SiteCalibration;
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Fixed custody bound for an optional neutral scene package.
@@ -506,7 +509,7 @@ impl LongCorroborationGeometry {
     /// An owner assertion cannot silently become an adopted generation during an exact retry.
     pub(crate) fn check_current(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         sensors: &[SensorId; 2],
         cx: &ReplayCx,
@@ -515,9 +518,19 @@ impl LongCorroborationGeometry {
         if self.recipe.calibration.is_none() {
             return Ok(());
         }
-        let adoptions = retained_adoptions(deployment).map_err(|_| {
-            CorroborationError::InvalidPlan("current calibration authority could not be verified")
-        })?;
+        let adoptions =
+            retained_adoptions_from_batches(deployment.ledger().batches(), |digest, maximum| {
+                deployment
+                    .read_object_bounded(digest, maximum)
+                    .map_err(|_| {
+                        AdoptionError::InvalidRecord("calibration authority receipt unreadable")
+                    })
+            })
+            .map_err(|_| {
+                CorroborationError::InvalidPlan(
+                    "current calibration authority could not be verified",
+                )
+            })?;
         for (index, sensor) in sensors.iter().enumerate() {
             let Some(PoseProvenance::SiteCalibration {
                 calibration_digest,

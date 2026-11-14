@@ -139,6 +139,8 @@ fn every_exposed_budget_is_positive_bounded_unsigned_decimal() {
         "--max-dimension",
         "--max-pixels",
         "--max-segment-bytes",
+        "--max-read-bytes",
+        "--max-read-objects",
     ] {
         for value in ["0", "-1", "+1", "18446744073709551616", "1.5"] {
             let mut request = args("read");
@@ -158,6 +160,30 @@ fn every_exposed_budget_is_positive_bounded_unsigned_decimal() {
     let mut request = args("read");
     request.extend(["--max-dimension".into(), "15".into()]);
     assert!(parse(&request).is_err());
+}
+
+#[test]
+fn immutable_read_allowances_do_not_grant_native_replay_authority() {
+    for (key, maximum) in [
+        ("--max-read-bytes", 4_u64 * 1024 * 1024 * 1024),
+        ("--max-read-objects", 4_000_000),
+    ] {
+        let mut request = args("read");
+        request.extend([key.into(), maximum.to_string().into()]);
+        let parsed = parse(&request).unwrap();
+        assert!(parsed.pins.is_none());
+        let admitted = if key == "--max-read-bytes" {
+            parsed.read_limits.max_read_bytes
+        } else {
+            parsed.read_limits.max_read_objects
+        };
+        assert_eq!(admitted as u64, maximum);
+        *request.last_mut().unwrap() = (maximum + 1).to_string().into();
+        assert!(parse(&request).is_err());
+        let mut request = verify();
+        request.extend([key.into(), "1".into()]);
+        assert!(parse(&request).is_err());
+    }
 }
 
 #[cfg(unix)]

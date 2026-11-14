@@ -146,7 +146,11 @@ fn trained_avc_and_hevc_dwell_events_cold_read_and_verify_without_loose_inputs()
         let event = publish_dwell(&f, "ycbcr", size, duration, true)?;
         let before = f.snapshot()?;
         let read_args = f.read(&event);
+        let cx = context(&f.root)?;
+        let writer = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;
         let inspection = good(run(&read_args)?)?;
+        drop(writer);
+        cx.drain_and_finalize();
         assert_eq!(field(&inspection, "profile")?, "long_dwell");
         assert_eq!(field(&inspection, "status")?, "inspected_not_replayed");
         assert_eq!(

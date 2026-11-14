@@ -14,7 +14,7 @@ use fss_core::{
     CanonicalDecode, CanonicalEncode, CaptureInterval, ContentDigest, ContractError,
     DigestAlgorithm, EventHypothesis, EventId, EventKind, LedgerAnchor, ObjectId, SensorId,
 };
-use fss_object::{HostSpoolIo, ObjectManifest, read_verified_payload};
+use fss_object::ObjectManifest;
 use fss_publication::{ROOT_REACHABILITY_FAMILY, SlotName};
 
 use super::long_dwell::{LongDwellLimits, MAX_LONG_DWELL_FRAMES, MAX_LONG_DWELL_TRACE_BYTES};
@@ -26,6 +26,7 @@ use super::recorded_decode::{
 };
 use super::recorded_watch::{WatchError, WatchStatus};
 use super::{FileIngestError, RetainedFileImport};
+use crate::retained_source::{RetainedSource, verify_event_lineage};
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 mod dwell;
@@ -51,9 +52,10 @@ pub struct LongEventReplayLimits {
     /// Current ceiling on each retained trained-detector reservation. A stored recipe must fit
     /// every field; its original values are then restored without changing threshold or backend.
     pub detector: super::package_detect::PackageDetectLimits,
-    /// Cumulative selected payload reads, including the current-event and source-capsule
-    /// owners' second verification reads. Deployment/import opening, privacy-owner lookups and
-    /// native source-chunk reads retain their separate existing bounds.
+    /// Cumulative selected payload reads, including canonical event-lineage and source-capsule
+    /// verification rereads. Deployment/import opening, privacy-owner lookups and native
+    /// source-chunk reads retain their existing bounds. Immutable inspection also charges all
+    /// reads and final revalidation to the source owner's one aggregate allowance.
     pub maximum_metadata_bytes: usize,
 }
 impl Default for LongEventReplayLimits {
@@ -289,17 +291,16 @@ fn hex(value: ContentDigest) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-fn check_context(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+fn check_context(deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
     checkpoint(cx, "long_event_replay:read")?;
     if cx.root_dir() != deployment.root() || !cx.io_authority().is_valid() {
         return Err(LongEventReplayError::AuthorityChanged);
     }
     deployment
-        .ledger()
-        .verify_durable_head()
+        .verify_read_head()
         .map_err(|_| LongEventReplayError::AuthorityChanged)
 }
-fn unchanged(deployment: &ReferenceDeployment, basis: &LedgerAnchor, cx: &ReplayCx) -> Result<()> {
+fn unchanged(deployment: &dyn RetainedSource, basis: &LedgerAnchor, cx: &ReplayCx) -> Result<()> {
     check_context(deployment, cx)?;
     if deployment.current_anchor() != basis {
         return Err(LongEventReplayError::AuthorityChanged);
@@ -329,7 +330,7 @@ impl MetadataReader {
     }
     fn read(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         digest: ContentDigest,
         maximum: usize,
         cx: &ReplayCx,
@@ -339,12 +340,7 @@ impl MetadataReader {
         if self.objects == MAX_METADATA_OBJECTS || self.remaining == 0 {
             return Err(LongEventReplayError::Limit);
         }
-        let bytes = read_verified_payload(
-            deployment.publisher().spool().root(),
-            digest,
-            maximum.min(self.remaining),
-            &HostSpoolIo,
-        )?;
+        let bytes = deployment.read_object_bounded(digest, maximum.min(self.remaining))?;
         self.reserve_owner_read(bytes.len())?;
         checkpoint(cx, "long_event_replay:metadata_read")?;
         Ok(bytes)
@@ -361,7 +357,12 @@ fn manifest(bytes: &[u8], kind: &str, maximum: usize, metadata: bool) -> Result<
     }
     Ok(value)
 }
-fn published_root(deployment: &ReferenceDeployment, slot: &SlotName) -> Result<ContentDigest> {
+fn published_root(
+    deployment: &dyn RetainedSource,
+    slot: &SlotName,
+    reader: &mut MetadataReader,
+    cx: &ReplayCx,
+) -> Result<ContentDigest> {
     let object = ObjectId::parse(format!("object:local-root:{}", slot.as_str()))?;
     let current = deployment
         .ledger()
@@ -369,17 +370,15 @@ fn published_root(deployment: &ReferenceDeployment, slot: &SlotName) -> Result<C
         .objects
         .get(&object)
         .ok_or(LongEventReplayError::AuthorityChanged)?;
-    let visible = deployment
-        .publisher()
-        .root(slot)
-        .ok_or(LongEventReplayError::AuthorityChanged)?;
-    if current.family != ROOT_REACHABILITY_FAMILY
-        || current.generation != 1
-        || current.payload_digest != visible.root
-    {
+    if current.family != ROOT_REACHABILITY_FAMILY || current.generation != 1 {
         return Err(LongEventReplayError::AuthorityChanged);
     }
-    Ok(visible.root)
+    let root = current.payload_digest;
+    let bytes = reader.read(deployment, root, MAX_MANIFEST_BYTES, cx)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&bytes)
+        .map_err(|_| LongEventReplayError::InvalidRecord)?;
+    deployment.check_publication(slot, root, manifest.children().len())?;
+    Ok(root)
 }
 fn slot(prefix: &str, digest: ContentDigest) -> Result<SlotName> {
     SlotName::parse(&format!("{prefix}-{}", hex(digest)))
@@ -419,7 +418,7 @@ struct SourceBinding {
     capture_bindings: BTreeMap<usize, CaptureInterval>,
 }
 fn verify_source_metadata(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     source: &SourceBinding,
     limits: &LongEventReplayLimits,
     reader: &mut MetadataReader,
@@ -513,7 +512,7 @@ struct LoadedProfile {
     sources: Vec<SourceBinding>,
 }
 fn load(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event_id: &EventId,
     pins: Option<LongEventReplayPins>,
     limits: &LongEventReplayLimits,
@@ -563,27 +562,34 @@ fn load(
     }
     let parsed = EventHypothesis::from_canonical_bytes(&bytes)
         .map_err(|_| LongEventReplayError::InvalidRecord)?;
+    if parsed.event_id != *event_id {
+        return Err(LongEventReplayError::AuthorityChanged);
+    }
     if parsed.revision != 1 || parsed.supersedes.is_some() || parsed.kind != EventKind::Unclassified
     {
         return Err(LongEventReplayError::UnsupportedProfile);
     }
-    // The current-event owner also visits this revision while enumerating prior revisions.
-    // Both owner passes read the selected root and event payload.
-    for _ in 0..2 {
-        reader.reserve_owner_read(event_root_bytes.len())?;
-        reader.reserve_owner_read(bytes.len())?;
-    }
-    let (event, receipt) = deployment.current_event_authority(event_id)?;
-    if event != parsed || receipt.event_root != current.payload_digest {
+    // The shared canonical reader independently binds the complete committed lineage, exact
+    // event manifest and revision witness. Reserve its selected root/payload rereads before
+    // entering it; an immutable source also charges these to its one aggregate allowance.
+    reader.reserve_owner_read(event_root_bytes.len())?;
+    reader.reserve_owner_read(bytes.len())?;
+    let publications = verify_event_lineage(
+        deployment,
+        std::slice::from_ref(&parsed),
+        MAX_MANIFEST_BYTES,
+    )?;
+    if publications.len() != 1 || publications[0].0 != current.payload_digest {
         return Err(LongEventReplayError::AuthorityChanged);
     }
+    let event = parsed;
     if pins.is_some_and(|pins| pins.event_revision != event.revision_digest()) {
         return Err(LongEventReplayError::StaleSelection);
     }
     load_native_profile(
         deployment,
         event,
-        receipt.event_root,
+        current.payload_digest,
         pins,
         limits,
         reader,
@@ -661,7 +667,7 @@ fn review_basis_error(error: crate::event_review::ReviewError) -> LongEventRepla
 }
 
 fn load_native_profile(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: EventHypothesis,
     event_root: ContentDigest,
     pins: Option<LongEventReplayPins>,
@@ -680,7 +686,7 @@ fn load_native_profile(
             _ => "event:long-corroborated:",
         },
     )?;
-    let provenance_root = published_root(deployment, &slot(prefix, identity)?)?;
+    let provenance_root = published_root(deployment, &slot(prefix, identity)?, &mut reader, cx)?;
     if pins.is_some_and(|pins| pins.provenance_root != provenance_root) {
         return Err(LongEventReplayError::StaleSelection);
     }
@@ -735,8 +741,9 @@ fn load_native_profile(
 }
 
 /// Inspect current original event metadata and source capsules without executing perception.
+/// Immutable callers must revalidate their source owner before releasing derived output.
 pub fn inspect_long_event(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventId,
     limits: &LongEventReplayLimits,
     cx: &ReplayCx,
