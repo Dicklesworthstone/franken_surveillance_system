@@ -79,7 +79,8 @@ pub struct ReferenceAlertPlan {
 /// The commitment is journaled at `commit_at` before the provider is touched; the provider's
 /// acceptance, loss, or failure is recorded at `outcome_at`.
 /// A new dispatch requires `prepared_at < commit_at < outcome_at`. Invalid ordering is refused
-/// before authority revalidation can cancel the operation, any commitment, or provider dispatch.
+/// before commitment or provider dispatch. A validly bound plan displaced by a newer committed
+/// event revision can still be cancelled locally; malformed plans and current events stay unchanged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlertDispatchTimes {
     /// Time at which the commitment is journaled, before provider dispatch.
@@ -1575,12 +1576,91 @@ where
     pub provider: &'a mut ReferenceAlertProvider,
 }
 
+/// Whether invalid dispatch timing may still enter the existing stale-event cleanup path.
+/// Caller mistakes alone cannot retire an operation: the exact prepared intent, original
+/// precondition and a durable successor of its event must all be established independently.
+fn prepared_alert_was_displaced(
+    plan: &ReferenceAlertPlan,
+    operation: &OperationReceipt,
+    obligation: Option<&Obligation>,
+    authority: &DurableReferenceLedger,
+) -> bool {
+    let Some(obligation) = obligation else {
+        return false;
+    };
+    if operation.state != EffectState::Prepared
+        || operation.intent != plan.intent
+        || obligation.obligation_id != plan.obligation_id
+        || obligation.operation_id != plan.intent.operation_id
+        || validate_reference_alert_plan(plan).is_err()
+        || refuse_restored_effect_authority(authority).is_err()
+    {
+        return false;
+    }
+    let Ok(event) =
+        hydrate_event_revision(&plan.event_revision_encoding, plan.event_revision_digest)
+    else {
+        return false;
+    };
+    if operation.intent.precondition_digest
+        != alert_precondition_digest_parts(
+            plan.event_revision_digest,
+            &plan.authority_anchor,
+            event.state,
+            event.decision_path.fingerprint,
+            plan.prepared_head_sequence,
+            plan.prepared_head_digest,
+        )
+    {
+        return false;
+    }
+    let Ok(mut lineage) = decode_prior_revisions(&plan.prior_revision_encodings) else {
+        return false;
+    };
+    lineage.push(event);
+    if EventHypothesis::verify_chain(&lineage).is_err() {
+        return false;
+    }
+    let batches = authority.batches();
+    let Some(publishing_index) = batches
+        .iter()
+        .position(|batch| batch.new_anchor == plan.authority_anchor)
+    else {
+        return false;
+    };
+    let head_is_retained = usize::try_from(plan.prepared_head_sequence)
+        .ok()
+        .and_then(|sequence| sequence.checked_sub(1))
+        .is_some_and(|index| {
+            index >= publishing_index
+                && batches
+                    .get(index)
+                    .is_some_and(|batch| batch.batch_digest == plan.prepared_head_digest)
+        });
+    if !head_is_retained || authority.verify_durable_head().is_err() {
+        return false;
+    }
+    let prepared = fss_core::PreparedEffect {
+        intent: operation.intent.clone(),
+        obligation_id: obligation.obligation_id.clone(),
+        terminal_predicate: obligation.terminal_predicate.clone(),
+        prepared_at: operation.prepared_at,
+    };
+    let proof = alert_cancellation_proof(
+        &prepared,
+        &plan.authority_anchor,
+        &authority.current().anchor,
+    );
+    alert_cancellation_is_bound(proof, &prepared, plan, authority)
+}
+
 /// Shared execution helper for alert dispatch through the deterministic provider oracle.
 ///
-/// Checks the complete dispatch time ordering before revalidation can mutate a prepared
-/// operation, then revalidates event authority and plan integrity before committing and invoking
-/// provider dispatch. Existing operations past preparation retain their lifecycle refusal: an
-/// ambiguous delivery still requires reconciliation, regardless of the supplied dispatch times.
+/// Invalid dispatch times cannot commit or invoke the provider. They preserve a current operation
+/// and any operation named by a malformed plan, while a proven committed event successor still
+/// permits the existing monotonic cancellation of its exact prepared operation and obligation.
+/// Valid timing proceeds through full event-authority and plan revalidation before commitment.
+/// Operations past preparation retain their lifecycle refusal and reconciliation requirements.
 pub(crate) fn execute_alert_dispatch<J, R, E>(
     options: AlertDispatchOptions<'_, J, R, E>,
 ) -> Result<OperationReceipt, ReferenceError>
@@ -1605,8 +1685,19 @@ where
         && operation.state == EffectState::Prepared
         && (commit_at <= operation.updated_at || outcome_at <= commit_at)
     {
+        // A regressed caller clock does not revive an event the ledger already superseded.
+        // Prove displacement before allowing the existing local cleanup to change anything;
+        // a wrong channel, forged precondition or unreadable authority still leaves it alone.
+        if prepared_alert_was_displaced(
+            plan,
+            operation,
+            journal.obligation(&plan.obligation_id),
+            authority,
+        ) {
+            revalidate_alert_event_authority(plan, authority, read_payload, commit_at, journal)?;
+        }
         // Once the provider is called, an impossible outcome time would strand a delivered
-        // operation at Committed. Both timestamps are known now, before any effect or cancel.
+        // operation at Committed. This branch never commits or reaches provider dispatch.
         return Err(fss_core::ContractError::InvertedTimeInterval.into());
     }
 

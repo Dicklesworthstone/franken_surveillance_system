@@ -12,17 +12,34 @@ on:
       - 'crates/fss-cli/src/orient_cmd/**'
       - 'crates/fss-cli/src/bin/fss-mcp.rs'
       - 'crates/fss-cli/src/bin/fss_mcp/**'
+      - 'crates/fss-cli/src/bin/fss-event/replay.rs'
+      - 'crates/fss-cli/src/bin/fss-event/replay/**'
+      - 'crates/fss-cli/src/sources_query_cmd.rs'
       - 'crates/fss-cli/src/lib.rs'
       - 'crates/fss-cli/tests/event_counterfactual_cli_contract.rs'
       - 'crates/fss-cli/tests/explain_fusion_cli_contract.rs'
       - 'crates/fss-cli/tests/event_changes_cli_contract.rs'
+      - 'crates/fss-cli/tests/sources_query_cli_contract.rs'
+      - 'crates/fss-cli/tests/long_event_replay_cli.rs'
+      - 'crates/fss-cli/tests/long_event_replay_cli/**'
       - 'crates/fss-reference/src/retained_source.rs'
       - 'crates/fss-reference/src/alert.rs'
       - 'crates/fss-reference/src/alert_tests.rs'
       - 'crates/fss-reference/src/agent_event_changes.rs'
       - 'crates/fss-reference/src/agent_event_changes/**'
+      - 'crates/fss-reference/src/agent_orient.rs'
+      - 'crates/fss-reference/src/agent_orient/**'
+      - 'crates/fss-reference/src/agent_sources.rs'
+      - 'crates/fss-reference/src/agent_sources/**'
+      - 'crates/fss-reference/src/ingest/long_event_replay.rs'
+      - 'crates/fss-reference/src/ingest/long_event_replay/**'
+      - 'crates/fss-reference/src/ingest/recorded_corroboration/streaming/geometry.rs'
       - 'crates/fss-reference/tests/agent_event_changes_contract.rs'
       - 'crates/fss-reference/tests/agent_report_catalog_contract.rs'
+      - 'crates/fss-reference/tests/agent_sources_contract.rs'
+      - 'crates/fss-reference/tests/agent_sources_contract/**'
+      - 'crates/fss-reference/tests/long_event_replay_immutable_contract.rs'
+      - 'crates/fss-reference/tests/long_event_replay_immutable_contract/**'
       - 'crates/fss-fusion/**'
       - 'schemas/*counterfactual*.json'
       - 'Cargo.toml'
@@ -65,12 +82,21 @@ jobs:
         if: success() || failure()
         run: |
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib alert_tests::
-      - name: Verify immutable lineage and protected metadata revalidation
+      - name: Verify immutable lineage, source inventory and whole-recording custody
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract --test agent_report_catalog_contract
+        run: |
+          read_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_orient::tests || read_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::long_event_replay:: || read_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract --test agent_report_catalog_contract --test agent_sources_contract --test long_event_replay_immutable_contract || read_exit=1
+          exit "$read_exit"
       - name: Verify exact CLI and MCP explanation compatibility
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --bin fss-mcp --test event_counterfactual_cli_contract --test explain_fusion_cli_contract --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli
+        run: |
+          transport_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-event replay:: || transport_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --bin fss-mcp --test event_counterfactual_cli_contract --test explain_fusion_cli_contract --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli --test sources_query_cli_contract --test long_event_replay_cli || transport_exit=1
+          exit "$transport_exit"
       - name: Execute repository-owned Rust qualification lane
         if: success() || failure()
         run: bash scripts/qualify.sh --lane rust

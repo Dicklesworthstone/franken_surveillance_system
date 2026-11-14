@@ -4,6 +4,42 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Stale alert cleanup survives regressed dispatch time — 2026-11-14
+
+Reference alert dispatch no longer leaves a superseded prepared operation and
+its obligation pending merely because the caller supplied a regressed commit
+time or an inverted outcome time. Before allowing the existing monotonic local
+cancellation, it proves the exact journal intent/obligation, canonical event
+lineage, original precondition and preparation head, readable unfenced authority,
+and a later committed revision of the same event. Invalid times still cannot
+commit or invoke a provider; current events and altered or malformed plans
+retain their unchanged-journal refusal.
+
+The in-memory regression exercises seven altered plans and boundary/extreme
+timestamp pairs. The durable regression proves cancellation after preparation
+and preservation of both terminal states after cold reopen. These changes are
+independently source reviewed and pinned-rustfmt checked. Native execution is
+pending after local compilation again stopped in Asupersync before project
+code, including a serialized metadata-only attempt. Existing hosted alert and
+effect-plane suites retain their original eligibility and malformed-plan checks.
+
+## Exact read allowances and supplementary transport feedback — 2026-11-14
+
+An exhausted payload-byte allowance now still admits a bounded empty or absent
+read, with every attempt charged to the original read-count allowance. Positive
+payload bytes remain refused, and cancellation or a failed read permanently
+poisons the owner. Source inventory and final empty-journal verification no
+longer require an artificial unused byte. The existing event-lineage regression
+now requires exactly measured bytes, zero remaining byte credit, and independent
+one-byte-short and one-read-short finalization refusals.
+
+Hosted feedback for `88e365d` confirms 108 MCP unit tests, 24 explanation CLI
+contracts and nine native report-catalog contracts passed. That run also
+identified the stale-alert cleanup failure above and an older lineage test that
+expected the artificial extra byte; both are addressed in this increment, with
+rerun results pending. This is focused supplementary evidence, not a green
+whole-repository or release-qualification claim.
+
 ## Whole-recording incident reads coexist with active ingest — 2026-11-14
 
 `fss-event read` now inspects retained long-watch, long-dwell and two-camera
@@ -29,7 +65,10 @@ boundaries, final cancellation, payload/publication and authority drift, dirty
 journals and exports. They are source reviewed and pinned-rustfmt checked;
 execution is pending after the local Asupersync dependency build was killed
 before reaching project tests. The existing supplementary workflow selects the
-new contract. See [whole-recording inspection](docs/long_event_replay.md).
+new contract. Hosted feedback at `88e365d` also compiled the changed library and
+CLI and passed the transport suites above; the new immutable native target's
+execution still awaits its runner. See
+[whole-recording inspection](docs/long_event_replay.md).
 
 ## Historical health reads coexist with active ingest — 2026-11-14
 

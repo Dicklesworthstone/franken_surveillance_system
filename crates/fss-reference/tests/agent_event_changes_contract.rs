@@ -579,11 +579,9 @@ fn cancellation_and_exact_admission_budgets_cover_finish_without_refills() -> Te
         explain_event_changes_in_deployment(&fixture.root, &request, limits, &cx, &|| false)?;
     let mut exact = limits;
     // Final authority verification probes the empty effect journal after consuming the last
-    // payload byte. That probe still needs positive byte credit and one read attempt; its
-    // unused byte credit is not charged as payload or replenished between prepare and finish.
-    exact.read.max_read_bytes = usize::try_from(measured.read_usage.read_bytes)?
-        .checked_add(1)
-        .ok_or("admission credit overflow")?;
+    // payload byte. It needs one read attempt and zero additional payload bytes, all from
+    // the original allowance shared by preparation and finish.
+    exact.read.max_read_bytes = usize::try_from(measured.read_usage.read_bytes)?;
     exact.read.max_read_objects = usize::try_from(measured.read_usage.read_objects)?;
     let exact_cx = context(&fixture.root, exact, false)?;
     let prepared =
@@ -595,7 +593,7 @@ fn cancellation_and_exact_admission_budgets_cover_finish_without_refills() -> Te
     assert_eq!(answer.read_usage, measured.read_usage);
     assert_eq!(
         u64::try_from(exact.read.max_read_bytes)? - answer.read_usage.read_bytes,
-        1
+        0
     );
     assert_eq!(files(&fixture.root)?, before);
     for bytes in [true, false] {
@@ -616,13 +614,20 @@ fn cancellation_and_exact_admission_budgets_cover_finish_without_refills() -> Te
         let error = prepared
             .finish()
             .err()
-            .ok_or("the final empty-journal probe must stay within the original allowance")?;
+            .ok_or("final metadata verification must stay within the original allowance")?;
         assert!(matches!(error.kind, EventChangesErrorKind::Source(_)));
         let observed = error.observation.ok_or("observed bounded refusal")?;
-        assert_eq!(
-            observed.read_usage.read_bytes,
-            measured.read_usage.read_bytes
-        );
+        if bytes {
+            // The final nonempty authority payload must refuse before returning bytes
+            // that would exceed the allowance; the empty journal cannot hide that deficit.
+            assert!(observed.read_usage.read_bytes < measured.read_usage.read_bytes);
+        } else {
+            // The empty journal needs no bytes but still consumes a bounded read attempt.
+            assert_eq!(
+                observed.read_usage.read_bytes,
+                measured.read_usage.read_bytes
+            );
+        }
         assert_eq!(
             observed.read_usage.read_objects + 1,
             measured.read_usage.read_objects

@@ -1137,6 +1137,67 @@ fn refusal_at_or_before_prepare_time_cancels_op_and_obligation_p7() -> Result<()
     let decision_2 = successor(&decision.event, &evaluation_2)?;
     let _receipt_2 = publish_reference_event(&decision_2, &mut objects, &mut authority)?;
 
+    // A real successor cannot make a caller-forged plan eligible for cleanup when its
+    // dispatch times are invalid. Only the exact prepared event/precondition may retire.
+    let prepared_journal = journal.clone();
+    for changed_field in 0..7 {
+        let mut altered = plan.clone();
+        match changed_field {
+            0 => altered.channel = "unprepared-channel".to_owned(),
+            1 => {
+                altered.intent.precondition_digest =
+                    fss_core::ContentDigest::sha256(b"forged precondition")
+            }
+            2 => altered.authority_anchor.commit_sequence += 1,
+            3 => altered.prepared_head_sequence += 1,
+            4 => altered.event_revision_encoding.push(0),
+            5 => altered.prior_revision_encodings.push(Vec::new()),
+            _ => altered.obligation_id = ObligationId::parse("obligation:unprepared")?,
+        }
+        let refused = dispatch_reference_alert(
+            &altered,
+            &authority,
+            &objects,
+            ReferenceProviderBehavior::Deliver,
+            AlertDispatchTimes::new(TimestampNs(50), TimestampNs(60)),
+            &mut journal,
+            &mut provider,
+        );
+        assert!(matches!(
+            refused,
+            Err(ReferenceError::Contract(
+                ContractError::InvertedTimeInterval
+            ))
+        ));
+        assert_eq!(journal, prepared_journal, "changed field {changed_field}");
+    }
+
+    // Equality at prepare time and invalid outcome times also cannot keep an exact,
+    // already superseded operation pending. Independent journals exercise each refusal.
+    for (commit_at, outcome_at) in [(100, 101), (101, 101), (101, 100), (i128::MAX, i128::MIN)] {
+        let mut attempt = prepared_journal.clone();
+        let refused = dispatch_reference_alert(
+            &plan,
+            &authority,
+            &objects,
+            ReferenceProviderBehavior::Deliver,
+            AlertDispatchTimes::new(TimestampNs(commit_at), TimestampNs(outcome_at)),
+            &mut attempt,
+            &mut provider,
+        );
+        assert!(matches!(refused, Err(ReferenceError::StaleEventAuthority)));
+        let operation = attempt
+            .operation(&plan.intent.operation_id)
+            .ok_or("operation")?;
+        assert_eq!(operation.state, EffectState::Cancelled);
+        assert!(operation.updated_at > TimestampNs(100));
+        assert!(
+            attempt
+                .obligations()
+                .all(|obligation| obligation.state == ObligationState::Cancelled)
+        );
+    }
+
     // Dispatch requested at commit_at = 50ns (STRICTLY BEFORE prepare time 100ns).
     let res = dispatch_reference_alert(
         &plan,
@@ -1175,6 +1236,7 @@ fn refusal_at_or_before_prepare_time_cancels_op_and_obligation_p7() -> Result<()
         ObligationState::Cancelled,
         "obligation must be Cancelled, not left Pending"
     );
+    assert_eq!((provider.message_count(), provider.failure_count()), (0, 0));
     // The tamper successor published a newer revision of the event after the prepared anchor, so
     // the refusal's recorded evidence names that displacing anchor and verifies (fss-thzlz). The
     // same cancellation claimed at the prepared anchor itself, where nothing was displaced, is
@@ -1215,7 +1277,7 @@ fn refusal_at_or_before_prepare_time_cancels_op_and_obligation_p7() -> Result<()
 }
 
 #[test]
-fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
+fn durable_dispatch_refuses_stale_authority_with_regressed_time_and_persists_cancellation_p8()
 -> Result<(), Box<dyn Error>> {
     let ledger_path = temp_journal("p8-tamper-ledger");
     let journal_path = temp_journal("p8-tamper-journal");
@@ -1257,13 +1319,13 @@ fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
     let decision_2 = successor(&decision_1.event, &evaluation_2)?;
     let _receipt_2 = publish_reference_event(&decision_2, &mut objects, &mut authority)?;
 
-    // Durable dispatch must be refused with StaleEventAuthority.
+    // A regressed caller clock cannot strand a durably superseded operation at Prepared.
     let dispatch_res = durable_journal.dispatch_alert(
         &plan,
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        AlertDispatchTimes::new(TimestampNs(110), TimestampNs(120)),
+        AlertDispatchTimes::new(TimestampNs(50), TimestampNs(60)),
         &mut provider,
     );
     assert!(
@@ -1284,6 +1346,7 @@ fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
         .operation(&plan.intent.operation_id)
         .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
     assert_eq!(op.state, EffectState::Cancelled);
+    assert_eq!(op.updated_at, TimestampNs(101));
 
     let obl = durable_journal
         .obligations()
@@ -1303,6 +1366,7 @@ fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
         EffectState::Cancelled,
         "Cancelled state must persist across journal reopen"
     );
+    assert_eq!(reopened_op.updated_at, TimestampNs(101));
     let reopened_obl = reopened
         .obligations()
         .find(|item| item.obligation_id == plan.obligation_id)
@@ -4356,7 +4420,6 @@ fn unrelated_domain_tamper_and_durable_path_p6c() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-
 /// A transient policy action must agree with the exact event's retained decision-path action.
 /// Both public preparation owners must refuse before creating any operation or obligation.
 fn assert_prepare_policy_action_mismatch(
@@ -4405,7 +4468,10 @@ fn assert_prepare_policy_action_mismatch(
         ReferencePolicyAction::PrepareAlert => ReferencePolicyAction::Hold,
     };
     assert_eq!(supplied.event, committed.event);
-    assert_eq!(supplied.event.revision_digest(), receipt.event_revision_digest);
+    assert_eq!(
+        supplied.event.revision_digest(),
+        receipt.event_revision_digest
+    );
 
     let mut memory = EffectJournal::new();
     let mut durable = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
