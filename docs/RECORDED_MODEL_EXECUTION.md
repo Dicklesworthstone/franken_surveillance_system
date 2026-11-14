@@ -34,9 +34,27 @@ root, source, normalized input and output representation. This proves retained c
 independent numerical reproduction. `verify_by_replay` reruns the stored model and compares
 exact outputs, operation counts and executor allocation accounting without changing storage.
 
+The read and replay methods accept the sealed `RetainedSource` interface. Existing writer-owned
+callers remain supported; inspection callers can use `ImmutableRetainedSource` and
+`ReplayCx::from_context_authority_read_only` with an existing canonical deployment root. The
+immutable path acquires no publisher lock, creates no deployment directories and performs no
+journal repair or effect reconciliation. It can inspect a deployment while a writer is open.
+Decoded frames, source capsules, current privacy restrictions, publication child counts, model,
+normalized input and output are checked through the same owner. Its original byte/read-attempt
+allowance covers all metadata and payload reads, repeated verification and final revalidation;
+subreaders and retries cannot replenish that allowance.
+
+Before releasing or exporting results, call `ImmutableRetainedSource::revalidate()`. A changed
+authority head, altered selected payload/publication, tombstone, cancellation or exhausted
+allowance refuses the operation. This is a bounded observation with final revalidation, not an
+atomic filesystem snapshot or a lease preventing changes after validation. An unrelated commit
+can make an open owner stale; a fresh owner can still return a valid historical run with its
+original completion anchor.
+
 Successful identical runs are ledger-idempotent. Budget ceilings do not change successful run
 identity. Different source capsules, weights, normalization or executor source profiles do.
-Each retry actually re-executes and therefore consumes work again; this is not free caching.
+An already completed exact run revalidates its retained custody without executing again.
+An incomplete run must execute before completing publication; spent work is not refunded.
 Parent cancellation is checked at composition boundaries; the explicit scalar context owns
 in-executor cancellation. There are no worker threads or a second asynchronous runtime.
 A cancelled or failed execution returns no partial results. Staged objects can remain on
@@ -64,7 +82,13 @@ SHA-256 content addresses and strict suffix exhaustion. There is no serde-native
 
 The execution source profile hashes the bridge, scalar/preprocess implementation and tensor
 kernels/shape inference. It is not a compiled-binary or toolchain qualification certificate.
-Changed profiles fail closed instead of replaying under a silently substituted implementation.
+Custody inspection preserves an older nonzero SHA-256 executor profile when the exact receipt,
+run identity, manifest, publication and final delta all agree. The accessor
+`RecordedInference::executor_profile_digest()` exposes that original profile. Numeric replay
+requires it to equal the current `executor_profile_digest()` and refuses a mismatch before any
+numeric execution. Inspection therefore remains possible after a reader upgrade without
+claiming that a different implementation reproduced the original numbers. Tampered profiles
+still fail the retained content and authority bindings.
 The current loader accepts v1 only; other versions require a future explicit reader/migration.
 No existing graph bytes, manifest or model registry is rewritten.
 

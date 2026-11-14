@@ -649,7 +649,7 @@ pub fn verify_custody(capsule: &SensorCapsule, bytes: &[u8]) -> Result<(), Recor
 /// Retained source capsule of `segment` of a completed import, verified against its custody
 /// (the sensor identity every privacy-mask lookup starts from).
 pub fn retained_source_capsule(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     retained: &RetainedFileImport,
     segment: usize,
 ) -> Result<SensorCapsule, RecordedDecodeError> {
@@ -657,7 +657,7 @@ pub fn retained_source_capsule(
 }
 
 fn source(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &RecordedDecodeRequest,
     cx: &ReplayCx,
 ) -> Result<(RetainedFileImport, SensorCapsule, ContentDigest, Vec<u8>), RecordedDecodeError> {
@@ -665,7 +665,7 @@ fn source(
 }
 
 fn source_with_budget(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &RecordedDecodeRequest,
     cx: &ReplayCx,
     source_budget: Option<&SourceReadBudget>,
@@ -876,8 +876,9 @@ impl RecordedFrame {
     /// Reopen completed decoded pixels without the original input file or another codec run.
     /// Revalidates source custody, exact receipt/delta/manifest closure, and all pixel bytes.
     /// Checksums establish retained consistency; use `verify_by_replay` to reproduce the decode.
+    /// Immutable owners account for every read without acquiring the deployment's writer lock.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: &RecordedDecodeRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
@@ -885,7 +886,7 @@ impl RecordedFrame {
     }
 
     pub(crate) fn open_with_source_budget(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: &RecordedDecodeRequest,
         cx: &ReplayCx,
         source_budget: Option<&SourceReadBudget>,
@@ -927,7 +928,8 @@ impl RecordedFrame {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         let delta = &batch.deltas[0];
-        let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
+        let bytes = deployment
+            .read_object_bounded(delta.payload_digest, MAX_RECORDED_DECODE_RECEIPT_BYTES)?;
         let receipt = RecordedDecodeReceipt::decode(&bytes, delta.payload_digest)?;
         if receipt.identity() != identity
             || receipt.import_identity != retained.import_identity()
@@ -963,19 +965,15 @@ impl RecordedFrame {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         let slot = slot(identity)?;
-        let visible = deployment
-            .publisher()
-            .root(&slot)
-            .ok_or(RecordedDecodeError::Unavailable)?;
-        if visible.root != manifest.root()
-            || deployment.publisher().spool().read(manifest.root())? != manifest.canonical_bytes()
+        deployment.check_publication(&slot, manifest.root(), manifest.children().len())?;
+        if deployment.read_object_bounded(manifest.root(), manifest.canonical_bytes().len())?
+            != manifest.canonical_bytes()
         {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
-        let pixels = deployment
-            .publisher()
-            .spool()
-            .read(sha(receipt.codec.luma_sha256))?;
+        let pixel_count = usize::try_from(u64::from(receipt.width) * u64::from(receipt.height))
+            .map_err(|_| RecordedDecodeError::Limit)?;
+        let pixels = deployment.read_object_bounded(sha(receipt.codec.luma_sha256), pixel_count)?;
         if pixels.len() as u64 != u64::from(receipt.width) * u64::from(receipt.height)
             || ContentDigest::sha256(&pixels) != sha(receipt.codec.luma_sha256)
         {
@@ -985,6 +983,7 @@ impl RecordedFrame {
         if let Some(budget) = source_budget {
             budget.checkpoint()?;
         }
+        deployment.verify_read_head()?;
         Ok(Self {
             receipt,
             pixels,
@@ -995,7 +994,7 @@ impl RecordedFrame {
     /// Reproduce the complete canonical decoder output; never changes authority or storage.
     pub fn verify_by_replay(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: &RecordedDecodeRequest,
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,
@@ -1026,6 +1025,7 @@ impl RecordedFrame {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         checkpoint(cx, "recorded_decode:replay_complete")?;
+        deployment.verify_read_head()?;
         Ok(())
     }
     /// Complete source and codec provenance.

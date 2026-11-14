@@ -6,13 +6,14 @@
 //! tensors, never detections, corroboration, certified absence or external-effect authority.
 
 use super::recorded_decode::{RecordedDecodeError, RecordedDecodeRequest, RecordedFrame};
+use crate::retained_source::RetainedSource;
 use crate::{
     ExecBudget, ExecError, ReferenceDeployment, ReferenceError, ReplayCx, ScalarExecCx,
     ScalarExecutor,
 };
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
-    ContractError, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
+    ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
 };
 use fss_model_ir::{ModelIrDecodeError, ModelIrError};
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
@@ -111,6 +112,11 @@ impl From<RecordedDecodeError> for ModelRunError {
         Self::Media(Box::new(error))
     }
 }
+impl From<super::FileIngestError> for ModelRunError {
+    fn from(error: super::FileIngestError) -> Self {
+        Self::from(RecordedDecodeError::from(error))
+    }
+}
 conversion!(ContractError, Contract);
 conversion!(ReferenceError, Reference);
 conversion!(ObjectError, Object);
@@ -132,7 +138,8 @@ fn batch_id(id: ContentDigest) -> Result<BatchId> {
 }
 
 /// Source fingerprint of this execution bridge, scalar/preprocess code and tensor kernels.
-/// This is not a binary/toolchain qualification receipt; changed code requires explicit rerun.
+/// This is not a binary/toolchain qualification receipt; changed code requires explicit rerun
+/// for numeric replay. Authentic historical profiles remain inspectable from retained custody.
 pub fn executor_profile_digest() -> ContentDigest {
     let sources: &[&[u8]] = &[
         include_bytes!("mod.rs"),
@@ -222,7 +229,8 @@ impl Receipt {
             nodes: d.u64()?,
         };
         d.ensure_finished()?;
-        if value.runtime != executor_profile_digest()
+        if value.runtime.algorithm() != DigestAlgorithm::Sha256
+            || value.runtime.bytes() == [0; 32]
             || value.allocated > MAX_RUN_TENSOR_BYTES as u64
             || value.nodes > fss_model_ir::MAX_MODEL_IR_ITEMS as u64
             || value.encoded()? != bytes
@@ -511,8 +519,11 @@ impl RecordedInference {
 
     /// Restores a completed run from storage, including its model, without a model-file path.
     /// Source selection is explicit and revalidated; an identity cannot be rebound to another frame.
+    /// An immutable source shares its original read allowance across frame, model and result
+    /// verification, without acquiring a writer. Callers revalidate that owner before releasing
+    /// output. A historical executor profile is retained as provenance, not certified for replay.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         identity: ContentDigest,
         source: &RecordedDecodeRequest,
         cx: &ReplayCx,
@@ -529,7 +540,7 @@ impl RecordedInference {
             return Err(ModelRunError::Mismatch);
         }
         let delta = &batch.deltas[0];
-        let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
+        let bytes = deployment.read_object_bounded(delta.payload_digest, 4096)?;
         let receipt = Receipt::decode(&bytes, delta.payload_digest)?;
         if receipt.identity() != identity {
             return Err(ModelRunError::Mismatch);
@@ -550,19 +561,21 @@ impl RecordedInference {
         children.sort_unstable();
         children.dedup();
         if batch.children != children
-            || deployment
-                .publisher()
-                .root(&slot(identity)?)
-                .is_none_or(|r| r.root != manifest.root())
-            || deployment.publisher().spool().read(manifest.root())? != manifest.canonical_bytes()
+            || deployment.read_object_bounded(manifest.root(), manifest.canonical_bytes().len())?
+                != manifest.canonical_bytes()
         {
             return Err(ModelRunError::Mismatch);
         }
+        deployment.check_publication(
+            &slot(identity)?,
+            manifest.root(),
+            manifest.children().len(),
+        )?;
         let model = RecordedModel::decode(
-            &deployment.publisher().spool().read(receipt.model)?,
+            &deployment.read_object_bounded(receipt.model, MAX_RECORDED_MODEL_BYTES)?,
             receipt.model,
         )?;
-        let input = deployment.publisher().spool().read(receipt.input)?;
+        let input = deployment.read_object_bounded(receipt.input, MAX_RUN_OUTPUT_BYTES)?;
         if input.len() > MAX_RUN_OUTPUT_BYTES || ContentDigest::sha256(&input) != receipt.input {
             return Err(ModelRunError::Mismatch);
         }
@@ -578,12 +591,13 @@ impl RecordedInference {
         {
             return Err(ModelRunError::Mismatch);
         }
-        let output_bytes = deployment.publisher().spool().read(receipt.output)?;
+        let output_bytes = deployment.read_object_bounded(receipt.output, MAX_RUN_OUTPUT_BYTES)?;
         if ContentDigest::sha256(&output_bytes) != receipt.output {
             return Err(ModelRunError::Mismatch);
         }
         let outputs = decode_outputs(&output_bytes, &model)?;
         checkpoint(cx, "recorded_inference:read_complete")?;
+        deployment.verify_read_head()?;
         Ok(Self {
             receipt,
             model,
@@ -595,14 +609,18 @@ impl RecordedInference {
 
     /// Re-executes the retained model and compares exact tensor bytes and numeric accounting.
     /// Custody-only `open` does not make this independent reproducibility claim.
+    /// The recorded executor profile must match this executable before any numeric work starts.
     pub fn verify_by_replay(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         source: &RecordedDecodeRequest,
         budget: ExecBudget,
         exec_cx: &ScalarExecCx,
         cx: &ReplayCx,
     ) -> Result<()> {
+        if self.receipt.runtime != executor_profile_digest() {
+            return Err(ModelRunError::Mismatch);
+        }
         let restored = Self::open(deployment, self.identity(), source, cx)?;
         if restored.receipt != self.receipt || restored.output_bytes != self.output_bytes {
             return Err(ModelRunError::Mismatch);
@@ -612,7 +630,9 @@ impl RecordedInference {
         if receipt != self.receipt || output != self.output_bytes {
             return Err(ModelRunError::Mismatch);
         }
-        checkpoint(cx, "recorded_inference:replay_complete")
+        checkpoint(cx, "recorded_inference:replay_complete")?;
+        deployment.verify_read_head()?;
+        Ok(())
     }
     /// Exact immutable run identity.
     #[must_use]
@@ -628,6 +648,12 @@ impl RecordedInference {
     #[must_use]
     pub fn frame_root(&self) -> ContentDigest {
         self.receipt.frame
+    }
+    /// Executor source profile retained by the original run. Historical custody inspection
+    /// preserves this value; numeric replay requires the current [`executor_profile_digest`].
+    #[must_use]
+    pub fn executor_profile_digest(&self) -> ContentDigest {
+        self.receipt.runtime
     }
     /// Uncalibrated F32 outputs; shapes are declared in the retained model's output ports.
     #[must_use]

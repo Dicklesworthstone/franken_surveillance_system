@@ -572,7 +572,7 @@ pub fn current_mask(
 /// Binding digests of every lineage the sensor's current binding superseded: the no-policy
 /// marker and every earlier retained generation (empty when no policy is retained).
 pub fn superseded_bindings(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     sensor: &SensorId,
 ) -> Result<Vec<ContentDigest>, PrivacyMaskError> {
     let generations = retained_generations(deployment, sensor)?;

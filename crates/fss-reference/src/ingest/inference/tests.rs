@@ -10,6 +10,8 @@ use fss_tensor::Shape;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod immutable;
+
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const JPEG: &[u8] = include_bytes!("../../../../fss-codec-mjpeg/tests/fixtures/gray.jpg");
 
