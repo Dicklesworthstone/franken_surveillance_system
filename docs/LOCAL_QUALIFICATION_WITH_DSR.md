@@ -225,6 +225,6 @@ of the toolchain cargo suppresses it; the practical route is to retry later or o
 
 `confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
 fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
-suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract). Media and archive also
+suites), `agent` (effect and rehearsal contracts) and `privacy` (masking contract) — the last two are written but **not yet proven end to end**, because the fleet refused every run with `RCH-E330` while they were being added. Media and archive also
 run inside `full` and `release`. The remaining claim lanes (`lab`, `adapter`, `model`, `geometry`,
 `threat`) still fail closed and are the next wiring targets, in that order of expected value.
