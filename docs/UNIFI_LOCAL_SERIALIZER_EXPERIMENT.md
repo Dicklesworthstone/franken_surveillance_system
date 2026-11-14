@@ -55,8 +55,12 @@ storage, post-restart restore planning, independent camera identity, and
 physical-camera behavior are not yet established. The initial remote build
 stopped before compilation due to a dependency lock mismatch; the corrected
 v12 build and tamper/cold-reopen tests passed as recorded below. A newer source
-snapshot remains queued for its own build. No checkpoint was captured from the
-physical G4.
+snapshot remains queued for its own build. The worktree now also has a
+candidate comparison of a recovered checkpoint with an independently admitted
+new-session observation; its build and tests are pending. The comparison can
+identify changes and requested-field matches, but does not authenticate the
+camera, settle an effect, or authorize a restore. No checkpoint was captured
+from the physical G4.
 
 The initial planning snapshot passed two synthetic tests on a strict remote
 worker: one-track request shape and rejection of changed baseline, peer,
@@ -173,6 +177,17 @@ the later scope accessors in the current worktree require their own build and
 tests. The checkpoint remains a fixture-tested component, with no production
 key management, durable nonce policy, post-restart restore authorization, or
 physical-camera validation. It does not settle any earlier effect.
+
+The newer candidate recovery-comparison snapshot has checkpoint source SHA-256
+`6401a5560e4ee22651a3fb5b88378ddeeb453c181e7d2a92660b190c43362eba`.
+Its strict-remote build is queued as `9253469360607986726`; no test result is
+claimed for it. The method compares preserved values to a caller-admitted new
+session without requiring the old session generation, distinguishes changes
+to other tracks, and compares the requested fields. Camera and certificate
+arguments are claims supplied by the caller, not authentication. The older
+v13 build is separately queued as `9253469360607986717`; its source does not
+include this comparison. Neither candidate reopens or reconciles the original
+journal, and neither constructs or dispatches a post-restart restore.
 
 ## Live qualification still required
 
