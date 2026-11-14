@@ -53,9 +53,10 @@ implementation is responsible for cryptographic entropy and nonce uniqueness.
 This code does not use Keychain. A real key provider, automatic protected
 storage, post-restart restore planning, independent camera identity, and
 physical-camera behavior are not yet established. The initial remote build
-stopped before compilation due to a dependency lock mismatch, and a corrected
-build and tamper/cold-reopen tests are pending. No checkpoint was captured from
-the physical G4.
+stopped before compilation due to a dependency lock mismatch; the corrected
+v12 build and tamper/cold-reopen tests passed as recorded below. A newer source
+snapshot remains queued for its own build. No checkpoint was captured from the
+physical G4.
 
 The initial planning snapshot passed two synthetic tests on a strict remote
 worker: one-track request shape and rejection of changed baseline, peer,
