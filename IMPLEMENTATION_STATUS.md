@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Source-independent recording export verification — 2026-11-14
+
+The FSS-135 / INV-075 recording reconstruction path now exposes
+`fss-archive verify-export` for an independently copied whole-window export. The
+caller supplies a trusted `COMPLETE.json` digest, codec and complete recording/clock
+scope. Dispatch enters this read-only path before opening an archive writer or
+privacy deployment; the original archive is not required and no files are changed.
+
+Strict bounded parsing verifies the pinned completion, exact generated inventory,
+role-ordered hashes and lengths, canonical manifests, source/index/media bindings
+through the existing native AVC/HEVC recording verifiers, and byte-exact playback
+concatenation. A dedicated 4 MiB report parser preserves the exporter's advertised
+limit without widening ordinary control inputs. Empty and gapped selections remain
+explicitly unindexed; completion never establishes footage coverage or absence.
+
+Linux/procfs reads are anchored to held directory handles. No-follow/nonblocking
+opens, file and directory identities, exact inventory, cumulative read/I/O limits
+and cancellation/deadline checks cover initial reads and final rereads. The optional
+pending completion may be a transported byte-identical copy. REQUEST.json remains
+a separately reported, consistency-checked observation: existing completion v1 does
+not bind its exact bytes. Success grants no current disclosure authority, original
+catalog completeness, decoded-picture, atomic-filesystem or future-custody claim.
+
+All 14 tests of the actual production bundle module passed against real `fss-core`
+and `nix` dependencies on the pinned nightly, and both new actual-core parser tests
+passed. Independent source/API review, pinned formatting and scoped diff checks
+passed. Five normal full CLI/native composition regressions were added, including
+AVC and HEVC copies verified after original-archive removal and a hash-consistent
+codec relabeling refusal, but they remain unrun: the earlier full build stopped in
+Asupersync with SIGKILL before changed crates. No full CLI compilation or release
+qualification is claimed. See [export verification](docs/ARCHIVE_EXPORT_VERIFICATION.md).
+
 ## Native MP4 initialization parameter probing — 2026-11-14
 
 FSS-053 now extends `fss-probe --parameters` and the borrowed native parameter API

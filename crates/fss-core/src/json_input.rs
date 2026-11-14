@@ -15,6 +15,9 @@ const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 65_536;
 const MAX_RETAINED_REPORT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RETAINED_REPORT_NODES: usize = 262_144;
+/// Complete local archive export reports have a separate 4 MiB input envelope.
+pub const MAX_ARCHIVE_EXPORT_REPORT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ARCHIVE_EXPORT_REPORT_NODES: usize = 524_288;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 const MAX_RECONSTRUCTION_ATLAS_REPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RECONSTRUCTION_ATLAS_REPORT_NODES: usize = 2_097_152;
@@ -131,6 +134,22 @@ pub fn parse_retained_supervisor_report(text: &str) -> Result<Value, JsonError> 
         MAX_RETAINED_REPORT_NODES,
         MAX_STRING_BYTES,
         "document exceeds the retained report bound",
+    )
+}
+
+/// Parse an existing local archive export report without widening ordinary intents.
+///
+/// The exporter permits 4 MiB reports containing complete per-window file descriptors.
+/// This report-only profile admits that same byte bound and at most 524,288 value nodes;
+/// duplicate-key, depth, numeric, string and Unicode checks are unchanged. Parsing grants
+/// neither source/disclosure authority nor proof that the named files are available.
+pub fn parse_archive_export_report(text: &str) -> Result<Value, JsonError> {
+    parse_bounded(
+        text,
+        MAX_ARCHIVE_EXPORT_REPORT_BYTES,
+        MAX_ARCHIVE_EXPORT_REPORT_NODES,
+        MAX_STRING_BYTES,
+        "document exceeds the archive export report bound",
     )
 }
 
@@ -496,6 +515,34 @@ mod tests {
         assert!(parse_retained_supervisor_report(&oversized).is_err());
         let too_many = format!("[{}]", vec!["0"; MAX_RETAINED_REPORT_NODES].join(","));
         assert!(parse_retained_supervisor_report(&too_many).is_err());
+    }
+
+    #[test]
+    fn archive_export_profile_admits_full_reports_without_widening_intents() -> Result<(), JsonError>
+    {
+        let item = format!("\"{}\"", "a".repeat(32 * 1024));
+        let report = format!("[{}]", vec![item; 100].join(","));
+        assert!(report.len() > MAX_RETAINED_REPORT_BYTES);
+        assert!(parse(&report).is_err());
+        assert!(parse_retained_supervisor_report(&report).is_err());
+        assert_eq!(
+            parse_archive_export_report(&report)?
+                .array()
+                .map(<[Value]>::len),
+            Some(100)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn archive_export_profile_refuses_ambiguity_and_capacity_overflow() {
+        for bad in [r#"{"a":1,"a":2}"#, r#"{"a":1} trailing"#, r#""\ud800""#] {
+            assert!(parse_archive_export_report(bad).is_err());
+        }
+        let too_large = " ".repeat(MAX_ARCHIVE_EXPORT_REPORT_BYTES + 1);
+        assert!(parse_archive_export_report(&too_large).is_err());
+        let too_many = format!("[{}]", vec!["0"; MAX_ARCHIVE_EXPORT_REPORT_NODES].join(","));
+        assert!(parse_archive_export_report(&too_many).is_err());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Operator access to existing local recording archives. Not an agent protocol,
+//! Operator access to existing local recording archives and independently pinned copies. Not an agent protocol,
 //! export capability, capture-time conversion, or coverage/absence certificate.
 
 use std::collections::BTreeMap;
@@ -30,12 +30,14 @@ use fss_reference::rtsp::recording_catalog::{CatalogEntry, CatalogScope};
 
 mod export;
 mod utc;
+mod verify_export;
+pub use verify_export::bundle::ExportVerificationError;
 
-const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REPORT_BYTES: usize = fss_core::json_input::MAX_ARCHIVE_EXPORT_REPORT_BYTES;
 /// Explicitly versioned operator output; this is not an fss/1 agent response.
 pub const ARCHIVE_REPORT_SCHEMA: &str = "fss.local_archive_operator_report.v1";
 /// Help for the standalone archive utility. Paths accept native OS strings.
-pub const HELP: &str = "fss-archive <inspect|query|verify|export|query-utc> [options]\n\
+pub const HELP: &str = "fss-archive <inspect|query|verify|export|verify-export|query-utc> [options]\n\
   Required: --root DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
             --decode-clock sha256:HEX --time-scale N\n\
@@ -44,6 +46,15 @@ pub const HELP: &str = "fss-archive <inspect|query|verify|export|query-utc> [opt
   query-utc: --expected-snapshot sha256:HEX --expected-clock-index sha256:HEX\n\
              --start-utc-ns N --end-utc-ns N\n\
              [--max-output-windows N] [--max-output-bytes N]\n\
+  verify-export: --root COPIED_BUNDLE --expected-completion sha256:HEX\n\
+                 (plus the explicit codec/sensor/stream/generation/clock scope above)\n\
+                 [--max-windows N] [--max-objects N] [--max-total-bytes N]\n\
+                 [--max-read-bytes N] [--max-io-calls N] [--timeout-ms N]\n\
+  verify-export reads only that copied bundle on Linux with /proc/self/fd available.\n\
+  It checks the pinned COMPLETE.json, exact files, native source provenance and playback.\n\
+  It needs no original archive and performs no writes, network access or publication.\n\
+  REQUEST.json is checked for consistency; v1 completion does not pin its exact bytes.\n\
+  Success grants no current archive/disclosure authority, catalog completeness or coverage.\n\
   export: --output-dir NEW_DIR --allow-whole-windows yes [--max-export-bytes N]\n\
           --privacy-root EXISTING_DEPLOYMENT --site SITE (the deployment retaining the\n\
           sensor's privacy-mask authority). Original packets cannot be masked: export of a\n\
@@ -58,7 +69,7 @@ pub const HELP: &str = "fss-archive <inspect|query|verify|export|query-utc> [opt
   evidence. Camera capture time stays unknown; no UTC coverage or absence is inferred.\n\
   Export includes original packets and boundary lookahead beyond requested samples.\n\
   Unindexed ranges are not coverage or absence evidence. Output is bounded JSON.\n\
-  Open takes the existing exclusive storage locks and performs normal recovery,\n\
+  Source-archive commands take the existing exclusive storage locks and perform recovery,\n\
   verification holds and directory sync; it is NOT a forensic read-only open.\n\
   No network access, guessed scope, automatic repair, retention change or deletion.\n";
 
@@ -102,6 +113,8 @@ pub enum ArchiveCommandError {
     ExportBudget,
     /// An export directory may contain partial output; no cleanup/rollback is claimed.
     ExportIncomplete(Box<ArchiveCommandError>),
+    /// The copied bundle could not be completely verified; no files were modified.
+    ExportVerification(ExportVerificationError),
     /// Raw original packets of a sensor with a current retained privacy mask (or of a sensor
     /// whose mask authority was not named) are never exported; nothing was written.
     Privacy {
@@ -138,6 +151,7 @@ impl fmt::Debug for ArchiveCommandError {
             Self::OutputExists => f.write_str("OutputExists"),
             Self::ExportBudget => f.write_str("ExportBudget"),
             Self::ExportIncomplete(e) => f.debug_tuple("ExportIncomplete").field(e).finish(),
+            Self::ExportVerification(e) => f.debug_tuple("ExportVerification").field(e).finish(),
             Self::Privacy { code, message } => f.debug_tuple(code).field(message).finish(),
         }
     }
@@ -180,6 +194,7 @@ enum Action {
     QueryUtc,
     Verify,
     Export,
+    VerifyExport,
 }
 impl Action {
     fn name(self) -> &'static str {
@@ -189,6 +204,7 @@ impl Action {
             Self::QueryUtc => "query-utc",
             Self::Verify => "verify",
             Self::Export => "export",
+            Self::VerifyExport => "verify-export",
         }
     }
 }
@@ -201,6 +217,7 @@ pub struct ArchiveOptions {
     action: Action,
     scope: CatalogScope,
     expected: Option<ContentDigest>,
+    expected_completion: Option<ContentDigest>,
     query: Option<Range<u64>>,
     utc_query: Option<utc::UtcQuery>,
     query_limits: ArchiveQueryLimits,
@@ -209,6 +226,8 @@ pub struct ArchiveOptions {
     timeout: Duration,
     output: Option<PathBuf>,
     export_budget: u64,
+    verify_read_budget: u64,
+    verify_io_budget: u64,
     /// Export only: the deployment retaining the sensor's privacy-mask authority and its site.
     privacy: Option<(PathBuf, String)>,
 }
@@ -251,10 +270,11 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         "query-utc" => Action::QueryUtc,
         "verify" => Action::Verify,
         "export" => Action::Export,
+        "verify-export" => Action::VerifyExport,
         _ => {
             return Err(argument(
                 ERR_CLI_UNKNOWN_COMMAND,
-                "expected inspect, query, query-utc, verify or export",
+                "expected inspect, query, query-utc, verify, export or verify-export",
             ));
         }
     };
@@ -287,8 +307,14 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         let key = pair[0]
             .to_str()
             .ok_or_else(|| argument(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
-        if !common.contains(&key)
-            && !(action != Action::Inspect && selection.contains(&key))
+        let common_allowed = common.contains(&key)
+            && !(action == Action::VerifyExport
+                && ["--max-pages", "--max-scan-roots"].contains(&key));
+        if !common_allowed
+            && !(matches!(
+                action,
+                Action::Query | Action::QueryUtc | Action::Verify | Action::Export
+            ) && selection.contains(&key))
             && !(matches!(action, Action::Query | Action::Verify | Action::Export)
                 && ranged.contains(&key))
             && !(action == Action::QueryUtc && utc_ranged.contains(&key))
@@ -299,6 +325,13 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
                     "--max-export-bytes",
                     "--privacy-root",
                     "--site",
+                ]
+                .contains(&key))
+            && !(action == Action::VerifyExport
+                && [
+                    "--expected-completion",
+                    "--max-read-bytes",
+                    "--max-io-calls",
                 ]
                 .contains(&key))
         {
@@ -370,7 +403,15 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         time_scale: number("--time-scale", None, 1, u64::from(u32::MAX))? as u32,
     };
     let scan = number("--max-scan-roots", Some(16_384), 1, 65_536)? as usize;
-    let objects = number("--max-objects", Some(65_536), 1, 131_072)? as usize;
+    let (default_objects, maximum_objects) = if action == Action::VerifyExport {
+        (
+            verify_export::bundle::MAX_FILES as u64,
+            verify_export::bundle::MAX_FILES as u64,
+        )
+    } else {
+        (65_536, 131_072)
+    };
+    let objects = number("--max-objects", Some(default_objects), 1, maximum_objects)? as usize;
     let storage_limits = LocalPublicationLimits::new(
         scan,
         512,
@@ -398,7 +439,7 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         windows_per_page: 64,
     };
     archive_limits.validate()?;
-    let (expected, query, utc_query) = if action == Action::Inspect {
+    let (expected, query, utc_query) = if matches!(action, Action::Inspect | Action::VerifyExport) {
         (None, None, None)
     } else if action == Action::QueryUtc {
         let start = number("--start-utc-ns", None, 0, u64::MAX)?;
@@ -461,6 +502,11 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         action,
         scope,
         expected,
+        expected_completion: if action == Action::VerifyExport {
+            Some(digest("--expected-completion")?)
+        } else {
+            None
+        },
         query,
         utc_query,
         archive_limits,
@@ -471,6 +517,18 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
             Some(512 * 1024 * 1024),
             1,
             export::MAX_EXPORT_BYTES,
+        )?,
+        verify_read_budget: number(
+            "--max-read-bytes",
+            Some(4 * 1024 * 1024 * 1024),
+            1,
+            verify_export::bundle::MAX_READ_BYTES,
+        )?,
+        verify_io_budget: number(
+            "--max-io-calls",
+            Some(1_000_000),
+            1,
+            verify_export::bundle::MAX_IO_CALLS,
         )?,
         query_limits: ArchiveQueryLimits {
             max_windows: number("--max-output-windows", Some(64), 1, 4096)? as usize,
@@ -525,9 +583,10 @@ impl OperationClock for Deadline {
     }
 }
 
-/// Recover and inspect/query/reverify an existing archive under explicit local owner bounds.
-/// Returns a single report only after the entire command succeeds. Open performs the
-/// existing owner's recovery I/O; this is not a read-only forensic interface or an agent grant.
+/// Execute one bounded operator request and return a single complete report.
+/// Source-archive actions perform the existing owner's recovery I/O under exclusive locks.
+/// `verify-export` instead reads only a copied bundle through descriptor-bound file handles;
+/// it neither opens an archive owner nor creates an agent or disclosure grant.
 pub fn execute_archive(options: &ArchiveOptions) -> Result<String> {
     let clock = Deadline::new(options.timeout)?;
     execute_archive_with_clock(options, &clock)
@@ -539,6 +598,9 @@ fn execute_archive_with_clock(
     options: &ArchiveOptions,
     clock: &impl OperationClock,
 ) -> Result<String> {
+    if options.action == Action::VerifyExport {
+        return verify_export::execute(options, clock);
+    }
     // Keep the authority owner alive until all payload writes, readbacks and the
     // completion publication finish. A preflight-only check lets another owner
     // commit a mask between validation and disclosure of the original packets.
