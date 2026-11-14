@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_localizations_query.v1.json",
+  "title": "Retained recorded-localization discovery selector for AOP-005",
+  "description": "Closed metadata-only discovery of retained recorded-localization recipes and receipts. The launcher fixes deployment and principal. Native admission verifies the complete bounded current publication index, canonical recipe and receipt source header, exact source import/capsule/current privacy bindings and authority closure before filtering or pagination, then revalidates metadata and publication state under the same read allowance. Existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts preserve protected deployment context and obligations. No source, twin or atlas payload is read and no geometry or media replay is performed. Archive availability, active calibration, current physical camera position, physical coverage and absence remain unknown. Exact H0 metadata handles grant no ReadMedia, perception, calibration-adoption or effect authority. The complete protected page fits 256 KiB or refuses. Native admission remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target"
+  ],
+  "properties": {
+    "target": {
+      "const": "localizations"
+    },
+    "max_entries": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32,
+      "default": 16,
+      "description": "Complete retained localization metadata rows per page, in canonical native package-identity order."
+    },
+    "anchor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Optional exact current deployment authority/effect-history precondition. Historical source metadata never selects historical authority."
+    },
+    "continuation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Exact native continuation from the preceding page, bound to principal, filters, page size, complete verified inventory, all limits and current authority/effect prefix. No offset, discovery bypass or silent rebase."
+    },
+    "max_query_read_bytes": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 9,
+      "default": "268435456",
+      "description": "Shared metadata payload-byte ceiling, 1..268435456, covering current history, canonical recipes/receipts, source metadata and final rereads. Original media and twin/atlas payloads are not read; failed reads invalidate the remaining balance."
+    },
+    "max_query_read_objects": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 5,
+      "default": "65536",
+      "description": "Shared metadata payload-read-attempt ceiling, 1..65536, including final revalidation. Not an archive filesystem syscall quota."
+    },
+    "max_query_results": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 4,
+      "default": "1024",
+      "description": "Complete retained-localization index ceiling, 1..1024, applied before all source/twin filtering and pagination. Excluded corrupt metadata and over-budget inventories refuse the whole query; no partial prefix is returned. Native traversal separately bounds all ledger objects."
+    },
+    "sensor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Exact source sensor identity, conjunctive with every other selector; omission selects all sensors after complete inventory verification."
+    },
+    "stream": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Exact source stream identity, conjunctive with every other selector; omission selects all streams after complete inventory verification."
+    },
+    "import_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71,
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "description": "Exact completed source import identity, conjunctive with source and twin selectors. Never a path, latest selector or permission to read original media."
+    },
+    "twin_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71,
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "description": "Exact retained twin archive identity pin, conjunctive with source selectors. Does not verify archive availability, adopt a calibration or establish physical camera position."
+    }
+  }
+}

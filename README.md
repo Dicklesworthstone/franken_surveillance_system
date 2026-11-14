@@ -238,6 +238,13 @@ CLI/MCP query surface. It preserves historical health and protected deployment
 context while keeping current health, physical coverage and media availability
 unknown. See [source inventory](docs/AGENT_SOURCES_QUERY.md).
 
+`fss query --target localizations` discovers retained recorded-localization
+recipes and receipts by sensor, stream, import or twin, with exact continuation
+pages and H0 metadata handles while ingest remains active. It preserves current
+privacy and custody checks while leaving replay, archive availability, adoption
+and physical calibration explicitly unestablished. See
+[localization discovery](docs/AGENT_LOCALIZATIONS_QUERY.md).
+
 `fss query --target reports` discovers the exact detector and zone-report handles
 needed by tracks and QSR, with bounded filters and pagination over verified
 retained metadata. It reads no original media and grants no source-verification

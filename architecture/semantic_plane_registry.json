@@ -1052,7 +1052,10 @@
     "crates/fss-reference/src/agent_localizations/result.rs": "cognition",
     "crates/fss-reference/src/ingest/twin_localization/retained/metadata.rs": "support",
     "crates/fss-reference/tests/agent_localizations_contract.rs": "support",
-    "crates/fss-reference/tests/twin_localization_query_support/mod.rs": "support"
+    "crates/fss-reference/tests/twin_localization_query_support/mod.rs": "support",
+    "crates/fss-cli/src/localizations_query_cmd.rs": "ambiguous",
+    "crates/fss-cli/src/bin/fss_mcp/localizations.rs": "support",
+    "crates/fss-cli/tests/localizations_query_cli_contract.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

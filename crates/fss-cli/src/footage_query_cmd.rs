@@ -93,6 +93,8 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--state",
             "--sensor",
             "--stream",
+            "--import-id",
+            "--twin-digest",
             "--from-ns",
             "--through-ns",
             "--max-entries",
@@ -179,6 +181,10 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             crate::sources_query_cmd::parse_sources_query_args(tokens)
                 .map(FssCommand::SourcesQuery)
         }
+        Some((_, target, _)) if target == "localizations" => {
+            crate::localizations_query_cmd::parse_localizations_query_args(tokens)
+                .map(FssCommand::LocalizationsQuery)
+        }
         Some((_, target, _)) if target == "evidence-hydration" => {
             crate::event_hydration_query_cmd::parse_event_hydration_query_args(tokens)
                 .map(FssCommand::EventHydrationQuery)
@@ -256,7 +262,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         Some((_, target, index)) => Err(malformed(
             "--target",
             target,
-            "expected events, footage, recordings, onvif, qsr, tracks, reports or evidence-hydration",
+            "expected events, footage, recordings, onvif, qsr, tracks, reports, sources, localizations or evidence-hydration",
             *index,
         )),
     }

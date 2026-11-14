@@ -29,6 +29,8 @@ mod recordings;
 mod report_catalog;
 #[path = "fss_mcp/sources.rs"]
 mod sources;
+#[path = "fss_mcp/localizations.rs"]
+mod localizations;
 #[path = "fss_mcp/server.rs"]
 mod server;
 #[path = "fss_mcp/tracks.rs"]
@@ -49,6 +51,8 @@ They verify original encoded evidence without returning media or creating retain
 Detector track reads require the separate tracks source-verification grant and exact report.\n\
 They return matched observations with tentative/confirmed state and continuity boundaries.\n\
 Report discovery returns retained metadata handles without a source-verification grant.\n\
+Localizations discovers retained recipes/receipts by sensor, stream, import and twin.\n\
+No source or archive payload read, pose replay or calibration adoption is implied.\n\
 Event evidence-hydration uses an existing session and exact current event revision/anchor.\n\
 H0 costs 5000 and H1 costs 16000 cumulative tokens; agent-journal charge/cursor writes\n\
 precede output. Use the full receipt.continuation JSON for H1; consumed cursors never replay.\n\

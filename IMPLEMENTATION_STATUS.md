@@ -4,9 +4,10 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Native retained-localization discovery — 2026-11-14
+## Canonical retained-localization discovery — 2026-11-14
 
-`agent_localizations::query_localizations` now discovers completed native
+`fss query --target localizations`, MCP `query` and the shared native
+`agent_localizations::query_localizations` now discover completed native
 recorded-localization packages through the canonical AOP-005 query plan and
 immutable retained-source owner. Exact sensor, stream, import and twin filters
 apply only after verification of the complete bounded index. Native continuation
@@ -27,8 +28,12 @@ Twelve genuine-producer native contracts exercise all three outcome classes,
 current privacy/tombstones, exact filters and cursors, live-writer/no-recovery
 reads, missing replay assets, excluded corrupt metadata, exact final-read
 budgets, cancellation and final publication/payload/head drift. Source review
-and pinned formatting are complete; native execution is pending in the focused
-supplementary workflow. CLI/MCP exposure is a separate integration increment.
+and pinned formatting are complete. Four real-process CLI/MCP contracts add
+byte-exact native projection parity, H0-only handles, complete paging/filters,
+metadata failures and closed selectors. Standalone/embedded schema parity and
+representative valid/invalid schema inputs passed. Native execution is pending
+in the focused supplementary workflow, which selects localization checks first.
+See [localization discovery](docs/AGENT_LOCALIZATIONS_QUERY.md).
 
 ## Confirmed focused execution at `29e61253` — 2026-11-14
 

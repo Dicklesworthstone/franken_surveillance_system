@@ -90,6 +90,8 @@ pub mod replay_time_json;
 pub mod report_catalog_query_cmd;
 /// Canonical bounded retained-source metadata and historical continuity query.
 pub mod sources_query_cmd;
+/// Canonical bounded discovery of retained recorded-localization metadata.
+pub mod localizations_query_cmd;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
 /// Exact owner-approved session authority revocation through AOP-010.

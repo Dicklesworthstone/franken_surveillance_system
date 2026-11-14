@@ -59,6 +59,23 @@ JPEG decode root when applicable. Video decoding remains read-only and adds no d
 The process-local geometry basis is freshly allocated when the archives are imported; it
 is not serialized as if it were a durable object identity.
 
+## Find existing retained results
+
+Use the canonical query when the package identity is not already known:
+
+```sh
+fss query --target localizations --json \
+  --root /absolute/path/to/deployment --sensor sensor:rear
+```
+
+The same MCP `query` target supports exact sensor, stream, import and twin
+selection with bounded native continuation. It returns the package identity,
+publication root and receipt digest required below, together with original
+source/archive pins and current metadata custody/privacy. Discovery works while
+the publisher is active, reads no source or twin/atlas payloads, and does not
+interpret candidate outcomes or establish current calibration. See
+[localization discovery](AGENT_LOCALIZATIONS_QUERY.md) for complete semantics.
+
 ## Inspect or independently reproduce it
 
 Reading checks immutable package objects, complete twin/atlas byte custody, root-to-ledger

@@ -969,6 +969,32 @@ pub(crate) fn build_sources_response(
     )
 }
 
+/// Retained localization discovery projects existing metadata under AgentQuery authority.
+pub(crate) fn build_localizations_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+        || parts.capability != fss_core::RuntimeGrant::AgentQuery.as_str()
+    {
+        return Err(RenderError("invalid localizations query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose = "read-only discovery of retained localization recipe and receipt metadata".to_owned();
+    projection.visible_domains.extend([
+        "retained-localization-recipe-and-receipt-metadata".to_owned(),
+        "localization-publication-and-source-custody-metadata".to_owned(),
+        "declared-twin-and-atlas-identity-pins".to_owned(),
+    ]);
+    build_response_for_basis_and_privacy(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+    )
+}
+
 /// Explicit privacy projection for native archive metadata, scoped to AOP-005 only.
 pub(crate) fn build_recording_response(
     parts: ResponseParts,
