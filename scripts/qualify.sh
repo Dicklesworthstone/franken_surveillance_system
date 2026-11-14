@@ -484,10 +484,10 @@ case "$LANE" in
   policy) policy_lane ;;
   docs) docs_lane ;;
   rust) policy_lane; rust_lane ;;
-  full) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh" ;;
+  full) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh" ;;
   lab|adapter|media|archive|model|geometry|threat|agent|privacy) claim_lane ;;
   release-preflight) policy_lane; clean_tree_lane; rust_lane ;;
-  release) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; clean_tree_lane ;;
+  release) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh"; clean_tree_lane ;;
   *) printf 'unknown qualification lane: %s\n' "$LANE" >&2; exit 4 ;;
 esac
 printf 'qualification lane %s completed\n' "$LANE" >&2
