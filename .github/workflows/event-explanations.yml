@@ -17,6 +17,8 @@ on:
       - 'crates/fss-cli/tests/explain_fusion_cli_contract.rs'
       - 'crates/fss-cli/tests/event_changes_cli_contract.rs'
       - 'crates/fss-reference/src/retained_source.rs'
+      - 'crates/fss-reference/src/alert.rs'
+      - 'crates/fss-reference/src/alert_tests.rs'
       - 'crates/fss-reference/src/agent_event_changes.rs'
       - 'crates/fss-reference/src/agent_event_changes/**'
       - 'crates/fss-reference/tests/agent_event_changes_contract.rs'
@@ -59,6 +61,9 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib event_counterfactual:: || scenario_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib orient_cmd::what_if:: || scenario_exit=1
           exit "$scenario_exit"
+      - name: Verify committed alert preparation and dispatch eligibility
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib alert_tests::
       - name: Verify immutable lineage and protected metadata revalidation
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract --test agent_report_catalog_contract

@@ -366,7 +366,12 @@ fn mcp_matches(
     let lines = wire.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), 2, "initialize and one tools/call response only");
     assert!(lines[1].contains(&format!("\"isError\":{}", !expected.status.success())));
-    let expected = std::str::from_utf8(&expected.stdout)?;
+    // The executable prints one transport newline; MCP embeds the native envelope itself.
+    // Remove exactly that frame delimiter, preserving every semantic byte and any whitespace
+    // that belongs to the native response.
+    let expected = std::str::from_utf8(&expected.stdout)?
+        .strip_suffix('\n')
+        .ok_or("CLI response is missing its framing newline")?;
     assert!(
         lines[1].contains(&format!("\"text\":{}", quote(expected))),
         "MCP must preserve the complete CLI semantic envelope"

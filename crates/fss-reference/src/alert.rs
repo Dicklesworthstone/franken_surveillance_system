@@ -1477,12 +1477,20 @@ pub fn prepare_reference_alert(
             "forged_event_receipt_tamper_status",
         ));
     }
+    // The action enum is transient caller input, not a retained field of the event manifest.
+    // Once the event is bound to current authority, derive the action from its exact recorded
+    // policy path as dispatch does. A caller cannot promote a committed Hold into a prepared
+    // operation and pending obligation by changing only that enum.
+    let committed_action = committed_policy_action(&params.decision.event);
+    if params.decision.action != committed_action {
+        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
+    }
     // The receipt and the witness are cross-checks only: eligibility is re-derived from the event's
     // lineage as the authority ledger holds it, with the check dispatch runs (fss-2uftm).
     let lineage_status = verify_alert_eligibility_in_lineage(
         params.authority,
         &params.decision.event,
-        params.decision.action,
+        committed_action,
         &decode_prior_revisions(&params.event_receipt.prior_revision_encodings)?,
     )?;
     if lineage_status != params.event_receipt.lineage_tamper_status {

@@ -4355,3 +4355,168 @@ fn unrelated_domain_tamper_and_durable_path_p6c() -> Result<(), Box<dyn Error>> 
     let _ = fs::remove_file(&durable_path);
     Ok(())
 }
+
+
+/// A transient policy action must agree with the exact event's retained decision-path action.
+/// Both public preparation owners must refuse before creating any operation or obligation.
+fn assert_prepare_policy_action_mismatch(
+    committed_action: crate::ReferencePolicyAction,
+    label: &str,
+) -> Result<(), Box<dyn Error>> {
+    use crate::ReferencePolicyAction;
+
+    let ledger_path = temp_journal(&format!("policy-action-{label}-ledger"));
+    let journal_path = temp_journal(&format!("policy-action-{label}-effects"));
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (eligible, eligible_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let (committed, receipt) = if committed_action == ReferencePolicyAction::Hold {
+        // Retain a valid independently corroborated event under an explicit conservative Hold.
+        // Only its exact path and event identity differ; the real evidence remains in custody.
+        let mut held = eligible.clone();
+        held.event.event_id = EventId::parse("event:alert:committed-hold")?;
+        held.action = ReferencePolicyAction::Hold;
+        held.event.decision_path = crate::policy::policy_decision_path(
+            &held.event.event_id,
+            &held.event.evidence,
+            held.event.state,
+            held.action,
+        );
+        held.event.verify()?;
+        let receipt = publish_reference_event(&held, &mut objects, &mut authority)?;
+        (held, receipt)
+    } else {
+        (eligible, eligible_receipt)
+    };
+    assert_eq!(committed.event.state, fss_core::EventState::Corroborated);
+    assert_eq!(
+        crate::alert::committed_reference_policy_action(&committed.event),
+        committed_action
+    );
+    assert_eq!(committed.action, committed_action);
+    assert!(!receipt.lineage_tamper_status.has_open_tamper());
+
+    let mut supplied = committed.clone();
+    supplied.action = match committed_action {
+        ReferencePolicyAction::Hold => ReferencePolicyAction::PrepareAlert,
+        ReferencePolicyAction::PrepareAlert => ReferencePolicyAction::Hold,
+    };
+    assert_eq!(supplied.event, committed.event);
+    assert_eq!(supplied.event.revision_digest(), receipt.event_revision_digest);
+
+    let mut memory = EffectJournal::new();
+    let mut durable = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let ledger_before = fs::read(&ledger_path)?;
+    let effects_before = fs::read(&journal_path)?;
+    let memory_result = prepare(&supplied, &receipt, &authority, &mut memory);
+    assert!(
+        matches!(
+            memory_result,
+            Err(ReferenceError::InvalidSpec("alert_not_eligible"))
+        ),
+        "{label}: {memory_result:?}"
+    );
+    assert_eq!(memory.operations().count(), 0);
+    assert_eq!(memory.obligations().count(), 0);
+    assert_eq!(fs::read(&ledger_path)?, ledger_before);
+    assert_eq!(fs::read(&journal_path)?, effects_before);
+
+    let durable_result = durable.prepare_alert(durable_params(&supplied, &receipt, &authority)?);
+    assert!(
+        matches!(
+            durable_result,
+            Err(DurableEffectError::Reference(ReferenceError::InvalidSpec(
+                "alert_not_eligible"
+            )))
+        ),
+        "{label}: {durable_result:?}"
+    );
+    assert_eq!(durable.operations().count(), 0);
+    assert_eq!(durable.obligations().count(), 0);
+    assert_eq!(fs::read(&ledger_path)?, ledger_before);
+    assert_eq!(fs::read(&journal_path)?, effects_before);
+    drop(durable);
+
+    let reopened = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.operations().count(), 0);
+    assert_eq!(reopened.obligations().count(), 0);
+    assert_eq!(fs::read(&journal_path)?, effects_before);
+    assert_eq!(fs::read(&ledger_path)?, ledger_before);
+    drop(reopened);
+    drop(authority);
+    fs::remove_file(ledger_path)?;
+    fs::remove_file(journal_path)?;
+    Ok(())
+}
+
+#[test]
+fn prepare_policy_action_committed_hold_cannot_be_promoted() -> Result<(), Box<dyn Error>> {
+    assert_prepare_policy_action_mismatch(crate::ReferencePolicyAction::Hold, "held-event")
+}
+
+#[test]
+fn prepare_policy_action_transient_hold_is_refused_without_writes() -> Result<(), Box<dyn Error>> {
+    assert_prepare_policy_action_mismatch(
+        crate::ReferencePolicyAction::PrepareAlert,
+        "transient-hold",
+    )
+}
+
+#[test]
+fn prepare_policy_action_exact_commitment_is_admitted_and_replays() -> Result<(), Box<dyn Error>> {
+    let ledger_path = temp_journal("policy-action-valid-ledger");
+    let journal_path = temp_journal("policy-action-valid-effects");
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, receipt) = eligible_event(&mut objects, &mut authority)?;
+    assert_eq!(
+        crate::alert::committed_reference_policy_action(&decision.event),
+        crate::ReferencePolicyAction::PrepareAlert
+    );
+    assert_eq!(decision.action, crate::ReferencePolicyAction::PrepareAlert);
+    let ledger_before = fs::read(&ledger_path)?;
+    let mut memory = EffectJournal::new();
+    let mut durable = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let effects_before = fs::read(&journal_path)?;
+
+    let memory_plan = prepare(&decision, &receipt, &authority, &mut memory)?;
+    assert_eq!(memory.operations().count(), 1);
+    assert_eq!(memory.obligations().count(), 1);
+    let durable_plan = durable.prepare_alert(durable_params(&decision, &receipt, &authority)?)?;
+    assert_eq!(durable_plan, memory_plan);
+    assert_eq!(durable.operations().count(), 1);
+    assert_eq!(durable.obligations().count(), 1);
+    assert_eq!(fs::read(&ledger_path)?, ledger_before);
+    assert_ne!(fs::read(&journal_path)?, effects_before);
+    drop(durable);
+
+    let reopened = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.operations().count(), 1);
+    assert_eq!(reopened.obligations().count(), 1);
+    assert_eq!(
+        reopened
+            .operation(&durable_plan.intent.operation_id)
+            .ok_or("prepared operation missing after replay")?
+            .state,
+        EffectState::Prepared
+    );
+    assert_eq!(
+        reopened
+            .obligation(&durable_plan.obligation_id)
+            .ok_or("prepared obligation missing after replay")?
+            .state,
+        ObligationState::Pending
+    );
+    assert_eq!(fs::read(&ledger_path)?, ledger_before);
+    drop(reopened);
+    drop(authority);
+    fs::remove_file(ledger_path)?;
+    fs::remove_file(journal_path)?;
+    Ok(())
+}
