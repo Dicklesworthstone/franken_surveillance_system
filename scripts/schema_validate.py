@@ -1250,6 +1250,33 @@ def parse_schemas_md(schemas_md_path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def _digest_domain_cells(line: str) -> list[str] | None:
+    """Keep declaration rows, excluding only recognized Markdown table structure."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return None
+    parts = [p.strip().strip("`") for p in stripped.split("|")[1:-1]]
+    # Short reserved-ID/tombstone tables do not declare digest domains.
+    if len(parts) < 5:
+        return None
+    if all(re.fullmatch(r":?-{3,}:?", part) for part in parts):
+        return None
+    if (
+        len(parts) == 5
+        and parts[0] in {"ID", "Stable ID"}
+        and parts[1] in {"Domain", "Digest domain"}
+        and parts[2] in {"Scope", "Owner", "Producer"}
+        and parts[3] in {"Authority", "Plane", "Plane / authority"}
+        and parts[4] in {
+            "Invariant rule", "Bound meaning", "Meaning", "Canonical contract",
+            "Binding", "Binding rule",
+        }
+    ):
+        return None
+    # Invalid IDs/names remain visible to constitution validation.
+    return parts
+
+
 def parse_digest_domains_md(digest_domains_path: Path) -> list[DigestDomainDeclaration]:
     """Parse table rows from registries/DIGEST_DOMAINS.md."""
     if not digest_domains_path.is_file():
@@ -1261,11 +1288,8 @@ def parse_digest_domains_md(digest_domains_path: Path) -> list[DigestDomainDecla
     seen_domains: set[str] = set()
 
     for line_no, line in enumerate(text.splitlines(), 1):
-        stripped = line.strip()
-        if not stripped.startswith("|") or stripped.startswith("|---"):
-            continue
-        parts = [p.strip().strip("`") for p in stripped.split("|")[1:-1]]
-        if len(parts) >= 5 and parts[0] != "ID":
+        parts = _digest_domain_cells(line)
+        if parts is not None:
             sid, dname, scope, auth, rule = parts[0], parts[1], parts[2], parts[3], parts[4]
             if sid in seen_ids or dname in seen_domains:
                 continue
@@ -1488,11 +1512,8 @@ def validate_schema_constitution(
     if d_path.is_file():
         text = d_path.read_text(encoding="utf-8")
         for line_no, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            if not stripped.startswith("|") or stripped.startswith("|---"):
-                continue
-            parts = [p.strip().strip("`") for p in stripped.split("|")[1:-1]]
-            if len(parts) >= 5 and parts[0] != "ID":
+            parts = _digest_domain_cells(line)
+            if parts is not None:
                 sid, dname, scope, auth, rule = parts[0], parts[1], parts[2], parts[3], parts[4]
                 if not STABLE_ID_PATTERN.match(sid):
                     validator.emit(

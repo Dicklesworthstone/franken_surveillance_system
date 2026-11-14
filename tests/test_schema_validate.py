@@ -917,8 +917,9 @@ class TestSchemaConstitution(unittest.TestCase):
         # duplicate schema registrations; table headers are not declarations. Add one
         # source-byte retention domain, seven UTC-set domains, six UTC-discovery domains
         # and four durable retention-policy domains, followed by eight cross-session UTC domains.
-        # Current registry plus four whole-receipt replay import domains; headers are not domains.
-        self.assertEqual(result["digestDomainCount"], 797)
+        # Current registry, including eight source-query domains; Markdown headings/separators
+        # and the reserved-ID tombstone are not digest declarations.
+        self.assertEqual(result["digestDomainCount"], 865)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1484,8 +1485,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # duplicate schema registrations; table headers are not declarations. Add one
         # source-byte retention domain, seven UTC-set domains, six UTC-discovery domains
         # and four durable retention-policy domains, followed by eight cross-session UTC domains.
-        # Current registry plus four whole-receipt replay import domains; headers are not domains.
-        self.assertEqual(result["digestDomainCount"], 797)
+        # Current registry, including eight source-query domains; Markdown headings/separators
+        # and the reserved-ID tombstone are not digest declarations.
+        self.assertEqual(result["digestDomainCount"], 865)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1576,6 +1578,62 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
             self.assertEqual(len(unreg_errors), 1)
             self.assertIn("fss.rogue_unregistered_domain.v1", unreg_errors[0].message)
 
+    def test_digest_domain_markdown_structure_is_not_a_declaration(self) -> None:
+        """Repeated headers, aligned separators and reserved IDs are not domains."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            schemas_dir = root / "schemas"
+            schemas_dir.mkdir()
+            registry_dir = root / "registries"
+            registry_dir.mkdir()
+            schemas_md = registry_dir / "SCHEMAS.md"
+            schemas_md.write_text(
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n",
+                encoding="utf-8",
+            )
+            domains_md = registry_dir / "DIGEST_DOMAINS.md"
+            domains_md.write_text(
+                "# Domains\n"
+                "| ID | Domain | Scope | Authority | Invariant rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-DOMAIN-FIRST-001` | `fss.first.v1` | Core | auth | rule |\n"
+                "\n## Another owner\n"
+                "| Stable ID | Domain | Owner | Authority | Binding |\n"
+                "| --- | :--- | ---: | :---: | --- |\n"
+                "| `SCHEMA-DOMAIN-SECOND-001` | `fss.second.v1` | Core | auth | rule |\n"
+                "| Stable ID | Domain | Owner | Authority | Binding |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| ID | Digest domain | Producer | Authority | Binding rule |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "\n## Reserved IDs\n"
+                "| ID | Status | Reason |\n"
+                "| --- | --- | --- |\n"
+                "| `SCHEMA-DOMAIN-RETIRED-001` | Tombstoned duplicate | Owned elsewhere |\n",
+                encoding="utf-8",
+            )
+            parsed = schema_validate.parse_digest_domains_md(domains_md)
+            self.assertEqual(
+                [(row.stable_id, row.domain_name) for row in parsed],
+                [
+                    ("SCHEMA-DOMAIN-FIRST-001", "fss.first.v1"),
+                    ("SCHEMA-DOMAIN-SECOND-001", "fss.second.v1"),
+                ],
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=root,
+                schemas_dir=schemas_dir,
+                schemas_md_path=schemas_md,
+                digest_domains_path=domains_md,
+                architecture_dir=root / "architecture",
+                crates_dir=root / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "passed", validator.findings)
+            self.assertEqual(result["digestDomainCount"], 2)
+            self.assertEqual(validator.findings, [])
+
     def test_digest_domain_names_admit_published_hyphenated_tags_only_there(self) -> None:
         """fss-rir2v: a published hyphenated digest tag is registrable byte-exact; schema names stay strict."""
         self.assertTrue(schema_validate.DIGEST_DOMAIN_NAME_PATTERN.match("fss.rgb-evidence-custody.reference.v1"))
@@ -1606,7 +1664,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
                 "| `INVALID_ID` | `fss.canonical.v1` | Core | auth | rule |\n"
                 "| `SCHEMA-DOMAIN-001` | `invalid-name-shape` | Core | auth | rule |\n"
                 "| `SCHEMA-DOMAIN-002` | `fss.dup.v1` | Core | auth | rule |\n"
-                "| `SCHEMA-DOMAIN-002` | `fss.dup2.v1` | Core | auth | rule |\n",
+                "| `SCHEMA-DOMAIN-002` | `fss.dup2.v1` | Core | auth | rule |\n"
+                "| Stable ID | `fss.not_a_heading.v1` | Owner | Authority | Binding |\n"
+                "| --- | `fss.not_a_separator.v1` | --- | --- | --- |\n",
                 encoding="utf-8",
             )
 
@@ -1625,6 +1685,13 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
             self.assertIn(schema_validate.CODE_INVALID_STABLE_ID, codes)
             self.assertIn(schema_validate.CODE_INVALID_SCHEMA_NAME, codes)
             self.assertIn(schema_validate.CODE_DUPLICATE_STABLE_ID, codes)
+            self.assertEqual(res["digestDomainCount"], 6)
+            invalid_ids = {
+                finding.message for finding in v.findings
+                if finding.code == schema_validate.CODE_INVALID_STABLE_ID
+            }
+            self.assertTrue(any("'Stable ID'" in message for message in invalid_ids))
+            self.assertTrue(any("'---'" in message for message in invalid_ids))
 
 
 if __name__ == "__main__":
