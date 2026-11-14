@@ -23,6 +23,9 @@ use std::{
 #[path = "discovery_fleet.rs"]
 pub mod fleet;
 
+#[path = "discovery_neighbor.rs"]
+pub mod neighbor;
+
 #[path = "discovery_scan.rs"]
 pub mod scan;
 
