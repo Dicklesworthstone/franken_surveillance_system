@@ -214,3 +214,9 @@ both are wrapped. Invoke the toolchain binary directly for that build only:
 ```sh
 ~/.rustup/toolchains/<pinned>/bin/cargo build --target <host-triple> ...
 ```
+
+A second, distinct refusal appears when the fleet is up but its build disks are tight:
+`RCH-E330 remote_build_disk_budget_exceeded` — the worker reports plenty of free space yet the admission
+check says "free space cannot cover active build reservations and protected floor". Retries land on
+other workers and fail the same way. Neither `RCH_DISABLE=1` nor `RCH_ALLOW_LOCAL_FALLBACK=1` in front
+of the toolchain cargo suppresses it; the practical route is to retry later or over SSH on a worker.
