@@ -29,10 +29,11 @@ int main(int argc,char**argv){
     fprintf(stderr,"it=%d done=%zu dicPos=%u st=%d\n", i, done, (unsigned)d.decoder.dicPos, (int)st);
     /* shim removed: LzmaDecU already returns OK for a pending match */
     if(r!=SZ_OK && d.decoder.remainLen==0) { fprintf(stderr,"res=%d st=%d out=%u src=%zu\n",(int)r,(int)st,(unsigned)d.decoder.dicPos, done); break; }
-    if(d.state==8) { if(done<total && b[off+done]==0) done++; d.decoder.remainLen = 276; d.state = 0; d.needInitLevel = 0; continue; }   /* 0x00 ends a stream; the next byte is another control */
+    if(d.state==8) { if(done<total && b[off+done]==0) done++; d.decoder.remainLen = 276; d.state = 0; d.needInitLevel = 0; if(getenv("STOP_EOS")) break; continue; }   /* 0x00 ends a stream; the next byte is another control */
     if(!sl && d.decoder.remainLen==0) { if(SKIP) { done += SKIP; continue; } break; }
   }
   if(maxout && d.decoder.dicPos>maxout) d.decoder.dicPos=(SizeT)maxout;
+  if (getenv("DROP_PENDING") && d.decoder.remainLen) d.decoder.dicPos--;
   fwrite(o,1,d.decoder.dicPos,stdout);
   return 0;
 }

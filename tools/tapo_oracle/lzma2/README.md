@@ -59,3 +59,7 @@ cc -O1 -I/tmp/inc -I/tmp/lz19dbg -include /tmp/lz19dbg/Precomp.h \
    -o /tmp/l2d_stock l2d3.c /tmp/g.c /tmp/lz19dbg/Lzma2Dec.c /tmp/lz19/C/LzmaDec.c
 bash ../lzma2_roundtrip.sh /tmp/l2d_stock 50000
 ```
+
+`Lzma2Dec_stock_fixed.c` is the build the guard runs against: standard field order (uncompressed first)
+and the uncompressed copy capped by the declared chunk size. `bash ../lzma2_roundtrip.sh <stock build>`
+must print ROUNDTRIP OK; it did not before those two fixes.
