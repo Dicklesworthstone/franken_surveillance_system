@@ -4,6 +4,33 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native event inspection uses immutable custody — 2026-11-14
+
+Native recorded-luma and detector-package `fss-event read` and both `report`
+modes now use the sealed retained-source reader before any writable deployment
+owner is opened. Inspection can coexist with a live publisher without acquiring
+its lock or invoking journal/layout recovery. The existing exact source,
+analysis, event-lineage and provenance checks remain authoritative; publication
+validation also checks durable state and the exact child count.
+
+Metadata, retained source payloads, publication records and final rereads share
+one nonrenewing allowance. The command accepts `--max-read-bytes` and
+`--max-read-objects`, with the same defaults and ceilings as immutable native
+inference inspection and a cooperative 60-second deadline. Output and explicit
+outside-deployment exports are buffered until protected metadata and final
+custody/authority checks pass. This does not change prepare, publish, watch,
+corroboration or effect authority.
+
+New and extended native contracts cover inspection while a publisher remains
+open, byte-preserving success and refusal, partial ledger/effect-journal tails
+without repair, corrupt original custody, aggregate read exhaustion, late
+cancellation, final payload rehash, and create-new export behavior. They are
+included in the existing pinned-nightly supplementary workflow. These changes
+were source reviewed; local compilation was killed in the existing Asupersync
+dependency and the execution environment then became unavailable. Execution
+results for this head remain pending. Repository-owned DSR qualification and
+release claims are unchanged.
+
 ## Alert preparation agrees with committed policy — 2026-11-14
 
 Preparation now binds the transient requested action to the exact committed

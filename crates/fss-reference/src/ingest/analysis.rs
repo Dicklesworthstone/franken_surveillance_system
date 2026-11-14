@@ -19,7 +19,8 @@ use super::recorded_decode::{ComponentInterpretation, DecodeLimits, RecordedDeco
 use super::tracking::{
     AssociationBudget, LocalBoxTracker, TrackingConfig, TrackingError, TrackingUpdate,
 };
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::retained_source::RetainedSource;
+use crate::ReplayCx;
 
 /// Hard ceiling for one complete, non-truncated report.
 pub const MAX_ANALYSIS_FRAMES: usize = 256;
@@ -388,7 +389,7 @@ impl AnalysisReport {
     /// Revalidate every retained run and rebuild the exact detector/tracker history.
     /// This does not execute models or append authority. A failure returns no partial report.
     pub fn read(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &AnalysisPlan,
         limits: &AnalysisLimits,
         budget: &mut AnalysisBudget,
@@ -462,7 +463,7 @@ impl AnalysisReport {
     /// Serialized tracks are never trusted as a tracker checkpoint. Model numeric replay is
     /// separate (`RecordedInference::verify_by_replay`); this verifies postprocessing/association.
     pub fn verify(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         bytes: &[u8],
         expected: ContentDigest,
         limits: &AnalysisLimits,

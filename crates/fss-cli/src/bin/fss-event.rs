@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Local operator preparation, exact publication, and recovery of unresolved recorded events.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -14,16 +14,17 @@ use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, EventId, OperationId, PrincipalId};
 use fss_reference::ingest::analysis::{
-    AnalysisBudget, AnalysisFrame, AnalysisLimits, AnalysisPlan, AnalysisReport,
+    AnalysisBudget, AnalysisFrame, AnalysisLimits,
     MAX_ANALYSIS_REPORT_BYTES,
 };
 use fss_reference::ingest::detections::{BoxEncoding, CoordinateSpace, DetectionSpec};
 use fss_reference::ingest::package_event::{
-    PackageAnalysisReport, PackageEvent, PackageEventProposal, PackageEventStatus,
+    PackageAnalysisReport, PackageEventProposal, PackageEventStatus,
     PackageTrackingConfig,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
-use fss_reference::ingest::recorded_event::{RecordedEvent, RecordedEventProposal};
+use fss_reference::ingest::recorded_event::RecordedEventProposal;
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::ingest::tracking::TrackingConfig;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -53,6 +54,10 @@ mod privacy_mask;
 mod qsr;
 #[path = "fss-event/replay.rs"]
 mod replay;
+#[path = "fss-event/retained.rs"]
+mod retained;
+#[path = "fss-infer/retained_read.rs"]
+mod retained_read;
 #[path = "fss-event/supervise.rs"]
 mod supervise;
 #[path = "fss-event/watch.rs"]
@@ -95,6 +100,11 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     Source paths, thresholds, zones, detector packages and event approvals are not inputs.\n\
     Use fss-event verify --help for metadata, per-camera execution and report bounds.\n\
   Budgets: --detection-work-units N --association-work-units N --max-report-bytes N\n\
+  Native recorded-luma/package read and report: --max-read-bytes N --max-read-objects N\n\
+    Open immutable retained custody without taking the publisher lock or repairing state.\n\
+    Metadata, source payloads and final revalidation share one allowance (default 1 GiB and\n\
+    1,000,000 read attempts; maximum 4 GiB and 4,000,000), with a cooperative 60 s deadline.\n\
+    Authority, publication, metadata and custody must still match before any output/export.\n\
   Exports: --event-out FILE (canonical event JSON); read also accepts --report-out FILE\n\
   An existing operator-authorized deployment is required. Report inputs are complete\n\
   canonical AnalysisReport bytes, not detector CLI JSON or a tracker checkpoint.\n\
@@ -452,6 +462,7 @@ struct Options {
     site: String,
     principal: String,
     limits: AnalysisLimits,
+    read_limits: ImmutableRetainedReadLimits,
     detection_units: u64,
     association_units: u64,
     event_out: Option<PathBuf>,
@@ -495,6 +506,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             Err("help takes no additional arguments".into())
         };
     }
+    let read_limits = retained_read::parse_limits(&Values::new())?;
     if action == "watch" {
         let watch = watch::parse(&args[1..])?;
         return Ok(Some(Options {
@@ -502,6 +514,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             site: watch.site.clone(),
             principal: watch.principal.clone(),
             limits: AnalysisLimits::default(),
+            read_limits,
             detection_units: 0,
             association_units: 0,
             event_out: None,
@@ -516,6 +529,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             site: request.site.clone(),
             principal: request.principal.clone(),
             limits: AnalysisLimits::default(),
+            read_limits,
             detection_units: 0,
             association_units: 0,
             event_out: None,
@@ -530,6 +544,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             site: request.site.clone(),
             principal: request.principal.clone(),
             limits: AnalysisLimits::default(),
+            read_limits,
             detection_units: 0,
             association_units: 0,
             event_out: None,
@@ -544,6 +559,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             site: request.site.clone(),
             principal: request.principal.clone(),
             limits: AnalysisLimits::default(),
+            read_limits,
             detection_units: 0,
             association_units: 0,
             event_out: None,
@@ -558,6 +574,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             site: request.site.clone(),
             principal: request.principal.clone(),
             limits: AnalysisLimits::default(),
+            read_limits,
             detection_units: 0,
             association_units: 0,
             event_out: None,
@@ -572,6 +589,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             site: request.site.clone(),
             principal: request.principal.clone(),
             limits: AnalysisLimits::default(),
+            read_limits,
             detection_units: 0,
             association_units: 0,
             event_out: None,
@@ -621,7 +639,8 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
                 && matches!(key, "--report" | "--report-digest" | "--track"))
             || (action == "publish" && key == "--proposal-digest")
             || (action == "read" && key == "--event-id")
-            || (matches!(action, "read" | "report") && key == "--report-out")
+            || (matches!(action, "read" | "report")
+                && matches!(key, "--report-out" | "--max-read-bytes" | "--max-read-objects"))
             || (action == "report" && report_options.contains(&key));
         if !allowed {
             return Err("unknown or inapplicable option".into());
@@ -764,6 +783,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         site,
         principal,
         limits,
+        read_limits: retained_read::parse_limits(&v)?,
         detection_units: number(&v, "--detection-work-units", 100_000_000)?,
         association_units: number(&v, "--association-work-units", 100_000_000)?,
         event_out: v.get("--event-out").map(PathBuf::from),
@@ -864,6 +884,12 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     if !is_dir || !has_layout {
         return Err(io::Error::other("existing non-symlink deployment required").into());
     }
+    if matches!(
+        &options.action,
+        Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. }
+    ) {
+        return retained::run(options, out);
+    }
     // The authenticated local process and filesystem are the boundary. The principal is an
     // audit label, not remote authentication; no model or device-control grant. Only `alert`
     // receives alert capabilities: prepare always, commit only with an explicit --dispatch.
@@ -942,91 +968,8 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 delete::run(action, &mut deployment, &authority, &cx, out)?;
                 return Ok(());
             }
-            Action::Report {
-                import,
-                interpretation,
-                detector,
-                tracking,
-                runs,
-                output,
-            } => {
-                let plan = AnalysisPlan::new(
-                    *import,
-                    *interpretation,
-                    detector.clone(),
-                    *tracking,
-                    read_runs(runs, &cx)?,
-                )?;
-                let report =
-                    AnalysisReport::read(&deployment, &plan, &options.limits, &mut budget, &cx)?;
-                export(output, report.encoded(), &options.root, &cx)?;
-                let tracks: BTreeSet<_> = report
-                    .observations()
-                    .iter()
-                    .flat_map(|o| &o.tracking().tracks)
-                    .filter(|t| t.observed_row.is_some())
-                    .map(|t| t.id)
-                    .collect();
-                writeln!(
-                    out,
-                    "operation=report_verified\nreport_digest={}\nplan_digest={}\nframes={}\ntrack_count={}",
-                    report.digest(),
-                    plan.digest(),
-                    report.observations().len(),
-                    tracks.len()
-                )?;
-                for track in tracks {
-                    writeln!(out, "track={track}")?;
-                }
-                writeln!(
-                    out,
-                    "detection_work_units={}\nassociation_work_units={}\nabsence_certifiable=false\neffects_authorized=false",
-                    budget.detection.used(),
-                    budget.association.used()
-                )?;
-                return Ok(());
-            }
-            Action::PackageReport {
-                report,
-                label,
-                tracking,
-                output,
-            } => {
-                let analysis =
-                    PackageAnalysisReport::read(&deployment, *report, label, *tracking, &cx)?;
-                export(output, analysis.encoded(), &options.root, &cx)?;
-                let retained = analysis.retained();
-                let record = retained.record();
-                let confirmed: Vec<_> = analysis.tracks().iter().filter(|t| t.confirmed).collect();
-                writeln!(
-                    out,
-                    "operation=package_report_verified\nreport_digest={}\npackage_report={}\npackage_detection_root={}\npackage_digest={}\nmodel_id={}\ngeneration={}\nlabel={}\nframes={}\ntrack_count={}",
-                    analysis.digest(),
-                    record.report_digest,
-                    retained.root(),
-                    record.package_digest,
-                    record.model_id,
-                    record.generation,
-                    analysis.label(),
-                    record.frames.len(),
-                    confirmed.len()
-                )?;
-                for track in confirmed {
-                    writeln!(out, "track={}", track.identity)?;
-                }
-                writeln!(
-                    out,
-                    "scores=uncalibrated\nabsence_certifiable=false\neffects_authorized=false"
-                )?;
-                return Ok(());
-            }
-            Action::Read(id) => {
-                if id.as_str().starts_with("event:package:") {
-                    return read_package_event(&options, &deployment, id, &cx, out);
-                }
-                let record =
-                    RecordedEvent::open(&deployment, id, &options.limits, &mut budget, &cx)?;
-                (record.event().clone(), Some(record), "read_verified")
+            Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. } => {
+                return Err(io::Error::other("read-only event inspection was not routed").into());
             }
             Action::Prepare {
                 report,
@@ -1122,123 +1065,6 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     })();
     cx.drain_and_finalize();
     result
-}
-
-fn read_package_event(
-    options: &Options,
-    deployment: &ReferenceDeployment,
-    id: &EventId,
-    cx: &ReplayCx,
-    out: &mut impl Write,
-) -> RunResult<()> {
-    use fss_cli::agent_json::{array, object, string};
-    use fss_reference::ingest::package_event::PackageEventError;
-
-    let record = PackageEvent::open(deployment, id, cx)?;
-    if record.report().encoded().len() > options.limits.maximum_report_bytes {
-        return Err(PackageEventError::Limit.into());
-    }
-    // Project only exact rows assigned by the verified analysis. No adjacent detections,
-    // supplied scores or additional source reads can enter this inventory.
-    let report = record.report();
-    let native = report.retained().record();
-    let track = report
-        .tracks()
-        .iter()
-        .find(|track| track.identity == record.track())
-        .ok_or(PackageEventError::Mismatch)?;
-    let mut observations = Vec::with_capacity(track.observations.len());
-    for observation in &track.observations {
-        cx.checkpoint("package_event:selector_inventory")?;
-        let (row, score_bits, bounds, _) =
-            observation.detection.ok_or(PackageEventError::Mismatch)?;
-        let frame = native
-            .frames
-            .iter()
-            .find(|frame| {
-                frame.segment == observation.segment
-                    && frame.capsule_digest == observation.capsule_digest
-            })
-            .ok_or(PackageEventError::Mismatch)?;
-        let detection = frame
-            .detections
-            .iter()
-            .find(|detection| detection.row == row && detection.class_index == report.class_index())
-            .ok_or(PackageEventError::Mismatch)?;
-        if detection.score_bits != score_bits || detection.bounds != bounds {
-            return Err(PackageEventError::Mismatch.into());
-        }
-        observations.push(object(&[
-            ("sensor_id", string(&frame.sensor_id)),
-            (
-                "capture_ns",
-                array(&[
-                    string(&frame.capture.earliest.0.to_string()),
-                    string(&frame.capture.latest.0.to_string()),
-                ]),
-            ),
-            ("score_f32_bits", score_bits.to_string()),
-            (
-                "selector",
-                object(&[
-                    ("event_id", string(id.as_str())),
-                    (
-                        "capsule_digest",
-                        string(&observation.capsule_digest.to_text()),
-                    ),
-                    ("segment", observation.segment.to_string()),
-                    ("detection_row", row.to_string()),
-                ]),
-            ),
-        ]));
-    }
-    let selectors = object(&[
-        ("site_lineage", string(deployment.site_lineage())),
-        (
-            "current_authority_sequence",
-            string(&deployment.current_anchor().commit_sequence.to_string()),
-        ),
-        (
-            "expected_authority_root",
-            string(&deployment.current_anchor().state_root.to_text()),
-        ),
-        ("event_id", string(id.as_str())),
-        ("expected_event_root", string(&record.root().to_text())),
-        ("report_digest", string(&report.digest().to_text())),
-        ("track", string(&record.track().to_text())),
-        ("package_digest", string(&native.package_digest.to_text())),
-        ("model_digest", string(&native.model_digest.to_text())),
-        ("contract_digest", string(&native.contract_digest.to_text())),
-        ("class_index", report.class_index().to_string()),
-        ("label", string(report.label())),
-        ("source_custody_verified", "true".to_owned()),
-        ("effects_authorized", "false".to_owned()),
-        ("observations", array(&observations)),
-    ]);
-    if selectors.len() > options.limits.maximum_report_bytes {
-        return Err(PackageEventError::Limit.into());
-    }
-    if let Some(path) = &options.event_out {
-        export(
-            path,
-            record.event().to_canonical_json().as_bytes(),
-            &options.root,
-            cx,
-        )?;
-    }
-    if let Some(path) = &options.report_out {
-        export(path, record.report().encoded(), &options.root, cx)?;
-    }
-    writeln!(
-        out,
-        "event_root={}\nauthority_sequence={}\nreport_digest={}\ntrack={}\nretained_supervisor_sources={}",
-        record.root(),
-        record.authority_anchor().commit_sequence,
-        record.report().digest(),
-        record.track(),
-        selectors
-    )?;
-    print_package_event(record.event(), "read_verified", out)
 }
 
 /// `prepare`/`publish` of a package analysis report (see `ingest::package_event`).
@@ -1442,6 +1268,8 @@ mod tests {
             ["--proposal-digest", "bad"],
             ["--max-report-bytes", "0"],
             ["--max-report-bytes", "16777217"],
+            ["--max-read-bytes", "1"],
+            ["--max-read-objects", "1"],
         ] {
             let mut argv = args("prepare");
             argv.extend(extra.into_iter().map(OsString::from));

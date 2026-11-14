@@ -15,6 +15,8 @@ use fss_core::{
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 use fss_reference::deletion::{approval_digest, commit_deletion, plan_deletion};
+use fss_reference::agent_orient::OrientLimits;
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::ingest::package_detect::{
     PackageDetectLimits, PackageDetectReport, PackageDetectRequest, run_package_detection,
 };
@@ -248,6 +250,25 @@ fn cold_read_and_exact_retries_preserve_the_original_revision_and_anchor() -> Te
         &PackageEvent::open(&f.deployment, &f.receipt.event.event_id, &f.cx)?,
         &f,
     );
+    // The same retained analysis and exact package provenance are readable while the writer
+    // remains open. Final metadata and custody validation use this owner's shared allowance.
+    let immutable = ImmutableRetainedSource::open(
+        &f.root,
+        ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: 1024 * 1024 * 1024,
+            max_read_objects: 1_000_000,
+        },
+        &f.cx,
+    )?;
+    assert_record(
+        &PackageEvent::open(&immutable, &f.receipt.event.event_id, &f.cx)?,
+        &f,
+    );
+    immutable.revalidate_snapshot_metadata()?;
+    immutable.revalidate()?;
+    assert_eq!(f.deployment.current_anchor(), &head);
+    drop(immutable);
     // Close all authority owners and recover only the deployment, without a loose report or
     // source file (and without any loaded model instance).
     let Fixture {

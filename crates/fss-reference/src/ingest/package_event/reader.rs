@@ -24,7 +24,7 @@ impl PackageEvent {
     /// This is a read: it never repairs missing evidence, runs the model, republishes an event,
     /// or needs the original source/model/report files. A later decision outside this candidate
     /// policy is refused rather than overwritten or presented as its earlier unresolved state.
-    pub fn open(deployment: &ReferenceDeployment, id: &EventId, cx: &ReplayCx) -> Result<Self> {
+    pub fn open(deployment: &dyn RetainedSource, id: &EventId, cx: &ReplayCx) -> Result<Self> {
         checkpoint(cx, "package_event:read")?;
         let (event, root, anchor) =
             load_authority(deployment, id, cx)?.ok_or(PackageEventError::EventUnavailable)?;
@@ -61,7 +61,7 @@ impl PackageEvent {
     }
 
     fn from_authority(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         event: EventHypothesis,
         root: ContentDigest,
         anchor: LedgerAnchor,
@@ -151,7 +151,7 @@ fn review_basis_error(error: crate::event_review::ReviewError) -> PackageEventEr
 /// Check the current ledger object and every actual event revision. Do not deduplicate, sort or
 /// skip inconsistent revisions: each must be the exact next extension of its predecessor.
 fn load_authority(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     id: &EventId,
     cx: &ReplayCx,
 ) -> Result<Option<(EventHypothesis, ContentDigest, LedgerAnchor)>> {
@@ -233,17 +233,15 @@ fn load_authority(
 }
 
 fn verify_provenance(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     proof: &Provenance,
     cx: &ReplayCx,
 ) -> Result<()> {
     checkpoint(cx, "package_event:read_provenance")?;
-    if deployment
-        .publisher()
-        .root(&proof.slot)
-        .is_none_or(|r| r.root != proof.manifest.root())
-        || read_verified(deployment, proof.manifest.root())? != proof.manifest.canonical_bytes()
-    {
+    deployment
+        .check_publication(&proof.slot, proof.manifest.root(), proof.manifest.children().len())
+        .map_err(RecordedDecodeError::from)?;
+    if read_verified(deployment, proof.manifest.root())? != proof.manifest.canonical_bytes() {
         return Err(PackageEventError::Mismatch);
     }
     for (digest, bytes) in &proof.objects {

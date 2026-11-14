@@ -15,11 +15,14 @@ use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest, RecordedFrame,
 };
 use fss_reference::ingest::tracking::TrackingConfig;
-use fss_reference::ingest::{FileIngestAdapter, FileIngestRequest, RetainedReadLimits};
+use fss_reference::ingest::{
+    FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
+};
 use fss_reference::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -57,11 +60,7 @@ struct Fixture {
     import: String,
     runs: PathBuf,
 }
-fn fixture(label: &str) -> TestResult<Fixture> {
-    let directory = Directory::new(label)?;
-    let root = directory.0.join("deployment");
-    let source = directory.0.join("source.mjpeg");
-    fs::write(&source, [JPEG, JPEG].concat())?;
+fn context(root: &Path) -> TestResult<ReplayCx> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:event-cli-test".into(),
         operation_id: OperationId::parse("operation:event-cli-test")?,
@@ -76,7 +75,14 @@ fn fixture(label: &str) -> TestResult<Fixture> {
         generation: 1,
     })?;
     authority.validate()?;
-    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
+    Ok(ReplayCx::from_context_authority(&authority, root.to_path_buf())?)
+}
+fn fixture(label: &str) -> TestResult<Fixture> {
+    let directory = Directory::new(label)?;
+    let root = directory.0.join("deployment");
+    let source = directory.0.join("source.mjpeg");
+    fs::write(&source, [JPEG, JPEG].concat())?;
+    let cx = context(&root)?;
     let mut deployment = ReferenceDeployment::open(&root, "site:event-cli", &cx)?;
     let imported = FileIngestAdapter::ingest(
         FileIngestRequest::new(
@@ -405,7 +411,22 @@ fn report_command_reproduces_the_library_recipe_and_lists_event_candidates() -> 
     let _serial = serial();
     let f = fixture("report")?;
     let path = f.directory.0.join("cli-analysis.bin");
-    let result = command(&f, "report")
+    let result = report_command(&f, &path).output()?;
+    success(&result);
+    assert_eq!(field(&result, "report_digest")?, f.digest);
+    assert_eq!(fs::read(path)?, f.bytes);
+    assert_eq!(field(&result, "frames")?, "2");
+    assert!(
+        std::str::from_utf8(&result.stdout)?
+            .lines()
+            .any(|s| s == format!("track={}", f.track))
+    );
+    Ok(())
+}
+
+fn report_command(f: &Fixture, path: &Path) -> Command {
+    let mut result = command(f, "report");
+    result
         .args([
             "--import-id",
             &f.import,
@@ -425,16 +446,189 @@ fn report_command_reproduces_the_library_recipe_and_lists_event_candidates() -> 
         .arg("--runs")
         .arg(&f.runs)
         .arg("--report-out")
-        .arg(&path)
+        .arg(path);
+    result
+}
+
+fn deployment_bytes(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = BTreeMap::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else {
+                assert!(kind.is_file(), "fixture contains a non-regular entry");
+                files.insert(
+                    entry.path().strip_prefix(root)?.to_path_buf(),
+                    fs::read(entry.path())?,
+                );
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn published_id(f: &Fixture) -> TestResult<String> {
+    let prepared = command(f, "prepare").output()?;
+    success(&prepared);
+    let published = command(f, "publish")
+        .args(["--proposal-digest", &field(&prepared, "proposal_digest")?])
         .output()?;
-    success(&result);
-    assert_eq!(field(&result, "report_digest")?, f.digest);
-    assert_eq!(fs::read(path)?, f.bytes);
-    assert_eq!(field(&result, "frames")?, "2");
-    assert!(
-        std::str::from_utf8(&result.stdout)?
-            .lines()
-            .any(|s| s == format!("track={}", f.track))
+    success(&published);
+    field(&published, "event_id")
+}
+
+#[test]
+fn native_read_and_report_coexist_with_a_live_writer_and_preserve_all_bytes() -> TestResult {
+    let _serial = serial();
+    let f = fixture("immutable-live-writer")?;
+    let id = published_id(&f)?;
+    fs::remove_file(&f.report)?;
+    let cx = context(&f.root)?;
+    let writer = ReferenceDeployment::open(&f.root, "site:event-cli", &cx)?;
+    let before = deployment_bytes(&f.root)?;
+    let event_path = f.directory.0.join("immutable-event.json");
+    let read_report = f.directory.0.join("immutable-read.bin");
+    let read = command(&f, "read")
+        .args(["--event-id", &id])
+        .arg("--event-out")
+        .arg(&event_path)
+        .arg("--report-out")
+        .arg(&read_report)
+        .output()?;
+    success(&read);
+    assert_eq!(field(&read, "operation")?, "read_verified");
+    assert_eq!(fs::read(&read_report)?, f.bytes);
+    assert_eq!(
+        EventHypothesis::from_json(&fs::read_to_string(&event_path)?)?.event_id.as_str(),
+        id
     );
+    let existing = fs::read(&event_path)?;
+    let refused = command(&f, "read")
+        .args(["--event-id", &id])
+        .arg("--event-out")
+        .arg(&event_path)
+        .output()?;
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(refused.stdout.is_empty());
+    assert_eq!(fs::read(&event_path)?, existing);
+    let analysis_path = f.directory.0.join("immutable-analysis.bin");
+    let analysis = report_command(&f, &analysis_path).output()?;
+    success(&analysis);
+    assert_eq!(fs::read(analysis_path)?, f.bytes);
+    assert_eq!(deployment_bytes(&f.root)?, before);
+    drop(writer);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn immutable_reads_refuse_incomplete_journals_without_repair_or_exports() -> TestResult {
+    let _serial = serial();
+    let f = fixture("immutable-journal-tail")?;
+    let id = published_id(&f)?;
+    for relative in [
+        fss_reference::reference_deployment::RELATIVE_PATH_LEDGER,
+        fss_reference::reference_deployment::RELATIVE_PATH_EFFECTS,
+    ] {
+        let journal = f.root.join(relative);
+        let original = fs::read(&journal)?;
+        let mut incomplete = original.clone();
+        incomplete.push(0xff);
+        fs::write(&journal, &incomplete)?;
+        let before = deployment_bytes(&f.root)?;
+        let event_path = f.directory.0.join("refused-event.json");
+        let read_report = f.directory.0.join("refused-read.bin");
+        let read = command(&f, "read")
+            .args(["--event-id", &id])
+            .arg("--event-out")
+        .arg(&event_path)
+            .arg("--report-out")
+        .arg(&read_report)
+            .output()?;
+        assert_eq!(read.status.code(), Some(1));
+        assert!(read.stdout.is_empty());
+        assert!(!event_path.exists() && !read_report.exists());
+        let analysis_path = f.directory.0.join("refused-analysis.bin");
+        let report = report_command(&f, &analysis_path).output()?;
+        assert_eq!(report.status.code(), Some(1));
+        assert!(report.stdout.is_empty());
+        assert!(!analysis_path.exists());
+        assert_eq!(deployment_bytes(&f.root)?, before);
+        fs::write(journal, original)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn aggregate_read_allowances_withhold_outputs_and_exports() -> TestResult {
+    let _serial = serial();
+    let f = fixture("immutable-read-budget")?;
+    let id = published_id(&f)?;
+    let before = deployment_bytes(&f.root)?;
+    for key in ["--max-read-bytes", "--max-read-objects"] {
+        let event_path = f.directory.0.join("budget-event.json");
+        let read = command(&f, "read")
+            .args(["--event-id", &id, key, "1"])
+            .arg("--event-out")
+        .arg(&event_path)
+            .output()?;
+        assert_eq!(read.status.code(), Some(1));
+        assert!(read.stdout.is_empty());
+        assert!(!event_path.exists());
+        let analysis_path = f.directory.0.join("budget-report.bin");
+        let report = report_command(&f, &analysis_path).args([key, "1"]).output()?;
+        assert_eq!(report.status.code(), Some(1));
+        assert!(report.stdout.is_empty());
+        assert!(!analysis_path.exists());
+    }
+    assert_eq!(deployment_bytes(&f.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn corrupt_source_custody_is_refused_without_repair() -> TestResult {
+    let _serial = serial();
+    let f = fixture("immutable-corrupt-source")?;
+    let id = published_id(&f)?;
+    let cx = context(&f.root)?;
+    let writer = ReferenceDeployment::open(&f.root, "site:event-cli", &cx)?;
+    let imported = RetainedFileImport::open(
+        &writer,
+        ContentDigest::parse(&f.import)?,
+        RetainedReadLimits::default(),
+        &cx,
+    )?;
+    let source = *imported.manifest().ordered_chunks.first().ok_or("missing source chunk")?;
+    let path = writer.publisher().spool().object_path(source);
+    drop(writer);
+    cx.drain_and_finalize();
+    let mut damaged = fs::read(&path)?;
+    *damaged.last_mut().ok_or("empty source object")? ^= 1;
+    fs::write(path, damaged)?;
+    let before = deployment_bytes(&f.root)?;
+    let event_path = f.directory.0.join("corrupt-event.json");
+    fs::write(&event_path, b"operator-owned")?;
+    let read_report = f.directory.0.join("corrupt-read.bin");
+    let read = command(&f, "read")
+        .args(["--event-id", &id])
+        .arg("--event-out")
+        .arg(&event_path)
+        .arg("--report-out")
+        .arg(&read_report)
+        .output()?;
+    assert_eq!(read.status.code(), Some(1));
+    assert!(read.stdout.is_empty());
+    assert_eq!(fs::read(&event_path)?, b"operator-owned");
+    assert!(!read_report.exists());
+    let report_path = f.directory.0.join("corrupt-report.bin");
+    let report = report_command(&f, &report_path).output()?;
+    assert_eq!(report.status.code(), Some(1));
+    assert!(report.stdout.is_empty());
+    assert!(!report_path.exists());
+    assert_eq!(deployment_bytes(&f.root)?, before);
     Ok(())
 }

@@ -20,6 +20,8 @@ use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationError, SlotName};
 
 use super::analysis::{AnalysisBudget, AnalysisError, AnalysisLimits, AnalysisReport};
+use super::FileIngestError;
+use crate::retained_source::RetainedSource;
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
@@ -63,6 +65,8 @@ pub enum RecordedEventError {
     Publication(LocalPublicationError),
     /// Retained custody could not be read or verified.
     Spool(SpoolError),
+    /// Immutable retained metadata, source custody, or shared read allowance was refused.
+    Source(Box<FileIngestError>),
 }
 impl fmt::Display for RecordedEventError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -78,9 +82,11 @@ impl fmt::Display for RecordedEventError {
             Self::Cancelled => "recorded event owner cancelled",
             Self::Analysis(_) => "recorded event source analysis refused",
             Self::Contract(_) | Self::Event(_) => "recorded event contract refused",
-            Self::Reference(_) | Self::Object(_) | Self::Publication(_) | Self::Spool(_) => {
-                "recorded event storage refused"
-            }
+            Self::Reference(_)
+            | Self::Object(_)
+            | Self::Publication(_)
+            | Self::Spool(_)
+            | Self::Source(_) => "recorded event storage refused",
         })
     }
 }
@@ -94,6 +100,7 @@ impl Error for RecordedEventError {
             Self::Object(e) => Some(e),
             Self::Publication(e) => Some(e),
             Self::Spool(e) => Some(e),
+            Self::Source(e) => Some(e),
             _ => None,
         }
     }
@@ -114,6 +121,11 @@ conversion!(ReferenceError, Reference);
 conversion!(ObjectError, Object);
 conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
+impl From<FileIngestError> for RecordedEventError {
+    fn from(error: FileIngestError) -> Self {
+        Self::Source(Box::new(error))
+    }
+}
 type Result<T> = std::result::Result<T, RecordedEventError>;
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
@@ -142,8 +154,8 @@ fn bounded_limits(limits: &AnalysisLimits) -> AnalysisLimits {
     limits.maximum_frames = limits.maximum_frames.min(MAX_RECORDED_EVENT_FRAMES);
     limits
 }
-fn read_verified(deployment: &ReferenceDeployment, digest: ContentDigest) -> Result<Vec<u8>> {
-    let bytes = deployment.publisher().spool().read(digest)?;
+fn read_verified(deployment: &dyn RetainedSource, digest: ContentDigest) -> Result<Vec<u8>> {
+    let bytes = deployment.read_object(digest)?;
     if ContentDigest::sha256(&bytes) != digest {
         return Err(RecordedEventError::Mismatch);
     }
@@ -164,7 +176,7 @@ fn insert(objects: &mut BTreeMap<ContentDigest, Vec<u8>>, bytes: Vec<u8>) -> Con
 }
 
 fn provenance(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     report: &AnalysisReport,
     track: ContentDigest,
     cx: &ReplayCx,
@@ -283,7 +295,7 @@ fn event_manifest(event: &EventHypothesis) -> Result<ObjectManifest> {
 // Read the current event through its authoritative object revision, never an unanchored file.
 // Historical revisions are checked with the event owner's full chain verifier.
 fn load_event(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     id: &EventId,
     cx: &ReplayCx,
 ) -> Result<Option<(EventHypothesis, ContentDigest, LedgerAnchor)>> {
@@ -355,7 +367,7 @@ impl RecordedEvent {
     /// Original input/model/report export files are unnecessary. A superseding owner decision
     /// outside this narrow unresolved-candidate policy is refused, never silently downgraded.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         id: &EventId,
         limits: &AnalysisLimits,
         budget: &mut AnalysisBudget,
@@ -399,15 +411,10 @@ impl RecordedEvent {
         let mut rebuilt = provenance(deployment, &report, track, cx)?;
         rebuilt.event.revision = event.revision;
         rebuilt.event.supersedes = event.supersedes;
-        if rebuilt.event != event
-            || rebuilt.manifest.canonical_bytes() != root_bytes
-            || deployment
-                .publisher()
-                .root(&rebuilt.slot)
-                .is_none_or(|r| r.root != proof.root())
-        {
+        if rebuilt.event != event || rebuilt.manifest.canonical_bytes() != root_bytes {
             return Err(RecordedEventError::Mismatch);
         }
+        deployment.check_publication(&rebuilt.slot, proof.root(), proof.children().len())?;
         for (digest, bytes) in &rebuilt.objects {
             checkpoint(cx, "recorded_event:verify")?;
             if read_verified(deployment, *digest)? != *bytes {

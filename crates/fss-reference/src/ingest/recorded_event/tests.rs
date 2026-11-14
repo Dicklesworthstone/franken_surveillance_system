@@ -10,6 +10,9 @@ use crate::ingest::recorded_decode::{
 use crate::ingest::tracking::TrackingConfig;
 use crate::ingest::{FileIngestAdapter, FileIngestRequest, RetainedReadLimits};
 use crate::{ExecBudget, ScalarExecCx};
+use crate::agent_orient::OrientLimits;
+use crate::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
+use std::sync::atomic::{AtomicBool, Ordering};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, SensorId, StreamId, TimestampNs};
 use std::fs;
@@ -520,5 +523,98 @@ fn event_provenance_retains_full_report_and_actual_model_receipts() -> TestResul
             .iter()
             .all(|e| e.relation == EvidenceEdgeRelation::DerivedFrom)
     );
+    Ok(())
+}
+
+fn immutable_limits() -> ImmutableRetainedReadLimits {
+    ImmutableRetainedReadLimits {
+        snapshot: OrientLimits::default(),
+        max_read_bytes: 1024 * 1024 * 1024,
+        max_read_objects: 1_000_000,
+    }
+}
+
+#[test]
+fn immutable_event_reconstruction_shares_its_final_read_allowance() -> TestResult {
+    let mut f = fixture("immutable-budget")?;
+    let proposal = prepare(&f, false)?;
+    let published = publish(&mut f, &proposal)?;
+    let root = f.directory.0.join("deployment");
+    // Keep the publisher open: immutable inspection must not acquire its exclusive lock.
+    let source = ImmutableRetainedSource::open(&root, immutable_limits(), &f.cx)?;
+    let recovered = RecordedEvent::open(
+        &source,
+        &published.event().event_id,
+        &AnalysisLimits::default(),
+        &mut budget(),
+        &f.cx,
+    )?;
+    assert_eq!(recovered.event(), published.event());
+    assert_eq!(recovered.report().encoded(), f.report.encoded());
+    assert_eq!(recovered.authority_anchor(), published.authority_anchor());
+    let before_final = source.usage();
+    source.revalidate_snapshot_metadata()?;
+    source.revalidate()?;
+    assert!(source.usage().read_objects > before_final.read_objects);
+
+    // The exact allowance sufficient for reconstruction cannot be refreshed for the final
+    // authority/custody check. A caller must withhold the otherwise valid result.
+    let limited = ImmutableRetainedSource::open(
+        &root,
+        ImmutableRetainedReadLimits {
+            max_read_objects: usize::try_from(before_final.read_objects)?,
+            ..immutable_limits()
+        },
+        &f.cx,
+    )?;
+    RecordedEvent::open(
+        &limited,
+        &published.event().event_id,
+        &AnalysisLimits::default(),
+        &mut budget(),
+        &f.cx,
+    )?;
+    assert!(limited.revalidate_snapshot_metadata().is_err());
+    assert!(limited.revalidate().is_err());
+    Ok(())
+}
+
+#[test]
+fn immutable_event_final_check_refuses_late_cancellation_and_changed_payload() -> TestResult {
+    let mut f = fixture("immutable-final")?;
+    let proposal = prepare(&f, false)?;
+    let published = publish(&mut f, &proposal)?;
+    let root = f.directory.0.join("deployment");
+    let cancelled = AtomicBool::new(false);
+    let probe = || cancelled.load(Ordering::SeqCst);
+    let source = ImmutableRetainedSource::open_cancellable(
+        &root, immutable_limits(), &f.cx, &probe,
+    )?;
+    RecordedEvent::open(
+        &source,
+        &published.event().event_id,
+        &AnalysisLimits::default(),
+        &mut budget(),
+        &f.cx,
+    )?;
+    cancelled.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        source.revalidate(),
+        Err(FileIngestError::CancellationRequested { .. })
+    ));
+
+    let source = ImmutableRetainedSource::open(&root, immutable_limits(), &f.cx)?;
+    RecordedEvent::open(
+        &source,
+        &published.event().event_id,
+        &AnalysisLimits::default(),
+        &mut budget(),
+        &f.cx,
+    )?;
+    let path = f.deployment.publisher().spool().object_path(f.report.digest());
+    let mut damaged = fs::read(&path)?;
+    *damaged.last_mut().ok_or("empty retained analysis")? ^= 1;
+    fs::write(path, damaged)?;
+    assert!(source.revalidate().is_err());
     Ok(())
 }
