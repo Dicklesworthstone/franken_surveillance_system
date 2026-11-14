@@ -45,6 +45,7 @@ use crate::recording_query_cmd::utc_set::{
 };
 use crate::recording_query_cmd::{RecordingQueryArgs, execute_recording_query};
 use crate::report_catalog_query_cmd::{ReportCatalogQueryArgs, execute_report_catalog_query};
+use crate::sources_query_cmd::{SourcesQueryArgs, execute_sources_query};
 use crate::session_cmd::{SessionCommand, execute_session, parse_handoff, parse_session_args};
 use crate::site_cmd::{SiteCommand, execute_site, parse_site_args};
 use crate::status_cmd::{StatusArgs, execute_status, parse_status_args};
@@ -95,6 +96,8 @@ pub enum FssCommand {
     TracksQuery(TracksQueryArgs),
     /// Bounded retained detector, zone and model-run discovery without source-media reads.
     ReportCatalogQuery(ReportCatalogQueryArgs),
+    /// Bounded retained sensor/stream metadata and historical diagnostics, without media reads.
+    SourcesQuery(SourcesQueryArgs),
     /// Session-owned H0/H1 event hydration with durable charges and replay-protected cursors.
     EventHydrationQuery(EventHydrationQueryArgs),
     /// Read-only AOP-005 exact native AVC/HEVC recording catalog metadata.
@@ -149,6 +152,7 @@ impl FssCommand {
             | Self::QsrQuery(_)
             | Self::TracksQuery(_)
             | Self::ReportCatalogQuery(_)
+            | Self::SourcesQuery(_)
             | Self::EventHydrationQuery(_)
             | Self::RecordingQuery(_)
             | Self::RecordingReplayQuery(_)
@@ -524,6 +528,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::QsrQuery(ref args) => execute_qsr_query(args),
         FssCommand::TracksQuery(ref args) => execute_tracks_query(args),
         FssCommand::ReportCatalogQuery(ref args) => execute_report_catalog_query(args),
+        FssCommand::SourcesQuery(ref args) => execute_sources_query(args),
         FssCommand::EventHydrationQuery(ref args) => execute_event_hydration_query(args),
         FssCommand::RecordingQuery(ref args) => execute_recording_query(args),
         FssCommand::RecordingReplayQuery(ref args) => execute_recording_replay_query(args),

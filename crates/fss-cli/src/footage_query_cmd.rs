@@ -175,6 +175,10 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             crate::report_catalog_query_cmd::parse_report_catalog_query_args(tokens)
                 .map(FssCommand::ReportCatalogQuery)
         }
+        Some((_, target, _)) if target == "sources" => {
+            crate::sources_query_cmd::parse_sources_query_args(tokens)
+                .map(FssCommand::SourcesQuery)
+        }
         Some((_, target, _)) if target == "evidence-hydration" => {
             crate::event_hydration_query_cmd::parse_event_hydration_query_args(tokens)
                 .map(FssCommand::EventHydrationQuery)

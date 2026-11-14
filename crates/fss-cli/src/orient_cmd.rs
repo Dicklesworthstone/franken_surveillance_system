@@ -942,6 +942,33 @@ pub(crate) fn build_report_catalog_response(
     )
 }
 
+/// Retained source discovery discloses metadata under AgentQuery authority alone.
+pub(crate) fn build_sources_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+        || parts.capability != fss_core::RuntimeGrant::AgentQuery.as_str()
+    {
+        return Err(RenderError("invalid sources query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only inventory of retained source metadata and historical continuity".to_owned();
+    projection.visible_domains.extend([
+        "retained-sensor-and-stream-capsule-metadata".to_owned(),
+        "historical-source-continuity-and-health-metadata".to_owned(),
+        "source-import-and-deletion-inventory".to_owned(),
+    ]);
+    build_response_for_basis_and_privacy(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+    )
+}
+
 /// Explicit privacy projection for native archive metadata, scoped to AOP-005 only.
 pub(crate) fn build_recording_response(
     parts: ResponseParts,

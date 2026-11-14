@@ -27,6 +27,8 @@ mod qsr;
 mod recordings;
 #[path = "fss_mcp/report_catalog.rs"]
 mod report_catalog;
+#[path = "fss_mcp/sources.rs"]
+mod sources;
 #[path = "fss_mcp/server.rs"]
 mod server;
 #[path = "fss_mcp/tracks.rs"]

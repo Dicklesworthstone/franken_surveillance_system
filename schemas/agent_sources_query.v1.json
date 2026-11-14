@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_sources_query.v1.json",
+  "title": "Retained source inventory selector for AOP-005",
+  "description": "Closed metadata-only discovery of retained sensor/stream capsule inventory and historical source continuity. The launcher fixes deployment and principal. The immutable reader verifies the complete bounded capsule inventory and current deletion/import restrictions before filtering and pagination, then revalidates under the same read allowance. Existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts preserve protected deployment context, including retained historical health. Historical metadata does not establish present liveness or health, physical coverage, absence, origin authentication or source-byte availability. Representative H0 capsule-metadata handles grant no ReadMedia authority. No original-media read, model execution, recovery, publication or effect is inferred. The complete protected page fits 256 KiB or refuses. Native admission remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target"
+  ],
+  "properties": {
+    "target": {
+      "const": "sources"
+    },
+    "max_entries": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32,
+      "default": 16,
+      "description": "Complete stream inventory rows per page, ordered by sensor then stream identity."
+    },
+    "anchor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Optional exact current deployment authority/effect-history precondition. Historical source metadata never selects historical authority."
+    },
+    "continuation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Exact native continuation from the preceding page, bound to principal, filters, page size, complete verified inventory, all limits and current authority/effect prefix. No offset, discovery bypass or silent rebase."
+    },
+    "max_query_read_bytes": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 9,
+      "default": "268435456",
+      "description": "Shared metadata payload-byte ceiling, 1..268435456, covering current history, retained capsule metadata and final rereads. Original source media is not read; failed reads invalidate the remaining balance."
+    },
+    "max_query_read_objects": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 5,
+      "default": "65536",
+      "description": "Shared metadata payload-read-attempt ceiling, 1..65536, including final revalidation. Not an archive filesystem syscall quota."
+    },
+    "max_query_results": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 4,
+      "default": "1024",
+      "description": "Complete retained stream-inventory ceiling, 1..1024, applied before sensor/stream filtering and pagination. Filtering never bypasses verification or truncates an over-budget inventory. Native traversal separately bounds ledger objects and capsule metadata."
+    },
+    "sensor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Exact retained sensor identity. Omission selects all sensors. Selection follows complete inventory verification."
+    },
+    "stream": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Exact retained stream identity. Sensor and stream filters are conjunctive. Selection follows complete inventory verification."
+    }
+  }
+}

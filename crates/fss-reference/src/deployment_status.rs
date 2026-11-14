@@ -613,6 +613,27 @@ fn witnessed_capsules(
     witnessed
 }
 
+/// Reuse the status owner's exact inventory semantics under another crate-owned read session.
+/// The caller validates its own bounds and owns cumulative I/O admission and final revalidation.
+/// No status writer detection, handoff read, mutable open or independent allowance is created.
+pub(crate) fn inventory_from_snapshot(
+    batches: &[EvidenceDeltaBatch],
+    limits: &StatusLimits,
+    snapshot: &DeploymentSnapshot,
+    read: &mut dyn FnMut(ContentDigest, usize) -> Result<Vec<u8>, StatusError>,
+    checkpoint: &mut dyn FnMut() -> Result<(), StatusError>,
+) -> Result<SourceInventory, StatusError> {
+    let witnessed = witnessed_capsules(snapshot);
+    inventory_witnessed(
+        batches,
+        limits,
+        &witnessed,
+        &mut |digest| snapshot.deletions.object(digest).is_some(),
+        read,
+        checkpoint,
+    )
+}
+
 fn validate_limits(limits: &StatusLimits) -> Result<(), StatusError> {
     if limits.max_objects == 0
         || limits.max_objects > 65_536

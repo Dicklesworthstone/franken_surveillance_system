@@ -232,6 +232,12 @@ per-sample tentative/confirmed state and explicit continuity resets. It verifies
 retained source custody under a separate source-read grant and supports exact
 pagination while a deployment writer remains active. See
 [retained detector track queries](docs/AGENT_TRACKS_QUERY.md).
+`fss query --target sources` inventories retained sensors and streams, historical
+continuity, capsule gaps and import/deletion boundaries through the same bounded
+CLI/MCP query surface. It preserves historical health and protected deployment
+context while keeping current health, physical coverage and media availability
+unknown. See [source inventory](docs/AGENT_SOURCES_QUERY.md).
+
 `fss query --target reports` discovers the exact detector and zone-report handles
 needed by tracks and QSR, with bounded filters and pagination over verified
 retained metadata. It reads no original media and grants no source-verification

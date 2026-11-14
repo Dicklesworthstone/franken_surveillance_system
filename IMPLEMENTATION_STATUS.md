@@ -4,6 +4,39 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Canonical source and stream inventory — 2026-11-14
+
+`fss query --target sources` and the existing MCP `query` tool now expose
+retained sensor/stream capsule inventory through one native AOP-005 owner.
+Exact optional sensor and stream filters return bounded canonical pages with
+capsule/gap/declared-byte counts, all clock bases, declared capture hulls, and
+the same historical continuity classification used by operational status.
+Whole-deployment deleted/incomplete-import accounting and protected historical
+health, uncertainty and obligations remain unfiltered. Representative proof
+handles name the actual native capsule family and allow H0 metadata only.
+[Source query documentation](docs/AGENT_SOURCES_QUERY.md) describes the request
+and its limits.
+
+The complete bounded inventory is verified before filtering or paging. Native
+continuations bind the full index, protected diagnostic boundaries, current
+authority/effect prefix, principal, filters, page size and every limit. One
+nonrenewing metadata allowance covers opening history, capsule reads, complete
+protected-metadata rereads and final custody/authority checks. No source media,
+publisher lock, recovery or deployment writes are used. Current health, physical
+coverage and source-payload availability remain explicitly unknown; empty or
+gap-free history cannot establish absence.
+
+Twelve native contracts and three real-process CLI/MCP contracts were added for
+status parity, exact filters and continuation, deleted/incomplete custody,
+complete-index bounds, absent media, corrupt excluded metadata, changed protected
+diagnostics, final authority changes, and aggregate final-read accounting. Closed
+MCP selector and schema-parity unit tests were also added. Source review and
+JavaScript checks of embedded-schema parity and all eight domain registrations
+completed; Rust execution for this head is pending in the pinned supplementary
+workflow while the local execution environment is unavailable. Pre-existing
+registry/policy qualification debt is not claimed resolved, and release
+qualification remains repository-owned.
+
 ## Native event inspection uses immutable custody — 2026-11-14
 
 Native recorded-luma and detector-package `fss-event read` and both `report`

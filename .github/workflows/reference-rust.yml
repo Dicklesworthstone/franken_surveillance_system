@@ -43,6 +43,13 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test package_event_reader_contract || event_read_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test recorded_event_cli_contract || event_read_exit=1
           exit "$event_read_exit"
+      - name: Verify canonical retained source inventory and transport parity
+        if: success() || failure()
+        run: |
+          sources_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test agent_sources_contract || sources_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp --test sources_query_cli_contract || sources_exit=1
+          exit "$sources_exit"
       - name: Verify immutable event explanations and source-loss counterfactuals
         if: success() || failure()
         run: |

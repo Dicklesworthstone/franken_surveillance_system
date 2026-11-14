@@ -40,6 +40,7 @@ pub mod agent_recording_context;
 pub mod agent_recordings;
 /// Bounded metadata discovery of retained detector and screened-zone report handles.
 pub mod agent_report_catalog;
+pub mod agent_sources;
 pub mod agent_session;
 /// Source-verified observations from an exact retained detector report and tracking recipe.
 pub mod agent_tracks;
