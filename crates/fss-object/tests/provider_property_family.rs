@@ -9,7 +9,7 @@
 
 use fss_core::{CanonicalDecode, CanonicalEncode, CanonicalEncoder};
 use fss_core::{ContentDigest, TimestampNs};
-use fss_object::InMemoryObjectStore;
+use fss_object::{InMemoryObjectStore, ObjectManifest};
 use fss_object::provider::memory::InMemoryObjectStoreProvider;
 use fss_object::provider::{ObjectStoreProvider, PublicationState};
 
@@ -47,6 +47,16 @@ fn climb_to(
         }
     }
     Ok(())
+}
+
+fn durable_manifest(
+    p: &mut InMemoryObjectStoreProvider,
+    children: &[ContentDigest],
+) -> Result<ContentDigest, Box<dyn std::error::Error>> {
+    let manifest = ObjectManifest::new("provider-property", children.iter().copied(), None)?;
+    let root = p.stage(&manifest.try_canonical_bytes()?)?;
+    climb_to(p, root, PublicationState::Durable)?;
+    Ok(root)
 }
 
 /// R2 + skip/backward refusals: the ladder is monotone; every illegal move
@@ -102,7 +112,7 @@ fn p2_root_activates_only_over_durable_children() -> Result<(), Box<dyn std::err
     let mut p = provider();
     let a = p.stage(b"child-a")?;
     let b = p.stage(b"child-b")?;
-    let root = ContentDigest::sha256(b"manifest-root");
+    let root = durable_manifest(&mut p, &[a, b])?;
     // Both children staged: refused, naming a child.
     let err = p.activate_root(root, &[a, b]).err();
     assert!(matches!(
@@ -121,7 +131,8 @@ fn p2_root_activates_only_over_durable_children() -> Result<(), Box<dyn std::err
     // Replicated children are equally admissible (rank >= Durable).
     let c = p.stage(b"child-c")?;
     climb_to(&mut p, c, PublicationState::Replicated)?;
-    p.activate_root(ContentDigest::sha256(b"root-2"), &[c])?;
+    let second = durable_manifest(&mut p, &[c])?;
+    p.activate_root(second, &[c])?;
     cases += 1;
     emit("root-last-activation", cases);
     Ok(())
@@ -135,7 +146,7 @@ fn p3_retirement_is_closed_under_active_roots() -> Result<(), Box<dyn std::error
     let mut cases = 0u64;
     let mut p = provider();
     let child = p.stage(b"pinned-child")?;
-    let root = ContentDigest::sha256(b"pinning-root");
+    let root = durable_manifest(&mut p, &[child])?;
     climb_to(&mut p, child, PublicationState::Durable)?;
     p.activate_root(root, &[child])?;
     // Pinned: refuse even WITH authority. The authority record itself is a

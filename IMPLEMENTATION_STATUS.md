@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Canonical provider roots and transitive custody — 2026-11-14
+
+The FSS-061 in-memory object-store provider now activates only retained, durable
+canonical `ObjectManifest` bytes whose exact unique children match the caller's
+request. Activation rechecks every object in the declared, registered manifest
+closure before publishing a binding. Arbitrary root aliases, substituted child
+sets, missing metadata and corrupt or non-durable custody fail without publication.
+
+Active roots protect their own payloads and all registered descendants from
+retirement. Immutable manifest bindings survive deactivation, so turning off an
+intermediate root cannot release evidence still needed by an active ancestor.
+Never-activated manifest-shaped bytes remain opaque, preserving the underlying
+custody owner's explicit-registration semantics. Graph walks are iterative and
+deduplicate shared identities within the configured object/manifest bounds.
+Successful manifest retirement releases its graph metadata after recording the
+terminal state and custody tombstone; deactivation alone preserves live edges.
+
+Retirement now checks provider membership and a separately retained, verified
+deletion witness before changing custody. A refused deletion cannot make staged
+bytes readable or delete an object unknown to the provider. Retrievability also
+requires the provider's own visible-state admission, even when the supplied
+custody store already contains verified bytes.
+
+The existing provider/property and conformance suites now use real canonical
+manifest objects, and 14 new regressions cover exact bindings, nested pins,
+late registration, cold custody input, corruption and refusal atomicity. The
+change received independent source review. Native test and formatting execution
+are not claimed: the local execution environment became unavailable. The
+repository-owned `scripts/check_provider_custody.sh` selects these contracts early
+in the existing supplementary pinned-nightly workflow. This remains a reference
+provider change, not production storage, replication or release qualification.
+
 ## Full localization inspection coexists with active ingest — 2026-11-14
 
 `fss-file read-localization` now routes directly to immutable retained custody

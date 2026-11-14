@@ -14,9 +14,14 @@
 //! it may claim conformance. This is the differential anchor the transfer
 //! lane compares against.
 
-use fss_core::{ContentDigest, TimestampNs};
+use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, TimestampNs};
 
+use crate::ObjectManifest;
 use crate::provider::{ObjectStoreProvider, PublicationState};
+
+/// Versioned identity of the canonical-manifest custody oracle.
+/// Earlier opaque-root scenario digests are not evidence for this contract.
+pub const ORACLE_SCENARIO_DOMAIN: &str = "fss.object_provider_oracle.v2";
 
 /// One oracle check result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,8 +37,8 @@ pub struct OracleCheck {
 pub struct OracleReport {
     /// Ordered check results.
     pub checks: Vec<OracleCheck>,
-    /// Digest over every observable the oracle measured (final lattice
-    /// positions of every object, in canonical order).
+    /// Versioned digest over all check verdicts and final lattice positions,
+    /// with object identities in canonical order.
     pub scenario_digest: ContentDigest,
     /// True iff every check passed.
     pub all_passed: bool,
@@ -56,7 +61,17 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     let a = ContentDigest::sha256(b"oracle-object-a");
     let b = ContentDigest::sha256(b"oracle-object-b");
     let authority = ContentDigest::sha256(b"oracle-deletion-authority");
-    let root = ContentDigest::sha256(b"oracle-manifest-root");
+    let manifest = match ObjectManifest::new("provider-oracle", [a, b], None) {
+        Ok(manifest) => manifest,
+        Err(_) => {
+            return OracleReport {
+                checks: vec![OracleCheck { name: "manifest-construction", passed: false }],
+                scenario_digest: ContentDigest::sha256(b"oracle-manifest-failed.v2"),
+                all_passed: false,
+            };
+        }
+    };
+    let root = manifest.root();
     let now = TimestampNs(1);
 
     // R2 monotone admission: both children climb to Durable; skipping is
@@ -64,10 +79,15 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     let da = provider.stage(b"oracle-object-a").ok();
     let db = provider.stage(b"oracle-object-b").ok();
     let authority_id = provider.stage(b"oracle-deletion-authority").ok();
-    check(&mut checks, "stage-admits", da.is_some() && db.is_some());
+    let root_id = provider.stage(&manifest.canonical_bytes()).ok();
+    check(
+        &mut checks,
+        "stage-admits",
+        da == Some(a) && db == Some(b) && authority_id == Some(authority) && root_id == Some(root),
+    );
     let skip = da.and_then(|d| provider.advance(d, PublicationState::Protected).err());
     check(&mut checks, "ladder-skip-refused", skip.is_some());
-    for id in [da, db, authority_id].into_iter().flatten() {
+    for id in [da, db, authority_id, root_id].into_iter().flatten() {
         let mut current = provider.state(id).ok();
         for next in [PublicationState::Visible, PublicationState::Durable] {
             if current == Some(next) {
@@ -83,7 +103,9 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     }
 
     // R1 root-last: activation over durable children succeeds.
-    let (Some(da), Some(db), Some(_authority_id)) = (da, db, authority_id) else {
+    let (Some(da), Some(db), Some(_authority_id), Some(_root_id)) =
+        (da, db, authority_id, root_id)
+    else {
         return OracleReport {
             checks,
             scenario_digest: ContentDigest::sha256(b"oracle-stage-failed"),
@@ -91,8 +113,35 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
         };
     };
     let children = [da, db];
+    check(
+        &mut checks,
+        "unretained-root-refused",
+        provider
+            .activate_root(ContentDigest::sha256(b"oracle-unretained-root"), &children)
+            .is_err(),
+    );
+    check(
+        &mut checks,
+        "root-manifest-children-bound",
+        provider.activate_root(root, &[da]).is_err(),
+    );
     let activated = provider.activate_root(root, &children).is_ok();
     check(&mut checks, "root-activates-over-durable", activated);
+    check(
+        &mut checks,
+        "root-exact-retry",
+        provider.activate_root(root, &[db, da]).is_ok(),
+    );
+    check(
+        &mut checks,
+        "root-rebind-refused",
+        provider.activate_root(root, &[db]).is_err(),
+    );
+    check(
+        &mut checks,
+        "active-root-retirement-refused",
+        provider.retire(root, authority).is_err(),
+    );
 
     // R3 pinning: retirement of a pinned child is refused even with
     // authority; deactivation unpins; retirement then succeeds and is
@@ -108,6 +157,12 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
         &mut checks,
         "retire-after-deactivate",
         unpinned && retired && terminal == Some(PublicationState::Retired) && probe.is_some(),
+    );
+
+    check(
+        &mut checks,
+        "invalidated-root-reactivation-refused",
+        provider.activate_root(root, &children).is_err(),
     );
 
     // Witnessed retrievability on a live object: the probe re-hashes and
@@ -128,18 +183,25 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     check(&mut checks, "unknown-is-typed", unknown_state.is_some());
 
     // ---- observables + digest ----------------------------------------
-    for id in [a, b, authority, ghost] {
+    for id in [a, b, authority, root, ghost] {
         if let Ok(state) = provider.state(id) {
             observables.push((id, state));
         }
     }
-    observables.sort_by_key(|(id, _)| id.bytes().to_vec());
-    let mut material = Vec::new();
-    for (id, state) in &observables {
-        material.extend_from_slice(&id.bytes());
-        material.push(state.rank());
+    observables.sort_by_key(|(id, _)| *id);
+    let mut material = CanonicalEncoder::new();
+    material.text(ORACLE_SCENARIO_DOMAIN);
+    material.u64(checks.len() as u64);
+    for verdict in &checks {
+        material.text(verdict.name);
+        material.bool(verdict.passed);
     }
-    let scenario_digest = ContentDigest::sha256(&material);
+    material.u64(observables.len() as u64);
+    for (id, state) in &observables {
+        material.digest(*id);
+        state.encode_canonical(&mut material);
+    }
+    let scenario_digest = ContentDigest::sha256(&material.finish());
     let all_passed = checks.iter().all(|c| c.passed);
     OracleReport {
         checks,

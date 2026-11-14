@@ -10,6 +10,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'scripts/check_recording_lifecycle.sh'
+      - 'scripts/check_provider_custody.sh'
       - '.github/workflows/reference-rust.yml'
   workflow_dispatch:
 
@@ -35,6 +36,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify canonical provider roots and transitive custody
+        if: success() || failure()
+        run: bash scripts/check_provider_custody.sh
       - name: Verify digest registry declarations remain distinct from Markdown structure
         if: success() || failure()
         run: >-

@@ -42,7 +42,7 @@ fn reference_provider_conforms_deterministically() -> Result<(), Box<dyn std::er
     assert_eq!(r1.scenario_digest, r2.scenario_digest, "deterministic");
     assert_eq!(
         r1.checks.len(),
-        10,
+        17,
         "canonical scenario check count is frozen"
     );
     report_line(&r1);
