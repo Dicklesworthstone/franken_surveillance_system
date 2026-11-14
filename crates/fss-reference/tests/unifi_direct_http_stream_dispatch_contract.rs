@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 //! Synthetic journaled local serializer dispatch and reconciliation contracts.
 use asupersync::{
     http::h1::Response, io::AsyncWrite, net::TcpListener, runtime::RuntimeBuilder, time::timeout,
@@ -10,7 +10,7 @@ use fss_core::{
 };
 use fss_object::{
     HostSpoolIo, SpoolLimits, StagingSpool,
-    effect_journal::{EffectJournalLimits, FileEffectJournal},
+    effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
 };
 use fss_reference::unifi_direct::{
     AudioCodec, StreamStart, VideoChannel, VideoCodec,
@@ -26,9 +26,11 @@ use fss_reference::unifi_direct::{
 use fss_runtime::{
     authority::AuthorityCx,
     effect::{CommitApproval, CommittedEffect, EffectCoordinator, PrepareSpec, Reconciliation},
+    effect_journal::{EffectJournalStore, EffectPinRetainer, PinRetainedEffectJournal},
     execution::{TaskCompletion, TaskSpec, run_owned_async},
     lease::LeaseRegistry,
 };
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     cell::{Cell, RefCell},
     error::Error,
@@ -42,6 +44,27 @@ use std::{
 };
 
 type Test = Result<(), Box<dyn Error>>;
+fn metadata_journal(
+    dir: &std::path::Path,
+    label: &str,
+) -> Result<PinRetainedEffectJournal, Box<dyn Error>> {
+    let limits = EffectJournalLimits::default();
+    let file = FileEffectJournal::create(
+        dir.join(format!("{label}-journal")),
+        limits,
+        Arc::new(HostSpoolIo),
+    )?;
+    let root = FileTrustedRootPinRetainer::create(
+        dir.join(format!("{label}-root")),
+        limits,
+        Arc::new(HostSpoolIo),
+        ContentDigest::sha256(label.as_bytes()),
+    )?;
+    Ok(PinRetainedEffectJournal::new(
+        Box::new(file),
+        Box::new(root),
+    )?)
+}
 fn serializer_snapshot(
     peer: Ipv4Addr,
     generation: u64,
@@ -406,25 +429,45 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
         dir.join("checkpoint-spool"),
         SpoolLimits::new(4, 1_000_000, 100_000, 8),
     )?;
+    let key_dir = dir.join("keys");
+    std::fs::DirBuilder::new().mode(0o700).create(&key_dir)?;
+    let lease = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        Ok::<_, Box<dyn Error>>(checkpoint::keyfile::KeyLease::create(
+            &cx,
+            &CheckpointPolicy(true),
+            checkpoint_scope,
+            &key_dir.join("key"),
+        )?)
+    })?;
+    let wrong_lease = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        Ok::<_, Box<dyn Error>>(checkpoint::keyfile::KeyLease::create(
+            &cx,
+            &CheckpointPolicy(true),
+            checkpoint_scope,
+            &key_dir.join("wrong-key"),
+        )?)
+    })?;
     let stored = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         assert!(
-            checkpoint::Stored::capture_and_stage(
+            checkpoint::Stored::capture_with_keyfile(
                 &cx,
                 &DenyCheckpoint(checkpoint::Action::Stage),
                 checkpoint_scope,
-                &key,
+                &lease,
                 &plan,
                 &baseline,
                 &mut checkpoint_spool
             )
             .is_err()
         );
-        Ok::<_, Box<dyn Error>>(checkpoint::Stored::capture_and_stage(
+        Ok::<_, Box<dyn Error>>(checkpoint::Stored::capture_with_keyfile(
             &cx,
             &CheckpointPolicy(true),
             checkpoint_scope,
-            &key,
+            &lease,
             &plan,
             &baseline,
             &mut checkpoint_spool,
@@ -443,34 +486,141 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
     )?;
     let other_scope =
         checkpoint::Scope::from_plan(&other_plan, ContentDigest::sha256(b"fixture certificate"))?;
-    let other_stored = runtime.block_on(async {
+    let other_lease = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
-        Ok::<_, Box<dyn Error>>(checkpoint::Stored::capture_and_stage(
+        Ok::<_, Box<dyn Error>>(checkpoint::keyfile::KeyLease::create(
             &cx,
             &CheckpointPolicy(true),
             other_scope,
-            &key,
+            &key_dir.join("other-key"),
+        )?)
+    })?;
+    let other_stored = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        Ok::<_, Box<dyn Error>>(checkpoint::Stored::capture_with_keyfile(
+            &cx,
+            &CheckpointPolicy(true),
+            other_scope,
+            &other_lease,
             &other_plan,
             &baseline,
             &mut checkpoint_spool,
         )?)
     })?;
     drop(checkpoint_spool);
-    let reopened_spool = StagingSpool::open(
+    let mut reopened_spool = StagingSpool::open(
         dir.join("checkpoint-spool"),
         SpoolLimits::new(4, 1_000_000, 100_000, 8),
     )?;
     let stored_bytes = reopened_spool.read_bounded(stored.digest(), 100_000)?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
-        checkpoint::Sealed::from_bytes(&stored_bytes)?.open(
-            &cx,
-            &CheckpointPolicy(true),
-            stored.scope(),
-            &key,
-        )?;
+        lease.with_key(&cx, &CheckpointPolicy(true), |key| {
+            checkpoint::Sealed::from_bytes(&stored_bytes)?.open(
+                &cx,
+                &CheckpointPolicy(true),
+                stored.scope(),
+                key,
+            )
+        })??;
         Ok::<(), Box<dyn Error>>(())
     })?;
+    let mut anchor_journal = metadata_journal(&dir, "checkpoint-anchor")?;
+    let mut other_journal = metadata_journal(&dir, "other-anchor")?;
+    let anchored = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        assert!(
+            stored
+                .anchor_with_keyfile(
+                    &cx,
+                    &DenyCheckpoint(checkpoint::Action::Anchor),
+                    &lease,
+                    &mut reopened_spool,
+                    &mut anchor_journal
+                )
+                .is_err()
+        );
+        assert!(anchor_journal.head().is_none());
+        assert!(
+            stored
+                .anchor_with_keyfile(
+                    &cx,
+                    &CheckpointPolicy(true),
+                    &wrong_lease,
+                    &mut reopened_spool,
+                    &mut anchor_journal
+                )
+                .is_err()
+        );
+        assert!(anchor_journal.head().is_none());
+        Ok::<_, Box<dyn Error>>(stored.anchor_with_keyfile(
+            &cx,
+            &CheckpointPolicy(true),
+            &lease,
+            &mut reopened_spool,
+            &mut anchor_journal,
+        )?)
+    })?;
+    let other_anchored = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        Ok::<_, Box<dyn Error>>(other_stored.anchor_with_keyfile(
+            &cx,
+            &CheckpointPolicy(true),
+            &other_lease,
+            &mut reopened_spool,
+            &mut other_journal,
+        )?)
+    })?;
+    assert_eq!(anchored.digest(), stored.digest());
+    let anchor_pin = anchored.pin();
+    drop(anchor_journal);
+    let limits = EffectJournalLimits::default();
+    let mut root = FileTrustedRootPinRetainer::open_trusting_storage(
+        dir.join("checkpoint-anchor-root"),
+        limits,
+        Arc::new(HostSpoolIo),
+        ContentDigest::sha256(b"checkpoint-anchor"),
+    )?;
+    assert_eq!(root.retained_pin()?, Some(anchor_pin));
+    let file = FileEffectJournal::open(
+        dir.join("checkpoint-anchor-journal"),
+        limits,
+        Arc::new(HostSpoolIo),
+        anchor_pin,
+    )?;
+    let mut reopened_anchor =
+        PinRetainedEffectJournal::for_reconciliation(Box::new(file), Box::new(root))?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let recovered = checkpoint::recover_record(
+            &cx,
+            &CheckpointPolicy(true),
+            &mut reopened_anchor,
+            anchor_pin,
+        )?;
+        assert_eq!(recovered.scope(), checkpoint_scope);
+        assert_eq!(recovered.digest(), stored.digest());
+        assert!(
+            checkpoint::recover_record(
+                &cx,
+                &DenyCheckpoint(checkpoint::Action::Anchor),
+                &mut reopened_anchor,
+                anchor_pin
+            )
+            .is_err()
+        );
+        let wrong = fss_runtime::effect_journal::EffectJournalPin {
+            sequence: anchor_pin.sequence,
+            root: ContentDigest::sha256(b"wrong metadata pin"),
+        };
+        assert!(
+            checkpoint::recover_record(&cx, &CheckpointPolicy(true), &mut reopened_anchor, wrong)
+                .is_err()
+        );
+        Ok::<(), Box<dyn Error>>(())
+    })?;
+    let stored = anchored;
+    let other_stored = other_anchored;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let run = run_owned_async(

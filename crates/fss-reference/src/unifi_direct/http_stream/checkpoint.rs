@@ -25,6 +25,7 @@ use zeroize::Zeroize;
 pub mod keyfile;
 
 const SCOPE_DOMAIN: &str = "fss.unifi-direct.serializer-checkpoint-scope.v1";
+const RETENTION_DOMAIN: &str = "fss.unifi-direct.serializer-checkpoint-retention.v1";
 const MAGIC: &[u8; 8] = b"FSSUSC01";
 const NONCE_BYTES: usize = 24;
 const TAG_BYTES: usize = 16;
@@ -236,6 +237,8 @@ pub enum Action {
     Stage,
     /// Verify and hold the staged ciphertext in the object store.
     Verify,
+    /// Retain or inspect the checkpoint's separate metadata journal.
+    Anchor,
     /// Create an exclusive private checkpoint-key file.
     KeyCreate,
     /// Read or revalidate an existing private checkpoint-key file.
@@ -302,12 +305,128 @@ pub struct Stored {
     scope: Scope,
     digest: ContentDigest,
 }
+
+/// Live evidence that one staged checkpoint's metadata was appended to a
+/// separately retained journal. The storage domains, key custody and device
+/// identity remain caller-trusted. This is not a dispatch permit.
+pub struct Anchored {
+    scope: Scope,
+    digest: ContentDigest,
+    pin: fss_runtime::effect_journal::EffectJournalPin,
+}
+impl fmt::Debug for Anchored {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AnchoredSerializerCheckpoint(<redacted>)")
+    }
+}
+impl Anchored {
+    /// The separately retained metadata-journal head, not the camera effect head.
+    pub fn pin(&self) -> fss_runtime::effect_journal::EffectJournalPin {
+        self.pin
+    }
+    /// The staged ciphertext digest for later authorized recovery.
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
+    pub(in crate::unifi_direct) fn matches_plan(&self, plan: &Plan) -> bool {
+        Scope::from_plan(plan, self.scope.certificate).is_ok_and(|scope| scope == self.scope)
+    }
+}
+
+/// Reopened metadata only. It cannot be converted into a live dispatch gate.
+pub struct RecoveryRecord {
+    scope: Scope,
+    digest: ContentDigest,
+}
+impl RecoveryRecord {
+    /// Protected camera and request claims read from the metadata record.
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+    /// Ciphertext identity for an authorized bounded spool read.
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
+}
+impl fmt::Debug for RecoveryRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CheckpointRecoveryRecord(<redacted>)")
+    }
+}
+
+fn retention_record(scope: Scope, digest: ContentDigest) -> Result<Vec<u8>, Error> {
+    if !valid_digest(digest) {
+        return Err(Error::Invalid);
+    }
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(RETENTION_DOMAIN);
+    encoder.bytes(&scope.encode()?);
+    encoder.digest(digest);
+    encoder.finish_checked().map_err(|_| Error::Invalid)
+}
 impl fmt::Debug for Stored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("StoredSerializerCheckpoint(<redacted>)")
     }
 }
 impl Stored {
+    /// Recheck the private key file and authenticated staged ciphertext, then
+    /// retain metadata in a fresh separately pinned journal. The caller chooses
+    /// the trusted storage domains. Errors after a storage write may require
+    /// cold inspection; this synchronous I/O belongs in an owned blocking task.
+    #[cfg(target_os = "linux")]
+    pub fn anchor_with_keyfile(
+        &self,
+        cx: &Cx,
+        authority: &dyn Authority,
+        lease: &keyfile::KeyLease,
+        spool: &mut fss_object::StagingSpool,
+        journal: &mut fss_runtime::effect_journal::PinRetainedEffectJournal,
+    ) -> Result<Anchored, Error> {
+        if !lease.matches_scope(self.scope) {
+            return Err(Error::Invalid);
+        }
+        lease.with_key(cx, authority, |key| {
+            admit(cx, &self.scope, authority, Action::Verify)?;
+            let (state, bytes) = spool
+                .verify_and_read(self.digest)
+                .map_err(|_| Error::Storage)?;
+            if state != fss_object::SpoolObjectState::Verified {
+                return Err(Error::Storage);
+            }
+            admit(cx, &self.scope, authority, Action::Verify)?;
+            Sealed::from_bytes(&bytes)?.open(cx, authority, self.scope, key)?;
+            self.anchor(cx, authority, journal)
+        })?
+    }
+
+    #[cfg(target_os = "linux")]
+    fn anchor(
+        &self,
+        cx: &Cx,
+        authority: &dyn Authority,
+        journal: &mut fss_runtime::effect_journal::PinRetainedEffectJournal,
+    ) -> Result<Anchored, Error> {
+        use fss_runtime::effect_journal::EffectJournalStore;
+        admit(cx, &self.scope, authority, Action::Anchor)?;
+        if journal.head().is_some() || !journal.records().is_empty() {
+            return Err(Error::Invalid);
+        }
+        let record = retention_record(self.scope, self.digest)?;
+        let pin = journal.append(None, &record).map_err(|_| Error::Storage)?;
+        admit(cx, &self.scope, authority, Action::Anchor)?;
+        if journal.verify_retained_head().map_err(|_| Error::Storage)? != pin
+            || journal.records().last().map(Vec::as_slice) != Some(record.as_slice())
+        {
+            return Err(Error::Storage);
+        }
+        admit(cx, &self.scope, authority, Action::Anchor)?;
+        Ok(Anchored {
+            scope: self.scope,
+            digest: self.digest,
+            pin,
+        })
+    }
     /// Stage using a separately retained private Linux key file. Its parent
     /// and ancestors are caller-trusted; the scope and journal pins still need
     /// independent retention. This does not replace live device admission.
@@ -369,9 +488,41 @@ impl Stored {
     pub fn scope(&self) -> Scope {
         self.scope
     }
-    pub(in crate::unifi_direct) fn matches_plan(&self, plan: &Plan) -> bool {
-        Scope::from_plan(plan, self.scope.certificate).is_ok_and(|scope| scope == self.scope)
+}
+
+/// Read a single retained metadata record after reopening the caller's journal
+/// and pin custodian. This returns data for reconciliation only, not authority
+/// to redispatch or proof of an independent physical storage domain.
+pub fn recover_record(
+    cx: &Cx,
+    authority: &dyn Authority,
+    journal: &mut fss_runtime::effect_journal::PinRetainedEffectJournal,
+    expected: fss_runtime::effect_journal::EffectJournalPin,
+) -> Result<RecoveryRecord, Error> {
+    use fss_runtime::effect_journal::EffectJournalStore;
+    if journal.records().len() != 1 {
+        return Err(Error::Invalid);
     }
+    let bytes = &journal.records()[0];
+    if bytes.len() > 1024 {
+        return Err(Error::Invalid);
+    }
+    let mut decoder = CanonicalDecoder::new(bytes);
+    if decoder.text().map_err(|_| Error::Invalid)? != RETENTION_DOMAIN {
+        return Err(Error::Invalid);
+    }
+    let scope = Scope::decode(decoder.bytes().map_err(|_| Error::Invalid)?)?;
+    let digest = decoder.digest().map_err(|_| Error::Invalid)?;
+    decoder.ensure_finished().map_err(|_| Error::Invalid)?;
+    if retention_record(scope, digest)?.as_slice() != bytes.as_slice() {
+        return Err(Error::Invalid);
+    }
+    admit(cx, &scope, authority, Action::Anchor)?;
+    if journal.verify_retained_head().map_err(|_| Error::Storage)? != expected {
+        return Err(Error::Invalid);
+    }
+    admit(cx, &scope, authority, Action::Anchor)?;
+    Ok(RecoveryRecord { scope, digest })
 }
 impl fmt::Debug for Sealed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

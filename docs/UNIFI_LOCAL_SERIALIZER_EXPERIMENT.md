@@ -270,7 +270,13 @@ refused before transport polling. The staged receipt does not guarantee future
 object availability, independently retain the key or scope, or anchor the
 effect journal. The helper performs synchronous I/O and requires an owned,
 bounded blocking caller. Its strict-remote build was admitted from queue
-`9253469360607986756` as job `30097323753214396`; its tests are pending. The
+`9253469360607986756` as job `30097323753214396` and exited zero; 7/7
+serializer unit tests and 5/5 dispatcher integration tests passed on `hz2`.
+The test executable SHA-256 values were
+`2a2eae24af9455611da9f17d8372c342477997beaa6a7e7d2fbba5367ce6dcb5` and
+`95e2b195f5ed76ff3082e90b391192f4fca7aed2f5e36b675baec9c1d0a9955c`;
+both deletion-denying traces recorded zero attempts. These are synthetic tests,
+not physical-camera behavior. The
 four source SHA-256 values (checkpoint, camera API, HTTP owner and fixture) are
 `507ef345ff289f2eb752db1487eec791f1508ea5020476c75047dbb601b7a8ff`,
 `37e5b6d4254d4536c70c7a7901e86589ecfb6eef44b08855252a09a8a091479e`,
@@ -297,11 +303,46 @@ owner, privileged users, rollback, or loss of the device. Failures after file
 creation can leave partial files, which are never overwritten or deleted by
 the helper. It can feed checkpoint staging, but it does not independently
 retain the scope or journal anchors and is not yet mandatory for dispatch.
-No real key file was created. The v19 source snapshot is being built remotely
-as job `30097323753214397`;
-its tests have not yet run. Checkpoint and keyfile source SHA-256 values are
+No real key file was created. The v19 source snapshot built remotely as job
+`30097323753214397` and passed 8/8 serializer/key unit tests and 5/5 dispatcher
+integration tests on `hz2`. The key fixture exercised creation and cold reopen,
+denied use, wrong scope, symlink, hard link, public permissions and short file
+refusals. Its test executables' SHA-256 values were
+`d347e4f67e9fc2ad3af098a7c8fd7087cb41659d5c14ed3fb657cbab48cd9306` and
+`92d9408168d0173d11dfe9743777389a4833f0efed0233b2b3d87d73c939485f`;
+both deletion-denying traces recorded zero attempts. These are synthetic Linux
+tests, not physical-camera or backup verification. Checkpoint and keyfile source SHA-256 values are
 `8a62fac73928e736f24e79b4711f89c7c92c30d0044b9742631ba409ad2816d7` and
 `450601a5215fd48a275a5a4d14587a52000628e9ea5fa49f73b647361b06ce10`.
+
+The v20 candidate adds a dedicated retained metadata journal for the scope and
+ciphertext digest. A start dispatch requires a live `Anchored` receipt, created
+only after a successful append and retained-head check; cold reopening returns
+an inspection-only recovery record and cannot recreate that dispatch receipt.
+Its caller must choose genuinely separate trusted storage and protect its root;
+the type cannot prove physical independence or protect a rolled-back trusted
+root. Key-file custody remains optional and is not yet bound to this receipt.
+The v20 source snapshot was admitted from queue `9253469360607986764` as job
+`30097323753214403` for strict-remote build and fixture testing;
+neither has passed yet. Its checkpoint, keyfile, camera API, HTTP owner and
+fixture SHA-256 values are
+`a360a53c52229939ad2baad1b829cad61f741f32ebe2a1ce3961426e67d15e91`,
+`450601a5215fd48a275a5a4d14587a52000628e9ea5fa49f73b647361b06ce10`,
+`dc8d9e1587213736bf0be7bce6f85d37bca618aa85ab32855e16054fff7bf166`,
+`9ae836bb71b29fe202081022720d1e4fc8e3320a0373009804f25b5a497b3a51`, and
+`c0d288440f240ebc754940bd37fc3505d0007c91be6a9560488d6cd04a6efb19`.
+
+The v21 candidate tightens this path: creating the live anchored receipt now
+requires a matching Linux private-key lease and a fresh spool re-read whose
+ciphertext authenticates under that key, before the metadata journal append.
+The fixture includes a wrong-key refusal before journal append. This still
+depends on caller-trusted paths and does not protect against later key loss,
+privileged interference, rollback, or loss of the storage device. Its dispatch
+fixture is Linux-only; a corresponding macOS key provider is not implemented.
+The v21 source snapshot is compiling in strict-remote job `30097323753214406`;
+its tests have not run. Its checkpoint and fixture SHA-256 values are
+`e8860cb360543020dd6882375b51e7a4fc92dd8359f32a4a66fd6b09fa0308ca` and
+`60e112748f4ac8fea1b3fb66cc211b7987fd1c767f7498f373da237314a16866`.
 
 ## Live qualification still required
 

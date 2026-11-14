@@ -595,7 +595,7 @@ pub enum HandoffError {
     PermitMismatch,
     /// The current preconditions differ from the plan.
     Stale,
-    /// A start request lacks a matching staged and verified checkpoint.
+    /// A start request lacks a matching staged and separately anchored checkpoint.
     CheckpointRequired,
     /// The caller's live identity, policy or lease check refused dispatch.
     Denied,
@@ -1077,7 +1077,7 @@ impl Session {
         plan: &http_stream::Plan,
         current: http_stream::Preconditions,
         observed: &VideoSerializers,
-        checkpoint: Option<&http_stream::checkpoint::Stored>,
+        checkpoint: Option<&http_stream::checkpoint::Anchored>,
         mut permit: CommittedEffect,
         authority: &dyn SerializerAuthority,
         wait: Duration,

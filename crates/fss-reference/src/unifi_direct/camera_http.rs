@@ -496,7 +496,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         plan: &http_stream::Plan,
         current: http_stream::Preconditions,
         observed: &camera_api::VideoSerializers,
-        checkpoint: Option<&http_stream::checkpoint::Stored>,
+        checkpoint: Option<&http_stream::checkpoint::Anchored>,
         permit: CommittedEffect,
         authority: &dyn camera_api::SerializerAuthority,
         wait: Duration,
