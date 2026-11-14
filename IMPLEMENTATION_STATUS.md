@@ -4,6 +4,30 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Historical health reads coexist with active ingest — 2026-11-14
+
+`fss-event health read` now inspects retained diagnostic metadata through the
+sealed immutable source owner without opening a publisher, taking a writer lock
+or invoking recovery. Opening metadata, selected receipt reads and final
+protected-metadata/custody/authority verification share one nonrenewing read
+allowance and cooperative deadline. Complete output and explicit outside-root
+exports are withheld on any failure; existing export files are preserved.
+
+Inspection remains metadata-only: damaged original source media can leave a
+retained diagnostic readable, with `native_replayed=false` and
+`source_and_trace_verified=false`. Historical health findings never become
+current-health, tamper, absence or event-verification claims. The separate
+`health verify` path retains its exact provenance pin, current privacy checks
+and explicit native source/trace replay.
+
+The existing health suites now include immutable reads while the writer remains
+open, successful and refused exports, unchanged deployment bytes, exhausted
+aggregate allowances, malformed ledger/effect journals and corrupt diagnostic
+metadata without repair. These changes received independent source review and
+are selected early in the existing supplementary pinned-nightly workflow; Rust
+execution for this head is pending while the local environment is unavailable.
+No release qualification is claimed.
+
 ## Canonical source and stream inventory — 2026-11-14
 
 `fss query --target sources` and the existing MCP `query` tool now expose

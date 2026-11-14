@@ -3,6 +3,8 @@
 
 use super::*;
 use crate::ingest::long_watch::LongWatchReport;
+use crate::agent_orient::OrientLimits;
+use crate::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use crate::ingest::privacy_mask::{declare_mask, preview_mask};
 use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig, WatchZone};
@@ -194,6 +196,23 @@ fn degraded_quiet_recording_retains_without_events_and_replays_after_restart() -
     let inspected = read_retained(&f.deployment, retained.record_digest, &limits, &f.cx)?;
     assert!(!inspected.native_verified);
     assert_eq!(inspected.frames_replayed, 0);
+    let immutable = ImmutableRetainedSource::open(
+        &root,
+        ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: 1024 * 1024 * 1024,
+            max_read_objects: 1_000_000,
+        },
+        &f.cx,
+    )?;
+    let concurrent = read_retained(&immutable, retained.record_digest, &limits, &f.cx)?;
+    assert_eq!(concurrent.record.to_bytes(), inspected.record.to_bytes());
+    assert_eq!(concurrent.provenance_root, inspected.provenance_root);
+    assert_eq!(concurrent.ledger_anchor, inspected.ledger_anchor);
+    assert!(!concurrent.native_verified);
+    immutable.revalidate_snapshot_metadata()?;
+    immutable.revalidate()?;
+    drop(immutable);
     let verified = verify_retained(
         &f.deployment,
         retained.record_digest,

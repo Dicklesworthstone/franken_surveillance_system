@@ -749,6 +749,13 @@ fn cold_selection_budgets_and_damaged_source_refuse_without_changing_history() -
         assert_eq!(f.journals()?, before);
     }
     fs::write(&f.source_chunk, b"damaged retained original")?;
+    // Metadata inspection must not silently become a source-media verification operation.
+    let inspected = good(run(&f.read(&digest))?)?;
+    assert_eq!(field(&inspected, "status")?, "inspected_not_replayed");
+    assert_eq!(
+        member(&inspected, "source_and_trace_verified")?,
+        &Value::Bool(false)
+    );
     refuses(run(&f.verify(&digest, &provenance))?, "ERR-");
     assert_eq!(f.journals()?, before);
     Ok(())
@@ -822,5 +829,86 @@ fn missing_screening_mixed_approvals_and_unapproved_execution_fail_before_deploy
     verify.extend(["--execute-perception".into(), "no".into()]);
     refuses(run(&verify)?, "execute-perception");
     assert!(!root.exists());
+    Ok(())
+}
+
+fn deployment_bytes(root: &Path) -> Test<BTreeMap<PathBuf, Vec<u8>>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = BTreeMap::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else {
+                assert!(kind.is_file(), "fixture contains a non-regular entry");
+                files.insert(
+                    entry.path().strip_prefix(root)?.to_path_buf(),
+                    fs::read(entry.path())?,
+                );
+            }
+        }
+    }
+    Ok(files)
+}
+
+#[test]
+fn immutable_health_read_preserves_live_custody_and_refuses_damaged_metadata() -> Test {
+    let f = Fixture::new("immutable-metadata", None)?;
+    let retained = f.retain()?;
+    let health = member(&retained, "historical_health")?;
+    let digest = field(health, "record_digest")?;
+    let cx = context(&f.root)?;
+    let writer = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;
+    let record_path = writer
+        .publisher()
+        .spool()
+        .object_path(ContentDigest::parse(&digest)?);
+    let before = deployment_bytes(&f.root)?;
+    let export = f._directory.0.join("health-inspection.json");
+    let mut args = f.read(&digest);
+    args.extend(["--report-out".into(), export.as_os_str().to_owned()]);
+    let output = run(&args)?;
+    assert_eq!(fs::read(&export)?, output.stdout);
+    let inspected = good(output)?;
+    assert_eq!(field(&inspected, "status")?, "inspected_not_replayed");
+    assert_eq!(field(&inspected, "record_digest")?, digest);
+    assert_eq!(member(&inspected, "native_replayed")?, &Value::Bool(false));
+    let existing = fs::read(&export)?;
+    refuses(run(&args)?, "ERR-");
+    assert_eq!(fs::read(&export)?, existing);
+    assert_eq!(deployment_bytes(&f.root)?, before);
+
+    for key in ["--max-read-bytes", "--max-read-objects"] {
+        let mut bounded = f.read(&digest);
+        bounded.extend([key.into(), "1".into()]);
+        let path = f._directory.0.join("bounded-health.json");
+        bounded.extend(["--report-out".into(), path.as_os_str().to_owned()]);
+        refuses(run(&bounded)?, "ERR-");
+        assert!(!path.exists());
+        assert_eq!(deployment_bytes(&f.root)?, before);
+    }
+    drop(writer);
+    cx.drain_and_finalize();
+
+    for path in [
+        f.root.join("ledger/journal.fssj"),
+        f.root.join("effects/journal.fssj"),
+        record_path,
+    ] {
+        let original = fs::read(&path)?;
+        let mut damaged = original.clone();
+        damaged.push(0xff);
+        fs::write(&path, damaged)?;
+        let damaged_state = deployment_bytes(&f.root)?;
+        let mut selected = f.read(&digest);
+        let output = f._directory.0.join("refused-health.json");
+        selected.extend(["--report-out".into(), output.as_os_str().to_owned()]);
+        refuses(run(&selected)?, "ERR-");
+        assert!(!output.exists());
+        assert_eq!(deployment_bytes(&f.root)?, damaged_state);
+        fs::write(path, original)?;
+    }
     Ok(())
 }

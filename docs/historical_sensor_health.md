@@ -113,9 +113,11 @@ report or trained model file. It verifies the health derivation; trained class a
 and event hypotheses have their own replay owner.
 
 Wrong provenance pins, changed privacy, missing or damaged source/trace custody, cancellation,
-insufficient budgets and divergence refuse without a success report. Existing deployment
-open still owns its normal restart recovery. The read and verify commands themselves append
-no diagnostic, event or effect.
+insufficient budgets and divergence refuse without a success report. Metadata-only `health
+read` uses immutable custody and works while a publisher is active; it never takes the writer
+lock, repairs a journal or invokes deployment recovery. The explicit native `health verify`
+path still opens the existing deployment with its normal restart recovery. Neither command
+appends a diagnostic, event or effect.
 
 ## Bounds and exact recipes
 
@@ -130,6 +132,14 @@ access retain their existing bounded owners. The option is not a claim that all 
 opening or source I/O spends that one allowance. `--max-report-bytes` bounds the complete
 JSON including the verification command (1 MiB by default; at most 16 MiB). Output is never
 silently truncated; an optional `--report-out` creates a new file outside the deployment.
+
+For metadata-only `health read`, `--max-read-bytes` and `--max-read-objects` bound the
+whole immutable read, including opening history, selected metadata and final protected
+metadata/custody/authority rereads. Defaults are 1 GiB and 1,000,000 payload-read attempts;
+hard ceilings are 4 GiB and 4,000,000 attempts. One balance covers the entire read with a
+cooperative 60-second deadline. Failed verification withholds stdout and exports. These
+limits supplement the selected-metadata/report bounds and do not authorize source-media
+reads. Existing export files remain untouched.
 
 Native admission additionally exposes `--source-read-bytes`, `--pixel-budget`,
 `--assignment-work`, `--trace-bytes`, `--decode-work`, `--max-dimension`, `--max-pixels` and

@@ -786,7 +786,7 @@ pub fn read_retained_at(
 }
 
 struct Metadata<'a> {
-    deployment: &'a ReferenceDeployment,
+    deployment: &'a dyn RetainedSource,
     remaining: usize,
     cx: &'a ReplayCx,
 }
@@ -798,9 +798,7 @@ impl Metadata<'_> {
         }
         let bytes = self
             .deployment
-            .publisher()
-            .spool()
-            .read_bounded(digest, maximum.min(self.remaining))?;
+            .read_object_bounded(digest, maximum.min(self.remaining))?;
         self.remaining = self
             .remaining
             .checked_sub(bytes.len())
@@ -809,7 +807,7 @@ impl Metadata<'_> {
     }
 }
 fn inspect(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
     reader: &mut Metadata<'_>,
 ) -> Result<HistoricalHealthReadReport> {
@@ -860,7 +858,7 @@ fn inspect_with_deletions(
 /// A newer mask does not erase an older historical finding; its exact historical policy remains
 /// explicit. Native replay additionally requires the currently applicable policy to match.
 pub fn read_retained(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
     limits: &HistoricalHealthReadLimits,
     cx: &ReplayCx,
@@ -870,20 +868,14 @@ pub fn read_retained(
     if cx.root_dir() != deployment.root() {
         return Err(HistoricalHealthError::AuthorityChanged);
     }
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(ReferenceError::from)?;
+    deployment.verify_read_head()?;
     let mut reader = Metadata {
         deployment,
         remaining: limits.maximum_metadata_bytes,
         cx,
     };
     let report = inspect(deployment, digest, &mut reader)?;
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(ReferenceError::from)?;
+    deployment.verify_read_head()?;
     Ok(report)
 }
 

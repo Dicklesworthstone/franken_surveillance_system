@@ -4,9 +4,11 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use fss_cli::agent_json::{evidence_anchor, object, string};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
@@ -17,6 +19,9 @@ use fss_core::{
 use fss_reference::ingest::historical_health::{
     HistoricalHealthDiagnostic, HistoricalHealthReadLimits, HistoricalHealthReadReport,
     HistoricalHealthRetention, read_retained, verify_retained,
+};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedSource,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -44,6 +49,10 @@ emits a historical_health array; each camera has its own exact --retain-health c
 Retain one camera per invocation, independently of paired events; event approval is separate.\n\
 Common bounds: --max-metadata-bytes N (default 64 MiB, maximum 256 MiB)\n\
   --max-report-bytes N (default 1 MiB, maximum 16 MiB) [--principal ID]\n\
+Read additionally accepts --max-read-bytes N and --max-read-objects N. Opening metadata,\n\
+selected records and final revalidation share one allowance: default 1 GiB/1,000,000 read\n\
+attempts, at most 4 GiB/4,000,000, with a cooperative 60 s deadline. Read works while the\n\
+publisher is open and never repairs or writes deployment state.\n\
 Execution ceilings (also accepted by read to bind its verification command):\n\
   --source-read-bytes N --pixel-budget N --assignment-work N --trace-bytes N\n\
   --decode-work N --max-dimension N --max-pixels N --max-segment-bytes N\n\
@@ -51,7 +60,7 @@ Ceilings can refuse replay; they never change or widen the retained recipe.\n\
 Optional --report-out FILE exports the complete JSON create-only outside the deployment.\n\
 Missing/deleted selected metadata, wrong pins and exhausted bounds refuse without success\n\
 output. Native verification also refuses missing source/trace custody and changed privacy.\n\
-Existing deployment open may perform its normal restart recovery; these\n\
+Verify's existing deployment open may perform its normal restart recovery. These\n\
 commands publish no events, diagnostics or effects. A matched replay establishes historical\n\
 reproducibility, not current camera health, tampering, physical absence or detector accuracy.\n";
 
@@ -82,6 +91,7 @@ struct Options {
     diagnostic: ContentDigest,
     expected_root: Option<ContentDigest>,
     limits: HistoricalHealthReadLimits,
+    read_limits: ImmutableRetainedReadLimits,
     dimension_override: Option<u32>,
     pixels_override: Option<usize>,
     maximum_report_bytes: usize,
@@ -128,7 +138,7 @@ fn digest(value: &str) -> Result<ContentDigest, String> {
 }
 
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 35 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
+    if args.len() > 39 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
         return Err("argument bounds exceeded".into());
     }
     let verify = match args.first().and_then(|arg| arg.to_str()) {
@@ -139,7 +149,9 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or("option names require UTF-8")?;
-        if !COMMON.contains(&key) && !(verify && VERIFY.contains(&key)) {
+        let immutable_read_limit =
+            !verify && matches!(key, "--max-read-bytes" | "--max-read-objects");
+        if !COMMON.contains(&key) && !(verify && VERIFY.contains(&key)) && !immutable_read_limit {
             return Err(format!("unknown or inapplicable option {key}"));
         }
         let value = pair
@@ -268,6 +280,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         diagnostic: digest(text(&values, "--diagnostic-digest")?)?,
         expected_root,
         limits,
+        read_limits: super::retained_read::parse_limits(&values)?,
         dimension_override,
         pixels_override,
         maximum_report_bytes: number(
@@ -453,6 +466,9 @@ fn report(options: &Options, root: &Path, retained: &HistoricalHealthReadReport)
 }
 
 fn run(options: Options) -> Run<String> {
+    if options.expected_root.is_none() {
+        return read_only(options);
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:historical-health-cli".into(),
         operation_id: OperationId::parse("operation:historical-health-cli")?,
@@ -484,6 +500,58 @@ fn run(options: Options) -> Run<String> {
             )?,
         };
         let output = report(&options, &root, &retained)?;
+        if let Some(path) = &options.report_out {
+            super::export(path, output.as_bytes(), &root, &cx)?;
+        }
+        Ok(output)
+    })();
+    cx.drain_and_finalize();
+    result
+}
+
+fn read_only(options: Options) -> Run<String> {
+    if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
+        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
+            .file_type()
+            .is_file()
+    {
+        return Err("existing non-symlink deployment required".into());
+    }
+    let root = fs::canonicalize(&options.root)?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:historical-health-cli".into(),
+        operation_id: OperationId::parse("operation:historical-health-cli")?,
+        principal: options.principal.clone(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
+            .build()?,
+        privacy_scope: "privacy:current-deployment-policy".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
+        generation: 1,
+    })?;
+    authority.validate()?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
+    let started = Instant::now();
+    let cancelled = || started.elapsed() >= super::retained_read::DEADLINE;
+    let result = (|| -> Run<String> {
+        let deployment = ImmutableRetainedSource::open_cancellable(
+            &root,
+            options.read_limits,
+            &cx,
+            &cancelled,
+        )?;
+        if deployment.site_lineage() != options.site {
+            return Err("retained deployment site lineage mismatch".into());
+        }
+        let retained = read_retained(&deployment, options.diagnostic, &options.limits, &cx)?;
+        let output = report(&options, &root, &retained)?;
+        deployment.revalidate_snapshot_metadata()?;
+        deployment.revalidate()?;
         if let Some(path) = &options.report_out {
             super::export(path, output.as_bytes(), &root, &cx)?;
         }
