@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
-    CanonicalDecode, CanonicalDecoder, CaptureInterval, EvidenceDeltaBatch, SensorId, StreamId,
+    CanonicalDecode, CanonicalDecoder, CaptureInterval, EvidenceDeltaBatch, Plane, SensorId,
+    StreamId,
 };
 use fss_publication::{
     ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY, ROOT_REACHABILITY_OBJECT_PREFIX,
@@ -153,7 +154,7 @@ fn codec(source: &RecordedLocalizationSource) -> &'static str {
 
 /// The source-binding prefix belongs to this native owner. Do not infer geometry from the
 /// opaque remaining candidate receipt: exact reproduction belongs to verify_by_replay.
-fn receipt_binding(
+pub(super) fn receipt_binding(
     bytes: &[u8],
     recipe: &Recipe,
     capsule: &SensorCapsule,
@@ -245,7 +246,7 @@ fn receipt_binding(
     Ok(mask_policy)
 }
 
-fn publication<'a>(
+pub(super) fn publication<'a>(
     source: &'a dyn RetainedSource,
     slot: &SlotName,
     expected: &ObjectManifest,
@@ -305,7 +306,7 @@ fn publication<'a>(
 
 /// Follow only current native publication roots. All other digests remain opaque leaves,
 /// exactly as LocalRootPublisher::root_closure does; never sniff leaf bytes as manifests.
-fn metadata_closure(
+pub(super) fn metadata_closure(
     source: &dyn RetainedSource,
     expected: &ObjectManifest,
     cx: &ReplayCx,

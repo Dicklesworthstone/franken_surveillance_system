@@ -137,7 +137,11 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
           --expected-root sha256:HEX --expected-receipt sha256:HEX\n\
           [--geometry-work-units N] [--receipt-out FILE]\n\
           Reopens only retained deployment bytes; no external twin, atlas or image options.\n\
-          read-localization checks custody and current privacy, without running perception.\n\
+          read-localization checks full archive custody and current privacy without perception,\n\
+          writer locks, recovery or deployment writes; it works while ingestion is active.\n\
+          [--max-read-bytes N] (default/max 256 MiB) [--max-read-objects N] (default/max 65536)\n\
+          share one allowance through final metadata, payload, publication and head revalidation.\n\
+          Inspection has a 60-second cooperative deadline; complete status/export or refusal.\n\
           verify-localization requires --execute-perception yes and natively decodes original\n\
           retained JPEG/AVC/HEVC, reruns localization, and compares the whole candidate receipt.\n\
           [--work-units N] [--report-out FILE.json]; neither command changes authority.\n\
@@ -505,6 +509,18 @@ fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -
 }
 
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
+    if let Action::LocalizationReplay(action) = &options.action
+        && action.is_read_only()
+    {
+        return localization_replay::read_only(
+            action,
+            options.limits,
+            &options.root,
+            &options.site,
+            &options.principal,
+            out,
+        );
+    }
     let importing = matches!(&options.action, Action::Import(_));
     if !importing {
         let layout = fs::symlink_metadata(options.root.join("LAYOUT"))?;

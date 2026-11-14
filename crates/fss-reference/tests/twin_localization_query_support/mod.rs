@@ -32,12 +32,11 @@ use fss_reference::ingest::{
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use fss_twin::atlas_archive::{ArchiveExpectation, ReferenceProvenance, encode_atlas};
 use fss_twin::localization::native::{
-    ExtractionOptions, GrayImage, ImageIdentity, ImageLocalizationOptions, descriptor_domain,
-    extract_gray,
+    ExtractionOptions, GrayImage, ImageLocalizationOptions, descriptor_domain, extract_gray,
 };
 use fss_twin::localization::{
-    AtlasBinding, AtlasLandmark, AtlasReference, LocalizationAtlas, LocalizationOutcome,
-    MatchOptions,
+    AtlasBinding, AtlasLandmark, AtlasReference, ImageIdentity, LocalizationAtlas,
+    LocalizationOutcome, MatchOptions,
 };
 use fss_twin::rectification::{LensDistortion, LumaRange, RectificationSpec};
 use fss_twin::{ImportExpectation, ImportLimits, PropertyTwin, import_twin};
