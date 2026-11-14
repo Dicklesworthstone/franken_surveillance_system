@@ -30,8 +30,10 @@ untrusted brand bytes and returns an error when output fails.
 The focused selection contains 22 container probe tests and 13 CLI tests, including
 retained AVC/HEVC fixtures, exact budgets/source ranges, EOF, cancellation, syntax
 and geometry refusals, codec-header ambiguity and I/O failures. Independent source
-review completed. Native tests and formatting are unverified because the execution
-environment became unavailable. `scripts/check_media_probe.sh` selects these
+review and pinned-nightly formatting passed. Native compilation and tests remain
+unverified: the provider test build and a single-job object/container type check
+both stopped when the unchanged Asupersync 0.5.0 dependency compiler received
+SIGKILL, before reaching the changed crates. `scripts/check_media_probe.sh` selects these
 contracts early in the existing supplementary pinned-nightly workflow.
 FSS-053 generation/custody integration and QL-MEDIA-001, TEST-MEDIA-MALFORMED-001
 and GATE-040 remain open. See [bounded media probing](docs/MEDIA_PROBE.md).
@@ -60,13 +62,22 @@ requires the provider's own visible-state admission, even when the supplied
 custody store already contains verified bytes.
 
 The existing provider/property and conformance suites now use real canonical
-manifest objects, and 14 new regressions cover exact bindings, nested pins,
+manifest objects, and 15 new regressions cover exact bindings, nested pins,
 late registration, cold custody input, corruption and refusal atomicity. The
-change received independent source review. Native test and formatting execution
-are not claimed: the local execution environment became unavailable. The
+registered v2 oracle identity also binds early refusal verdicts and observed
+object states; different partial admissions cannot share a fixed failure digest.
+Independent source review and pinned-nightly formatting passed. Native compilation
+and test execution remain unverified: both the test build and a single-job type
+check stopped when the Asupersync 0.5.0 dependency compiler received SIGKILL. The
 repository-owned `scripts/check_provider_custody.sh` selects these contracts early
 in the existing supplementary pinned-nightly workflow. This remains a reference
 provider change, not production storage, replication or release qualification.
+
+Two focused digest-registry Python regressions passed, and the new oracle domain
+is admitted by the repository's domain-registration policy. The two broader schema
+constitution tests still fail on the same 96 findings reproduced at the unchanged
+baseline; the added domain introduces no new finding. The registry now contains
+874 digest domains. No full repository qualification is claimed.
 
 ## Full localization inspection coexists with active ingest — 2026-11-14
 

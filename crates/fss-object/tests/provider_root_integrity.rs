@@ -9,10 +9,7 @@ use fss_object::{InMemoryObjectStore, MAX_MANIFEST_CHILDREN, ObjectLimits, Objec
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn provider() -> InMemoryObjectStoreProvider {
-    InMemoryObjectStoreProvider::new(
-        InMemoryObjectStore::new(ObjectLimits::new(64, 1 << 20)),
-        2,
-    )
+    InMemoryObjectStoreProvider::new(InMemoryObjectStore::new(ObjectLimits::new(64, 1 << 20)), 2)
 }
 
 fn durable(
@@ -167,7 +164,10 @@ fn active_manifest_body_is_pinned_and_retired_roots_cannot_reactivate() -> TestR
     p.retire(m.root(), witness)?;
     assert!(matches!(
         p.activate_root(m.root(), m.children()),
-        Err(ProviderError::RootNotDurable { state: PublicationState::Retired, .. })
+        Err(ProviderError::RootNotDurable {
+            state: PublicationState::Retired,
+            ..
+        })
     ));
     assert!(p.stage(&m.try_canonical_bytes()?).is_err());
     p.retire(child, witness)?;

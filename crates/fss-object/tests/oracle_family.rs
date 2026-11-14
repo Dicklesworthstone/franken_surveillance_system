@@ -3,9 +3,13 @@
 //! in-memory reference provider. Any future provider must reproduce the
 //! same scenario digest before claiming conformance.
 
+use fss_core::{ContentDigest, TimestampNs};
 use fss_object::InMemoryObjectStore;
 use fss_object::provider::memory::InMemoryObjectStoreProvider;
 use fss_object::provider::oracle::{OracleReport, run_oracle};
+use fss_object::provider::{
+    ObjectStoreProvider, ProviderError, PublicationState, RetrievabilityWitness,
+};
 
 fn reference_provider() -> InMemoryObjectStoreProvider {
     InMemoryObjectStoreProvider::new(
@@ -129,5 +133,102 @@ fn oracle_catches_pin_violations() -> Result<(), Box<dyn std::error::Error>> {
         .find(|c| c.name == "retire-after-deactivate")
         .ok_or("check missing")?;
     assert!(!r3.passed);
+    Ok(())
+}
+
+#[test]
+fn early_stage_failures_commit_distinct_observed_states() -> Result<(), Box<dyn std::error::Error>>
+{
+    struct RefusingStage {
+        inner: InMemoryObjectStoreProvider,
+        refused: ContentDigest,
+    }
+
+    impl ObjectStoreProvider for RefusingStage {
+        fn stage(&mut self, bytes: &[u8]) -> Result<ContentDigest, ProviderError> {
+            if ContentDigest::sha256(bytes) == self.refused {
+                Err(ProviderError::Custody(
+                    "intentional oracle stage refusal".to_owned(),
+                ))
+            } else {
+                self.inner.stage(bytes)
+            }
+        }
+
+        fn advance(
+            &mut self,
+            digest: ContentDigest,
+            to: PublicationState,
+        ) -> Result<PublicationState, ProviderError> {
+            self.inner.advance(digest, to)
+        }
+
+        fn activate_root(
+            &mut self,
+            root: ContentDigest,
+            children: &[ContentDigest],
+        ) -> Result<(), ProviderError> {
+            self.inner.activate_root(root, children)
+        }
+
+        fn deactivate_root(&mut self, root: ContentDigest) -> Result<(), ProviderError> {
+            self.inner.deactivate_root(root)
+        }
+
+        fn retire(
+            &mut self,
+            digest: ContentDigest,
+            witness: ContentDigest,
+        ) -> Result<(), ProviderError> {
+            self.inner.retire(digest, witness)
+        }
+
+        fn verify_retrievable(
+            &mut self,
+            digest: ContentDigest,
+            now: TimestampNs,
+        ) -> Result<RetrievabilityWitness, ProviderError> {
+            self.inner.verify_retrievable(digest, now)
+        }
+
+        fn state(&self, digest: ContentDigest) -> Result<PublicationState, ProviderError> {
+            self.inner.state(digest)
+        }
+    }
+
+    let authority = ContentDigest::sha256(b"oracle-deletion-authority");
+    let root = fss_object::ObjectManifest::new(
+        "provider-oracle",
+        [
+            ContentDigest::sha256(b"oracle-object-a"),
+            ContentDigest::sha256(b"oracle-object-b"),
+        ],
+        None,
+    )?
+    .root();
+    let run = |refused| {
+        run_oracle(RefusingStage {
+            inner: reference_provider(),
+            refused,
+        })
+    };
+    let missing_authority = run(authority);
+    let missing_root = run(root);
+    let replay = run(authority);
+
+    assert!(!missing_authority.all_passed);
+    assert!(!missing_root.all_passed);
+    // Both runs admit three objects and produce identical verdicts. Only the observed
+    // identities differ, so a digest over verdicts alone would still alias these failures.
+    assert_eq!(missing_authority.checks, missing_root.checks);
+    assert_ne!(
+        missing_authority.scenario_digest,
+        missing_root.scenario_digest
+    );
+    assert_eq!(missing_authority, replay);
+    assert_ne!(
+        missing_authority.scenario_digest,
+        ContentDigest::sha256(b"oracle-stage-failed")
+    );
     Ok(())
 }

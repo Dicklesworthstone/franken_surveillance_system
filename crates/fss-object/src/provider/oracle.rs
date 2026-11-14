@@ -6,8 +6,9 @@
 //! scenario — stage, climb, root activation, pinning, retirement,
 //! retrievability — checking the TLA-derived publication invariants
 //! (R1/R2/R3 + witnessed retrievability) after every step. The scenario's
-//! final state folds into a scenario digest: two providers agreeing on
-//! the digest agree on every observable the oracle measures.
+//! check verdicts and observed final states fold into a versioned scenario
+//! digest, including early failures: differing observations cannot share a
+//! fixed failure sentinel.
 //!
 //! The in-memory reference provider passes by construction; a real
 //! ATP-backed provider plugs in and must reproduce the same digest before
@@ -48,6 +49,39 @@ fn check(checks: &mut Vec<OracleCheck>, name: &'static str, passed: bool) {
     checks.push(OracleCheck { name, passed });
 }
 
+fn finish_report(
+    provider: &impl ObjectStoreProvider,
+    checks: Vec<OracleCheck>,
+    identities: &[ContentDigest],
+) -> OracleReport {
+    let mut observables = Vec::new();
+    for &id in identities {
+        if let Ok(state) = provider.state(id) {
+            observables.push((id, state));
+        }
+    }
+    observables.sort_by_key(|(id, _)| *id);
+    let mut material = CanonicalEncoder::new();
+    material.text(ORACLE_SCENARIO_DOMAIN);
+    material.u64(checks.len() as u64);
+    for verdict in &checks {
+        material.text(verdict.name);
+        material.bool(verdict.passed);
+    }
+    material.u64(observables.len() as u64);
+    for (id, state) in &observables {
+        material.digest(*id);
+        state.encode_canonical(&mut material);
+    }
+    let scenario_digest = ContentDigest::sha256(&material.finish());
+    let all_passed = checks.iter().all(|c| c.passed);
+    OracleReport {
+        checks,
+        scenario_digest,
+        all_passed,
+    }
+}
+
 /// Runs the canonical conformance scenario against one provider.
 ///
 /// The provider is consumed: the oracle owns it for the scenario's
@@ -55,23 +89,27 @@ fn check(checks: &mut Vec<OracleCheck>, name: &'static str, passed: bool) {
 /// behavior yields identical reports and digests.
 pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     let mut checks = Vec::new();
-    let mut observables: Vec<(ContentDigest, PublicationState)> = Vec::new();
 
     // ---- scenario material -------------------------------------------
     let a = ContentDigest::sha256(b"oracle-object-a");
     let b = ContentDigest::sha256(b"oracle-object-b");
     let authority = ContentDigest::sha256(b"oracle-deletion-authority");
+    let ghost = ContentDigest::sha256(b"oracle-never-staged");
     let manifest = match ObjectManifest::new("provider-oracle", [a, b], None) {
         Ok(manifest) => manifest,
         Err(_) => {
-            return OracleReport {
-                checks: vec![OracleCheck { name: "manifest-construction", passed: false }],
-                scenario_digest: ContentDigest::sha256(b"oracle-manifest-failed.v2"),
-                all_passed: false,
-            };
+            return finish_report(
+                &provider,
+                vec![OracleCheck {
+                    name: "manifest-construction",
+                    passed: false,
+                }],
+                &[a, b, authority, ghost],
+            );
         }
     };
     let root = manifest.root();
+    let scenario_ids = [a, b, authority, root, ghost];
     let now = TimestampNs(1);
 
     // R2 monotone admission: both children climb to Durable; skipping is
@@ -103,14 +141,9 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     }
 
     // R1 root-last: activation over durable children succeeds.
-    let (Some(da), Some(db), Some(_authority_id), Some(_root_id)) =
-        (da, db, authority_id, root_id)
+    let (Some(da), Some(db), Some(_authority_id), Some(_root_id)) = (da, db, authority_id, root_id)
     else {
-        return OracleReport {
-            checks,
-            scenario_digest: ContentDigest::sha256(b"oracle-stage-failed"),
-            all_passed: false,
-        };
+        return finish_report(&provider, checks, &scenario_ids);
     };
     let children = [da, db];
     check(
@@ -178,34 +211,8 @@ pub fn run_oracle(mut provider: impl ObjectStoreProvider) -> OracleReport {
     );
 
     // Unknown digests are typed refusals, never silent defaults.
-    let ghost = ContentDigest::sha256(b"oracle-never-staged");
     let unknown_state = provider.state(ghost).err();
     check(&mut checks, "unknown-is-typed", unknown_state.is_some());
 
-    // ---- observables + digest ----------------------------------------
-    for id in [a, b, authority, root, ghost] {
-        if let Ok(state) = provider.state(id) {
-            observables.push((id, state));
-        }
-    }
-    observables.sort_by_key(|(id, _)| *id);
-    let mut material = CanonicalEncoder::new();
-    material.text(ORACLE_SCENARIO_DOMAIN);
-    material.u64(checks.len() as u64);
-    for verdict in &checks {
-        material.text(verdict.name);
-        material.bool(verdict.passed);
-    }
-    material.u64(observables.len() as u64);
-    for (id, state) in &observables {
-        material.digest(*id);
-        state.encode_canonical(&mut material);
-    }
-    let scenario_digest = ContentDigest::sha256(&material.finish());
-    let all_passed = checks.iter().all(|c| c.passed);
-    OracleReport {
-        checks,
-        scenario_digest,
-        all_passed,
-    }
+    finish_report(&provider, checks, &scenario_ids)
 }

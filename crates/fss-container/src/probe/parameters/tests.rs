@@ -69,10 +69,7 @@ fn retained_avc_fixtures_keep_coded_and_cropped_dimensions_distinct() -> TestRes
 
 #[test]
 fn retained_hevc_main_and_main10_prefixes_preserve_crop_and_depth() -> TestResult {
-    for (v, s, depth, display) in [
-        (VPS8, SPS8, 8, (62, 46)),
-        (VPS10, SPS10, 10, (64, 48)),
-    ] {
+    for (v, s, depth, display) in [(VPS8, SPS8, 8, (62, 46)), (VPS10, SPS10, 10, (64, 48))] {
         let (vps, sps, pps) = (hex(v)?, hex(s)?, hex(PPS)?);
         let bytes = annex_b(&[&vps, &sps, &pps], true);
         let report = probe_parameters(&bytes, false, ParameterLimits::default(), || false)?;

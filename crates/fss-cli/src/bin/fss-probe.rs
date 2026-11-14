@@ -26,7 +26,11 @@ const EXIT_USAGE: i32 = 2;
 fn main() {
     let mut out = std::io::stdout();
     let code = run(std::env::args().skip(1), &mut std::io::stdin(), &mut out);
-    let code = if out.flush().is_ok() { code } else { EXIT_USAGE };
+    let code = if out.flush().is_ok() {
+        code
+    } else {
+        EXIT_USAGE
+    };
     std::process::exit(code);
 }
 
@@ -127,12 +131,7 @@ where
     }
 
     if parameters {
-        return match probe_parameters(
-            &head[..read],
-            end_of_source,
-            parameter_limits,
-            || false,
-        ) {
+        return match probe_parameters(&head[..read], end_of_source, parameter_limits, || false) {
             Ok(report) => {
                 write!(
                     out,
@@ -239,7 +238,11 @@ mod tests {
     fn invoke(args: &[&str], head: &[u8]) -> (i32, String) {
         let mut input = head;
         let mut out = Vec::new();
-        let code = run(args.iter().map(|arg| (*arg).to_owned()), &mut input, &mut out);
+        let code = run(
+            args.iter().map(|arg| (*arg).to_owned()),
+            &mut input,
+            &mut out,
+        );
         (code, String::from_utf8_lossy(&out).into_owned())
     }
 
@@ -247,7 +250,10 @@ mod tests {
     fn isobmff_reports_brand_and_exits_zero() {
         let (code, line) = invoke(&[], b"\x00\x00\x00\x18ftypisomxxxx");
         assert_eq!(code, EXIT_OK);
-        assert_eq!(line.trim(), "identified container=iso-bmff media=video brand=isom");
+        assert_eq!(
+            line.trim(),
+            "identified container=iso-bmff media=video brand=isom"
+        );
     }
 
     #[test]
@@ -272,10 +278,7 @@ mod tests {
 
     #[test]
     fn jpeg_maps_to_image() {
-        let (code, line) = invoke(
-            &[],
-            &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0],
-        );
+        let (code, line) = invoke(&[], &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(code, EXIT_OK);
         assert!(line.contains("media=image"), "{line}");
     }
@@ -339,7 +342,10 @@ mod tests {
         assert!(line.contains("container=mpeg-ts"), "{line}");
         assert_eq!(
             invoke(&["--bytes", "32"], &bytes),
-            (EXIT_INSUFFICIENT, "insufficient needed=189 have=32\n".into())
+            (
+                EXIT_INSUFFICIENT,
+                "insufficient needed=189 have=32\n".into()
+            )
         );
         let mut input = &bytes[..];
         let mut out = Vec::new();
@@ -351,14 +357,14 @@ mod tests {
     fn parameters_report_native_metadata_and_refuse_exhausted_work() {
         let (code, line) = invoke(&["--parameters"], AVC);
         assert_eq!(code, EXIT_OK, "{line}");
-        assert!(line.contains("codec=h264 scope=configuration-prefix"), "{line}");
+        assert!(
+            line.contains("codec=h264 scope=configuration-prefix"),
+            "{line}"
+        );
         assert!(line.contains("coded_width=160 coded_height=128"), "{line}");
         assert!(line.contains("bit_depth=8 profile=66 level=11"), "{line}");
         assert!(line.contains("vps=none sps="), "{line}");
-        assert_eq!(
-            invoke(&["--parameters", "--units", "1"], AVC).0,
-            EXIT_LIMIT
-        );
+        assert_eq!(invoke(&["--parameters", "--units", "1"], AVC).0, EXIT_LIMIT);
         assert_eq!(
             invoke(&["--parameters"], b"\x00\x00\x00\x18ftypisom").0,
             EXIT_UNSUPPORTED
@@ -367,8 +373,7 @@ mod tests {
 
     #[test]
     fn a_full_read_allowance_cannot_close_an_undelimited_parameter_set()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
+    -> Result<(), Box<dyn std::error::Error>> {
         let report = probe_parameters(AVC, false, ParameterLimits::default(), || false)?;
         let source = &AVC[..report.pps.range.end];
         let exact = source.len().to_string();

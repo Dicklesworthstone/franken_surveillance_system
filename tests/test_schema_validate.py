@@ -919,7 +919,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # and four durable retention-policy domains, followed by eight cross-session UTC domains.
         # Current registry, including eight source-query and eight localization-query domains; Markdown headings/separators
         # and the reserved-ID tombstone are not digest declarations.
-        self.assertEqual(result["digestDomainCount"], 873)
+        # Add the versioned canonical-manifest provider oracle (FSS-061/FSS-062).
+        self.assertEqual(result["digestDomainCount"], 874)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1487,7 +1488,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # and four durable retention-policy domains, followed by eight cross-session UTC domains.
         # Current registry, including eight source-query and eight localization-query domains; Markdown headings/separators
         # and the reserved-ID tombstone are not digest declarations.
-        self.assertEqual(result["digestDomainCount"], 873)
+        # Add the versioned canonical-manifest provider oracle (FSS-061/FSS-062).
+        self.assertEqual(result["digestDomainCount"], 874)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

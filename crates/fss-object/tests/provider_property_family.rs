@@ -9,9 +9,9 @@
 
 use fss_core::{CanonicalDecode, CanonicalEncode, CanonicalEncoder};
 use fss_core::{ContentDigest, TimestampNs};
-use fss_object::{InMemoryObjectStore, ObjectManifest};
 use fss_object::provider::memory::InMemoryObjectStoreProvider;
 use fss_object::provider::{ObjectStoreProvider, PublicationState};
+use fss_object::{InMemoryObjectStore, ObjectManifest};
 
 fn emit(property: &str, cases: u64) {
     println!(

@@ -223,7 +223,10 @@ impl std::fmt::Display for ProviderError {
                 write!(f, "root {root:?} is not a canonical retained manifest")
             }
             Self::RootChildrenMismatch { root } => {
-                write!(f, "root {root:?} child list differs from its immutable manifest")
+                write!(
+                    f,
+                    "root {root:?} child list differs from its immutable manifest"
+                )
             }
             Self::RootCycle { root } => {
                 write!(f, "root {root:?} would introduce a manifest cycle")

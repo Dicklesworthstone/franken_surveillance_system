@@ -9,10 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{ContentDigest, TimestampNs};
 
-use crate::{InMemoryObjectStore, MAX_MANIFEST_CHILDREN, ObjectManifest};
 use crate::provider::{
     ObjectStoreProvider, ProviderError, PublicationState, RetrievabilityWitness,
 };
+use crate::{InMemoryObjectStore, MAX_MANIFEST_CHILDREN, ObjectManifest};
 
 /// One object's provider-side record.
 #[derive(Clone, Debug)]
@@ -266,8 +266,14 @@ impl ObjectStoreProvider for InMemoryObjectStoreProvider {
         }
         let supplied: BTreeSet<_> = children.iter().copied().collect();
         if supplied.len() != children.len()
-            || !supplied.iter().copied().eq(manifest.children().iter().copied())
-            || self.manifests.get(&root).is_some_and(|prior| prior != &manifest)
+            || !supplied
+                .iter()
+                .copied()
+                .eq(manifest.children().iter().copied())
+            || self
+                .manifests
+                .get(&root)
+                .is_some_and(|prior| prior != &manifest)
         {
             return Err(ProviderError::RootChildrenMismatch { root });
         }
@@ -300,10 +306,12 @@ impl ObjectStoreProvider for InMemoryObjectStoreProvider {
     ) -> Result<RetrievabilityWitness, ProviderError> {
         // Pre-populated custody can already contain verified bytes before this provider stages
         // them. Its private verified state must never bypass the provider's visible-state gate.
-        let record = self.record(digest).map_err(|_| ProviderError::NotRetrievable {
-            digest,
-            reason: "object is not registered with this provider".to_owned(),
-        })?;
+        let record = self
+            .record(digest)
+            .map_err(|_| ProviderError::NotRetrievable {
+                digest,
+                reason: "object is not registered with this provider".to_owned(),
+            })?;
         if record.state.rank() < PublicationState::Visible.rank() {
             return Err(ProviderError::NotRetrievable {
                 digest,
@@ -390,7 +398,10 @@ mod tests {
         let target = provider.stage(b"staged private source")?;
         let witness = provider.stage(b"staged witness")?;
         assert!(provider.retire(target, witness).is_err());
-        assert_eq!(provider.custody.state(target), Some(crate::ObjectState::Staged));
+        assert_eq!(
+            provider.custody.state(target),
+            Some(crate::ObjectState::Staged)
+        );
         assert_eq!(provider.state(target)?, PublicationState::Staged);
         Ok(())
     }

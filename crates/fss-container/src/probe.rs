@@ -165,8 +165,8 @@ pub fn probe<'a>(head: &'a [u8], limits: &ProbeLimits) -> ProbeOutcome<'a> {
                 return ProbeOutcome::Insufficient { needed: 20 };
             }
             let size = u64::from_be_bytes([
-                window[8], window[9], window[10], window[11],
-                window[12], window[13], window[14], window[15],
+                window[8], window[9], window[10], window[11], window[12], window[13], window[14],
+                window[15],
             ]);
             if size < 24 {
                 return ProbeOutcome::Unsupported;
@@ -333,7 +333,10 @@ mod tests {
             }
         }
         packet[188] = 0x47;
-        assert_eq!(identify(&packet, &ProbeLimits::new(189)), ContainerKind::MpegTs);
+        assert_eq!(
+            identify(&packet, &ProbeLimits::new(189)),
+            ContainerKind::MpegTs
+        );
     }
 
     #[test]
@@ -367,7 +370,9 @@ mod tests {
             ProbeOutcome::Insufficient { needed: 20 }
         );
         match probe(bytes, &ProbeLimits::new(20)) {
-            ProbeOutcome::Identified { container, brand, .. } => {
+            ProbeOutcome::Identified {
+                container, brand, ..
+            } => {
                 assert_eq!(container, ContainerKind::IsoBmff);
                 assert_eq!(brand, Some(&b"iso6"[..]));
             }
@@ -384,5 +389,4 @@ mod tests {
             ProbeOutcome::Unsupported
         );
     }
-
 }

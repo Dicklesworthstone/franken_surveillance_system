@@ -275,15 +275,14 @@ pub fn probe_parameters<'a>(
         // resembles a nonzero-layer HEVC VPS, while HEVC IRAP 0x28 resembles
         // AVC PPS. Only admitted base-layer HEVC headers are candidates, and
         // a PPS cannot establish AVC before an SPS has selected that codec.
-        let candidate = if header & 31 == 7
-            || (header & 31 == 8 && codec == Some(ParameterCodec::Avc))
-        {
-            Some(ParameterCodec::Avc)
-        } else if matches!(header & 0x7f, 0x40 | 0x42 | 0x44) {
-            Some(ParameterCodec::Hevc)
-        } else {
-            None
-        };
+        let candidate =
+            if header & 31 == 7 || (header & 31 == 8 && codec == Some(ParameterCodec::Avc)) {
+                Some(ParameterCodec::Avc)
+            } else if matches!(header & 0x7f, 0x40 | 0x42 | 0x44) {
+                Some(ParameterCodec::Hevc)
+            } else {
+                None
+            };
         if let Some(candidate) = candidate {
             if codec.is_some_and(|prior| prior != candidate) {
                 return Err(ParameterError::Contradictory);
@@ -299,9 +298,8 @@ pub fn probe_parameters<'a>(
                 },
             }
         }
-        let ready = sps.is_some()
-            && pps.is_some()
-            && (codec == Some(ParameterCodec::Avc) || vps.is_some());
+        let ready =
+            sps.is_some() && pps.is_some() && (codec == Some(ParameterCodec::Avc) || vps.is_some());
         if ready {
             checkpoint(&mut cancelled)?;
             let sps = sps.ok_or(ParameterError::Truncated)?;
