@@ -8,7 +8,7 @@ import sys
 import threading
 
 
-def run_case(base, addresses, incomplete=False):
+def run_case(base, addresses, incomplete=False, include_mac=False):
     peers = []
     errors = []
     threads = []
@@ -37,7 +37,7 @@ def run_case(base, addresses, incomplete=False):
         thread = threading.Thread(target=respond)
         threads.append(thread)
         thread.start()
-    args = base + [value for address in addresses for value in ('--target', address)]
+    args = base + (['--include-mac-claims'] if include_mac else []) + [value for address in addresses for value in ('--target', address)]
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=12)
     finally:
@@ -49,6 +49,16 @@ def run_case(base, addresses, incomplete=False):
         raise RuntimeError('unicast fixture failed: ' + result.stderr[-300:])
     report = json.loads(result.stdout)
     cameras = report.get('cameras', [])
+    if include_mac:
+        if report.get('schema') != 'fss.unifi_discovery_lab.v3':
+            raise RuntimeError('MAC claims require the v3 schema')
+        expected = {'1002030405' + format(6 + index, '02x') for index in range(len(addresses))}
+        if {camera.get('mac_claim') for camera in cameras if camera.get('mac_claim') is not None} != expected:
+            raise RuntimeError('incorrect MAC claims')
+        if incomplete and sum(camera.get('mac_claim') is None for camera in cameras) != 1:
+            raise RuntimeError('missing MAC claim was not preserved')
+    elif report.get('schema') != 'fss.unifi_discovery_lab.v2' or any('mac_claim' in camera for camera in cameras):
+        raise RuntimeError('default v2 output disclosed MAC claims')
     if incomplete:
         if (report.get('stop') != 'WindowElapsed' or report.get('absence_proven') is not False
                 or report.get('datagrams') != 2 or len(cameras) != 2
@@ -79,10 +89,18 @@ def main():
         result = subprocess.run(base + extra, capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             raise RuntimeError('out-of-scope or duplicate target was accepted')
+    incompatible = [sys.argv[1], '--auto-scope', '192.168.4.0/22', '--combined-v2',
+                    '--include-mac-claims', '--principal', 'principal:fixture',
+                    '--approval', 'sha256:' + '1' * 64, '--owner-authorized']
+    result = subprocess.run(incompatible, capture_output=True, text=True, timeout=5)
+    if result.returncode == 0 or 'combined-v2 cannot include v3 MAC claims' not in result.stderr:
+        raise RuntimeError('combined v2 accepted v3 disclosure')
     run_case(base, ['127.0.0.1'])
     run_case(base, ['127.0.0.1', '127.0.0.2'])
     run_case(base, ['127.0.0.1'], incomplete=True)
-    print('unicast CLI fixture: 5/5 passed')
+    run_case(base, ['127.0.0.1', '127.0.0.2'], include_mac=True)
+    run_case(base, ['127.0.0.1'], incomplete=True, include_mac=True)
+    print('unicast CLI fixture: 8/8 passed')
 
 if __name__ == '__main__':
     main()

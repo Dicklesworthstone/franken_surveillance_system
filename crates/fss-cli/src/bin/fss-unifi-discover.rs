@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--combined-v2]) [--target IPV4]... --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
+const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 const MAX_AUTO_INTERFACES: usize = 4;
 
 struct Options {
@@ -32,6 +32,7 @@ struct Options {
     only_interface: Option<String>,
     combined_v2: bool,
     limited_broadcast: bool,
+    include_mac_claims: bool,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -41,6 +42,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     let mut only_interface = None;
     let mut combined_v2 = false;
     let mut limited_broadcast = false;
+    let mut include_mac_claims = false;
     let mut authorized = false;
     let mut i = 0;
     while i < args.len() {
@@ -57,6 +59,11 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         }
         if flag == "--limited-broadcast" && !limited_broadcast {
             limited_broadcast = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--include-mac-claims" && !include_mac_claims {
+            include_mac_claims = true;
             i += 1;
             continue;
         }
@@ -100,6 +107,9 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     if !authorized {
         return Err("owner authorization is required");
     }
+    if combined_v2 && include_mac_claims {
+        return Err("combined-v2 cannot include v3 MAC claims");
+    }
     let (iface, prefix, targets, auto) = match (iface, prefix, auto_scope) {
         (None, None, Some((network, prefix))) => {
             if targets.len() + 1 + usize::from(limited_broadcast) > 64
@@ -139,6 +149,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         only_interface,
         combined_v2,
         limited_broadcast,
+        include_mac_claims,
     })
 }
 
@@ -472,13 +483,18 @@ fn json(value: &str) -> String {
     result
 }
 
-fn report_json(report: &Report) -> String {
+fn report_json(report: &Report, include_mac_claims: bool) -> String {
     let cameras = report.cameras.iter().enumerate().map(|(index, c)| {
                 let claims = report.assess_claims(index).expect("enumerated candidate exists");
-                format!("{{\"address\":{},\"platform\":{},\"firmware\":{},\"source_advertised\":{},\"identity\":\"unverified\",\"setup\":\"unavailable\",\"claim_issues\":{{\"missing_or_invalid_mac\":{},\"conflicting_macs_at_address\":{},\"same_mac_at_multiple_addresses\":{},\"conflicting_metadata\":{},\"source_not_advertised\":{},\"incomplete_claim_at_address\":{}}}}}", json(&c.source().ip().to_string()), json(c.platform()), c.firmware().map_or_else(|| "null".into(), json), c.source_advertised(), claims.missing_or_invalid_mac, claims.conflicting_macs_at_address, claims.same_mac_at_multiple_addresses, claims.conflicting_metadata, claims.source_not_advertised, claims.incomplete_claim_at_address)
+                let mac = if include_mac_claims {
+                    let value = c.mac().map_or_else(|| "null".to_owned(), |bytes| json(&bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()));
+                    format!(",\"mac_claim\":{value}")
+                } else { String::new() };
+                format!("{{\"address\":{},\"platform\":{},\"firmware\":{},\"source_advertised\":{},\"identity\":\"unverified\",\"setup\":\"unavailable\"{mac},\"claim_issues\":{{\"missing_or_invalid_mac\":{},\"conflicting_macs_at_address\":{},\"same_mac_at_multiple_addresses\":{},\"conflicting_metadata\":{},\"source_not_advertised\":{},\"incomplete_claim_at_address\":{}}}}}", json(&c.source().ip().to_string()), json(c.platform()), c.firmware().map_or_else(|| "null".into(), json), c.source_advertised(), claims.missing_or_invalid_mac, claims.conflicting_macs_at_address, claims.same_mac_at_multiple_addresses, claims.conflicting_metadata, claims.source_not_advertised, claims.incomplete_claim_at_address)
             }).collect::<Vec<_>>().join(",");
     format!(
-        "{{\"schema\":\"fss.unifi_discovery_lab.v2\",\"datagrams\":{},\"malformed\":{},\"out_of_scope\":{},\"stop\":{},\"absence_proven\":false,\"cameras\":[{}]}}",
+        "{{\"schema\":\"fss.unifi_discovery_lab.v{}\",\"datagrams\":{},\"malformed\":{},\"out_of_scope\":{},\"stop\":{},\"absence_proven\":false,\"cameras\":[{}]}}",
+        if include_mac_claims { 3 } else { 2 },
         report.datagrams,
         report.malformed,
         report.out_of_scope,
@@ -508,16 +524,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let result = options(&args).and_then(|options| {
-        execute(&options).map(|windows| (options.auto, options.combined_v2, windows))
+        execute(&options).map(|windows| (options.auto, options.combined_v2, options.include_mac_claims, windows))
     });
     match result {
-        Ok((false, _, mut windows)) => match windows
+        Ok((false, _, include_mac_claims, mut windows)) => match windows
             .pop()
             .expect("explicit interface has one window")
             .report
         {
             Ok(report) => {
-                println!("{}", report_json(&report));
+                println!("{}", report_json(&report, include_mac_claims));
                 ExitCode::SUCCESS
             }
             Err(error) => {
@@ -525,9 +541,9 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok((true, true, windows)) => match combine_windows(&windows) {
+        Ok((true, true, include_mac_claims, windows)) => match combine_windows(&windows) {
             Ok(report) => {
-                println!("{}", report_json(&report));
+                println!("{}", report_json(&report, include_mac_claims));
                 ExitCode::SUCCESS
             }
             Err(error) => {
@@ -535,16 +551,16 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok((true, false, windows)) => {
+        Ok((true, false, include_mac_claims, windows)) => {
             let (combined, combination, success) = match combine_windows(&windows) {
-                Ok(report) => (report_json(&report), "complete", true),
+                Ok(report) => (report_json(&report, include_mac_claims), "complete", true),
                 Err(error) => ("null".to_owned(), error, false),
             };
             let results = windows
                 .iter()
                 .map(|window| {
                     let (report, error) = match &window.report {
-                        Ok(report) => (report_json(report), "null".to_owned()),
+                        Ok(report) => (report_json(report, include_mac_claims), "null".to_owned()),
                         Err(error) => ("null".to_owned(), json(error)),
                     };
                     format!(
