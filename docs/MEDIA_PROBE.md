@@ -78,3 +78,10 @@ cargo test --locked --offline -p fss-cli --bin fss-probe
 ```
 
 The focused contracts cover retained AVC baseline/cropped fixtures, retained HEVC Main/Main10 metadata, exact source ranges, budget-tail noninterference, one-byte-short and one-unit-short refusals, geometry ceilings, EOF-versus-budget behavior, all cancellation checkpoints, contradictory candidates, cross-codec header aliases, native corruption/unsupported refusal, three-/four-byte Annex-B delimiters, trailing zero bytes, short/interrupted stdin reads, escaped brands and failed stdout writes. Native execution and broader qualification remain separately evidenced; the presence of these tests is not a passing qualification claim.
+
+## Qualification
+
+`scripts/qualify.sh --lane media` runs `scripts/lanes/media.sh`, which drives the built binary rather
+than the library: the contract here is the exit status, so a lane that never execs the shipped path
+would prove nothing. It covers a matroska head, an ISO-BMFF head with a brand, a JPEG head, a short
+head (`10`), an unknown head (`11`) and an under-length `--parameters` prefix (`10`).
