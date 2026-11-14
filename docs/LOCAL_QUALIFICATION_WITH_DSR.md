@@ -220,3 +220,11 @@ A second, distinct refusal appears when the fleet is up but its build disks are 
 check says "free space cannot cover active build reservations and protected floor". Retries land on
 other workers and fail the same way. Neither `RCH_DISABLE=1` nor `RCH_ALLOW_LOCAL_FALLBACK=1` in front
 of the toolchain cargo suppresses it; the practical route is to retry later or over SSH on a worker.
+
+### Claim lanes that exist today
+
+`confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
+fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
+suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract). Media and archive also
+run inside `full` and `release`. The remaining claim lanes (`lab`, `adapter`, `model`, `geometry`,
+`threat`) still fail closed and are the next wiring targets, in that order of expected value.
