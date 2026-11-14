@@ -69,6 +69,11 @@ pub mod conversation;
 pub mod discovery;
 /// Source-preserving camera event observations and bounded interpretation.
 pub mod events;
+/// Exact source evidence for a camera event with unknown physical time.
+pub mod event_evidence;
+pub mod event_handoff;
+/// Cancellation-drained publication of one retained camera event.
+pub mod event_worker;
 /// Source-linked FLV segment evidence graph preparation.
 pub mod evidence;
 /// Inert, exact controller-address handoff planning.

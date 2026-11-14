@@ -167,6 +167,15 @@ impl Frame {
             digest,
         }
     }
+    /// Validate and retain an untrusted complete event envelope. This does not
+    /// prove a network origin or authorize ingestion; refusal returns the exact
+    /// original bytes so callers can account for them.
+    pub fn from_untrusted_source(source: Bytes) -> Result<Self, (Error, Bytes)> {
+        match super::event_evidence::classify(&source) {
+            Some((kind, message_id, response_expected)) => Ok(Self::new(kind, message_id, response_expected, source)),
+            None => Err((Error::Invalid, source)),
+        }
+    }
     /// Event function classification.
     pub fn kind(&self) -> Kind {
         self.kind

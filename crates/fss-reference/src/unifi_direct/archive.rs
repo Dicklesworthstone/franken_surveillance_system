@@ -21,7 +21,7 @@ use super::{
     av_evidence::{self, AudioConfigurationOrigin, PreparedAv, PreparedAvVideoOnly},
     av_recording,
     evidence::{DOMAIN, KIND, Prepared},
-    source_evidence,
+    event_evidence, events, source_evidence,
 };
 use crate::{ReferenceDeployment, ReplayCx, reference_deployment::ReplayCancellationBridge};
 
@@ -126,6 +126,11 @@ impl UnknownTimePin {
             root: plan.manifest().root(),
             retention: plan.retention(),
         }
+    }
+
+    /// Candidate for one camera event whose physical time is unknown.
+    pub fn from_event_plan(plan: &event_evidence::Prepared<'_>) -> Self {
+        Self { root: plan.manifest().root(), retention: plan.retention() }
     }
 
     // Existing spool and policy checks use only root and retention. The full
@@ -386,6 +391,23 @@ pub fn publish_unknown_time_source_anchored(
     publish_unknown_time_anchored(
         plan, pin, deployment, authority, limits, work, cx, journal, keeper,
     )
+}
+
+/// Retain one event source using an explicit retention grant and dedicated
+/// unknown-time journal and anchor. The caller retains the original frame;
+/// uncertain publication requires reconciliation against the same pin.
+pub fn publish_unknown_time_event_anchored(
+    plan: &event_evidence::Prepared<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, UnknownTimePublishError> {
+    let pin = UnknownTimePin::from_event_plan(plan);
+    publish_unknown_time_anchored(plan, pin, deployment, authority, limits, work, cx, journal, keeper)
 }
 
 fn publish_unknown_time_anchored(
@@ -1087,6 +1109,12 @@ impl Graph for source_evidence::Prepared<'_> {
         Box::new(self.payloads())
     }
 }
+impl Graph for event_evidence::Prepared<'_> {
+    fn manifest(&self) -> &ObjectManifest { self.manifest() }
+    fn capture(&self) -> Option<CaptureInterval> { None }
+    fn retention(&self) -> ContentDigest { self.retention() }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> { Box::new(self.payloads()) }
+}
 
 struct RecoveredConfirmedAvGraph {
     manifest: ObjectManifest,
@@ -1679,6 +1707,127 @@ pub fn read_unknown_time_av_object(
         av_evidence::KIND,
         av_evidence::DOMAIN,
     )
+}
+
+/// An authorized recovered camera event, with unverified source claims.
+pub struct RecoveredEvent {
+    pub(super) frame: events::Frame,
+    pub(super) key: fss_container::flv_avc::SourceKey,
+    pub(super) camera_claim: ContentDigest,
+    pub(super) retention: ContentDigest,
+    pub(super) metadata: Vec<u8>,
+    pub(super) manifest: ObjectManifest,
+    pub(super) state: SourcePublicationState,
+}
+impl RecoveredEvent {
+    /// Exact source message; its contents remain subject to disclosure policy.
+    pub fn frame(&self) -> &events::Frame { &self.frame }
+    /// Caller-supplied source connection and generation.
+    pub fn key(&self) -> fss_container::flv_avc::SourceKey { self.key }
+    /// Caller-supplied camera claim, not authenticated identity.
+    pub fn camera_claim(&self) -> ContentDigest { self.camera_claim }
+    /// Whether the source was ledgered or only verified as staged.
+    pub fn publication_state(&self) -> SourcePublicationState { self.state }
+}
+
+/// Reopen one ledgered event source under current read authority. Capture
+/// time, source identity, detection meaning and coverage remain unknown.
+pub fn read_unknown_time_event(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredEvent, Error> {
+    let (manifest, metadata) = open_graph_kind_with_time(
+        deployment, pin.access_pin(), authority, limits, work, cx,
+        event_evidence::KIND, event_evidence::DOMAIN, false,
+    )?;
+    recover_event_components(deployment, pin, manifest, metadata, authority, limits, work, cx, SourcePublicationState::Ledgered)
+}
+
+/// Recover a staged, pending event without claiming it was published.
+pub fn read_staged_unknown_time_event(
+    deployment: &ReferenceDeployment,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredEvent, Error> {
+    if journal.inner.is_fenced() || keeper.is_fenced() || keeper.target() != journal.anchor() {
+        return Err(Error::RecoveryRequired);
+    }
+    let pin = journal.pending().ok_or(Error::RecoveryRequired)?;
+    let access = pin.access_pin();
+    let _ = access.slot()?;
+    if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
+        || deployment.publisher().limits().spool.max_object_bytes > limits.maximum_spool_object_bytes
+        || deployment.publisher().is_poisoned()
+    {
+        return Err(Error::Limit);
+    }
+    let root = read_part(deployment, access, pin.root, authority, work, cx)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root).map_err(storage)?;
+    if manifest.root() != pin.root || manifest.kind() != event_evidence::KIND || manifest.children().len() != 2 {
+        return Err(Error::Mismatch);
+    }
+    let metadata_digest = manifest.metadata_digest().ok_or(Error::Mismatch)?;
+    require_child(&manifest, metadata_digest, work)?;
+    let metadata = read_part(deployment, access, metadata_digest, authority, work, cx)?;
+    let recovered = recover_event_components(deployment, pin, manifest, metadata, authority, limits, work, cx, SourcePublicationState::Staged)?;
+    read_authorize(access, authority, cx)?;
+    if journal.inner.is_fenced() || keeper.is_fenced() || journal.pending() != Some(pin) || keeper.target() != journal.anchor() {
+        return Err(Error::RecoveryRequired);
+    }
+    Ok(recovered)
+}
+
+fn recover_event_components(
+    deployment: &ReferenceDeployment,
+    pin: UnknownTimePin,
+    manifest: ObjectManifest,
+    metadata: Vec<u8>,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    state: SourcePublicationState,
+) -> Result<RecoveredEvent, Error> {
+    let access = pin.access_pin();
+    work.charge((metadata.len() as u64).checked_mul(4).ok_or(Error::Limit)?)?;
+    let mut decoder = CanonicalDecoder::new(&metadata);
+    check_prefix_kind_with_time(&mut decoder, access, event_evidence::DOMAIN, false)?;
+    let key = fss_container::flv_avc::SourceKey {
+        connection: decoder.u64().map_err(storage)?, generation: decoder.u64().map_err(storage)?,
+    };
+    let camera_claim = decoder.digest().map_err(storage)?;
+    let kind = event_evidence::kind_from_code(decoder.u8().map_err(storage)?).ok_or(Error::Mismatch)?;
+    let message_id = decoder.u64().map_err(storage)?;
+    let response_expected = decoder.bool().map_err(storage)?;
+    let length = read_size(&mut decoder, limits.maximum_spool_object_bytes)?;
+    let digest = decoder.digest().map_err(storage)?;
+    decoder.ensure_finished().map_err(storage)?;
+    if key.connection == 0 || key.generation == 0 || !event_evidence::valid_digest(camera_claim)
+        || length == 0 || length > super::MAX_MESSAGE_BYTES || !event_evidence::valid_digest(digest)
+    {
+        return Err(Error::Mismatch);
+    }
+    let metadata_digest = ContentDigest::sha256(&metadata);
+    if digest == metadata_digest || manifest.metadata_digest() != Some(metadata_digest) || manifest.children().len() != 2 {
+        return Err(Error::Mismatch);
+    }
+    require_child(&manifest, metadata_digest, work)?;
+    require_child(&manifest, digest, work)?;
+    let bytes = read_part_bounded(deployment, access, digest, length, authority, work, cx)?;
+    if bytes.len() != length || ContentDigest::sha256(&bytes) != digest { return Err(Error::Mismatch); }
+    if event_evidence::classify(&bytes) != Some((kind, message_id, response_expected)) { return Err(Error::Mismatch); }
+    Ok(RecoveredEvent {
+        frame: events::Frame::new(kind, message_id, response_expected, bytes.into()), key,
+        camera_claim, retention: pin.retention, metadata, manifest, state,
+    })
 }
 
 /// Publication status of an authorized recovered source record.
