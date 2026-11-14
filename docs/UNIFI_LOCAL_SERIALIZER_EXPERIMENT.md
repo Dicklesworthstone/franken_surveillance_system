@@ -14,6 +14,13 @@ shape, changes to shared audio or other tracks, and a transient stream that
 cannot be restored from the reported prior value. Readback, direct media
 receipt, and observation of the existing recorder are distinct evidence.
 
+The [reference project's own protocol overview](https://github.com/xuio/scrypted-unifi-direct)
+describes camera-pushed extended FLV and full-resolution snapshots decoded from
+a live keyframe; its RTSP endpoint is provided by the controller-side plugin.
+This supports prioritizing a native owned push receiver and keyframe decoder.
+It is the author's general account, not proof that every G4 firmware lacks an
+alternative interface or that a particular physical request is safe.
+
 ## Current implementation
 
 `unifi_direct::http_stream` constructs a single-track request tied to the
@@ -281,6 +288,9 @@ found no name containing `anchor`, `pin`, or `keeper` among 10 and 9 entries.
 The late manifests are not pre-effect anchors; the name scan cannot exclude
 anchors elsewhere or under different names. Neither observation settles the
 historical effects or grants permission to replay them.
+The separately retained five-file forensic copy of the time-sync journal on
+`trj` also matched the late time-sync manifest. It preserves bytes, but cannot
+replace the original namespace or supply the missing pre-effect anchor.
 
 A read-only archive inventory on 2026-11-14 found 10,358 video files in the
 root-owned `/bulk/unifi_camera_recordings/g4-instant-fallback`; the newest was
