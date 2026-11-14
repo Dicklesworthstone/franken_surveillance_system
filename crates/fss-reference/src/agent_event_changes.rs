@@ -436,7 +436,13 @@ impl PreparedEventChanges<'_> {
 
     /// Finish the live read after rendering admission, or return no deliverable comparison.
     pub fn finish(mut self) -> Result<DeploymentEventChanges, EventChangesError> {
-        if let Err(error) = self.owner.revalidate() {
+        // Protected context also contains non-event metadata loaded by the opening snapshot.
+        // Rehash it under this owner's remaining allowance before the final authority check.
+        let revalidated = self
+            .owner
+            .revalidate_snapshot_metadata()
+            .and_then(|()| self.owner.revalidate());
+        if let Err(error) = revalidated {
             return Err(EventChangesError {
                 kind: EventChangesErrorKind::Source(error),
                 observation: Some(EventChangesObservation {

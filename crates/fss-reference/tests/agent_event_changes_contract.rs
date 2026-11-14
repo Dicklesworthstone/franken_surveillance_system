@@ -239,6 +239,36 @@ impl Fixture {
     }
 }
 
+
+fn retain_liveness_metadata(fixture: &Fixture) -> Test<ContentDigest> {
+    use fss_core::SensorId;
+    use fss_reference::discovery::DiscoverReport;
+    use fss_reference::discovery::retained_liveness::{
+        DeviceEnrollment, retain_discovery_sweep,
+    };
+    use fss_reference::discovery::watchdog::DeviceClass;
+
+    let enrollment = DeviceEnrollment::new(
+        std::net::Ipv4Addr::new(192, 0, 2, 10),
+        SensorId::parse("sensor:metadata-revalidation")?,
+        DeviceClass::Onvif,
+    )?;
+    let mut deployment = ReferenceDeployment::open(&fixture.root, SITE, &fixture.writer)?;
+    // A synthetic empty report retains metadata without performing network discovery.
+    let retained = retain_discovery_sweep(
+        &mut deployment,
+        &[enrollment],
+        &DiscoverReport::default(),
+        1_000,
+        &fixture.writer,
+    )?;
+    Ok(retained
+        .first()
+        .ok_or("retained liveness fixture")?
+        .record
+        .digest())
+}
+
 fn object(root: &Path, digest: ContentDigest) -> PathBuf {
     root.join("objects")
         .join(LOCAL_SPOOL_DIR)
@@ -253,15 +283,21 @@ fn hex(digest: ContentDigest) -> String {
         .collect()
 }
 
-fn files(root: &Path) -> Test<BTreeMap<PathBuf, Vec<u8>>> {
-    fn visit(root: &Path, path: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) -> Test {
+fn files(root: &Path) -> Test<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        out: &mut BTreeMap<PathBuf, (bool, Vec<u8>)>,
+    ) -> Test {
+        out.insert(path.strip_prefix(root)?.to_path_buf(), (true, Vec::new()));
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
                 visit(root, &path, out)?;
             } else {
-                out.insert(path.strip_prefix(root)?.to_path_buf(), fs::read(path)?);
+                assert!(entry.file_type()?.is_file(), "unexpected special fixture entry");
+                out.insert(path.strip_prefix(root)?.to_path_buf(), (false, fs::read(path)?));
             }
         }
         Ok(())
@@ -762,31 +798,9 @@ fn shared_lineage_verifier_refuses_empty_or_reordered_inputs_and_revalidates_met
 
 #[test]
 fn snapshot_metadata_revalidation_detects_changed_non_event_liveness_without_new_authority() -> Test {
-    use fss_core::SensorId;
-    use fss_reference::discovery::DiscoverReport;
-    use fss_reference::discovery::retained_liveness::{
-        DeviceEnrollment, retain_discovery_sweep,
-    };
-    use fss_reference::discovery::watchdog::DeviceClass;
-
     for remove in [false, true] {
         let fixture = Fixture::new(if remove { "missing-liveness" } else { "changed-liveness" })?;
-        let enrollment = DeviceEnrollment::new(
-            std::net::Ipv4Addr::new(192, 0, 2, 10),
-            SensorId::parse("sensor:metadata-revalidation")?,
-            DeviceClass::Onvif,
-        )?;
-        let mut deployment = ReferenceDeployment::open(&fixture.root, SITE, &fixture.writer)?;
-        // Only a synthetic empty report is retained; this fixture performs no network discovery.
-        let retained = retain_discovery_sweep(
-            &mut deployment,
-            &[enrollment],
-            &DiscoverReport::default(),
-            1_000,
-            &fixture.writer,
-        )?;
-        let digest = retained.first().ok_or("retained liveness fixture")?.record.digest();
-        drop(deployment);
+        let digest = retain_liveness_metadata(&fixture)?;
         let before = files(&fixture.root)?;
         let limits = EventChangesLimits::default();
         let cx = context(&fixture.root, limits, false)?;
@@ -816,6 +830,61 @@ fn snapshot_metadata_revalidation_detects_changed_non_event_liveness_without_new
         );
         assert_eq!(files(&fixture.root)?, before_refusal);
         drop(owner);
+        cx.drain_and_finalize();
+    }
+    Ok(())
+}
+
+#[test]
+fn finish_refuses_changed_non_event_liveness_after_complete_preparation() -> Test {
+    for remove in [false, true] {
+        let fixture = Fixture::new(if remove {
+            "finish-missing-liveness"
+        } else {
+            "finish-corrupt-liveness"
+        })?;
+        let digest = retain_liveness_metadata(&fixture)?;
+        let request = fixture.request()?;
+        let limits = EventChangesLimits::default();
+        let cx = context(&fixture.root, limits, false)?;
+        let cancelled = || false;
+        let before_prepare = files(&fixture.root)?;
+        let prepared =
+            prepare_event_changes_in_deployment(&fixture.root, &request, limits, &cx, &cancelled)?;
+        assert_eq!(prepared.answer().snapshot.sensor_liveness.len(), 1);
+        assert_eq!(prepared.answer().report.from(), &fixture.from);
+        assert_eq!(prepared.answer().report.to(), &fixture.to);
+        let preview_usage = prepared.answer().read_usage;
+        let observed_anchor = prepared.answer().snapshot.anchor.clone();
+        assert_eq!(files(&fixture.root)?, before_prepare, "prepare must be read only");
+
+        // This is protected non-event context, outside the selected event publication
+        // lineage. Neither the committed authority head nor the event revisions change.
+        let path = object(&fixture.root, digest);
+        if remove {
+            fs::remove_file(&path)?;
+        } else {
+            fs::write(&path, b"liveness metadata changed after full comparison preparation")?;
+        }
+        let before_finish = files(&fixture.root)?;
+        let error = prepared
+            .finish()
+            .err()
+            .ok_or("late non-event metadata tampering must withhold the prepared answer")?;
+        assert!(matches!(error.kind, EventChangesErrorKind::Source(_)));
+        let observation = error.observation.ok_or("observed metadata refusal")?;
+        assert_eq!(observation.anchor, observed_anchor);
+        assert!(
+            observation.read_usage.read_objects > preview_usage.read_objects,
+            "the failed non-event reread must be charged to the original allowance"
+        );
+        assert!(observation.read_usage.read_bytes <= u64::try_from(limits.read.max_read_bytes)?);
+        assert!(observation.read_usage.read_objects <= u64::try_from(limits.read.max_read_objects)?);
+        assert_eq!(
+            files(&fixture.root)?,
+            before_finish,
+            "finish must neither repair tampered metadata nor perform writer work"
+        );
         cx.drain_and_finalize();
     }
     Ok(())
