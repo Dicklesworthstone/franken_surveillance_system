@@ -199,6 +199,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures 0.3.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -211,6 +212,7 @@ dependencies = [
  "chacha20",
  "cipher",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -653,6 +655,7 @@ name = "fss-reference"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "chacha20poly1305",
  "fss-codec-h264",
  "fss-codec-h265",
  "fss-codec-jpeg-encode",
@@ -672,6 +675,7 @@ dependencies = [
  "fss-tutk",
  "fss-tuya",
  "fss-twin",
+ "zeroize",
 ]
 
 [[package]]

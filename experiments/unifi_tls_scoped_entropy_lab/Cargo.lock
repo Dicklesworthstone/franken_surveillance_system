@@ -838,6 +838,7 @@ dependencies = [
  "fss-packet",
  "fss-reference",
  "fss-runtime",
+ "nix",
  "p256",
  "rustls",
  "rustls-pure",

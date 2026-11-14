@@ -44,6 +44,19 @@ the physical camera applies it as a restoration is unknown. The plan does
 not durably retain the old value, prove camera merge semantics, restore shared
 audio or settle either effect.
 
+An encrypted pre-change checkpoint is being added to retain the three prior
+serializer values and the exact proposed forward body. Its authenticated scope
+binds camera and certificate claims, original request, preconditions and
+baseline; the scope and caller-supplied key must be retained independently.
+The nonce comes from the scoped runtime under an explicit authority whose
+implementation is responsible for cryptographic entropy and nonce uniqueness.
+This code does not use Keychain. A real key provider, automatic protected
+storage, post-restart restore planning, independent camera identity, and
+physical-camera behavior are not yet established. The initial remote build
+stopped before compilation due to a dependency lock mismatch, and a corrected
+build and tamper/cold-reopen tests are pending. No checkpoint was captured from
+the physical G4.
+
 The initial planning snapshot passed two synthetic tests on a strict remote
 worker: one-track request shape and rejection of changed baseline, peer,
 listener, fence, framing, and codec claims. The guarded-dispatch and loopback
@@ -145,6 +158,20 @@ the camera API executable SHA-256 was
 `ba40aee85b4d5aafc309af29f382e9e9e82981e1cda5134b324a87a0e4c19a55`.
 Both invocations' deletion guards observed zero attempts. These regressions
 do not qualify physical-device behavior or a complete replacement.
+
+The encrypted-checkpoint v12 snapshot compiled with `--offline --locked` on
+`hz2`. Its seven serializer unit tests passed, including a private staging
+spool reopen, wrong key and scope, tampered nonce and ciphertext, and denied
+access; all five guarded loopback dispatch tests passed separately. The unit
+and integration executable SHA-256 values were
+`de7ccd7e9ba91249663292982114d2bb33ac15a496306621f416f8a529d61473` and
+`d29e744dde677b6f0a9da7612a02647e59f89652609361947b64c7ec6cf824bd`.
+The deletion guard observed zero attempts. The tested checkpoint source
+SHA-256 was `e5edb0b92ebdefadd6924bc744e4862638ecd97d98a536bcef24910fb2518999`;
+the later scope accessors in the current worktree require their own build and
+tests. The checkpoint remains a fixture-tested component, with no production
+key management, durable nonce policy, post-restart restore authorization, or
+physical-camera validation. It does not settle any earlier effect.
 
 ## Live qualification still required
 

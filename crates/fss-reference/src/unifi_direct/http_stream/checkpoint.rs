@@ -84,6 +84,23 @@ impl Scope {
         scope.validate()?;
         Ok(scope)
     }
+    /// Compare expected camera and certificate claims during independent
+    /// recovery admission. This is equality, not identity authentication.
+    pub fn matches_camera(&self, camera: ContentDigest, certificate: ContentDigest) -> bool {
+        self.camera == camera && self.certificate == certificate
+    }
+    /// The original forward request digest, for matching a recovered journal.
+    pub fn request_digest(&self) -> ContentDigest {
+        self.request
+    }
+    /// The original forward precondition digest, for matching a recovered journal.
+    pub fn precondition_digest(&self) -> ContentDigest {
+        self.preconditions
+    }
+    /// The original private baseline binding; treat this digest as sensitive.
+    pub fn baseline_digest(&self) -> ContentDigest {
+        self.baseline
+    }
     fn validate(&self) -> Result<(), Error> {
         if !(1..=3).contains(&self.channel)
             || ![
@@ -453,6 +470,12 @@ mod tests {
         let scope = Scope::from_plan(&plan, ContentDigest::sha256(b"synthetic certificate"))?;
         let scope_bytes = scope.encode()?;
         assert_eq!(Scope::decode(&scope_bytes)?, scope);
+        assert!(scope.matches_camera(plan.camera, ContentDigest::sha256(b"synthetic certificate")));
+        assert!(
+            !scope.matches_camera(plan.camera, ContentDigest::sha256(b"different certificate"))
+        );
+        assert_eq!(scope.request_digest(), plan.request_digest());
+        assert_eq!(scope.precondition_digest(), plan.precondition_digest());
         let mut trailing = scope_bytes.clone();
         trailing.push(0);
         assert!(matches!(Scope::decode(&trailing), Err(Error::Invalid)));
