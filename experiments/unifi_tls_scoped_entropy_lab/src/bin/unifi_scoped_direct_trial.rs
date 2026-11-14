@@ -88,7 +88,7 @@ fn retain_output_on_receipt_failure<R, E: Into<Box<dyn Error>>>(
         },
     }
 }
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
@@ -184,6 +184,58 @@ async fn acquire_entropy<'scope, 'task>(
     }
 }
 
+// This Linux-only interface observation is a laboratory boundary. Production
+// use needs a qualified first-party OS substrate and revalidation at dispatch.
+#[cfg(target_os = "linux")]
+async fn lab_check_neighbor_interface<'scope, 'task>(
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    interface: &str,
+    bind: Ipv4Addr,
+    prefix: u8,
+) -> ResultBox<()> {
+    use fss_runtime::drained_blocking::{self, WorkOutcome};
+    use nix::{ifaddrs::getifaddrs, net::if_::InterfaceFlags};
+    use discovery::neighbor::Error;
+    task.checkpoint_for(RuntimeGrant::AdapterNet, "unifi:discovery", clock.now()?, &BudgetVector::ZERO)?;
+    let interface = interface.to_owned();
+    let work = move |child: asupersync::Cx| {
+        child.checkpoint().map_err(|_| Error::Authority)?;
+        let mut matched = false;
+        for entry in getifaddrs().map_err(|_| Error::Unavailable)? {
+            if entry.interface_name != interface
+                || !entry.flags.contains(InterfaceFlags::IFF_UP | InterfaceFlags::IFF_BROADCAST)
+                || entry.flags.intersects(InterfaceFlags::IFF_LOOPBACK | InterfaceFlags::IFF_POINTOPOINT)
+            {
+                continue;
+            }
+            let Some(address) = entry.address.as_ref().and_then(|a| a.as_sockaddr_in()) else { continue };
+            if address.ip() != bind { continue; }
+            let netmask = entry.netmask.as_ref().and_then(|a| a.as_sockaddr_in()).ok_or(Error::Configuration)?;
+            let mask = u32::from(netmask.ip());
+            let actual_prefix = mask.leading_ones();
+            if !(1..=30).contains(&actual_prefix)
+                || mask != u32::MAX << (32 - actual_prefix)
+                || u32::from(prefix) < actual_prefix
+            {
+                return Err(Error::Configuration);
+            }
+            matched = true;
+        }
+        child.checkpoint().map_err(|_| Error::Authority)?;
+        if matched { Ok(()) } else { Err(Error::Configuration) }
+    };
+    let mut worker = drained_blocking::start(cx, work).map_err(|_| Error::Worker)?;
+    let receipt = worker.join().await.ok_or(Error::Worker)?;
+    if receipt.runtime.is_err() { return Err(Error::Worker.into()); }
+    task.checkpoint_for(RuntimeGrant::AdapterNet, "unifi:discovery", clock.now()?, &BudgetVector::ZERO)?;
+    match receipt.work {
+        WorkOutcome::Finished(result) => Ok(result?),
+        _ => Err(Error::Worker.into()),
+    }
+}
+
 // Discover an already pinned camera without requiring its MAC or IP as input.
 // No credential is read or sent during these bounded TLS-only probes. A match
 // establishes possession of the pinned key, not ownership of the physical camera.
@@ -237,8 +289,10 @@ struct Options {
     camera: Option<Ipv4Addr>,
     discovery_prefix: Option<u8>,
     discovery_hint: Option<Ipv4Addr>,
+    discovery_neighbor_interface: Option<String>,
     observe_only: bool,
     observe_snapshot: bool,
+    observe_serializers: bool,
     mac: Option<[u8; 6]>,
     cert: PathBuf,
     key: PathBuf,
@@ -389,6 +443,8 @@ fn options() -> ResultBox<Options> {
     if lab_video_only_archive { args.pop(); }
     let lab_owned_archive = args.last().is_some_and(|s| s == "--lab-owned-archive");
     if lab_owned_archive { args.pop(); }
+    let observe_serializers = args.last().is_some_and(|s| s == "--observe-serializers");
+    if observe_serializers { args.pop(); }
     let observe_snapshot = args.last().is_some_and(|s| s == "--observe-snapshot");
     if observe_snapshot { args.pop(); }
     let observe_only = args.last().is_some_and(|s| s == "--observe-only");
@@ -406,6 +462,14 @@ fn options() -> ResultBox<Options> {
     let lab_inband_avc_auto = lab_auto_pinned_setup && lab_managed_archive
         && lab_video_only_archive && !lab_inband_avc_explicit;
     let lab_inband_avc = lab_inband_avc_explicit || lab_inband_avc_auto;
+    let discovery_neighbor_interface = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--discovery-neighbor-interface=")) {
+        if value.is_empty() || value.len() > 15 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b,b'_'|b'-'|b'.'|b':')) {
+            return Err("invalid discovery neighbor interface".into());
+        }
+        let interface = value.to_owned();
+        args.pop();
+        Some(interface)
+    } else { None };
     let discovery_hint = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--discovery-hint=")) {
         let ip = value.parse::<Ipv4Addr>()?;
         args.pop();
@@ -542,6 +606,7 @@ fn options() -> ResultBox<Options> {
     if camera.is_none() != discovery_prefix.is_some()
         || (discovery_prefix.is_some() && (setup.is_none() || !cfg!(target_os = "linux")))
         || (discovery_hint.is_some() && discovery_prefix.is_none())
+        || (discovery_neighbor_interface.is_some() && discovery_prefix.is_none())
     {
         return Err("automatic discovery requires auto, a scope prefix and Linux camera setup".into());
     }
@@ -553,6 +618,9 @@ fn options() -> ResultBox<Options> {
     }
     if observe_snapshot && !observe_only {
         return Err("snapshot observation requires --observe-only".into());
+    }
+    if observe_serializers && !observe_only {
+        return Err("serializer observation requires --observe-only".into());
     }
     if lab_auto_pinned_setup != lab_setup_fence.is_some()
         || (lab_auto_pinned_setup && (observe_only || anchored_journal.is_none() || setup.is_none() || discovery_prefix.is_none() || args.get(2).is_none_or(|mac| mac != "auto"))) {
@@ -651,8 +719,10 @@ fn options() -> ResultBox<Options> {
         camera,
         discovery_prefix,
         discovery_hint,
+        discovery_neighbor_interface,
         observe_only,
         observe_snapshot,
+        observe_serializers,
         mac,
         cert,
         key,
@@ -1051,9 +1121,23 @@ fn run(args: Options) -> ResultBox<()> {
                 #[cfg(target_os="linux")]
                 let discovered=if let Some(prefix)=args.discovery_prefix {
                     let setup_args=args.setup.as_ref().ok_or("automatic discovery requires setup")?;
-                    let targets=discovery_targets(*args.listen.ip(),prefix,setup_args.discovery_port,args.discovery_hint)?;
-                    let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,&targets,"unifi:discovery",Duration::from_secs(2),MAX_DISCOVERY_PACKETS)?;
-                    let report=discovery::discover(task,cx,clock.now()?,&cfg).await?;
+                    let plans=if let Some(interface)=args.discovery_neighbor_interface.as_deref() {
+                        let scope=discovery::neighbor::Scope::new(*args.listen.ip(),prefix,setup_args.discovery_port)?;
+                        lab_check_neighbor_interface(task,cx,clock,interface,*args.listen.ip(),prefix).await?;
+                        let hints=discovery::neighbor::read(task,cx,clock,"unifi:discovery",interface,scope).await?;
+                        println!("trial_neighbor_discovery=hints count={} completeness=unknown",hints.len());
+                        discovery::neighbor::plans(scope,&hints,args.discovery_hint)?
+                    } else {
+                        vec![discovery_targets(*args.listen.ip(),prefix,setup_args.discovery_port,args.discovery_hint)?]
+                    };
+                    let mut reports=Vec::with_capacity(plans.len());
+                    for targets in &plans {
+                        let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,targets,"unifi:discovery",Duration::from_secs(2),MAX_DISCOVERY_PACKETS)?;
+                        reports.push(discovery::discover(task,cx,clock.now()?,&cfg).await?);
+                    }
+                    let report=if reports.len()==1 {reports.pop().ok_or("discovery report missing")?} else {
+                        discovery::Report::combine_completed(&reports.iter().collect::<Vec<_>>())?
+                    };
                     let index=match args.mac {
                         Some(mac)=>report.select_mac_claim(mac)?,
                         None=>find_pinned_candidate(task,cx,clock,&report,camera_pin.as_deref().ok_or("missing camera certificate pin")?,setup_args.https_port).await?,
@@ -1172,10 +1256,30 @@ fn run(args: Options) -> ResultBox<()> {
                     if args.observe_only {
                         let observed=setup_owner.observe(&mut http,&setup_config).await?;
                         if setup_owner.effects.journal().operations().next().is_some() {return Err("read-only observation unexpectedly prepared an effect".into());}
-                        println!("trial_observation=complete settings_consistent=true controller_port={:?} controller_claim={:?} identity=network_claim journal=none",observed.status.controller_port,observed.settings.controller);
+                        println!("trial_projection_observation=matched reads=2 values=redacted");
+                        println!("trial_video_destinations={:?} provenance=camera_claim values=redacted",observed.settings.video_destinations);
                         if let Some(limits)=auto_profile_limits {
                             let selection=observed.select_reported_video(limits)?;
                             println!("trial_reported_video={:?} provenance=camera_claim delivery=unverified",selection.selected);
+                        }
+                        if args.observe_serializers {
+                            // The public settings projection hides destination values. Compare
+                            // independently authorized bindings without printing or retaining
+                            // the values or their potentially sensitive digests.
+                            let (first_shape,first)=http.settings_serializers(Duration::from_secs(10)).await?;
+                            let (second_shape,second)=http.settings_serializers(Duration::from_secs(10)).await?;
+                            if first_shape!=observed.settings || second_shape!=observed.settings {
+                                return Err("serializer observation projection changed".into());
+                            }
+                            let authorize=|peer,generation| {
+                                peer==camera_address && generation==1
+                                    && camera_http::Authority::permits(&setup_policy,peer,generation,camera_http::Operation::SettingsSerializers)
+                                    && clock.now().is_ok_and(|now| task.checkpoint_for(RuntimeGrant::ObserveStatus,&resource,now,&BudgetVector::ZERO).is_ok())
+                            };
+                            if first.binding(&authorize)? != second.binding(&authorize)? {
+                                return Err("serializer binding changed between reads".into());
+                            }
+                            println!("trial_serializer_observation=consistent reads=2 values=redacted custody=memory_only");
                         }
                         if args.observe_snapshot {
                             task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
@@ -1188,6 +1292,7 @@ fn run(args: Options) -> ResultBox<()> {
                             if usize::try_from(width)?.checked_mul(usize::try_from(height)?)!=Some(image.pixels().len()) {return Err("decoded snapshot dimensions inconsistent".into());}
                             println!("trial_snapshot=decoded width={width} height={height} media_persisted=false");
                         }
+                        println!("trial_observation=complete settings_projection_consistent=true identity=network_claim journal=none");
                         return Ok(());
                     }
                     let framing=if setup_args.chunked {handoff::Framing::Chunked} else {handoff::Framing::ContentLength};

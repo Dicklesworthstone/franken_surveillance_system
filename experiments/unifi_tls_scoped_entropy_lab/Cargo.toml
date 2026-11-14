@@ -27,6 +27,9 @@ rustix = { version = "=1.1.6", features = ["fs"] }
 x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
 fss-object = { path = "../../crates/fss-object" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["net"] }
+
 [dev-dependencies]
 socket2 = "=0.6.5"
 
