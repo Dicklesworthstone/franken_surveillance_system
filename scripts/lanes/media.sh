@@ -38,8 +38,20 @@ check() { # check <expected-exit> <label> <printf-format>
   printf 'probe %s: exit %s\n' "$label" "$got"
 }
 
+checkp() { # checkp <expected-exit> <label> <printf-format>  — --parameters mode
+  local want="$1" label="$2" fixture="$3"
+  local got=0
+  printf "$fixture" | "$BIN" --parameters --bytes 16 >/dev/null 2>&1 || got=$?
+  if [[ "$got" != "$want" ]]; then
+    printf 'parameters %s: exit %s, wanted %s\n' "$label" "$got" "$want" >&2
+    exit 1
+  fi
+  printf 'parameters %s: exit %s\n' "$label" "$got"
+}
+
 check 0 matroska            '\x1a\x45\xdf\xa3matroska'
 check 0 isobmff-brand       '\x00\x00\x00\x18ftypavc1'
 check 0 jpeg                '\xff\xd8\xff\xe0ACameraX'
 check 10 short-head         'FLV'
 check 11 unknown            'RIFFxxxxWAVE'
+checkp 10 parameters-short  '\x00\x00\x00\x01\x67'
