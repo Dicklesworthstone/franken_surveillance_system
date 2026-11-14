@@ -299,10 +299,13 @@ fn completed_native_source_deletion_revokes_derivatives_without_poisoning_discov
     let report_objects = before
         .rows
         .iter()
-        .map(|row| {
+        .map(|row| -> Test<ObjectId> {
             let native = match row.family {
                 ReportCatalogFamily::PackageDetectionRecord => "package-detection",
                 ReportCatalogFamily::PackageZoneReport => "package-zones",
+                ReportCatalogFamily::ModelInvocationReceipt => {
+                    return Err("fixture unexpectedly contains a scalar model run".into());
+                }
             };
             let identity: String = row
                 .report_digest
@@ -310,9 +313,9 @@ fn completed_native_source_deletion_revokes_derivatives_without_poisoning_discov
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
-            ObjectId::parse(format!("object:{native}:{identity}"))
+            Ok(ObjectId::parse(format!("object:{native}:{identity}"))?)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Test<Vec<_>>>()?;
     for object in &report_objects {
         assert!(
             plan.tombstones
