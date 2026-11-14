@@ -7,7 +7,7 @@
 //! and account for I/O. A written request only proves local dispatch. An
 //! interrupted write is fenced; the caller must reconcile the remote session.
 
-use super::{VideoChannel, handoff, metered::MeteredIo};
+use super::{VideoChannel, handoff, http_stream, intent, metered::MeteredIo};
 use asupersync::{
     Cx,
     http::h1::Response,
@@ -32,6 +32,19 @@ const MAX_CREDENTIAL: usize = 4096;
 const MAX_STATUS: usize = 262_144;
 const MAX_JPEG: usize = 4 * 1024 * 1024;
 
+/// Camera-local operation that received a temporary-unavailability response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpOperation {
+    /// Camera-local session login.
+    Login,
+    /// Camera status read.
+    Status,
+    /// Camera settings read, including serializer inspection.
+    Settings,
+    /// JPEG snapshot read.
+    Snapshot,
+}
+
 /// Payload-free local API refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -43,6 +56,8 @@ pub enum Error {
     RequestMismatch,
     /// The peer did not return a successful login, status or image response.
     HttpStatus,
+    /// The peer returned HTTP 503 for this operation. This does not authorize retry.
+    ServiceUnavailable(HttpOperation),
     /// A unique, safe camera session cookie was not returned.
     Cookie,
     /// The status response was not a bounded, strict JSON object.
@@ -60,6 +75,14 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+fn http_failure(status: u16, operation: HttpOperation) -> Error {
+    if status == 503 {
+        Error::ServiceUnavailable(operation)
+    } else {
+        Error::HttpStatus
+    }
+}
 
 /// Local request outcome; a completed write does not prove peer acceptance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +118,12 @@ pub enum Phase {
     AwaitHandoff,
     /// A handoff response was accepted but requires fresh settings readback.
     ReconcileSettings,
+    /// A locally written serializer request awaits its HTTP response.
+    AwaitSerializer,
+    /// The serializer response requires a full serializer readback.
+    ReconcileSerializers,
+    /// A full post-serializer settings response is awaited.
+    AwaitSerializerSettings,
     /// The local session must be retired or independently reconciled.
     Fenced,
 }
@@ -105,6 +134,7 @@ enum Kind {
     RefreshStatus,
     Settings,
     SettingsAfterHandoff,
+    SettingsAfterSerializer,
     Snapshot,
 }
 
@@ -447,6 +477,58 @@ pub trait HandoffAuthority {
     ) -> bool;
 }
 
+/// Live authority for a single camera-local serializer update. The caller must
+/// independently bind the actual transport, listener, peer, lease and policy.
+pub trait SerializerAuthority {
+    /// Revalidate on every write and flush; this must consult current authority.
+    fn permits(
+        &self,
+        plan: &http_stream::Plan,
+        current: http_stream::Preconditions,
+        permit: &CommittedEffect,
+    ) -> bool;
+}
+
+struct GuardedSerializerWriter<'a, 'scope, 'task, IO> {
+    io: &'a mut MeteredIo<'scope, 'task, IO>,
+    cx: &'a Cx,
+    plan: &'a http_stream::Plan,
+    current: http_stream::Preconditions,
+    permit: &'a CommittedEffect,
+    authority: &'a dyn SerializerAuthority,
+}
+impl<IO: AsyncWrite + Unpin> GuardedSerializerWriter<'_, '_, '_, IO> {
+    fn check(&self) -> io::Result<()> {
+        if self.cx.checkpoint().is_err()
+            || !self.authority.permits(self.plan, self.current, self.permit)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "serializer authority refused",
+            ));
+        }
+        Ok(())
+    }
+}
+impl<IO: AsyncWrite + Unpin> AsyncWrite for GuardedSerializerWriter<'_, '_, '_, IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.check()?;
+        Pin::new(&mut *self.io).poll_write(cx, bytes)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut *self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check()?;
+        Pin::new(&mut *self.io).poll_shutdown(cx)
+    }
+}
+
 struct GuardedHandoffWriter<'a, 'scope, 'task, IO> {
     io: &'a mut MeteredIo<'scope, 'task, IO>,
     cx: &'a Cx,
@@ -569,7 +651,9 @@ pub struct Session {
     phase: Phase,
     pending: Option<Kind>,
     cookie: Option<Private>,
+    last_status: Option<StatusShape>,
     last_settings: Option<SettingsObservation>,
+    last_serializers: Option<ContentDigest>,
 }
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -597,7 +681,9 @@ impl Session {
             phase: Phase::Login,
             pending: None,
             cookie: None,
+            last_status: None,
             last_settings: None,
+            last_serializers: None,
         })
     }
     /// Fence an interrupted request or response and discard the session cookie.
@@ -605,6 +691,8 @@ impl Session {
     pub(crate) fn fence(&mut self) {
         self.pending = None;
         self.cookie = None;
+        self.last_status = None;
+        self.last_serializers = None;
         self.phase = Phase::Fenced;
     }
 
@@ -675,6 +763,18 @@ impl Session {
         let bytes = self.get("/api/1.1/settings", "application/json")?;
         self.prepare(kind, bytes)
     }
+    /// Prepare a full serializer read, including the mandatory readback after
+    /// a locally written serializer request. This does not settle the effect.
+    pub fn prepare_serializer_settings(&mut self) -> Result<Request, Error> {
+        let kind = match self.phase {
+            Phase::Snapshot => Kind::Settings,
+            Phase::ReconcileSettings => Kind::SettingsAfterHandoff,
+            Phase::ReconcileSerializers => Kind::SettingsAfterSerializer,
+            _ => return Err(Error::State),
+        };
+        let bytes = self.get("/api/1.1/settings", "application/json")?;
+        self.prepare(kind, bytes)
+    }
     fn get(&self, path: &str, accept: &str) -> Result<Vec<u8>, Error> {
         let cookie = &self.cookie.as_ref().ok_or(Error::State)?.0;
         let head = format!(
@@ -716,12 +816,18 @@ impl Session {
             (Kind::Snapshot, WriteOutcome::NotWritten) => Phase::Snapshot,
             (Kind::Settings, WriteOutcome::NotWritten) => Phase::Snapshot,
             (Kind::SettingsAfterHandoff, WriteOutcome::NotWritten) => Phase::ReconcileSettings,
+            (Kind::SettingsAfterSerializer, WriteOutcome::NotWritten) => {
+                Phase::ReconcileSerializers
+            }
             (Kind::Login, WriteOutcome::Written) => Phase::AwaitLogin,
             (Kind::Status, WriteOutcome::Written) => Phase::AwaitStatus,
             (Kind::RefreshStatus, WriteOutcome::Written) => Phase::AwaitStatus,
             (Kind::Snapshot, WriteOutcome::Written) => Phase::AwaitSnapshot,
             (Kind::Settings, WriteOutcome::Written) => Phase::AwaitSettings,
             (Kind::SettingsAfterHandoff, WriteOutcome::Written) => Phase::AwaitSettings,
+            (Kind::SettingsAfterSerializer, WriteOutcome::Written) => {
+                Phase::AwaitSerializerSettings
+            }
         };
         Ok(())
     }
@@ -734,7 +840,7 @@ impl Session {
         let result = if response.0.status == 200 {
             cookie(&response.0.headers)
         } else {
-            Err(Error::HttpStatus)
+            Err(http_failure(response.0.status, HttpOperation::Login))
         };
         match result {
             Ok(cookie) => {
@@ -757,10 +863,11 @@ impl Session {
         let result = if response.0.status == 200 {
             status_shape(&response.0.body)
         } else {
-            Err(Error::HttpStatus)
+            Err(http_failure(response.0.status, HttpOperation::Status))
         };
         match result {
             Ok(shape) => {
+                self.last_status = Some(shape);
                 self.phase = Phase::Snapshot;
                 Ok(shape)
             }
@@ -780,11 +887,12 @@ impl Session {
         let result = if response.0.status == 200 {
             settings(&response.0.body, self.peer, self.generation)
         } else {
-            Err(Error::HttpStatus)
+            Err(http_failure(response.0.status, HttpOperation::Settings))
         };
         match result {
             Ok(observation) => {
                 self.last_settings = Some(observation);
+                self.last_serializers = None;
                 self.phase = Phase::Snapshot;
                 Ok(observation)
             }
@@ -802,17 +910,30 @@ impl Session {
         response: Response,
     ) -> Result<(SettingsObservation, VideoSerializers), Error> {
         let response = PrivateResponse(response);
-        if self.phase != Phase::AwaitSettings {
+        if !matches!(
+            self.phase,
+            Phase::AwaitSettings | Phase::AwaitSerializerSettings
+        ) {
             return Err(Error::State);
         }
         let result = if response.0.status == 200 {
             settings_with_serializers(&response.0.body, self.peer, self.generation)
         } else {
-            Err(Error::HttpStatus)
+            Err(http_failure(response.0.status, HttpOperation::Settings))
         };
         match result {
             Ok((observation, serializers)) => {
+                let binding = match serializers
+                    .binding(|peer, generation| peer == self.peer && generation == self.generation)
+                {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        self.phase = Phase::Fenced;
+                        return Err(error);
+                    }
+                };
                 self.last_settings = Some(observation);
+                self.last_serializers = Some(binding);
                 self.phase = Phase::Snapshot;
                 Ok((observation, serializers))
             }
@@ -868,7 +989,7 @@ impl Session {
         {
             refuse!(HandoffError::PermitMismatch);
         }
-        if plan.check_current(current).is_err() {
+        if plan.check_current(current).is_err() || !plan.matches_latest_status(self.last_status) {
             refuse!(HandoffError::Stale);
         }
         if !authority.permits(plan, current, &permit) {
@@ -922,6 +1043,7 @@ impl Session {
         // request retryable. The permit's obligation survives future drop.
         self.phase = Phase::Fenced;
         self.last_settings = None;
+        self.last_serializers = None;
         let write = async {
             let mut guarded = GuardedHandoffWriter {
                 io,
@@ -941,6 +1063,143 @@ impl Session {
             }
             _ => Ok(HandoffWrite::Indeterminate { permit }),
         }
+    }
+
+    /// Dispatch an experimental local serializer change. A complete write is
+    /// not evidence that the camera applied it or that restoration is possible.
+    /// The same refusal and indeterminate-write semantics as handoff apply.
+    pub async fn dispatch_serializer<IO: AsyncWrite + Unpin>(
+        &mut self,
+        cx: &Cx,
+        io: &mut MeteredIo<'_, '_, IO>,
+        plan: &http_stream::Plan,
+        current: http_stream::Preconditions,
+        observed: &VideoSerializers,
+        mut permit: CommittedEffect,
+        authority: &dyn SerializerAuthority,
+        wait: Duration,
+    ) -> Result<HandoffWrite, HandoffRefusal> {
+        macro_rules! refuse {
+            ($reason:expr) => {
+                return Err(HandoffRefusal {
+                    reason: $reason,
+                    permit,
+                })
+            };
+        }
+        if wait.is_zero() || wait > Duration::from_secs(30) {
+            refuse!(HandoffError::Wait);
+        }
+        if self.phase != Phase::Snapshot
+            || self.pending.is_some()
+            || self.last_serializers != Some(current.serializers)
+            || !plan.matches_session(self.peer, self.generation)
+            || !std::ptr::eq(cx, io.runtime_context())
+        {
+            refuse!(HandoffError::Session);
+        }
+        if !permit.journal_backed() {
+            refuse!(HandoffError::JournalRequired);
+        }
+        if permit.prepared().effect_class() != intent::EFFECT_CLASS
+            || permit.prepared().request_digest() != plan.request_digest()
+            || permit.prepared().precondition_digest() != plan.precondition_digest()
+            || permit.resource() != plan.resource()
+            || permit.fence() != plan.fence()
+        {
+            refuse!(HandoffError::PermitMismatch);
+        }
+        if plan.check_current(current, observed).is_err() {
+            refuse!(HandoffError::Stale);
+        }
+        if !authority.permits(plan, current, &permit) {
+            refuse!(HandoffError::Denied);
+        }
+        if !cx.has_timer() || cx.checkpoint().is_err() {
+            refuse!(HandoffError::Context);
+        }
+        let Some(cookie) = self.cookie.as_ref() else {
+            refuse!(HandoffError::Session);
+        };
+        let Ok(body) = plan.body() else {
+            refuse!(HandoffError::Stale);
+        };
+        let framing_header = match plan.framing() {
+            handoff::Framing::ContentLength => format!("Content-Length: {}\r\n", body.0.len()),
+            handoff::Framing::Chunked => "Transfer-Encoding: chunked\r\n".to_owned(),
+        };
+        let head = format!(
+            "PUT /api/1.1/settings HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n{}Accept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\nCookie: ",
+            self.peer, framing_header
+        );
+        let prefix = match plan.framing() {
+            handoff::Framing::ContentLength => String::new(),
+            handoff::Framing::Chunked => format!("{:x}\r\n", body.0.len()),
+        };
+        let suffix: &[u8] = match plan.framing() {
+            handoff::Framing::ContentLength => b"",
+            handoff::Framing::Chunked => b"\r\n0\r\n\r\n",
+        };
+        let mut bytes = Private(Vec::new());
+        if bytes
+            .0
+            .try_reserve_exact(
+                head.len() + cookie.0.len() + 4 + prefix.len() + body.0.len() + suffix.len(),
+            )
+            .is_err()
+        {
+            refuse!(HandoffError::Allocation);
+        }
+        bytes.0.extend_from_slice(head.as_bytes());
+        bytes.0.extend_from_slice(&cookie.0);
+        bytes.0.extend_from_slice(b"\r\n\r\n");
+        bytes.0.extend_from_slice(prefix.as_bytes());
+        bytes.0.extend_from_slice(&body.0);
+        bytes.0.extend_from_slice(suffix);
+        if !permit.try_claim_dispatch() {
+            refuse!(HandoffError::PermitUsed);
+        }
+        self.phase = Phase::Fenced;
+        self.last_settings = None;
+        self.last_serializers = None;
+        let write = async {
+            let mut guarded = GuardedSerializerWriter {
+                io,
+                cx,
+                plan,
+                current,
+                permit: &permit,
+                authority,
+            };
+            guarded.write_all(&bytes.0).await?;
+            guarded.flush().await
+        };
+        match timeout_at(cx.now() + wait, write).await {
+            Ok(Ok(())) => {
+                self.phase = Phase::AwaitSerializer;
+                Ok(HandoffWrite::Written { permit })
+            }
+            _ => Ok(HandoffWrite::Indeterminate { permit }),
+        }
+    }
+
+    /// Observe the local HTTP reply and require a complete serializer readback.
+    /// A 200 and its payload do not settle the journaled obligation.
+    pub fn accept_serializer_response_observed(
+        &mut self,
+        response: Response,
+    ) -> Result<HandoffResponseObservation, Error> {
+        let response = PrivateResponse(response);
+        if self.phase != Phase::AwaitSerializer {
+            return Err(Error::State);
+        }
+        if response.0.status != 200 {
+            self.phase = Phase::Fenced;
+            return Err(Error::HttpStatus);
+        }
+        let observation = handoff_response_observation(&response.0.body);
+        self.phase = Phase::ReconcileSerializers;
+        Ok(observation)
     }
 
     /// Observe the complete HTTP response to a locally written handoff. A 200
@@ -975,7 +1234,7 @@ impl Session {
         let body = &response.0.body;
         if response.0.status != 200 {
             self.phase = Phase::Fenced;
-            return Err(Error::HttpStatus);
+            return Err(http_failure(response.0.status, HttpOperation::Snapshot));
         }
         if body.len() < 4
             || body.len() > MAX_JPEG
@@ -1328,7 +1587,7 @@ pub(super) fn controller_binding(
     };
     Ok(binding)
 }
-fn clear_value(value: &mut Value) {
+pub(super) fn clear_value(value: &mut Value) {
     match value {
         Value::Text(s) | Value::Number(s) => {
             let mut bytes = std::mem::take(s).into_bytes();

@@ -109,6 +109,13 @@ fn harness(suffix: &str) -> Result<Harness, Box<dyn Error>> {
     harness_with_framing(suffix, Framing::ContentLength)
 }
 fn harness_with_framing(suffix: &str, framing: Framing) -> Result<Harness, Box<dyn Error>> {
+    harness_with_optional_port(suffix, framing, None)
+}
+fn harness_with_optional_port(
+    suffix: &str,
+    framing: Framing,
+    bound_port: Option<u16>,
+) -> Result<Harness, Box<dyn Error>> {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-handoff-dispatch-{}-{suffix}",
         std::process::id()
@@ -157,7 +164,10 @@ fn harness_with_framing(suffix: &str, framing: Framing) -> Result<Harness, Box<d
     )?;
     let r = session.prepare_status()?;
     session.finish_write(r, WriteOutcome::Written)?;
-    session.accept_status(Response::new(200, "OK", b"{}".to_vec()))?;
+    let status_body = bound_port
+        .map(|port| format!("{{\"controller\":{{\"port\":{port}}}}}"))
+        .unwrap_or_else(|| "{}".into());
+    let status = session.accept_status(Response::new(200, "OK", status_body.into_bytes()))?;
     let r = session.prepare_settings()?;
     session.finish_write(r, WriteOutcome::Written)?;
     let settings = session.accept_settings(Response::new(
@@ -178,7 +188,11 @@ fn harness_with_framing(suffix: &str, framing: Framing) -> Result<Harness, Box<d
         lease_fence: fence,
         settings,
     };
-    let plan = Plan::new_with_framing(peer, Ipv4Addr::new(192, 168, 1, 40), conditions, framing)?;
+    let mut plan =
+        Plan::new_with_framing(peer, Ipv4Addr::new(192, 168, 1, 40), conditions, framing)?;
+    if let Some(port) = bound_port {
+        plan = plan.bind_reported_controller_port(status, port)?;
+    }
     let op = OperationId::parse("operation:handoff-dispatch")?;
     let prepared = effects.prepare(
         &authority,
@@ -229,6 +243,125 @@ fn denied_stale_then_written_requires_fresh_readback() -> Test {
 fn chunked_write_is_bound_to_its_own_permit_and_has_exact_wire_framing() -> Test {
     exercise_framing(Framing::Chunked)
 }
+
+#[test]
+fn port_bound_handoff_refuses_a_newer_incompatible_status_without_writing() -> Test {
+    let Harness {
+        _temp,
+        mut authority,
+        mut tree,
+        effects,
+        mut session,
+        plan,
+        conditions,
+        permit,
+    } = harness_with_optional_port("port-changed", Framing::Chunked, Some(7442))?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:handoff-stale-port")?,
+                started_at: TimestampNs(5),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = async {
+                    let clock = MeteredClock::new(task, cx, TimestampNs(6))?;
+                    let bytes = Rc::new(RefCell::new(Vec::new()));
+                    let polled = Rc::new(Cell::new(false));
+                    let mut io = MeteredIo::with_clock(
+                        Sink {
+                            bytes: bytes.clone(),
+                            partial: false,
+                            polled: polled.clone(),
+                        },
+                        clock,
+                        "fixture:camera",
+                        4096,
+                    )?;
+                    let mut permit = permit;
+                    for body in [
+                        br#"{"controller":{"port":7443}}"#.as_slice(),
+                        br#"{"controller":{}}"#.as_slice(),
+                        br#"{"controller":{"port":null}}"#.as_slice(),
+                        br#"{"controller":{"port":0}}"#.as_slice(),
+                    ] {
+                        let request = session.prepare_status()?;
+                        session.finish_write(request, WriteOutcome::Written)?;
+                        session.accept_status(Response::new(200, "OK", body.to_vec()))?;
+                        let refusal = session
+                            .dispatch_handoff(
+                                cx,
+                                &mut io,
+                                &plan,
+                                conditions,
+                                permit,
+                                &Guard(true),
+                                Duration::from_secs(1),
+                            )
+                            .await
+                            .expect_err("newer incompatible port must refuse dispatch");
+                        assert_eq!(refusal.reason, HandoffError::Stale);
+                        assert_eq!(session.phase(), Phase::Snapshot);
+                        assert!(!polled.get());
+                        assert!(bytes.borrow().is_empty());
+                        permit = refusal.permit;
+                    }
+                    let request = session.prepare_status()?;
+                    session.finish_write(request, WriteOutcome::Written)?;
+                    session.accept_status(Response::new(
+                        200,
+                        "OK",
+                        br#"{"controller":{"port":7442}}"#.to_vec(),
+                    ))?;
+                    let written = session
+                        .dispatch_handoff(
+                            cx,
+                            &mut io,
+                            &plan,
+                            conditions,
+                            permit,
+                            &Guard(true),
+                            Duration::from_secs(1),
+                        )
+                        .await
+                        .map_err(|_| "matching refreshed port was refused")?;
+                    assert!(matches!(written, HandoffWrite::Written { .. }));
+                    assert!(polled.get());
+                    assert!(!bytes.borrow().is_empty());
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(59_000_000_000),
+                }
+            },
+        )
+        .await?;
+        run.receipt?;
+        run.output
+    })?;
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&OperationId::parse("operation:handoff-dispatch")?)
+            .ok_or("missing journal")?
+            .state,
+        fss_core::EffectState::Committed
+    );
+    Ok(())
+}
+
 fn exercise_framing(framing: Framing) -> Test {
     let Harness {
         _temp,
@@ -1152,11 +1285,11 @@ impl fss_reference::unifi_direct::conversation::Approval for SetupApproval {
         })
     }
 }
-struct SlowSetupApproval(Arc<std::sync::atomic::AtomicBool>);
+struct SlowSetupApproval(Arc<std::sync::atomic::AtomicBool>, Duration);
 impl fss_reference::unifi_direct::conversation::Approval for SlowSetupApproval {
     fn approve(&self, prepared: &fss_runtime::effect::PreparedEffect) -> Option<CommitApproval> {
         self.0.store(true, std::sync::atomic::Ordering::Release);
-        std::thread::sleep(Duration::from_millis(400));
+        std::thread::sleep(self.1);
         Some(CommitApproval {
             prepared_digest: prepared.digest(),
             current_precondition_digest: prepared.precondition_digest(),
@@ -1381,7 +1514,14 @@ fn run_discovered_setup_with_listener(
                         admission: peer_admission,
                         fence,
                     };
-                    let slow_approval = SlowSetupApproval(Arc::clone(&slow_approval_called));
+                    let slow_approval = SlowSetupApproval(
+                        Arc::clone(&slow_approval_called),
+                        if matches!(integrated_mode, 13..=15) {
+                            Duration::from_millis(1500)
+                        } else {
+                            Duration::from_millis(400)
+                        },
+                    );
                     let mut owner = setup::Owner {
                         cx,
                         task,
@@ -1404,7 +1544,7 @@ fn run_discovered_setup_with_listener(
                                 destination,
                                 operation: &operation,
                                 credential: br#"{"username":"fixture","password":"synthetic"}"#,
-                                wait: if matches!(integrated_mode, 13..=15) { Duration::from_millis(250) } else { Duration::from_secs(5) },
+                                wait: if matches!(integrated_mode, 13..=15) { Duration::from_secs(1) } else { Duration::from_secs(5) },
                             }
                         };
                     }
@@ -1452,7 +1592,7 @@ fn run_discovered_setup_with_listener(
                         let manual_evidence = ContentDigest::sha256(b"fixture retained setup deadline evidence");
                         assert!(matches!(owner.cancel_prepared_effect(&mut trace, manual_evidence), Err(setup::Error::Configuration)));
                         let result = owner.run_with_framing_tracked(&mut http, &config!(&report), framing, &mut trace).await;
-                        assert!(matches!(result, Err(setup::Error::Deadline)));
+                        assert!(matches!(result, Err(setup::Error::Deadline)), "expected setup deadline, got {result:?}");
                         assert_eq!(trace.operation(), Some(&operation));
                         assert!(!trace.dispatch_started());
                         assert!(!trace.preparation_cancelled());

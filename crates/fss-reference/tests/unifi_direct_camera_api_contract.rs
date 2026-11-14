@@ -4,9 +4,9 @@ use asupersync::http::h1::Response;
 use fss_core::ContentDigest;
 use fss_reference::unifi_direct::VideoChannel;
 use fss_reference::unifi_direct::camera_api::{
-    ControllerAddress, ControllerPort, Error, Phase, Session, StatusShape, VideoDestinationShape,
-    VideoMetric, VideoProfile, VideoProfileDisposition, VideoProfileLimits, WriteOutcome,
-    select_reported_video_profile,
+    ControllerAddress, ControllerPort, Error, HttpOperation, Phase, Session, StatusShape,
+    VideoDestinationShape, VideoMetric, VideoProfile, VideoProfileDisposition, VideoProfileLimits,
+    WriteOutcome, select_reported_video_profile,
 };
 use std::{error::Error as StdError, net::Ipv4Addr};
 
@@ -226,6 +226,72 @@ fn status(s: &mut Session) -> Test {
             controller_port: ControllerPort::Missing,
         }
     );
+    Ok(())
+}
+
+#[test]
+fn service_unavailable_preserves_read_stage_and_fences_without_retry() -> Test {
+    for code in [401, 403, 429, 500, 503] {
+        let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+        let request = session.prepare_login(CREDENTIAL)?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        let error = session
+            .accept_login(Response::new(code, "fixture", Vec::new()))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            if code == 503 {
+                Error::ServiceUnavailable(HttpOperation::Login)
+            } else {
+                Error::HttpStatus
+            }
+        );
+        assert_eq!(session.phase(), Phase::Fenced);
+        assert!(session.prepare_login(CREDENTIAL).is_err());
+    }
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut session)?;
+    let request = session.prepare_status()?;
+    session.finish_write(request, WriteOutcome::Written)?;
+    assert_eq!(
+        session
+            .accept_status(Response::new(503, "fixture", Vec::new()))
+            .unwrap_err(),
+        Error::ServiceUnavailable(HttpOperation::Status)
+    );
+    assert_eq!(session.phase(), Phase::Fenced);
+
+    for serializer_read in [false, true] {
+        let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+        login(&mut session)?;
+        status(&mut session)?;
+        let request = session.prepare_settings()?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        let response = Response::new(503, "fixture", Vec::new());
+        let error = if serializer_read {
+            session
+                .accept_settings_with_serializers(response)
+                .err()
+                .unwrap()
+        } else {
+            session.accept_settings(response).err().unwrap()
+        };
+        assert_eq!(error, Error::ServiceUnavailable(HttpOperation::Settings));
+        assert_eq!(session.phase(), Phase::Fenced);
+    }
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut session)?;
+    status(&mut session)?;
+    let request = session.prepare_snapshot()?;
+    session.finish_write(request, WriteOutcome::Written)?;
+    assert_eq!(
+        session
+            .accept_snapshot(Response::new(503, "fixture", Vec::new()))
+            .err()
+            .unwrap(),
+        Error::ServiceUnavailable(HttpOperation::Snapshot)
+    );
+    assert_eq!(session.phase(), Phase::Fenced);
     Ok(())
 }
 

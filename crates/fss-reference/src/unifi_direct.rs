@@ -78,6 +78,8 @@ pub mod event_worker;
 pub mod evidence;
 /// Inert, exact controller-address handoff planning.
 pub mod handoff;
+/// Inert, scoped planning for a camera-local HTTP serializer request.
+pub mod http_stream;
 /// Source-preserving TCP-to-extended-FLV ingress boundary.
 pub mod ingress;
 /// Exact inert stream-setting effect intent.

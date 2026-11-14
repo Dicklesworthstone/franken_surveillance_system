@@ -219,6 +219,16 @@ impl Plan {
     pub(super) fn matches_session(&self, peer: Ipv4Addr, generation: u64) -> bool {
         self.peer == peer && self.generation == generation
     }
+    /// A port-bound plan must still match the latest status observed by the
+    /// same local session. This does not prove the camera has not changed
+    /// after that observation.
+    pub(super) fn matches_latest_status(&self, status: Option<camera_api::StatusShape>) -> bool {
+        self.controller_port.is_none_or(|port| {
+            status.is_some_and(|status| {
+                status.controller_port == camera_api::ControllerPort::Reported(port)
+            })
+        })
+    }
     pub(super) fn framing(&self) -> Framing {
         self.framing
     }

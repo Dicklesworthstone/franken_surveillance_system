@@ -1550,6 +1550,9 @@ mod tests {
             setup::Error::VideoProfileUnavailable,
             setup::Error::Camera(camera_http::Error::Denied),
             setup::Error::Camera(camera_http::Error::Camera(camera_api::Error::HttpStatus)),
+            setup::Error::Camera(camera_http::Error::Camera(
+                camera_api::Error::ServiceUnavailable(camera_api::HttpOperation::Login),
+            )),
             setup::Error::Camera(camera_http::Error::Io(ErrorKind::Interrupted)),
             setup::Error::Camera(camera_http::Error::Protocol),
             setup::Error::Effect,

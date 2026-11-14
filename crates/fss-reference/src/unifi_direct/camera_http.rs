@@ -8,7 +8,7 @@
 //! cancelled or failed exchange fences the session; do not reuse its socket.
 
 use super::{
-    camera_api, handoff,
+    camera_api, handoff, http_stream,
     metered::{MeteredClock, MeteredIo},
 };
 use asupersync::{
@@ -50,6 +50,8 @@ pub enum Operation {
     Snapshot,
     /// Commit one separately journaled controller-association change.
     Handoff,
+    /// Commit one separately journaled camera-local serializer change.
+    SerializerSettings,
 }
 impl Operation {
     fn grant(self) -> RuntimeGrant {
@@ -60,6 +62,7 @@ impl Operation {
             }
             Self::Snapshot => RuntimeGrant::ReadMedia,
             Self::Handoff => RuntimeGrant::CameraManagementCommit,
+            Self::SerializerSettings => RuntimeGrant::CameraSettingCommit,
         }
     }
 }
@@ -195,6 +198,38 @@ impl camera_api::HandoffAuthority for HandoffPolicy<'_, '_, '_> {
             })
     }
 }
+struct SerializerPolicy<'a, 'scope, 'task> {
+    owner: &'a dyn Authority,
+    serializer: &'a dyn camera_api::SerializerAuthority,
+    task: &'scope TaskCx<'task>,
+    clock: MeteredClock<'scope, 'task>,
+    peer: Ipv4Addr,
+    generation: u64,
+    resource: &'a str,
+}
+impl camera_api::SerializerAuthority for SerializerPolicy<'_, '_, '_> {
+    fn permits(
+        &self,
+        plan: &http_stream::Plan,
+        current: http_stream::Preconditions,
+        permit: &CommittedEffect,
+    ) -> bool {
+        self.serializer.permits(plan, current, permit)
+            && self
+                .owner
+                .permits(self.peer, self.generation, Operation::SerializerSettings)
+            && self.clock.now().ok().is_some_and(|now| {
+                self.task
+                    .checkpoint_for(
+                        RuntimeGrant::CameraSettingCommit,
+                        self.resource,
+                        now,
+                        &BudgetVector::ZERO,
+                    )
+                    .is_ok()
+            })
+    }
+}
 struct ResponseAttempt<'a> {
     session: &'a mut camera_api::Session,
     finished: bool,
@@ -253,6 +288,7 @@ pub struct Owner<'scope, 'task, 'policy, IO> {
     resource: String,
     session: camera_api::Session,
     pending_handoff: Option<ContentDigest>,
+    pending_serializer: Option<ContentDigest>,
 }
 impl<IO> fmt::Debug for Owner<'_, '_, '_, IO> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -292,6 +328,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             resource: resource.to_owned(),
             session: camera_api::Session::new(peer, generation)?,
             pending_handoff: None,
+            pending_serializer: None,
         })
     }
     pub(super) fn matches_setup(
@@ -380,7 +417,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         Error,
     > {
         self.admit(Operation::SettingsSerializers, wait)?;
-        let request = self.session.prepare_settings()?;
+        let request = self.session.prepare_serializer_settings()?;
         let mut response = SensitiveResponse(Some(
             self.perform(request, Operation::SettingsSerializers, wait)
                 .await?,
@@ -392,6 +429,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             .accept_settings_with_serializers(response)
             .map_err(Error::Camera)?;
         self.pending_handoff = None;
+        self.pending_serializer = None;
         Ok(observation)
     }
     /// Read one bounded original JPEG without implying decoded content or capture time.
@@ -415,7 +453,10 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         authority: &dyn camera_api::HandoffAuthority,
         wait: Duration,
     ) -> Result<camera_api::HandoffWrite, camera_api::HandoffRefusal> {
-        if self.resource != plan.resource() || self.pending_handoff.is_some() {
+        if self.resource != plan.resource()
+            || self.pending_handoff.is_some()
+            || self.pending_serializer.is_some()
+        {
             return Err(camera_api::HandoffRefusal {
                 reason: camera_api::HandoffError::Session,
                 permit,
@@ -446,6 +487,95 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             self.pending_handoff = Some(permit.prepared().digest());
         }
         result
+    }
+
+    /// Dispatch one experimental serializer update under the camera-setting
+    /// capability and a separately committed effect. No restoration is implied.
+    pub async fn dispatch_serializer(
+        &mut self,
+        plan: &http_stream::Plan,
+        current: http_stream::Preconditions,
+        observed: &camera_api::VideoSerializers,
+        permit: CommittedEffect,
+        authority: &dyn camera_api::SerializerAuthority,
+        wait: Duration,
+    ) -> Result<camera_api::HandoffWrite, camera_api::HandoffRefusal> {
+        if self.resource != plan.resource()
+            || self.pending_handoff.is_some()
+            || self.pending_serializer.is_some()
+        {
+            return Err(camera_api::HandoffRefusal {
+                reason: camera_api::HandoffError::Session,
+                permit,
+            });
+        }
+        let policy = SerializerPolicy {
+            owner: self.authority,
+            serializer: authority,
+            task: self.task,
+            clock: self.clock,
+            peer: self.peer,
+            generation: self.generation,
+            resource: &self.resource,
+        };
+        let result = self
+            .session
+            .dispatch_serializer(
+                self.io.runtime_context(),
+                &mut self.io,
+                plan,
+                current,
+                observed,
+                permit,
+                &policy,
+                wait,
+            )
+            .await;
+        if let Ok(camera_api::HandoffWrite::Written { permit }) = &result {
+            self.pending_serializer = Some(permit.prepared().digest());
+        }
+        result
+    }
+
+    /// Read the response for this exact locally written effect. A successful
+    /// response requires a full serializer readback and independent settlement.
+    pub async fn read_serializer_response_observed(
+        &mut self,
+        permit: &CommittedEffect,
+        wait: Duration,
+    ) -> Result<camera_api::HandoffResponseObservation, Error> {
+        if self.session.phase() != camera_api::Phase::AwaitSerializer
+            || self.pending_serializer != Some(permit.prepared().digest())
+        {
+            return Err(Error::Camera(camera_api::Error::State));
+        }
+        self.admit(Operation::Settings, wait)?;
+        let cx = self.io.runtime_context();
+        let mut attempt = ResponseAttempt {
+            session: &mut self.session,
+            finished: false,
+        };
+        let mut guarded = Guarded {
+            io: &mut self.io,
+            task: self.task,
+            clock: self.clock,
+            authority: self.authority,
+            peer: self.peer,
+            generation: self.generation,
+            operation: Operation::Settings,
+            resource: &self.resource,
+        };
+        let result = timeout_at(cx.now() + wait, read_response(&mut guarded)).await;
+        let mut response = SensitiveResponse(Some(match result {
+            Err(_) => return Err(Error::Deadline),
+            Ok(value) => value?,
+        }));
+        guarded.check().map_err(classify_io)?;
+        let observation = attempt
+            .session
+            .accept_serializer_response_observed(response.0.take().ok_or(Error::Protocol)?)?;
+        attempt.finished = true;
+        Ok(observation)
     }
     /// Read the reply to this session's exact written handoff, then require a
     /// fresh [`Self::settings`] readback. The caller retains the claimed permit
