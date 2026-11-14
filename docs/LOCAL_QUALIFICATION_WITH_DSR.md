@@ -203,3 +203,14 @@ Exact DSR command forms may evolve; the invariants above do not.
 - partial manifest accidentally marked authoritative;
 - upload/download mismatch;
 - known critical negative evidence without an explicit blocked claim.
+
+## When the fleet refuses admission
+
+`RCH` can refuse every worker with `no_admissible_workers: disk_headroom=1` even though
+`allow_local_fallback = true` is configured, in which case the shim still prints "remote required" and
+the build never runs. Neither `rustup run <toolchain> cargo` nor a plain `cargo` escapes it, because
+both are wrapped. Invoke the toolchain binary directly for that build only:
+
+```sh
+~/.rustup/toolchains/<pinned>/bin/cargo build --target <host-triple> ...
+```
