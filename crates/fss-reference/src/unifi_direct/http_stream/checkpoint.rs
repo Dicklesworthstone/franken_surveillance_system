@@ -421,6 +421,63 @@ impl Retained {
         let view = std::array::from_fn(|i| tracks[i].object().and_then(|v| v.get("value")));
         Ok(inspect(view, root.get("forward").ok_or(Error::Invalid)?))
     }
+
+    /// Compare a newly observed session with the retained pre-change values
+    /// and forward request. The caller must independently admit the current
+    /// camera and certificate, and the callback must authorize disclosure of
+    /// this observation's actual peer and generation. Equality of the supplied
+    /// claims does not authenticate the device. The result is a readback
+    /// claim, not effect settlement, restore authority, or proof of streaming.
+    pub fn compare_reopened(
+        &self,
+        cx: &Cx,
+        authority: &dyn Authority,
+        camera: ContentDigest,
+        certificate: ContentDigest,
+        observed: &VideoSerializers,
+        authorize_observation: impl FnOnce(Ipv4Addr, u64) -> bool,
+    ) -> Result<super::ReadbackObservation, Error> {
+        if !self.scope.matches_camera(camera, certificate) {
+            return Err(Error::Invalid);
+        }
+        let channel = match self.scope.channel {
+            1 => "video1",
+            2 => "video2",
+            3 => "video3",
+            _ => return Err(Error::Invalid),
+        };
+        let index = usize::from(self.scope.channel - 1);
+        let result = self.visit(cx, authority, |before, forward| {
+            let expected = forward
+                .object()
+                .and_then(|o| o.get("av"))
+                .and_then(Value::object)
+                .and_then(|o| o.get("video"))
+                .and_then(Value::object)
+                .and_then(|o| o.get(channel))
+                .and_then(Value::object)
+                .and_then(|o| o.get("avSerializer"))
+                .ok_or(Error::Invalid)?;
+            observed
+                .visit(authorize_observation, |after| {
+                    let target_changed = before[index] != after[index];
+                    let other_changed = (0..3).any(|i| i != index && before[i] != after[i]);
+                    let change = match (target_changed, other_changed) {
+                        (false, false) => super::ReadbackChange::Unchanged,
+                        (true, false) => super::ReadbackChange::TargetTrackOnly,
+                        (_, true) => super::ReadbackChange::OtherTracks { target_changed },
+                    };
+                    super::ReadbackObservation {
+                        change,
+                        requested_fields_match: after[index]
+                            .is_some_and(|actual| super::contains_requested(expected, actual)),
+                    }
+                })
+                .map_err(|_| Error::Denied)
+        })??;
+        admit(cx, &self.scope, authority, Action::Inspect)?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -571,6 +628,24 @@ mod tests {
                 assert_eq!(tracks[2], None);
                 assert!(forward.object().is_some());
             })?;
+            let certificate = ContentDigest::sha256(b"synthetic certificate");
+            let new_peer = Ipv4Addr::new(192, 168, 44, 21);
+            let after = snapshot(new_peer, 2, br#"{"av":{"video":{"video1":{"avSerializer":{"type":"extendedFlv","parameters":{"streamName":"0123456789abcdef","withOpus":false},"destinations":["tcp://192.168.44.10:17777?retryInterval=1&connectTimeout=5"]}},"video2":{"avSerializer":null}}}}"#);
+            let admitted = |p, g| p == new_peer && g == 2;
+            assert_eq!(
+                retained.compare_reopened(&cx, &Policy(true), plan.camera, certificate, &after, admitted)?,
+                super::super::ReadbackObservation {
+                    change: super::super::ReadbackChange::TargetTrackOnly,
+                    requested_fields_match: true,
+                }
+            );
+            let drift = snapshot(new_peer, 2, br#"{"av":{"video":{"video1":{"avSerializer":{}},"video2":{"avSerializer":{}}}}}"#);
+            let observation = retained.compare_reopened(&cx, &Policy(true), plan.camera, certificate, &drift, admitted)?;
+            assert_eq!(observation.change, super::super::ReadbackChange::OtherTracks { target_changed: true });
+            assert!(!observation.requested_fields_match);
+            assert!(matches!(retained.compare_reopened(&cx, &Policy(true), plan.camera, ContentDigest::sha256(b"different certificate"), &after, admitted), Err(Error::Invalid)));
+            assert!(matches!(retained.compare_reopened(&cx, &Policy(true), plan.camera, certificate, &after, |_, _| false), Err(Error::Denied)));
+            assert!(matches!(retained.compare_reopened(&cx, &Deny(Action::Inspect), plan.camera, certificate, &after, admitted), Err(Error::Denied)));
             Ok::<(), Box<dyn std::error::Error>>(())
         })?;
         Ok(())
