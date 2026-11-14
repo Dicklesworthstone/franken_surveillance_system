@@ -16,7 +16,10 @@
     "inference": "crates/fss-reference/src/ingest/inference/mod.rs",
     "native_cli": "crates/fss-cli/src/bin/fss-infer.rs",
     "detection_tracking": "crates/fss-cli/src/bin/fss-infer/detection_cli.rs",
-    "status": "IMPLEMENTATION_STATUS.md"
+    "status": "IMPLEMENTATION_STATUS.md",
+    "model_run_metadata": "crates/fss-reference/src/ingest/inference/metadata.rs",
+    "canonical_catalog": "crates/fss-reference/src/agent_report_catalog.rs",
+    "catalog_guide": "docs/AGENT_REPORT_CATALOG.md"
   },
   "published_checkpoints": [
     {
@@ -24,8 +27,12 @@
       "change": "Sealed retained frame/model read interface, bounded custody verification, historical executor inspection and seven library regressions."
     },
     {
-      "commit": "this_commit",
+      "commit": "a0cd32d2b74235c2368d1c3de278c97799b931f9",
       "change": "Immutable native read/replay/detect/track commands, shared finite allowances, final validation before output/export, explicit executor compatibility and subprocess regressions."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Canonical CLI/MCP discovery of native scalar runs, exact source selectors and retained profile metadata, real receipt/root proof handles, metadata-only disclosure and mixed-producer compatibility."
     }
   ],
   "cases": [
@@ -45,7 +52,10 @@
     "Decoded source, current masks/deletions, publication child counts, model, input and output share one immutable owner and original allowance.",
     "Final validation precedes stdout and every export. A poisoned custody or read-budget state refuses even a partial detection report.",
     "Valid computational partial reports and original historical completion anchors remain supported.",
-    "An empty final journal probe conservatively requires one remaining allowance byte even when it returns no payload."
+    "An empty final journal probe conservatively requires one remaining allowance byte even when it returns no payload.",
+    "Native model discovery verifies actual frame/import/capsule metadata and deletion authority without reading original media, pixels, model bytes or input/output tensors.",
+    "The generic model_invocation_receipt family also contains executor-activity JSON receipts; native discovery scopes its producer namespace and still refuses malformed declarations claiming that namespace.",
+    "Generic report handles identify the stored receipt; the distinct semantic run identity is disclosed only as a native reader selector, never as an available blob."
   ],
   "authority": {
     "user": "Implement and commit directly to main through GitHub; no PRs.",
@@ -57,20 +67,26 @@
     "retained_bytes": "Default 1 GiB; hard maximum 4 GiB, shared across metadata, all selected source/model reads and final rereads.",
     "retained_read_attempts": "Default 1000000; hard maximum 4000000; repeats count and failure does not refill.",
     "deadline": "Cooperative 60 seconds at retained-read boundaries; no preemption of a running scalar kernel.",
-    "numeric": "Existing independent MAC, tensor, detection and association ceilings remain in effect."
+    "numeric": "Existing independent MAC, tensor, detection and association ceilings remain in effect.",
+    "catalog": "Existing complete-index bounds remain: 4096 supported declarations, 256 MiB and 65536 metadata read attempts, at most 32 rows per page and 256 KiB complete protected output. Filters do not bypass complete native declaration validation."
   },
   "validation": {
     "completed": [
-      "Scoped pinned nightly-2026-08-31 library rustfmt.",
-      "Whitespace checks and independent source/API review, including historical codec/profile compatibility and read-only authority construction."
+      "Scoped pinned nightly-2026-08-31 rustfmt checks passed for every changed Rust production and test file.",
+      "Whitespace checks and independent source/API review, including historical codec/profile compatibility, read-only authority construction, metadata source linkage and mixed receipt producers.",
+      "36 executed JSON Schema validations: standalone selector and actual MCP inputSchema each accepted 5 positive cases and refused 13 negative cases, including native family support, bounded pagination, closed aliases, denied client source grants/execution arguments and root/principal overrides.",
+      "Actual MCP JSON schema parsing and enum agreement passed; implementation discovery preserves the existing detector/zone token and adds the native model metadata token exactly once."
     ],
     "authored_pending_native_execution": {
       "immutable_inference_library": 7,
       "inference_cli_process": 3,
       "detection_tracking_cli_process": 3,
-      "shared_allowance_parser": 1
+      "shared_allowance_parser": 1,
+      "native_catalog_binding_deletion_cancellation_and_mixed_producers": 4,
+      "catalog_cli_mcp_process": 2,
+      "catalog_mcp_adapter": 2
     },
-    "environment": "The exact pinned compiler is installed. Local execution has stalled under heavy host resource pressure; the locked offline dependency cache is incomplete. No native test result is inferred from source review or formatting.",
+    "environment": "Pinned nightly-2026-08-31 is installed. Missing windows-sys index metadata was repaired from exact local cache entries. The focused cargo test --locked --offline -p fss-reference --lib ingest::inference::tests command then exited 101 before Rust compilation: ctutils v0.4.3 is absent and downloading is prohibited in offline mode. The exact archive and extracted source were absent from eight known cache homes; 145 other locked archives were SHA-verified. No pins, dependencies, source overrides or repository gates were changed. No native test result is inferred from source review, schema execution or formatting.",
     "hosted": "Bounded-video run 43534372856, job 132259663730 stopped before Rust compilation on existing dependency-admission, schema/domain registry and documentation checks. No new inference file was named and no compiler output was produced. Other reference checks remain pending; hosted results are supplementary."
   },
   "obligations": [
@@ -86,14 +102,15 @@
   "unknowns": [
     "New native tests have not yet executed successfully.",
     "These reads are bounded observations with final validation, not atomic filesystem snapshots or leases.",
-    "Canonical agent discovery of scalar model runs remains a separate identified gap at this checkpoint.",
+    "Canonical scalar-model metadata discovery does not establish tensor/source availability or current pixel privacy eligibility; native inspection must verify them independently.",
     "No trained-model accuracy, continuous coverage, physical absence or camera interoperability is established."
   ],
   "next_affordances": [
     "cargo test --locked --offline -p fss-reference --lib ingest::inference::tests",
     "cargo test --locked --offline -p fss-cli --bin fss-infer --test inference_cli_contract --test detection_tracking_cli_contract",
     "Inspect the existing hosted native checks for the exact published commits.",
-    "Extend existing canonical reports discovery to native model-invocation receipts under its metadata and privacy contract."
+    "cargo test --locked --offline -p fss-cli --bin fss-mcp --test report_catalog_query_cli_contract",
+    "Retain the missing locked package archives on a capable host and execute the new native regression suites before claiming runtime validation."
   ],
   "invalidation_conditions": [
     "Changed retained authority/effect history, current deletion or privacy restrictions",

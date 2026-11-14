@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Canonical CLI/MCP discovery of retained detector and zone-report metadata handles.
+//! Canonical CLI/MCP discovery of retained detector, zone and model-run metadata handles.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -110,7 +110,7 @@ pub fn parse_report_catalog_query_args(
             ReportCatalogFamily::parse(text).map_err(|_| {
                 malformed(
                     "--family",
-                    "expected package_detection_record or package_zone_report",
+                    "expected package_detection_record, package_zone_report or model_invocation_receipt",
                     *index,
                 )
             })
@@ -235,7 +235,8 @@ fn response(
     for row in &query.rows {
         let report_schema = match row.family {
             ReportCatalogFamily::PackageDetectionRecord => PACKAGE_DETECTION_REPORT_SCHEMA,
-            ReportCatalogFamily::PackageZoneReport => row.schema.as_str(),
+            ReportCatalogFamily::PackageZoneReport
+            | ReportCatalogFamily::ModelInvocationReceipt => row.schema.as_str(),
         };
         metadata.insert(row.report_digest, report_schema.to_owned());
         metadata.insert(row.record_digest, row.schema.clone());

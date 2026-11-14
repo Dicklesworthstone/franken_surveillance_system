@@ -10,6 +10,7 @@ use fss_tensor::Shape;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod catalog;
 mod immutable;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -443,7 +444,6 @@ fn receipt_truncation_and_wrong_tensor_shape_fail_closed() -> TestResult {
     Ok(())
 }
 
-
 #[test]
 fn surveillance_admission_wraps_retained_execution_and_reopen() -> TestResult {
     let (_dir, cx, mut deployment, request, frame) = fixture("surveillance-admission")?;
@@ -507,20 +507,9 @@ fn surveillance_admission_wraps_retained_execution_and_reopen() -> TestResult {
     );
     let identity = run.run().identity();
     let outputs = run.run().outputs().clone();
-    let reopened = AdmittedRecordedInference::open(
-        &deployment,
-        identity,
-        &request,
-        &admitted,
-        &cx,
-    )?;
+    let reopened =
+        AdmittedRecordedInference::open(&deployment, identity, &request, &admitted, &cx)?;
     assert_eq!(reopened.run().outputs(), &outputs);
-    reopened.verify_by_replay(
-        &deployment,
-        &request,
-        budget(),
-        &ScalarExecCx::new(),
-        &cx,
-    )?;
+    reopened.verify_by_replay(&deployment, &request, budget(), &ScalarExecCx::new(), &cx)?;
     Ok(())
 }

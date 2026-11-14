@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded discovery of retained package detection and package-zone report handles.
+//! Bounded discovery of retained detection, zone-report and scalar model-run metadata.
 //!
 //! This metadata-only read verifies current cognition declarations, their exact publication
 //! roots and retained report bytes. It does not reconstruct source media, rerun inference,
@@ -22,8 +22,10 @@ use crate::ReplayCx;
 use crate::agent_follow::AnchorToken;
 use crate::agent_orient::OrientLimits;
 use crate::ingest::FileIngestError;
+use crate::ingest::inference::RecordedInferenceMetadata;
 use crate::ingest::package_event::PACKAGE_DETECTION_FAMILY;
 use crate::ingest::package_zones::PACKAGE_ZONE_FAMILY;
+use crate::reference_deployment::FAMILY_MODEL_INVOCATION_RECEIPT;
 use crate::retained_source::ImmutableRetainedReadLimits;
 
 pub use result::DeploymentReportCatalogQuery;
@@ -42,6 +44,9 @@ pub enum ReportCatalogFamily {
     PackageDetectionRecord,
     /// A retained package-zone report, with its original v1 or v2 schema preserved.
     PackageZoneReport,
+    /// A native RecordedInference (`object:model-run`) receipt. Other model receipt producers
+    /// are outside this view; model and tensor payloads are not inspected.
+    ModelInvocationReceipt,
 }
 
 impl ReportCatalogFamily {
@@ -50,6 +55,7 @@ impl ReportCatalogFamily {
         match self {
             Self::PackageDetectionRecord => PACKAGE_DETECTION_FAMILY,
             Self::PackageZoneReport => PACKAGE_ZONE_FAMILY,
+            Self::ModelInvocationReceipt => FAMILY_MODEL_INVOCATION_RECEIPT,
         }
     }
 
@@ -58,6 +64,7 @@ impl ReportCatalogFamily {
         match value {
             PACKAGE_DETECTION_FAMILY => Ok(Self::PackageDetectionRecord),
             PACKAGE_ZONE_FAMILY => Ok(Self::PackageZoneReport),
+            FAMILY_MODEL_INVOCATION_RECEIPT => Ok(Self::ModelInvocationReceipt),
             _ => Err(ReportCatalogError::InvalidRequest("unknown report family")),
         }
     }
@@ -66,7 +73,7 @@ impl ReportCatalogFamily {
 /// Conjunctive predicates over the family and interval declared by retained cognition.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReportCatalogFilter {
-    /// Exact existing cognition family, or both supported families.
+    /// Exact existing cognition family, or all supported families.
     pub family: Option<ReportCatalogFamily>,
     /// Inclusive lower endpoint in the declared source-native time domain.
     pub from_ns: Option<i128>,
@@ -103,7 +110,7 @@ impl ReportCatalogFilter {
     /// Literal, bounded interpretation of these structured predicates.
     pub fn description(&self) -> String {
         format!(
-            "Retained report metadata; family={}; closed declared source-native overlap [{},{}]; source availability, reconstruction and QSR eligibility remain unknown",
+            "Retained report metadata; family={}; model receipts are limited to native object:model-run declarations; closed declared source-native overlap [{},{}]; source availability, reconstruction and QSR eligibility remain unknown",
             self.family.map_or("any", ReportCatalogFamily::as_str),
             self.from_ns
                 .map_or_else(|| "unbounded".to_owned(), |time| time.to_string()),
@@ -250,8 +257,9 @@ impl ReportCatalogLimits {
 pub struct ReportCatalogRow {
     /// Existing committed cognition family.
     pub family: ReportCatalogFamily,
-    /// Native report handle accepted by the corresponding source reader. For a detector this
-    /// is the original report identity, not the canonical detection record's payload digest.
+    /// Retained report object handle. For a detector this is the original report object;
+    /// for a model run it is the receipt object, with the semantic native lookup key separately
+    /// preserved in `model_run.run_identity`.
     pub report_digest: ContentDigest,
     /// Exact payload digest from the committed cognition delta.
     pub record_digest: ContentDigest,
@@ -259,12 +267,15 @@ pub struct ReportCatalogRow {
     pub provenance_root: ContentDigest,
     /// Exact existing publication slot spelling.
     pub publication_slot: String,
-    /// Existing native metadata domain, preserving package-zone v1 versus v2.
+    /// Existing native metadata domain, preserving zone versions and model receipt identity.
     pub schema: String,
     /// Closed validity interval declared in the retained cognition delta.
     pub validity: CaptureInterval,
     /// Commit sequence of the exact retention batch.
     pub committed_sequence: u64,
+    /// Exact scalar-run selectors and retained runtime provenance. Absent for package reports.
+    /// These verified metadata declarations do not establish tensor or source availability.
+    pub model_run: Option<RecordedInferenceMetadata>,
 }
 
 impl ReportCatalogRow {
@@ -280,6 +291,18 @@ impl ReportCatalogRow {
         encoder.text(&self.schema);
         self.validity.encode_canonical(&mut encoder);
         encoder.u64(self.committed_sequence);
+        if let Some(run) = &self.model_run {
+            encoder.digest(run.run_identity);
+            encoder.digest(run.executor_profile_digest);
+            encoder.digest(run.model_digest);
+            encoder.digest(run.frame_root);
+            encoder.digest(run.import_identity);
+            encoder.u64(run.segment_index);
+            encoder.u8(match run.interpretation {
+                crate::ingest::recorded_decode::ComponentInterpretation::Grayscale => 0,
+                crate::ingest::recorded_decode::ComponentInterpretation::YCbCr => 1,
+            });
+        }
         ContentDigest::sha256(&encoder.finish())
     }
 }
@@ -331,7 +354,7 @@ impl std::fmt::Display for ReportCatalogError {
 }
 impl std::error::Error for ReportCatalogError {}
 
-/// Discover current retained detector and zone report metadata without source-media reads.
+/// Discover current retained detector, zone and scalar-run metadata without source-media reads.
 ///
 /// The caller supplies metadata I/O authority and a live cancellation/deadline probe. No
 /// `ReadMedia` capability is required or inferred. Every supported current report is verified

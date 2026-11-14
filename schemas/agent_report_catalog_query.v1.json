@@ -2,15 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.invalid/schemas/agent_report_catalog_query.v1.json",
   "title": "Retained report metadata discovery selector for AOP-005",
-  "description": "Closed metadata-only discovery of retained package detection and package-zone report handles. The launcher fixes deployment/principal. The immutable reader verifies the complete bounded current declaration index, exact native publication manifests and retained metadata/report bytes before filtering and pagination, then revalidates under the same allowance. Existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts preserve protected deployment context. Returned handles establish metadata custody only: original source availability, current source reconstruction, privacy eligibility for coordinates and QSR eligibility remain unestablished. No ReadMedia grant, original-media read, model execution, recovery, publication or effect is inferred. The complete protected page fits 256 KiB or refuses. Native admission remains authoritative.",
+  "description": "Closed metadata-only discovery of retained package detection, package-zone and completed native fss-infer model-run receipt handles. The launcher fixes deployment/principal. The immutable reader verifies the complete bounded current declaration index, exact native publication manifests and retained metadata/report bytes before filtering and pagination, then revalidates under the same allowance. Existing AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts preserve protected deployment context. Returned handles establish metadata custody only: original source availability, current source reconstruction, privacy eligibility for coordinates and QSR eligibility remain unestablished. No ReadMedia grant, original-media read, model execution, recovery, publication or effect is inferred. The complete protected page fits 256 KiB or refuses. Native admission remains authoritative.",
   "type": "object",
   "additionalProperties": false,
   "required": ["target"],
   "properties": {
     "target": {"const": "reports"},
     "family": {
-      "enum": ["package_detection_record", "package_zone_report"],
-      "description": "Exact existing cognition family; omission selects both. Detector rows expose the original package-detection report digest accepted by tracks queries. Zone rows retain v1 versus v2 metadata identity; discovery does not certify QSR eligibility."
+      "enum": ["package_detection_record", "package_zone_report", "model_invocation_receipt"],
+      "description": "Exact existing cognition family; omission selects all supported families. Detector rows expose the original package-detection report digest accepted by tracks queries. Zone rows retain v1 versus v2 metadata identity; discovery does not certify QSR eligibility. Model rows describe native fss-infer RecordedInference runs and name the stored receipt SHA; model_run.run_identity is the separate native --run-id. Generic executor-activity receipt schemas are outside this catalog. Model, tensor and source payloads are not read or verified."
     },
     "from_ns": {
       "type": "string", "pattern": "^(0|-?[1-9][0-9]*)(?![\\s\\S])", "maxLength": 40,

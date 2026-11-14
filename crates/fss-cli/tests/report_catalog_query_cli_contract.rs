@@ -4,6 +4,9 @@
 #[path = "../../fss-reference/tests/qsr_observations_support/mod.rs"]
 mod support;
 
+#[path = "report_catalog_query_cli_contract/model_run.rs"]
+mod model_run;
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;

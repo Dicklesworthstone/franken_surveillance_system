@@ -523,6 +523,73 @@ impl RecordedDecodeReceipt {
     }
 }
 
+/// Verify an exact completed frame's metadata and original import/capsule binding, without
+/// reading encoded media or pixels. Historical mask bindings remain metadata; this function
+/// grants no current pixel access and does not establish source-payload availability.
+pub(crate) fn retained_frame_metadata(
+    deployment: &dyn RetainedSource,
+    receipt_digest: ContentDigest,
+    expected_root: ContentDigest,
+    expected_anchor: &LedgerAnchor,
+    cx: &ReplayCx,
+) -> Result<RecordedDecodeReceipt, RecordedDecodeError> {
+    checkpoint(cx, "recorded_decode:metadata")?;
+    let bytes =
+        deployment.read_object_bounded(receipt_digest, MAX_RECORDED_DECODE_RECEIPT_BYTES)?;
+    let receipt = RecordedDecodeReceipt::decode(&bytes, receipt_digest)?;
+    // This native open verifies only import manifests/authority. It refuses committed import
+    // deletion even when shared metadata or not-yet-unlinked source objects remain present.
+    let retained = RetainedFileImport::open(
+        deployment,
+        receipt.import_identity,
+        RetainedReadLimits::default(),
+        cx,
+    )?;
+    let index = usize::try_from(receipt.segment_index).map_err(|_| RecordedDecodeError::Limit)?;
+    let (capsule, capsule_digest) = source_capsule(deployment, &retained, index)?;
+    if retained.manifest().format != "mjpeg"
+        || receipt.import_root != retained.import_root()
+        || receipt.manifest_digest != retained.manifest_digest()
+        || receipt.source_anchor != *retained.authority_anchor()
+        || receipt.capsule != capsule
+        || receipt.capsule_digest != capsule_digest
+        || receipt.source_offset != retained.manifest().segment_spans[index].offset
+    {
+        return Err(RecordedDecodeError::InvalidReceipt);
+    }
+    let manifest = receipt.manifest()?;
+    let target = batch_id(receipt.identity())?;
+    let batch = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .find(|batch| batch.batch_id == target)
+        .ok_or(RecordedDecodeError::Unavailable)?;
+    let mut children = manifest.children().to_vec();
+    children.push(manifest.root());
+    children.sort_unstable();
+    children.dedup();
+    if manifest.root() != expected_root
+        || batch.new_anchor != *expected_anchor
+        || batch.deltas.as_slice() != [receipt.delta(manifest.root())?]
+        || batch.children != children
+        || deployment.read_object_bounded(manifest.root(), manifest.canonical_bytes().len())?
+            != manifest.canonical_bytes()
+    {
+        return Err(RecordedDecodeError::InvalidReceipt);
+    }
+    deployment.check_publication(
+        &slot(receipt.identity())?,
+        manifest.root(),
+        manifest.children().len(),
+    )?;
+    for digest in manifest.children() {
+        deployment.check_object_available(*digest)?;
+    }
+    checkpoint(cx, "recorded_decode:metadata_complete")?;
+    Ok(receipt)
+}
+
 fn decode_sha(d: &mut CanonicalDecoder<'_>) -> Result<[u8; 32], RecordedDecodeError> {
     let value = d.digest()?;
     if value.algorithm() != DigestAlgorithm::Sha256 {

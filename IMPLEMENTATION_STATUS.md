@@ -4,6 +4,39 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Canonical scalar model-run discovery — 2026-11-14
+
+`fss query --target reports` and MCP `query` now discover completed native scalar
+model runs with `family=model_invocation_receipt`. Operators can recover exact
+run/import/segment/interpretation selectors without having saved the original
+terminal output. The typed `model_run` metadata also preserves the original
+executor profile, recorded-model digest and decoded-frame root. Generic report
+and record handles identify the actual receipt object; the semantic run identity
+is never advertised as an available blob. CLI and MCP use the same complete,
+bounded catalog and protected response contract.
+
+Discovery verifies the native receipt/publication, exact frame completion and
+original import/capsule metadata, including current deletion restrictions, under
+one immutable owner. It reads no original media, decoded pixels, model bytes or
+input/output tensors. Source availability remains unknown; tensor verification,
+source reconstruction and model execution are explicitly not performed. Later
+`fss-infer read` independently verifies current custody and privacy; replay also
+requires the matching executor profile. Existing detector and zone families keep
+their row semantics. All supported declarations are verified before filtering,
+and pagination retains its complete-index and current-authority bindings.
+See [report discovery](docs/AGENT_REPORT_CATALOG.md).
+
+New contracts exercise exact selectors and real-object evidence handles, native
+inspection of a discovered run, metadata-only CLI/MCP parity after payload loss,
+invalid metadata outside the selected family, forged source linkage, deletion
+before unlink, mixed receipt producers and cancellation. Scoped pinned formatting
+and independent source review passed. Executed JSON Schema checks accepted five
+positive cases and refused thirteen negative cases against each of the standalone
+selector and actual MCP input schema: 36 validations passed. Native execution
+remains pending under the local cache/resource limitations recorded below.
+These source changes establish
+no model-quality, physical-coverage or release-qualification claim.
+
 ## Immutable retained inference, detection and tracking reads — 2026-11-14
 
 Native `fss-infer read`, `replay`, `detect` and `track` now use the sealed immutable
@@ -30,13 +63,17 @@ corruption, tombstones/publication changes, stale authority, cancellation and
 historical profiles. Six new subprocess regressions cover both native command
 pairs, unchanged deployment bytes, damaged journals without recovery and
 read-budget refusal without output/export; the shared parser also has a strict
-allowance contract. Scoped pinned library formatting, whitespace checks and
+allowance contract. Scoped pinned library and native CLI formatting, whitespace checks and
 independent source review passed. Native compilation and test execution are
 pending: the local host has severe resource pressure and an incomplete offline
-dependency cache. Existing hosted checks were triggered by the direct-main
+dependency cache. The focused locked/offline library command exited 101 before
+Rust compilation because `ctutils v0.4.3` is absent from the available exact
+package caches. No dependency pins or qualification gates were changed. Existing
+hosted checks were triggered by the direct-main
 checkpoint and remain supplementary. The first bounded-video job stopped before
 Rust compilation on existing dependency-admission, schema/domain registry and
-documentation checks; it produced no compiler result for this change. No native runtime pass, detector-quality
+documentation checks; it produced no compiler result for this change. No native
+runtime pass, detector-quality
 claim, camera result or release qualification is implied. Broad VIT-008 and
 VIT-015 work remains open.
 

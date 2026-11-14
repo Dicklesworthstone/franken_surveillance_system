@@ -61,7 +61,7 @@ impl DeploymentReportCatalogQuery {
             EnvelopeProposition {
                 id: "claim:report-catalog:selection".to_owned(),
                 statement: format!(
-                    "Verified {} current retained package detection and package-zone report metadata declarations; {} match the requested family and declared interval; this page returns {} from position {}; {} remain. Report handles, canonical publication metadata and retained bytes are verified. Source reconstruction, source availability and QSR eligibility are unknown.",
+                    "Verified {} current retained detection, zone and native RecordedInference model-run metadata declarations; {} match the requested family and declared interval; this page returns {} from position {}; {} remain. Metadata handles, canonical publications and retained metadata bytes are verified. Source availability remains unknown; source reconstruction, tensor payload verification and model execution are not performed.",
                     self.scanned_reports, self.matched_reports, self.rows.len(),
                     self.cursor.position, self.remaining_reports(),
                 ),
@@ -71,7 +71,7 @@ impl DeploymentReportCatalogQuery {
             },
             EnvelopeProposition {
                 id: "claim:report-catalog:source-observability".to_owned(),
-                statement: "This catalog reads retained metadata only. It does not verify original media, current source availability, zone-report semantic reconstruction, QSR eligibility, physical identity, presence, absence or coverage. A discovered handle grants no ReadMedia capability; a later source-verified query can still refuse.".to_owned(),
+                statement: "This catalog reads retained metadata only. It does not verify original media, current source availability, model/input/output tensors, zone-report semantic reconstruction, QSR eligibility, physical identity, presence, absence or coverage. A discovered handle grants no ReadMedia capability; a later source-verified query can still refuse.".to_owned(),
                 state: KnowledgeState::Unknown,
                 provenance: "derived".to_owned(),
                 evidence: Vec::new(),
@@ -87,11 +87,15 @@ impl DeploymentReportCatalogQuery {
                 statement: format!("Retained report metadata: {}", row_json(row)),
                 state: KnowledgeState::Known,
                 provenance: "derived".to_owned(),
-                evidence: vec![
-                    row.report_digest.to_text(),
-                    row.record_digest.to_text(),
-                    row.provenance_root.to_text(),
-                ],
+                evidence: if row.model_run.is_some() {
+                    vec![row.record_digest.to_text(), row.provenance_root.to_text()]
+                } else {
+                    vec![
+                        row.report_digest.to_text(),
+                        row.record_digest.to_text(),
+                        row.provenance_root.to_text(),
+                    ]
+                },
             });
         }
         EnvelopeEpistemic {
@@ -100,6 +104,7 @@ impl DeploymentReportCatalogQuery {
                 self.filter.description(),
                 "The principal is an audit label, not authentication. This metadata read grants no source-media disclosure, inference or effect authority.".to_owned(),
                 "A native v2 zone-report schema is a retained declaration; QSR eligibility still requires the separate native source-verified query.".to_owned(),
+                "Model-run discovery covers native RecordedInference declarations only; executor_activity receipts and other model-invocation producers are not interpreted by this catalog.".to_owned(),
                 "Verification is a bounded sequence of metadata observations with live admission, not an atomic filesystem snapshot or a read lease.".to_owned(),
             ],
             invalidators: vec![
@@ -113,10 +118,10 @@ impl DeploymentReportCatalogQuery {
     pub fn coverage(&self) -> EnvelopeCoverage {
         let remaining = self.remaining_reports();
         EnvelopeCoverage {
-            authorized_domain: vec!["current retained package_detection_record and package_zone_report metadata".to_owned()],
-            observed_domain: vec!["exact committed report declarations, native publication manifests and retained report bytes".to_owned()],
+            authorized_domain: vec!["current retained package_detection_record, package_zone_report and native object:model-run model_invocation_receipt metadata".to_owned()],
+            observed_domain: vec!["exact supported native report declarations, publication manifests and retained metadata bytes; native model-run frame/import metadata linkage".to_owned()],
             not_observable_domain: vec![
-                "other report families, source media, current source availability, report semantic reconstruction and QSR eligibility".to_owned(),
+                "other report families and model-invocation producers, source media, current source availability, model/input/output payloads, report semantic reconstruction and QSR eligibility".to_owned(),
                 "physical identity, presence, absence, live coverage, trusted UTC and precise occurrence time".to_owned(),
             ],
             omitted_count: remaining as u64,
@@ -151,13 +156,34 @@ fn quote(value: &str) -> String {
 /// Exact native row fields inside the existing statement, without a second outer envelope.
 /// Times and commit sequences are decimal strings so JSON consumers preserve all i128/u64 bits.
 fn row_json(row: &ReportCatalogRow) -> String {
+    let details = match &row.model_run {
+        None => ",\"qsr_eligibility\":\"unknown\"".to_owned(),
+        Some(run) => format!(
+            concat!(
+                ",\"model_run\":{{\"run_identity\":{},\"executor_profile_digest\":{},",
+                "\"model_digest\":{},\"frame_root\":{},\"import_identity\":{},",
+                "\"segment_index\":{},\"interpretation\":{}}},",
+                "\"tensor_payload_verification\":\"not_performed\",\"model_execution\":\"not_performed\""
+            ),
+            quote(&run.run_identity.to_text()),
+            quote(&run.executor_profile_digest.to_text()),
+            quote(&run.model_digest.to_text()),
+            quote(&run.frame_root.to_text()),
+            quote(&run.import_identity.to_text()),
+            quote(&run.segment_index.to_string()),
+            quote(match run.interpretation {
+                crate::ingest::recorded_decode::ComponentInterpretation::Grayscale => "gray",
+                crate::ingest::recorded_decode::ComponentInterpretation::YCbCr => "ycbcr",
+            }),
+        ),
+    };
     format!(
         concat!(
             "{{\"family\":{},\"report_digest\":{},\"record_digest\":{},",
             "\"provenance_root\":{},\"publication_slot\":{},\"schema\":{},",
             "\"declared_validity_ns\":[{},{}],\"retention_commit\":{},",
             "\"metadata_availability\":\"verified\",\"source_payload_availability\":\"unknown\",",
-            "\"source_reconstruction\":\"not_performed\",\"qsr_eligibility\":\"unknown\"}}"
+            "\"source_reconstruction\":\"not_performed\"{}}}"
         ),
         quote(row.family.as_str()),
         quote(&row.report_digest.to_text()),
@@ -168,6 +194,7 @@ fn row_json(row: &ReportCatalogRow) -> String {
         quote(&row.validity.earliest.0.to_string()),
         quote(&row.validity.latest.0.to_string()),
         quote(&row.committed_sequence.to_string()),
+        details,
     )
 }
 
@@ -249,6 +276,7 @@ pub(super) fn compile(
         vec![
             PACKAGE_DETECTION_FAMILY.to_owned(),
             PACKAGE_ZONE_FAMILY.to_owned(),
+            FAMILY_MODEL_INVOCATION_RECEIPT.to_owned(),
         ],
         vec![crate::agent_query::CAPABILITY_QUERY.to_owned()],
         vec!["metadata_only".to_owned()],

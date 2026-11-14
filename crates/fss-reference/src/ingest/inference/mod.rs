@@ -12,8 +12,8 @@ use crate::{
     ScalarExecutor,
 };
 use fss_core::{
-    BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
-    ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
+    BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
+    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
 };
 use fss_model_ir::{ModelIrDecodeError, ModelIrError};
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
@@ -22,8 +22,10 @@ use fss_tensor::{DType, Tensor, TensorError};
 use std::collections::BTreeMap;
 
 pub mod admission;
+mod metadata;
 mod model;
 pub use admission::{AdmittedRecordedInference, AdmittedRecordedModel, ModelAdmissionError};
+pub use metadata::RecordedInferenceMetadata;
 pub use model::{MAX_RECORDED_MODEL_BYTES, RECORDED_MODEL_DOMAIN, RecordedModel};
 
 /// Maximum input/intermediate tensor accounting admitted for one reference run.
@@ -258,6 +260,9 @@ impl Receipt {
         )?)
     }
     fn delta(&self, frame: &RecordedFrame, root: ContentDigest) -> Result<EvidenceDelta> {
+        self.delta_at(frame.receipt().capsule().capture, root)
+    }
+    fn delta_at(&self, validity: CaptureInterval, root: ContentDigest) -> Result<EvidenceDelta> {
         let id = hex(self.identity());
         Ok(EvidenceDelta {
             delta_id: format!("delta:model-run:{id}"),
@@ -265,7 +270,7 @@ impl Receipt {
             object_id: ObjectId::parse(format!("object:model-run:{id}"))?,
             prior_generation: None,
             new_generation: 1,
-            validity: frame.receipt().capsule().capture,
+            validity,
             plane: Plane::Cognition,
             payload_digest: ContentDigest::sha256(&self.encoded()?),
             witness_digest: Some(root),

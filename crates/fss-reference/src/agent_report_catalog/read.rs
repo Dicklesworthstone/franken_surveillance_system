@@ -21,8 +21,30 @@ fn invalid<T>() -> Result<T, ReportCatalogError> {
     Err(ReportCatalogError::InvalidRecord)
 }
 
-fn selected_family(family: &str) -> Option<ReportCatalogFamily> {
-    ReportCatalogFamily::parse(family).ok()
+fn selected_family(family: &str, object: &str) -> Option<ReportCatalogFamily> {
+    let family = ReportCatalogFamily::parse(family).ok()?;
+    if family == ReportCatalogFamily::ModelInvocationReceipt
+        && !object.starts_with("object:model-run")
+    {
+        // executor_activity also retains model_invocation_receipt, under the distinct
+        // executor-receipt/executor-result namespace and a different canonical schema.
+        return None;
+    }
+    Some(family)
+}
+
+fn selected_declaration(
+    batch: &EvidenceDeltaBatch,
+    delta: &EvidenceDelta,
+) -> Option<ReportCatalogFamily> {
+    selected_family(&delta.family, delta.object_id.as_str()).or_else(|| {
+        // A malformed would-be native declaration cannot evade verification by changing its
+        // object prefix while retaining a native batch or delta identity.
+        (delta.family == FAMILY_MODEL_INVOCATION_RECEIPT
+            && (batch.batch_id.as_str().starts_with("batch:model-run")
+                || delta.delta_id.starts_with("delta:model-run")))
+        .then_some(ReportCatalogFamily::ModelInvocationReceipt)
+    })
 }
 
 pub(super) fn query(
@@ -59,8 +81,8 @@ pub(super) fn query(
     let expected_count = ledger
         .current()
         .objects
-        .values()
-        .filter(|value| selected_family(&value.family).is_some())
+        .iter()
+        .filter(|(id, value)| selected_family(&value.family, id.as_str()).is_some())
         .count();
     if expected_count > limits.max_reports {
         return Err(ReportCatalogError::OverBudget);
@@ -74,7 +96,7 @@ pub(super) fn query(
             return Err(ReportCatalogError::Cancelled);
         }
         for delta in &batch.deltas {
-            let Some(family) = selected_family(&delta.family) else {
+            let Some(family) = selected_declaration(batch, delta) else {
                 continue;
             };
             let revision = ledger
@@ -118,6 +140,14 @@ pub(super) fn query(
         rows.push(match family {
             ReportCatalogFamily::PackageDetectionRecord => detection(&owner, batch, delta)?,
             ReportCatalogFamily::PackageZoneReport => zone(&owner, batch, delta)?,
+            ReportCatalogFamily::ModelInvocationReceipt => model_run(&owner, batch, delta, cx)
+                .map_err(|error| {
+                    if cancelled() || cx.is_cancelled() {
+                        ReportCatalogError::Cancelled
+                    } else {
+                        error
+                    }
+                })?,
         });
     }
     rows.sort_by_key(|row| (row.family, row.report_digest));
@@ -235,6 +265,7 @@ fn detection(
         schema: PACKAGE_DETECTION_RECORD_DOMAIN.to_owned(),
         validity,
         committed_sequence: batch.new_anchor.commit_sequence,
+        model_run: None,
     })
 }
 
@@ -293,5 +324,32 @@ fn zone(
         schema: schema.to_owned(),
         validity: delta.validity,
         committed_sequence: batch.new_anchor.commit_sequence,
+        model_run: None,
+    })
+}
+
+fn model_run(
+    source: &dyn RetainedSource,
+    batch: &EvidenceDeltaBatch,
+    delta: &EvidenceDelta,
+    cx: &ReplayCx,
+) -> Result<ReportCatalogRow, ReportCatalogError> {
+    let metadata = RecordedInferenceMetadata::read(source, delta.payload_digest, cx)
+        .map_err(|_| ReportCatalogError::InvalidRecord)?;
+    if metadata.authority_anchor != batch.new_anchor {
+        return invalid();
+    }
+    Ok(ReportCatalogRow {
+        family: ReportCatalogFamily::ModelInvocationReceipt,
+        // A semantic run key is not a retained proof blob. Both generic handles name the
+        // actual receipt; the native lookup key is explicit inside the typed model_run block.
+        report_digest: metadata.record_digest,
+        record_digest: metadata.record_digest,
+        provenance_root: metadata.publication_root,
+        publication_slot: metadata.publication_slot.to_string(),
+        schema: crate::ingest::inference::RECORDED_INFERENCE_DOMAIN.to_owned(),
+        validity: metadata.validity,
+        committed_sequence: metadata.authority_anchor.commit_sequence,
+        model_run: Some(metadata),
     })
 }

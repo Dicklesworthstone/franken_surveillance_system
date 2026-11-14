@@ -13,15 +13,15 @@ fn limits() -> ImmutableRetainedReadLimits {
     }
 }
 
-struct Fixture {
-    cx: ReplayCx,
-    deployment: ReferenceDeployment,
-    request: RecordedDecodeRequest,
-    run: RecordedInference,
+pub(super) struct Fixture {
+    pub(super) cx: ReplayCx,
+    pub(super) deployment: ReferenceDeployment,
+    pub(super) request: RecordedDecodeRequest,
+    pub(super) run: RecordedInference,
     _dir: Directory,
 }
 impl Fixture {
-    fn new(name: &str) -> TestResult<Self> {
+    pub(super) fn new(name: &str) -> TestResult<Self> {
         let (dir, cx, mut deployment, request, frame) = fixture(name)?;
         let run = RecordedInference::run_and_publish(
             &mut deployment,
@@ -43,7 +43,7 @@ impl Fixture {
 
 // Include empty directories as well as all file bytes, so an immutable read cannot silently
 // create staging, lock, journal, recovery or cache entries and still pass this comparison.
-fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+pub(super) fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Option<Vec<u8>>>> {
     fn visit(
         root: &Path,
         path: &Path,
