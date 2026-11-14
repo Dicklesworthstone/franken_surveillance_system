@@ -4,6 +4,21 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Alert preparation agrees with committed policy — 2026-11-14
+
+Preparation now binds the transient requested action to the exact committed
+event policy path used by dispatch. Changing only a caller's action enum cannot
+promote a retained Hold decision into a prepared operation and pending
+obligation. Existing authority, lifecycle and sensor-integrity veto precedence
+is preserved; mismatches refuse before effect-journal writes.
+
+Three new native regressions exercise both in-memory and durable preparation:
+committed Hold with a forged PrepareAlert action, transient Hold against a
+committed PrepareAlert, and a matching accepted decision with durable replay.
+Refusal checks include unchanged authority/effect bytes and zero operations and
+obligations. The full alert test module is included in focused native feedback;
+execution on this corrected final head remains pending.
+
 ## Current-event source-loss explanations — 2026-11-14
 
 AOP-011 now admits a narrowly defined `what_if` through the canonical CLI and
@@ -37,10 +52,19 @@ explicit full metadata reread for non-event protected context.
 New contracts cover native loss mechanics, complete artifact reconstruction,
 CLI/MCP identity, immutable deployment bytes, strict scope/refusal, raw-score
 binding, schema discovery parity, and late event/non-event metadata corruption.
-They are staged for pinned-nightly native CI; this entry does not claim they
-have executed locally. The local compute environment disconnected during this
-session. The earlier report-discovery repair checkpoint independently passed
-its hosted recording/replay and all 102 MCP tests. Qualification gates and
+[Pinned native feedback at b5b355e](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43557396430/job/132333229471)
+compiled and passed 155 focused tests, including all 104 MCP unit tests, the
+new numerical/projection owners, metadata/catalog contracts and legacy
+explanation suites. Four new integration tests reached the same parity-harness
+assertion because it included the executable's transport newline. The harness
+now removes exactly that delimiter while comparing every semantic byte; the
+corrected integration and later WhatChanged/alert changes await final-head
+execution. The WhatChanged owner now also rereads protected non-event metadata
+before its final authority observation.
+
+The local compute environment disconnected during authoring. Hosted functional
+feedback does not replace repository-owned DSR qualification; that lane still
+reports existing dependency/policy/registry debt. Qualification gates and
 release/physical-evidence claims remain unchanged.
 
 

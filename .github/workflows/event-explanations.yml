@@ -63,7 +63,8 @@ jobs:
           exit "$scenario_exit"
       - name: Verify committed alert preparation and dispatch eligibility
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib alert_tests::
+        run: |
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib alert_tests::
       - name: Verify immutable lineage and protected metadata revalidation
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract --test agent_report_catalog_contract
