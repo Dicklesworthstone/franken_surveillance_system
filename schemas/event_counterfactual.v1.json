@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/event_counterfactual.v1.json",
+  "title": "fss.event_counterfactual.v1",
+  "description": "Complete source-pinned hypothetical calibrated failure-domain-loss sensitivity. The original event, exact raw caller inputs, both native queries and recomputed outcomes remain attached. All scored rows share synthetic sensor and calibration common causes, and both queries preserve a coverage gap. This is not historical decision replay or a physical source certificate. The native owner refuses the whole result when its UTF-8 JSON plus one possible newline exceeds 262144 bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "question",
+    "scope",
+    "source_event",
+    "source_event_revision_digest",
+    "source_publication_root",
+    "request",
+    "request_digest",
+    "ablation",
+    "explain_receipt_digest",
+    "counterfactual_digest",
+    "assumptions",
+    "source_custody_verified",
+    "historical_decision_replayed",
+    "physical_coverage_certified",
+    "event_policy_changed",
+    "published",
+    "effect_authority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.event_counterfactual.v1"
+    },
+    "question": {
+      "const": "what_if"
+    },
+    "scope": {
+      "const": "hypothetical_declared_failure_domain_loss"
+    },
+    "source_event": {
+      "$ref": "event_hypothesis.v1.json",
+      "description": "Complete unchanged canonical source EventHypothesis, including original uncertainty, neutral or integrity edges, recorded probability and decision path. Its revision digest must equal both request and result revision pins."
+    },
+    "source_event_revision_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_publication_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "request": {
+      "allOf": [
+        {
+          "$ref": "event_counterfactual_request.v1.json"
+        },
+        {
+          "type": "object",
+          "required": [
+            "fusion_policy"
+          ],
+          "properties": {
+            "score_calibration": {
+              "type": "object",
+              "required": [
+                "true_positives",
+                "false_positives",
+                "prior_log_odds_millibans",
+                "interval"
+              ],
+              "properties": {
+                "bins": {
+                  "items": {
+                    "required": [
+                      "hi_ppm",
+                      "llr_millibans"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Complete canonical normalized request: sorted unique selectors, lexical score-map order, explicit default policy and every reconstructed calibration summary. Native digest reproduction binds raw scores even when they occupy the same calibrated bin."
+    },
+    "request_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "ablation": {
+      "allOf": [
+        {
+          "$ref": "fusion_ablation.v1.json"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "targets": {
+              "items": {
+                "properties": {
+                  "kind": {
+                    "const": "failure_domain"
+                  }
+                }
+              }
+            },
+            "baseline": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/fixed_query_assumptions"
+                    },
+                    {
+                      "properties": {
+                        "evidence": {
+                          "items": {
+                            "properties": {
+                              "observability": {
+                                "const": "observed"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "counterfactual": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/fixed_query_assumptions"
+                    },
+                    {
+                      "properties": {
+                        "evidence": {
+                          "items": {
+                            "properties": {
+                              "observability": {
+                                "anyOf": [
+                                  {
+                                    "const": "observed"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                      "not_observable"
+                                    ],
+                                    "properties": {
+                                      "not_observable": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "The exact native simultaneous ablation, with no dropped evidence rows, future choices or hidden baseline. Matching assumed-available rows become not observable; the remaining calibrated observations are clustered and fused again."
+    },
+    "explain_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "counterfactual_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "assumptions": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      },
+      "description": "Complete fixed assumption disclosure: caller scores/applicability, shared dependencies, assumed availability, coverage gap, prior/policy/consequences, unchanged original event and non-durable receipts."
+    },
+    "source_custody_verified": {
+      "const": false
+    },
+    "historical_decision_replayed": {
+      "const": false
+    },
+    "physical_coverage_certified": {
+      "const": false
+    },
+    "event_policy_changed": {
+      "const": false
+    },
+    "published": {
+      "const": false
+    },
+    "effect_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "$ref": "event_counterfactual_request.v1.json#/$defs/digest"
+    },
+    "fixed_query_assumptions": {
+      "type": "object",
+      "properties": {
+        "looks": {
+          "const": 1
+        },
+        "now_ns": {
+          "const": "0"
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reason"
+          ],
+          "properties": {
+            "state": {
+              "const": "gap"
+            },
+            "reason": {
+              "const": "event metadata supplies no current physical coverage witness"
+            }
+          }
+        },
+        "severity": {
+          "type": "object",
+          "properties": {
+            "expected_harm": {
+              "const": "1000"
+            },
+            "false_alert_cost": {
+              "const": "100"
+            },
+            "delay_cost_per_second": {
+              "const": "10"
+            },
+            "reversible": {
+              "const": false
+            }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "generation": {
+              "const": "fss.explain.fusion_policy.v1"
+            },
+            "min_independent_support": {
+              "const": 2
+            },
+            "urgent_single_domain_threshold": {
+              "type": "null"
+            },
+            "max_wait_ns": {
+              "const": "0"
+            },
+            "look_penalty_per_doubling": {
+              "const": 0
+            },
+            "operator_confirmation_available": {
+              "const": false
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sensor": {
+                "const": "event-evidence-projection"
+              },
+              "calibration": {
+                "required": [
+                  "generation",
+                  "llr"
+                ]
+              }
+            }
+          }
+        },
+        "opportunities": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "probes": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    }
+  }
+}

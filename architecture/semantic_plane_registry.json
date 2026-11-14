@@ -97,7 +97,8 @@
     "crates/fss-reference/src/agent_recording_context/replay/retained.rs",
     "crates/fss-cli/src/recording_query_cmd/replay/retained.rs",
     "crates/fss-reference/src/agent_qsr.rs",
-    "crates/fss-cli/src/qsr_query_cmd.rs"
+    "crates/fss-cli/src/qsr_query_cmd.rs",
+    "crates/fss-cli/src/orient_cmd/what_if.rs"
   ],
   "module_declarations": {
     "crates/fss-reference/src/agent_qsr.rs": "ambiguous",
@@ -1041,7 +1042,11 @@
     "crates/fss-reference/tests/qsr_observations_support/mod.rs": "support",
     "crates/fss-cli/tests/qsr_cli_contract.rs": "support",
     "crates/fss-reference/src/agent_recording_context/replay/retained.rs": "cognition",
-    "crates/fss-cli/src/recording_query_cmd/replay/retained.rs": "cognition"
+    "crates/fss-cli/src/recording_query_cmd/replay/retained.rs": "cognition",
+    "crates/fss-cli/src/event_counterfactual.rs": "cognition",
+    "crates/fss-cli/src/event_counterfactual/tests.rs": "support",
+    "crates/fss-cli/src/orient_cmd/what_if.rs": "ambiguous",
+    "crates/fss-cli/tests/event_counterfactual_cli_contract.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

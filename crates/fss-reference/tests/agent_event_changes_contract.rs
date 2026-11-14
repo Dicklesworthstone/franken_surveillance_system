@@ -20,6 +20,7 @@ use fss_reference::agent_event_changes::{
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_orient::{OrientRequest, explain_event, orient_deployment};
 use fss_reference::reference_deployment::RELATIVE_PATH_EFFECTS;
+use fss_reference::retained_source::{ImmutableRetainedSource, verify_event_lineage};
 use fss_reference::{
     ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
@@ -705,5 +706,117 @@ fn complete_json_bound_refuses_valid_large_native_metadata_without_a_prefix() ->
     assert!(error.observation.is_some());
     assert_eq!(files(&fixture.root)?, before);
     cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn shared_lineage_verifier_refuses_empty_or_reordered_inputs_and_revalidates_metadata() -> Test {
+    let fixture = Fixture::new("shared-lineage-verifier")?;
+    for digest in [
+        ContentDigest::sha256(SOURCE),
+        fixture.from.model_receipts[0],
+        fixture.to.model_receipts[0],
+    ] {
+        fs::remove_file(object(&fixture.root, digest))?;
+    }
+    let before = files(&fixture.root)?;
+    let limits = EventChangesLimits::default();
+    let cx = context(&fixture.root, limits, false)?;
+    let owner = ImmutableRetainedSource::open(&fixture.root, limits.read, &cx)?;
+    let opening_usage = owner.usage();
+    assert!(
+        verify_event_lineage(&owner, &[], limits.read.snapshot.max_object_bytes).is_err()
+    );
+    assert!(
+        verify_event_lineage(
+            &owner,
+            &[fixture.to.clone(), fixture.from.clone()],
+            limits.read.snapshot.max_object_bytes,
+        )
+        .is_err()
+    );
+    assert_eq!(owner.usage(), opening_usage, "invalid chains spend no payload I/O");
+
+    let publications = verify_event_lineage(
+        &owner,
+        &[fixture.from.clone(), fixture.to.clone()],
+        limits.read.snapshot.max_object_bytes,
+    )?;
+    assert_eq!(publications, vec![(fixture.roots[0], 1), (fixture.roots[1], 2)]);
+    assert!(owner.usage().read_objects > opening_usage.read_objects);
+    owner.revalidate()?;
+    assert_eq!(files(&fixture.root)?, before, "metadata verification is read only");
+
+    // Selected metadata remains registered even though source and model children were absent.
+    let path = object(&fixture.root, fixture.payloads[0]);
+    let mut changed = fs::read(&path)?;
+    changed.push(0);
+    fs::write(&path, changed)?;
+    let before_refusal = files(&fixture.root)?;
+    assert!(owner.revalidate().is_err(), "late metadata changes invalidate the result");
+    assert_eq!(files(&fixture.root)?, before_refusal);
+    drop(owner);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn snapshot_metadata_revalidation_detects_changed_non_event_liveness_without_new_authority() -> Test {
+    use fss_core::SensorId;
+    use fss_reference::discovery::DiscoverReport;
+    use fss_reference::discovery::retained_liveness::{
+        DeviceEnrollment, retain_discovery_sweep,
+    };
+    use fss_reference::discovery::watchdog::DeviceClass;
+
+    for remove in [false, true] {
+        let fixture = Fixture::new(if remove { "missing-liveness" } else { "changed-liveness" })?;
+        let enrollment = DeviceEnrollment::new(
+            std::net::Ipv4Addr::new(192, 0, 2, 10),
+            SensorId::parse("sensor:metadata-revalidation")?,
+            DeviceClass::Onvif,
+        )?;
+        let mut deployment = ReferenceDeployment::open(&fixture.root, SITE, &fixture.writer)?;
+        // Only a synthetic empty report is retained; this fixture performs no network discovery.
+        let retained = retain_discovery_sweep(
+            &mut deployment,
+            &[enrollment],
+            &DiscoverReport::default(),
+            1_000,
+            &fixture.writer,
+        )?;
+        let digest = retained.first().ok_or("retained liveness fixture")?.record.digest();
+        drop(deployment);
+        let before = files(&fixture.root)?;
+        let limits = EventChangesLimits::default();
+        let cx = context(&fixture.root, limits, false)?;
+        let owner = ImmutableRetainedSource::open(&fixture.root, limits.read, &cx)?;
+        assert_eq!(owner.snapshot().sensor_liveness.len(), 1);
+        let opening_usage = owner.usage();
+        owner.revalidate_snapshot_metadata()?;
+        assert!(owner.usage().read_bytes > opening_usage.read_bytes);
+        assert!(owner.usage().read_objects > opening_usage.read_objects);
+        owner.revalidate()?;
+        assert_eq!(files(&fixture.root)?, before);
+
+        let path = object(&fixture.root, digest);
+        if remove {
+            fs::remove_file(&path)?;
+        } else {
+            fs::write(&path, b"changed retained liveness metadata")?;
+        }
+        let before_refusal = files(&fixture.root)?;
+        assert!(
+            owner.revalidate_snapshot_metadata().is_err(),
+            "changed non-event context must not survive with unchanged ledger/effect heads"
+        );
+        assert!(
+            owner.revalidate().is_err(),
+            "a failed metadata reread poisons the original allowance"
+        );
+        assert_eq!(files(&fixture.root)?, before_refusal);
+        drop(owner);
+        cx.drain_and_finalize();
+    }
     Ok(())
 }

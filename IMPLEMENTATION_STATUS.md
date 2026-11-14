@@ -4,6 +4,46 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Current-event source-loss explanations — 2026-11-14
+
+AOP-011 now admits a narrowly defined `what_if` through the canonical CLI and
+MCP `explain` operation: simultaneous loss of explicitly selected declared
+failure domains on one exact current event revision. The new public
+`EventCounterfactualRequest` owner connects retained event metadata to the
+existing numerical fusion-ablation engine. It preserves the whole source event,
+both complete numerical queries, both outcomes, calibration counts and
+reconstructed summaries, raw ppm assumptions, policy, and typed WhatIf receipt.
+[Operator documentation](docs/AGENT_EVENT_COUNTERFACTUALS.md) provides the exact
+request and invocation.
+
+The caller must supply every contributing domain's score. Missing/extra scores,
+unknown domains, stale revisions, ambiguous input and synthetic common-cause
+collisions refuse. The baseline and projected query both retain a physical
+coverage gap and shared calibration/synthetic-sensor dependence; losing a source
+does not certify absence. Same-bin score changes still change the request and
+explanation identities. This is hypothetical calibrated sensitivity, not replay
+of an event's original policy or a physical sensor-identity certificate.
+
+The transport uses one immutable metadata owner through current lineage
+verification, complete protected context, snapshot-metadata rereads and final
+custody/authority/effect verification. Its shared 256 MiB / 65,536 read-attempt
+allowance is not replenished. Complete reversible JSON-pointer rows and current
+contradictions, alternatives, residuals and obligations must fit the explicit
+view budget and 256 KiB whole-response ceiling, or the payload is withheld.
+No media/model payload hydration, session publication, event/policy mutation or
+effect is authorized. The owner exposes a shared exact lineage verifier and an
+explicit full metadata reread for non-event protected context.
+
+New contracts cover native loss mechanics, complete artifact reconstruction,
+CLI/MCP identity, immutable deployment bytes, strict scope/refusal, raw-score
+binding, schema discovery parity, and late event/non-event metadata corruption.
+They are staged for pinned-nightly native CI; this entry does not claim they
+have executed locally. The local compute environment disconnected during this
+session. The earlier report-discovery repair checkpoint independently passed
+its hosted recording/replay and all 102 MCP tests. Qualification gates and
+release/physical-evidence claims remain unchanged.
+
+
 ## Calibrated explanations preserve missing evidence — 2026-11-14
 
 Opt-in `fss explain --score-calibration` now requires an explicit score for every

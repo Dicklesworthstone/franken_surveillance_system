@@ -2,6 +2,18 @@
 
 `fss_fusion::ablate` answers one bounded counterfactual: what would the current fusion query conclude if a selected set of sensors or declared failure domains were unavailable? The result is derived advice. It does not assert that an outage occurred, certify physical independence or coverage, change a policy, or authorize an effect.
 
+## Current retained events through CLI and MCP
+
+The canonical `explain` operation exposes declared failure-domain loss for a current,
+exactly pinned retained event with `--question what_if --counterfactual '<JSON>'`.
+The request supplies a complete explicit score map and verified calibration; retained
+support/contradiction labels never manufacture measurements. This projection preserves
+unknown physical coverage and shared calibration dependencies, includes both complete
+queries and results, and performs bounded current metadata revalidation without writing
+to the deployment. It accepts declared event domains, rather than inferring physical
+sensor identities from event labels. See [current event counterfactuals](AGENT_EVENT_COUNTERFACTUALS.md)
+for the request schema, CLI/MCP examples, whole-result budgets and refusal behavior.
+
 ## Recompute the remaining evidence graph
 
 A common-cause cluster can contain several sensors joined transitively. Removing one sensor is therefore different from subtracting its entire cluster. The owner preserves every evidence row and its calibration and likelihood. Matching observed rows become explicitly `NotObservable`; existing stale, redacted and not-observable reasons remain intact. The ordinary fusion rule then rebuilds the remaining usable components and their likelihood hulls from scratch. A removed bridge can split a component, so a counterfactual posterior can increase as well as decrease. That change describes the declared dependency graph, not newly measured evidence or independently qualified physical independence.

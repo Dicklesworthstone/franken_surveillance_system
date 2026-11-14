@@ -11,7 +11,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot};
+use fss_core::{
+    CanonicalEncode, ContentDigest, EventHypothesis, EvidenceDeltaBatch, LedgerAnchor,
+    LedgerSnapshot, Plane,
+};
+use fss_object::ObjectManifest;
 use fss_publication::{LocalPublicationState, SlotName, root_record_bytes};
 
 use crate::agent_orient::{
@@ -344,6 +348,30 @@ impl<'a> ImmutableRetainedSource<'a> {
         &self.snapshot
     }
 
+    /// Rehash every metadata dependency of the opening snapshot under the original allowance.
+    ///
+    /// This repeats the metadata-only native projection, including non-event coverage, health,
+    /// liveness and calibration records. Model receipts and media children remain unopened.
+    /// It neither observes a new authority head nor renews read authority: callers must still
+    /// withhold their complete output until `revalidate()` performs final custody/head checks.
+    pub fn revalidate_snapshot_metadata(&self) -> Result<(), FileIngestError> {
+        self.admit()?;
+        let mut current = self
+            .history
+            .snapshot_at_cancellable(self.history.head(), &|| self.admission_cancelled())
+            .map_err(|error| read_error(&self.budget, self.cx, self.cancelled, error))?;
+        // Counter fields measure individual passes; equality concerns their complete metadata.
+        current.bytes_read = self.snapshot.bytes_read;
+        current.files_read = self.snapshot.files_read;
+        if current != self.snapshot {
+            self.budget.fail();
+            return Err(corrupt(
+                "immutable retained snapshot metadata changed during the read",
+            ));
+        }
+        Ok(())
+    }
+
     /// Aggregate successful payload bytes and attempted payload reads.
     #[must_use]
     pub fn usage(&self) -> RetainedReadUsage {
@@ -531,6 +559,77 @@ impl RetainedSource for ImmutableRetainedSource<'_> {
             None => Ok(()),
         }
     }
+}
+
+/// Verify and retain one complete committed event lineage under this owner's read allowance.
+///
+/// Only event manifests and canonical revision metadata are opened. Their declared model,
+/// evidence and source children remain metadata handles, without new read authority. Every
+/// selected payload and witness is registered for the caller's final `revalidate` pass.
+/// Returned rows are publication-root/commit-sequence pairs in canonical revision order.
+///
+/// # Errors
+///
+/// Refuses empty or invalid chains, unmatched committed declarations, changed canonical
+/// metadata, unavailable custody and exhausted read allowances. The caller must withhold
+/// derived output until `owner.revalidate()` succeeds under the same authority.
+pub fn verify_event_lineage(
+    owner: &ImmutableRetainedSource<'_>,
+    revisions: &[EventHypothesis],
+    maximum: usize,
+) -> Result<Vec<(ContentDigest, u64)>, FileIngestError> {
+    let first = revisions
+        .first()
+        .ok_or_else(|| corrupt("event lineage is empty"))?;
+    EventHypothesis::verify_chain(revisions)
+        .map_err(|_| corrupt("event lineage chain is invalid"))?;
+    let object = format!("object:event:{}", first.event_id.as_str());
+    let mut publications = Vec::with_capacity(revisions.len());
+    for batch in owner.ledger().batches() {
+        for delta in &batch.deltas {
+            if delta.family != "event_revision" || delta.object_id.as_str() != object {
+                continue;
+            }
+            let revision = revisions
+                .get(publications.len())
+                .ok_or_else(|| corrupt("event lineage has additional committed revisions"))?;
+            if delta.plane != Plane::Authority
+                || delta.new_generation != revision.revision
+                || delta.prior_generation
+                    != revision.revision.checked_sub(1).filter(|prior| *prior != 0)
+                || delta.witness_digest != Some(revision.revision_digest())
+                || delta.validity != revision.interval
+                || delta.operation_id.is_some()
+            {
+                return Err(corrupt("event lineage differs from committed authority"));
+            }
+            let bytes = owner.read_object_bounded(delta.payload_digest, maximum)?;
+            let manifest = ObjectManifest::from_canonical_bytes(&bytes)
+                .map_err(|_| corrupt("event lineage manifest is invalid"))?;
+            let payload = manifest
+                .metadata_digest()
+                .ok_or_else(|| corrupt("event lineage manifest has no metadata"))?;
+            let mut receipts = revision.model_receipts.clone();
+            receipts.push(payload);
+            receipts.sort_unstable();
+            receipts.dedup();
+            if manifest.kind() != "event-revision" || manifest.children() != receipts {
+                return Err(corrupt("event lineage manifest differs from declared metadata"));
+            }
+            let retained = owner.read_object_bounded(payload, maximum)?;
+            if retained != revision.canonical_bytes() {
+                return Err(corrupt("event lineage canonical metadata differs"));
+            }
+            // The witness is independently bound by the canonical record and committed delta.
+            // It is a metadata handle, never permission to open model or source children.
+            owner.check_object_available(revision.revision_digest())?;
+            publications.push((delta.payload_digest, batch.new_anchor.commit_sequence));
+        }
+    }
+    if publications.len() != revisions.len() {
+        return Err(corrupt("event lineage lacks a committed revision"));
+    }
+    Ok(publications)
 }
 
 fn cancelled_error() -> FileIngestError {

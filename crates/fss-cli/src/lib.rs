@@ -40,6 +40,8 @@ pub mod episode_cmd;
 pub mod error;
 /// Source-bound calibrated class advice over native watch and corroboration reports.
 pub mod event_fusion;
+/// Exact event-metadata source-loss scenarios with explicit caller score assumptions.
+pub mod event_counterfactual;
 /// Session-owned H0/H1 event evidence hydration through canonical AOP-005.
 pub mod event_hydration_query_cmd;
 /// `fss feedback` (AOP-013): advisory, evidence-linked proposals; never a policy mutation.

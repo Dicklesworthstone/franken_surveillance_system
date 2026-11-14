@@ -23,6 +23,8 @@ pub(crate) mod history;
 mod learning_explain;
 #[path = "orient_cmd/what_changed.rs"]
 mod what_changed;
+#[path = "orient_cmd/what_if.rs"]
+mod what_if;
 
 use std::path::PathBuf;
 
@@ -84,6 +86,13 @@ pub enum ExplainTarget {
         from_revision_digest: ContentDigest,
         /// Exact digest of the current committed revision.
         to_revision_digest: ContentDigest,
+    },
+    /// One exact current event under explicit numerical source-loss assumptions.
+    EventCounterfactual {
+        /// Selected retained event lineage.
+        event_id: EventId,
+        /// Complete canonical inline request, never a path or source-read grant.
+        scenario: String,
     },
     /// One immutable captured-learning graph under current session authority.
     Learning {
@@ -366,6 +375,7 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
             "--question",
             "--from-revision-digest",
             "--to-revision-digest",
+            "--counterfactual",
         ],
     )?;
     let (view, budget_tokens) = explain_options::parse(&values)?;
@@ -380,17 +390,61 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         };
     let question = match take(&values, "--question") {
         None => "why",
-        Some((_, value, _)) if matches!(value.as_str(), "why" | "what_changed") => value.as_str(),
+        Some((_, value, _)) if matches!(value.as_str(), "why" | "what_changed" | "what_if") => value.as_str(),
         Some((_, value, index)) => {
             return Err(malformed(
                 "--question",
                 value,
                 *index,
-                "explain admits why or exact adjacent-revision what_changed",
+                "explain admits why, exact adjacent-revision what_changed, or explicit source-loss what_if",
             ));
         }
     };
-    let target = if question == "what_changed" {
+    if question != "what_if" && take(&values, "--counterfactual").is_some() {
+        return Err(malformed(
+            "--counterfactual",
+            "[redacted]",
+            0,
+            "counterfactual input requires --question what_if",
+        ));
+    }
+    let target = if question == "what_if" {
+        for option in [
+            "--at", "--session", "--learning-root", "--custody", "--score-calibration",
+            "--fusion-policy", "--from-revision-digest", "--to-revision-digest",
+        ] {
+            if let Some((_, _, index)) = take(&values, option) {
+                return Err(malformed(
+                    option,
+                    "[redacted]",
+                    *index,
+                    "what_if requires current pinned metadata and one complete inline counterfactual request",
+                ));
+            }
+        }
+        let (_, raw, index) = take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
+            option: "--event-id".to_owned(),
+            command: Some("explain".to_owned()),
+            expected: "the exact retained event for hypothetical source loss".to_owned(),
+        })?;
+        let event_id = EventId::parse(raw.clone()).map_err(|_| {
+            malformed("--event-id", "[redacted]", *index, "expected an exact event identity")
+        })?;
+        let (_, raw, index) = take(&values, "--counterfactual").ok_or_else(|| CliError::MissingValue {
+            option: "--counterfactual".to_owned(),
+            command: Some("explain".to_owned()),
+            expected: "a complete inline fss.event_counterfactual_request.v1 JSON object".to_owned(),
+        })?;
+        let scenario = crate::event_counterfactual::EventCounterfactualRequest::parse(raw)
+            .map_err(|_| malformed(
+                "--counterfactual",
+                "[redacted]",
+                *index,
+                "counterfactual requires an exact revision, unique declared domains, explicit scores and a verified calibration",
+            ))?
+            .canonical_request_json();
+        ExplainTarget::EventCounterfactual { event_id, scenario }
+    } else if question == "what_changed" {
         for option in [
             "--at",
             "--session",
@@ -2379,6 +2433,9 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             return learning_explain::execute(args, session, *publication_root);
         }
         ExplainTarget::Event(event_id) => event_id,
+        ExplainTarget::EventCounterfactual { event_id, scenario } => {
+            return what_if::execute(args, event_id, scenario);
+        }
         ExplainTarget::EventComparison {
             event_id,
             from_revision_digest,

@@ -13,9 +13,8 @@ use std::path::Path;
 use fss_core::{
     AgentView, BudgetQuantitiesSpec, BudgetVector, CanonicalEncode, CanonicalEncoder,
     ContentDigest, ContractError, DigestAlgorithm, EventHypothesis, EventId, ExplainQuestion,
-    ExplainReceipt, LedgerAnchor, Plane, PrincipalId, TimestampNs,
+    ExplainReceipt, LedgerAnchor, PrincipalId, TimestampNs,
 };
-use fss_object::ObjectManifest;
 
 use crate::ReplayCx;
 use crate::agent_follow::{AnchorToken, snapshot_anchor_token};
@@ -25,7 +24,8 @@ use crate::agent_orient::{
 };
 use crate::ingest::FileIngestError;
 use crate::retained_source::{
-    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage, RetainedSource,
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage,
+    verify_event_lineage,
 };
 
 /// Complete comparison projection, independent of the existing frozen event-record schema.
@@ -368,68 +368,6 @@ pub struct DeploymentEventChanges {
     pub read_usage: RetainedReadUsage,
 }
 
-/// Resolve and retain every selected-lineage metadata dependency for final verification.
-fn retain_lineage(
-    owner: &ImmutableRetainedSource<'_>,
-    revisions: &[EventHypothesis],
-    maximum: usize,
-) -> Result<Vec<(ContentDigest, u64)>, EventChangesError> {
-    let event = &revisions[0].event_id;
-    let object = format!("object:event:{}", event.as_str());
-    let mut publications = Vec::with_capacity(revisions.len());
-    for batch in owner.ledger().batches() {
-        for delta in &batch.deltas {
-            if delta.family != "event_revision" || delta.object_id.as_str() != object {
-                continue;
-            }
-            let revision = revisions
-                .get(publications.len())
-                .ok_or_else(|| failure(EventChangesErrorKind::InvalidRecord))?;
-            if delta.plane != Plane::Authority
-                || delta.new_generation != revision.revision
-                || delta.prior_generation
-                    != revision.revision.checked_sub(1).filter(|prior| *prior != 0)
-                || delta.witness_digest != Some(revision.revision_digest())
-                || delta.validity != revision.interval
-                || delta.operation_id.is_some()
-            {
-                return Err(failure(EventChangesErrorKind::InvalidRecord));
-            }
-            let bytes = owner
-                .read_object_bounded(delta.payload_digest, maximum)
-                .map_err(source)?;
-            let manifest = ObjectManifest::from_canonical_bytes(&bytes)
-                .map_err(|_| failure(EventChangesErrorKind::InvalidRecord))?;
-            let payload = manifest
-                .metadata_digest()
-                .ok_or_else(|| failure(EventChangesErrorKind::InvalidRecord))?;
-            let mut receipts = revision.model_receipts.clone();
-            receipts.push(payload);
-            receipts.sort_unstable();
-            receipts.dedup();
-            if manifest.kind() != "event-revision" || manifest.children() != receipts {
-                return Err(failure(EventChangesErrorKind::InvalidRecord));
-            }
-            let retained = owner
-                .read_object_bounded(payload, maximum)
-                .map_err(source)?;
-            if retained != revision.canonical_bytes() {
-                return Err(failure(EventChangesErrorKind::InvalidRecord));
-            }
-            // The witness is independently bound by the canonical record and committed delta.
-            // It is a metadata handle, never permission to open model or source children.
-            owner
-                .check_object_available(revision.revision_digest())
-                .map_err(source)?;
-            publications.push((delta.payload_digest, batch.new_anchor.commit_sequence));
-        }
-    }
-    if publications.len() != revisions.len() {
-        return Err(failure(EventChangesErrorKind::InvalidRecord));
-    }
-    Ok(publications)
-}
-
 fn request_digest(
     request: &EventChangesRequest,
     limits: EventChangesLimits,
@@ -576,11 +514,12 @@ pub fn prepare_event_changes_in_deployment<'a>(
         {
             return Err(failure(EventChangesErrorKind::NonAdjacent));
         }
-        let publications = retain_lineage(
+        let publications = verify_event_lineage(
             &owner,
             &selected.revisions,
             limits.read.snapshot.max_object_bytes,
-        )?;
+        )
+        .map_err(source)?;
         let from_publication = publications[prior];
         let to_publication = publications[prior + 1];
         if to_publication != (selected.event_root, selected.committed_sequence) {

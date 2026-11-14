@@ -1,0 +1,70 @@
+# Focused supplementary native feedback; local repository-owned DSR qualification remains authoritative.
+# A separate queue avoids waiting for the broad reference suite before testing explanation changes.
+name: supplementary event explanation checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-cli/src/event_counterfactual.rs'
+      - 'crates/fss-cli/src/event_counterfactual/**'
+      - 'crates/fss-cli/src/orient_cmd.rs'
+      - 'crates/fss-cli/src/orient_cmd/**'
+      - 'crates/fss-cli/src/bin/fss-mcp.rs'
+      - 'crates/fss-cli/src/bin/fss_mcp/**'
+      - 'crates/fss-cli/src/lib.rs'
+      - 'crates/fss-cli/tests/event_counterfactual_cli_contract.rs'
+      - 'crates/fss-cli/tests/explain_fusion_cli_contract.rs'
+      - 'crates/fss-cli/tests/event_changes_cli_contract.rs'
+      - 'crates/fss-reference/src/retained_source.rs'
+      - 'crates/fss-reference/src/agent_event_changes.rs'
+      - 'crates/fss-reference/src/agent_event_changes/**'
+      - 'crates/fss-reference/tests/agent_event_changes_contract.rs'
+      - 'crates/fss-reference/tests/agent_report_catalog_contract.rs'
+      - 'crates/fss-fusion/**'
+      - 'schemas/*counterfactual*.json'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/bootstrap_toolchain.sh'
+      - '.github/workflows/event-explanations.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fss-event-explanations-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  event-explanations:
+    name: pinned immutable event explanations and source-loss scenarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Provision pinned test toolchain
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify source-loss mathematics and complete artifact projection
+        if: success() || failure()
+        run: |
+          scenario_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib event_counterfactual:: || scenario_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib orient_cmd::what_if:: || scenario_exit=1
+          exit "$scenario_exit"
+      - name: Verify immutable lineage and protected metadata revalidation
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract --test agent_report_catalog_contract
+      - name: Verify exact CLI and MCP explanation compatibility
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --bin fss-mcp --test event_counterfactual_cli_contract --test explain_fusion_cli_contract --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli
+      - name: Execute repository-owned Rust qualification lane
+        if: success() || failure()
+        run: bash scripts/qualify.sh --lane rust
