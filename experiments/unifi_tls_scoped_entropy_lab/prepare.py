@@ -21,7 +21,7 @@ COPY_FILES = (
     "src/server.rs", "src/owned.rs", "src/owned/client.rs", "src/owned/offload.rs", "src/client_handshake.rs",
     "src/camera_tls.rs", "src/camera_tls_owned.rs", "src/camera_tls_client.rs", "src/camera_setup.rs", "src/snapshot_auth.rs", "src/bin/live_tls_probe.rs", "src/bin/live_snapshot_probe.rs",
     "src/bin/unifi_scoped_direct_trial.rs", "src/bin/live_media_probe.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_run_id/mod.rs", "src/bin/trial_setup_fence/mod.rs",
-    "src/bin/trial_owned_archive/mod.rs", "src/bin/trial_owned_archive/video.rs", "src/bin/trial_owned_archive/still_export.rs",
+    "src/bin/trial_owned_archive/mod.rs", "src/bin/trial_owned_archive/video.rs", "src/bin/trial_owned_archive/still_export.rs", "src/bin/trial_owned_archive/event_store.rs",
     "src/fleet_transport.rs", "src/fleet_leased.rs", "src/prepared_setup.rs", "src/prepared_camera.rs", "src/camera_factory.rs", "src/setup_upgrade.rs",
     "tests/scoped_entropy.rs", "tests/owned_entropy.rs", "tests/client_scoped_entropy.rs",
     "tests/owned_client.rs", "tests/fleet_route.rs", "tests/pinned_client.rs", "tests/support/stream.rs", "tests/support/baseline.264", "tests/support/synthetic_g4_resolution.264",

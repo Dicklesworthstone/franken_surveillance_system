@@ -391,6 +391,7 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     mut retained_bootstrap: Option<av_rollover_generation::BootstrapWorker>,
     stop_after_retained_reservation: bool,
     auto_retained_generations: Option<u64>,
+    mut event_archive: super::event_store::Archive,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let policy = video_bootstrap::Policy {
         inband,
@@ -757,6 +758,9 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             }
         }
         if let Some(frame) = event {
+            if let Err(reason) = event_archive.begin(frame.clone(), task, cx, clock, "unifi:owned-event") {
+                break Err(reason);
+            }
             if let Some(index) = startup_answered.iter().position(|digest| *digest == frame.digest()) {
                 startup_answered.remove(index);
                 println!("trial_owned_startup_event=already_answered source_bytes_omitted={} effects_require_reconciliation=true", frame.source().len());
@@ -807,6 +811,9 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                     ),
                     _ => break Err("event reply incomplete; reconcile journal"),
                 }
+            }
+            if let Err(reason) = event_archive.complete().await {
+                break Err(reason);
             }
         }
         if transition {
@@ -954,6 +961,12 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             break Ok(());
         }
     };
+    let event_result = event_archive.finish(task, cx, clock, "unifi:owned-event").await;
+    match &event_result {
+        Ok(count) => println!("trial_owned_events=archived count={count} readback=verified source_identity=network_claim capture_bounds=unknown"),
+        Err(reason) => eprintln!("trial_owned_events=incomplete reason={reason} source_custody=unconfirmed"),
+    }
+    let shutdown_result: Result<usize, Box<dyn std::error::Error>> = async {
     // The capture loop has a single exit. Drain the still before any of the
     // phase-specific shutdown paths can return or relinquish source custody.
     if let Some((mut worker, pin)) = live_still.take() {
@@ -1672,6 +1685,15 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         retained_unresolved,
     ));
     result.map(|()| pins.len()).map_err(Into::into)
+    }.await;
+    match (event_result, shutdown_result) {
+        (Err(event), Err(shutdown)) => {
+            eprintln!("trial_owned_shutdown=failed reason={shutdown}");
+            Err(Box::new(event))
+        }
+        (Err(event), Ok(_)) => Err(Box::new(event)),
+        (Ok(_), shutdown) => shutdown,
+    }
 }
 
 #[cfg(test)]

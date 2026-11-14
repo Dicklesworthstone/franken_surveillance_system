@@ -397,6 +397,10 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                             raise ValueError("empty-first selection marker missing")
                         if name in ("full-empty-control", "full-idle-control", "full-prefix-control") and (b"trial_stage=media_selection_control clocks=2 event_replies=1" not in out or b"trial_owned_startup_event=already_answered" not in out):
                             raise ValueError("selection-time control trace missing or event not retained")
+                        if name in ("full-empty-control", "full-idle-control", "full-prefix-control"):
+                            archived = re.search(rb"trial_owned_events=archived count=([1-9][0-9]*) readback=verified", out)
+                            if not archived:
+                                raise ValueError("selection-time camera event was not published to the event archive")
                         if name == "full-idle-control" and b"trial_stage=unselected_media_candidate source_bytes_omitted=0 unread_bytes_unknown=true" not in out:
                             raise ValueError("idle candidate omission not reported")
                         if name == "full-prefix-control" and (b"trial_stage=media_candidate_selected attempts=3 header_retained=true" not in out or out.count(b"trial_stage=unselected_media_candidate source_bytes_omitted=1 unread_bytes_unknown=true") != 2):

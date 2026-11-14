@@ -20,6 +20,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 mod video;
 mod still_export;
+mod event_store;
 
 // Explicit lifetime limit for this laboratory run; installed custody remains
 // held by the trial. This does not provide restart-safe generation planning.
@@ -621,6 +622,9 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             access.clone(),
         )?
     };
+    let mut event_archive = event_store::Archive::create(
+        task, cx, clock, root, &storage_authority, source, camera_claim, retention, access.clone(),
+    )?;
     if video_only {
         let mut plan = if managed {
             task.checkpoint_for(RuntimeGrant::ObjectStage, root.to_str().ok_or("archive root is not UTF-8")?, clock.now()?, &BudgetVector::ZERO)?;
@@ -654,7 +658,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         } else { None };
         return Box::pin(video::run(supervisor, owner, run_id, task, cx, clock, root,
             source, camera_claim, retention, access, created, wait, segment_limit,
-            management, reply_events, startup_answered, decode_owned, video_still, still_export_path, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations)).await;
+            management, reply_events, startup_answered, decode_owned, video_still, still_export_path, inband, plan, renewal_batch, retained_bootstrap, stop_after_retained_reservation, auto_retained_generations, event_archive)).await;
     }
     let collector = av_bootstrap::Collector::new(
         audio,
@@ -904,6 +908,9 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             println!("trial_stage=owned_segment_published count={published} kind={:?}", pin.1);
         }
         if let Some(frame) = event {
+            if let Err(reason) = event_archive.begin(frame.clone(), task, cx, clock, "unifi:owned-event") {
+                break Err(reason);
+            }
             if let Some(index) = startup_answered.iter().position(|digest| *digest == frame.digest()) {
                 startup_answered.remove(index);
                 println!("trial_owned_startup_event=already_answered source_bytes_omitted={} effects_require_reconciliation=true", frame.source().len());
@@ -956,12 +963,21 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                     _ => break Err("event reply incomplete; reconcile journal"),
                 }
             }
+            if let Err(reason) = event_archive.complete().await {
+                break Err(reason);
+            }
         }
         if let Some(reason)=stop_after_control {break Err(reason);}
         if published == segment_limit {
             break Ok(());
         }
     };
+    let event_result = event_archive.finish(task, cx, clock, "unifi:owned-event").await;
+    match &event_result {
+        Ok(count) => println!("trial_owned_events=archived count={count} readback=verified source_identity=network_claim capture_bounds=unknown"),
+        Err(reason) => eprintln!("trial_owned_events=incomplete reason={reason} source_custody=unconfirmed"),
+    }
+    let shutdown_result: Result<usize, Box<dyn std::error::Error>> = async {
     if let Err(reason) = result {
         // Preserve the payload-free reason even if later drain or custody checks also fail.
         eprintln!("trial_owned_capture_stop reason={reason}");
@@ -1114,4 +1130,13 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     result.map(|()| published).map_err(Into::into)
+    }.await;
+    match (event_result, shutdown_result) {
+        (Err(event), Err(shutdown)) => {
+            eprintln!("trial_owned_shutdown=failed reason={shutdown}");
+            Err(Box::new(event))
+        }
+        (Err(event), Ok(_)) => Err(Box::new(event)),
+        (Ok(_), shutdown) => shutdown,
+    }
 }

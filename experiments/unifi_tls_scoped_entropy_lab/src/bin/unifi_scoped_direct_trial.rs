@@ -70,6 +70,24 @@ use trial_run_id::TrialRunId;
 use fss_unifi_scoped_tls_entropy_lab::{camera_tls_owned, owned, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
+
+// A failed task receipt must not discard an output error that owns pending
+// camera data or publication custody. Receipt failure remains visible.
+fn retain_output_on_receipt_failure<R, E: Into<Box<dyn Error>>>(
+    receipt: Result<R, E>,
+    output: ResultBox<()>,
+) -> ResultBox<(R, ResultBox<()>)> {
+    match receipt {
+        Ok(receipt) => Ok((receipt, output)),
+        Err(receipt_error) => match output {
+            Err(output_error) => {
+                eprintln!("trial_task_receipt=unavailable output_custody=returned");
+                Err(output_error)
+            }
+            Ok(()) => Err(receipt_error.into()),
+        },
+    }
+}
 const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
@@ -1540,7 +1558,7 @@ fn run(args: Options) -> ResultBox<()> {
             };
             TaskCompletion {output,outcome,completed_at}
         }).await?;
-        let receipt=result.receipt?;
+        let (receipt, output) = retain_output_on_receipt_failure(result.receipt, result.output)?;
         let outcome=match receipt.outcome {
             TaskOutcome::Success=>"success_no_effect",
             TaskOutcome::Indeterminate(_)=>"effect_unsettled",
@@ -1548,7 +1566,7 @@ fn run(args: Options) -> ResultBox<()> {
             TaskOutcome::Cancelled=>"cancelled",
         };
         println!("trial_task_outcome={outcome}");
-        result.output
+        output
     })
 }
 fn inspect_anchored_journal(args: &[String]) -> ResultBox<()> {
@@ -1687,6 +1705,45 @@ fn main() {
     if let Err(error) = result {
         eprintln!("trial stopped: {error}; effect journal may require reconciliation");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod receipt_custody_tests {
+    use super::*;
+    use std::{cell::Cell, fmt, rc::Rc};
+
+    #[derive(Debug)]
+    struct Custody(Rc<Cell<bool>>);
+    impl fmt::Display for Custody {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("synthetic owned failure")
+        }
+    }
+    impl Error for Custody {}
+    impl Drop for Custody {
+        fn drop(&mut self) { self.0.set(true); }
+    }
+
+    #[test]
+    fn receipt_failure_returns_the_original_owned_output_error() {
+        let dropped = Rc::new(Cell::new(false));
+        let output: ResultBox<()> = Err(Box::new(Custody(dropped.clone())));
+        let receipt: Result<(), std::io::Error> = Err(std::io::Error::other("synthetic receipt"));
+        let error = retain_output_on_receipt_failure(receipt, output).expect_err("receipt accepted");
+        assert!(!dropped.get());
+        let retained = error.downcast::<Custody>().expect("output custody changed");
+        assert!(!dropped.get());
+        drop(retained);
+        assert!(dropped.get());
+    }
+
+    #[test]
+    fn successful_receipt_returns_output_unchanged() {
+        let receipt: Result<u8, std::io::Error> = Ok(7);
+        let (receipt, output) = retain_output_on_receipt_failure(receipt, Ok(())).expect("receipt refused");
+        assert_eq!(receipt, 7);
+        assert!(output.is_ok());
     }
 }
 
