@@ -240,3 +240,164 @@ fn exports_never_overwrite_and_read_does_not_create_deployments() -> TestResult 
     assert!(!within.exists());
     Ok(())
 }
+
+fn inspection_fixture(name: &str) -> TestResult<(Directory, PathBuf, String, String)> {
+    let dir = Directory::new(name)?;
+    let root = dir.0.join("deployment");
+    let source = dir.0.join("source.jpg");
+    let model = dir.0.join("model.bin");
+    fs::write(&source, JPEG)?;
+    fs::write(&model, MODEL)?;
+    let import_id = import(&root, &source)?;
+    let result = run(&root, &import_id, &model).output()?;
+    success(&result);
+    let run_id = field(&result, "run_identity")?;
+    Ok((dir, root, import_id, run_id))
+}
+
+fn deployment_bytes(root: &Path) -> TestResult<std::collections::BTreeMap<PathBuf, Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) -> TestResult {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path.strip_prefix(root)?.to_path_buf();
+            if entry.file_type()?.is_dir() {
+                files.insert(relative, Vec::new());
+                visit(root, &path, files)?;
+            } else {
+                files.insert(relative, fs::read(path)?);
+            }
+        }
+        Ok(())
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
+#[test]
+fn read_and_replay_coexist_with_a_writer_without_changing_deployment_bytes() -> TestResult {
+    use fss_core::{BudgetVector, ContextAuthority, OperationId, RootAuthoritySpec};
+    use fss_reference::{ReferenceDeployment, ReplayCx};
+
+    let (dir, root, import_id, run_id) = inspection_fixture("concurrent-reader")?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:inspection-writer".to_owned(),
+        operation_id: OperationId::parse("operation:inspection-writer")?,
+        principal: "principal:inspection-test".to_owned(),
+        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder().bytes(1024 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:test".to_owned(),
+        retention_scope: "retention:test".to_owned(),
+        anchor_universe: ContentDigest::sha256(b"site:inference-cli"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
+    let writer = ReferenceDeployment::open(&root, "site:inference-cli", &cx)?;
+    let before = deployment_bytes(&root)?;
+    for action in ["read", "replay"] {
+        let destination = dir.0.join(format!("{action}-inspection.tensor"));
+        let output = command(&root, action, &import_id)
+            .args(["--run-id", &run_id])
+            .arg("--output")
+            .arg(&destination)
+            .output()?;
+        success(&output);
+        assert_eq!(field(&output, "run_identity")?, run_id);
+        assert_eq!(field(&output, "replay_compatible")?, "true");
+        assert_eq!(
+            field(&output, "executor_profile")?,
+            fss_reference::ingest::inference::executor_profile_digest().to_text()
+        );
+        assert_eq!(field(&output, "deployment_mutated")?, "false");
+        assert!(field(&output, "payload_read_bytes")?.parse::<u64>()? > 0);
+        assert!(field(&output, "payload_read_attempts")?.parse::<u64>()? > 0);
+        assert_eq!(
+            ContentDigest::sha256(&fs::read(destination)?).to_text(),
+            field(&output, "output_digest")?
+        );
+        assert_eq!(deployment_bytes(&root)?, before);
+    }
+    drop(writer);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn read_and_replay_refuse_torn_journals_without_recovery_or_export() -> TestResult {
+    for (index, relative) in ["ledger/journal.fssj", "effects/journal.fssj"]
+        .iter()
+        .enumerate()
+    {
+        let (dir, root, import_id, run_id) = inspection_fixture(&format!("torn-{index}"))?;
+        let path = root.join(relative);
+        let mut bytes = fs::read(&path)?;
+        bytes.extend_from_slice(b"uncommitted-inference-inspection-tail");
+        fs::write(&path, bytes)?;
+        let before = deployment_bytes(&root)?;
+        for action in ["read", "replay"] {
+            let destination = dir.0.join(format!("{action}-refused.tensor"));
+            let output = command(&root, action, &import_id)
+                .args(["--run-id", &run_id])
+                .arg("--output")
+                .arg(&destination)
+                .output()?;
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(!destination.exists());
+            assert_eq!(deployment_bytes(&root)?, before);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn inference_inspection_uses_one_allowance_through_final_revalidation() -> TestResult {
+    let (dir, root, import_id, run_id) = inspection_fixture("read-allowance")?;
+    let before = deployment_bytes(&root)?;
+    for action in ["read", "replay"] {
+        let output = command(&root, action, &import_id)
+            .args(["--run-id", &run_id])
+            .output()?;
+        success(&output);
+        let bytes = field(&output, "payload_read_bytes")?.parse::<u64>()?;
+        let attempts = field(&output, "payload_read_attempts")?.parse::<u64>()?;
+        assert!(bytes > 1 && attempts > 1);
+        // A final empty journal probe needs one remaining byte of allowance, even though
+        // it returns no payload. All actual reads and rereads still share one counter.
+        let byte_allowance = bytes + 1;
+        let exact = command(&root, action, &import_id)
+            .args([
+                "--run-id",
+                &run_id,
+                "--max-read-bytes",
+                &byte_allowance.to_string(),
+                "--max-read-objects",
+                &attempts.to_string(),
+            ])
+            .output()?;
+        success(&exact);
+        for (key, amount) in [
+            ("--max-read-bytes", byte_allowance - 1),
+            ("--max-read-objects", attempts - 1),
+        ] {
+            let destination = dir.0.join(format!("{action}-{key}-refused.tensor"));
+            let refused = command(&root, action, &import_id)
+                .args(["--run-id", &run_id, key, &amount.to_string()])
+                .arg("--output")
+                .arg(&destination)
+                .output()?;
+            assert!(!refused.status.success());
+            assert!(refused.stdout.is_empty());
+            assert!(!destination.exists());
+            assert_eq!(deployment_bytes(&root)?, before);
+        }
+    }
+    Ok(())
+}

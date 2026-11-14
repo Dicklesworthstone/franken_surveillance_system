@@ -11,7 +11,8 @@ use std::fmt;
 
 use super::inference::RecordedInference;
 use super::recorded_decode::{RecordedDecodeRequest, RecordedFrame};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::ReplayCx;
+use crate::retained_source::RetainedSource;
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm, LedgerAnchor,
     SensorCapsule,
@@ -444,7 +445,7 @@ pub struct DetectionFrame {
 impl DetectionFrame {
     /// Reads verified retained inference and frame objects without executing a model or changing authority.
     pub fn read(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         run_id: ContentDigest,
         source: &RecordedDecodeRequest,
         contract: &DetectionContract,

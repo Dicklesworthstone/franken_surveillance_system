@@ -7,9 +7,13 @@ use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
 use fss_reference::ingest::RetainedReadLimits;
 use fss_reference::ingest::inference::{
     MAX_RECORDED_MODEL_BYTES, MAX_RUN_TENSOR_BYTES, RecordedInference, RecordedModel,
+    executor_profile_digest,
 };
 use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest, RecordedFrame,
+};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedSource,
 };
 use fss_reference::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
 use std::collections::BTreeMap;
@@ -20,6 +24,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::time::Instant;
 
 #[path = "fss-infer/activity_cli.rs"]
 mod activity_cli;
@@ -33,6 +38,8 @@ mod onnx_cli;
 mod package_cli;
 #[path = "fss-infer/recording_cli.rs"]
 mod recording_cli;
+#[path = "fss-infer/retained_read.rs"]
+mod retained_read;
 
 const HELP: &str = "fss-infer <run|read|replay|activity|detect|track|analyze|import-onnx|package-detect|sentinel-replay> [options]\n\
   run/read/replay: --root DIR --site SITE --import-id sha256:HEX --segment N\n\
@@ -40,6 +47,11 @@ const HELP: &str = "fss-infer <run|read|replay|activity|detect|track|analyze|imp
   run: --model FILE --model-digest sha256:HEX [--decode-work-units N]\n\
   read/replay: --run-id sha256:HEX (the model is recovered from storage)\n\
   run/replay budgets: --max-macs N --max-tensor-bytes N\n\
+  read/replay: [--max-read-bytes N] [--max-read-objects N]\n\
+  Reads use immutable custody, with no publisher lock or recovery; the shared allowance\n\
+  covers metadata, source/model verification and final revalidation. Default: 1 GiB and\n\
+  1,000,000 read attempts; maximum: 4 GiB and 4,000,000. A cooperative 60-second deadline\n\
+  is checked around reads and model replay; it does not preempt a running scalar kernel.\n\
   Exports: --output FILE --receipt-out FILE --model-out FILE\n\
   detect/track: use fss-infer detect --help for explicit output contracts and run lists.\n\
   analyze: use fss-infer analyze --help for bounded recording-to-report execution.\n\
@@ -71,6 +83,7 @@ struct Options {
     principal: String,
     source: RecordedDecodeRequest,
     budget: ExecBudget,
+    read_limits: ImmutableRetainedReadLimits,
     action: Action,
     output: Option<PathBuf>,
     receipt: Option<PathBuf>,
@@ -136,7 +149,8 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         let allowed = common.contains(&key)
             || (action == "run"
                 && matches!(key, "--model" | "--model-digest" | "--decode-work-units"))
-            || (action != "run" && key == "--run-id")
+            || (action != "run"
+                && matches!(key, "--run-id" | "--max-read-bytes" | "--max-read-objects"))
             || (action != "read" && matches!(key, "--max-macs" | "--max-tensor-bytes"));
         if !allowed {
             return Err("unknown or inapplicable option".to_owned());
@@ -197,6 +211,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         principal,
         source,
         budget,
+        read_limits: retained_read::parse_limits(&values)?,
         action,
         output: values.get("--output").map(PathBuf::from),
         receipt: values.get("--receipt-out").map(PathBuf::from),
@@ -239,7 +254,7 @@ fn export(path: &Path, bytes: &[u8], root: &Path, cx: &ReplayCx) -> RunResult<()
     cx.checkpoint_post_commit("inference_cli:export_complete");
     Ok(())
 }
-fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
+fn run(mut options: Options, out: &mut impl Write) -> RunResult<()> {
     // Read commands must never initialize an absent deployment. The authenticated local process
     // and filesystem permissions are the boundary; a principal label is not remote authentication.
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
@@ -249,36 +264,55 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     {
         return Err(io::Error::other("existing non-symlink deployment required").into());
     }
+    let started = Instant::now();
+    let stopped = || started.elapsed() >= retained_read::DEADLINE;
+    let read_only = !matches!(options.action, Action::Run { .. });
+    if read_only {
+        options.root = fs::canonicalize(&options.root)?;
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:inference-cli".to_owned(),
         operation_id: OperationId::parse("operation:inference-cli")?,
         principal: options.principal,
-        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        capabilities: if read_only {
+            vec!["ADP-REPLAY-001".to_owned(), "CAP-READ-MEDIA-001".to_owned()]
+        } else {
+            vec!["ADP-REPLAY-001".to_owned()]
+        },
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder()
-            .bytes(options.budget.max_bytes as u64)
-            .build()?,
+        budgets: if read_only {
+            BudgetVector::builder()
+                .bytes(options.read_limits.max_read_bytes as u64)
+                .storage_operations(options.read_limits.max_read_objects as u64)
+                .build()?
+        } else {
+            BudgetVector::builder()
+                .bytes(options.budget.max_bytes as u64)
+                .build()?
+        },
         privacy_scope: "privacy:local-authorized-files".to_owned(),
         retention_scope: "retention:existing-deployment-policy".to_owned(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
     })?;
     authority.validate()?;
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    let cx = if read_only {
+        ReplayCx::from_context_authority_read_only(&authority, options.root.clone())?
+    } else {
+        ReplayCx::from_context_authority(&authority, options.root.clone())?
+    };
     let exec_cx = ScalarExecCx::new();
     let result = (|| -> RunResult<()> {
         cx.checkpoint("inference_cli:load")?;
-        let model = match &options.action {
-            Action::Run { path, digest, .. } => Some(load_model(path, *digest)?),
-            _ => None,
-        };
-        let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
-        let (result, operation) = match &options.action {
-            Action::Run { decode_work, .. } => {
-                let model = model
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("model not loaded"))?;
+        let (result, operation, read_usage) = match &options.action {
+            Action::Run {
+                path,
+                digest,
+                decode_work,
+            } => {
+                let model = load_model(path, *digest)?;
+                let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
                 RecordedFrame::decode_and_publish(
                     &mut deployment,
                     &options.source,
@@ -289,28 +323,42 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                     RecordedInference::run_and_publish(
                         &mut deployment,
                         &options.source,
-                        model,
+                        &model,
                         options.budget,
                         &exec_cx,
                         &cx,
                     )?,
                     "run",
+                    None,
                 )
             }
-            Action::Read(id) => (
-                RecordedInference::open(&deployment, *id, &options.source, &cx)?,
-                "read",
-            ),
-            Action::Replay(id) => {
-                let result = RecordedInference::open(&deployment, *id, &options.source, &cx)?;
-                result.verify_by_replay(
-                    &deployment,
-                    &options.source,
-                    options.budget,
-                    &exec_cx,
+            Action::Read(id) | Action::Replay(id) => {
+                let owner = ImmutableRetainedSource::open_cancellable(
+                    &options.root,
+                    options.read_limits,
                     &cx,
+                    &stopped,
                 )?;
-                (result, "replay_verified")
+                if owner.site_lineage() != options.site {
+                    return Err(io::Error::other("retained inference site lineage mismatch").into());
+                }
+                let result = RecordedInference::open(&owner, *id, &options.source, &cx)?;
+                let operation = if matches!(options.action, Action::Replay(_)) {
+                    result.verify_by_replay(
+                        &owner,
+                        &options.source,
+                        options.budget,
+                        &exec_cx,
+                        &cx,
+                    )?;
+                    "replay_verified"
+                } else {
+                    "read"
+                };
+                // No export or stdout prefix is visible until source, model, current privacy,
+                // publication and authority have passed the same nonrenewing read allowance.
+                owner.revalidate()?;
+                (result, operation, Some(owner.usage()))
             }
         };
         if let Some(path) = &options.output {
@@ -338,10 +386,23 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         )?;
         writeln!(
             out,
+            "executor_profile={}\nreplay_compatible={}",
+            result.executor_profile_digest(),
+            result.executor_profile_digest() == executor_profile_digest()
+        )?;
+        writeln!(
+            out,
             "output_digest={}\noutput_ports={}\nmodel_outputs=uncalibrated\nabsence_certifiable=false\neffects_authorized=false",
             ContentDigest::sha256(result.output_bytes()),
             result.outputs().len()
         )?;
+        if let Some(usage) = read_usage {
+            writeln!(
+                out,
+                "payload_read_bytes={}\npayload_read_attempts={}\ndeployment_mutated=false",
+                usage.read_bytes, usage.read_objects
+            )?;
+        }
         Ok(())
     })();
     exec_cx.drain_and_finalize();

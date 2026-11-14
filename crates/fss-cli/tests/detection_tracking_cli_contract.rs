@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 //! Cross-process operator tests for real stored model runs, detector proposals and tracking.
 
-use fss_core::ContentDigest;
+use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_reference::{ReferenceDeployment, ReplayCx};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,6 +147,152 @@ fn list(f: &Fixture, ids: &[&str]) -> TestResult<PathBuf> {
     fs::write(&path, bytes)?;
     Ok(path)
 }
+
+fn inventory(root: &Path) -> TestResult<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        result: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) -> TestResult {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                result.insert(path.strip_prefix(root)?.to_path_buf(), None);
+                visit(root, &path, result)?;
+            } else if kind.is_file() {
+                result.insert(
+                    path.strip_prefix(root)?.to_path_buf(),
+                    Some(fs::read(&path)?),
+                );
+            } else {
+                return Err(std::io::Error::other("unexpected fixture entry type").into());
+            }
+        }
+        Ok(())
+    }
+    let mut result = BTreeMap::new();
+    visit(root, root, &mut result)?;
+    Ok(result)
+}
+
+#[test]
+fn detect_and_track_coexist_with_writer_and_leave_every_store_byte_unchanged() -> TestResult {
+    let f = fixture("immutable-writer")?;
+    let runs = list(&f, &f.runs.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let baseline_detect = command(&f.root, &f.import, "detect")
+        .args(["--segment", "0", "--run-id", &f.runs[0]])
+        .output()?;
+    let baseline_track = command(&f.root, &f.import, "track")
+        .arg("--runs")
+        .arg(&runs)
+        .output()?;
+    success(&baseline_detect);
+    success(&baseline_track);
+
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:detector-read-writer".into(),
+        operation_id: OperationId::parse("operation:detector-read-writer")?,
+        principal: "principal:local-operator".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(b"site:track-cli"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority(&authority, f.root.clone())?;
+    let writer = ReferenceDeployment::open(&f.root, "site:track-cli", &cx)?;
+    let before = inventory(&f.root)?;
+    let detected = command(&f.root, &f.import, "detect")
+        .args(["--segment", "0", "--run-id", &f.runs[0]])
+        .output()?;
+    let tracked = command(&f.root, &f.import, "track")
+        .arg("--runs")
+        .arg(&runs)
+        .output()?;
+    success(&detected);
+    success(&tracked);
+    assert_eq!(detected.stdout, baseline_detect.stdout);
+    assert_eq!(tracked.stdout, baseline_track.stdout);
+    assert_eq!(inventory(&f.root)?, before);
+    drop(writer);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn detector_reads_refuse_torn_journals_without_repair_or_report_export() -> TestResult {
+    let f = fixture("immutable-tails")?;
+    let runs = list(&f, &f.runs.iter().map(String::as_str).collect::<Vec<_>>())?;
+    for relative in ["ledger/journal.fssj", "effects/journal.fssj"] {
+        let journal = f.root.join(relative);
+        let intact = fs::read(&journal)?;
+        let mut torn = intact.clone();
+        torn.extend_from_slice(&[0x46, 0x53, 0x53]);
+        fs::write(&journal, &torn)?;
+        let before = inventory(&f.root)?;
+        for action in ["detect", "track"] {
+            let export = f.dir.0.join(format!("torn-{action}.json"));
+            let mut read = command(&f.root, &f.import, action);
+            if action == "detect" {
+                read.args(["--segment", "0", "--run-id", &f.runs[0]]);
+            } else {
+                read.arg("--runs").arg(&runs);
+            }
+            let result = read.arg("--report-out").arg(&export).output()?;
+            assert_eq!(result.status.code(), Some(1));
+            assert!(result.stdout.is_empty());
+            assert!(!export.exists());
+            assert_eq!(inventory(&f.root)?, before);
+        }
+        fs::write(journal, intact)?;
+    }
+    let recovered = command(&f.root, &f.import, "track")
+        .arg("--runs")
+        .arg(&runs)
+        .output()?;
+    success(&recovered);
+    Ok(())
+}
+
+#[test]
+fn detector_custody_budget_exhaustion_is_atomic_and_retry_does_not_change_storage() -> TestResult {
+    let f = fixture("immutable-budget")?;
+    let runs = list(&f, &f.runs.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let before = inventory(&f.root)?;
+    for action in ["detect", "track"] {
+        for bound in ["--max-read-bytes", "--max-read-objects"] {
+            let export = f.dir.0.join(format!("budget-{action}-{bound}.json"));
+            let mut read = command(&f.root, &f.import, action);
+            if action == "detect" {
+                read.args(["--segment", "0", "--run-id", &f.runs[0]]);
+            } else {
+                read.arg("--runs").arg(&runs);
+            }
+            let result = read
+                .args([bound, "1"])
+                .arg("--report-out")
+                .arg(&export)
+                .output()?;
+            assert_eq!(result.status.code(), Some(1));
+            assert!(result.stdout.is_empty());
+            assert!(!export.exists());
+            assert_eq!(inventory(&f.root)?, before);
+        }
+    }
+    let retry = command(&f.root, &f.import, "track")
+        .arg("--runs")
+        .arg(&runs)
+        .output()?;
+    success(&retry);
+    assert_eq!(inventory(&f.root)?, before);
+    Ok(())
+}
+
 #[test]
 fn detect_and_track_replay_after_source_removal_is_byte_identical() -> TestResult {
     let f = fixture("replay")?;

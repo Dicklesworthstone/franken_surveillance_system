@@ -1,8 +1,44 @@
 # Implementation status
 
-**As of:** 2026-11-13 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-14 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Immutable retained inference, detection and tracking reads — 2026-11-14
+
+Native `fss-infer read`, `replay`, `detect` and `track` now use the sealed immutable
+retained source and a read-only replay-authority constructor. They can inspect a
+deployment while a writer is open without acquiring its publisher lock, creating
+deployment directories, repairing journals or reconciling effects. Decoded-frame,
+source, model, normalized-input and result verification share one nonrenewing
+byte/read-attempt allowance through final revalidation. No result or export begins
+until selected custody, publications, current privacy restrictions and authority
+are revalidated. A damaged source or exhausted allowance refuses output.
+
+Authentic historical executor profiles remain inspectable under exact original
+receipt/run/manifest/delta bindings. `executor_profile` and `replay_compatible`
+make that distinction visible; numeric replay requires the exact current profile
+before execution. Historical completion anchors, native detection report bytes,
+local track identities and ordinary computational partial-result semantics are
+preserved. Read limits are explicit CLI options, with a cooperative 60-second
+read deadline. This is a bounded observation, not an atomic snapshot or a hard
+scalar-kernel deadline. See [inference](docs/INFERENCE_OPERATOR_WORKFLOW.md) and
+[detection/tracking](docs/DETECTION_AND_TRACKING_WORKFLOW.md).
+
+Seven new library regressions cover live writers, cumulative allowances,
+corruption, tombstones/publication changes, stale authority, cancellation and
+historical profiles. Six new subprocess regressions cover both native command
+pairs, unchanged deployment bytes, damaged journals without recovery and
+read-budget refusal without output/export; the shared parser also has a strict
+allowance contract. Scoped pinned library formatting, whitespace checks and
+independent source review passed. Native compilation and test execution are
+pending: the local host has severe resource pressure and an incomplete offline
+dependency cache. Existing hosted checks were triggered by the direct-main
+checkpoint and remain supplementary. The first bounded-video job stopped before
+Rust compilation on existing dependency-admission, schema/domain registry and
+documentation checks; it produced no compiler result for this change. No native runtime pass, detector-quality
+claim, camera result or release qualification is implied. Broad VIT-008 and
+VIT-015 work remains open.
 
 ## Immutable QSR agent queries — 2026-11-13
 

@@ -40,7 +40,8 @@ The output reports `run_identity`, `model_digest`, `frame_root`, final `authorit
 `executed_macs`, `allocated_tensor_bytes`, output digest and number of output ports.
 `model_outputs=uncalibrated`, `absence_certifiable=false` and `effects_authorized=false` are
 explicit. Interpret a tensor only according to the separately admitted model's output contract.
-Successful identical invocations reuse authority identities, but execute and charge work again.
+Successful identical invocations reuse authority identities and revalidate the completed run
+from custody; an incomplete run must execute before completing publication.
 
 ## Reopen and reproduce
 
@@ -59,9 +60,30 @@ cargo run -p fss-cli --bin fss-infer -- replay \
 Both commands retrieve the model object from retained custody. `read` verifies source,
 normalized-input, output and publication consistency without executing graph operators.
 `replay` additionally reruns the exact model and compares every output bit and executor
-accounting field. Neither modifies authority. A new unrelated ledger commit does not change
-the run's completion anchor. An unavailable source/root or incompatible execution profile
-is not silently replaced by newer data or implementation behavior.
+accounting field. Both use immutable custody with a read-only authority constructor: they
+coexist with an open writer, take no publisher lock, create no deployment directories and
+perform no journal repair or effect reconciliation. A new unrelated ledger commit does not
+change the run's completion anchor. A change during inspection refuses the open owner.
+
+`executor_profile` reports the original executor source profile, and `replay_compatible`
+states whether that profile matches the current executable's source profile. `read` can
+inspect an intact historical run from an older profile; `replay` requires the exact current
+profile before numerical work. This compatibility field is not a claim that replay has run.
+An unavailable source/root is never replaced by newer data.
+
+Both commands accept `--max-read-bytes` (default 1 GiB, maximum 4 GiB) and
+`--max-read-objects` (default 1,000,000, maximum 4,000,000). These are one shared, nonrenewing
+allowance for metadata, retained source/frame/model/input/output verification and final
+revalidation. Repeated reads count again; the object counter counts read attempts, not unique
+objects. `payload_read_bytes` and `payload_read_attempts` report consumed work after successful
+final revalidation. Empty journal probes still need a remaining byte of allowance even when
+they return no bytes. There is also a cooperative 60-second deadline checked at read boundaries;
+it does not preempt a running scalar kernel.
+
+No stdout result or export starts until final source, publication, current privacy and authority
+revalidation succeeds. `deployment_mutated=false` describes the inspection command's behavior,
+not a lock against concurrent writers. The result is a bounded observation, not an atomic
+filesystem snapshot or a guarantee against a change after the final validation.
 
 ## Failure and export boundaries
 
@@ -97,7 +119,9 @@ cargo test -p fss-cli --bin fss-infer
 cargo test -p fss-cli --test inference_cli_contract
 ```
 
-These tests were added but not executed in the editing environment. Full model admission,
-trained detector output decoding, tracking, live sensor operation and release qualification
-remain open. The internal format definitions and identity rules are documented in the linked
+Additional inspection regressions cover a live writer, unchanged deployment bytes and directory
+entries, damaged journals without recovery, and shared allowances through final revalidation.
+Validation results are recorded in the current implementation-status checkpoint. Production
+model admission, trained detector quality, live sensor operation and release qualification
+remain separate. The internal format definitions and identity rules are documented in the linked
 recorded model execution contract; this utility does not invent an alternate agent envelope.

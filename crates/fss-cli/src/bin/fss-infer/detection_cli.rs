@@ -4,6 +4,7 @@
 use super::{RunResult, Values, digest, export, number, text, value};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
+use fss_reference::ReplayCx;
 use fss_reference::ingest::RetainedReadLimits;
 use fss_reference::ingest::detections::{
     BoxEncoding, CoordinateSpace, DetectionBudget, DetectionContract, DetectionFrame, DetectionSpec,
@@ -14,13 +15,16 @@ use fss_reference::ingest::recorded_decode::{
 use fss_reference::ingest::tracking::{
     AssociationBudget, LocalBoxTracker, TrackEnd, TrackingConfig, TrackingUpdate,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedSource,
+};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 const MAX_FRAMES: usize = 128;
 const MAX_RUN_LIST_BYTES: usize = 65536;
@@ -31,6 +35,7 @@ const HELP: &str = "fss-infer detect|track [options]\n\
        --box-format xyxy|cxcywh --coordinates pixels|normalized\n\
        [--minimum-score-ppm N] [--nms-iou-ppm N]\n\
        [--maximum-rows N] [--maximum-detections N] [--work-units N]\n\
+       [--max-read-bytes N] [--max-read-objects N]\n\
        [--principal ID] [--report-out FILE]\n\
   detect: --segment N --run-id sha256:HEX\n\
   track: --runs FILE (one SEGMENT SHA256_RUN_ID per line, increasing segments)\n\
@@ -39,7 +44,12 @@ const HELP: &str = "fss-infer detect|track [options]\n\
   Output must be [N,6] or [1,N,6]: four box values, score in [0,1], integer class.\n\
   No implicit resizing, letterbox reversal, logits, class inference, model downloads or alerts.\n\
   Reports are JSON with explicit incomplete results and source proofs. A missed box is not\n\
-  absence. Track IDs are local hypotheses. Reconstruct history by replaying the full run list.\n";
+  absence. Track IDs are local hypotheses. Reconstruct history by replaying the full run list.\n\
+  Reads share one finite custody allowance and never acquire a deployment writer or repair\n\
+  storage. Changed custody or exhausted read authority refuses output before any export.\n\
+  Default: 1 GiB and 1,000,000 read attempts; maximum: 4 GiB and 4,000,000. Metadata,\n\
+  source verification and final rereads share this allowance. A cooperative 60-second\n\
+  deadline is checked around reads and before output; active analysis is not preempted.\n";
 
 #[derive(Debug)]
 enum Selection {
@@ -58,6 +68,7 @@ struct Options {
     selection: Selection,
     detector_work: u64,
     association_work: u64,
+    read_limits: ImmutableRetainedReadLimits,
     report: Option<PathBuf>,
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
@@ -77,6 +88,8 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         "--maximum-rows",
         "--maximum-detections",
         "--work-units",
+        "--max-read-bytes",
+        "--max-read-objects",
         "--principal",
         "--report-out",
     ];
@@ -184,6 +197,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         tracking: track_config,
         detector_work: number(&values, "--work-units", Some(10_000_000))?,
         association_work: number(&values, "--association-work-units", Some(10_000_000))?,
+        read_limits: super::retained_read::parse_limits(&values)?,
         report: values.get("--report-out").map(PathBuf::from),
     })
 }
@@ -372,7 +386,7 @@ fn render_frame(frame: &DetectionFrame, update: Option<&TrackingUpdate>) -> RunR
     s.push('}');
     Ok(s)
 }
-fn run(options: Options, out: &mut impl Write) -> RunResult<bool> {
+fn run(mut options: Options, out: &mut impl Write) -> RunResult<bool> {
     let entries = load_selection(&options.selection)?;
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
         || !fs::symlink_metadata(options.root.join("LAYOUT"))?
@@ -381,23 +395,37 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<bool> {
     {
         return Err(io::Error::other("existing non-symlink deployment required").into());
     }
+    options.root = fs::canonicalize(&options.root)?;
     let auth = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:detector-cli".into(),
         operation_id: OperationId::parse("operation:detector-cli")?,
         principal: options.principal,
-        capabilities: vec!["ADP-REPLAY-001".into()],
+        capabilities: vec!["ADP-REPLAY-001".into(), "CAP-READ-MEDIA-001".into()],
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+        budgets: BudgetVector::builder()
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
+            .build()?,
         privacy_scope: "privacy:local-authorized-files".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
     })?;
     auth.validate()?;
-    let cx = ReplayCx::from_context_authority(&auth, options.root.clone())?;
+    let cx = ReplayCx::from_context_authority_read_only(&auth, options.root.clone())?;
+    let started = Instant::now();
+    let cancelled = || started.elapsed() >= super::retained_read::DEADLINE;
     let result = (|| -> RunResult<bool> {
-        let deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
+        let deployment = ImmutableRetainedSource::open_cancellable(
+            &options.root,
+            options.read_limits,
+            &cx,
+            &cancelled,
+        )?;
+        if deployment.site_lineage() != options.site {
+            return Err(io::Error::other("retained deployment site lineage mismatch").into());
+        }
         let mut tracker = options.tracking.map(LocalBoxTracker::new).transpose()?;
         let mut detection_budget = DetectionBudget::new(options.detector_work);
         let mut association_budget = AssociationBudget::new(options.association_work);
@@ -508,6 +536,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<bool> {
             association_budget.used()
         )?;
         cx.checkpoint("detector_cli:report")?;
+        deployment.revalidate()?;
         if let Some(path) = &options.report {
             export(path, report.as_bytes(), &options.root, &cx)?;
         }

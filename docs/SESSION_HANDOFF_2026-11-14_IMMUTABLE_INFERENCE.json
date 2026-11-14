@@ -1,0 +1,104 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-14",
+  "timezone": "UTC",
+  "state": "source_implemented_native_validation_pending",
+  "mission": {
+    "goal": "Close important retained inference inspection gaps with meaningful direct-main commits and no PRs.",
+    "initial_source_head": "0fd82f57f1d8ec0fdd6dbd31c888f3221f118edc",
+    "bead_scope": ["VIT-008 / fss-vit-je36t.8", "VIT-015 / fss-vit-je36t.15"],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "retained_owner": "crates/fss-reference/src/retained_source.rs",
+    "inference": "crates/fss-reference/src/ingest/inference/mod.rs",
+    "native_cli": "crates/fss-cli/src/bin/fss-infer.rs",
+    "detection_tracking": "crates/fss-cli/src/bin/fss-infer/detection_cli.rs",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "ec2e3cc367f6e379cc53273ef43a490c8581b97a",
+      "change": "Sealed retained frame/model read interface, bounded custody verification, historical executor inspection and seven library regressions."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Immutable native read/replay/detect/track commands, shared finite allowances, final validation before output/export, explicit executor compatibility and subprocess regressions."
+    }
+  ],
+  "cases": [
+    {
+      "id": "native-inspection-opened-writer",
+      "finding": "Native read commands opened ReferenceDeployment and could acquire publisher custody or recover journals. The ordinary ReplayCx constructor also had a create_dir_all path.",
+      "resolution": "Canonical existing root, read-only ReplayCx constructor and ImmutableRetainedSource for every native inspection command; publication paths retain the mutable deployment."
+    },
+    {
+      "id": "reader-upgrade-invalidated-historical-inspection",
+      "finding": "Receipt decoding required the current executor source profile even for custody-only inspection.",
+      "resolution": "Preserve the original nonzero SHA-256 profile under exact receipt/run/manifest/delta bindings; enforce the current profile before numeric replay."
+    }
+  ],
+  "findings": [
+    "The edited retained bridge does not change baseline or progressive codec fingerprints.",
+    "Decoded source, current masks/deletions, publication child counts, model, input and output share one immutable owner and original allowance.",
+    "Final validation precedes stdout and every export. A poisoned custody or read-budget state refuses even a partial detection report.",
+    "Valid computational partial reports and original historical completion anchors remain supported.",
+    "An empty final journal probe conservatively requires one remaining allowance byte even when it returns no payload."
+  ],
+  "authority": {
+    "user": "Implement and commit directly to main through GitHub; no PRs.",
+    "scope": "Repository code and deterministic fixtures; no live fleet access, camera operation or model activation.",
+    "native_boundary": "Existing filesystem-authorized local operator; principal is an audit label.",
+    "release": "Repository-owned local qualification and retained DSR receipts remain required; hosted checks are supplementary."
+  },
+  "budgets": {
+    "retained_bytes": "Default 1 GiB; hard maximum 4 GiB, shared across metadata, all selected source/model reads and final rereads.",
+    "retained_read_attempts": "Default 1000000; hard maximum 4000000; repeats count and failure does not refill.",
+    "deadline": "Cooperative 60 seconds at retained-read boundaries; no preemption of a running scalar kernel.",
+    "numeric": "Existing independent MAC, tensor, detection and association ceilings remain in effect."
+  },
+  "validation": {
+    "completed": [
+      "Scoped pinned nightly-2026-08-31 library rustfmt.",
+      "Whitespace checks and independent source/API review, including historical codec/profile compatibility and read-only authority construction."
+    ],
+    "authored_pending_native_execution": {
+      "immutable_inference_library": 7,
+      "inference_cli_process": 3,
+      "detection_tracking_cli_process": 3,
+      "shared_allowance_parser": 1
+    },
+    "environment": "The exact pinned compiler is installed. Local execution has stalled under heavy host resource pressure; the locked offline dependency cache is incomplete. No native test result is inferred from source review or formatting.",
+    "hosted": "Bounded-video run 43534372856, job 132259663730 stopped before Rust compilation on existing dependency-admission, schema/domain registry and documentation checks. No new inference file was named and no compiler output was produced. Other reference checks remain pending; hosted results are supplementary."
+  },
+  "obligations": [
+    {
+      "state": "waiting",
+      "action": "Execute the focused native library, fss-infer binary and inference/detection subprocess suites; fix concrete diagnostics before claiming runtime validation."
+    },
+    {
+      "state": "open",
+      "action": "Retain exact validation results and complete repository-owned qualification before production use."
+    }
+  ],
+  "unknowns": [
+    "New native tests have not yet executed successfully.",
+    "These reads are bounded observations with final validation, not atomic filesystem snapshots or leases.",
+    "Canonical agent discovery of scalar model runs remains a separate identified gap at this checkpoint.",
+    "No trained-model accuracy, continuous coverage, physical absence or camera interoperability is established."
+  ],
+  "next_affordances": [
+    "cargo test --locked --offline -p fss-reference --lib ingest::inference::tests",
+    "cargo test --locked --offline -p fss-cli --bin fss-infer --test inference_cli_contract --test detection_tracking_cli_contract",
+    "Inspect the existing hosted native checks for the exact published commits.",
+    "Extend existing canonical reports discovery to native model-invocation receipts under its metadata and privacy contract."
+  ],
+  "invalidation_conditions": [
+    "Changed retained authority/effect history, current deletion or privacy restrictions",
+    "Changed selected payload, publication root, child count, manifest or receipt",
+    "Cancellation, cooperative deadline or exhausted shared allowance",
+    "Executor source profile mismatch for numeric replay"
+  ]
+}

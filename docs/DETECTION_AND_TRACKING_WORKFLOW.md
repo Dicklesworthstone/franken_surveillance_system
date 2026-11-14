@@ -4,6 +4,8 @@
 [the inference workflow](INFERENCE_OPERATOR_WORKFLOW.md). These commands do not execute a
 model, download weights, append detection/track authority, or authorize an alert. They
 revalidate retained model/frame evidence and produce bounded, reproducible read projections.
+They use an immutable retained owner and read-only authority constructor, so they can run while
+a writer is open without acquiring its lock, creating directories or recovering journals.
 
 ## Explicit detector-output contract
 
@@ -93,12 +95,23 @@ The separate association allowance counts candidate pairs and solver column prob
 whole list. These are deterministic reference-operation counters, not CPU time, energy, complete
 process memory accounting, or performance guarantees. Tracker capacity is at most 128 hypotheses.
 
+Both commands also accept `--max-read-bytes` (default 1 GiB, maximum 4 GiB) and
+`--max-read-objects` (default 1,000,000, maximum 4,000,000). One nonrenewing allowance covers
+metadata, all requested run/frame/model/source reads and final revalidation across the complete
+list. Repeated reads count again. The object limit counts attempts, not unique objects; failed
+reads do not replenish the allowance. A cooperative 60-second deadline is checked at read and
+completion boundaries. These bounds are separate from detector and association work units.
+
 The versioned internal operator report is `fss.detector_track_report.v1`; it is not a universal
 agent response envelope. `complete` describes processing the requested list, not observability
 or real-world detection completeness. Ordinary source/analysis failure emits completed records,
 `complete:false`, a failing `next_entry`/`next_segment`, and a nonzero exit. Invalid arguments,
 invalid run lists, deployment-open failures, and export failures are also nonzero. Never ignore
-the exit status. A cancelled owner cannot export a report.
+the exit status. A cancelled owner cannot export a report. Retained-custody or read-budget failure
+poisons the owner and refuses all report output, including a partial prefix. Before any stdout or
+export, final revalidation checks the selected objects/publications, current privacy restrictions
+and authority head. A changed or damaged source is not repaired as a side effect of inspection.
+This is a bounded observation, not an atomic snapshot or a lease preventing subsequent writes.
 
 Association state is deliberately reconstructed from the exact full ordered history. Replaying
 the full list with the same inputs and budgets reproduces its history-linked digests and IDs.
@@ -114,6 +127,8 @@ audit label, not remote authentication.
 The detection and tracking modules own the internal projection encodings `FSSDETS1` and
 `FSSTRKS1`, version 1, with canonical source/contract/history bindings. They are derived read
 results; hashes are not authentication and do not promote projections into ledger authority.
-The regression model is authored arithmetic, not trained detection. Rust tests were added but
-not executed in the editing environment. Production model admission, trained detector quality,
+The regression model is authored arithmetic, not trained detection. Inspection regressions cover
+a live writer, identical reports, unchanged deployment bytes, torn ledger/effect journals without
+recovery and read-budget refusal without output/export. Validation results are recorded in the
+current implementation-status checkpoint. Production model admission, trained detector quality,
 appearance/multi-camera tracking, live capture, notification delivery and qualification remain open.
