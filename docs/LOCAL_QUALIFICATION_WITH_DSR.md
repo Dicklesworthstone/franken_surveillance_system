@@ -225,6 +225,5 @@ of the toolchain cargo suppresses it; the practical route is to retry later or o
 
 `confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
 fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
-suites), `agent` (effect and rehearsal contracts) and `privacy` (masking contract) — the last two are proven: 38 tests green (30 privacy, 2 effect, 6 rehearsal). Media and archive also
-run inside `full` and `release`. The remaining claim lanes (`lab`, `adapter`, `model`, `geometry`,
-`threat`) still fail closed and are the next wiring targets, in that order of expected value.
+suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is written but has only produced a partial verdict: six of its seven suites pass and the seventh exposed a stale expectation in `lab_ingest_cli` (it demanded `first_frame_observed`, which a file import deliberately never reaches); that expectation is fixed and the suite awaits a re-run. Media and archive also
+run inside `full` and `release`. The remaining claim lanes (`adapter`, `model`, `geometry`, `threat`) still fail closed and are the next wiring targets, in that order of expected value.
