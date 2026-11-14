@@ -50,3 +50,12 @@ pristine headers were pruned from `/tmp/lz19`, but a copy lives in `/tmp/lz19dbg
 mkdir -p /tmp/inc && ln -sfn /tmp/lz19dbg /tmp/inc/lz19
 cc -O1 -I/tmp/inc -o /tmp/l2d l2d3.c Lzma2Dec_<variant>.c LzmaDec_<variant>.c
 ```
+
+Stock build for the round-trip guard (no vendor patches; needs the `g_unpack` the harness references):
+
+```
+printf 'unsigned long g_unpack;\n' > /tmp/g.c
+cc -O1 -I/tmp/inc -I/tmp/lz19dbg -include /tmp/lz19dbg/Precomp.h \
+   -o /tmp/l2d_stock l2d3.c /tmp/g.c /tmp/lz19dbg/Lzma2Dec.c /tmp/lz19/C/LzmaDec.c
+bash ../lzma2_roundtrip.sh /tmp/l2d_stock 50000
+```
