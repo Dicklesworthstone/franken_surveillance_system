@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--neighbor-cache] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
+const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--neighbor-cache | --sweep-page N] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 const MAX_AUTO_INTERFACES: usize = 4;
 const MAX_AUTO_WINDOWS: usize = 4;
 const MAX_NEIGHBOR_BYTES: usize = 128 * 1024;
@@ -36,6 +36,7 @@ struct Options {
     limited_broadcast: bool,
     include_mac_claims: bool,
     neighbor_cache: bool,
+    sweep_page: Option<u16>,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -47,6 +48,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     let mut limited_broadcast = false;
     let mut include_mac_claims = false;
     let mut neighbor_cache = false;
+    let mut sweep_page = None;
     let mut authorized = false;
     let mut i = 0;
     while i < args.len() {
@@ -97,6 +99,9 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
             "--only-interface" if only_interface.is_none() && valid_interface_name(value) => {
                 only_interface = Some(value.clone());
             }
+            "--sweep-page" if sweep_page.is_none() => {
+                sweep_page = Some(value.parse().map_err(|_| "invalid sweep page")?);
+            }
             "--principal"
                 if principal.is_none() && value.starts_with("principal:") && value.len() <= 128 =>
             {
@@ -142,7 +147,13 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         ),
         _ => return Err("choose one interface or one automatic subnet scope"),
     };
-    if !auto && (only_interface.is_some() || combined_v2 || limited_broadcast || neighbor_cache) {
+    if !auto
+        && (only_interface.is_some()
+            || combined_v2
+            || limited_broadcast
+            || neighbor_cache
+            || sweep_page.is_some())
+    {
         return Err("automatic-only option used with an explicit interface");
     }
     if limited_broadcast && only_interface.is_none() {
@@ -150,6 +161,17 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     }
     if neighbor_cache && only_interface.is_none() {
         return Err("neighbor cache requires an explicitly selected interface");
+    }
+    if sweep_page.is_some()
+        && (only_interface.is_none()
+            || neighbor_cache
+            || combined_v2
+            || !targets.is_empty()
+            || prefix < 20)
+    {
+        return Err(
+            "sweep requires one selected interface, a /20 or narrower scope, and no other targets",
+        );
     }
     Ok(Options {
         iface,
@@ -163,6 +185,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         limited_broadcast,
         include_mac_claims,
         neighbor_cache,
+        sweep_page,
     })
 }
 
@@ -488,6 +511,55 @@ fn auto_neighbor_plans(
     Ok(plans)
 }
 
+// A page covers at most four windows on one selected interface. The ordinal
+// sequence skips the interface itself but otherwise visits every usable host;
+// a completed page is still not proof of device absence or packet delivery.
+fn auto_sweep_page(
+    interfaces: &[AutoInterface],
+    page: u16,
+    limited_broadcast: bool,
+) -> Result<(usize, Vec<(AutoInterface, Vec<SocketAddrV4>)>), &'static str> {
+    let [interface] = interfaces else {
+        return Err("sweep requires exactly one eligible interface address");
+    };
+    if !(20..=30).contains(&interface.prefix) {
+        return Err("sweep interface scope must be /20 to /30");
+    }
+    let mask = u32::MAX << (32 - interface.prefix);
+    let base = u32::from(interface.address) & mask;
+    let own_host = u32::from(interface.address) & !mask;
+    if own_host == 0 || own_host == !mask {
+        return Err("invalid interface host");
+    }
+    let own = own_host - 1;
+    let host_count = (1_u32 << (32 - interface.prefix)) - 3;
+    let capacity = 64 - 1 - usize::from(limited_broadcast);
+    let per_page = capacity * MAX_AUTO_WINDOWS;
+    let count = usize::try_from(host_count).map_err(|_| "sweep host count overflow")?;
+    let pages = count.div_ceil(per_page);
+    let start = usize::from(page)
+        .checked_mul(per_page)
+        .ok_or("sweep page overflow")?;
+    if start >= count {
+        return Err("sweep page is outside the selected interface scope");
+    }
+    let end = (start + per_page).min(count);
+    let mut plans = Vec::new();
+    for first in (start..end).step_by(capacity) {
+        let mut targets = vec![SocketAddrV4::new(directed_broadcast(*interface), 10001)];
+        if limited_broadcast {
+            targets.push(SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001));
+        }
+        for index in first..(first + capacity).min(end) {
+            let index = u32::try_from(index).map_err(|_| "sweep host index overflow")?;
+            let host = base + 1 + index + u32::from(index >= own);
+            targets.push(SocketAddrV4::new(Ipv4Addr::from(host), 10001));
+        }
+        plans.push((*interface, targets));
+    }
+    Ok((pages, plans))
+}
+
 fn elapsed(start: Instant) -> TimestampNs {
     TimestampNs(i128::try_from(start.elapsed().as_nanos()).unwrap_or(i128::MAX))
 }
@@ -586,7 +658,9 @@ fn execute(options: &Options) -> Result<Vec<Window>, &'static str> {
                             prefix: options.prefix,
                         }]
                     };
-                    let plans: Vec<_> = if options.auto && options.neighbor_cache {
+                    let plans: Vec<_> = if let Some(page) = options.sweep_page {
+                        auto_sweep_page(&interfaces, page, options.limited_broadcast)?.1
+                    } else if options.auto && options.neighbor_cache {
                         let neighbors = read_neighbor_cache(
                             owner,
                             runtime_cx,
@@ -720,7 +794,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "{USAGE}\nAutomatic selection scans only active broadcast interfaces inside the supplied authorized subnet, with at most four bounded windows. On Linux, --neighbor-cache adds complete cached neighbors on the explicitly selected interface; the cache is not a complete host inventory. Setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
+            "{USAGE}\nAutomatic selection scans only active broadcast interfaces inside the supplied authorized subnet, with at most four bounded windows. On Linux, --neighbor-cache adds complete cached neighbors on the explicitly selected interface; --sweep-page probes one bounded page of a /20 or narrower interface scope. Neither proves host absence. Setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
         );
         return ExitCode::SUCCESS;
     }
@@ -731,12 +805,14 @@ fn main() -> ExitCode {
                 options.combined_v2,
                 options.include_mac_claims,
                 options.neighbor_cache,
+                options.sweep_page,
+                options.limited_broadcast,
                 windows,
             )
         })
     });
     match result {
-        Ok((false, _, include_mac_claims, _, mut windows)) => match windows
+        Ok((false, _, include_mac_claims, _, _, _, mut windows)) => match windows
             .pop()
             .expect("explicit interface has one window")
             .report
@@ -750,7 +826,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok((true, true, include_mac_claims, _, windows)) => match combine_windows(&windows) {
+        Ok((true, true, include_mac_claims, _, _, _, windows)) => match combine_windows(&windows) {
             Ok(report) => {
                 println!("{}", report_json(&report, include_mac_claims));
                 ExitCode::SUCCESS
@@ -760,7 +836,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok((true, false, include_mac_claims, neighbor_cache, windows)) => {
+        Ok((
+            true,
+            false,
+            include_mac_claims,
+            neighbor_cache,
+            sweep_page,
+            limited_broadcast,
+            windows,
+        )) => {
             let (combined, combination, success) = match combine_windows(&windows) {
                 Ok(report) => (report_json(&report, include_mac_claims), "complete", true),
                 Err(error) => ("null".to_owned(), error, false),
@@ -787,8 +871,31 @@ fn main() -> ExitCode {
             } else {
                 ""
             };
+            let sweep = if let Some(page) = sweep_page {
+                let Some(window) = windows.first() else {
+                    eprintln!("UniFi discovery: sweep returned no windows");
+                    return ExitCode::FAILURE;
+                };
+                let (pages, plans) =
+                    match auto_sweep_page(&[window.interface], page, limited_broadcast) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            eprintln!("UniFi discovery: {error}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                let planned_hosts: usize = plans
+                    .iter()
+                    .map(|(_, targets)| targets.len() - 1 - usize::from(limited_broadcast))
+                    .sum();
+                format!(
+                    ",\"sweep_page\":{page},\"sweep_pages\":{pages},\"planned_hosts\":{planned_hosts},\"sweep_completeness\":\"page_only\""
+                )
+            } else {
+                String::new()
+            };
             println!(
-                "{{\"schema\":\"fss.unifi_discovery_auto_lab.v1\",\"absence_proven\":false,\"windows_ok\":{success},\"combination\":{},\"combined\":{combined},\"windows\":[{results}]{cache}}}",
+                "{{\"schema\":\"fss.unifi_discovery_auto_lab.v1\",\"absence_proven\":false,\"windows_ok\":{success},\"combination\":{},\"combined\":{combined},\"windows\":[{results}]{cache}{sweep}}}",
                 json(combination)
             );
             if success {
@@ -1185,5 +1292,77 @@ mod tests {
         }];
         assert!(matches!(combine_windows(&failed), Err("window_failed")));
         assert!(matches!(combine_windows(&[]), Err("combination_refused")));
+    }
+
+    #[test]
+    fn sweep_pages_cover_every_other_host_once_without_exceeding_windows() {
+        for prefix in [20, 22, 24, 30] {
+            for limited in [false, true] {
+                let interface = AutoInterface {
+                    address: Ipv4Addr::new(192, 168, 4, 1),
+                    prefix,
+                };
+                let (pages, _) = auto_sweep_page(&[interface], 0, limited).unwrap();
+                let mut observed = BTreeSet::new();
+                for page in 0..pages {
+                    let (reported, plans) =
+                        auto_sweep_page(&[interface], page as u16, limited).unwrap();
+                    assert_eq!(reported, pages);
+                    assert!((1..=MAX_AUTO_WINDOWS).contains(&plans.len()));
+                    for (_, targets) in plans {
+                        assert!(targets.len() <= 64);
+                        for target in targets.into_iter().skip(1 + usize::from(limited)) {
+                            assert_eq!(target.port(), 10001);
+                            assert!(observed.insert(*target.ip()), "duplicate sweep host");
+                        }
+                    }
+                }
+                let mask = u32::MAX << (32 - prefix);
+                let base = u32::from(interface.address) & mask;
+                let expected: BTreeSet<_> = (1..!mask)
+                    .map(|host| Ipv4Addr::from(base + host))
+                    .filter(|address| *address != interface.address)
+                    .collect();
+                assert_eq!(observed, expected);
+                assert!(auto_sweep_page(&[interface], pages as u16, limited).is_err());
+            }
+        }
+        let wide = AutoInterface {
+            address: Ipv4Addr::new(192, 168, 4, 1),
+            prefix: 19,
+        };
+        assert!(auto_sweep_page(&[wide], 0, false).is_err());
+        assert!(auto_sweep_page(&[], 0, false).is_err());
+        assert!(auto_sweep_page(&[wide, wide], 0, false).is_err());
+    }
+
+    #[test]
+    fn sweep_requires_explicit_bounded_scope_and_disallows_other_target_modes() {
+        let args = [
+            "--auto-scope",
+            "192.168.4.0/22",
+            "--only-interface",
+            "eth0",
+            "--sweep-page",
+            "0",
+            "--principal",
+            "principal:owner",
+            "--approval",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "--owner-authorized",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        assert_eq!(options(&args).unwrap().sweep_page, Some(0));
+        let mut conflicting = args.clone();
+        conflicting.push("--neighbor-cache".into());
+        assert!(options(&conflicting).is_err());
+        let mut no_interface = args.clone();
+        no_interface.drain(2..4);
+        assert!(options(&no_interface).is_err());
+        let mut broad = args;
+        broad[1] = "192.168.0.0/16".into();
+        assert!(options(&broad).is_err());
     }
 }
