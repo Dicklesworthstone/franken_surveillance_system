@@ -536,6 +536,13 @@ media owner and fixture SHA-256 values are
 `d590bc1be96017b2816520582725c96d38b5defb32c0070b253be62698cf8de0`,
 `351dcb16003b5d42200ccebcaab0a8ad003831e22d486c3eccb5fa7d36065a04`, and
 `c456e75fd9995391af8e031dd66d59c0dabec06bd4cd0f415907329ff04303ad`.
+An isolated local copy of the v36 snapshot was hash-checked before a remote
+request to `trj`; job `30109207290183937` exited 103 before source or execution
+admission because another task owned an overlapping source namespace. No
+recorder settings were changed. The same snapshot is now compiling on `ts1`
+in job `30109207290183938`; the redundant queued v36 request on the other
+fleet was cancelled before admission with exit 130 acknowledged. The ts1 build
+and all its tests remain pending.
 The v32 archive fixture used the exact registry `asupersync` 0.5.0 default
 runtime, whose documented blocking-pool maximum is zero and whose builder
 creates no pool in that case. The archive worker requires a pool, making the
