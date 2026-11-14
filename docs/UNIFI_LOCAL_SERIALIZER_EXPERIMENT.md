@@ -323,8 +323,14 @@ Its caller must choose genuinely separate trusted storage and protect its root;
 the type cannot prove physical independence or protect a rolled-back trusted
 root. Key-file custody remains optional and is not yet bound to this receipt.
 The v20 source snapshot was admitted from queue `9253469360607986764` as job
-`30097323753214403` for strict-remote build and fixture testing;
-neither has passed yet. Its checkpoint, keyfile, camera API, HTTP owner and
+`30097323753214403`; its locked build exited zero and 8/8 serializer/key unit
+tests plus 5/5 dispatcher/metadata integration tests passed on `hz2`. These
+fixtures included a cold-reopened metadata journal and wrong-pin refusal. The
+unit and integration executable SHA-256 values were
+`cc5520166d02aad6ca0c581a93abda2b4f64ff65e76eeab2480de3234e533efa` and
+`d294255fceb9805741989eda221981f7a1806c7ddfb40d9542be4fbc043434c2`;
+both deletion-denying traces recorded zero attempts. This is synthetic evidence,
+not physical storage independence or real camera operation. Its checkpoint, keyfile, camera API, HTTP owner and
 fixture SHA-256 values are
 `a360a53c52229939ad2baad1b829cad61f741f32ebe2a1ce3961426e67d15e91`,
 `450601a5215fd48a275a5a4d14587a52000628e9ea5fa49f73b647361b06ce10`,
@@ -339,8 +345,14 @@ The fixture includes a wrong-key refusal before journal append. This still
 depends on caller-trusted paths and does not protect against later key loss,
 privileged interference, rollback, or loss of the storage device. Its dispatch
 fixture is Linux-only; a corresponding macOS key provider is not implemented.
-The v21 source snapshot is compiling in strict-remote job `30097323753214406`;
-its tests have not run. Its checkpoint and fixture SHA-256 values are
+The v21 source snapshot built in strict-remote job `30097323753214406`; 8/8
+serializer/key unit tests and 5/5 dispatcher/metadata integration tests passed
+on `hz2`, including wrong-key refusal and metadata cold reopen. The executable
+SHA-256 values were
+`b36fe8a9012a350688e64abf1d0b507ef20f5b1fbebd14c5a04ad38161a35df5` and
+`d90397dd1a7d44658f782dcd420578aaa50336b8ac59ac98776fd18e445b2291`;
+both deletion-denying traces recorded zero attempts. This is synthetic Linux
+evidence, not physical-camera behavior. Its checkpoint and fixture SHA-256 values are
 `e8860cb360543020dd6882375b51e7a4fc92dd8359f32a4a66fd6b09fa0308ca` and
 `60e112748f4ac8fea1b3fb66cc211b7987fd1c767f7498f373da237314a16866`.
 
