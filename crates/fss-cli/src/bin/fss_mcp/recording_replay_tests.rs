@@ -470,7 +470,7 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
                 }
             }
             assert_eq!(retained_modes, 1);
-        } else if matches!(target, "qsr" | "tracks" | "reports") {
+        } else if matches!(target, "qsr" | "tracks" | "reports" | "sources") {
             // These targets share immutable payload-read accounting, not archive syscall quotas.
             assert!(excludes(branch, "retained_import"));
             assert!(excludes(branch, "max_query_io_calls"));

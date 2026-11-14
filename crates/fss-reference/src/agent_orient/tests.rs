@@ -15,9 +15,9 @@ use fss_core::{
 
 use super::{
     AFFORDANCE_PLAN, AFFORDANCE_REORIENT, CLAIM_COVERAGE, CLAIM_LEDGER_HEAD, DeploymentReadError,
-    OrientError, OrientLimits, OrientRequest, RECORDED_COVERAGE_PROVENANCE, RetainedSourceCoverage,
-    SOURCE_COVERAGE_PROVENANCE, WORLD_UNOBSERVED_ACTIVITY, ZoneCoverageState, explain_event,
-    orient_deployment, read_deployment,
+    MetadataReadBudget, OrientError, OrientLimits, OrientRequest, RECORDED_COVERAGE_PROVENANCE,
+    Reader, RetainedSourceCoverage, SOURCE_COVERAGE_PROVENANCE, WORLD_UNOBSERVED_ACTIVITY,
+    ZoneCoverageState, explain_event, orient_deployment, read_deployment,
 };
 use crate::ingest::source_coverage::{
     RetainedAbsence, RetainedCoverageRefusal, SourceCoverageInput, SourceCoverageRecord,
@@ -73,6 +73,86 @@ fn request(view: AgentView) -> Result<OrientRequest, Box<dyn Error>> {
         principal: PrincipalId::parse("principal:orient-unit")?,
         budget_tokens: None,
     })
+}
+
+#[test]
+fn exact_byte_budget_still_checks_empty_and_absent_payloads() -> TestResult {
+    let root = fresh_root("exact-byte-budget")?;
+    fs::create_dir_all(&root)?;
+    fs::write(root.join("payload"), b"one payload")?;
+    fs::write(root.join("empty"), b"")?;
+    let budget = MetadataReadBudget::new(b"one payload".len(), 3);
+    let mut reader = Reader {
+        files_read: 0,
+        bytes_read: 0,
+        budget: Some(budget.clone()),
+        cancelled: None,
+    };
+    assert_eq!(
+        reader.read_file(&root.join("payload"), 4096)?,
+        Some(b"one payload".to_vec()),
+    );
+    assert_eq!(
+        reader.read_file(&root.join("empty"), 4096)?,
+        Some(Vec::new()),
+    );
+    assert_eq!(reader.read_file(&root.join("absent"), 4096)?, None);
+    assert_eq!(budget.consumed(), (b"one payload".len() as u64, 3));
+    assert_eq!(reader.files_read, 2);
+    assert_eq!(reader.bytes_read, b"one payload".len() as u64);
+    // Empty and absent reads still exhaust the shared read-attempt ceiling.
+    assert!(reader.read_file(&root.join("absent"), 4096).is_err());
+    assert_eq!(budget.consumed(), (b"one payload".len() as u64, 3));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn exhausted_byte_budget_never_admits_another_payload_byte() -> TestResult {
+    let root = fresh_root("exhausted-byte-budget")?;
+    fs::create_dir_all(&root)?;
+    fs::write(root.join("payload"), b"x")?;
+    let budget = MetadataReadBudget::new(1, 2);
+    let mut reader = Reader {
+        files_read: 0,
+        bytes_read: 0,
+        budget: Some(budget.clone()),
+        cancelled: None,
+    };
+    assert_eq!(
+        reader.read_file(&root.join("payload"), 1)?,
+        Some(vec![b'x'])
+    );
+    assert!(reader.read_file(&root.join("payload"), 1).is_err());
+    assert_eq!(budget.consumed(), (1, 2));
+    assert_eq!(reader.files_read, 1);
+    assert_eq!(reader.bytes_read, 1);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn cancelled_or_failed_reads_cannot_spend_zero_byte_allowances() -> TestResult {
+    let budget = MetadataReadBudget::new(1, 4);
+    assert_eq!(budget.allowance(1)?, 1);
+    budget.charge(1)?;
+    let cancelled = || true;
+    let mut reader = Reader {
+        files_read: 0,
+        bytes_read: 0,
+        budget: Some(budget.clone()),
+        cancelled: Some(&cancelled),
+    };
+    // Cancellation precedes even the stat of this deliberately uncreated path.
+    assert!(
+        reader
+            .read_file(&fresh_root("cancelled-zero-byte-budget")?, 1)
+            .is_err()
+    );
+    assert_eq!(budget.consumed(), (1, 1));
+    assert!(budget.ensure_valid().is_err());
+    assert!(budget.allowance(0).is_err());
+    Ok(())
 }
 
 #[test]

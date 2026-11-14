@@ -454,9 +454,12 @@ impl MetadataReadBudget {
         if failed {
             return Err(io::Error::other("previous metadata read failed"));
         }
-        if objects >= self.max_objects || bytes >= self.max_bytes {
+        if objects >= self.max_objects || bytes > self.max_bytes {
             return Err(io::Error::other("metadata read budget exhausted"));
         }
+        // A zero-byte allowance can still verify an absent or empty payload, such as the
+        // final effect journal. The bounded reader must reject any positive-length input;
+        // this attempt still consumes an object read and never replenishes byte authority.
         state.1 += 1;
         Ok(maximum.min((self.max_bytes - bytes) as usize))
     }
