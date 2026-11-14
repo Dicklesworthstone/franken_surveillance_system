@@ -170,6 +170,8 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         command.append(f"--video-channel={override}")
     if clock_burst == "continuing":
         command.append("--bounded-continuing-clock")
+    if clock_burst == "auto-conservative":
+        command.append("--uncorrelated-timesync")
     if media is not None:
         command.append("--media-before-reply")
         if stream_name_event is not None:
@@ -253,7 +255,7 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                     second = message("ubnt_avclient_timeSync", 62, first_reply["messageId"])
                     second["responseExpected"] = True
                     control.sendall(frame(second))
-                    if clock_burst == "conservative":
+                    if clock_burst in ("conservative", "auto-conservative"):
                         control.settimeout(2)
                         try:
                             received(control)
@@ -271,6 +273,15 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                     second_reply = received(control)
                     if second_reply.get("functionName") != "ubnt_avclient_timeSync" or second_reply.get("inResponseTo") != 62:
                         raise ValueError("correlated pre-hello clock reply missing")
+                    if clock_burst == "auto-default":
+                        previous = second_reply
+                        for request_id in range(63, 71):
+                            request = message("ubnt_avclient_timeSync", request_id, previous["messageId"])
+                            request["responseExpected"] = True
+                            control.sendall(frame(request))
+                            previous = received(control)
+                            if previous.get("functionName") != "ubnt_avclient_timeSync" or previous.get("inResponseTo") != request_id:
+                                raise ValueError("automatic correlated clock reply missing")
                     control.sendall(frame(message("ubnt_avclient_hello", 7, payload={})))
                 if name == "handoff-changed":
                     out, err = child.communicate(timeout=15)
@@ -393,6 +404,10 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                         if child.returncode != 0 or b"trial_complete" not in out:
                             report = out.decode(errors="replace")
                             raise RuntimeError("synthetic media trial failed: " + err.decode(errors="replace")[-1200:] + " stages=" + " | ".join(report.splitlines()[-20:]))
+                        if clock_burst == "auto-default":
+                            trace = re.search(rb"trial_stage=startup_protocol_trace clocks=(\d+)", out)
+                            if not trace or int(trace.group(1)) < 10:
+                                raise ValueError("automatic setup did not retain ten startup clock effects")
                         if name in ("full-empty-first", "full-empty-events", "full-empty-av", "full-empty-control", "full-idle-control") and b"trial_stage=media_candidate_selected attempts=2 header_retained=true" not in out:
                             raise ValueError("empty-first selection marker missing")
                         if name in ("full-empty-control", "full-idle-control", "full-prefix-control") and (b"trial_stage=media_selection_control clocks=2 event_replies=1" not in out or b"trial_owned_startup_event=already_answered" not in out):

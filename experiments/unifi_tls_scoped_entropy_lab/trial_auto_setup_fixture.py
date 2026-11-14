@@ -365,6 +365,18 @@ def main():
     run(str(binary), "10.198.0.1", inband_root, (first[0], first[1], first[2], key),
         "auto-handoff-inband", profiles, "video1", media=media,
         archive="video", auto_pin=True, expect_auto_inband=True)
+    clock_root = root / "automatic-clock"
+    clock_root.mkdir(mode=0o700)
+    (clock_root / "camera-fence").mkdir(mode=0o700)
+    run(str(binary), "10.198.0.1", clock_root, (first[0], first[1], first[2], key),
+        "auto-handoff-clock", profiles, "video1", media=media,
+        archive="video", auto_pin=True, expect_auto_inband=True, clock_burst="auto-default")
+    conservative_root = root / "automatic-clock-conservative"
+    conservative_root.mkdir(mode=0o700)
+    (conservative_root / "camera-fence").mkdir(mode=0o700)
+    run(str(binary), "10.198.0.1", conservative_root, (first[0], first[1], first[2], key),
+        "auto-handoff-clock-conservative", profiles, "video1", auto_pin=True,
+        clock_burst="auto-conservative")
     changed_root = root / "changed-inband"
     changed_root.mkdir(mode=0o700)
     (changed_root / "camera-fence").mkdir(mode=0o700)

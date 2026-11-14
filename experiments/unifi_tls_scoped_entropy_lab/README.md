@@ -1438,3 +1438,14 @@ selection with `ControllerUnavailable`. Separate controller test repetitions
 passed after earlier five-second startup deadline failures. The failures are
 not explained or erased by the later results. See
 `docs/UNIFI_DIRECT_REFERENCE.md` for exact scopes and receipts.
+
+### Automatic setup clock policy
+
+The explicit `--lab-auto-pinned-setup` path defaults to the bounded continuing
+clock-exchange policy, which can answer correlated time-sync requests before
+and after hello. Each reply still requires its own authorized, journaled effect;
+the existing per-chain and startup-operation quotas apply. Select
+`--uncorrelated-timesync` to use the more conservative policy. Manual setup and
+read-only observation retain their previous default. This laboratory behavior
+is not proof of compatibility with a physical camera or permission to retry an
+unresolved earlier effect. See `docs/UNIFI_DIRECT_REFERENCE.md` for test status.

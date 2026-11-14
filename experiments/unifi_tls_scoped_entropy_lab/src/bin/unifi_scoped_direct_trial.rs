@@ -88,7 +88,7 @@ fn retain_output_on_receipt_failure<R, E: Into<Box<dyn Error>>>(
         },
     }
 }
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--uncorrelated-timesync|--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized\nAutomatic pinned setup defaults to a bounded continuing time-sync exchange; each reply remains a separately authorized journaled effect. --uncorrelated-timesync selects the conservative policy.";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
@@ -565,6 +565,10 @@ fn options() -> ResultBox<Options> {
         return Err("startup replies and stream-name checks require --media-before-reply in this trial".into());
     }
     let time_sync_policy = match args.last().map(String::as_str) {
+        Some("--uncorrelated-timesync") => {
+            args.pop();
+            TimeSyncPolicy::UncorrelatedOnly
+        }
         Some("--allow-correlated-timesync") => {
             args.pop();
             TimeSyncPolicy::ExplicitCorrelatedRequests
@@ -581,6 +585,12 @@ fn options() -> ResultBox<Options> {
             args.pop();
             TimeSyncPolicy::BoundedContinuingClockExchange
         }
+        // The automatic lab path explicitly authorizes a bounded setup. Its
+        // reference peer replies to correlated clock exchanges; each reply
+        // remains separately metered, journaled, and subject to the existing
+        // per-chain and startup-operation limits. Manual and observation paths
+        // retain their conservative default.
+        _ if lab_auto_pinned_setup => TimeSyncPolicy::BoundedContinuingClockExchange,
         _ => TimeSyncPolicy::UncorrelatedOnly,
     };
     let video_channel = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--video-channel=")) {
