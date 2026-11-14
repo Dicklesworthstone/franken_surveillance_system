@@ -70,7 +70,7 @@ use trial_run_id::TrialRunId;
 use fss_unifi_scoped_tls_entropy_lab::{camera_tls_owned, owned, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
@@ -235,6 +235,7 @@ struct Options {
     video_channel: Option<VideoChannel>,
     time_sync_policy: TimeSyncPolicy,
     media_before_reply: bool,
+    lab_stream_name_event: Option<String>,
     reply_events: bool,
     reply_startup_requests: bool,
     lab_aac_config: Option<[u8; 2]>,
@@ -257,6 +258,22 @@ struct Options {
     lab_save_still: Option<PathBuf>,
     lab_anchor_root: Option<PathBuf>,
     setup: Option<SetupOptions>,
+}
+
+/// Explicitly account for every candidate when this laboratory trial stops.
+fn retire_media_selection(selection: listener::ValidatedMediaSelection<'_, '_, '_>) {
+    let (_startup,candidates)=selection.into_parts();
+    let count=candidates.attempts();
+    let (_listener,current,additional)=candidates.into_parts();
+    let mut retained=0usize;
+    for candidate in std::iter::once(current).chain(additional.into_iter().map(|candidate| candidate.map(|pipeline| *pipeline))) {
+        if let Some(candidate)=candidate {
+            let retired=candidate.retire();
+            retained+=1;
+            println!("trial_stage=media_candidate_stopped attempts={count} source_bytes_omitted={} unread_bytes_unknown=true effects_require_reconciliation=true",retired.ingress.source.received);
+        }
+    }
+    if retained==0 {println!("trial_stage=media_candidate_stopped attempts={count} source_bytes_omitted=0 unread_bytes_unknown=true effects_require_reconciliation=true");}
 }
 struct SetupOptions {
     discovery_port: u16,
@@ -450,12 +467,20 @@ fn options() -> ResultBox<Options> {
     if reply_events {
         args.pop();
     }
+    let lab_stream_name_event = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-stream-name-event=")) {
+        if value.is_empty() || value.len() > 64 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err("stream-name event must be a bounded ASCII identifier".into());
+        }
+        let event = value.to_owned();
+        args.pop();
+        Some(event)
+    } else { None };
     let media_before_reply = args.last().is_some_and(|s| s == "--media-before-reply");
     if media_before_reply {
         args.pop();
     }
-    if (reply_events || reply_startup_requests) && !media_before_reply {
-        return Err("startup replies require --media-before-reply in this trial".into());
+    if (reply_events || reply_startup_requests || lab_stream_name_event.is_some()) && !media_before_reply {
+        return Err("startup replies and stream-name checks require --media-before-reply in this trial".into());
     }
     let time_sync_policy = match args.last().map(String::as_str) {
         Some("--allow-correlated-timesync") => {
@@ -504,6 +529,9 @@ fn options() -> ResultBox<Options> {
     }
     if observe_only && (setup.is_none() || anchored_journal.is_some()) {
         return Err("read-only observation requires camera setup and no effect journal".into());
+    }
+    if observe_only && lab_stream_name_event.is_some() {
+        return Err("stream-name selection cannot run in read-only observation mode".into());
     }
     if observe_snapshot && !observe_only {
         return Err("snapshot observation requires --observe-only".into());
@@ -619,6 +647,7 @@ fn options() -> ResultBox<Options> {
         video_channel,
         time_sync_policy,
         media_before_reply,
+        lab_stream_name_event,
         reply_events,
         reply_startup_requests,
         lab_aac_config,
@@ -1086,6 +1115,8 @@ fn run(args: Options) -> ResultBox<()> {
                 let wall=Wall {task,clock};
                 #[cfg(target_os="linux")]
                 let mut selected_video_channel=args.video_channel.unwrap_or(VideoChannel::Video2);
+                #[cfg(target_os="linux")]
+                let mut selected_video_dimensions=None;
                 let mut setup_session=if let Some(setup_args)=&args.setup {
                     let (report,index)=if let Some(found)=discovered {found} else {
                         let prefix=(u32::from(*args.listen.ip()) ^ u32::from(camera_address)).leading_zeros().min(32) as u8;
@@ -1170,7 +1201,11 @@ fn run(args: Options) -> ResultBox<()> {
                         let choice=trace.outcome().ok_or("setup outcome unavailable")?
                             .select_reported_video(limits)?.ok_or("setup profile observation unavailable")?;
                         if preflight.selected != choice.selected {return Err("video profile changed after setup; reconcile any handoff before retry".into());}
-                        selected_video_channel=preflight.selected.ok_or("preflight video selection missing")?.0;
+                        let (channel,profile)=preflight.selected.ok_or("preflight video selection missing")?;
+                        let (camera_api::VideoMetric::Reported(width),camera_api::VideoMetric::Reported(height))=(profile.width,profile.height)
+                            else {return Err("selected profile dimensions missing".into());};
+                        selected_video_channel=channel;
+                        selected_video_dimensions=Some([width,height]);
                         println!("trial_video_channel_selected={selected_video_channel:?} provenance=camera_claim delivery=unverified");
                     }
                     let handoff=if matches!(trace.outcome(),Some(setup::Outcome::AlreadyAssociated {..})) {"no_effect_observed"} else {"requires_reconciliation"};
@@ -1221,10 +1256,15 @@ fn run(args: Options) -> ResultBox<()> {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let io_wait=remaining.min(MAX_IO_WAIT);
-                    let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:selected_video_channel,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
+                    // The request name is a public claim, not an authentication token.
+                    // Bind the experimental selector to this run's nonce so that
+                    // unrelated trials do not all request the same name.
+                    let requested_stream_name=if args.lab_stream_name_event.is_some() {run_id.as_str().get(..16).ok_or("invalid run identity")?} else {"0123456789abcdef"};
+                    let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:selected_video_channel,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:requested_stream_name,hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
                     let framing=if args.lab_zero_stream_id {SearchMode::ZeroStreamId} else if args.lab_g4_trailer {SearchMode::StructuredTrailer16AvFlag} else {SearchMode::Conservative};
                     let flv_limits=FlvLimits::default();
-                    let framer=Framer::with_mode(flv_limits,flv_limits.complete_candidate_buffer()?,framing)?; let recorder_factory=if args.lab_inband_avc {recording::Recorder::new_inband} else {recording::Recorder::new}; let recorder=recorder_factory(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
+                    let framer=Framer::with_mode(flv_limits,flv_limits.complete_candidate_buffer()?,framing)?; let recorder_factory=if args.lab_inband_avc {recording::Recorder::new_inband} else {recording::Recorder::new}; let mut recorder=recorder_factory(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
+                    if let Some(dimensions)=selected_video_dimensions {recorder.require_dimensions(dimensions)?;}
                     let mut startup_trace=listener::StartTrace::default();
                     let mut event_trace=conversation::StartupEventTrace::default();
                     let startup=async {
@@ -1234,17 +1274,9 @@ fn run(args: Options) -> ResultBox<()> {
                             } else {
                                 listener::start_before_reply_retaining_listener(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await
                             };
-                            result.and_then(|retained| {
-                                for observation in retained.started.observations_during_accept {
-                                    if let Observation::StreamSettingsReply {success,..}=observation {
-                                        if success==Some(false) {return Err(listener::StartError::Conversation(conversation::Error::Unexpected));}
-                                        println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
-                                    }
-                                }
-                                Ok((retained.started.pipeline,Some(retained.listener)))
-                            })
+                            result.map(|retained| (None,Some(retained)))
                         } else {
-                            listener::start_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.map(|started| (started.pipeline,None))
+                            listener::start_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.map(|started| (Some(started.pipeline),None))
                         }
                     };
                     let startup_result=timeout_at(deadline,startup).await;
@@ -1261,42 +1293,58 @@ fn run(args: Options) -> ResultBox<()> {
                     let unhandled=session.unhandled_request_counts();
                     println!("trial_stage=unhandled_response_requests pre_hello={} later={} correlated={} claims_unverified=true",unhandled.pre_hello,unhandled.later,unhandled.correlated);
                     match startup_result {
-                        Ok(Ok((pipeline,retained_listener)))=>{
-                            let pipeline=if let Some(media_listener)=retained_listener {
+                        Ok(Ok((pipeline,retained_startup)))=>{
+                            let pipeline=if let Some(retained)=retained_startup {
                                 let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos())).min(MAX_IO_WAIT);
-                                let mut candidates=match listener::MediaCandidates::new_validating(media_listener,pipeline,4,16*1024,MAX_SOURCE,remaining) {
-                                    Ok(candidates)=>candidates,
+                                let mut selection=match listener::ValidatedMediaSelection::new(retained,4,16*1024,MAX_SOURCE,remaining) {
+                                    Ok(selection)=>selection,
                                     Err(refusal)=>{
-                                        let retired=refusal.pipeline.retire();
+                                        let (started,_listener)=refusal.startup.into_parts();
+                                        let retired=started.pipeline.retire();
                                         println!("trial_stage=media_candidate_configuration_refused source_bytes_omitted={} unread_bytes_unknown=true effects_require_reconciliation=true",retired.ingress.source.received);
                                         return Err("invalid bounded media candidate policy".into());
                                     }
                                 };
+                                let rejected=selection.startup().observations_during_accept.iter().any(|observation| matches!(observation,Observation::StreamSettingsReply {success:Some(false),..}));
+                                if rejected {
+                                    retire_media_selection(selection);
+                                    return Err("camera reported stream-setting failure; candidate source requires reconciliation".into());
+                                }
+                                for observation in &selection.startup().observations_during_accept {
+                                    if let Observation::StreamSettingsReply {success,..}=observation {
+                                        println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
+                                    }
+                                }
+                                if let Some(event)=&args.lab_stream_name_event {
+                                    if let Err(error)=selection.require_stream_name(event,fss_packet::extended_flv::stream::MAX_NAME_PREFIX_BYTES,fss_packet::extended_flv::stream::MAX_NAME_PREFIX_TAGS,8*1024*1024) {
+                                        retire_media_selection(selection);
+                                        return Err(error.into());
+                                    }
+                                    println!("trial_stage=stream_name_policy_required identity=unverified");
+                                }
                                 let mut create=|index:usize| -> std::io::Result<_> {
                                     let key=SourceKey {connection:(attempts as u64)+(index as u64)*(MAX_INITIAL_CONNECTIONS as u64),generation:1};
                                     let framer=Framer::with_mode(flv_limits,flv_limits.complete_candidate_buffer().map_err(std::io::Error::other)?,framing).map_err(std::io::Error::other)?;
-                                    let recorder=recorder_factory(key,recording::Limits::default()).map_err(std::io::Error::other)?;
+                                    let mut recorder=recorder_factory(key,recording::Limits::default()).map_err(std::io::Error::other)?;
+                                    if let Some(dimensions)=selected_video_dimensions {recorder.require_dimensions(dimensions).map_err(std::io::Error::other)?;}
                                     Ok((framer,recorder))
                                 };
                                 println!("trial_stage=media_candidate_selection_started identity=network_claim");
                                 let replies=if args.reply_events || args.reply_startup_requests {Some((&event_replies,&mut event_trace))} else {None};
-                                if let Err(error)=listener::select_candidates_with_control(&mut candidates,&mut owner,&mut session,&request,&mut startup_trace,replies,&mut create).await {
-                                    let count=candidates.attempts();
-                                    let (_listener,current,additional)=candidates.into_parts();
-                                    let mut retained=0usize;
-                                    for candidate in std::iter::once(current).chain(additional.into_iter().map(|candidate| candidate.map(|pipeline| *pipeline))) {
-                                        if let Some(candidate)=candidate {
-                                            let retired=candidate.retire();
-                                            retained+=1;
-                                            println!("trial_stage=media_candidate_stopped attempts={count} source_bytes_omitted={} unread_bytes_unknown=true effects_require_reconciliation=true",retired.ingress.source.received);
-                                        }
-                                    }
-                                    if retained==0 {println!("trial_stage=media_candidate_stopped attempts={count} source_bytes_omitted=0 effects_require_reconciliation=true");}
+                                if let Err(error)=selection.select(&mut owner,&mut session,&request,&mut startup_trace,replies,&mut create).await {
+                                    retire_media_selection(selection);
                                     return Err(error.into());
                                 }
                                 println!("trial_stage=media_selection_control clocks={} event_replies={} effects_require_reconciliation=true",startup_trace.clock_replies_written(),event_trace.attempts().len());
-                                println!("trial_stage=media_candidate_selected attempts={} header_retained=true identity=network_claim",candidates.attempts());
-                                let selected=candidates.take_ready().ok_or("selected media missing")?;
+                                println!("trial_stage=media_candidate_selected attempts={} header_retained=true identity=network_claim",selection.attempts());
+                                let Some(selected)=selection.take_ready() else {
+                                    retire_media_selection(selection);
+                                    return Err("selected media missing".into());
+                                };
+                                let (_startup,candidates)=selection.into_parts();
+                                if args.lab_stream_name_event.is_some() {
+                                    println!("trial_stage=stream_name_claim matched=true rejected={} authenticated=false",candidates.name_rejections());
+                                }
                                 let (_listener,current,additional)=candidates.into_parts();
                                 for candidate in std::iter::once(current).chain(additional.into_iter().map(|candidate| candidate.map(|pipeline| *pipeline))) {
                                     if let Some(candidate)=candidate {
@@ -1305,7 +1353,7 @@ fn run(args: Options) -> ResultBox<()> {
                                     }
                                 }
                                 selected
-                            } else { pipeline };
+                            } else { pipeline.ok_or("selected media owner missing")? };
                             let source_key=pipeline.source_key();
                             break (session,pipeline,event_trace,startup_trace,source_key)
                         },
@@ -1390,6 +1438,13 @@ fn run(args: Options) -> ResultBox<()> {
                                 println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
                             },
                             supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered))=>(),
+                            supervisor::Step::MediaError(pipeline::Error::Recording(recording::Refusal {
+                                reason:recording::Error::DimensionsMismatch {expected,observed},unaccepted,
+                            }))=>{
+                                let bytes=unaccepted.as_ref().map_or(0,|record|record.bytes().len());
+                                println!("trial_stage=media_dimension_mismatch expected={}x{} observed={}x{} source_bytes_omitted={bytes} effects_require_reconciliation=true",expected[0],expected[1],observed[0],observed[1]);
+                                return Err("stream configuration does not match selected dimensions; source not retained".into());
+                            },
                             supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))=>{
                                 source_omitted=source_omitted.saturating_add(record.bytes().len());
                                 if args.lab_aac_source {

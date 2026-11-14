@@ -17,7 +17,7 @@ import tarfile
 EXPECTED = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 ROOT = Path(__file__).resolve().parent
 COPY_FILES = (
-    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_auto_setup_fixture.py", "trial_live_media_probe.py", "trial_pin_discovery_fixture.py", "trial_media_fixture.py", "src/lib.rs",
+    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_profile_resolution_fixture.py", "trial_profile_archive_resolution_fixture.py", "trial_stream_name_fixture.py", "trial_discovery_cli_fixture.py", "trial_auto_setup_fixture.py", "trial_live_media_probe.py", "trial_pin_discovery_fixture.py", "trial_media_fixture.py", "src/lib.rs",
     "src/server.rs", "src/owned.rs", "src/owned/client.rs", "src/owned/offload.rs", "src/client_handshake.rs",
     "src/camera_tls.rs", "src/camera_tls_owned.rs", "src/camera_tls_client.rs", "src/camera_setup.rs", "src/snapshot_auth.rs", "src/bin/live_tls_probe.rs", "src/bin/live_snapshot_probe.rs",
     "src/bin/unifi_scoped_direct_trial.rs", "src/bin/live_media_probe.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_run_id/mod.rs", "src/bin/trial_setup_fence/mod.rs",

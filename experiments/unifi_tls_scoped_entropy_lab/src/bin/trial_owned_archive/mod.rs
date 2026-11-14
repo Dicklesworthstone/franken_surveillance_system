@@ -427,8 +427,10 @@ fn control(step: supervisor::Step, event: &mut Option<events::Frame>) -> Result<
                 pipeline::Error::Ingress(fss_reference::unifi_direct::ingress::Error::Framing(reason)) =>
                     eprintln!("trial_owned_media_error stage=framing reason={reason:?}"),
                 pipeline::Error::Ingress(_) => eprintln!("trial_owned_media_error stage=ingress"),
-                pipeline::Error::Recording(refusal) =>
-                    eprintln!("trial_owned_media_error stage=recording reason={:?}", refusal.reason),
+                pipeline::Error::Recording(refusal) => {
+                    let omitted = refusal.unaccepted.as_ref().map_or(0, |record| record.bytes().len());
+                    eprintln!("trial_owned_media_error stage=recording reason={:?} source_bytes_omitted={omitted}", refusal.reason);
+                }
                 pipeline::Error::Stopped => eprintln!("trial_owned_media_error stage=stopped"),
                 pipeline::Error::AudioPending => eprintln!("trial_owned_media_error stage=audio_pending"),
                 pipeline::Error::Cancelled => eprintln!("trial_owned_media_error stage=cancelled"),

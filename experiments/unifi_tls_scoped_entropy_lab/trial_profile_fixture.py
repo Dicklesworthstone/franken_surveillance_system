@@ -138,7 +138,11 @@ def serve_http(tls, controller_port, address, profiles, needs_handoff=False, fin
                     + b"\r\nConnection: keep-alive\r\n\r\n" + body)
 
 
-def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False, inband=False, wait_seconds=20, expect_auto_inband=False, expect_media_refusal=None):
+def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False, inband=False, wait_seconds=20, expect_auto_inband=False, expect_media_refusal=None, min_frames=6, min_archive_frames=5, stream_name_event=None, first_candidate=None):
+    if not isinstance(min_frames, int) or min_frames < 1 or not isinstance(min_archive_frames, int) or min_archive_frames < 1:
+        raise ValueError("invalid minimum decoded frames")
+    if (stream_name_event is not None and media is None) or (first_candidate is not None and stream_name_event is None):
+        raise ValueError("name selection requires synthetic media and a name policy")
     case = root / name
     case.mkdir(mode=0o700)
     credential = case / "credential.json"
@@ -168,6 +172,8 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         command.append("--bounded-continuing-clock")
     if media is not None:
         command.append("--media-before-reply")
+        if stream_name_event is not None:
+            command.append(f"--lab-stream-name-event={stream_name_event}")
         if name in ("full-empty-events", "full-empty-control", "full-idle-control", "full-prefix-control"):
             command.append("--reply-events")
         if archive == "av":
@@ -288,9 +294,16 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                     stream = received(control)
                     if stream.get("functionName") != "ChangeVideoSettings" or set(stream.get("payload", {}).get("video", {})) != {expected}:
                         raise ValueError("wrong stream profile requested")
+                    requested_stream_name = stream["payload"]["video"][expected]["avSerializer"]["parameters"]["streamName"]
+                    if stream_name_event is not None and not re.fullmatch(r"[0-9a-f]{16}", requested_stream_name):
+                        raise ValueError("invalid run-scoped stream claim")
                     if media is None:
                         out, err = stop_child(child)
                     else:
+                        if callable(media):
+                            media = media(requested_stream_name)
+                        if callable(first_candidate):
+                            first_candidate = first_candidate(requested_stream_name)
                         control.sendall(frame(message("ChangeVideoSettings", 9, stream["messageId"])))
                         control.sendall(frame(message("ubnt_avclient_timeSync", 10)))
                         sync = received(control)
@@ -300,7 +313,12 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                         if target.scheme != "tcp" or target.hostname != address or not target.port:
                             raise ValueError("media destination escaped fixture address")
                         prefix = b""
-                        if name in ("full-empty-first", "full-empty-events", "full-empty-av", "full-empty-control"):
+                        if first_candidate is not None:
+                            if stream_name_event is None:
+                                raise ValueError("candidate metadata needs a name policy")
+                            with socket.create_connection((address, target.port), timeout=5) as candidate:
+                                candidate.sendall(first_candidate)
+                        if name in ("full-empty-first", "full-empty-events", "full-empty-av", "full-empty-control", "resolution-reconnect-mismatch", "resolution-archive-reconnect-mismatch"):
                             with socket.create_connection((address, target.port), timeout=5):
                                 pass
                         held = []
@@ -354,6 +372,20 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                         if expect_media_refusal is not None:
                             if child.returncode == 0 or expect_media_refusal not in out + err or b"trial_complete" in out:
                                 raise ValueError("expected media refusal was not retained")
+                            if name.startswith("resolution-") and f"trial_video_channel_selected=Video{expected[-1]}".encode() not in out:
+                                raise ValueError("resolution refusal did not follow the selected profile")
+                            if name.startswith("resolution-"):
+                                if archive:
+                                    pattern = rb"trial_owned_media_error stage=recording reason=DimensionsMismatch \{ expected: \[2688, 1512\], observed: \[160, 128\] \} source_bytes_omitted=(\d+)"
+                                    mismatch = re.search(pattern, out + err)
+                                else:
+                                    mismatch = re.search(rb"trial_stage=media_dimension_mismatch expected=2688x1512 observed=160x128 source_bytes_omitted=(\d+)", out)
+                                if mismatch is None or int(mismatch.group(1)) == 0 or (not archive and (case / "clip.mp4").exists()):
+                                    raise ValueError("resolution mismatch evidence or source accounting missing")
+                            if name in ("resolution-reconnect-mismatch", "resolution-archive-reconnect-mismatch") and b"trial_stage=media_candidate_selected attempts=2 header_retained=true" not in out:
+                                raise ValueError("resolution refusal did not use the second candidate")
+                            if stream_name_event is not None and b"trial_stage=stream_name_claim matched=true rejected=0 authenticated=false" not in out:
+                                raise ValueError("resolution refusal lost its matching name claim")
                             if expect_auto_inband and b"trial_avc_selection=automatic_inband" not in out:
                                 raise ValueError("automatic in-band AVC selection missing before refusal")
                             print(f"trial_profile_fixture case={name} media_refused=true result=pass", flush=True)
@@ -391,16 +423,23 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                                 readback_fields = dict(part.split("=", 1) for part in readback.split() if "=" in part)
                                 if int(readback_fields.get("audio_frames", 0)) < 1 or int(readback_fields.get("video_samples", 0)) < 1:
                                     raise ValueError("A/V readback empty: " + readback)
-                            if fields.get("width") != "2688" or fields.get("height") != "1512" or int(fields.get("frames", 0)) < (1 if archive == "av" else 5) or (archive != "av" and (fields.get("frames") != fields.get("samples") or fields.get("decode_mode") != "streamed_prefix")):
+                            if fields.get("width") != "2688" or fields.get("height") != "1512" or int(fields.get("frames", 0)) < (1 if archive == "av" else min_archive_frames) or (archive != "av" and (fields.get("frames") != fields.get("samples") or fields.get("decode_mode") != "streamed_prefix")):
                                 raise ValueError("archive decode mismatch: " + decoded)
                             streams = [{"nb_read_frames": fields["frames"]}]
                         else:
                             probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", str(clip)], capture_output=True, check=True, timeout=20)
                             streams = json.loads(probe.stdout)["streams"]
-                            if len(streams) != 1 or streams[0]["width"] != 2688 or streams[0]["height"] != 1512 or int(streams[0]["nb_read_frames"]) < 6:
+                            if len(streams) != 1 or streams[0]["width"] != 2688 or streams[0]["height"] != 1512 or int(streams[0]["nb_read_frames"]) < min_frames:
                                 raise ValueError("synthetic high-resolution media output mismatch")
                             subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-i", str(clip), "-map", "0:v:0", "-f", "null", "-"], capture_output=True, check=True, timeout=30)
                     output = out + err
+                    if stream_name_event is not None:
+                        count = 1 if first_candidate is not None else 0
+                        marker = f"trial_stage=stream_name_claim matched=true rejected={count} authenticated=false".encode()
+                        if marker not in output:
+                            raise ValueError("selected media lacks its expected name-claim result")
+                        if first_candidate is not None and b"trial_stage=media_candidate_selected attempts=2 header_retained=true" not in output:
+                            raise ValueError("matching stream was not the replacement candidate")
                     if auto_pin and (b"trial_pin_discovery=matched candidates=1 credentials_sent=false" not in output or b"trial_setup_fence=created" not in output or b"trial_journal=anchored" not in output):
                         raise ValueError("automatic pinned setup or anchored journal trace missing")
                     if auto_pin and b"trial_task_outcome=effect_unsettled" not in output:
@@ -414,6 +453,7 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         detail = (f" width=2688 height=1512 frames={streams[0]['nb_read_frames']} {archive_detail}=pass"
                   if media is not None else "")
         print(f"trial_profile_fixture case={name} selected={expected or 'none'}{detail} result=pass", flush=True)
+        return requested_stream_name
     except Exception:
         if auto_pin:
             out, err = stop_child(child) if child.poll() is None else child.communicate()
