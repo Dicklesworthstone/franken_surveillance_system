@@ -9,6 +9,7 @@ fss-probe < source-prefix
 fss-probe --bytes 189 < source.ts
 fss-probe --parameters < source.264
 fss-probe --parameters --bytes 4096 --units 16 < source.265
+fss-probe --parameters < initialization.mp4
 ```
 
 The command reads only stdin and writes one diagnostic line. There is no network access, source retention, decoding, model execution or automatic fallback. The original family-only invocation remains available.
@@ -16,7 +17,7 @@ The command reads only stdin and writes one diagnostic line. There is no network
 | Mode | Default byte allowance | Result |
 | --- | --- | --- |
 | Family | 189 | Container-family signature, payload domain and ISO-BMFF major brand when present |
-| `--parameters` | 4096 | First complete admitted Annex-B configuration tuple, signalled dimensions/profile/level/depth, original parameter spans and inspection counts |
+| `--parameters` | 4096 | First complete admitted Annex-B tuple or MP4 initialization, signalled dimensions/profile/level/depth, original parameter spans and inspection counts |
 
 `--bytes` accepts 1 through 4096 for family mode and 12 through 4096 for parameter mode. `--units` is available only with `--parameters` and accepts 1 through 64. Invalid or repeated options refuse before reading stdin. Short reads are accumulated within the original allowance. Interrupted reads have a fixed retry ceiling, and output failures return an error status.
 
@@ -27,6 +28,8 @@ parameters container=annex-b codec=h264 scope=configuration-prefix coded_width=1
 ```
 
 The numerical spans and counts come from the actual input. Spans are half-open byte offsets in that input, excluding Annex-B delimiters and trailing zero bytes. Source bytes are not printed. Non-alphanumeric ISO-BMFF brand bytes, except `.`, `_` and `-`, are percent-escaped so untrusted metadata cannot inject output lines or fields.
+
+MP4 output reports `container=iso-bmff` and adds `track_id=N`; its parameter spans point directly into the original `avcC` or `hvcC` record, excluding NAL length fields. The native `VideoParameters` API exposes the same container and optional track identifier. Existing Annex-B results retain `container=annex-b` and have no container track.
 
 ## Two different claims
 
@@ -43,17 +46,39 @@ Only admitted base-layer HEVC parameter headers select HEVC. An ambiguous PPS-li
 
 HEVC parsing retains the native owner's **configuration-prefix** boundary: VPS profile/tier/level, SPS dimensions/crop/depth and PPS binding are interpreted, while the remaining parameter syntax is not certified. Neither AVC nor HEVC success certifies picture decoding, full profile/level conformance, sample timing, frame rate, source custody, live continuity, coverage or physical scene truth. Coded dimensions and cropped display dimensions remain separate fields.
 
+## MP4 initialization within the prefix
+
+An ISO-BMFF prefix may supply parameters through `ftyp` followed by a complete first `moov`. The probe visits the track headers, media handlers and sample descriptions before selecting one video track. It admits one `avc1` AVC or `hvc1` HEVC description with a complete, internally bound parameter tuple. Other declared media-handler tracks may coexist; multiple video tracks, duplicate track identifiers, duplicate required boxes or competing parameter candidates refuse. An incomplete later track inside that `moov` cannot be hidden by an earlier valid video configuration.
+
+Configuration-record framing and original NAL ranges come from the existing demux owner's `avcC`/`hvcC` parsers. Native SPS/PPS/VPS interpretation supplies the reported geometry, profile, level and depth. The record's profile/tier/level, chroma and depth declarations must agree with the admitted native parameters where those fields are present. A truncated native parameter inside a complete MP4 configuration is malformed metadata: more bytes after that box cannot repair it.
+
+| Initialization feature | Probe behavior |
+| --- | --- |
+| Ordinary or extended-size boxes | Admitted within parent and prefix bounds |
+| Top-level size-zero box | Requires observed EOF; an exhausted allowance cannot close it |
+| Nested size-zero box | Refused |
+| AVC `avc1`, HEVC `hvc1` | Admitted with complete supported tuples |
+| `avc3`, `hev1`, other video entries | Unsupported in this initialization-only operation |
+| `encv`, `sinf`, compressed `cmov` | Unsupported |
+| Multiple video tracks/descriptions | Contradictory; no implicit track preference |
+| `moov` after media outside the prefix | Incomplete or byte-limited; no seeking |
+| `mdat`, fragments or another initialization after the completed first `moov` | Outside the reported configuration-prefix scope |
+
+The prefix may end exactly at the declared `moov` boundary without EOF: its box size closes that metadata. Sample tables, samples, later parameter changes, data-reference targets and media availability are not validated, and no external reference is followed. Track matrices and sample-entry display transforms are not applied to native SPS dimensions. This result is useful for inspecting initialization and planning later admitted work; it does not certify a complete or playable MP4.
+
+In addition to the caller's byte, NAL and geometry ceilings, MP4 traversal has hard limits of 128 visited box headers and 16 declared tracks. Traversal follows a fixed initialization hierarchy, with no unbounded recursion. The complete selected configuration record is checked before a result is returned; its SEI NAL arrays consume the NAL allowance even though they do not supply reported parameters.
+
 ## EOF, bounds and ownership
 
-The native parameter API takes an explicit `end_of_source` observation. A caller may set it only after observing EOF; exhausting an allowance is not EOF. A final undelimited NAL is incomplete until either its next delimiter or actual EOF is observed. If an entire source is longer than the allowed prefix, its EOF cannot close the clipped prefix. The CLI never reads an extra byte just to decide whether EOF occurred. Consequently, an undelimited tuple ending exactly at `--bytes` needs a larger allowance to observe EOF, or a following delimiter within the allowance.
+The native parameter API takes an explicit `end_of_source` observation. A caller may set it only after observing EOF; exhausting an allowance is not EOF. A final undelimited Annex-B NAL is incomplete until either its next delimiter or actual EOF is observed. If an entire source is longer than the allowed prefix, its EOF cannot close the clipped prefix. The CLI never reads an extra byte just to decide whether EOF occurred. Consequently, an undelimited tuple ending exactly at `--bytes` needs a larger allowance to observe EOF, or a following delimiter within the allowance. MP4 uses its declared complete box boundaries, except that top-level size-zero boxes still require EOF.
 
 `ParameterLimits` independently limits head bytes, NAL count, coded width, coded height and coded luma samples. Defaults are 4096 bytes, 64 NAL units, 8192 by 8192 coded dimensions and 67,108,864 luma samples. Dimensions are metadata bounds; probing allocates no pixel buffers. Native parser allocations are confined to the bounded parameter bytes. Invalid limits fail closed rather than widening or clamping policy.
 
-Delimiter scanning is linear in the inspected prefix. Cancellation is checked on entry, between units, every 128 delimiter-scan bytes and before/after native parsing; a final cancellation withholds the result. The caller supplies that cancellation observation. The stdin CLI does not install a separate cancellation runtime or signal handler.
+Delimiter scanning is linear in the inspected prefix. Cancellation is checked on entry, between boxes and units, every 128 delimiter-scan bytes and before/after native parsing; a final cancellation withholds the result. The caller supplies that cancellation observation. The stdin CLI does not install a separate cancellation runtime or signal handler.
 
 `VideoParameters` borrows the exact parameter bytes through `ParameterSource`; Rust prevents those backing bytes being mutated or reused while the result is live. Debug output exposes ranges, not payloads. This lifetime binding is not a durable custody record: an ingest owner must still bind stream/configuration generations and retained source evidence before using metadata in its own publication protocol.
 
-The cost boundary is the admitted source prefix plus at most 64 bounded native NAL inspections and one successful configuration parse. `inspected_bytes` is the highest inspected source offset, including a terminating delimiter; `inspected_units` counts complete units considered. These are inspection accounting, not measured CPU-time or decoding-cost claims.
+The cost boundary is the admitted source prefix plus at most 64 bounded native NAL inspections and one successful configuration parse, with the additional fixed MP4 traversal bounds above. `inspected_bytes` is the consumed prefix extent, including a terminating Annex-B delimiter or the completed MP4 `moov`; skipped bounded MP4 boxes remain within that extent. `inspected_units` counts complete units considered. These are inspection accounting, not measured CPU-time or decoding-cost claims.
 
 ## Exit statuses
 
@@ -78,6 +103,8 @@ cargo test --locked --offline -p fss-cli --bin fss-probe
 ```
 
 The focused contracts cover retained AVC baseline/cropped fixtures, retained HEVC Main/Main10 metadata, exact source ranges, budget-tail noninterference, one-byte-short and one-unit-short refusals, geometry ceilings, EOF-versus-budget behavior, all cancellation checkpoints, contradictory candidates, cross-codec header aliases, native corruption/unsupported refusal, three-/four-byte Annex-B delimiters, trailing zero bytes, short/interrupted stdin reads, escaped brands and failed stdout writes. Native execution and broader qualification remain separately evidenced; the presence of these tests is not a passing qualification claim.
+
+MP4 contracts additionally use retained baseline/cropped initializations and fragmented AVC/HEVC audio-plus-video fixtures, plus the independently retained HEVC Main/Main10 tuples. They exercise complete-moov release, exact original configuration spans, late-moov refusal, hidden/competing tracks, unsupported and encrypted entries, ordinary/extended/size-zero boxes, internal truncation, record-versus-native metadata contradictions, box/track ceilings and cancellation at every observed checkpoint. All fixture bytes are checked in; no foreign decoder or media tool runs in these tests.
 
 ## Qualification
 

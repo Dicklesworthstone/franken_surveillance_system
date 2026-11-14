@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! fss-probe: bounded container-family or Annex-B configuration inspection.
+//! fss-probe: bounded container-family, Annex-B or MP4 initialization inspection.
 //!
 //! Reads at most --bytes from stdin. The default is 189 bytes for signatures,
 //! or 4096 for --parameters. No decoding, networking or source retention occurs.
@@ -135,9 +135,10 @@ where
             Ok(report) => {
                 write!(
                     out,
-                    "parameters container=annex-b codec={} scope=configuration-prefix \
+                    "parameters container={} codec={} scope=configuration-prefix \
                      coded_width={} coded_height={} display_width={} display_height={} \
                      bit_depth={} profile={} level={} vps=",
+                    report.container.as_str(),
                     report.codec.as_str(),
                     report.coded_dimensions.0,
                     report.coded_dimensions.1,
@@ -152,9 +153,9 @@ where
                 } else {
                     write!(out, "none")?;
                 }
-                writeln!(
+                write!(
                     out,
-                    " sps={}..{} pps={}..{} inspected_bytes={} inspected_units={} bytes={read}",
+                    " sps={}..{} pps={}..{} inspected_bytes={} inspected_units={}",
                     report.sps.range.start,
                     report.sps.range.end,
                     report.pps.range.start,
@@ -162,6 +163,10 @@ where
                     report.inspected_bytes,
                     report.inspected_units,
                 )?;
+                if let Some(track) = report.track_id {
+                    write!(out, " track_id={track}")?;
+                }
+                writeln!(out, " bytes={read}")?;
                 Ok(EXIT_OK)
             }
             Err(error) => {
@@ -367,8 +372,65 @@ mod tests {
         assert_eq!(invoke(&["--parameters", "--units", "1"], AVC).0, EXIT_LIMIT);
         assert_eq!(
             invoke(&["--parameters"], b"\x00\x00\x00\x18ftypisom").0,
-            EXIT_UNSUPPORTED
+            EXIT_INSUFFICIENT
         );
+    }
+
+    #[test]
+    fn mp4_parameters_report_actual_container_track_and_prefix_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = include_bytes!("../../../fss-container/tests/fixtures/fragmented_av.mp4");
+        let (code, line) = invoke(&["--parameters"], bytes);
+        assert_eq!(code, EXIT_OK, "{line}");
+        assert!(
+            line.starts_with("parameters container=iso-bmff codec=h264 "),
+            "{line}"
+        );
+        assert!(line.contains("track_id=1"), "{line}");
+        assert!(line.contains("inspected_bytes=1214"), "{line}");
+        assert!(line.contains("coded_width=64 coded_height=48"), "{line}");
+        assert_eq!(
+            invoke(&["--parameters", "--bytes", "1214"], bytes).0,
+            EXIT_OK
+        );
+        assert_eq!(
+            invoke(&["--parameters", "--bytes", "1213"], bytes).0,
+            EXIT_LIMIT
+        );
+        assert_eq!(
+            invoke(&["--parameters"], &bytes[..1213]).0,
+            EXIT_INSUFFICIENT
+        );
+        assert_eq!(
+            invoke(&["--parameters", "--units", "1"], bytes).0,
+            EXIT_LIMIT
+        );
+        let hevc = include_bytes!("../../../fss-container/tests/fixtures/hevc_fragmented_av.mp4");
+        let (code, line) = invoke(&["--parameters"], hevc);
+        assert_eq!(code, EXIT_OK, "{line}");
+        assert!(
+            line.starts_with("parameters container=iso-bmff codec=h265 "),
+            "{line}"
+        );
+        assert!(line.contains("bit_depth=8 profile=1 level=30"), "{line}");
+        Ok(())
+    }
+
+    #[test]
+    fn mp4_parameters_do_not_seek_to_late_metadata_or_accept_inband_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let late = include_bytes!("../../../fss-container/tests/fixtures/hevc_av.mp4");
+        assert_eq!(invoke(&["--parameters"], late).0, EXIT_LIMIT);
+        let mut bytes =
+            include_bytes!("../../../fss-container/tests/fixtures/baseline_init.bin").to_vec();
+        // A compatible brand may also name avc1; the final occurrence is this fixture's entry.
+        let at = bytes
+            .windows(4)
+            .rposition(|kind| kind == b"avc1")
+            .ok_or("fixture avc1 entry")?;
+        bytes[at..at + 4].copy_from_slice(b"avc3");
+        assert_eq!(invoke(&["--parameters"], &bytes).0, EXIT_UNSUPPORTED);
+        Ok(())
     }
 
     #[test]

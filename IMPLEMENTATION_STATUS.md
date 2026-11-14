@@ -4,6 +4,35 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native MP4 initialization parameter probing — 2026-11-14
+
+FSS-053 now extends `fss-probe --parameters` and the borrowed native parameter API
+to MP4 initialization metadata. A bounded box walk admits one complete `moov`
+with exactly one supported `avc1` or `hvc1` video configuration, reusing the
+demux owner's `avcC`/`hvcC` record grammar and the packet owner's AVC/HEVC parsers.
+Results identify the actual container and track, coded/cropped dimensions,
+component depth, profile/level indicators and original parameter-set byte ranges.
+The existing Annex-B CLI line remains compatible.
+
+Ordinary, extended and explicitly terminated top-level boxes are bounded by the
+same 4096-byte prefix, with independent box/track/NAL/geometry ceilings and
+cancellation checkpoints. Incomplete input, exhausted allowance, malformed complete
+records, conflicting tracks/configurations, encrypted entries and unsupported
+in-band configurations have explicit refusal outcomes. Configuration-record
+profile/chroma/depth declarations must agree with the admitted native parameter
+tuple. A complete initialization can succeed before following media bytes without
+seeking to a late `moov`, decoding samples or certifying later configuration,
+timing, full codec conformance, continuity or retained-source custody.
+
+All 84 production container unit tests passed, including 34 probe tests with
+12 new MP4 regressions; all 15 tests compiled from the exact `fss-probe.rs` passed,
+including two new MP4 command cases. The pinned nightly compiled the actual
+`fss-core`, `fss-packet` and `fss-container` libraries directly with `rustc`, then
+the exact production crate/binary test roots. No substitute modules or mocked
+dependencies were used. Independent source review, pinned formatting and diff
+checks passed. This is component execution evidence; full Cargo/workspace and
+DSR release qualification remain unverified. See [media probing](docs/MEDIA_PROBE.md).
+
 ## Bounded native media parameter probing — 2026-11-14
 
 FSS-053 now exposes an explicit Annex-B configuration-prefix probe through
@@ -27,13 +56,14 @@ contradictory signatures refuse. The CLI accumulates bounded short reads, handle
 interrupted input with a retry ceiling, rejects invalid/repeated policies, escapes
 untrusted brand bytes and returns an error when output fails.
 
-The focused selection contains 22 container probe tests and 13 CLI tests, including
-retained AVC/HEVC fixtures, exact budgets/source ranges, EOF, cancellation, syntax
-and geometry refusals, codec-header ambiguity and I/O failures. Independent source
-review and pinned-nightly formatting passed. Native compilation and tests remain
-unverified: the provider test build and a single-job object/container type check
-both stopped when the unchanged Asupersync 0.5.0 dependency compiler received
-SIGKILL, before reaching the changed crates. `scripts/check_media_probe.sh` selects these
+The original focused selection contains 22 container probe tests and 13 CLI tests,
+including retained AVC/HEVC fixtures, exact budgets/source ranges, EOF, cancellation,
+syntax and geometry refusals, codec-header ambiguity and I/O failures. These tests
+now pass as part of the larger direct-production-source native suites documented
+above. Independent source review and pinned-nightly formatting also passed. Full
+Cargo/workspace verification remains blocked: the earlier provider test build and
+single-job object/container type check stopped when the unchanged Asupersync 0.5.0
+dependency compiler received SIGKILL. `scripts/check_media_probe.sh` selects these
 contracts early in the existing supplementary pinned-nightly workflow.
 FSS-053 generation/custody integration and QL-MEDIA-001, TEST-MEDIA-MALFORMED-001
 and GATE-040 remain open. See [bounded media probing](docs/MEDIA_PROBE.md).

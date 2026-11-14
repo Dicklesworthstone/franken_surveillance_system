@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod mp4;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const AVC: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -283,7 +285,7 @@ fn native_parameter_refusals_are_preserved_without_decode_fallback() -> TestResu
             ParameterLimits::default(),
             || false
         ),
-        Err(ParameterError::Unsupported)
+        Err(ParameterError::Truncated)
     );
     Ok(())
 }

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded Annex-B configuration probing with borrowed source bindings.
+//! Bounded Annex-B and MP4 initialization probing with borrowed source bindings.
 //!
 //! The first complete AVC SPS/PPS or HEVC VPS/SPS/PPS tuple is interpreted by
 //! the packet owner's existing parsers. No picture is decoded, no source is
@@ -18,6 +18,8 @@ use fss_packet::{
 };
 
 use super::{ContainerKind, MAX_PROBE_BYTES, ProbeLimits, ProbeOutcome, probe};
+
+mod mp4;
 
 /// Independent byte, work and geometry ceilings; invalid policies fail closed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,7 +112,7 @@ impl ParameterCodec {
 /// One exact original NAL. The borrow prevents reuse/mutation while the result lives.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ParameterSource<'a> {
-    /// Range in the supplied source head, excluding delimiters and trailing zero bytes.
+    /// Range in the original head, excluding Annex-B delimiters/padding or MP4 length fields.
     pub range: Range<usize>,
     bytes: &'a [u8],
 }
@@ -132,6 +134,10 @@ impl fmt::Debug for ParameterSource<'_> {
 /// Subsequent configuration changes, sample timelines and pictures are not inspected.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoParameters<'a> {
+    /// Container whose bounded initialization supplied the tuple.
+    pub container: ContainerKind,
+    /// Selected MP4 track identifier; elementary streams have no container track.
+    pub track_id: Option<u32>,
     /// Codec whose native parameter parser accepted the tuple.
     pub codec: ParameterCodec,
     /// Coded luma dimensions before the signalled crop.
@@ -150,10 +156,108 @@ pub struct VideoParameters<'a> {
     pub sps: ParameterSource<'a>,
     /// Original PPS, checked against the SPS.
     pub pps: ParameterSource<'a>,
-    /// Highest inspected source offset, including any terminating delimiter.
+    /// Consumed prefix extent, including a terminating delimiter or the complete MP4 `moov`.
     pub inspected_bytes: usize,
-    /// Number of complete NAL units considered, including skipped non-parameter units.
+    /// Complete NAL units considered, including skipped Annex-B units or MP4 SEI arrays.
     pub inspected_units: usize,
+}
+
+struct ParameterTuple<'a> {
+    codec: ParameterCodec,
+    vps: Option<ParameterSource<'a>>,
+    sps: ParameterSource<'a>,
+    pps: ParameterSource<'a>,
+}
+
+struct TupleMetadata {
+    coded: (u32, u32),
+    display: (u32, u32),
+    depth: u8,
+    profile: u8,
+    level: u8,
+    hevc_profile_tier_level: Option<[u8; 12]>,
+}
+
+impl<'a> ParameterTuple<'a> {
+    fn report(
+        self,
+        metadata: TupleMetadata,
+        container: ContainerKind,
+        track_id: Option<u32>,
+        inspected_bytes: usize,
+        inspected_units: usize,
+    ) -> VideoParameters<'a> {
+        VideoParameters {
+            container,
+            track_id,
+            codec: self.codec,
+            coded_dimensions: metadata.coded,
+            display_dimensions: metadata.display,
+            bit_depth: metadata.depth,
+            profile: metadata.profile,
+            level: metadata.level,
+            vps: self.vps,
+            sps: self.sps,
+            pps: self.pps,
+            inspected_bytes,
+            inspected_units,
+        }
+    }
+}
+
+fn parse_tuple(
+    tuple: &ParameterTuple<'_>,
+    limits: ParameterLimits,
+    cancelled: &mut impl FnMut() -> bool,
+) -> Result<TupleMetadata, ParameterError> {
+    checkpoint(cancelled)?;
+    let metadata = match tuple.codec {
+        ParameterCodec::Avc => {
+            let syntax = AvcSyntaxLimits {
+                max_nal_bytes: limits.max_bytes,
+                max_parameter_set_bytes: limits.max_bytes,
+                max_width: limits.max_width,
+                max_height: limits.max_height,
+                max_luma_samples: limits.max_luma_samples,
+                ..AvcSyntaxLimits::default()
+            };
+            let parsed = parse_sps(tuple.sps.bytes, syntax).map_err(avc_error)?;
+            checkpoint(cancelled)?;
+            parse_pps(tuple.pps.bytes, &parsed, syntax).map_err(avc_error)?;
+            TupleMetadata {
+                coded: parsed.coded_dimensions(),
+                display: parsed.display_dimensions(),
+                depth: 8,
+                profile: parsed.profile_idc(),
+                level: parsed.level_idc(),
+                hevc_profile_tier_level: None,
+            }
+        }
+        ParameterCodec::Hevc => {
+            let parsed = HevcConfiguration::parse(
+                tuple.vps.as_ref().ok_or(ParameterError::Truncated)?.bytes,
+                tuple.sps.bytes,
+                tuple.pps.bytes,
+                HevcConfigurationLimits {
+                    max_parameter_bytes: limits.max_bytes,
+                    max_width: limits.max_width,
+                    max_height: limits.max_height,
+                    max_luma_samples: limits.max_luma_samples,
+                },
+            )
+            .map_err(hevc_error)?;
+            TupleMetadata {
+                coded: parsed.coded_dimensions(),
+                display: parsed.display_dimensions(),
+                depth: parsed.bit_depth(),
+                profile: parsed.profile_tier_level()[0] & 31,
+                level: parsed.profile_tier_level()[11],
+                hevc_profile_tier_level: Some(*parsed.profile_tier_level()),
+            }
+        }
+    };
+    checkpoint(cancelled)?;
+    Ok(metadata)
 }
 
 fn checkpoint(cancelled: &mut impl FnMut() -> bool) -> Result<(), ParameterError> {
@@ -202,8 +306,10 @@ fn save<'a>(
     Ok(())
 }
 
-/// Inspect a bounded Annex-B prefix with cancellation checkpoints between units,
-/// every 128 delimiter-scan bytes, and before/after native parsing.
+/// Inspect Annex-B configuration or complete MP4 initialization within a bounded prefix.
+/// Cancellation is checked between boxes/units, every 128 delimiter-scan bytes,
+/// and before/after native parsing. MP4 requires one video track in a complete `moov`;
+/// a later `mdat`, sample timeline and subsequent configuration are not inspected.
 ///
 /// end_of_source may be true only when the supplied bytes end at an observed EOF.
 /// Reaching a byte allowance is not EOF: the final undelimited NAL is then incomplete.
@@ -234,6 +340,10 @@ pub fn probe_parameters<'a>(
             container: ContainerKind::AnnexB,
             ..
         } => {}
+        ProbeOutcome::Identified {
+            container: ContainerKind::IsoBmff,
+            ..
+        } => return mp4::probe(window, complete, incomplete, limits, &mut cancelled),
         ProbeOutcome::Identified { .. } | ProbeOutcome::Unsupported => {
             return Err(ParameterError::Unsupported);
         }
@@ -301,67 +411,20 @@ pub fn probe_parameters<'a>(
         let ready =
             sps.is_some() && pps.is_some() && (codec == Some(ParameterCodec::Avc) || vps.is_some());
         if ready {
-            checkpoint(&mut cancelled)?;
-            let sps = sps.ok_or(ParameterError::Truncated)?;
-            let pps = pps.ok_or(ParameterError::Truncated)?;
-            let codec = codec.ok_or(ParameterError::Unsupported)?;
-            let (coded, display, depth, profile, level) = match codec {
-                ParameterCodec::Avc => {
-                    let syntax = AvcSyntaxLimits {
-                        max_nal_bytes: limits.max_bytes,
-                        max_parameter_set_bytes: limits.max_bytes,
-                        max_width: limits.max_width,
-                        max_height: limits.max_height,
-                        max_luma_samples: limits.max_luma_samples,
-                        ..AvcSyntaxLimits::default()
-                    };
-                    let parsed = parse_sps(sps.bytes, syntax).map_err(avc_error)?;
-                    checkpoint(&mut cancelled)?;
-                    parse_pps(pps.bytes, &parsed, syntax).map_err(avc_error)?;
-                    (
-                        parsed.coded_dimensions(),
-                        parsed.display_dimensions(),
-                        8,
-                        parsed.profile_idc(),
-                        parsed.level_idc(),
-                    )
-                }
-                ParameterCodec::Hevc => {
-                    let parsed = HevcConfiguration::parse(
-                        vps.as_ref().ok_or(ParameterError::Truncated)?.bytes,
-                        sps.bytes,
-                        pps.bytes,
-                        HevcConfigurationLimits {
-                            max_parameter_bytes: limits.max_bytes,
-                            max_width: limits.max_width,
-                            max_height: limits.max_height,
-                            max_luma_samples: limits.max_luma_samples,
-                        },
-                    )
-                    .map_err(hevc_error)?;
-                    (
-                        parsed.coded_dimensions(),
-                        parsed.display_dimensions(),
-                        parsed.bit_depth(),
-                        parsed.profile_tier_level()[0] & 31,
-                        parsed.profile_tier_level()[11],
-                    )
-                }
-            };
-            checkpoint(&mut cancelled)?;
-            return Ok(VideoParameters {
-                codec,
-                coded_dimensions: coded,
-                display_dimensions: display,
-                bit_depth: depth,
-                profile,
-                level,
+            let tuple = ParameterTuple {
+                codec: codec.ok_or(ParameterError::Unsupported)?,
                 vps,
-                sps,
-                pps,
-                inspected_bytes: next.map_or(window.len(), |(_, payload)| payload),
-                inspected_units: units,
-            });
+                sps: sps.ok_or(ParameterError::Truncated)?,
+                pps: pps.ok_or(ParameterError::Truncated)?,
+            };
+            let metadata = parse_tuple(&tuple, limits, &mut cancelled)?;
+            return Ok(tuple.report(
+                metadata,
+                ContainerKind::AnnexB,
+                None,
+                next.map_or(window.len(), |(_, payload)| payload),
+                units,
+            ));
         }
         start = match next {
             Some((_, start)) => start,

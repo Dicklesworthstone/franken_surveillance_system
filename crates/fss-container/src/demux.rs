@@ -134,6 +134,44 @@ pub enum VideoCodec {
     Hevc,
 }
 
+/// Reuse the demuxer's exact configuration-record grammar for bounded initialization probes.
+/// The supplied range contains an `avcC`/`hvcC` body in the original source, not a reconstructed
+/// Annex-B stream. Returned ranges remain in that source; the count includes admitted SEI NALs.
+pub(crate) fn probe_parameter_sets(
+    source: &[u8],
+    codec: VideoCodec,
+    body: Range<usize>,
+    maximum_nals: usize,
+    check: &mut dyn FnMut() -> Result<(), DemuxError>,
+) -> Result<(Vec<Range<usize>>, usize), DemuxError> {
+    if source.len() > 4096 || !(1..=64).contains(&maximum_nals) {
+        return Err(DemuxError::Limit);
+    }
+    source.get(body.clone()).ok_or(DemuxError::Layout)?;
+    let limits = DemuxLimits {
+        maximum_input_bytes: 4096,
+        maximum_metadata_bytes: 4096,
+        maximum_table_entries: 128,
+        maximum_nals,
+        ..DemuxLimits::default()
+    };
+    let mut reader = Reader::new(source, limits, check);
+    let config = reader::BoxRef {
+        kind: if codec == VideoCodec::Avc {
+            *b"avcC"
+        } else {
+            *b"hvcC"
+        },
+        start: body.start,
+        body,
+    };
+    let (_, parameters) = match codec {
+        VideoCodec::Avc => avc_configuration(&mut reader, &config)?,
+        VideoCodec::Hevc => hevc_configuration(&mut reader, &config)?,
+    };
+    Ok((parameters, reader.nals))
+}
+
 /// One original media sample in decode order. All offsets address the original MP4 file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AvcSample {
