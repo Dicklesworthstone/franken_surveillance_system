@@ -164,11 +164,20 @@ impl Muxer {
 
     /// Construct an `avc3` writer allowing repeated, byte-identical in-band
     /// SPS/PPS before pictures. Configuration changes remain refused.
-    pub fn new_inband(key: SourceKey, source: &SourceRecord, limits: Mp4Limits) -> Result<Self, Mp4Error> {
+    pub fn new_inband(
+        key: SourceKey,
+        source: &SourceRecord,
+        limits: Mp4Limits,
+    ) -> Result<Self, Mp4Error> {
         Self::new_with_inband(key, source, limits, true)
     }
 
-    fn new_with_inband(key: SourceKey, source: &SourceRecord, limits: Mp4Limits, inband: bool) -> Result<Self, Mp4Error> {
+    fn new_with_inband(
+        key: SourceKey,
+        source: &SourceRecord,
+        limits: Mp4Limits,
+        inband: bool,
+    ) -> Result<Self, Mp4Error> {
         limits.validate()?;
         if key.connection == 0 || key.generation == 0 {
             return Err(Mp4Error::Configuration);
@@ -225,6 +234,12 @@ impl Muxer {
     pub fn initialization(&self) -> &InitializationSegment {
         &self.initialization
     }
+    /// Display dimensions declared by this configuration's parsed SPS.
+    /// This is a bitstream claim, not a decoded-picture or camera identity proof.
+    pub fn display_dimensions(&self) -> [u32; 2] {
+        let (width, height) = self.sps.display_dimensions();
+        [width, height]
+    }
     /// Derive an AVC plus AAC initialization for the same video configuration.
     /// The caller must independently bind the audio configuration and its
     /// clock to this source connection before publishing any A/V derivative.
@@ -232,7 +247,11 @@ impl Muxer {
         &self,
         audio: &fss_packet::extended_flv::aac::Configuration<'_>,
     ) -> Result<crate::flv_av::Initialization, Mp4Error> {
-        let builder = if self.inband { init::build_av_inband } else { init::build_av };
+        let builder = if self.inband {
+            init::build_av_inband
+        } else {
+            init::build_av
+        };
         let (video, audio_range) = builder(
             &self.sps,
             &self.pps,

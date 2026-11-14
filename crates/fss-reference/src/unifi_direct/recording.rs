@@ -166,6 +166,14 @@ pub enum Error {
     Limit,
     /// The source had an unsupported or ambiguous configuration transition.
     ConfigurationChange,
+    /// The stream's parsed SPS disagreed with the required display dimensions.
+    /// These are source claims, not decoded-picture or identity evidence.
+    DimensionsMismatch {
+        /// The dimensions required before source admission.
+        expected: [u32; 2],
+        /// Dimensions reported by the stream's AVC configuration.
+        observed: [u32; 2],
+    },
     /// Video arrived before an AVC configuration.
     MissingConfiguration,
     /// FLV candidate boundaries were marked provisional.
@@ -228,6 +236,8 @@ pub struct Recorder {
     source_bytes: usize,
     last_video_time: Option<(u32, u64)>,
     started: bool,
+    observed: bool,
+    expected_dimensions: Option<[u32; 2]>,
     fenced: bool,
 }
 impl fmt::Debug for Recorder {
@@ -272,8 +282,26 @@ impl Recorder {
             source_bytes: 0,
             last_video_time: None,
             started: false,
+            observed: false,
+            expected_dimensions: None,
             fenced: false,
         })
+    }
+
+    /// Require exact SPS display dimensions before accepting any source record.
+    /// This is an optional admission check, not an assertion of decoded frames,
+    /// camera identity, frame rate, or source continuity. It cannot be changed
+    /// after any record was offered, or after a previous requirement was set.
+    pub fn require_dimensions(&mut self, expected: [u32; 2]) -> Result<(), Error> {
+        if self.observed
+            || self.fenced
+            || self.expected_dimensions.is_some()
+            || expected.contains(&0)
+        {
+            return Err(Error::Configuration);
+        }
+        self.expected_dimensions = Some(expected);
+        Ok(())
     }
 
     /// MP4 initialization for the current exact configuration, if observed.
@@ -307,6 +335,7 @@ impl Recorder {
                 unaccepted: Some(record),
             });
         }
+        self.observed = true;
         if matches!(
             record.kind(),
             RecordKind::Candidate {
@@ -349,6 +378,15 @@ impl Recorder {
                 };
                 match constructor(self.key, &record, self.limits.mp4) {
                     Ok(mux) => {
+                        let observed = mux.display_dimensions();
+                        if let Some(expected) = self.expected_dimensions {
+                            if expected != observed {
+                                return Err(self.refuse(
+                                    Error::DimensionsMismatch { expected, observed },
+                                    Some(record),
+                                ));
+                            }
+                        }
                         self.configuration = Some(ConfigurationBinding {
                             inband: self.inband,
                             source_offset: record.offset(),

@@ -3061,6 +3061,65 @@ fn video_only_fixture() -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::err
     video_only_fixture_with_frames(7)
 }
 
+#[test]
+fn selected_dimensions_gate_both_avc_profiles_without_losing_source() -> TestResult {
+    // The independent FFmpeg fixture oracle reports 160 x 128 for BASELINE.
+    for inband in [false, true] {
+        let create = if inband { Recorder::new_inband } else { Recorder::new };
+        let mut matching = create(KEY, Limits::default())?;
+        assert_eq!(matching.require_dimensions([0, 128]), Err(Error::Configuration));
+        matching.require_dimensions([160, 128])?;
+        assert_eq!(matching.require_dimensions([160, 128]), Err(Error::Configuration));
+        let (_, records) = video_only_fixture()?;
+        let mut configured = false;
+        let mut segments = 0;
+        for record in records {
+            match matching.push(record).map_err(|r| r.reason)? {
+                Push::Source { disposition: SourceDisposition::Configuration, .. } => configured = true,
+                Push::Segment(_) => segments += 1,
+                _ => (),
+            }
+        }
+        assert!(configured && segments > 0);
+
+        let mut wrong = create(KEY, Limits::default())?;
+        wrong.require_dimensions([2688, 1512])?;
+        let (_, records) = video_only_fixture()?;
+        let mut refused = false;
+        for record in records {
+            let offset = record.offset();
+            let bytes = record.bytes().to_vec();
+            match wrong.push(record) {
+                Ok(_) => (),
+                Err(refusal) => {
+                    assert_eq!(refusal.reason, Error::DimensionsMismatch {
+                        expected: [2688, 1512], observed: [160, 128],
+                    });
+                    let source = refusal.unaccepted.ok_or("configuration source lost")?;
+                    assert_eq!(source.offset(), offset);
+                    assert_eq!(source.bytes(), bytes);
+                    assert!(wrong.initialization().is_none());
+                    assert_eq!(wrong.require_dimensions([160, 128]), Err(Error::Configuration));
+                    assert_eq!(wrong.push(source).err().ok_or("fenced owner resumed")?.reason, Error::Fenced);
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(refused);
+        let retired = wrong.retire();
+        assert!(retired.fenced && retired.pending.is_empty());
+
+        let (_, records) = video_only_fixture()?;
+        let mut late = create(KEY, Limits::default())?;
+        let first = records.into_iter().next().ok_or("fixture header missing")?;
+        let first_push = late.push(first).map_err(|r| r.reason)?;
+        assert!(matches!(first_push, Push::Source { disposition: SourceDisposition::Header, .. }));
+        assert_eq!(late.require_dimensions([160, 128]), Err(Error::Configuration));
+    }
+    Ok(())
+}
+
 fn video_only_fixture_with_frames(frame_count: usize) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(BASELINE).collect();
     let sps = nals.iter().copied().find(|n| n[0] & 31 == 7).ok_or("SPS")?;

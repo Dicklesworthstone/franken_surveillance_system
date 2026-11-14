@@ -91,9 +91,25 @@ fn local(ip: Ipv4Addr) -> bool {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 4 || args[3] != "--owner-authorized" {
-        return Err("usage: unifi_live_still_probe BIND_IPV4:PORT PEER_IPV4 ABSOLUTE_NEW_JPEG --owner-authorized".into());
+    if !(args.len() == 4 || args.len() == 6) || args[3] != "--owner-authorized" {
+        return Err("usage: unifi_live_still_probe BIND_IPV4:PORT PEER_IPV4 ABSOLUTE_NEW_JPEG --owner-authorized [--expect-dimensions WIDTHxHEIGHT]".into());
     }
+    let expected_dimensions = if args.len() == 6 {
+        if args[4] != "--expect-dimensions" {
+            return Err("unknown diagnostic option".into());
+        }
+        let (width, height) = args[5]
+            .split_once('x')
+            .ok_or("invalid expected dimensions")?;
+        let width: u32 = width.parse().map_err(|_| "invalid expected dimensions")?;
+        let height: u32 = height.parse().map_err(|_| "invalid expected dimensions")?;
+        if width == 0 || height == 0 {
+            return Err("invalid expected dimensions".into());
+        }
+        Some((width, height))
+    } else {
+        None
+    };
     let bind: SocketAddrV4 = args[0].parse()?;
     let peer: Ipv4Addr = args[1].parse()?;
     let destination = PathBuf::from(&args[2]);
@@ -150,7 +166,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                 io::stdout().flush()?;
                 let limits = FlvLimits::default();
                 let framer = Framer::with_mode(limits, limits.complete_candidate_buffer()?, SearchMode::ZeroStreamId)?;
-                let recorder = recording::Recorder::new_inband(SourceKey { connection: 1, generation: 1 }, recording::Limits::default())?;
+                let mut recorder = recording::Recorder::new_inband(SourceKey { connection: 1, generation: 1 }, recording::Limits::default())?;
+                if let Some((width, height)) = expected_dimensions {
+                    recorder.require_dimensions([width, height])?;
+                }
                 let mut pipeline = listener.accept(framer, recorder, 32 * 1024, MAX_INPUT, Duration::from_secs(30)).await?;
                 let result: Result<Result<(fss_codec_h264::Picture, usize), Box<dyn Error>>, _> = timeout(cx.now(), Duration::from_secs(60), async {
                     for _ in 0..65_536 {
@@ -183,6 +202,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let _retired = pipeline.retire();
                 let (picture, samples) = result.map_err(|_| "media deadline elapsed")??;
                 let dimensions = (picture.width(), picture.height());
+                if expected_dimensions.is_some_and(|expected| expected != dimensions) {
+                    return Err("decoded dimensions differ from requested dimensions".into());
+                }
                 let resource = "camera:owner-unifi-push-probe";
                 let target = destination.to_str().ok_or("output path unavailable")?;
                 let now = clock.now()?;
