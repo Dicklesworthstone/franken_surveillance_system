@@ -19,8 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
+const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--neighbor-cache] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 const MAX_AUTO_INTERFACES: usize = 4;
+const MAX_AUTO_WINDOWS: usize = 4;
+const MAX_NEIGHBOR_BYTES: usize = 128 * 1024;
 
 struct Options {
     iface: Ipv4Addr,
@@ -33,6 +35,7 @@ struct Options {
     combined_v2: bool,
     limited_broadcast: bool,
     include_mac_claims: bool,
+    neighbor_cache: bool,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -43,6 +46,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     let mut combined_v2 = false;
     let mut limited_broadcast = false;
     let mut include_mac_claims = false;
+    let mut neighbor_cache = false;
     let mut authorized = false;
     let mut i = 0;
     while i < args.len() {
@@ -64,6 +68,11 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         }
         if flag == "--include-mac-claims" && !include_mac_claims {
             include_mac_claims = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--neighbor-cache" && !neighbor_cache {
+            neighbor_cache = true;
             i += 1;
             continue;
         }
@@ -133,11 +142,14 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         ),
         _ => return Err("choose one interface or one automatic subnet scope"),
     };
-    if !auto && (only_interface.is_some() || combined_v2 || limited_broadcast) {
+    if !auto && (only_interface.is_some() || combined_v2 || limited_broadcast || neighbor_cache) {
         return Err("automatic-only option used with an explicit interface");
     }
     if limited_broadcast && only_interface.is_none() {
         return Err("limited broadcast requires an explicitly selected interface");
+    }
+    if neighbor_cache && only_interface.is_none() {
+        return Err("neighbor cache requires an explicitly selected interface");
     }
     Ok(Options {
         iface,
@@ -150,6 +162,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         combined_v2,
         limited_broadcast,
         include_mac_claims,
+        neighbor_cache,
     })
 }
 
@@ -310,6 +323,171 @@ fn auto_targets(
         .collect())
 }
 
+// Neighbor entries are unauthenticated hints, not an inventory of all hosts.
+// Only complete entries on the operator-selected interface and an admitted
+// subnet become unicast destinations; missing entries never prove absence.
+fn parse_neighbor_cache(
+    input: &str,
+    interface_name: &str,
+    interfaces: &[AutoInterface],
+) -> Result<Vec<Ipv4Addr>, &'static str> {
+    let mut lines = input.lines();
+    if !lines
+        .next()
+        .is_some_and(|line| line.starts_with("IP address"))
+    {
+        return Err("invalid neighbor cache header");
+    }
+    let mut addresses = BTreeSet::new();
+    for line in lines {
+        let fields: Vec<_> = line.split_ascii_whitespace().collect();
+        if fields.len() != 6 {
+            return Err("invalid neighbor cache row");
+        }
+        if fields[5] != interface_name {
+            continue;
+        }
+        let flags = fields[2]
+            .strip_prefix("0x")
+            .and_then(|value| u32::from_str_radix(value, 16).ok())
+            .ok_or("invalid neighbor cache flags")?;
+        if flags & 2 == 0 {
+            continue;
+        }
+        let address: Ipv4Addr = fields[0].parse().map_err(|_| "invalid neighbor address")?;
+        if interfaces.iter().any(|interface| {
+            scope_host(interface.address, interface.prefix, address) && address != interface.address
+        }) {
+            addresses.insert(address);
+        }
+        if addresses.len() > MAX_AUTO_WINDOWS * 64 {
+            return Err("neighbor cache exceeds bounded discovery capacity");
+        }
+    }
+    Ok(addresses.into_iter().collect())
+}
+
+#[cfg(target_os = "linux")]
+async fn read_neighbor_cache(
+    owner: &fss_runtime::execution::TaskCx<'_>,
+    cx: &asupersync::Cx,
+    start: Instant,
+    resource: &str,
+    interface_name: &str,
+    interfaces: &[AutoInterface],
+) -> Result<Vec<Ipv4Addr>, &'static str> {
+    use fss_runtime::drained_blocking::{self, WorkOutcome};
+    use std::io::Read;
+    cx.checkpoint()
+        .map_err(|_| "neighbor inventory cancelled")?;
+    let cost = BudgetVector::builder()
+        .bytes((MAX_NEIGHBOR_BYTES + 1) as u64)
+        .build()
+        .map_err(|_| "neighbor inventory budget invalid")?;
+    owner
+        .checkpoint_for(RuntimeGrant::AdapterNet, resource, elapsed(start), &cost)
+        .map_err(|_| "neighbor inventory authority refused")?;
+    let interface_name = interface_name.to_owned();
+    let interfaces = interfaces.to_vec();
+    let work = move |child: asupersync::Cx| {
+        child
+            .checkpoint()
+            .map_err(|_| "neighbor inventory cancelled")?;
+        let file =
+            std::fs::File::open("/proc/net/arp").map_err(|_| "neighbor cache unavailable")?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(MAX_NEIGHBOR_BYTES + 1)
+            .map_err(|_| "neighbor inventory allocation failed")?;
+        file.take((MAX_NEIGHBOR_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "neighbor cache read failed")?;
+        child
+            .checkpoint()
+            .map_err(|_| "neighbor inventory cancelled")?;
+        if bytes.len() > MAX_NEIGHBOR_BYTES {
+            return Err("neighbor cache exceeds bounded read size");
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|_| "invalid neighbor cache encoding")?;
+        parse_neighbor_cache(text, &interface_name, &interfaces)
+    };
+    let mut running =
+        drained_blocking::start(cx, work).map_err(|_| "neighbor inventory admission failed")?;
+    let receipt = running
+        .join()
+        .await
+        .ok_or("neighbor inventory completion unavailable")?;
+    if receipt.runtime.is_err() {
+        return Err("neighbor inventory runtime stopped");
+    }
+    owner
+        .checkpoint_for(
+            RuntimeGrant::AdapterNet,
+            resource,
+            elapsed(start),
+            &BudgetVector::ZERO,
+        )
+        .map_err(|_| "neighbor inventory authority refused")?;
+    match receipt.work {
+        WorkOutcome::Finished(result) => result,
+        _ => Err("neighbor inventory did not complete"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn read_neighbor_cache(
+    _: &fss_runtime::execution::TaskCx<'_>,
+    _: &asupersync::Cx,
+    _: Instant,
+    _: &str,
+    _: &str,
+    _: &[AutoInterface],
+) -> Result<Vec<Ipv4Addr>, &'static str> {
+    Err("neighbor cache discovery is only available on Linux")
+}
+
+fn auto_neighbor_plans(
+    interfaces: &[AutoInterface],
+    targets: &[Ipv4Addr],
+    neighbors: &[Ipv4Addr],
+    limited_broadcast: bool,
+) -> Result<Vec<(AutoInterface, Vec<SocketAddrV4>)>, &'static str> {
+    // Validate explicitly requested targets before merging untrusted hints.
+    auto_targets(interfaces, targets, limited_broadcast)?;
+    let mut plans = Vec::new();
+    for interface in interfaces {
+        let mut hosts = BTreeSet::new();
+        hosts.extend(targets.iter().chain(neighbors).copied().filter(|target| {
+            scope_host(interface.address, interface.prefix, *target) && *target != interface.address
+        }));
+        let hosts: Vec<_> = hosts.into_iter().collect();
+        let capacity = 64 - 1 - usize::from(limited_broadcast);
+        let count = hosts.len().div_ceil(capacity).max(1);
+        if plans
+            .len()
+            .checked_add(count)
+            .is_none_or(|total| total > MAX_AUTO_WINDOWS)
+        {
+            return Err("neighbor targets exceed bounded discovery windows");
+        }
+        for window in 0..count {
+            let mut chosen = vec![SocketAddrV4::new(directed_broadcast(*interface), 10001)];
+            if limited_broadcast {
+                chosen.push(SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001));
+            }
+            let from = window * capacity;
+            let to = (from + capacity).min(hosts.len());
+            chosen.extend(
+                hosts[from..to]
+                    .iter()
+                    .map(|host| SocketAddrV4::new(*host, 10001)),
+            );
+            plans.push((*interface, chosen));
+        }
+    }
+    Ok(plans)
+}
+
 fn elapsed(start: Instant) -> TimestampNs {
     TimestampNs(i128::try_from(start.elapsed().as_nanos()).unwrap_or(i128::MAX))
 }
@@ -369,6 +547,7 @@ fn execute(options: &Options) -> Result<Vec<Window>, &'static str> {
         .narrow_grants(grants)
         .map_err(|_| "authority scope refused")?;
     let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
         .build()
         .map_err(|_| "runtime unavailable")?;
     let run = runtime.block_on(async {
@@ -407,19 +586,41 @@ fn execute(options: &Options) -> Result<Vec<Window>, &'static str> {
                             prefix: options.prefix,
                         }]
                     };
-                    let plans = if options.auto {
-                        auto_targets(&interfaces, &options.targets, options.limited_broadcast)?
+                    let plans: Vec<_> = if options.auto && options.neighbor_cache {
+                        let neighbors = read_neighbor_cache(
+                            owner,
+                            runtime_cx,
+                            start,
+                            &resource,
+                            options
+                                .only_interface
+                                .as_deref()
+                                .ok_or("neighbor interface missing")?,
+                            &interfaces,
+                        )
+                        .await?;
+                        auto_neighbor_plans(
+                            &interfaces,
+                            &options.targets,
+                            &neighbors,
+                            options.limited_broadcast,
+                        )?
+                    } else if options.auto {
+                        let targets =
+                            auto_targets(&interfaces, &options.targets, options.limited_broadcast)?;
+                        interfaces.into_iter().zip(targets).collect()
                     } else {
-                        vec![
+                        vec![(
+                            interfaces[0],
                             options
                                 .targets
                                 .iter()
                                 .map(|ip| SocketAddrV4::new(*ip, 10001))
                                 .collect(),
-                        ]
+                        )]
                     };
-                    let mut windows = Vec::with_capacity(interfaces.len());
-                    for (interface, targets) in interfaces.into_iter().zip(plans) {
+                    let mut windows = Vec::with_capacity(plans.len());
+                    for (interface, targets) in plans {
                         let report = match Config::new_many(
                             interface.address,
                             interface.prefix,
@@ -519,15 +720,23 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "{USAGE}\nAutomatic selection scans only active broadcast interfaces inside the supplied authorized subnet, with at most four bounded windows. Setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
+            "{USAGE}\nAutomatic selection scans only active broadcast interfaces inside the supplied authorized subnet, with at most four bounded windows. On Linux, --neighbor-cache adds complete cached neighbors on the explicitly selected interface; the cache is not a complete host inventory. Setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
         );
         return ExitCode::SUCCESS;
     }
     let result = options(&args).and_then(|options| {
-        execute(&options).map(|windows| (options.auto, options.combined_v2, options.include_mac_claims, windows))
+        execute(&options).map(|windows| {
+            (
+                options.auto,
+                options.combined_v2,
+                options.include_mac_claims,
+                options.neighbor_cache,
+                windows,
+            )
+        })
     });
     match result {
-        Ok((false, _, include_mac_claims, mut windows)) => match windows
+        Ok((false, _, include_mac_claims, _, mut windows)) => match windows
             .pop()
             .expect("explicit interface has one window")
             .report
@@ -541,7 +750,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok((true, true, include_mac_claims, windows)) => match combine_windows(&windows) {
+        Ok((true, true, include_mac_claims, _, windows)) => match combine_windows(&windows) {
             Ok(report) => {
                 println!("{}", report_json(&report, include_mac_claims));
                 ExitCode::SUCCESS
@@ -551,7 +760,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok((true, false, include_mac_claims, windows)) => {
+        Ok((true, false, include_mac_claims, neighbor_cache, windows)) => {
             let (combined, combination, success) = match combine_windows(&windows) {
                 Ok(report) => (report_json(&report, include_mac_claims), "complete", true),
                 Err(error) => ("null".to_owned(), error, false),
@@ -573,8 +782,13 @@ fn main() -> ExitCode {
                 })
                 .collect::<Vec<_>>()
                 .join(",");
+            let cache = if neighbor_cache {
+                ",\"neighbor_cache\":true,\"neighbor_cache_completeness\":\"unknown\""
+            } else {
+                ""
+            };
             println!(
-                "{{\"schema\":\"fss.unifi_discovery_auto_lab.v1\",\"absence_proven\":false,\"windows_ok\":{success},\"combination\":{},\"combined\":{combined},\"windows\":[{results}]}}",
+                "{{\"schema\":\"fss.unifi_discovery_auto_lab.v1\",\"absence_proven\":false,\"windows_ok\":{success},\"combination\":{},\"combined\":{combined},\"windows\":[{results}]{cache}}}",
                 json(combination)
             );
             if success {
@@ -810,6 +1024,86 @@ mod tests {
         };
         let plans = auto_targets(&[left, overlap], &[first], false).unwrap();
         assert_eq!(plans[0][1], plans[1][1]);
+    }
+
+    #[test]
+    fn neighbor_hints_require_the_selected_interface_and_scope() {
+        let interface = AutoInterface {
+            address: Ipv4Addr::new(192, 168, 4, 10),
+            prefix: 24,
+        };
+        let input = "IP address HW type Flags HW address Mask Device\n\
+192.168.4.21 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n\
+192.168.4.21 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n\
+192.168.4.22 0x1 0x0 00:00:00:00:00:00 * eth0\n\
+192.168.4.23 0x1 0x2 aa:bb:cc:dd:ee:ff * eth1\n\
+192.168.5.24 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n\
+192.168.4.10 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n";
+        assert_eq!(
+            parse_neighbor_cache(input, "eth0", &[interface]).unwrap(),
+            [Ipv4Addr::new(192, 168, 4, 21)]
+        );
+        assert!(parse_neighbor_cache("not a cache\n", "eth0", &[interface]).is_err());
+        assert!(parse_neighbor_cache("IP address\nmalformed\n", "eth0", &[interface]).is_err());
+        assert!(
+            parse_neighbor_cache(
+                "IP address\n192.168.4.21 0x1 bad aa * eth0\n",
+                "eth0",
+                &[interface]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn neighbor_targets_are_batched_without_silent_truncation() {
+        let interface = AutoInterface {
+            address: Ipv4Addr::new(192, 168, 4, 1),
+            prefix: 22,
+        };
+        let hosts: Vec<_> = (2..=131).map(|n| Ipv4Addr::new(192, 168, 4, n)).collect();
+        let plans = auto_neighbor_plans(&[interface], &[hosts[0]], &hosts, true).unwrap();
+        assert_eq!(plans.len(), 3);
+        assert!(
+            plans
+                .iter()
+                .all(|(_, targets)| targets.len() <= 64 && targets[1].ip() == &Ipv4Addr::BROADCAST)
+        );
+        let unique: BTreeSet<_> = plans
+            .iter()
+            .flat_map(|(_, targets)| targets.iter().skip(2).map(|target| *target.ip()))
+            .collect();
+        assert_eq!(unique.len(), hosts.len());
+        assert!(hosts.iter().all(|host| unique.contains(host)));
+        let too_many: Vec<_> = (2_u32..=250)
+            .map(|n| Ipv4Addr::from(u32::from(Ipv4Addr::new(192, 168, 4, 0)) + n))
+            .collect();
+        assert!(auto_neighbor_plans(&[interface], &[], &too_many, true).is_err());
+        assert!(
+            auto_neighbor_plans(&[interface], &[Ipv4Addr::new(192, 168, 8, 2)], &[], false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn neighbor_mode_requires_an_authorized_selected_interface() {
+        let mut args = [
+            "--auto-scope",
+            "192.168.4.0/22",
+            "--neighbor-cache",
+            "--principal",
+            "principal:owner",
+            "--approval",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "--owner-authorized",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert!(options(&args).is_err());
+        args.extend(["--only-interface".into(), "eth0".into()]);
+        assert!(options(&args).unwrap().neighbor_cache);
+        args.retain(|arg| arg != "--owner-authorized");
+        assert!(options(&args).is_err());
     }
 
     #[test]
