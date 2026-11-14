@@ -156,6 +156,8 @@ fn publish_plan_for(
             path: "/private-relay-path".to_owned(),
             plaintext_approval: ContentDigest::sha256(b"historical route approval"),
             deadline_ms: 100,
+            disclosure_profile: crate::webhook::WebhookDisclosureProfile::ReferencesV1,
+            metadata_approval: None,
         },
         operation_id: episode.operation_id.clone(),
         obligation_id: "obligation:fixture".to_owned(),

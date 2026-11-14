@@ -148,6 +148,20 @@ fn publication(value: &AgentPublicationState) -> Result<String, ContractError> {
                         string(&record.route.plaintext_approval.to_text()),
                     ),
                     ("deadline_ms", record.route.deadline_ms.to_string()),
+                    (
+                        "disclosure_profile",
+                        string(record.route.disclosure_profile.as_str()),
+                    ),
+                    (
+                        "metadata_approval",
+                        optional_string(
+                            record
+                                .route
+                                .metadata_approval
+                                .map(|digest| digest.to_text())
+                                .as_deref(),
+                        ),
+                    ),
                 ]),
             ),
             (

@@ -22,6 +22,10 @@ use std::time::Duration;
 
 mod wire;
 
+/// Pure, versioned disclosure policies and bounded source-derived representation.
+pub mod profile;
+pub use profile::{WebhookDisclosureProfile, WebhookProfileError};
+
 /// Durable local custody and read-only inspection of completed wire observations.
 pub mod retained;
 
@@ -32,6 +36,8 @@ pub struct WebhookEndpoint {
     peer: SocketAddr,
     target: String,
     approval: ContentDigest,
+    profile: WebhookDisclosureProfile,
+    metadata_approval: Option<ContentDigest>,
     digest: ContentDigest,
     channel: String,
 }
@@ -44,32 +50,34 @@ impl WebhookEndpoint {
         target: &str,
         plaintext_approval: ContentDigest,
     ) -> Result<Self, WebhookError> {
-        if peer.port() == 0
-            || peer.ip().is_unspecified()
-            || peer.ip().is_multicast()
-            || matches!(peer.ip(), std::net::IpAddr::V4(ip) if ip.is_broadcast())
-            || !target.starts_with('/')
-            || target.starts_with("//")
-            || target.len() > 1024
-            || !target
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"/._~-".contains(&b))
-            || target.split('/').any(|part| part == "." || part == "..")
-            || plaintext_approval.bytes() == [0; 32]
-        {
-            return Err(WebhookError::Configuration);
-        }
-        let mut e = CanonicalEncoder::new();
-        e.text("fss.http-webhook-route.v1:explicit-plaintext:json-references");
-        e.text(&peer.to_string());
-        e.text(target);
-        e.digest(plaintext_approval);
-        let digest = ContentDigest::sha256(&e.finish_checked().map_err(ReferenceError::from)?);
+        Self::new_with_profile(
+            peer,
+            target,
+            plaintext_approval,
+            WebhookDisclosureProfile::ReferencesV1,
+            None,
+        )
+    }
+    /// Select an exact disclosure policy before preparing the alert channel. Rich metadata
+    /// requires its own approval handle and produces a disjoint route/operation identity.
+    /// Both handles remain evidence for the explicit live owner, not grants by themselves.
+    pub fn new_with_profile(
+        peer: SocketAddr,
+        target: &str,
+        plaintext_approval: ContentDigest,
+        profile: WebhookDisclosureProfile,
+        metadata_approval: Option<ContentDigest>,
+    ) -> Result<Self, WebhookError> {
+        let digest =
+            profile::route_digest(peer, target, plaintext_approval, profile, metadata_approval)
+                .map_err(|_| WebhookError::Configuration)?;
         let channel = format!("http-webhook:{}", wire::hex(digest));
         Ok(Self {
             peer,
             target: target.to_owned(),
             approval: plaintext_approval,
+            profile,
+            metadata_approval,
             digest,
             channel,
         })
@@ -86,6 +94,14 @@ impl WebhookEndpoint {
     pub fn plaintext_approval(&self) -> ContentDigest {
         self.approval
     }
+    /// Exact versioned content projection, included in a rich route's identity.
+    pub fn profile(&self) -> WebhookDisclosureProfile {
+        self.profile
+    }
+    /// Independently supplied event-metadata disclosure approval, if this profile requires it.
+    pub fn metadata_approval(&self) -> Option<ContentDigest> {
+        self.metadata_approval
+    }
     /// Frozen route/security profile; successful resource budgets do not change it.
     pub fn digest(&self) -> ContentDigest {
         self.digest
@@ -96,6 +112,31 @@ impl WebhookEndpoint {
         &self.channel
     }
 }
+/// Pure preview of the exact complete bytes the native attempt will retain and send.
+/// Compute before durable preparation: an oversized metadata projection has no partial fallback.
+/// A preview grants no I/O authority; dispatch repeats canonical-event and live authority checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WebhookRequestPreview {
+    /// Versioned content disclosure.
+    pub profile: WebhookDisclosureProfile,
+    /// Exact HTTP request identity, including route, idempotency and body.
+    pub request_digest: ContentDigest,
+    /// Whole request bytes, within the unchanged 4096-byte allowance.
+    pub request_bytes: usize,
+}
+/// Inspect representation feasibility without printing private metadata or performing I/O.
+pub fn preview_webhook_request(
+    plan: &ReferenceAlertPlan,
+    endpoint: &WebhookEndpoint,
+) -> Result<WebhookRequestPreview, WebhookError> {
+    let request = wire::request(plan, endpoint)?;
+    Ok(WebhookRequestPreview {
+        profile: endpoint.profile(),
+        request_digest: ContentDigest::sha256(&request),
+        request_bytes: request.len(),
+    })
+}
+
 impl std::fmt::Debug for WebhookEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebhookEndpoint")
@@ -214,6 +255,8 @@ impl WebhookLimits {
 pub enum WebhookError {
     /// Invalid route/limits/lease, or unsupported request representation.
     Configuration,
+    /// Exact revision/profile or complete request representation was refused before I/O.
+    Disclosure(WebhookProfileError),
     /// Plan channel does not pin this exact endpoint.
     RouteMismatch,
     /// Live capability check refused before this operation.
@@ -245,6 +288,7 @@ impl std::fmt::Display for WebhookError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Configuration => "invalid webhook configuration",
+            Self::Disclosure(_) => "webhook disclosure profile or complete request refused",
             Self::RouteMismatch => "webhook route mismatch",
             Self::Denied(_) => "webhook authority refused",
             Self::ClockReversed => "webhook admission clock reversed",

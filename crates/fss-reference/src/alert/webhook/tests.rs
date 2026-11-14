@@ -121,10 +121,20 @@ fn limits(bytes: usize) -> WebhookLimits {
     }
 }
 fn endpoint(peer: SocketAddr) -> Test<WebhookEndpoint> {
-    Ok(WebhookEndpoint::new(
+    endpoint_for_profile(peer, WebhookDisclosureProfile::ReferencesV1)
+}
+fn endpoint_for_profile(
+    peer: SocketAddr,
+    profile: WebhookDisclosureProfile,
+) -> Test<WebhookEndpoint> {
+    let metadata_approval = (profile == WebhookDisclosureProfile::EventMetadataV1)
+        .then(|| ContentDigest::sha256(b"explicit-test-only-event-metadata-approval"));
+    Ok(WebhookEndpoint::new_with_profile(
         peer,
         "/notify",
         ContentDigest::sha256(b"explicit-test-only-plaintext-approval"),
+        profile,
+        metadata_approval,
     )?)
 }
 struct Owner {
@@ -509,6 +519,83 @@ fn endpoint_pins_route_and_refuses_secret_or_injected_targets() -> Test {
     assert!(!format!("{first:?}").contains("notify"));
     Ok(())
 }
+
+#[test]
+fn reference_plan_cannot_be_upgraded_to_metadata_without_new_bound_intent() -> Test {
+    let relay = Relay::new(b"")?;
+    let old = endpoint(relay.peer()?)?;
+    let rich = endpoint_for_profile(relay.peer()?, WebhookDisclosureProfile::EventMetadataV1)?;
+    let mut f = fixture("no-profile-upgrade", &old)?;
+    let owner = Owner::new(&rich, f.journal.path());
+    assert!(matches!(
+        preview_webhook_request(&f.plan, &rich),
+        Err(WebhookError::RouteMismatch)
+    ));
+    assert!(matches!(
+        WebhookAttempt::begin(
+            &f.plan,
+            &rich,
+            &f.ledger,
+            &mut f.journal,
+            limits(4096),
+            101,
+            DEADLINE,
+            &owner,
+            |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec())
+        ),
+        Err(WebhookError::RouteMismatch)
+    ));
+    assert_eq!(
+        f.journal
+            .operation(&f.plan.intent.operation_id)
+            .ok_or("missing operation")?
+            .state,
+        EffectState::Prepared
+    );
+    assert!(
+        matches!(relay.listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    Ok(())
+}
+
+#[test]
+fn metadata_requires_verified_revision_before_commitment_or_connection() -> Test {
+    let relay = Relay::new(b"")?;
+    let endpoint = endpoint_for_profile(relay.peer()?, WebhookDisclosureProfile::EventMetadataV1)?;
+    let mut f = fixture("forged-metadata", &endpoint)?;
+    let owner = Owner::new(&endpoint, f.journal.path());
+    let mut forged = f.plan.clone();
+    forged.event_revision_encoding.push(0);
+    assert!(matches!(
+        preview_webhook_request(&forged, &endpoint),
+        Err(WebhookError::Disclosure(WebhookProfileError::EventRevision))
+    ));
+    assert!(matches!(
+        WebhookAttempt::begin(
+            &forged,
+            &endpoint,
+            &f.ledger,
+            &mut f.journal,
+            limits(4096),
+            101,
+            DEADLINE,
+            &owner,
+            |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec())
+        ),
+        Err(WebhookError::Disclosure(WebhookProfileError::EventRevision))
+    ));
+    assert_eq!(
+        f.journal
+            .operation(&f.plan.intent.operation_id)
+            .ok_or("missing operation")?
+            .state,
+        EffectState::Prepared
+    );
+    assert!(
+        matches!(relay.listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    Ok(())
+}
 #[test]
 fn response_requires_complete_final_head_and_preserves_all_fragment_boundaries() -> Test {
     for bytes in [b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n".as_slice(),
@@ -551,10 +638,124 @@ fn response_refuses_ambiguous_framing_and_header_injection() {
 }
 #[test]
 fn native_post_is_durably_committed_before_connect_and_never_verified_by_http() -> Test {
-    for fragment in [1, 7, 4096] {
-        let mut relay = Relay::new(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")?;
-        let endpoint = endpoint(relay.peer()?)?;
-        let mut f = fixture(&format!("accepted-{fragment}"), &endpoint)?;
+    for profile in [
+        WebhookDisclosureProfile::ReferencesV1,
+        WebhookDisclosureProfile::EventMetadataV1,
+    ] {
+        for fragment in [1, 7, 4096] {
+            let mut relay = Relay::new(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")?;
+            let endpoint = endpoint_for_profile(relay.peer()?, profile)?;
+            let mut f = fixture(&format!("accepted-{fragment}"), &endpoint)?;
+            let preview = preview_webhook_request(&f.plan, &endpoint)?;
+            let owner = Owner::new(&endpoint, f.journal.path());
+            let path = f.journal.path().to_path_buf();
+            let mut attempt = WebhookAttempt::begin(
+                &f.plan,
+                &endpoint,
+                &f.ledger,
+                &mut f.journal,
+                limits(fragment),
+                101,
+                DEADLINE,
+                &owner,
+                |d| f.objects.read_verified(d).map(|b| b.to_vec()),
+            )?;
+            assert_eq!(attempt.evidence().sent_bytes(), 0);
+            assert_eq!(relay.accepted, 0);
+            let on_disk = DurableEffectJournal::inspect(&path, DurableLedgerLimits::default())?;
+            assert_eq!(
+                on_disk
+                    .journal
+                    .ok_or("missing journal")?
+                    .operation(&f.plan.intent.operation_id)
+                    .ok_or("missing committed operation")?
+                    .state,
+                EffectState::Committed
+            );
+            assert_eq!(
+                drive(&mut attempt, &mut relay, &f.objects, &owner)?,
+                WebhookOutcome::ReceiverAccepted(202)
+            );
+            assert_eq!(relay.request, attempt.evidence().request());
+            assert_eq!(
+                ContentDigest::sha256(attempt.evidence().request()),
+                preview.request_digest
+            );
+            assert_eq!(attempt.evidence().request().len(), preview.request_bytes);
+            assert_eq!(preview.profile, profile);
+            assert_eq!(attempt.evidence().sent_bytes(), relay.request.len());
+            let request = std::str::from_utf8(&relay.request)?;
+            assert!(request.starts_with("POST /notify HTTP/1.1\r\n"));
+            assert!(request.contains("Idempotency-Key: "));
+            assert!(request.contains("event_revision_sha256"));
+            assert_eq!(
+                request.contains("fss.webhook_event_metadata.v1"),
+                profile == WebhookDisclosureProfile::EventMetadataV1
+            );
+            if profile == WebhookDisclosureProfile::EventMetadataV1 {
+                assert!(request.contains("\"current\":\"unknown\""));
+                assert!(request.contains("\"kind\":\"unknown_presence\""));
+            }
+            let digest = attempt.evidence().digest()?;
+            assert_eq!(
+                attempt.record(10000, &owner)?.state,
+                EffectState::AdapterAccepted
+            );
+            assert_eq!(attempt.record(10001, &owner)?.result_digest, Some(digest));
+            let calls = attempt.evidence().io_calls();
+            assert_eq!(
+                attempt.poll(10002, &owner, |d| f
+                    .objects
+                    .read_verified(d)
+                    .map(|b| b.to_vec())),
+                WebhookProgress::ReadyToRecord(WebhookOutcome::ReceiverAccepted(202))
+            );
+            assert_eq!(attempt.evidence().io_calls(), calls);
+            let evidence = attempt.retire();
+            assert_eq!(
+                f.journal
+                    .obligation(&f.plan.obligation_id)
+                    .ok_or("missing obligation")?
+                    .state,
+                ObligationState::Pending
+            );
+            assert!(
+                WebhookAttempt::begin(
+                    &f.plan,
+                    &endpoint,
+                    &f.ledger,
+                    &mut f.journal,
+                    limits(fragment),
+                    10003,
+                    DEADLINE,
+                    &owner,
+                    |d| f.objects.read_verified(d).map(|b| b.to_vec())
+                )
+                .is_err()
+            );
+            drop(f.journal);
+            let reopened = DurableEffectJournal::open(path, IncompleteTailPolicy::Reject)?;
+            assert_eq!(
+                reopened
+                    .operation(&f.plan.intent.operation_id)
+                    .ok_or("lost outcome")?
+                    .result_digest,
+                Some(evidence.digest()?)
+            );
+        }
+    }
+    Ok(())
+}
+#[test]
+fn lost_ack_remains_indeterminate_across_cold_restart_without_resend() -> Test {
+    for profile in [
+        WebhookDisclosureProfile::ReferencesV1,
+        WebhookDisclosureProfile::EventMetadataV1,
+    ] {
+        let mut relay = Relay::new(b"")?;
+        relay.close_without_ack = true;
+        let endpoint = endpoint_for_profile(relay.peer()?, profile)?;
+        let mut f = fixture("lost-ack", &endpoint)?;
         let owner = Owner::new(&endpoint, f.journal.path());
         let path = f.journal.path().to_path_buf();
         let mut attempt = WebhookAttempt::begin(
@@ -562,140 +763,51 @@ fn native_post_is_durably_committed_before_connect_and_never_verified_by_http() 
             &endpoint,
             &f.ledger,
             &mut f.journal,
-            limits(fragment),
+            limits(4096),
             101,
             DEADLINE,
             &owner,
             |d| f.objects.read_verified(d).map(|b| b.to_vec()),
         )?;
-        assert_eq!(attempt.evidence().sent_bytes(), 0);
-        assert_eq!(relay.accepted, 0);
-        let on_disk = DurableEffectJournal::inspect(&path, DurableLedgerLimits::default())?;
-        assert_eq!(
-            on_disk
-                .journal
-                .ok_or("missing journal")?
-                .operation(&f.plan.intent.operation_id)
-                .ok_or("missing committed operation")?
-                .state,
-            EffectState::Committed
-        );
         assert_eq!(
             drive(&mut attempt, &mut relay, &f.objects, &owner)?,
-            WebhookOutcome::ReceiverAccepted(202)
+            WebhookOutcome::Interrupted(WebhookInterruption::Disconnected)
         );
-        assert_eq!(relay.request, attempt.evidence().request());
-        assert_eq!(attempt.evidence().sent_bytes(), relay.request.len());
-        let request = std::str::from_utf8(&relay.request)?;
-        assert!(request.starts_with("POST /notify HTTP/1.1\r\n"));
-        assert!(request.contains("Idempotency-Key: "));
-        assert!(request.contains("event_revision_sha256"));
-        let digest = attempt.evidence().digest()?;
+        assert!(!relay.request.is_empty());
         assert_eq!(
             attempt.record(10000, &owner)?.state,
-            EffectState::AdapterAccepted
+            EffectState::Indeterminate
         );
-        assert_eq!(attempt.record(10001, &owner)?.result_digest, Some(digest));
-        let calls = attempt.evidence().io_calls();
-        assert_eq!(
-            attempt.poll(10002, &owner, |d| f
-                .objects
-                .read_verified(d)
-                .map(|b| b.to_vec())),
-            WebhookProgress::ReadyToRecord(WebhookOutcome::ReceiverAccepted(202))
-        );
-        assert_eq!(attempt.evidence().io_calls(), calls);
         let evidence = attempt.retire();
+        drop(f.journal);
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
         assert_eq!(
-            f.journal
+            journal
                 .obligation(&f.plan.obligation_id)
                 .ok_or("missing obligation")?
                 .state,
-            ObligationState::Pending
+            ObligationState::Indeterminate
         );
         assert!(
             WebhookAttempt::begin(
                 &f.plan,
                 &endpoint,
                 &f.ledger,
-                &mut f.journal,
-                limits(fragment),
-                10003,
+                &mut journal,
+                limits(4096),
+                10001,
                 DEADLINE,
                 &owner,
                 |d| f.objects.read_verified(d).map(|b| b.to_vec())
             )
             .is_err()
         );
-        drop(f.journal);
-        let reopened = DurableEffectJournal::open(path, IncompleteTailPolicy::Reject)?;
         assert_eq!(
-            reopened
-                .operation(&f.plan.intent.operation_id)
-                .ok_or("lost outcome")?
-                .result_digest,
-            Some(evidence.digest()?)
+            record_webhook_evidence(&evidence, &endpoint, &mut journal, 10002, &owner)?.state,
+            EffectState::Indeterminate
         );
+        assert_eq!(relay.accepted, 1);
     }
-    Ok(())
-}
-#[test]
-fn lost_ack_remains_indeterminate_across_cold_restart_without_resend() -> Test {
-    let mut relay = Relay::new(b"")?;
-    relay.close_without_ack = true;
-    let endpoint = endpoint(relay.peer()?)?;
-    let mut f = fixture("lost-ack", &endpoint)?;
-    let owner = Owner::new(&endpoint, f.journal.path());
-    let path = f.journal.path().to_path_buf();
-    let mut attempt = WebhookAttempt::begin(
-        &f.plan,
-        &endpoint,
-        &f.ledger,
-        &mut f.journal,
-        limits(4096),
-        101,
-        DEADLINE,
-        &owner,
-        |d| f.objects.read_verified(d).map(|b| b.to_vec()),
-    )?;
-    assert_eq!(
-        drive(&mut attempt, &mut relay, &f.objects, &owner)?,
-        WebhookOutcome::Interrupted(WebhookInterruption::Disconnected)
-    );
-    assert!(!relay.request.is_empty());
-    assert_eq!(
-        attempt.record(10000, &owner)?.state,
-        EffectState::Indeterminate
-    );
-    let evidence = attempt.retire();
-    drop(f.journal);
-    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-    assert_eq!(
-        journal
-            .obligation(&f.plan.obligation_id)
-            .ok_or("missing obligation")?
-            .state,
-        ObligationState::Indeterminate
-    );
-    assert!(
-        WebhookAttempt::begin(
-            &f.plan,
-            &endpoint,
-            &f.ledger,
-            &mut journal,
-            limits(4096),
-            10001,
-            DEADLINE,
-            &owner,
-            |d| f.objects.read_verified(d).map(|b| b.to_vec())
-        )
-        .is_err()
-    );
-    assert_eq!(
-        record_webhook_evidence(&evidence, &endpoint, &mut journal, 10002, &owner)?.state,
-        EffectState::Indeterminate
-    );
-    assert_eq!(relay.accepted, 1);
     Ok(())
 }
 #[test]
@@ -908,55 +1020,60 @@ fn post_write_revocation_retains_sent_prefix_and_requires_local_cleanup_authorit
 }
 #[test]
 fn changed_authority_head_blocks_first_write_after_committed_connect() -> Test {
-    let mut relay = Relay::new(b"")?;
-    let endpoint = endpoint(relay.peer()?)?;
-    let mut f = fixture("stale", &endpoint)?;
-    let owner = Owner::new(&endpoint, f.journal.path());
-    let mut attempt = WebhookAttempt::begin(
-        &f.plan,
-        &endpoint,
-        &f.ledger,
-        &mut f.journal,
-        limits(4096),
-        101,
-        DEADLINE,
-        &owner,
-        |d| f.objects.read_verified(d).map(|b| b.to_vec()),
-    )?;
-    assert_eq!(
-        attempt.poll(102, &owner, |d| f
-            .objects
-            .read_verified(d)
-            .map(|b| b.to_vec())),
-        WebhookProgress::Pending
-    );
-    assert_eq!(
-        attempt.poll(103, &owner, |d| f
-            .objects
-            .read_verified(d)
-            .map(|b| b.to_vec())),
-        WebhookProgress::Pending
-    );
-    fs::OpenOptions::new()
-        .append(true)
-        .open(f.dir.0.join("events"))?
-        .write_all(b"uncommitted mutation")?;
-    assert_eq!(
-        attempt.poll(104, &owner, |d| f
-            .objects
-            .read_verified(d)
-            .map(|b| b.to_vec())),
-        WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(
-            WebhookInterruption::EventAuthorityRefused
-        ))
-    );
-    relay.step()?;
-    assert!(relay.request.is_empty());
-    assert_eq!(attempt.evidence().sent_bytes(), 0);
-    assert_eq!(
-        attempt.record(105, &owner)?.state,
-        EffectState::Indeterminate
-    );
+    for profile in [
+        WebhookDisclosureProfile::ReferencesV1,
+        WebhookDisclosureProfile::EventMetadataV1,
+    ] {
+        let mut relay = Relay::new(b"")?;
+        let endpoint = endpoint_for_profile(relay.peer()?, profile)?;
+        let mut f = fixture("stale", &endpoint)?;
+        let owner = Owner::new(&endpoint, f.journal.path());
+        let mut attempt = WebhookAttempt::begin(
+            &f.plan,
+            &endpoint,
+            &f.ledger,
+            &mut f.journal,
+            limits(4096),
+            101,
+            DEADLINE,
+            &owner,
+            |d| f.objects.read_verified(d).map(|b| b.to_vec()),
+        )?;
+        assert_eq!(
+            attempt.poll(102, &owner, |d| f
+                .objects
+                .read_verified(d)
+                .map(|b| b.to_vec())),
+            WebhookProgress::Pending
+        );
+        assert_eq!(
+            attempt.poll(103, &owner, |d| f
+                .objects
+                .read_verified(d)
+                .map(|b| b.to_vec())),
+            WebhookProgress::Pending
+        );
+        fs::OpenOptions::new()
+            .append(true)
+            .open(f.dir.0.join("events"))?
+            .write_all(b"uncommitted mutation")?;
+        assert_eq!(
+            attempt.poll(104, &owner, |d| f
+                .objects
+                .read_verified(d)
+                .map(|b| b.to_vec())),
+            WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(
+                WebhookInterruption::EventAuthorityRefused
+            ))
+        );
+        relay.step()?;
+        assert!(relay.request.is_empty());
+        assert_eq!(attempt.evidence().sent_bytes(), 0);
+        assert_eq!(
+            attempt.record(105, &owner)?.state,
+            EffectState::Indeterminate
+        );
+    }
     Ok(())
 }
 #[test]

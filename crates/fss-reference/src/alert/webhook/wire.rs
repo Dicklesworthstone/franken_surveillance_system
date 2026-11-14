@@ -12,45 +12,23 @@ pub(super) fn request(
     plan: &ReferenceAlertPlan,
     endpoint: &WebhookEndpoint,
 ) -> Result<Vec<u8>, WebhookError> {
-    // Only fixed ASCII and digests enter HTTP/JSON. Neither an arbitrary event
-    // description nor an unescaped operation/idempotency identifier becomes syntax.
-    let key = hex(ContentDigest::sha256(
-        plan.intent.idempotency_key.as_str().as_bytes(),
-    ));
-    let operation = hex(ContentDigest::sha256(
-        plan.intent.operation_id.as_str().as_bytes(),
-    ));
-    let body = format!(
-        concat!(
-            "{{\"schema\":\"fss.webhook-alert.v1\",",
-            "\"text\":\"FSS policy-authorized alert; inspect linked event evidence.\",",
-            "\"operation_sha256\":\"{}\",\"request_sha256\":\"{}\",",
-            "\"precondition_sha256\":\"{}\",\"event_root_sha256\":\"{}\",",
-            "\"event_revision_sha256\":\"{}\"}}"
-        ),
-        operation,
-        hex(plan.intent.request_digest),
-        hex(plan.intent.precondition_digest),
-        hex(plan.event_root),
-        hex(plan.event_revision_digest)
-    );
-    let request = format!(
-        concat!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\n",
-            "Content-Type: application/json\r\nIdempotency-Key: {}\r\n",
-            "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
-        ),
-        endpoint.target(),
-        endpoint.peer(),
-        key,
-        body.len(),
-        body
-    );
-    if request.len() > 4096 {
-        return Err(WebhookError::Configuration);
+    if plan.channel != endpoint.channel() {
+        return Err(WebhookError::RouteMismatch);
     }
-    Ok(request.into_bytes())
+    super::profile::request(
+        &super::profile::RequestFields {
+            intent: &plan.intent,
+            event_root: plan.event_root,
+            event_revision_digest: plan.event_revision_digest,
+            event_revision_encoding: &plan.event_revision_encoding,
+        },
+        endpoint.peer(),
+        endpoint.target(),
+        endpoint.profile(),
+    )
+    .map_err(WebhookError::Disclosure)
 }
+
 fn token(bytes: &[u8]) -> bool {
     !bytes.is_empty()
         && bytes

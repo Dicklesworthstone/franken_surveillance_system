@@ -13,7 +13,7 @@ use super::json::Value;
 
 type Refusal = (i32, &'static str);
 
-pub(super) const PLAN_TOOL: &str = r#"{"name":"plan","description":"AOP-007: publish a witnessed native alert ControlPlan in the fixed deployment. intent=alert without approve publishes cognition only; the exact returned plan approval durably prepares that same alert and still sends nothing. intent=close records the native immutable execution episode or withdraws a never-prepared plan; unresolved effects cannot be silently closed. Plans and recommendations grant no effect authority. intent=mission-bind explicitly enrolls one owned plan-outcome objective and evidence-clock deadline; intent=mission-assess records proof-derived lifecycle under an exact retained mission revision. These intents write cognition only and do not establish physical-event truth.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"alert"},"session":{"type":"string","minLength":1,"maxLength":128},"event_id":{"type":"string","minLength":1,"maxLength":128},"relay":{"type":"string","minLength":1,"maxLength":128,"description":"Exact literal IP:PORT; no DNS or URL."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Literal absolute webhook path."},"plaintext_approval":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"deadline_ms":{"type":"integer","minimum":1,"maximum":60000},"case":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","event_id","relay","path","plaintext_approval","deadline_ms"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"close"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128}},"required":["intent","session","plan"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"mission-bind"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128},"decision_deadline_ns":{"oneOf":[{"type":"integer","minimum":1},{"type":"string","pattern":"^[1-9][0-9]*$"}],"description":"Exact signed 128-bit evidence-clock nanoseconds; use a decimal string when a client cannot preserve integer precision."}},"required":["intent","session","plan","decision_deadline_ns"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"mission-assess"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128},"expected_mission":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","plan","expected_mission"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}"#;
+pub(super) const PLAN_TOOL: &str = r#"{"name":"plan","description":"AOP-007: publish a witnessed native alert ControlPlan in the fixed deployment. intent=alert without approve publishes cognition only; the exact returned plan approval durably prepares that same alert and still sends nothing. intent=close records the native immutable execution episode or withdraws a never-prepared plan; unresolved effects cannot be silently closed. Plans and recommendations grant no effect authority. intent=mission-bind explicitly enrolls one owned plan-outcome objective and evidence-clock deadline; intent=mission-assess records proof-derived lifecycle under an exact retained mission revision. These intents write cognition only and do not establish physical-event truth.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"alert"},"session":{"type":"string","minLength":1,"maxLength":128},"event_id":{"type":"string","minLength":1,"maxLength":128},"relay":{"type":"string","minLength":1,"maxLength":128,"description":"Exact literal IP:PORT; no DNS or URL."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Literal absolute webhook path."},"plaintext_approval":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"disclosure_profile":{"type":"string","enum":["references-v1","event-metadata-v1"],"description":"Default references-v1 preserves opaque references only. event-metadata-v1 discloses declared event/zone/uncertainty metadata and requires separate metadata_approval."},"metadata_approval":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71,"description":"Nonzero owner metadata-disclosure approval; required only for event-metadata-v1 and rejected otherwise.","not":{"const":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}},"deadline_ms":{"type":"integer","minimum":1,"maximum":60000},"case":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","event_id","relay","path","plaintext_approval","deadline_ms"],"additionalProperties":false,"allOf":[{"if":{"properties":{"disclosure_profile":{"const":"event-metadata-v1"}},"required":["disclosure_profile"]},"then":{"required":["metadata_approval"]},"else":{"not":{"required":["metadata_approval"]}}}]},{"type":"object","properties":{"intent":{"const":"close"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128}},"required":["intent","session","plan"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"mission-bind"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128},"decision_deadline_ns":{"oneOf":[{"type":"integer","minimum":1},{"type":"string","pattern":"^[1-9][0-9]*$"}],"description":"Exact signed 128-bit evidence-clock nanoseconds; use a decimal string when a client cannot preserve integer precision."}},"required":["intent","session","plan","decision_deadline_ns"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"mission-assess"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128},"expected_mission":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","plan","expected_mission"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}"#;
 
 pub(super) const COMMIT_TOOL: &str = r#"{"name":"commit","description":"AOP-008: dispatch or reconcile through the existing durable native alert owner. intent=dispatch requires a retained plan and its exact prepared dispatch approval; it revalidates before durably committing and makes at most one bounded relay attempt. An already-dispatched operation is never resent. Relay acceptance is not human delivery. intent=reconcile previews or records an exactly approved owner attestation with explicit operator_asserted provenance and no network I/O. After response loss inspect with wait and reconcile indeterminacy; never invent an approval or blindly resend.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"dispatch"},"plan":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","plan","approve"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"reconcile"},"operation_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["delivered","not_delivered"]},"evidence":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"statement":{"type":"string","minLength":1,"maxLength":1024,"description":"Literal owner attestation, at most 1024 UTF-8 bytes; never a file path to read."},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","operation_id","outcome","evidence","statement"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}"#;
 
@@ -124,6 +124,8 @@ pub(super) fn command(
                         "relay",
                         "path",
                         "plaintext_approval",
+                        "disclosure_profile",
+                        "metadata_approval",
                         "deadline_ms",
                         "case",
                         "approve",
@@ -138,6 +140,14 @@ pub(super) fn command(
                     ("plaintext_approval", "--plaintext-approval", 71),
                 ] {
                     put(&mut argv, args, key, flag, maximum)?;
+                }
+                for (key, flag, maximum) in [
+                    ("disclosure_profile", "--disclosure-profile", 32),
+                    ("metadata_approval", "--metadata-approval", 71),
+                ] {
+                    if args.contains_key(key) {
+                        put(&mut argv, args, key, flag, maximum)?;
+                    }
                 }
                 argv.push(format!("--deadline-ms={}", deadline(args)?).into());
                 if args.contains_key("case") {
@@ -339,6 +349,8 @@ mod tests {
         assert_eq!(plan.session.as_str(), "session:one");
         assert_eq!(plan.deadline_ms, 5000);
         assert!(plan.approve.is_none());
+        assert_eq!(plan.disclosure_profile.as_str(), "references-v1");
+        assert!(plan.metadata_approval.is_none());
 
         let EffectCommand::Commit(commit) = mapped(
             "commit",
@@ -364,6 +376,45 @@ mod tests {
             cancel.approve.map(|digest| digest.to_text()).as_deref(),
             Some(DIGEST)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rich_alert_mapping_preserves_explicit_disclosure_and_refuses_incomplete_selection()
+    -> Result<(), &'static str> {
+        let rich = format!(
+            r#"{},"disclosure_profile":"event-metadata-v1","metadata_approval":"{DIGEST}"}}"#,
+            ALERT.trim_end_matches('}')
+        );
+        let EffectCommand::Plan(plan) = mapped("plan", &rich)? else {
+            return Err("not an alert plan");
+        };
+        assert_eq!(plan.disclosure_profile.as_str(), "event-metadata-v1");
+        assert_eq!(
+            plan.metadata_approval
+                .map(|digest| digest.to_text())
+                .as_deref(),
+            Some(DIGEST)
+        );
+        assert_eq!(plan.root, std::path::Path::new(ROOT));
+        assert_eq!(plan.principal.as_str(), PRINCIPAL);
+        for extra in [
+            r#""disclosure_profile":"event-metadata-v1""#.to_owned(),
+            format!(r#""metadata_approval":"{DIGEST}""#),
+            format!(r#""disclosure_profile":"references-v1","metadata_approval":"{DIGEST}""#),
+            format!(r#""disclosure_profile":"invented","metadata_approval":"{DIGEST}""#),
+            format!(
+                r#""disclosure_profile":"event-metadata-v1","metadata_approval":"sha256:{}""#,
+                "0".repeat(64)
+            ),
+            format!(
+                r#""disclosure_profile":"event-metadata-v1","metadata_approval":"blake3:{}""#,
+                "1".repeat(64)
+            ),
+        ] {
+            let raw = format!("{},{}{}", ALERT.trim_end_matches('}'), extra, "}");
+            assert!(mapped("plan", &raw).is_err(), "admitted {extra}");
+        }
         Ok(())
     }
 

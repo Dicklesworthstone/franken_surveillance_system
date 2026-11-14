@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/webhook_event_metadata.v1.json",
+  "title": "Explicitly approved webhook event metadata v1",
+  "description": "A bounded projection of the exact verified canonical event revision. The complete HTTP request must fit 4096 bytes. This document preserves declared uncertainty and counterevidence; it does not establish physical truth, current health, calibration, delivery or effect authority. Native admission also enforces ordered time/probability intervals, exact evidence counts, UTF-8 byte bounds and explicit profile-bound approvals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "text",
+    "operation_sha256",
+    "request_sha256",
+    "precondition_sha256",
+    "event_root_sha256",
+    "event_revision_sha256",
+    "disclosure_profile",
+    "event"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.webhook_event_metadata.v1"
+    },
+    "text": {
+      "const": "FSS retained event metadata; inspect linked evidence before action."
+    },
+    "operation_sha256": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "precondition_sha256": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "event_root_sha256": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "event_revision_sha256": {
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "disclosure_profile": {
+      "const": "event-metadata-v1"
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision",
+        "kind",
+        "lifecycle",
+        "declared_interval_ns",
+        "zone_ids",
+        "uncertainty_reason",
+        "declared_probability",
+        "evidence_counts",
+        "sensor_health",
+        "decision_fingerprint",
+        "policy_generation",
+        "decision_abstained",
+        "physical_truth_claim"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "event_hypothesis.v1.json#/properties/eventId"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "$ref": "event_hypothesis.v1.json#/properties/kind"
+        },
+        "lifecycle": {
+          "$ref": "event_hypothesis.v1.json#/properties/state"
+        },
+        "declared_interval_ns": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "earliest",
+            "latest"
+          ],
+          "properties": {
+            "earliest": {
+              "$ref": "#/$defs/nanoseconds"
+            },
+            "latest": {
+              "$ref": "#/$defs/nanoseconds"
+            }
+          }
+        },
+        "zone_ids": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "uncertainty_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "declared_probability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lower",
+            "upper",
+            "calibration_generation",
+            "calibration_claim"
+          ],
+          "properties": {
+            "lower": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "upper": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "calibration_generation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/digest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "calibration_claim": {
+              "enum": [
+                "uncalibrated",
+                "generation_declared_not_reverified"
+              ]
+            }
+          },
+          "if": {
+            "properties": {
+              "calibration_generation": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "calibration_claim": {
+                "const": "uncalibrated"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "calibration_claim": {
+                "const": "generation_declared_not_reverified"
+              }
+            }
+          }
+        },
+        "evidence_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "supporting",
+            "contradicting",
+            "neutral",
+            "distinct_supporting_failure_domains"
+          ],
+          "properties": {
+            "supporting": {
+              "$ref": "#/$defs/count"
+            },
+            "contradicting": {
+              "$ref": "#/$defs/count"
+            },
+            "neutral": {
+              "$ref": "#/$defs/count"
+            },
+            "distinct_supporting_failure_domains": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        },
+        "sensor_health": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "current",
+            "basis",
+            "tamper_reports",
+            "integrity_restorations"
+          ],
+          "properties": {
+            "current": {
+              "const": "unknown"
+            },
+            "basis": {
+              "const": "this_revision_only"
+            },
+            "tamper_reports": {
+              "$ref": "#/$defs/count"
+            },
+            "integrity_restorations": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        },
+        "decision_fingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy_generation": {
+          "$ref": "#/$defs/digest"
+        },
+        "decision_abstained": {
+          "type": "boolean"
+        },
+        "physical_truth_claim": {
+          "const": "not_claimed"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[0-9a-f]{64}$"
+    },
+    "nanoseconds": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$",
+      "maxLength": 40
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256
+    }
+  }
+}

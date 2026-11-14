@@ -1,0 +1,8 @@
+POST /alerts HTTP/1.1
+Host: 127.0.0.1:8080
+Content-Type: application/json
+Idempotency-Key: 9cec7bc39000f3652e9b3d5ca7218c609ae7021fae351dca93e963bf66111d1d
+Content-Length: 539
+Connection: close
+
+{"schema":"fss.webhook-alert.v1","text":"FSS policy-authorized alert; inspect linked event evidence.","operation_sha256":"0fdf44b0d13980bac21e89ae8c96ddb53a436db7e207c4385d4f1dc0bcb681bb","request_sha256":"1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047","precondition_sha256":"ac27cf5248407a85a0cfe7e4b899851d938c9b7d25e4039993332b1d769924dc","event_root_sha256":"4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2","event_revision_sha256":"2b214ddf3326016519afcb268f63623b80b91a65265277668e4d020d87dd9078"}

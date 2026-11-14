@@ -14,18 +14,16 @@ use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, EventId, OperationId, PrincipalId};
 use fss_reference::ingest::analysis::{
-    AnalysisBudget, AnalysisFrame, AnalysisLimits,
-    MAX_ANALYSIS_REPORT_BYTES,
+    AnalysisBudget, AnalysisFrame, AnalysisLimits, MAX_ANALYSIS_REPORT_BYTES,
 };
 use fss_reference::ingest::detections::{BoxEncoding, CoordinateSpace, DetectionSpec};
 use fss_reference::ingest::package_event::{
-    PackageAnalysisReport, PackageEventProposal, PackageEventStatus,
-    PackageTrackingConfig,
+    PackageAnalysisReport, PackageEventProposal, PackageEventStatus, PackageTrackingConfig,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_event::RecordedEventProposal;
-use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::ingest::tracking::TrackingConfig;
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-event/alert.rs"]
@@ -331,7 +329,10 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
   calibration show: every adopted camera's current receipt, withdrawal and full history.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
+          [--disclosure-profile references-v1|event-metadata-v1] [--metadata-approval sha256:HEX]\n\
           [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\
+    event-metadata-v1 discloses declared event/zone/uncertainty metadata and requires its own\n\
+    nonzero metadata approval; references-v1 rejects that extra approval. Preview pins exact bytes.\n\
     Without --approve: reports the plan digest (nothing written). --approve PLAN: durably\n\
     prepares the intent (operation, idempotency key, obligation) and reports the dispatch\n\
     digest. --approve PLAN --dispatch DISPATCH: commits durably, then sends exactly one\n\
@@ -640,7 +641,10 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             || (action == "publish" && key == "--proposal-digest")
             || (action == "read" && key == "--event-id")
             || (matches!(action, "read" | "report")
-                && matches!(key, "--report-out" | "--max-read-bytes" | "--max-read-objects"))
+                && matches!(
+                    key,
+                    "--report-out" | "--max-read-bytes" | "--max-read-objects"
+                ))
             || (action == "report" && report_options.contains(&key));
         if !allowed {
             return Err("unknown or inapplicable option".into());

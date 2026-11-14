@@ -26,14 +26,18 @@ point somewhere else. The channel pins peer, path and plaintext approval. The
 existing request digest binds that channel and the exact canonical event revision.
 An approval digest is only a handle; it does not create a capability.
 
-The POST is bounded JSON with a fixed notification text and the operation,
+The default `references-v1` POST is bounded JSON with a fixed notification text and the operation,
 request, precondition, event-root and event-revision SHA-256 references. It does
 not export raw video, arbitrary model prose, credentials, or an unvalidated event
 summary. An Idempotency-Key header carries SHA-256 of the existing idempotency key.
 The relay can use that key for deduplication, but the client does not assume the
 relay supports it and never uses it as permission to retry a committed request.
-A relay that needs more event detail must hydrate it through a separately
-authorized evidence reader.
+A relay can receive the explicitly selected `event-metadata-v1` projection using a
+separate metadata approval, or hydrate further evidence through a separately
+authorized reader. The richer profile binds a distinct route, operation and exact
+approval; it cannot upgrade an old reference-only plan. See
+[alert disclosure profiles](ALERT_DISCLOSURE_PROFILES.md) for the precise fields,
+CLI/MCP selection, unchanged 4096-byte complete-request limit and validation status.
 
 ## Approve local wire retention with the dispatch
 

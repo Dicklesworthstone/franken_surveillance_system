@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 
 use fss_cli::alert_effect::{
     AlertIdentities, AlertRuntimeSummary, WIRE_RETENTION_POLICY, alert_identities,
-    check_alert_source_health, dispatch_approval_digest, dispatch_prepared_alert, not_eligible,
-    obligation_state, outcome_text, plan_approval_digest, wall_ns,
+    check_alert_request, check_alert_source_health, dispatch_approval_digest,
+    dispatch_prepared_alert, not_eligible, obligation_state, outcome_text,
+    parse_disclosure_profile, plan_approval_digest, wall_ns,
 };
 use fss_core::region::ContextAuthority;
 use fss_core::{
@@ -34,7 +35,10 @@ use fss_core::{
     OperationReceipt, PrincipalId, TimestampNs,
 };
 use fss_reference::webhook::retained::RetainedWebhookEvidence;
-use fss_reference::webhook::{WebhookEndpoint, WebhookEvidence, WebhookOutcome};
+use fss_reference::webhook::{
+    WebhookDisclosureProfile, WebhookEndpoint, WebhookEvidence, WebhookOutcome,
+    WebhookRequestPreview,
+};
 use fss_reference::{
     PrepareAlertParams, ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision,
     ReplayCx, committed_reference_policy_action, prepare_reference_alert,
@@ -57,6 +61,8 @@ const OPTIONS: &[&str] = &[
     "--relay",
     "--path",
     "--plaintext-approval",
+    "--disclosure-profile",
+    "--metadata-approval",
     "--deadline-ms",
     "--approve",
     "--dispatch",
@@ -76,6 +82,8 @@ pub(super) struct AlertAction {
     relay: SocketAddr,
     path: String,
     plaintext_approval: ContentDigest,
+    disclosure_profile: WebhookDisclosureProfile,
+    metadata_approval: Option<ContentDigest>,
     pub(super) deadline_ms: u64,
     approve: Option<ContentDigest>,
     pub(super) dispatch: Option<ContentDigest>,
@@ -142,6 +150,11 @@ pub(super) fn parse(args: &[OsString]) -> Result<AlertAction, String> {
     if dispatch.is_some() && approve.is_none() {
         return Err("--dispatch also requires the exact --approve plan digest".to_owned());
     }
+    let metadata_approval = find("--metadata-approval")
+        .map(|value| digest(value, "--metadata-approval"))
+        .transpose()?;
+    let disclosure_profile = parse_disclosure_profile(find("--disclosure-profile"), metadata_approval)
+        .map_err(|_| "--disclosure-profile must be references-v1 without --metadata-approval, or event-metadata-v1 with a nonzero SHA-256 --metadata-approval")?;
     Ok(AlertAction {
         root: PathBuf::from(required("--root")?),
         site,
@@ -152,6 +165,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<AlertAction, String> {
             .map_err(|_| "--relay must be an exact IP:PORT socket address (no DNS)")?,
         path: required("--path")?.to_owned(),
         plaintext_approval: digest(required("--plaintext-approval")?, "--plaintext-approval")?,
+        disclosure_profile,
+        metadata_approval,
         deadline_ms,
         approve,
         dispatch,
@@ -165,6 +180,7 @@ struct Report<'a> {
     endpoint: &'a WebhookEndpoint,
     ids: &'a AlertIdentities,
     event_state: &'a str,
+    preview: Option<WebhookRequestPreview>,
     policy_action: ReferencePolicyAction,
     plan: Option<ContentDigest>,
     dispatch: Option<ContentDigest>,
@@ -222,6 +238,13 @@ impl Report<'_> {
             a.plaintext_approval,
             a.deadline_ms,
         );
+        if let Some(approval) = a.metadata_approval {
+            command.push_str(&format!(
+                " --disclosure-profile {} --metadata-approval {}",
+                a.disclosure_profile.as_str(),
+                approval
+            ));
+        }
         if let Some(dispatch) = dispatch {
             command.push_str(&format!(" --dispatch {dispatch}"));
         }
@@ -274,6 +297,7 @@ impl Report<'_> {
                 "{{\"format\":\"fss.alert_operation_report.v1\",\"stage\":\"{}\",",
                 "\"event_id\":\"{}\",\"event_state\":\"{}\",\"policy_action\":\"{}\",",
                 "\"route_digest\":\"{}\",\"channel\":\"{}\",\"transport\":\"explicit_plaintext_relay\",",
+                "\"disclosure_profile\":\"{}\",\"metadata_approval\":{},\"request_preview_sha256\":{},\"request_preview_bytes\":{},",
                 "\"operation_id\":\"{}\",\"idempotency_key\":\"{}\",\"obligation_id\":\"{}\",",
                 "\"plan_digest\":{},\"dispatch_digest\":{},\"effect_state\":{},",
                 "\"obligation_state\":{},\"result_digest\":{},\"delivery_claim\":\"{}\",",
@@ -290,6 +314,13 @@ impl Report<'_> {
             },
             self.endpoint.digest(),
             self.endpoint.channel(),
+            self.endpoint.profile().as_str(),
+            optional(self.endpoint.metadata_approval()),
+            optional(self.preview.map(|preview| preview.request_digest)),
+            self.preview.map_or_else(
+                || "null".to_owned(),
+                |preview| preview.request_bytes.to_string()
+            ),
             self.ids.operation,
             self.ids.idempotency,
             self.ids.obligation,
@@ -329,6 +360,10 @@ fn emit(report: &Report<'_>, root: &Path, cx: &ReplayCx, out: &mut impl Write) -
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "alert/tests.rs"]
+mod tests;
+
 /// Runs one alert stage against the deployment. See the module documentation.
 pub(super) fn run(
     action: &AlertAction,
@@ -338,8 +373,14 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    let endpoint = WebhookEndpoint::new(action.relay, &action.path, action.plaintext_approval)
-        .map_err(|_| AlertCliError::Route)?;
+    let endpoint = WebhookEndpoint::new_with_profile(
+        action.relay,
+        &action.path,
+        action.plaintext_approval,
+        action.disclosure_profile,
+        action.metadata_approval,
+    )
+    .map_err(|_| AlertCliError::Route)?;
     let (event, receipt) = deployment
         .current_event_authority(&action.event_id)
         .map_err(AlertCliError::Authority)?;
@@ -355,6 +396,7 @@ pub(super) fn run(
         endpoint: &endpoint,
         ids: &ids,
         event_state: event.state.as_str(),
+        preview: None,
         policy_action,
         plan: None,
         dispatch: None,
@@ -387,6 +429,7 @@ pub(super) fn run(
             &mut EffectJournal::new(),
         )
         .map_err(not_eligible)?;
+        report.preview = Some(check_alert_request(&plan, &endpoint)?);
         let approval = plan_approval_digest(&plan, &endpoint, &action.principal);
         report.plan = Some(approval);
         if let Some(dispatch) = action.dispatch {
@@ -466,6 +509,7 @@ pub(super) fn run(
         endpoint.channel(),
     )
     .map_err(AlertCliError::Authority)?;
+    report.preview = Some(check_alert_request(&plan, &endpoint)?);
     let approval = plan_approval_digest(&plan, &endpoint, &action.principal);
     let dispatch =
         dispatch_approval_digest(approval, &operation, action.deadline_ms, &action.principal);

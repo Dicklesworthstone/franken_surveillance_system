@@ -4,6 +4,45 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Explicitly approved event metadata in alerts — 2026-11-14
+
+Native webhook alerts now admit an explicit `event-metadata-v1` disclosure
+profile, selected through `fss-event alert`, canonical `fss plan` or the MCP plan
+mapping. A separate nonzero SHA-256 metadata-disclosure approval is required.
+The default `references-v1` preserves its exact legacy route and HTTP request
+bytes; irrelevant, absent, unknown or invalid profile/approval combinations refuse.
+
+Rich requests derive only from the exact verified canonical event revision. They
+carry event identity/classification/lifecycle, exact decimal-string declared times,
+zones, uncertainty, declared probability/calibration, supporting/counterevidence
+counts and revision-local integrity reports. Decision and policy digests retain
+their algorithm tags. Current health remains unknown and physical truth is not
+claimed. Complete escaping and the existing 4096-byte whole-request ceiling apply;
+overflow refuses without truncating uncertainty, zones or counterevidence.
+
+Both CLI paths preview the complete request before durable preparation. Profile
+and approval bind the route/channel and existing operation, idempotency, plan and
+dispatch approvals. Rich plans use strict canonical `fss.reference_agent_plan.v2`
+records; reference plans retain byte-identical v1 records and identity. Recovery,
+backup descriptions and commit retain the approved profile. Existing live authority,
+source-health, retained-wire, indeterminate retry and no-resend rules still apply.
+
+The pinned nightly executed 22 unique tests from actual production pure modules:
+nine disclosure, four identity/approval and nine durable-record tests. Frozen
+legacy HTTP/route/operation/approval/record vectors, exact output bounds, hostile
+text, tagged digests, canonical corruption, strict v2 recovery and indeterminate
+retries passed. An actual generated rich request also passed the closed JSON
+schema, including Blake3 metadata and timestamps beyond JavaScript integer precision;
+wrong-profile and unknown-field projections refused. The actual MCP plan schema
+accepted three valid selections and refused six invalid combinations. Both new
+digest domains pass repository registration policy, raising the registry to 876.
+
+Full CLI/MCP and loopback/recovery suites have expanded assertions for both
+profiles, but remain unrun because the earlier dependency build stopped in unchanged
+Asupersync with SIGKILL. Pure execution and source review do not establish complete
+runtime compilation, delivery or release qualification. See
+[alert disclosure profiles](docs/ALERT_DISCLOSURE_PROFILES.md).
+
 ## Source-independent recording export verification — 2026-11-14
 
 The FSS-135 / INV-075 recording reconstruction path now exposes
@@ -138,8 +177,8 @@ provider change, not production storage, replication or release qualification.
 Two focused digest-registry Python regressions passed, and the new oracle domain
 is admitted by the repository's domain-registration policy. The two broader schema
 constitution tests still fail on the same 96 findings reproduced at the unchanged
-baseline; the added domain introduces no new finding. The registry now contains
-874 digest domains. No full repository qualification is claimed.
+baseline; the added domain introduces no new finding. That increment raised the
+registry to 874 digest domains. No full repository qualification is claimed.
 
 ## Full localization inspection coexists with active ingest — 2026-11-14
 

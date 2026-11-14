@@ -37,6 +37,8 @@ fn fixture(
             path: "/alert".to_owned(),
             plaintext_approval: ContentDigest::sha256(b"approved local route"),
             deadline_ms: 1000,
+            disclosure_profile: crate::webhook::WebhookDisclosureProfile::ReferencesV1,
+            metadata_approval: None,
         },
         operation_id: "operation:learning-capture".to_owned(),
         obligation_id: "obligation:learning-capture".to_owned(),

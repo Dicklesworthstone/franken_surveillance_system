@@ -43,7 +43,7 @@ use fss_reference::deployment_session::plan::{
     AlertRoute, PlanRecord, PlanningContext, hold_planning_context, publish_plan, read_plan,
     verify_plan_publication,
 };
-use fss_reference::webhook::WebhookEndpoint;
+use fss_reference::webhook::{WebhookDisclosureProfile, WebhookEndpoint, WebhookRequestPreview};
 use fss_reference::{
     PrepareAlertParams, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
     ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
@@ -53,8 +53,9 @@ use fss_reference::{
 use crate::agent_json;
 use crate::alert_effect::{
     AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS, WIRE_RETENTION_POLICY,
-    alert_identities, check_alert_source_health, dispatch_approval_digest, dispatch_prepared_alert,
-    not_eligible, obligation_state, outcome_text, plan_approval_digest, wall_ns,
+    alert_identities, check_alert_request, check_alert_source_health, dispatch_approval_digest,
+    dispatch_prepared_alert, not_eligible, obligation_state, outcome_text,
+    parse_disclosure_profile, plan_approval_digest, wall_ns,
 };
 use crate::error::{CliError, ExitIdentity};
 use crate::orient_cmd::{
@@ -102,6 +103,10 @@ pub struct PlanArgs {
     pub path: String,
     /// Owner approval of the plaintext relay.
     pub plaintext_approval: ContentDigest,
+    /// Exact versioned relay content projection.
+    pub disclosure_profile: WebhookDisclosureProfile,
+    /// Separate metadata disclosure approval; absent for the reference profile.
+    pub metadata_approval: Option<ContentDigest>,
     /// Dispatch deadline.
     pub deadline_ms: u64,
     /// Investigation case the plan rests on.
@@ -281,6 +286,8 @@ pub fn parse_plan_args(tokens: &[ArgToken]) -> Result<PlanArgs, CliError> {
             "--relay",
             "--path",
             "--plaintext-approval",
+            "--disclosure-profile",
+            "--metadata-approval",
             "--deadline-ms",
             "--case",
             "--approve",
@@ -350,6 +357,13 @@ pub fn parse_plan_args(tokens: &[ArgToken]) -> Result<PlanArgs, CliError> {
             Some(raw.clone())
         }
     };
+    let metadata_approval = digest_option(COMMAND, &values, "--metadata-approval")?;
+    let profile_option = take(&values, "--disclosure-profile");
+    let disclosure_profile = parse_disclosure_profile(profile_option.map(|(_, value, _)| value.as_str()), metadata_approval)
+        .map_err(|_| malformed(COMMAND, "--disclosure-profile",
+            profile_option.map_or("references-v1", |(_, value, _)| value.as_str()),
+            "references-v1 forbids metadata approval; event-metadata-v1 requires a nonzero SHA-256 --metadata-approval",
+            profile_option.map_or(0, |(_, _, index)| *index)))?;
     Ok(PlanArgs {
         root,
         session,
@@ -358,6 +372,8 @@ pub fn parse_plan_args(tokens: &[ArgToken]) -> Result<PlanArgs, CliError> {
         relay,
         path: path.clone(),
         plaintext_approval,
+        disclosure_profile,
+        metadata_approval,
         deadline_ms: deadline(COMMAND, &values, MAX_DEADLINE_MS)?,
         case,
         approve: digest_option(COMMAND, &values, "--approve")?,
@@ -838,6 +854,7 @@ struct PlanFacts<'a> {
     context: &'a PlanningContext,
     plan: &'a ReferenceAlertPlan,
     endpoint: &'a WebhookEndpoint,
+    request_preview: WebhookRequestPreview,
     event_state: &'a str,
     plan_approval: ContentDigest,
     plan_id: &'a str,
@@ -943,6 +960,15 @@ fn compile_alert_plan(facts: &PlanFacts<'_>) -> Result<ControlPlan, Box<dyn std:
             facts.endpoint.digest()
         ),
     );
+    // Preserve the legacy control-plan bytes and retry identity for references-v1.
+    if facts.endpoint.profile() == WebhookDisclosureProfile::EventMetadataV1 {
+        commit.verb.push_str(&format!(
+            " Explicit disclosure profile {} with separate metadata approval {}: declared event kind/lifecycle/time interval/zones, probability/uncertainty, evidence counts and decision fingerprints; current sensor health stays unknown. Exact HTTP request {} ({} bytes).",
+            facts.endpoint.profile().as_str(),
+            facts.endpoint.metadata_approval().map_or_else(|| "missing".to_owned(), |value| value.to_text()),
+            facts.request_preview.request_digest, facts.request_preview.request_bytes,
+        ));
+    }
     commit.robustness_class = if supported.is_empty() {
         StepRobustness::NotApplicable
     } else {
@@ -1204,8 +1230,14 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
         None,
     )?;
     let result = (|| -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
-        let endpoint = WebhookEndpoint::new(args.relay, &args.path, args.plaintext_approval)
-            .map_err(|_| alert_refusal(&AlertEffectError::Route))?;
+        let endpoint = WebhookEndpoint::new_with_profile(
+            args.relay,
+            &args.path,
+            args.plaintext_approval,
+            args.disclosure_profile,
+            args.metadata_approval,
+        )
+        .map_err(|_| alert_refusal(&AlertEffectError::Route))?;
         let (event, receipt) = deployment
             .current_event_authority(&args.event_id)
             .map_err(|error| alert_refusal(&AlertEffectError::Authority(error)))?;
@@ -1260,6 +1292,8 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
                 false,
             ),
         };
+        let request_preview =
+            check_alert_request(&plan, &endpoint).map_err(|error| alert_refusal(&error))?;
         let approval = plan_approval_digest(&plan, &endpoint, principal_label);
         if let Some(given) = args.approve
             && given != approval
@@ -1274,6 +1308,7 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
             context,
             plan: &plan,
             endpoint: &endpoint,
+            request_preview,
             event_state,
             plan_approval: approval,
             plan_id: &plan_id,
@@ -1293,6 +1328,8 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
                 relay: args.relay.to_string(),
                 path: args.path.clone(),
                 plaintext_approval: args.plaintext_approval,
+                disclosure_profile: args.disclosure_profile,
+                metadata_approval: args.metadata_approval,
                 deadline_ms: args.deadline_ms,
             },
             operation_id: ids.operation.as_str().to_owned(),
@@ -1363,6 +1400,11 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
             "Compiled plan {plan_id} for {} and published it root-last (root {plan_root}).",
             ids.operation
         )];
+        completed.push(format!(
+            "Disclosure profile {}; metadata approval {}; exact request {} ({} bytes, complete 4096-byte ceiling).",
+            endpoint.profile().as_str(), endpoint.metadata_approval().map_or_else(|| "not_applicable".to_owned(), |value| value.to_text()),
+            request_preview.request_digest, request_preview.request_bytes,
+        ));
         let mut not_started = Vec::new();
         if state.is_none() || state == Some(EffectState::Prepared) {
             completed.push(format!(
@@ -1562,9 +1604,14 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
         Some(record.route.deadline_ms),
     )?;
     let result = (|| {
-        let endpoint =
-            WebhookEndpoint::new(relay, &record.route.path, record.route.plaintext_approval)
-                .map_err(|_| alert_refusal(&AlertEffectError::Route))?;
+        let endpoint = WebhookEndpoint::new_with_profile(
+            relay,
+            &record.route.path,
+            record.route.plaintext_approval,
+            record.route.disclosure_profile,
+            record.route.metadata_approval,
+        )
+        .map_err(|_| alert_refusal(&AlertEffectError::Route))?;
         let (event, receipt) = deployment
             .current_event_authority(&event_id)
             .map_err(|error| alert_refusal(&AlertEffectError::Authority(error)))?;

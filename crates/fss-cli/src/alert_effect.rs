@@ -15,13 +15,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, ContentDigest, ContextAuthority, ContractError, EffectState,
-    EventHypothesis, IdempotencyKey, ObligationId, ObligationState, OperationId, OperationReceipt,
+    ContentDigest, ContextAuthority, ContractError, EffectState, EventHypothesis, ObligationState,
+    OperationReceipt,
 };
 use fss_publication::LocalPublicationError;
 use fss_reference::webhook::retained::RetainedWebhookEvidence;
 use fss_reference::webhook::{
-    WebhookEndpoint, WebhookEvidence, WebhookInterruption, WebhookOutcome,
+    WebhookDisclosureProfile, WebhookEndpoint, WebhookEvidence, WebhookInterruption,
+    WebhookOutcome, WebhookRequestPreview, preview_webhook_request,
 };
 use fss_reference::{
     MAX_ALERT_HEALTH_OBJECT_BYTES, ReferenceAlertPlan, ReferenceDeployment, ReferenceError,
@@ -45,11 +46,10 @@ pub const MAX_DISPATCH_NETWORK_BYTES: u64 = 4096 * 4096;
 pub const DISPATCH_CLEANUP_MS: u64 = 5_000;
 /// Source-read admissions and prepaid durable journal transitions and wire custody.
 pub const MAX_DISPATCH_STORAGE_OPERATIONS: u64 = 8192;
-const OPERATION_DOMAIN: &str = "fss.cli_alert_operation.v1";
-const PLAN_APPROVAL_DOMAIN: &str = "fss.cli_alert_plan_approval.v1";
-/// Exact local evidence retention approved by a dispatch, including untrusted response bytes.
-pub const WIRE_RETENTION_POLICY: &str = "local-root-last-exact-http-wire-v1";
-const DISPATCH_APPROVAL_DOMAIN: &str = "fss.cli_alert_dispatch_approval.v2";
+mod identity;
+pub use identity::{
+    AlertIdentities, WIRE_RETENTION_POLICY, alert_identities, dispatch_approval_digest,
+};
 
 /// Typed refusals of an alert stage, with registered identities.
 #[derive(Debug)]
@@ -114,6 +114,33 @@ pub fn not_eligible(error: ReferenceError) -> AlertEffectError {
     }
 }
 
+/// Parse the same explicit disclosure selection for both CLI surfaces and MCP forwarding.
+/// A separate metadata approval is mandatory for the rich profile and invalid for references.
+pub fn parse_disclosure_profile(
+    profile: Option<&str>,
+    metadata_approval: Option<ContentDigest>,
+) -> Result<WebhookDisclosureProfile, AlertEffectError> {
+    let profile = profile
+        .map(WebhookDisclosureProfile::parse)
+        .transpose()
+        .map_err(|_| AlertEffectError::Route)?
+        .unwrap_or_default();
+    profile
+        .validate(metadata_approval)
+        .map_err(|_| AlertEffectError::Route)?;
+    Ok(profile)
+}
+
+/// Refuse a complete unrepresentable request before any durable preparation. Dispatch repeats
+/// this same encoder after rebuilding the plan, while live event/effect authority stays separate.
+pub fn check_alert_request(
+    plan: &ReferenceAlertPlan,
+    endpoint: &WebhookEndpoint,
+) -> Result<WebhookRequestPreview, AlertEffectError> {
+    preview_webhook_request(plan, endpoint)
+        .map_err(|error| AlertEffectError::Dispatch(error.to_string()))
+}
+
 /// Checks retained diagnostic eligibility before proposing or durably preparing an alert.
 ///
 /// Reads are bounded before allocation and pass the caller's explicit context checkpoint. The
@@ -150,10 +177,6 @@ pub fn check_alert_source_health(
     .map_err(not_eligible)
 }
 
-fn hex(digest: ContentDigest) -> String {
-    digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Host wall clock read once at the CLI boundary as the journal admission time; deadlines are
 /// measured separately on a monotonic clock.
 pub fn wall_ns() -> Result<u64, AlertEffectError> {
@@ -163,76 +186,23 @@ pub fn wall_ns() -> Result<u64, AlertEffectError> {
     u64::try_from(elapsed.as_nanos()).map_err(|_| AlertEffectError::Clock)
 }
 
-/// The deterministic identities of one alert: one per (event revision, relay route).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AlertIdentities {
-    /// Effect operation identity.
-    pub operation: OperationId,
-    /// Idempotency key.
-    pub idempotency: IdempotencyKey,
-    /// Terminal-proof obligation identity.
-    pub obligation: ObligationId,
-}
-
-/// Derives the alert identities of `event_revision` sent over `route`.
-pub fn alert_identities(
-    event_revision: ContentDigest,
-    route: ContentDigest,
-) -> Result<AlertIdentities, ContractError> {
-    let mut e = CanonicalEncoder::new();
-    e.text(OPERATION_DOMAIN);
-    e.digest(event_revision);
-    e.digest(route);
-    let key = hex(ContentDigest::sha256(&e.finish()));
-    Ok(AlertIdentities {
-        operation: OperationId::parse(format!("operation:alert:{key}"))?,
-        idempotency: IdempotencyKey::parse(format!("idempotency:alert:{key}"))?,
-        obligation: ObligationId::parse(format!("obligation:alert:{key}"))?,
-    })
-}
-
-/// Exact approval identity of a plan: its effect intent, obligation, channel, relay route and the
-/// approving principal. Time-independent, so a dry run and the later preparation agree.
+/// Exact approval identity of the plan, including its profile-bound route/channel.
+/// The reference-profile encoding remains byte-identical to the previous implementation.
 #[must_use]
 pub fn plan_approval_digest(
     plan: &ReferenceAlertPlan,
     endpoint: &WebhookEndpoint,
     principal: &str,
 ) -> ContentDigest {
-    let mut e = CanonicalEncoder::new();
-    e.text(PLAN_APPROVAL_DOMAIN);
-    plan.intent.encode_canonical(&mut e);
-    plan.obligation_id.encode_canonical(&mut e);
-    e.text(&plan.channel);
-    e.digest(plan.event_root);
-    e.digest(plan.event_revision_digest);
-    e.digest(endpoint.digest());
-    e.text(principal);
-    ContentDigest::sha256(&e.finish())
-}
-
-/// Exact approval identity of one dispatch: the plan approval, the durable prepared record, the
-/// explicit deadline, principal, and exact local wire-retention policy. Version two prevents
-/// an older approval from silently authorizing the additional retained byte footprint.
-#[must_use]
-pub fn dispatch_approval_digest(
-    plan: ContentDigest,
-    operation: &OperationReceipt,
-    deadline_ms: u64,
-    principal: &str,
-) -> ContentDigest {
-    let mut e = CanonicalEncoder::new();
-    e.text(DISPATCH_APPROVAL_DOMAIN);
-    e.text(WIRE_RETENTION_POLICY);
-    e.digest(plan);
-    operation.intent.encode_canonical(&mut e);
-    e.text(operation.state.as_str());
-    e.i128(operation.prepared_at.0);
-    e.text(&operation.authority.principal);
-    e.text(&operation.authority.capability);
-    e.u64(deadline_ms);
-    e.text(principal);
-    ContentDigest::sha256(&e.finish())
+    identity::plan_approval_parts(
+        &plan.intent,
+        &plan.obligation_id,
+        &plan.channel,
+        plan.event_root,
+        plan.event_revision_digest,
+        endpoint.digest(),
+        principal,
+    )
 }
 
 /// Registered spelling of an obligation state.

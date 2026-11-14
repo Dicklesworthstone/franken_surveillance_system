@@ -223,6 +223,8 @@ impl Fixture {
                 path: endpoint.target().to_owned(),
                 plaintext_approval: endpoint.plaintext_approval(),
                 deadline_ms: 5000,
+                disclosure_profile: endpoint.profile(),
+                metadata_approval: endpoint.metadata_approval(),
             },
             operation_id: preview.intent.operation_id.as_str().to_owned(),
             obligation_id: preview.obligation_id.as_str().to_owned(),
@@ -252,10 +254,12 @@ impl Fixture {
         dep: &mut ReferenceDeployment,
         plan: &PlanRecord,
     ) -> TestResult<ReferenceAlertPlan> {
-        let endpoint = WebhookEndpoint::new(
+        let endpoint = WebhookEndpoint::new_with_profile(
             plan.route.relay.parse()?,
             &plan.route.path,
             plan.route.plaintext_approval,
+            plan.route.disclosure_profile,
+            plan.route.metadata_approval,
         )?;
         let key = plan
             .operation_id

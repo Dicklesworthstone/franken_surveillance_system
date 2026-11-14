@@ -102,6 +102,8 @@ fn retained_plan(opened: &OpenedSession) -> PlanRecord {
             path: "/fss/alert".into(),
             plaintext_approval: ContentDigest::sha256(b"historical-route-approval"),
             deadline_ms: 5_000,
+            disclosure_profile: fss_reference::webhook::WebhookDisclosureProfile::ReferencesV1,
+            metadata_approval: None,
         },
         operation_id: "operation:retained-plan-fixture".into(),
         obligation_id: "obligation:retained-plan-fixture".into(),
@@ -191,7 +193,12 @@ fn populated_agent_roundtrip_keeps_native_history_and_fences_all_deployment_writ
         },
     )?
     .publish(&[b"retained-handoff-rendering".to_vec()])?;
-    let plan = retained_plan(&opened);
+    // Recovery must preserve rich disclosure as historical evidence without turning either
+    // approval handle into live relay authority. Other fixtures retain the legacy v1 route.
+    let mut plan = retained_plan(&opened);
+    plan.route.disclosure_profile =
+        fss_reference::webhook::WebhookDisclosureProfile::EventMetadataV1;
+    plan.route.metadata_approval = Some(ContentDigest::sha256(b"historical-metadata-approval"));
     let plan_root = publish_plan(&f.source, &plan, b"exact-native-plan-child")?;
     let before = bytes_under(&f.source)?;
     let state = inspect_agent_state(
