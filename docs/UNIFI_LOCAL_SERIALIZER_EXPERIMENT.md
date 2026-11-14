@@ -54,10 +54,10 @@ This code does not use Keychain. A real key provider, automatic protected
 storage, post-restart restore planning, independent camera identity, and
 physical-camera behavior are not yet established. The initial remote build
 stopped before compilation due to a dependency lock mismatch; the corrected
-v12 build and tamper/cold-reopen tests passed as recorded below. A newer source
-snapshot remains queued for its own build. The worktree now also has a
-candidate comparison of a recovered checkpoint with an independently admitted
-new-session observation; its build and tests are pending. The comparison can
+v12 build and tamper/cold-reopen tests passed as recorded below. The subsequent
+v15 snapshot also passed its synthetic build and fixtures. It includes a
+comparison of a recovered checkpoint with an independently admitted new-session
+observation. The comparison can
 identify changes and requested-field matches, but does not authenticate the
 camera, settle an effect, or authorize a restore. No checkpoint was captured
 from the physical G4.
@@ -180,16 +180,134 @@ physical-camera validation. It does not settle any earlier effect.
 
 The newer candidate recovery-comparison snapshot has checkpoint source SHA-256
 `6401a5560e4ee22651a3fb5b88378ddeeb453c181e7d2a92660b190c43362eba`.
-Its strict-remote build is queued as `9253469360607986726`; no test result is
-claimed for it. The method compares preserved values to a caller-admitted new
+Its strict-remote build `9253469360607986726` was refused at disk-budget
+admission on `hz2` before execution (exit 120), so no test result is claimed
+for it. The v15 snapshot includes this candidate. The method compares
+preserved values to a caller-admitted new
 session without requiring the old session generation, distinguishes changes
 to other tracks, and compares the requested fields. Camera and certificate
 arguments are claims supplied by the caller, not authentication. The older
-v13 build is separately queued as `9253469360607986717`; its source does not
-include this comparison. Neither candidate reopens or reconciles the original
+v13 build was admitted from queue `9253469360607986717` as job
+`30097323753214384`; its source does not include this comparison. Neither
+candidate reopens or reconciles the original
 journal, and neither constructs or dispatches a post-restart restore.
 
+The later v15 candidate adds a read-only match between the checkpoint scope
+and an exact operation in a cold-recovered, reconciliation-only effect owner.
+It checks the separately supplied journal head and preparation digest, effect
+class, request digest and precondition digest; it returns the journal state,
+not proof of the camera outcome or permission to dispatch. A fixture now
+exercises a genuine journal close/reopen and rejects a live owner, changed
+head, preparation, preconditions and denied inspection. Strict-remote queue
+entry `9253469360607986730` was admitted as job `30097323753214360` on `hz2`;
+the locked offline build exited zero, then 7/7 serializer unit tests and 5/5
+dispatch/journal integration tests passed on that worker. Its
+checkpoint and test source SHA-256 values are
+`84f81f0abc23283e2ac3fcddeb8f2df3a52c70fb8a43f1ea327ccd26cac0d73c` and
+`2c022c930beecd77c03a0ec1435afe1f0c0b8e56d38230ef49f97e360e9b6bcc`.
+The executable SHA-256 values were
+`cf86f016c3c5a876652a0d54f9c3b8f5f97777fc845169c84b689ef1545b094d` and
+`17ad69a9107f2cc53fb8da199515a8cb10c34d6bbbc3e02098c1662fe64fea41`;
+both deletion-denying traces recorded zero attempts. These are synthetic
+results, not a physical-camera capture or settlement.
+The expected pins must be independently retained; no such anchoring is
+established for the prior physical G4 effects.
+
+The v16 candidate adds a separate post-restart restoration plan. It requires
+an exact cold-recovered forward operation in verified state, all operations in
+that journal terminal, a newly admitted session and current serializer binding,
+a target-only readback matching the retained forward request, and an exact
+match to the caller-reconstructed forward body. It refuses absent and scalar
+prior values. The plan grants no effect permit; independent fresh authority,
+lease, journal and dispatcher remain necessary. A synthetic fixture is staged
+to exercise reconciliation, cold reopen, changed peer/session and independent
+reconstruction of the restore request. Strict-remote job `30097323753214371`
+compiled v16 successfully, and 7/7 serializer unit tests and 5/5 dispatch
+integration tests passed on `hz2`. Source SHA-256 values for the checkpoint and
+fixture are `78da1b5c27103939a712c3f664bcdc4f718d6439a89436a85183ea1181b6167f`
+and `eff9433efa055c9d7fff5ce502aad35972cc4a6f4a014687c33498b2e506809e`.
+The corresponding executables were
+`960930d025ff7a2ec21d304b259a247b70f9be1805eb0be2bb502909d62fe7e0` and
+`6b56274db34bfde50211a297d7786911cf39caaf890884970b5ea30804a69577`;
+both deletion-denying traces recorded zero attempts. These tests do not address
+the v16 request-identity gap described next or establish physical behavior.
+It does not establish physical camera restore semantics, shared audio behavior,
+independent identity or protected key storage.
+
+Review found that v16's body comparison alone does not bind the requested
+video codec, which is part of the original request identity but absent from
+the JSON body. It must not be used as an exact-forward-request match. The v17
+candidate additionally recomputes the original request digest from the prior
+peer, session generation, framing and supplied stream configuration, and adds
+negative fixtures for changed codec and generation. The v17 checkpoint and
+fixture SHA-256 values are
+`d1dde2dca7b3e65bb47fb8b44a8d6bb1bffe443b19457deb171d49af2d667f1a` and
+`eb4f3b42823222cd1d15cfb2416d3927829aed8704f5615e4f913e9c5129579b`;
+that snapshot was admitted from queue `9253469360607986742` as job
+`30097323753214375` on `hz2`. Its locked offline build exited zero; 7/7
+serializer unit tests and 5/5 dispatch/journal integration tests passed,
+including the changed-codec and changed-generation refusals. The respective
+test executable SHA-256 values were
+`5dca1e6adf9feee374eede84b3d390c690d2d57e80ea163fdae6ebb845b885b6` and
+`1e17d3748d1b3e39ea2b01331ec7042a7cb8235871502f89f18a79312d90c4ce`.
+Both deletion-denying traces recorded zero attempts. This is synthetic
+evidence; the physical G4 has not received or restored this request.
+
+The v18 candidate connects checkpoint staging to the experimental HTTP
+serializer dispatcher. `Stored::capture_and_stage` encrypts the exact bound
+baseline, stages it in a caller-owned spool, re-reads the ciphertext and places
+the spool's verification hold. A start request now requires a matching `Stored`
+value before the one-use permit is claimed; a missing or mismatched value is
+refused before transport polling. The staged receipt does not guarantee future
+object availability, independently retain the key or scope, or anchor the
+effect journal. The helper performs synchronous I/O and requires an owned,
+bounded blocking caller. Its strict-remote build is queued as
+`9253469360607986756`, and its tests are pending. The
+four source SHA-256 values (checkpoint, camera API, HTTP owner and fixture) are
+`507ef345ff289f2eb752db1487eec791f1508ea5020476c75047dbb601b7a8ff`,
+`37e5b6d4254d4536c70c7a7901e86589ecfb6eef44b08855252a09a8a091479e`,
+`2bb2591d03d896a4be434e69b92ddc2924177223efe6978c3418845254d28df7`, and
+`2aa208e59292580904d0e2736cc597e57ac75d5b3c0cf276d9b3f9c159464884`.
+No physical camera has been changed by this candidate.
+
 ## Live qualification still required
+
+On 2026-11-14 a read-only re-inventory of the original physical G4 handoff
+and time-sync journals found five regular files in each; their late manifest
+hashes remained `fa94566200090a7d4b58b5c49733b6906ed5935e0a682e1d25a87fe2087bfeac`
+and `8484cb6be55fd66bc8ea6287ebcb0db3a31b14d09f8091afc49ff713e7aaf251`,
+respectively. A bounded file-name scan of their two retained trial directories
+found no name containing `anchor`, `pin`, or `keeper` among 10 and 9 entries.
+The late manifests are not pre-effect anchors; the name scan cannot exclude
+anchors elsewhere or under different names. Neither observation settles the
+historical effects or grants permission to replay them.
+
+A read-only archive inventory on 2026-11-14 found 10,358 video files in the
+root-owned `/bulk/unifi_camera_recordings/g4-instant-fallback`; the newest was
+modified two seconds earlier and the oldest was approximately 214.8 hours old.
+The inventory used noninteractive privileged access and reported metadata only;
+the preceding unprivileged walk could not traverse this private directory and
+therefore did not represent recorder activity. This is point-in-time file
+freshness and available span, not decoded-frame, gap-free or 30-day retention
+proof. It is existing Scrypted-based recording, not direct FSS capture.
+Separately, a closed file last modified 124 seconds earlier probed as a
+60.000326-second H.264 video at 1280 x 720 and one frame decoded successfully
+to a null sink. The probe used privileged read-only access and did not persist
+or play media. One usable medium-resolution sample does not prove every file,
+continuous coverage, or high-resolution continuous recording.
+Read-only inspection of the Python script currently selected by the fallback
+service found a `RETENTION` constant of 2,592,000 seconds (30 days); that
+script's SHA-256 was
+`86087aea0b3c1e8736e80c6b657c2a0c80869cf71a29ad725b1face8096f2435`.
+This confirms the configured constant, not that a particular old recording was
+deleted at the right time or that cleanup cannot affect other policies.
+An independent metadata-only ordering of eligible MP4s modified in the last
+24 hours (excluding files modified in the preceding two minutes) found 1,436
+files, three adjacent modification-time gaps over 90 seconds, none over 180
+seconds, and a largest gap of 121 seconds. Modification times are not camera
+capture times; these figures neither prove nor disprove lost video.
+`/bulk` reported approximately 3,313 GiB available at this check; this is a
+capacity snapshot, not a reservation for future retention.
 
 - Independently establish the camera identity, current settings, listener
   ownership, lease and exact effect authority; retain the actual prior values,

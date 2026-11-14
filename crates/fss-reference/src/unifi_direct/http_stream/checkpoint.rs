@@ -35,6 +35,9 @@ pub enum Error {
     Denied,
     /// Authentication failed, including a wrong key or scope.
     Authentication,
+    /// The protected object store refused or could not confirm a write or hold.
+    /// Its state may be indeterminate and must be inspected before retrying.
+    Storage,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -100,6 +103,39 @@ impl Scope {
     /// The original private baseline binding; treat this digest as sensitive.
     pub fn baseline_digest(&self) -> ContentDigest {
         self.baseline
+    }
+    /// Match this scope against one exact operation in a cold-recovered effect
+    /// owner. `expected_head` and `expected_preparation` must be retained
+    /// independently of that journal; this method cannot establish their
+    /// provenance. A match reports the journal's state only. It does not
+    /// authenticate a camera, settle the operation, or authorize any effect.
+    pub fn match_recovered_journal(
+        &self,
+        cx: &Cx,
+        authority: &dyn Authority,
+        owner: &fss_runtime::effect::EffectCoordinator,
+        operation: &fss_core::OperationId,
+        expected_head: fss_runtime::effect_journal::EffectJournalPin,
+        expected_preparation: ContentDigest,
+    ) -> Result<fss_core::EffectState, Error> {
+        admit(cx, self, authority, Action::Inspect)?;
+        if !owner.is_reconciliation_only()
+            || owner.persistence_needs_recovery()
+            || owner.durable_pin() != Some(expected_head)
+            || !valid_digest(expected_preparation)
+            || owner.retained_preparation_digest(operation) != Some(expected_preparation)
+        {
+            return Err(Error::Invalid);
+        }
+        let receipt = owner.journal().operation(operation).ok_or(Error::Invalid)?;
+        if receipt.intent.effect_class != super::intent::EFFECT_CLASS
+            || receipt.intent.request_digest != self.request
+            || receipt.intent.precondition_digest != self.preconditions
+        {
+            return Err(Error::Invalid);
+        }
+        admit(cx, self, authority, Action::Inspect)?;
+        Ok(receipt.state)
     }
     fn validate(&self) -> Result<(), Error> {
         if !(1..=3).contains(&self.channel)
@@ -192,6 +228,10 @@ pub enum Action {
     Open,
     /// Disclose the decrypted values to caller-owned code.
     Inspect,
+    /// Stage encrypted bytes in the caller-owned protected object store.
+    Stage,
+    /// Verify and hold the staged ciphertext in the object store.
+    Verify,
 }
 /// Live caller authority. For `Entropy`, the implementation must ensure the
 /// context supplies cryptographically secure random bytes and nonce uniqueness
@@ -244,6 +284,64 @@ fn append(out: &mut String, text: &str) -> Result<(), Error> {
 /// The scope and encryption key must be independently retained. Its bytes
 /// are not a persistence receipt, key-management solution or effect permit.
 pub struct Sealed(Vec<u8>);
+
+/// A checkpoint staged, re-read and held in a caller-owned spool during this
+/// process. This is not independent retention of the scope, key, or journal
+/// anchor, and it cannot guarantee later availability or prevent corruption.
+pub struct Stored {
+    scope: Scope,
+    digest: ContentDigest,
+}
+impl fmt::Debug for Stored {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("StoredSerializerCheckpoint(<redacted>)")
+    }
+}
+impl Stored {
+    /// Capture before dispatch, stage ciphertext, re-read it and install the
+    /// spool's durable verification hold. Any refusal after staging may leave
+    /// an object or hold behind; inspect the spool before retrying. This is
+    /// synchronous I/O: callers must use an owned bounded blocking operation.
+    /// The caller must independently retain scope, digest, key, and journal anchors.
+    pub fn capture_and_stage(
+        cx: &Cx,
+        authority: &dyn Authority,
+        scope: Scope,
+        key: &Key,
+        plan: &Plan,
+        baseline: &VideoSerializers,
+        spool: &mut fss_object::StagingSpool,
+    ) -> Result<Self, Error> {
+        let sealed = Sealed::capture(cx, authority, scope, key, plan, baseline)?;
+        admit(cx, &scope, authority, Action::Stage)?;
+        let receipt = spool
+            .stage_bytes(sealed.bytes())
+            .map_err(|_| Error::Storage)?;
+        admit(cx, &scope, authority, Action::Verify)?;
+        let (state, bytes) = spool
+            .verify_and_read(receipt.digest)
+            .map_err(|_| Error::Storage)?;
+        if state != fss_object::SpoolObjectState::Verified || bytes != sealed.bytes() {
+            return Err(Error::Storage);
+        }
+        admit(cx, &scope, authority, Action::Verify)?;
+        Ok(Self {
+            scope,
+            digest: receipt.digest,
+        })
+    }
+    /// Digest for independently authorized retention and later spool lookup.
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
+    /// Scope metadata must be protected and retained independently from the spool.
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+    pub(in crate::unifi_direct) fn matches_plan(&self, plan: &Plan) -> bool {
+        Scope::from_plan(plan, self.scope.certificate).is_ok_and(|scope| scope == self.scope)
+    }
+}
 impl fmt::Debug for Sealed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SealedSerializerCheckpoint")
@@ -398,6 +496,39 @@ pub struct Retained {
     scope: Scope,
     value: SecretValue,
 }
+
+/// Caller-supplied claims for planning a separate post-restart restore.
+/// The camera, certificate, journal anchors, current session, listener and
+/// lease require independent validation; this structure grants no authority.
+#[derive(Clone, Copy)]
+pub struct RestoreContext<'a> {
+    /// Previously admitted camera identity claim.
+    pub camera: ContentDigest,
+    /// Previously admitted camera certificate claim.
+    pub certificate: ContentDigest,
+    /// Peer of the newly admitted session.
+    pub peer: Ipv4Addr,
+    /// Original forward stream configuration, reconstructed by the caller.
+    pub forward: &'a super::super::StreamStart,
+    /// Peer bound to the original forward request.
+    pub original_peer: Ipv4Addr,
+    /// Session generation bound to the original forward request.
+    pub original_generation: u64,
+    /// Framing bound to the original forward request.
+    pub original_framing: super::Framing,
+    /// Fresh session, lease, listener and readback claims for restoration.
+    pub current: super::Preconditions,
+    /// HTTP request framing for the separate restore effect.
+    pub framing: super::Framing,
+    /// Cold-recovered original effect owner, not a live dispatch owner.
+    pub original_owner: &'a fss_runtime::effect::EffectCoordinator,
+    /// Exact original forward operation.
+    pub original_operation: &'a fss_core::OperationId,
+    /// Independently retained current head of the recovered journal.
+    pub journal_head: fss_runtime::effect_journal::EffectJournalPin,
+    /// Independently retained original preparation digest.
+    pub preparation: ContentDigest,
+}
 impl fmt::Debug for Retained {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("RetainedSerializerCheckpoint(<redacted>)")
@@ -477,6 +608,125 @@ impl Retained {
         })??;
         admit(cx, &self.scope, authority, Action::Inspect)?;
         Ok(result)
+    }
+
+    /// Plan, but do not authorize or dispatch, a separate restore after the
+    /// original journal has been independently reconciled as verified. All
+    /// effects in that journal must be terminal; other journals are outside
+    /// this check. The new session's readback must match the forward request
+    /// and preserve the other tracks. Applying null or objects remains an
+    /// unverified camera behavior and shared audio is not restored here.
+    pub fn prepare_verified_restore(
+        &self,
+        cx: &Cx,
+        authority: &dyn Authority,
+        context: RestoreContext<'_>,
+        observed: &VideoSerializers,
+        authorize_observation: impl Fn(Ipv4Addr, u64) -> bool,
+    ) -> Result<Plan, Error> {
+        if !self
+            .scope
+            .matches_camera(context.camera, context.certificate)
+            || context.current.camera != context.camera
+            || context.current.listener != context.forward.destination
+            || !super::local_unicast(context.peer)
+            || !super::local_unicast(*context.forward.destination.ip())
+            || super::request_digest(
+                context.original_peer,
+                context.forward,
+                context.original_generation,
+                context.original_framing,
+            )
+            .map_err(|_| Error::Invalid)?
+                != self.scope.request
+            || self.scope.match_recovered_journal(
+                cx,
+                authority,
+                context.original_owner,
+                context.original_operation,
+                context.journal_head,
+                context.preparation,
+            )? != fss_core::EffectState::Verified
+            || context
+                .original_owner
+                .check_all_terminal(&context.original_owner.binding())
+                .is_err()
+        {
+            return Err(Error::Invalid);
+        }
+        let channel = match context.forward.channel {
+            super::super::VideoChannel::Video1 => 1,
+            super::super::VideoChannel::Video2 => 2,
+            super::super::VideoChannel::Video3 => 3,
+        };
+        if channel != self.scope.channel {
+            return Err(Error::Invalid);
+        }
+        let admitted = |peer, generation| {
+            peer == context.peer
+                && generation == context.current.session_generation
+                && authorize_observation(peer, generation)
+        };
+        let comparison = self.compare_reopened(
+            cx,
+            authority,
+            context.camera,
+            context.certificate,
+            observed,
+            admitted,
+        )?;
+        if comparison.change != super::ReadbackChange::TargetTrackOnly
+            || !comparison.requested_fields_match
+            || observed.binding(admitted).map_err(|_| Error::Denied)? != context.current.serializers
+        {
+            return Err(Error::Invalid);
+        }
+        let preconditions = super::precondition_digest(context.peer, context.current)
+            .map_err(|_| Error::Invalid)?;
+        let forward = super::body(context.forward).map_err(|_| Error::Invalid)?;
+        let forward_json = SecretValue(
+            json_input::parse(std::str::from_utf8(&forward.0).map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?,
+        );
+        let index = usize::from(channel - 1);
+        let restore_body = self.visit(cx, authority, |tracks, original| {
+            if original != &forward_json.0 {
+                return Err(Error::Invalid);
+            }
+            let prior = tracks[index].ok_or(Error::Invalid)?;
+            if !matches!(prior, Value::Null | Value::Object(_)) {
+                return Err(Error::Invalid);
+            }
+            let mut text = SecretString(format!(
+                "{{\"av\":{{\"video\":{{\"{}\":{{\"avSerializer\":",
+                context.forward.channel.wire_name()
+            ));
+            super::super::events::write_json(prior, &mut text.0).map_err(|_| Error::Invalid)?;
+            append(&mut text.0, "}}}}")?;
+            Ok(PrivateBody(std::mem::take(&mut text.0).into_bytes()))
+        })??;
+        let request = super::request_digest_with_body(
+            context.peer,
+            context.forward,
+            context.current.session_generation,
+            context.framing,
+            &restore_body,
+            Operation::Restore,
+        )
+        .map_err(|_| Error::Invalid)?;
+        admit(cx, &self.scope, authority, Action::Inspect)?;
+        Ok(Plan {
+            peer: context.peer,
+            start: context.forward.clone(),
+            framing: context.framing,
+            camera: context.camera,
+            generation: context.current.session_generation,
+            fence: context.current.lease_fence,
+            request,
+            preconditions,
+            serializers: context.current.serializers,
+            restore_body: Some(restore_body),
+        })
     }
 }
 

@@ -9,7 +9,7 @@ use fss_core::{
     RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
 use fss_object::{
-    HostSpoolIo,
+    HostSpoolIo, SpoolLimits, StagingSpool,
     effect_journal::{EffectJournalLimits, FileEffectJournal},
 };
 use fss_reference::unifi_direct::{
@@ -19,12 +19,13 @@ use fss_reference::unifi_direct::{
     handoff::Framing,
     http_stream::{
         Operation as SerializerOperation, Plan, Preconditions, ReadbackChange, ReadbackObservation,
+        checkpoint,
     },
     metered::{MeteredClock, MeteredIo},
 };
 use fss_runtime::{
     authority::AuthorityCx,
-    effect::{CommitApproval, CommittedEffect, EffectCoordinator, PrepareSpec},
+    effect::{CommitApproval, CommittedEffect, EffectCoordinator, PrepareSpec, Reconciliation},
     execution::{TaskCompletion, TaskSpec, run_owned_async},
     lease::LeaseRegistry,
 };
@@ -41,7 +42,44 @@ use std::{
 };
 
 type Test = Result<(), Box<dyn Error>>;
+fn serializer_snapshot(
+    peer: Ipv4Addr,
+    generation: u64,
+    payload: &[u8],
+) -> Result<fss_reference::unifi_direct::camera_api::VideoSerializers, Box<dyn Error>> {
+    let mut session = Session::new(peer, generation)?;
+    let r = session.prepare_login(br#"{"username":"fixture","password":"synthetic"}"#)?;
+    session.finish_write(r, WriteOutcome::Written)?;
+    session.accept_login(
+        Response::new(200, "OK", Vec::new()).with_header("Set-Cookie", "authId=synthetic"),
+    )?;
+    let r = session.prepare_status()?;
+    session.finish_write(r, WriteOutcome::Written)?;
+    session.accept_status(Response::new(200, "OK", b"{}".to_vec()))?;
+    let r = session.prepare_serializer_settings()?;
+    session.finish_write(r, WriteOutcome::Written)?;
+    Ok(session
+        .accept_settings_with_serializers(Response::new(200, "OK", payload.to_vec()))?
+        .1)
+}
 struct Guard(bool);
+struct CheckpointPolicy(bool);
+impl checkpoint::Authority for CheckpointPolicy {
+    fn permits(&self, _: &asupersync::Cx, _: &checkpoint::Scope, _: checkpoint::Action) -> bool {
+        self.0
+    }
+}
+struct DenyCheckpoint(checkpoint::Action);
+impl checkpoint::Authority for DenyCheckpoint {
+    fn permits(
+        &self,
+        _: &asupersync::Cx,
+        _: &checkpoint::Scope,
+        action: checkpoint::Action,
+    ) -> bool {
+        action != self.0
+    }
+}
 impl SerializerAuthority for Guard {
     fn permits(&self, _: &Plan, _: Preconditions, _: &CommittedEffect) -> bool {
         self.0
@@ -284,8 +322,9 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
         },
         TimestampNs(3),
     )?;
+    let forward_preparation = prepared.digest();
     let approval = CommitApproval {
-        prepared_digest: prepared.digest(),
+        prepared_digest: forward_preparation,
         current_precondition_digest: plan.precondition_digest(),
     };
     let permit = effects.commit(
@@ -349,6 +388,89 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
         None
     };
     let runtime = RuntimeBuilder::current_thread().build()?;
+    let checkpoint_scope =
+        checkpoint::Scope::from_plan(&plan, ContentDigest::sha256(b"fixture certificate"))?;
+    let key = checkpoint::Key::new([7; 32])?;
+    let sealed = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        Ok::<_, Box<dyn Error>>(checkpoint::Sealed::capture(
+            &cx,
+            &CheckpointPolicy(true),
+            checkpoint_scope,
+            &key,
+            &plan,
+            &baseline,
+        )?)
+    })?;
+    let mut checkpoint_spool = StagingSpool::open(
+        dir.join("checkpoint-spool"),
+        SpoolLimits::new(4, 1_000_000, 100_000, 8),
+    )?;
+    let stored = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        assert!(
+            checkpoint::Stored::capture_and_stage(
+                &cx,
+                &DenyCheckpoint(checkpoint::Action::Stage),
+                checkpoint_scope,
+                &key,
+                &plan,
+                &baseline,
+                &mut checkpoint_spool
+            )
+            .is_err()
+        );
+        Ok::<_, Box<dyn Error>>(checkpoint::Stored::capture_and_stage(
+            &cx,
+            &CheckpointPolicy(true),
+            checkpoint_scope,
+            &key,
+            &plan,
+            &baseline,
+            &mut checkpoint_spool,
+        )?)
+    })?;
+    let other_conditions = Preconditions {
+        peer_admission: ContentDigest::sha256(b"other peer admission"),
+        ..conditions
+    };
+    let other_plan = Plan::new(
+        peer,
+        &start,
+        other_conditions,
+        &baseline,
+        Framing::ContentLength,
+    )?;
+    let other_scope =
+        checkpoint::Scope::from_plan(&other_plan, ContentDigest::sha256(b"fixture certificate"))?;
+    let other_stored = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        Ok::<_, Box<dyn Error>>(checkpoint::Stored::capture_and_stage(
+            &cx,
+            &CheckpointPolicy(true),
+            other_scope,
+            &key,
+            &other_plan,
+            &baseline,
+            &mut checkpoint_spool,
+        )?)
+    })?;
+    drop(checkpoint_spool);
+    let reopened_spool = StagingSpool::open(
+        dir.join("checkpoint-spool"),
+        SpoolLimits::new(4, 1_000_000, 100_000, 8),
+    )?;
+    let stored_bytes = reopened_spool.read_bounded(stored.digest(), 100_000)?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        checkpoint::Sealed::from_bytes(&stored_bytes)?.open(
+            &cx,
+            &CheckpointPolicy(true),
+            stored.scope(),
+            &key,
+        )?;
+        Ok::<(), Box<dyn Error>>(())
+    })?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let run = run_owned_async(
@@ -383,12 +505,26 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                         owner.status(Duration::from_secs(5)).await?;
                         let (_, observed) =
                             owner.settings_serializers(Duration::from_secs(5)).await?;
+                        let missing = owner
+                            .dispatch_serializer(
+                                &plan,
+                                conditions,
+                                &observed,
+                                None,
+                                permit,
+                                &Guard(true),
+                                Duration::from_secs(5),
+                            )
+                            .await
+                            .expect_err("missing checkpoint must not write");
+                        assert_eq!(missing.reason, HandoffError::CheckpointRequired);
                         let denied = owner
                             .dispatch_serializer(
                                 &plan,
                                 conditions,
                                 &observed,
-                                permit,
+                                Some(&stored),
+                                missing.permit,
                                 &Guard(true),
                                 Duration::from_secs(5),
                             )
@@ -401,6 +537,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                                 &plan,
                                 conditions,
                                 &observed,
+                                Some(&stored),
                                 denied.permit,
                                 &Guard(true),
                                 Duration::from_secs(5),
@@ -451,6 +588,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                                     &restore,
                                     restore_conditions,
                                     &readback,
+                                    None,
                                     permit,
                                     &Guard(true),
                                     Duration::from_secs(5),
@@ -493,6 +631,38 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                         "fixture:camera",
                         4096,
                     )?;
+                    let missing = session
+                        .dispatch_serializer(
+                            cx,
+                            &mut io,
+                            &plan,
+                            conditions,
+                            &baseline,
+                            None,
+                            permit,
+                            &Guard(true),
+                            Duration::from_secs(1),
+                        )
+                        .await
+                        .expect_err("missing checkpoint must not write");
+                    assert_eq!(missing.reason, HandoffError::CheckpointRequired);
+                    assert!(!polled.get());
+                    let wrong = session
+                        .dispatch_serializer(
+                            cx,
+                            &mut io,
+                            &plan,
+                            conditions,
+                            &baseline,
+                            Some(&other_stored),
+                            missing.permit,
+                            &Guard(true),
+                            Duration::from_secs(1),
+                        )
+                        .await
+                        .expect_err("mismatched checkpoint must not write");
+                    assert_eq!(wrong.reason, HandoffError::CheckpointRequired);
+                    assert!(!polled.get());
                     let refusal = session
                         .dispatch_serializer(
                             cx,
@@ -500,7 +670,8 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                             &plan,
                             conditions,
                             &baseline,
-                            permit,
+                            Some(&stored),
+                            wrong.permit,
                             &Guard(false),
                             Duration::from_secs(1),
                         )
@@ -519,6 +690,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                             &plan,
                             stale,
                             &baseline,
+                            Some(&stored),
                             refusal.permit,
                             &Guard(true),
                             Duration::from_secs(1),
@@ -534,6 +706,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                             &plan,
                             conditions,
                             &changed,
+                            Some(&stored),
                             refusal.permit,
                             &Guard(true),
                             Duration::from_secs(1),
@@ -549,6 +722,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                             &plan,
                             conditions,
                             &baseline,
+                            Some(&stored),
                             refusal.permit,
                             &Guard(true),
                             Duration::from_millis(if partial { 50 } else { 1000 }),
@@ -646,5 +820,179 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
             fss_core::EffectState::Committed
         );
     }
+    let verified = !owned && !partial && !bad_response;
+    if verified {
+        let handle = effects.prepared(&op).ok_or("missing preparation")?;
+        let proof = ContentDigest::sha256(b"independent synthetic observation");
+        effects.reconcile(
+            &mut tree,
+            &authority,
+            &handle,
+            Reconciliation::Indeterminate("fixture ambiguous write"),
+            TimestampNs(60_000_000_000),
+        )?;
+        effects.reconcile(
+            &mut tree,
+            &authority,
+            &handle,
+            Reconciliation::Observed(proof),
+            TimestampNs(61_000_000_000),
+        )?;
+        effects.reconcile(
+            &mut tree,
+            &authority,
+            &handle,
+            Reconciliation::Verified(proof),
+            TimestampNs(62_000_000_000),
+        )?;
+    }
+    let head = effects.durable_pin().ok_or("missing journal pin")?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        assert!(
+            checkpoint_scope
+                .match_recovered_journal(
+                    &cx,
+                    &CheckpointPolicy(true),
+                    &effects,
+                    &op,
+                    head,
+                    forward_preparation
+                )
+                .is_err()
+        );
+        Ok::<(), Box<dyn Error>>(())
+    })?;
+    drop(effects);
+    let journal = FileEffectJournal::open(
+        dir.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        head,
+    )?;
+    let recovered = EffectCoordinator::recover(Box::new(journal), head)?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        assert_eq!(
+            checkpoint_scope.match_recovered_journal(
+                &cx,
+                &CheckpointPolicy(true),
+                &recovered,
+                &op,
+                head,
+                forward_preparation
+            )?,
+            if verified { fss_core::EffectState::Verified } else { fss_core::EffectState::Committed }
+        );
+        assert!(
+            checkpoint_scope
+                .match_recovered_journal(
+                    &cx,
+                    &CheckpointPolicy(false),
+                    &recovered,
+                    &op,
+                    head,
+                    forward_preparation
+                )
+                .is_err()
+        );
+        assert!(
+            checkpoint_scope
+                .match_recovered_journal(
+                    &cx,
+                    &CheckpointPolicy(true),
+                    &recovered,
+                    &op,
+                    head,
+                    ContentDigest::sha256(b"wrong preparation")
+                )
+                .is_err()
+        );
+        let wrong_head = fss_runtime::effect_journal::EffectJournalPin {
+            sequence: head.sequence,
+            root: ContentDigest::sha256(b"wrong head"),
+        };
+        assert!(
+            checkpoint_scope
+                .match_recovered_journal(
+                    &cx,
+                    &CheckpointPolicy(true),
+                    &recovered,
+                    &op,
+                    wrong_head,
+                    forward_preparation
+                )
+                .is_err()
+        );
+        let changed_conditions = Preconditions {
+            peer_admission: ContentDigest::sha256(b"other admission"),
+            ..conditions
+        };
+        let changed_plan = Plan::new(
+            peer,
+            &start,
+            changed_conditions,
+            &baseline,
+            Framing::ContentLength,
+        )?;
+        let changed_scope = checkpoint::Scope::from_plan(
+            &changed_plan,
+            ContentDigest::sha256(b"fixture certificate"),
+        )?;
+        assert!(
+            changed_scope
+                .match_recovered_journal(
+                    &cx,
+                    &CheckpointPolicy(true),
+                    &recovered,
+                    &op,
+                    head,
+                    forward_preparation
+                )
+                .is_err()
+        );
+        if owned && match_request {
+            assert!(
+                checkpoint_scope
+                    .match_recovered_journal(
+                        &cx,
+                        &CheckpointPolicy(true),
+                        &recovered,
+                        &restore_op,
+                        head,
+                        forward_preparation
+                    )
+                    .is_err()
+            );
+        }
+        let retained = checkpoint::Sealed::from_bytes(sealed.bytes())?.open(&cx, &CheckpointPolicy(true), checkpoint_scope, &key)?;
+        let peer2 = Ipv4Addr::new(192, 168, 42, 12);
+        let after = serializer_snapshot(peer2, 2, br#"{"av":{"video":{"video1":{"avSerializer":{"type":"extendedFlv","parameters":{"streamName":"0123456789abcdef","withOpus":false},"destinations":["tcp://192.168.42.11:17777?retryInterval=1&connectTimeout=5"]}},"video2":{"avSerializer":{"destinations":["tcp://fixture:1"]}}}}}"#)?;
+        let current = Preconditions { session_generation: 2, serializers: after.binding(|_, _| true)?, ..conditions };
+        let context = checkpoint::RestoreContext { camera, certificate: ContentDigest::sha256(b"fixture certificate"), peer: peer2, forward: &start, original_peer: peer, original_generation: 1, original_framing: Framing::ContentLength, current, framing: Framing::ContentLength, original_owner: &recovered, original_operation: &op, journal_head: head, preparation: forward_preparation };
+        let admitted = |p, g| p == peer2 && g == 2;
+        if verified {
+            let result = retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), context, &after, admitted)?;
+            assert_eq!(result.operation(), SerializerOperation::Restore);
+            let before2 = serializer_snapshot(peer2, 2, br#"{"av":{"video":{"video1":{"avSerializer":null},"video2":{"avSerializer":{"destinations":["tcp://fixture:1"]}}}}}"#)?;
+            let before_conditions = Preconditions { serializers: before2.binding(|_, _| true)?, ..current };
+            let independent = Plan::new(peer2, &start, before_conditions, &before2, Framing::ContentLength)?.prepare_restore(&before2, &after, current, Framing::ContentLength, admitted)?;
+            assert_eq!(result.request_digest(), independent.request_digest());
+            assert_eq!(result.precondition_digest(), independent.precondition_digest());
+            let changed = serializer_snapshot(peer2, 2, br#"{"av":{"video":{"video1":{"avSerializer":{}},"video2":{"avSerializer":{}}}}}"#)?;
+            assert!(retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), context, &changed, admitted).is_err());
+            assert!(retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), context, &after, |_, _| false).is_err());
+            let wrong = checkpoint::RestoreContext { certificate: ContentDigest::sha256(b"wrong"), ..context };
+            assert!(retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), wrong, &after, admitted).is_err());
+            let other_codec = StreamStart::new(VideoChannel::Video1, listener, VideoCodec::H265, AudioCodec::Aac, "0123456789abcdef")?;
+            let wrong = checkpoint::RestoreContext { forward: &other_codec, ..context };
+            assert!(retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), wrong, &after, admitted).is_err());
+            let wrong = checkpoint::RestoreContext { original_generation: 2, ..context };
+            assert!(retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), wrong, &after, admitted).is_err());
+        } else {
+            assert!(retained.prepare_verified_restore(&cx, &CheckpointPolicy(true), context, &after, admitted).is_err());
+        }
+        Ok::<(), Box<dyn Error>>(())
+    })?;
     Ok(())
 }
