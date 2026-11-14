@@ -11,6 +11,7 @@ on:
       - 'rust-toolchain.toml'
       - 'scripts/check_recording_lifecycle.sh'
       - 'scripts/check_provider_custody.sh'
+      - 'scripts/check_media_probe.sh'
       - '.github/workflows/reference-rust.yml'
   workflow_dispatch:
 
@@ -39,6 +40,9 @@ jobs:
       - name: Verify canonical provider roots and transitive custody
         if: success() || failure()
         run: bash scripts/check_provider_custody.sh
+      - name: Verify bounded media identification and native parameter inspection
+        if: success() || failure()
+        run: bash scripts/check_media_probe.sh
       - name: Verify digest registry declarations remain distinct from Markdown structure
         if: success() || failure()
         run: >-

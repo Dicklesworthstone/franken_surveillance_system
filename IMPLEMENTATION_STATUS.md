@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Bounded native media parameter probing — 2026-11-14
+
+FSS-053 now exposes an explicit Annex-B configuration-prefix probe through
+`fss_container::probe::parameters` and `fss-probe --parameters`. It uses the
+existing packet-owned AVC and HEVC parsers to return the first complete admitted
+SPS/PPS or VPS/SPS/PPS tuple, coded and cropped dimensions, component depth,
+profile/level indicators, exact borrowed source ranges and inspection counts.
+
+Byte, NAL-count and geometry limits are independent; cancellation checkpoints
+withhold incomplete work. Exhausting a byte allowance never impersonates observed
+EOF. Conflicting tuples, malformed syntax, unsupported syntax, incomplete input
+and exhausted limits retain distinct refusal outcomes. AVC/HEVC header aliases
+cannot manufacture a codec declaration before a coherent parameter tuple exists.
+HEVC retains its native configuration-prefix scope; this does not certify decoding,
+full parameter conformance, timing, continuity or retained-source custody.
+
+Family recognition now obeys its complete byte allowance, including the MPEG-TS
+sync byte at offset 188, and its default window includes both required sync bytes.
+Extended-size ISO-BMFF headers use the correct major-brand offset; independent
+contradictory signatures refuse. The CLI accumulates bounded short reads, handles
+interrupted input with a retry ceiling, rejects invalid/repeated policies, escapes
+untrusted brand bytes and returns an error when output fails.
+
+The focused selection contains 22 container probe tests and 13 CLI tests, including
+retained AVC/HEVC fixtures, exact budgets/source ranges, EOF, cancellation, syntax
+and geometry refusals, codec-header ambiguity and I/O failures. Independent source
+review completed. Native tests and formatting are unverified because the execution
+environment became unavailable. `scripts/check_media_probe.sh` selects these
+contracts early in the existing supplementary pinned-nightly workflow.
+FSS-053 generation/custody integration and QL-MEDIA-001, TEST-MEDIA-MALFORMED-001
+and GATE-040 remain open. See [bounded media probing](docs/MEDIA_PROBE.md).
+
 ## Canonical provider roots and transitive custody — 2026-11-14
 
 The FSS-061 in-memory object-store provider now activates only retained, durable
