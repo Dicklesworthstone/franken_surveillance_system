@@ -88,6 +88,11 @@ fn valid_wait(wait: Duration) -> bool {
     !wait.is_zero() && wait <= MAX_WAIT
 }
 
+// Check deterministic accept inputs before a caller sends a camera request.
+pub(crate) fn valid_accept_config(chunk_bytes: usize, max_bytes: u64, wait: Duration) -> bool {
+    (1..=MAX_CHUNK_BYTES).contains(&chunk_bytes) && max_bytes != 0 && valid_wait(wait)
+}
+
 /// A single bound listener, held inside its owning task.
 pub struct Listener<'scope, 'task, 'policy> {
     listener: TcpListener,
@@ -177,6 +182,14 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
         self.bound
     }
 
+    pub(super) fn matches_camera_binding(
+        &self,
+        clock: &MeteredClock<'_, '_>,
+        resource: &str,
+    ) -> bool {
+        self.clock.same_mapping(clock) && self.resource == resource
+    }
+
     /// Accept one connection and build a task-bound media pipeline. The policy,
     /// task capabilities and clock are rechecked on every accept poll and once
     /// after acceptance. The listener is consumed on every outcome.
@@ -207,7 +220,7 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
         max_bytes: u64,
         wait: Duration,
     ) -> Result<Pipeline, Error> {
-        if !(1..=MAX_CHUNK_BYTES).contains(&chunk_bytes) || max_bytes == 0 || !valid_wait(wait) {
+        if !valid_accept_config(chunk_bytes, max_bytes, wait) {
             return Err(Error::Configuration);
         }
         let accept = poll_fn(|context| {

@@ -349,6 +349,13 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             && self.generation == generation
             && self.resource == resource
     }
+
+    pub(super) fn matches_media_listener(
+        &self,
+        listener: &super::listener::Listener<'_, '_, '_>,
+    ) -> bool {
+        listener.matches_camera_binding(&self.clock, &self.resource)
+    }
     /// Current local state; no remote identity or adoption is implied.
     pub fn phase(&self) -> camera_api::Phase {
         self.session.phase()

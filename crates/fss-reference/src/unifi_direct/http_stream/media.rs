@@ -8,13 +8,14 @@
 use super::{Plan, Preconditions, ReadbackChange, ReadbackObservation, checkpoint::Anchored};
 use crate::unifi_direct::{
     camera_api::{HandoffError, HandoffWrite, SerializerAuthority, VideoSerializers},
-    camera_http, listener,
-    pipeline::Pipeline,
+    camera_http, ingress, listener,
+    pipeline::{NameProbeError, Pipeline, ProbeError},
     recording::Recorder,
 };
 use asupersync::io::{AsyncRead, AsyncWrite};
-use fss_packet::extended_flv::stream::Framer;
-use fss_runtime::effect::CommittedEffect;
+use fss_core::{ContentDigest, TimestampNs};
+use fss_packet::extended_flv::stream::{Framer, NameProbeOwner};
+use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 use std::{net::Ipv4Addr, time::Duration};
 
 /// Caller-owned inputs for one bounded attempt. Identity, listener routing,
@@ -45,7 +46,7 @@ pub struct Request<'a> {
 /// Payload-free indication of where the startup stopped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Failure {
-    /// The bound listener does not match the exact start plan.
+    /// The start operation, listener, or media bounds failed preflight.
     Preflight,
     /// The dispatcher refused before claiming its permit.
     Dispatch(HandoffError),
@@ -89,13 +90,83 @@ impl std::fmt::Debug for Refusal {
 /// identity, high-resolution profile and durable recording remain unverified.
 #[must_use = "retain or explicitly retire the media pipeline and reconcile the effect"]
 pub struct Connected {
+    camera_claim: ContentDigest,
     /// Claimed permit retained for independent effect reconciliation.
+    pub(super) permit: CommittedEffect,
+    /// Full private serializer readback.
+    pub(super) readback: VideoSerializers,
+    /// Redacted comparison to the baseline and requested serializer fields.
+    pub(super) comparison: ReadbackObservation,
+    /// Fresh task-bound pipeline for independent media validation and custody.
+    pub(super) pipeline: Pipeline,
+}
+
+impl Connected {
+    /// The camera claim bound to the dispatched start, not authenticated identity.
+    pub fn camera_claim(&self) -> ContentDigest {
+        self.camera_claim
+    }
+
+    /// The redacted readback comparison made before accepting the socket.
+    pub fn comparison(&self) -> ReadbackObservation {
+        self.comparison
+    }
+
+    /// Install a source-preserving stream-name probe before processing media.
+    pub fn begin_name_probe(&mut self, probe: NameProbeOwner) -> Result<(), NameProbeOwner> {
+        self.pipeline.begin_name_probe(probe)
+    }
+
+    /// Recover and explicitly abandon an installed stream-name probe.
+    pub fn take_name_probe(&mut self) -> Option<NameProbeOwner> {
+        self.pipeline.take_name_probe()
+    }
+
+    /// Probe the initial FLV header while retaining its original bytes.
+    pub async fn probe_header_step(
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &asupersync::Cx,
+        now: TimestampNs,
+    ) -> Result<ingress::HeaderProbe, ProbeError> {
+        self.pipeline.probe_header_step(task, cx, now).await
+    }
+
+    /// Advance the installed stream-name probe while retaining source bytes.
+    pub async fn probe_name_step(
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &asupersync::Cx,
+        now: TimestampNs,
+    ) -> Result<ingress::NameProbeStep, NameProbeError> {
+        self.pipeline.probe_name_step(task, cx, now).await
+    }
+
+    /// Transfer all owners; a detached pipeline cannot be reattached as this
+    /// connected stream without performing a new startup.
+    pub fn into_parts(self) -> Detached {
+        Detached {
+            camera_claim: self.camera_claim,
+            permit: self.permit,
+            readback: self.readback,
+            comparison: self.comparison,
+            pipeline: self.pipeline,
+        }
+    }
+}
+
+/// Complete stream and effect custody after detaching the startup owner.
+#[must_use = "account for the media and reconcile the camera effect"]
+pub struct Detached {
+    /// Camera claim bound to the start, not authenticated identity.
+    pub camera_claim: ContentDigest,
+    /// Committed setting effect requiring reconciliation.
     pub permit: CommittedEffect,
     /// Full private serializer readback.
     pub readback: VideoSerializers,
-    /// Redacted comparison to the baseline and requested serializer fields.
+    /// Redacted readback comparison.
     pub comparison: ReadbackObservation,
-    /// Fresh task-bound pipeline for independent media validation and custody.
+    /// The admitted source pipeline.
     pub pipeline: Pipeline,
 }
 
@@ -111,6 +182,7 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<Connected, Refusal> {
     if request.plan.operation() != super::Operation::Start
         || request.current.listener != listener.local_addr()
+        || !http.matches_media_listener(listener)
         || !listener::valid_accept_config(request.chunk_bytes, request.max_bytes, request.wait)
     {
         return Err(Refusal {
@@ -206,6 +278,7 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
         .await
     {
         Ok(pipeline) => Ok(Connected {
+            camera_claim: request.current.camera,
             permit,
             readback,
             comparison,

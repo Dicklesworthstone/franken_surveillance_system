@@ -199,6 +199,14 @@ impl TcpIngress {
         Ok(())
     }
 
+    /// Check the existing task binding without reading or changing the socket.
+    /// Unbound, inactive, or inaccessible task state fails closed.
+    pub fn is_bound_to_task(&self, owner: &TaskCx<'_>) -> bool {
+        self.owner
+            .as_ref()
+            .is_some_and(|bound| owner.binding().is_ok_and(|current| &current == bound))
+    }
+
     /// Borrow the currently owned source chunk, if any.
     pub fn pending_bytes(&self) -> Option<&[u8]> {
         self.pending.map(|(_, len)| &self.buffer[..len])

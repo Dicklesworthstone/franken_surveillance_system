@@ -253,7 +253,13 @@ fn tcp_ingress_retries_a_dropped_pending_read_without_losing_or_double_charging_
                         .map_err(|e| e.to_string())?;
                     let mut source = TcpIngress::new(stream, "fixture:source", 4, 4)
                         .map_err(|e| e.to_string())?;
+                    if source.is_bound_to_task(owner) {
+                        return Err("unbound source claimed a task".into());
+                    }
                     source.bind_task(owner).map_err(|e| e.to_string())?;
+                    if !source.is_bound_to_task(owner) {
+                        return Err("source did not retain its task binding".into());
+                    }
                     let (mut different, mut different_tree) = root().map_err(|e| e.to_string())?;
                     let foreign = run_owned_async(
                         &mut different,
@@ -261,12 +267,13 @@ fn tcp_ingress_retries_a_dropped_pending_read_without_losing_or_double_charging_
                         task("task:source").map_err(|e| e.to_string())?,
                         cx,
                         async |foreign_owner, foreign_cx| {
+                            let same_binding = source.is_bound_to_task(foreign_owner);
                             let bind = source.bind_task(foreign_owner);
                             let read = source
                                 .receive(foreign_owner, foreign_cx, TimestampNs(4))
                                 .await;
                             TaskCompletion {
-                                output: (bind, read),
+                                output: (same_binding, bind, read),
                                 outcome: TaskOutcome::Success,
                                 completed_at: TimestampNs(5),
                             }
@@ -275,7 +282,11 @@ fn tcp_ingress_retries_a_dropped_pending_read_without_losing_or_double_charging_
                     .await
                     .map_err(|e| e.to_string())?;
                     if foreign.output
-                        != (Err(IngressError::Authority), Err(IngressError::Authority))
+                        != (
+                            false,
+                            Err(IngressError::Authority),
+                            Err(IngressError::Authority),
+                        )
                     {
                         return Err("different task claimed pre-bound source".into());
                     }

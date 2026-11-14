@@ -2,7 +2,15 @@
 #![cfg(target_os = "linux")]
 //! Synthetic journaled local serializer dispatch and reconciliation contracts.
 use asupersync::{
-    http::h1::Response, io::AsyncWrite, net::TcpListener, runtime::RuntimeBuilder, time::timeout,
+    http::h1::Response,
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpListener,
+    runtime::RuntimeBuilder,
+    time::timeout,
+};
+use fss_container::{
+    demux::{AvcMp4, DemuxLimits},
+    flv_avc::SourceKey,
 };
 use fss_core::{
     BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
@@ -12,6 +20,7 @@ use fss_object::{
     HostSpoolIo, SpoolLimits, StagingSpool,
     effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
 };
+use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
 use fss_reference::unifi_direct::{
     AudioCodec, StreamStart, VideoChannel, VideoCodec,
     camera_api::{HandoffError, HandoffWrite, Phase, SerializerAuthority, Session, WriteOutcome},
@@ -19,9 +28,11 @@ use fss_reference::unifi_direct::{
     handoff::Framing,
     http_stream::{
         Operation as SerializerOperation, Plan, Preconditions, ReadbackChange, ReadbackObservation,
-        checkpoint,
+        checkpoint, media,
     },
+    listener,
     metered::{MeteredClock, MeteredIo},
+    recording,
 };
 use fss_runtime::{
     authority::AuthorityCx,
@@ -114,7 +125,91 @@ impl camera_http::Authority for OwnerPolicy {
         generation == 1 && (operation != camera_http::Operation::SerializerSettings || self.0.get())
     }
 }
-fn fixture_server(address: std::net::SocketAddr, match_request: bool) -> std::io::Result<()> {
+struct MediaPolicy(SocketAddrV4);
+impl listener::Admission for MediaPolicy {
+    fn listener(&self, requested: SocketAddrV4, bound: Option<SocketAddrV4>) -> bool {
+        requested == self.0 && bound.is_none_or(|value| value == self.0)
+    }
+    fn peer(&self, bound: SocketAddrV4, source: SocketAddrV4) -> bool {
+        bound == self.0 && source.ip().is_loopback()
+    }
+}
+fn flv_tag(kind: u8, timestamp: u32, payload: &[u8]) -> std::io::Result<Vec<u8>> {
+    let size = payload.len();
+    let size32 = u32::try_from(size).map_err(std::io::Error::other)?;
+    let mut out = vec![
+        kind,
+        (size >> 16) as u8,
+        (size >> 8) as u8,
+        size as u8,
+        (timestamp >> 16) as u8,
+        (timestamp >> 8) as u8,
+        timestamp as u8,
+        (timestamp >> 24) as u8,
+        0,
+        0,
+        0,
+    ];
+    out.extend_from_slice(payload);
+    out.extend_from_slice(&(11_u32 + size32).to_be_bytes());
+    Ok(out)
+}
+fn synthetic_high_flv() -> std::io::Result<Vec<u8>> {
+    const SOURCE: &[u8] = include_bytes!(
+        "../../../experiments/unifi_tls_05_server_lab/tests/fixtures/synthetic_g4_resolution.264"
+    );
+    let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(SOURCE).collect();
+    let sps = nals
+        .iter()
+        .copied()
+        .find(|n| n[0] & 31 == 7)
+        .ok_or_else(|| std::io::Error::other("fixture SPS"))?;
+    let pps = nals
+        .iter()
+        .copied()
+        .find(|n| n[0] & 31 == 8)
+        .ok_or_else(|| std::io::Error::other("fixture PPS"))?;
+    let pictures: Vec<_> = nals.iter().copied().filter(|n| n[0] & 31 == 5).collect();
+    if pictures.len() != 4 {
+        return Err(std::io::Error::other("fixture IDR count"));
+    }
+    let mut avc = vec![0x17, 0, 0, 0, 0, 1, sps[1], sps[2], sps[3], 0xff, 0xe1];
+    avc.extend_from_slice(
+        &u16::try_from(sps.len())
+            .map_err(std::io::Error::other)?
+            .to_be_bytes(),
+    );
+    avc.extend_from_slice(sps);
+    avc.push(1);
+    avc.extend_from_slice(
+        &u16::try_from(pps.len())
+            .map_err(std::io::Error::other)?
+            .to_be_bytes(),
+    );
+    avc.extend_from_slice(pps);
+    let mut wire = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    wire.extend(flv_tag(9, 0, &avc)?);
+    for (i, picture) in pictures.iter().enumerate() {
+        let mut data = vec![0x17, 1, 0, 0, 0];
+        data.extend_from_slice(
+            &u32::try_from(picture.len())
+                .map_err(std::io::Error::other)?
+                .to_be_bytes(),
+        );
+        data.extend_from_slice(picture);
+        wire.extend(flv_tag(
+            9,
+            u32::try_from(i).map_err(std::io::Error::other)? * 40,
+            &data,
+        )?);
+    }
+    Ok(wire)
+}
+fn fixture_server(
+    address: std::net::SocketAddr,
+    match_request: bool,
+    media_target: Option<SocketAddrV4>,
+) -> std::io::Result<()> {
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     socket.set_read_timeout(Some(Duration::from_secs(8)))?;
     let mut routes = vec![
@@ -124,7 +219,7 @@ fn fixture_server(address: std::net::SocketAddr, match_request: bool) -> std::io
         "PUT /api/1.1/settings ",
         "GET /api/1.1/settings ",
     ];
-    if match_request {
+    if match_request && media_target.is_none() {
         routes.extend(["PUT /api/1.1/settings ", "GET /api/1.1/settings "]);
     }
     for (index, route) in routes.iter().enumerate() {
@@ -163,12 +258,14 @@ fn fixture_server(address: std::net::SocketAddr, match_request: bool) -> std::io
         if index == 5 && body != br#"{"av":{"video":{"video1":{"avSerializer":null}}}}"# {
             return Err(std::io::Error::other("fixture restore mismatch"));
         }
-        let reply: &[u8] = if index == 4 && match_request {
-            br#"{"av":{"video":{"video1":{"avSerializer":{"type":"extendedFlv","parameters":{"streamName":"0123456789abcdef","withOpus":false},"destinations":["tcp://192.168.42.11:17777?retryInterval=1&connectTimeout=5"]}},"video2":{"avSerializer":{"destinations":["tcp://fixture:1"]}}}}}"#
+        let reply: Vec<u8> = if index == 4 && match_request {
+            let target =
+                media_target.unwrap_or(SocketAddrV4::new(Ipv4Addr::new(192, 168, 42, 11), 17777));
+            format!(r#"{{"av":{{"video":{{"video1":{{"avSerializer":{{"type":"extendedFlv","parameters":{{"streamName":"0123456789abcdef","withOpus":false}},"destinations":["tcp://{target}?retryInterval=1&connectTimeout=5"]}}}},"video2":{{"avSerializer":{{"destinations":["tcp://fixture:1"]}}}}}}}}}}"#).into_bytes()
         } else if index == 2 || index == 4 || index == 6 {
-            br#"{"av":{"video":{"video1":{"avSerializer":null},"video2":{"avSerializer":{"destinations":["tcp://fixture:1"]}}}}}"#
+            br#"{"av":{"video":{"video1":{"avSerializer":null},"video2":{"avSerializer":{"destinations":["tcp://fixture:1"]}}}}}"#.to_vec()
         } else {
-            b"{}"
+            b"{}".to_vec()
         };
         let cookie = if index == 0 {
             "Set-Cookie: authId=synthetic\r\n"
@@ -180,7 +277,18 @@ fn fixture_server(address: std::net::SocketAddr, match_request: bool) -> std::io
             reply.len()
         );
         socket.write_all(head.as_bytes())?;
-        socket.write_all(reply)?;
+        socket.write_all(&reply)?;
+        if index == 4
+            && let Some(target) = media_target
+        {
+            let mut media =
+                std::net::TcpStream::connect_timeout(&target.into(), Duration::from_secs(5))?;
+            if match_request {
+                media.write_all(&synthetic_high_flv()?)?;
+            } else {
+                media.write_all(b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00")?;
+            }
+        }
     }
     Ok(())
 }
@@ -188,6 +296,35 @@ struct Sink {
     bytes: Rc<RefCell<Vec<u8>>>,
     polled: Rc<Cell<bool>>,
     partial: bool,
+}
+struct NoIo<'a>(&'a Cell<bool>);
+impl AsyncRead for NoIo<'_> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.0.set(true);
+        Poll::Ready(Err(std::io::Error::other("unexpected preflight read")))
+    }
+}
+impl AsyncWrite for NoIo<'_> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0.set(true);
+        Poll::Ready(Err(std::io::Error::other("unexpected preflight write")))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.0.set(true);
+        Poll::Ready(Err(std::io::Error::other("unexpected preflight flush")))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.0.set(true);
+        Poll::Ready(Err(std::io::Error::other("unexpected preflight shutdown")))
+    }
 }
 impl AsyncWrite for Sink {
     fn poll_write(
@@ -217,33 +354,424 @@ impl AsyncWrite for Sink {
 
 #[test]
 fn one_track_dispatch_requires_full_readback() -> Test {
-    exercise(false, false, false, false)
+    exercise(false, false, false, false, false, false)
 }
 #[test]
 fn partial_write_fences_and_leaves_effect_open() -> Test {
-    exercise(true, false, false, false)
+    exercise(true, false, false, false, false, false)
 }
 #[test]
 fn unsuccessful_response_fences_and_leaves_effect_open() -> Test {
-    exercise(false, true, false, false)
+    exercise(false, true, false, false, false, false)
 }
 #[test]
 fn owned_http_checks_policy_and_requires_private_readback() -> Test {
-    exercise(false, false, true, false)
+    exercise(false, false, true, false, false, false)
 }
 #[test]
 fn owned_http_observes_requested_fields_without_settling() -> Test {
-    exercise(false, false, true, true)
+    exercise(false, false, true, true, false, false)
+}
+#[test]
+fn owned_http_starts_native_media_listener() -> Test {
+    exercise(false, false, true, true, true, false)
+}
+#[test]
+fn owned_http_refuses_unmatched_readback_before_media_accept() -> Test {
+    exercise(false, false, true, false, true, false)
 }
 
-fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool) -> Test {
+#[test]
+fn owned_http_media_publishes_and_reads_native_video() -> Test {
+    exercise(false, false, true, true, true, true)
+}
+
+async fn archive_http_media<'scope, 'task>(
+    connected: media::Connected,
+    task: &'scope fss_runtime::execution::TaskCx<'task>,
+    cx: &'scope asupersync::Cx,
+    clock: MeteredClock<'scope, 'task>,
+    dir: &std::path::Path,
+    camera: ContentDigest,
+) -> Test {
+    use fss_core::region::ContextAuthority;
+    use fss_reference::{
+        DeploymentLimits, ReplayCx,
+        unifi_direct::{
+            archive, evidence,
+            http_stream::media_archive::{Driver, Step},
+            recording_storage,
+            source_coordinator::ArchiveAdmission,
+            source_worker, video_bootstrap, video_worker,
+        },
+    };
+    struct Access;
+    impl archive::RetainAuthority for Access {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            true
+        }
+    }
+    impl archive::ReadAuthority for Access {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            true
+        }
+    }
+    let replay_authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:http-media-archive".into(),
+        operation_id: OperationId::parse("operation:http-media-archive")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: BudgetVector::builder().bytes(256 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"HTTP media archive fixture"),
+        generation: 1,
+    })?;
+    let source_replay = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+    let video_replay = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+    let root = dir.join("media-archive");
+    let retention = ContentDigest::sha256(b"HTTP media retention");
+    let cfg = recording_storage::Configuration {
+        root: &root,
+        site_lineage: "site:http-media-fixture",
+        source: SourceKey {
+            connection: 1,
+            generation: 1,
+        },
+        camera_claim: camera,
+        source_retention: retention,
+        source_scope: ContentDigest::sha256(b"HTTP source scope"),
+        av_scope: ContentDigest::sha256(b"HTTP video scope"),
+        source_deployment_limits: DeploymentLimits::standard(),
+        av_deployment_limits: DeploymentLimits::standard(),
+        source_history_limits: EffectJournalLimits::default(),
+        av_history_limits: EffectJournalLimits::default(),
+        limits: archive::Limits::default(),
+        max_source_bytes: 1024 * 1024,
+        work_limit: 4_000_000_000,
+    };
+    let storage = recording_storage::create(
+        task,
+        cx,
+        clock,
+        cfg,
+        source_replay,
+        video_replay,
+        Arc::new(Access),
+    )?;
+    let policy = video_bootstrap::Policy {
+        inband: false,
+        retention,
+        media_limits: fss_container::Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
+    };
+    let other_camera = ContentDigest::sha256(b"different camera");
+    let other_root = dir.join("other-media-archive");
+    let other_cfg = recording_storage::Configuration {
+        root: &other_root,
+        camera_claim: other_camera,
+        ..cfg
+    };
+    let other_source = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+    let other_video = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+    let other_storage = recording_storage::create(
+        task,
+        cx,
+        clock,
+        other_cfg,
+        other_source,
+        other_video,
+        Arc::new(Access),
+    )?;
+    let mismatch = match Driver::attach(connected, other_storage, policy, other_camera) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("wrong camera archive binding accepted".into()),
+    };
+    let _other_storage = mismatch.storage;
+    let mut connected = mismatch.connected;
+    connected
+        .begin_name_probe(fss_packet::extended_flv::stream::NameProbeOwner::new(
+            "event1",
+            "0123456789abcdef",
+            256 * 1024,
+            4,
+            1_000_000,
+        )?)
+        .map_err(|_| "name probe installation refused")?;
+    let pending = match Driver::attach(connected, storage, policy, camera) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("unfinished name probe accepted".into()),
+    };
+    let mut connected = pending.connected;
+    let _probe = connected.take_name_probe().ok_or("missing name probe")?;
+    let mut driver = Driver::attach(connected, pending.storage, policy, camera)
+        .map_err(|_| "HTTP media archive attachment refused")?;
+    let cost = BudgetVector::ZERO;
+    if !matches!(
+        driver
+            .step(
+                task,
+                cx,
+                clock,
+                Duration::ZERO,
+                ArchiveAdmission {
+                    resource: "fixture:archive",
+                    cost: &cost
+                },
+                ArchiveAdmission {
+                    resource: "fixture:archive",
+                    cost: &cost
+                },
+            )
+            .await,
+        Step::Configuration
+    ) {
+        return Err("zero wait did not refuse before media work".into());
+    }
+    let mut foreign_budget = BudgetVector::ZERO;
+    foreign_budget.bytes = 64 * 1024 * 1024;
+    foreign_budget.network_bytes = 1_000_000;
+    let (mut foreign_authority, mut foreign_tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:foreign-archive".into(),
+            operation_id: OperationId::parse("operation:foreign-archive")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![
+                RuntimeGrant::AdapterNet.as_str().into(),
+                RuntimeGrant::ReadMedia.as_str().into(),
+                RuntimeGrant::ObjectStage.as_str().into(),
+                RuntimeGrant::ObjectPublish.as_str().into(),
+            ],
+            deadline: None,
+            priority: 1,
+            budgets: foreign_budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"foreign archive"),
+            generation: 1,
+        },
+        RegionId::new("region:foreign-archive")?,
+        RegionKind::Process,
+        foreign_budget,
+        TimestampNs(1),
+    )?;
+    let foreign = run_owned_async(
+        &mut foreign_authority,
+        &mut foreign_tree,
+        TaskSpec {
+            task_id: TaskId::new("task:serializer-test")?,
+            started_at: TimestampNs(7),
+        },
+        cx,
+        async |foreign_task, foreign_cx| {
+            let refused = match MeteredClock::new(foreign_task, foreign_cx, TimestampNs(8)) {
+                Ok(foreign_clock) => matches!(
+                    driver
+                        .step(
+                            foreign_task,
+                            foreign_cx,
+                            foreign_clock,
+                            Duration::from_secs(5),
+                            ArchiveAdmission {
+                                resource: "fixture:archive",
+                                cost: &cost
+                            },
+                            ArchiveAdmission {
+                                resource: "fixture:archive",
+                                cost: &cost
+                            },
+                        )
+                        .await,
+                    Step::Configuration
+                ),
+                Err(_) => false,
+            };
+            TaskCompletion {
+                output: refused,
+                outcome: TaskOutcome::Success,
+                completed_at: TimestampNs(9),
+            }
+        },
+    )
+    .await?;
+    if !foreign.output {
+        return Err("foreign task was allowed to drive the archive".into());
+    }
+    foreign.receipt?;
+    let pool = cx
+        .blocking_pool_handle()
+        .ok_or("missing archive blocking pool")?;
+    let occupied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_occupied = Arc::clone(&occupied);
+    let (release, wait_for_release) = std::sync::mpsc::channel();
+    let blocker = pool.spawn(move || {
+        worker_occupied.store(true, std::sync::atomic::Ordering::Release);
+        let _ = wait_for_release.recv();
+    });
+    timeout(cx.now(), Duration::from_secs(5), async {
+        while !occupied.load(std::sync::atomic::Ordering::Acquire) {
+            asupersync::time::sleep(cx.now(), Duration::from_millis(2)).await;
+        }
+    })
+    .await?;
+    let mut release = Some(release);
+    let mut observed_bounded_wait = false;
+    let mut pin = None;
+    let mut source_count = 0;
+    for _ in 0..512 {
+        let event = timeout(
+            cx.now(),
+            Duration::from_secs(30),
+            driver.step(
+                task,
+                cx,
+                clock,
+                if release.is_some() {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(5)
+                },
+                ArchiveAdmission {
+                    resource: "fixture:archive",
+                    cost: &cost,
+                },
+                ArchiveAdmission {
+                    resource: "fixture:archive",
+                    cost: &cost,
+                },
+            ),
+        )
+        .await?;
+        match event {
+            Step::SourceRunning if release.is_some() => {
+                observed_bounded_wait = true;
+                release.take().ok_or("missing archive release")?.send(())?;
+            }
+            Step::SourceCompleted(completion) => {
+                if completion.runtime.is_err() {
+                    return Err("source archive runtime failed".into());
+                }
+                if !matches!(
+                    completion.outcome,
+                    source_worker::Outcome::Publication(
+                        source_worker::Publication::Published { .. }
+                    )
+                ) {
+                    return Err("source archive did not publish".into());
+                }
+                source_count += 1;
+            }
+            Step::VideoCompleted(completion) => {
+                if completion.runtime.is_err() {
+                    return Err("video archive runtime failed".into());
+                }
+                match completion.outcome {
+                    video_worker::Outcome::Publication(video_worker::Publication::Published(
+                        published,
+                    )) => {
+                        pin = Some(published.pin);
+                        break;
+                    }
+                    _ => return Err("video archive did not publish".into()),
+                }
+            }
+            Step::SourceOffered(_)
+            | Step::Configured
+            | Step::VideoOffered
+            | Step::SourceStarted
+            | Step::VideoStarted
+            | Step::SourceRunning
+            | Step::VideoRunning
+            | Step::Media(_)
+            | Step::Idle => (),
+            Step::StartRefused(error) => return Err(format!("archive start refused: {error:?}").into()),
+            Step::SourceRefused(refusal) => {
+                let reason = match refusal {
+                    source_worker::OfferRefusal::Busy(_) => "busy",
+                    source_worker::OfferRefusal::Invalid(_) => "invalid",
+                    source_worker::OfferRefusal::Fenced(_) => "fenced",
+                };
+                return Err(format!("source offer refused: {reason}").into());
+            }
+            Step::VideoRefused(refusal) => {
+                let reason = match refusal {
+                    video_worker::OfferRefusal::Busy(_) => "busy".to_owned(),
+                    video_worker::OfferRefusal::Fenced(_) => "fenced".to_owned(),
+                    video_worker::OfferRefusal::Sink(refusal) => format!("sink {:?}", refusal.reason),
+                };
+                return Err(format!("video offer refused: {reason}").into());
+            }
+            Step::ConfigurationRefused(refusal) => return Err(format!("video configuration refused: {:?}", refusal.reason).into()),
+            Step::MediaError(error) => return Err(format!("media error: {error:?}").into()),
+            Step::SourceRetryRequired => return Err("source retry required".into()),
+            Step::VideoRetryRequired => return Err("video retry required".into()),
+            Step::ArchiveUnavailable => return Err("archive unavailable".into()),
+            Step::Configuration => return Err("archive context refused".into()),
+            Step::Halted => return Err("archive halted".into()),
+            Step::ConfigurationCopyRefused(_) => return Err("configuration copy refused".into()),
+            Step::ConfigurationChanged(_) => return Err("configuration changed".into()),
+            Step::SegmentBeforeConfiguration(_) => return Err("segment before configuration".into()),
+            Step::WorkerRefused(_) => return Err("video worker refused".into()),
+            Step::RecoveredWorkerRefused { .. } => return Err("recovered video worker refused".into()),
+        }
+    }
+    let pin = pin.ok_or("no video archive publication")?;
+    if !observed_bounded_wait || !blocker.is_done() {
+        return Err("bounded archive wait did not retain the running worker".into());
+    }
+    if source_count < 2 {
+        return Err("header and configuration were not archived".into());
+    }
+    driver.abort();
+    let parts = driver
+        .into_parts()
+        .map_err(|_| "archive workers did not drain")?;
+    let mut video = parts
+        .video
+        .ok_or("missing video archive worker")?
+        .retire()
+        .map_err(|_| "video archive did not retire")?;
+    let clip = archive::read_unknown_time_video_clip(
+        &mut video.parts.deployment,
+        pin,
+        &Access,
+        archive::Limits::default(),
+        &mut fss_geometry::WorkBudget::new(4_000_000_000),
+        &video.parts.replay,
+    )?;
+    let movie = AvcMp4::parse(clip.bytes(), None, DemuxLimits::default())?;
+    let annex = movie.annex_b(0, 1)?;
+    let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits {
+        max_pictures: 8,
+        ..Default::default()
+    })?;
+    let mut pictures = decoder.decode_annex_b(annex.bytes())?;
+    pictures.extend(decoder.finish()?);
+    if pictures.len() != 1 || (pictures[0].width(), pictures[0].height()) != (2688, 1512) {
+        return Err("archived high-resolution frame mismatch".into());
+    }
+    Ok(())
+}
+
+fn exercise(
+    partial: bool,
+    bad_response: bool,
+    owned: bool,
+    match_request: bool,
+    native_media: bool,
+    archive_media: bool,
+) -> Test {
     let dir = std::env::temp_dir().join(format!(
-        "fss-http-serializer-{}-{}-{}-{}-{}",
+        "fss-http-serializer-{}-{}-{}-{}-{}-{}-{}",
         std::process::id(),
         partial,
         bad_response,
         owned,
-        match_request
+        match_request,
+        native_media,
+        archive_media
     ));
     std::fs::create_dir(&dir)?;
     let journal = FileEffectJournal::create(
@@ -253,6 +781,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
     )?;
     let mut effects = EffectCoordinator::with_journal(Box::new(journal))?;
     let mut budget = BudgetVector::ZERO;
+    budget.bytes = 64 * 1024 * 1024;
     budget.network_bytes = 1_000_000;
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
@@ -263,8 +792,11 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                 RuntimeGrant::AdapterNet.as_str().into(),
                 RuntimeGrant::AdapterAuth.as_str().into(),
                 RuntimeGrant::ObserveStatus.as_str().into(),
+                RuntimeGrant::ReadMedia.as_str().into(),
                 RuntimeGrant::CameraSettingPrepare.as_str().into(),
                 RuntimeGrant::CameraSettingCommit.as_str().into(),
+                RuntimeGrant::ObjectStage.as_str().into(),
+                RuntimeGrant::ObjectPublish.as_str().into(),
             ],
             deadline: Some(TimestampNs(600_000_000_000)),
             priority: 1,
@@ -310,7 +842,16 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
     let fence = leases
         .acquire(&resource, authority.region().as_str(), None, TimestampNs(2))?
         .fence;
-    let listener = SocketAddrV4::new(Ipv4Addr::new(192, 168, 42, 11), 17777);
+    let listener = if native_media {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let std::net::SocketAddr::V4(value) = probe.local_addr()? else {
+            return Err("IPv4 fixture required".into());
+        };
+        drop(probe);
+        value
+    } else {
+        SocketAddrV4::new(Ipv4Addr::new(192, 168, 42, 11), 17777)
+    };
     let conditions = Preconditions {
         camera,
         peer_admission: ContentDigest::sha256(b"peer"),
@@ -362,7 +903,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
     // before this fixture runs. The owner must still independently revalidate
     // the actual response before dispatching the separate restoration permit.
     let restore_op = OperationId::parse("operation:serializer-restore")?;
-    let restore_parts = if owned && match_request {
+    let restore_parts = if owned && match_request && !native_media {
         let r = other_session.prepare_serializer_settings()?;
         other_session.finish_write(r, WriteOutcome::Written)?;
         let (_, anticipated) = other_session.accept_settings_with_serializers(Response::new(200, "OK", br#"{"av":{"video":{"video1":{"avSerializer":{"type":"extendedFlv","parameters":{"streamName":"0123456789abcdef","withOpus":false},"destinations":["tcp://192.168.42.11:17777?retryInterval=1&connectTimeout=5"]}},"video2":{"avSerializer":{"destinations":["tcp://fixture:1"]}}}}}"#.to_vec()))?;
@@ -410,7 +951,13 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
     } else {
         None
     };
-    let runtime = RuntimeBuilder::current_thread().build()?;
+    let runtime = if archive_media {
+        RuntimeBuilder::current_thread()
+            .blocking_threads(1, 1)
+            .build()?
+    } else {
+        RuntimeBuilder::current_thread().build()?
+    };
     let checkpoint_scope =
         checkpoint::Scope::from_plan(&plan, ContentDigest::sha256(b"fixture certificate"))?;
     let key = checkpoint::Key::new([7; 32])?;
@@ -635,12 +1182,31 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                 let output: Test = async {
                     let clock = MeteredClock::new(task, cx, TimestampNs(8))?;
                     if owned {
-                        let listener = TcpListener::bind("127.0.0.1:0").await?;
-                        let address = listener.local_addr()?;
-                        let fixture =
-                            std::thread::spawn(move || fixture_server(address, match_request));
+                        let media_policy = MediaPolicy(listener);
+                        let mut native_listener = if native_media {
+                            Some(
+                                listener::Listener::bind(
+                                    task,
+                                    cx,
+                                    clock,
+                                    &media_policy,
+                                    listener,
+                                    &resource,
+                                    Duration::from_secs(5),
+                                )
+                                .await?,
+                            )
+                        } else {
+                            None
+                        };
+                        let http_listener = TcpListener::bind("127.0.0.1:0").await?;
+                        let address = http_listener.local_addr()?;
+                        let fixture = std::thread::spawn(move || {
+                            fixture_server(address, match_request, native_media.then_some(listener))
+                        });
                         let (socket, _) =
-                            timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
+                            timeout(cx.now(), Duration::from_secs(5), http_listener.accept())
+                                .await??;
                         let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
                         let policy = OwnerPolicy(Cell::new(false));
                         let mut owner = camera_http::Owner::new(
@@ -668,6 +1234,305 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
                             .await
                             .expect_err("missing checkpoint must not write");
                         assert_eq!(missing.reason, HandoffError::CheckpointRequired);
+                        if native_media {
+                            policy.0.set(true);
+                            let wrong_listener = SocketAddrV4::new(
+                                Ipv4Addr::LOCALHOST,
+                                if listener.port() == u16::MAX {
+                                    1
+                                } else {
+                                    listener.port() + 1
+                                },
+                            );
+                            let preflight_request = media::Request {
+                                plan: &plan,
+                                current: Preconditions {
+                                    listener: wrong_listener,
+                                    ..conditions
+                                },
+                                baseline: &observed,
+                                checkpoint: &stored,
+                                authority: &Guard(true),
+                                wait: Duration::from_secs(5),
+                                framer: Framer::new(FlvLimits::default(), 1024 * 1024)?,
+                                recorder: recording::Recorder::new(
+                                    SourceKey {
+                                        connection: 2,
+                                        generation: 1,
+                                    },
+                                    recording::Limits::default(),
+                                )?,
+                                chunk_bytes: 4096,
+                                max_bytes: 1024 * 1024,
+                            };
+                            let preflight = match media::start(
+                                &mut owner,
+                                native_listener.as_mut().ok_or("missing media listener")?,
+                                preflight_request,
+                                missing.permit,
+                                |p, g| p == peer && g == 1,
+                            )
+                            .await
+                            {
+                                Err(refusal) => refusal,
+                                Ok(_) => return Err("wrong listener accepted".into()),
+                            };
+                            assert_eq!(preflight.failure, media::Failure::Preflight);
+                            assert!(!preflight.may_have_written);
+                            let mut permit = preflight.permit;
+                            for (chunk_bytes, max_bytes, wait) in [
+                                (0, 1024 * 1024, Duration::from_secs(5)),
+                                (
+                                    fss_runtime::tcp_ingress::MAX_CHUNK_BYTES + 1,
+                                    1024 * 1024,
+                                    Duration::from_secs(5),
+                                ),
+                                (4096, 0, Duration::from_secs(5)),
+                                (4096, 1024 * 1024, Duration::ZERO),
+                                (4096, 1024 * 1024, Duration::from_secs(31)),
+                            ] {
+                                let invalid = media::Request {
+                                    plan: &plan,
+                                    current: conditions,
+                                    baseline: &observed,
+                                    checkpoint: &stored,
+                                    authority: &Guard(true),
+                                    wait,
+                                    framer: Framer::new(FlvLimits::default(), 1024 * 1024)?,
+                                    recorder: recording::Recorder::new(
+                                        SourceKey {
+                                            connection: 2,
+                                            generation: 1,
+                                        },
+                                        recording::Limits::default(),
+                                    )?,
+                                    chunk_bytes,
+                                    max_bytes,
+                                };
+                                let refusal = match media::start(
+                                    &mut owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    invalid,
+                                    permit,
+                                    |p, g| p == peer && g == 1,
+                                )
+                                .await
+                                {
+                                    Err(refusal) => refusal,
+                                    Ok(_) => return Err("invalid media limits accepted".into()),
+                                };
+                                assert_eq!(refusal.failure, media::Failure::Preflight);
+                                assert!(!refusal.may_have_written);
+                                permit = refusal.permit;
+                            }
+                            for mismatch_clock in [true, false] {
+                                let io_polled = Cell::new(false);
+                                let alternate_clock = if mismatch_clock {
+                                    let origin =
+                                        clock.now()?.0.checked_add(1).ok_or("clock overflow")?;
+                                    MeteredClock::new(task, cx, TimestampNs(origin))?
+                                } else {
+                                    clock
+                                };
+                                let alternate_resource = if mismatch_clock {
+                                    resource.as_str()
+                                } else {
+                                    "fixture:different-camera"
+                                };
+                                let io = MeteredIo::with_clock(
+                                    NoIo(&io_polled),
+                                    alternate_clock,
+                                    alternate_resource,
+                                    4096,
+                                )?;
+                                let mut alternate_owner = camera_http::Owner::new(
+                                    io,
+                                    task,
+                                    cx,
+                                    alternate_clock,
+                                    &policy,
+                                    peer,
+                                    1,
+                                    alternate_resource,
+                                )?;
+                                let mismatched = media::Request {
+                                    plan: &plan,
+                                    current: conditions,
+                                    baseline: &observed,
+                                    checkpoint: &stored,
+                                    authority: &Guard(true),
+                                    wait: Duration::from_secs(5),
+                                    framer: Framer::new(FlvLimits::default(), 1024 * 1024)?,
+                                    recorder: recording::Recorder::new(
+                                        SourceKey {
+                                            connection: 2,
+                                            generation: 1,
+                                        },
+                                        recording::Limits::default(),
+                                    )?,
+                                    chunk_bytes: 4096,
+                                    max_bytes: 1024 * 1024,
+                                };
+                                let refusal = match media::start(
+                                    &mut alternate_owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    mismatched,
+                                    permit,
+                                    |p, g| p == peer && g == 1,
+                                )
+                                .await
+                                {
+                                    Err(refusal) => refusal,
+                                    Ok(_) => return Err("mismatched media owner accepted".into()),
+                                };
+                                assert_eq!(refusal.failure, media::Failure::Preflight);
+                                assert!(!refusal.may_have_written);
+                                assert!(!io_polled.get());
+                                permit = refusal.permit;
+                            }
+                            let request = media::Request {
+                                plan: &plan,
+                                current: conditions,
+                                baseline: &observed,
+                                checkpoint: &stored,
+                                authority: &Guard(true),
+                                wait: Duration::from_secs(5),
+                                framer: Framer::new(FlvLimits::default(), 1024 * 1024)?,
+                                recorder: recording::Recorder::new(
+                                    SourceKey {
+                                        connection: 1,
+                                        generation: 1,
+                                    },
+                                    recording::Limits::default(),
+                                )?,
+                                chunk_bytes: 4096,
+                                max_bytes: 1024 * 1024,
+                            };
+                            let result = media::start(
+                                &mut owner,
+                                native_listener.as_mut().ok_or("missing media listener")?,
+                                request,
+                                permit,
+                                |p, g| p == peer && g == 1,
+                            )
+                            .await;
+                            if !match_request {
+                                let refusal = match result {
+                                    Err(refusal) => refusal,
+                                    Ok(_) => return Err("unchanged readback accepted".into()),
+                                };
+                                assert!(matches!(
+                                    refusal.failure,
+                                    media::Failure::UnexpectedReadback(_)
+                                ));
+                                assert!(refusal.may_have_written);
+                                assert!(refusal.readback.is_some());
+                                drop(owner);
+                                fixture.join().map_err(|_| "fixture panic")??;
+                                return Ok(());
+                            }
+                            let connected = result.map_err(|_| "native media startup refused")?;
+                            assert_eq!(
+                                connected.comparison().change,
+                                ReadbackChange::TargetTrackOnly
+                            );
+                            assert!(connected.comparison().requested_fields_match);
+                            if archive_media {
+                                archive_http_media(
+                                    connected,
+                                    task,
+                                    cx,
+                                    clock,
+                                    &dir,
+                                    conditions.camera,
+                                )
+                                .await?;
+                                drop(owner);
+                                fixture.join().map_err(|_| "fixture panic")??;
+                                return Ok(());
+                            }
+                            let detached = connected.into_parts();
+                            let mut pipeline = detached.pipeline;
+                            let mut valid = false;
+                            for _ in 0..16 {
+                                match timeout(
+                                    cx.now(),
+                                    Duration::from_secs(5),
+                                    pipeline.probe_header_step(task, cx, clock.now()?),
+                                )
+                                .await??
+                                {
+                                    fss_reference::unifi_direct::ingress::HeaderProbe::Progress => {
+                                    }
+                                    fss_reference::unifi_direct::ingress::HeaderProbe::Valid => {
+                                        valid = true;
+                                        break;
+                                    }
+                                    _ => return Err("native media fixture header refused".into()),
+                                }
+                            }
+                            assert!(valid);
+                            let mut decoded = false;
+                            let mut source_records = Vec::new();
+                            for _ in 0..128 {
+                                let step = timeout(
+                                    cx.now(),
+                                    Duration::from_secs(10),
+                                    pipeline.step(task, cx, clock.now()?),
+                                )
+                                .await??;
+                                match step {
+                                    fss_reference::unifi_direct::pipeline::Step::Recording(
+                                        recording::Push::Source { record, .. },
+                                    ) => source_records.push(record),
+                                    fss_reference::unifi_direct::pipeline::Step::Recording(
+                                        recording::Push::Segment(segment),
+                                    ) => {
+                                        let mut mp4 = pipeline
+                                            .initialization()
+                                            .ok_or("missing synthetic initialization")?
+                                            .bytes()
+                                            .to_vec();
+                                        mp4.extend_from_slice(segment.fragment().bytes());
+                                        let movie =
+                                            AvcMp4::parse(&mp4, None, DemuxLimits::default())?;
+                                        if movie.samples().is_empty() {
+                                            return Err("synthetic segment has no samples".into());
+                                        }
+                                        let annex = movie.annex_b(0, 1)?;
+                                        let mut decoder = fss_codec_h264::Decoder::new(
+                                            fss_codec_h264::DecoderLimits {
+                                                max_pictures: 8,
+                                                ..Default::default()
+                                            },
+                                        )?;
+                                        let mut pictures = decoder.decode_annex_b(annex.bytes())?;
+                                        pictures.extend(decoder.finish()?);
+                                        if pictures.len() != 1
+                                            || (pictures[0].width(), pictures[0].height())
+                                                != (2688, 1512)
+                                        {
+                                            return Err(
+                                                "synthetic high-resolution decode mismatch".into(),
+                                            );
+                                        }
+                                        decoded = true;
+                                        break;
+                                    }
+                                    fss_reference::unifi_direct::pipeline::Step::Eof
+                                    | fss_reference::unifi_direct::pipeline::Step::LimitReached => {
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            assert!(decoded);
+                            assert!(!source_records.is_empty());
+                            let _retired = pipeline.retire();
+                            drop(owner);
+                            fixture.join().map_err(|_| "fixture panic")??;
+                            return Ok(());
+                        }
                         let denied = owner
                             .dispatch_serializer(
                                 &plan,
@@ -960,7 +1825,7 @@ fn exercise(partial: bool, bad_response: bool, owned: bool, match_request: bool)
             .state,
         fss_core::EffectState::Committed
     );
-    if owned && match_request {
+    if owned && match_request && !native_media {
         assert_eq!(
             effects
                 .journal()

@@ -323,8 +323,14 @@ Its caller must choose genuinely separate trusted storage and protect its root;
 the type cannot prove physical independence or protect a rolled-back trusted
 root. Key-file custody remains optional and is not yet bound to this receipt.
 The v20 source snapshot was admitted from queue `9253469360607986764` as job
-`30097323753214403` for strict-remote build and fixture testing;
-neither has passed yet. Its checkpoint, keyfile, camera API, HTTP owner and
+`30097323753214403`; its locked build exited zero and 8/8 serializer/key unit
+tests plus 5/5 dispatcher/metadata integration tests passed on `hz2`. These
+fixtures included a cold-reopened metadata journal and wrong-pin refusal. The
+unit and integration executable SHA-256 values were
+`cc5520166d02aad6ca0c581a93abda2b4f64ff65e76eeab2480de3234e533efa` and
+`d294255fceb9805741989eda221981f7a1806c7ddfb40d9542be4fbc043434c2`;
+both deletion-denying traces recorded zero attempts. This is synthetic evidence,
+not physical storage independence or real camera operation. Its checkpoint, keyfile, camera API, HTTP owner and
 fixture SHA-256 values are
 `a360a53c52229939ad2baad1b829cad61f741f32ebe2a1ce3961426e67d15e91`,
 `450601a5215fd48a275a5a4d14587a52000628e9ea5fa49f73b647361b06ce10`,
@@ -339,10 +345,203 @@ The fixture includes a wrong-key refusal before journal append. This still
 depends on caller-trusted paths and does not protect against later key loss,
 privileged interference, rollback, or loss of the storage device. Its dispatch
 fixture is Linux-only; a corresponding macOS key provider is not implemented.
-The v21 source snapshot is compiling in strict-remote job `30097323753214406`;
-its tests have not run. Its checkpoint and fixture SHA-256 values are
+The v21 source snapshot built in strict-remote job `30097323753214406`; 8/8
+serializer/key unit tests and 5/5 dispatcher/metadata integration tests passed
+on `hz2`, including wrong-key refusal and metadata cold reopen. The executable
+SHA-256 values were
+`b36fe8a9012a350688e64abf1d0b507ef20f5b1fbebd14c5a04ad38161a35df5` and
+`d90397dd1a7d44658f782dcd420578aaa50336b8ac59ac98776fd18e445b2291`;
+both deletion-denying traces recorded zero attempts. This is synthetic Linux
+evidence, not physical-camera behavior. Its checkpoint and fixture SHA-256 values are
 `e8860cb360543020dd6882375b51e7a4fc92dd8359f32a4a66fd6b09fa0308ca` and
 `60e112748f4ac8fea1b3fb66cc211b7987fd1c767f7498f373da237314a16866`.
+
+The v22 candidate composes the guarded HTTP serializer owner with an already
+bound native media listener. It checks the listener address, sends one
+journaled request, requires the complete response and a matching target-only
+readback, then returns the claimed permit, private readback and task-owned
+incoming pipeline. Refusals retain the permit and distinguish whether a write
+may have occurred; cancellation still requires journal reconciliation. A
+loopback fixture is staged to send an FLV header through the accepted listener.
+The candidate does not authenticate the incoming peer by itself, validate
+media, publish recordings, settle effects, or establish camera support for the
+HTTP request. Strict-remote job `30097323753214420` is building the snapshot;
+the fixture has not run. The source
+SHA-256 values for the module declaration, media owner and fixture are
+`a1232aae610a0c9d796b5936855d2f3808fe9c18539dc36654e0b5eaac509a74`,
+`c065db79f7b85b8b3070c8ef6a72438793d971b514b12dd20b556cd28e62e823` and
+`049ebaad32b4a1b65ed0d3f21ccd73135a3ca74efec8d8a369202a497cff379b`.
+The v23 fixture adds wrong-listener refusal before a write and unchanged-readback
+refusal after a potentially effective write. The production media module is
+unchanged from v22; the new fixture SHA-256 is
+`3cede391068f0de0148aabda9f75a14753cfe959ce9a33396a1d21b68f81d068`.
+The v23 request `9253469360607986770` exited 103 before compilation because the
+selected worker had no free slot; the fixture did not run. The v24 fixture
+retains these refusal cases.
+The v24 fixture further sends synthetic 2688 x 1512 AVC in FLV through that
+path, assembles an in-memory fragment and attempts a Rust frame decode. It is
+a synthetic source, not a live camera recording or retention proof. The v24
+fixture SHA-256 is
+`1b3e9a8f7caf7019598889d94cafc8feb5c64ae917b88d865e92953b8aba9c39`.
+Strict-remote job `30097323753214428` built the snapshot on `hz2`; 8/8
+serializer unit tests and 6/7 integration tests passed. The unchanged-readback
+refusal passed, while the high-resolution listener fixture failed with
+`Ingress(Source(BudgetExhausted))` before media decoding. Both deletion-denying
+traces recorded zero attempts. The integration executable SHA-256 was
+`6b027f5682547063b4500f36859ff8baa2fbcc384b6515ce6249c0082fbe2523`.
+
+The v22 build completed, but its fixture did not pass: 8/8 serializer unit
+tests passed and 5/6 integration tests passed; the native-listener test failed
+with `Ingress(Source(BudgetExhausted))`. Both deletion-denying traces recorded
+zero attempts. Inspection of the TCP ingress shows that it requires both byte
+and network-byte budgets; this fixture supplied only the latter. The v24
+snapshot had the same fixture budget and independently failed in the same way.
+
+The v25 candidate supplies a finite byte budget to the fixture and also checks
+listener chunk, total-byte, and wait bounds before issuing the camera request.
+It reuses the listener's own bounds so the preflight cannot diverge from the
+subsequent accept check. The fixture attempts five invalid configurations,
+requires a no-write refusal and then reuses the permit for its real loopback
+attempt. This protects against deterministic configuration errors after a
+camera write; it does not prove a socket will be available, authorize an effect,
+or resolve cancellation, readback, peer identity or restoration. The v25
+candidate's first remote request exited 120 before compilation because the
+worker's protected disk-reservation floor could not admit it. The same
+unchanged snapshot was resubmitted as `9253469360607986774` and started
+compilation on worker `vmi1153651`; execution is not a completed build and its tests have
+not yet run. Its listener,
+media owner and integration fixture SHA-256 values are
+`ed53108e18f803cd131745cd4acbb5fc20f7af60444a5b9b9d4be46abc069ef5`,
+`c8ad3e29e13a3b9c7363bc80339222e144c5c497f0b99580e48e6e1bf36c46f3`, and
+`07f6a710d88a736c153ee605a4ff5450db2b4f3fc02ab5bd2d4ea4d61ee2c38c`.
+The worktree's media owner subsequently changed only the `Preflight` variant's
+documentation to mention the newly checked bounds.
+
+The v25 strict-remote build completed on `vmi1153651`; its tests passed 8/8
+unit cases and 6/7 integration cases, with zero deletion attempts in both
+traces. The high-resolution test progressed beyond the former byte-budget
+failure but failed with `Mux(UnverifiedPicture)` before decoding. The fixture
+had repeated the same IDR NAL as several purported pictures; the muxer requires
+distinct picture identities. The next fixture uses the four distinct IDR NALs
+already present in the same synthetic source. This is a fixture correction, not
+evidence of a successful stream, physical device behavior, or recorder fix.
+
+The HTTP-started pipeline can now be attached to the existing native
+video-only and separate-source archive workers without constructing a
+controller WebSocket session. The driver retains the committed serializer
+effect and readback, pauses media while archive work is outstanding, returns
+all publication outcomes, and requires explicit retry after a failed attempt.
+It rejects mismatched camera/source bindings and streams that have already
+emitted records. A fresh stream or completed source-preserving prefix probe is
+eligible for attachment. End-of-stream and changed AVC configuration stop the
+driver and retain the remaining owners for the caller; this is not yet an
+unattended recorder, audio capture, rollover, identity proof, live device
+qualification or 30-day retention.
+
+An initial bridge snapshot passed a strict-remote `cargo check` on `hz2` in
+job `30097323753214438`; this was compile-only and preceded the fresh-stream
+attachment check. A subsequent v27 snapshot adds a synthetic HTTP-to-video
+archive/readback/decode fixture and that attachment check. Its first two remote
+requests exited 120 before compilation because `hz2` and `vmi1227854` could
+not admit the requested disk reservation. The v27 fixture has not run. Its
+bridge, pipeline, video-session and fixture SHA-256 values are
+`1ec90673aca39bdc5da8c92a783cc8743ab5d160b1ac2dc004826a20e62ae4b6`,
+`ba3304f3cc1cb2f9496af6be7e59b35991a5f1451ebd7bc1482acb1300751135`,
+`2e1c812ed8c138ba15e1b291312bca026d6163ad63cae6630fae578d45546269`, and
+`265cf83c0337df6d9952d00df2cd07287811426d93c989a87b316a34afdcaad4`.
+The staged v28 snapshot additionally retains the camera claim bound to the
+HTTP start and requires the archive binding to match that claim. Its fixture
+attempts attachment to independently prepared storage for another camera
+before attaching the matching storage. This is a caller-supplied claim, not
+independent camera authentication. v28 has not yet been built or tested; the
+media owner, archive bridge and fixture SHA-256 values are
+`385ec0e428b5c55fbdbd3d2fc7d57e4a2da7b076e6dcb4aa13d2e56a5403c888`,
+`e17cc587982e3f3cc39b7a1d1dd2920aab118a8464d20fecad8202d3011e4f08`, and
+`bee01678fcb4a153a4db53d17ec130b013c9821fea6d86070a381ace52681b97`.
+The staged v29 snapshot additionally refuses attachment while an installed
+name probe has not completed; otherwise ordinary media processing would discard
+that probe. Its synthetic fixture checks the refusal, explicitly abandons the
+probe, then attempts the matching archive attachment. Strict-remote request
+`9253469360607986788` was cancelled before admission after its fixture error
+was found; the wrapper exited 130 and its terminal status was acknowledged.
+The fixture did not run. Its pipeline and fixture SHA-256 values are respectively
+`764e1e169049630d5b4b187e4f8fa34c0ad2d36dd22df8082a8fdd96ac444d1d` and
+`b851ea12c694bfc037405190660c3eeadf6f072cbacb1bea335f7acb81c7b334`.
+Before execution, source inspection found that the v29 name-probe fixture
+requested 1 MiB while the packet API permits at most 256 KiB. The staged v30
+snapshot corrects that fixture input. v30 has not been run.
+The v32 candidate also fixes the repeated-IDR fixture and makes the connected
+owner's effect, readback and pipeline non-replaceable while attached; callers
+can explicitly detach all owners or use source-preserving probe methods.
+This protects the local binding from accidental owner substitution, not from
+an untrusted or misidentified physical peer. Strict-remote job
+`30097323753214452` built the v32 candidate on `vmi1153651`. The exact binary
+passed 8/8 unit tests and 7/8 integration tests under deletion-denying tracing,
+with zero deletion attempts in either trace. The corrected native listener test
+assembled and Rust-decoded one synthetic 2688 x 1512 frame; the archive test
+failed with an undifferentiated `HTTP media archive stopped unexpectedly`, so
+publication and readback remain unproven. This was a synthetic peer, not a
+physical camera. The integration executable SHA-256 was
+`5c13a4636f4fbe7b6897919672f063baa8bcf96081f39a613e1a59ca742cf65b`.
+The media owner and fixture SHA-256 values are
+`017f541c88d8edda2a3ecab2c1df8fd59e30e0459a09cee7fa0d561a7546c07e` and
+`ad8cd692644c009d1565d7291477f3b14a36a4c33a15f94d43e014de9f662620`.
+The staged v33 candidate waits on a running archive worker with the same bounded
+timeout used for media, instead of returning immediately in a polling loop. A
+dropped wait leaves the worker owned for a later join. Its fixture configures
+a one-thread blocking pool, occupies it, checks that the bounded wait returns
+while the source remains retained, then releases the pool and requires archive
+publication and readback. Strict-remote request `9253469360607986792` was
+cancelled before admission in favor of the newer v35 candidate; its wrapper
+exited 130 and its terminal status was acknowledged. v33 was not built or
+tested. Its
+bridge and fixture SHA-256 values are
+`23cdd4508fafdb9ac546f689b23ebfce36de2ac6b255f81a4e455f2a1871a077` and
+`3472b9738ffa1908f565b0c3f56faa8179dd70d1066ac586db168d7145ecb03c`.
+A separate native-runtime contract now exercises a timed-out join of an
+already-started blocking worker, then releases it and requires the same result
+exactly once. Its source SHA-256 is
+`49dceef1248de12e7301008c43ca1725070f05ff20104ad5891fd8700f6bedfb`.
+Request `9253469360607986791` was cancelled before admission to select another
+worker; its exit 130 was acknowledged. Its replacement
+`9253469360607986798` was also cancelled before admission to try another
+worker, with exit 130 acknowledged. The next request reached `vmi1149989` but
+exited 120 at disk admission before compilation. The contract has not yet run
+and does not by itself qualify the archive driver.
+
+The v35 candidate checks that every archive driver step uses the same canonical
+task that accepted the source, before starting storage or polling media. The
+new task-binding query refuses unbound, inactive or different task state. Its
+fixtures attempt a different authority with the same textual task ID, then
+continue under the original task. This does not establish a physical camera
+identity or a common clock mapping. Request `9253469360607986794` was cancelled
+before admission in favor of v36; its wrapper exited 130 and was acknowledged.
+The new binding and fixtures have not been built or tested. The TCP ingress,
+archive driver, runtime binding fixture and archive fixture SHA-256 values are
+`29c4d50d814fd2fc471cd8c67f9b05ccb28697a03b38ff87f255b820f898f152`,
+`f41768c93d12eaa40a50129d728118f07957efb4de456c4939e1cc24db56866d`,
+`604f329ec04b28538aa82f7c176e0feea3d6c8c18d0e2394ceb915c964e65153`, and
+`ecda3fe703f02f78772f3929ad4ee25aaa4e054f90149423044c6d7bd8cd87d0`.
+The v36 candidate additionally requires the HTTP owner and native listener to
+share their exact task/clock mapping and resource before dispatch; its fixture
+tries different mappings and resources using an I/O owner that reports any
+poll. It also reports specific archive refusal categories to diagnose the v32
+failure. Request `9253469360607986801` was cancelled before admission to try
+another worker, with exit 130 acknowledged. The next request reached `hz2` but
+exited 120 at disk admission before compilation. Private worker targets were
+seeded from copies of completed v32 and v24 targets as build caches; no v36
+compilation or test result is claimed. The listener, HTTP owner,
+media owner and fixture SHA-256 values are
+`ddf59e387d6511ebcfb928d073a5c38e7eec1eeeaf7074924194c6032d2872c5`,
+`d590bc1be96017b2816520582725c96d38b5defb32c0070b253be62698cf8de0`,
+`351dcb16003b5d42200ccebcaab0a8ad003831e22d486c3eccb5fa7d36065a04`, and
+`c456e75fd9995391af8e031dd66d59c0dabec06bd4cd0f415907329ff04303ad`.
+The v32 archive fixture used the exact registry `asupersync` 0.5.0 default
+runtime, whose documented blocking-pool maximum is zero and whose builder
+creates no pool in that case. The archive worker requires a pool, making the
+missing explicit pool a plausible cause of the undifferentiated failure. This
+is source-level diagnosis, not a captured refusal reason; the newer fixture
+explicitly provisions one worker and reports distinct errors.
 
 ## Live qualification still required
 

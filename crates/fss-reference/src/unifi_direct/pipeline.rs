@@ -146,6 +146,18 @@ impl Pipeline {
         !self.started && !self.stopped
     }
 
+    /// A fresh stream or a completed, source-preserving prefix probe may be
+    /// attached to a new recorder. No ordinary source record has been emitted.
+    pub(crate) fn is_ready_for_recording(&self) -> bool {
+        !self.stopped
+            && !self.probing
+            && ((!self.started && self.name_probe.is_none()) || self.first_byte_only)
+    }
+
+    pub(crate) fn is_bound_to_task(&self, task: &TaskCx<'_>) -> bool {
+        self.ingress.is_bound_to_task(task)
+    }
+
     /// Caller-supplied connection and generation claim; this does not authenticate the peer.
     pub fn source_key(&self) -> fss_container::flv_avc::SourceKey {
         self.recorder.source_key()

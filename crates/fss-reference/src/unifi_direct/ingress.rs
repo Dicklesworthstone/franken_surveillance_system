@@ -169,6 +169,10 @@ impl DirectIngress {
         }
     }
 
+    pub(crate) fn is_bound_to_task(&self, task: &TaskCx<'_>) -> bool {
+        self.source.is_bound_to_task(task)
+    }
+
     /// Probe a fresh connection without transferring or discarding the first
     /// byte. A dropped pending read may be retried using the same owner.
     pub async fn probe_first_byte(

@@ -32,6 +32,39 @@ async fn wait_flag(cx: &asupersync::Cx, flag: &AtomicBool) -> Test {
 }
 
 #[test]
+fn timed_out_join_retains_started_worker_and_exact_result() -> Test {
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let entered = Arc::new(AtomicBool::new(false));
+        let entered_worker = Arc::clone(&entered);
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut owner = drained_blocking::start(&cx, move |_| {
+            entered_worker.store(true, Ordering::Release);
+            if release_rx.recv().is_ok() { 73 } else { 0 }
+        })
+        .map_err(|_| "worker admission failed")?;
+        wait_flag(&cx, &entered).await?;
+        assert!(
+            timeout(cx.now(), Duration::from_millis(30), owner.join())
+                .await
+                .is_err()
+        );
+        release_tx.send(())?;
+        let receipt = timeout(cx.now(), Duration::from_secs(5), owner.join())
+            .await
+            .map_err(|_| "drain timed out")?
+            .ok_or("missing receipt")?;
+        assert!(receipt.runtime.is_ok());
+        assert!(matches!(receipt.work, WorkOutcome::Finished(73)));
+        assert!(owner.join().await.is_none());
+        Ok(())
+    })
+}
+
+#[test]
 fn cancellation_waits_for_started_closure_and_preserves_its_result() -> Test {
     let runtime = RuntimeBuilder::current_thread()
         .blocking_threads(1, 1)
