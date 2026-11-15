@@ -52,6 +52,8 @@ pub mod alert_control;
 pub mod alert_reconcile;
 /// Shared bounded immutable custody reads for retained source consumers.
 pub mod retained_source;
+/// The reader trait itself, re-exported so in-crate consumers can name it as `crate::RetainedSource`.
+pub use retained_source::RetainedSource;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
 pub use alert::webhook;
 
