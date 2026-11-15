@@ -38,7 +38,8 @@ def serve(peer, changed):
             destination = private_values[1 if changed and index == 5 else 0]
             body = json.dumps({"controller": {"addr": "10.252.15.1"}, "av": {"video": {
                 "video1": {"width": 2688, "height": 1512, "fps": 30,
-                           "avSerializer": {"type": "extendedFlv", "destinations": [destination]}}
+                           "avSerializer": {"type": "extendedFlv", "destinations": [destination]}},
+                "video2": {"avSerializer": None}
             }}}, separators=(",", ":")).encode()
         cookie = b"Set-Cookie: authId=fixture-cookie\r\n" if index == 0 else b""
         peer.sendall(b"HTTP/1.1 200 OK\r\n" + cookie + b"Content-Length: " + str(len(body)).encode()
@@ -67,6 +68,7 @@ def run(binary, root, cert, changed):
             str(case / "unused-key"), str(case / "journal"), str(case / "clip"),
             "12345678-1234-4abc-9abc-123456789abc", "20", "--auto-discovery=24",
             "--discovery-neighbor-interface=fssdummy", "--observe-only", "--observe-serializers",
+            f"--lab-http-checkpoint={case / 'checkpoint'}",
             f"--setup-camera={udp.getsockname()[1]},{https.getsockname()[1]},{cert[2]},{credential}",
             "--owner-authorized"]
     if not changed:
@@ -97,12 +99,36 @@ def run(binary, root, cert, changed):
             assert child.returncode != 0 and b"serializer binding changed between reads" in error
             assert b"trial_serializer_observation=consistent" not in output
             assert b"trial_observation=complete" not in output
+            assert b"trial_serializer_shapes=" not in output
+            assert not (case / "checkpoint").exists()
         else:
             assert child.returncode == 0, error.decode(errors="replace")
+            assert b'trial_serializer_shapes=["object", "null", "missing"] values=redacted restoration=unverified' in output
             assert b"trial_serializer_observation=consistent reads=2 values=redacted" in output
             assert b"trial_observation=complete" in output
+            assert b"trial_http_checkpoint=anchored camera_write=false restoration=unverified" in output
+            assert (case / "checkpoint" / "key").is_file()
+            assert (case / "checkpoint" / "spool").is_dir()
+            assert (case / "checkpoint" / "journal").is_dir()
+            assert (case / "checkpoint" / "pin").is_dir()
+            inspected = subprocess.run([binary, "--inspect-http-checkpoint", str(case / "checkpoint"),
+                                        "--owner-authorized"], capture_output=True, timeout=20)
+            assert inspected.returncode == 0, inspected.stderr.decode(errors="replace")
+            assert b"trial_http_checkpoint_inspection=authenticated camera_write=false" in inspected.stdout
+            assert all(value not in inspected.stdout + inspected.stderr for value in
+                       (b"10.252.15.11", b"10.252.15.12"))
         assert not (case / "journal").exists() and not (case / "clip").exists()
         print(f"serializer_fixture case={'changed' if changed else 'stable'} result=pass", flush=True)
+    except Exception:
+        if child.poll() is None:
+            child.terminate()
+        output, error = child.communicate(timeout=10)
+        for private in (b"10.252.15.11", b"10.252.15.12", b"fixture-cookie", b"synthetic"):
+            output = output.replace(private, b"[redacted]")
+            error = error.replace(private, b"[redacted]")
+        print(f"serializer_fixture child_exit={child.returncode}", file=sys.stderr)
+        sys.stderr.buffer.write(output + error)
+        raise
     finally:
         udp.close()
         https.close()
