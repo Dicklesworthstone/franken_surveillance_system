@@ -25,6 +25,9 @@
 use crate::video_codec::VideoCodec;
 use std::ops::Range;
 
+/// Canonical, reconstructible extraction commitments and original-byte verification.
+pub mod receipt;
+
 /// MPEG-2 transport packet size; M2TS and error-corrected packet sizes are not admitted.
 pub const TS_PACKET_BYTES: usize = 188;
 const MAX_INPUT: usize = 512 * 1024 * 1024;
@@ -131,6 +134,8 @@ pub enum TsError {
     Allocation,
     /// Owner checkpoint cancelled the extraction.
     Cancelled,
+    /// Invalid, corrupt or source-mismatched extraction receipt.
+    Receipt,
 }
 
 impl std::fmt::Display for TsError {
@@ -168,6 +173,8 @@ pub struct TsPes {
 #[derive(Debug)]
 pub struct MpegTsVideo<'a> {
     source: &'a [u8],
+    selection: TsSelection,
+    limits: TsLimits,
     codec: VideoCodec,
     program: u16,
     video_pid: u16,
@@ -297,6 +304,8 @@ impl<'a> MpegTsVideo<'a> {
         }
         Ok(Self {
             source,
+            selection,
+            limits,
             codec: pmt.codec,
             program: pat.program,
             video_pid: pmt.video_pid,
@@ -313,6 +322,14 @@ impl<'a> MpegTsVideo<'a> {
     /// Original immutable transport bytes, including all nonvideo structure.
     pub fn source(&self) -> &'a [u8] {
         self.source
+    }
+    /// Exact selection policy admitted by the parser.
+    pub fn selection(&self) -> TsSelection {
+        self.selection
+    }
+    /// Exact resource ceilings admitted by the parser.
+    pub fn limits(&self) -> TsLimits {
+        self.limits
     }
     /// Codec declared by the selected PMT; elementary syntax is validated downstream.
     pub fn codec(&self) -> VideoCodec {

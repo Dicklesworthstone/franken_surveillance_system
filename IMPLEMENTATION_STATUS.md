@@ -4,6 +4,23 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Compact MPEG-TS extraction provenance — 2026-11-15
+
+The finite native AVC/HEVC transport parser now retains its exact selection and
+resource policy and can produce a canonical `TsExtractionReceipt`. The bounded
+receipt commits to complete original and elementary bytes plus every PES timestamp
+and original-byte mapping. Source verification reconstructs the extraction under
+intersected current/historical limits and withholds results on corruption or
+cancellation. No media timing or continuity claim is strengthened.
+
+Seven focused contracts were authored, but the execution environment became
+unavailable before these changes could be compiled or tested. The 117 container
+and 50 packet passing tests recorded earlier in this session apply to the unchanged
+baseline only. Current supplementary GitHub workflows are queued/pending, with no
+new execution evidence. This is a source implementation checkpoint; broad beads,
+media gates and release qualification remain open. See [receipt contract and
+verification commands](docs/MPEG_TS_RECEIPTS.md).
+
 ## Immutable operator inspection during active ingest — 2026-11-15
 
 The native investigation and retention paths now share the existing sealed retained-source
