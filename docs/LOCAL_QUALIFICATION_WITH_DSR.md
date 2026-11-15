@@ -225,5 +225,20 @@ of the toolchain cargo suppresses it; the practical route is to retry later or o
 
 `confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
 fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
-suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is written but has only produced a partial verdict: six of its seven suites pass and the seventh exposed a stale expectation in `lab_ingest_cli` (it demanded `first_frame_observed`, which a file import deliberately never reaches); that expectation is fixed and the suite awaits a re-run. Media and archive also
+suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is proven too: 43 tests green across its seven suites. Wiring it exposed three stale `lab_ingest_cli` assertions (they demanded `first_frame_observed`, which a file import deliberately never reaches, and zero Annex-B omissions, when delimiters are reported) — fixed. Media and archive also
 run inside `full` and `release`. The remaining claim lanes (`adapter`, `model`, `geometry`, `threat`) still fail closed and are the next wiring targets, in that order of expected value.
+
+### When admission is refused repeatedly
+
+`RCH_SYNC_LIVE_CHECKOUT_REFUSED` and `RCH_TOPOLOGY_PATHS_PRESENT` can keep every worker refusing for
+tens of minutes while the queue has free slots. For a single verification run it is faster to take the
+shim out and put it back:
+
+```sh
+rch shim uninstall
+cargo test -q -p <crate> --test <suite> -j6
+rch shim install --allow-local-fallback
+```
+
+That is a two-second operation each way and a suite that took 25+ minutes through the queue ran in
+118 seconds locally. Leave the shim installed and on `--allow-local-fallback` when you are done.
