@@ -46,13 +46,15 @@ mod commit;
 /// Approval-gated preservation of retained imports and their shared derivative closures.
 pub mod holds;
 mod index;
+/// Immutable policy and hold inspection that coexists with an active deployment writer.
+pub mod inspection;
 mod onvif;
 mod plan;
 /// Conservative age selection and exact, crash-resumable cleanup of completed recordings.
 pub mod retention;
+mod retry;
 /// Owner-approved local expiry cleanup of retained review derivatives, preserving sources.
 pub mod review_expiry;
-mod retry;
 mod rtp;
 pub mod scope;
 mod walk;

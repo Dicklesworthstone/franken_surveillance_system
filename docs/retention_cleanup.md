@@ -233,8 +233,30 @@ fss-event delete policy-show \
   --root /path/to/deployment --site site:home --sensor-id sensor:front
 ```
 
-Omit `--sensor-id` to list all current policies in sensor order. To update or disable a
-policy, repeat the complete `policy-plan` request with the desired `--state` and settings,
+Omit `--sensor-id` to list all current policies in sensor order. `policy-show` can run while
+ingest holds the deployment writer lock: it opens immutable retained metadata without
+initializing a missing deployment, acquiring the writer lock, repairing journals or recovering
+unfinished work. It reads policy records and their retained impact plans without loading the
+original recording. All policy history is verified before applying the sensor filter; damaged
+custody outside the requested sensor cannot silently become an empty result.
+
+The CLI uses fixed defaults and hard ceilings of **268,435,456 payload bytes (256 MiB)** and
+**65,536 payload read attempts**, with a **cooperative 60-second deadline**. Opening metadata,
+native policy reconstruction and final revalidation share this one allowance. Read attempts
+count bounded payload reads, not filesystem syscalls. The complete existing
+`fss.retention_policy_cli.v1` JSON is withheld until metadata, selected record custody and both
+journal heads pass the final checks; cancellation, exhaustion, corruption or a changed head
+refuses the whole result. No CLI option enlarges these inspection ceilings. The existing
+64 MiB retention output ceiling also applies.
+
+Library callers use `deletion::inspection::inspect_policies` with a read-only `ReplayCx`,
+`CAP-RETENTION-PREPARE-001` and the `ADP-REPLAY-001` context. Principal, site and root must match.
+`inspection_limits()` can be narrowed within the caller's remaining authority budget. The
+returned anchor, records and read usage describe verified policy metadata, without claiming
+that source media is intact or granting deletion authority.
+
+To update or disable a policy, repeat the complete `policy-plan` request with the desired
+`--state` and settings,
 and put its current `policy_digest` in `--expected-policy`. A stale predecessor is refused.
 A new import, changed hold or authority head between preview and adoption changes the
 approval; the original command cannot silently adopt against different evidence.

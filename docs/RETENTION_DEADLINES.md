@@ -35,6 +35,14 @@ signed 128-bit integer nanoseconds. JSON uses decimal strings so clients cannot 
 them through binary64 numbers. This command reads the current hold records and writes no
 retention transition. It keeps indefinite and terminal records visible too.
 
+`due` and `list` can run while ingest holds the deployment writer lock. They inspect one
+unchanged committed head without initializing or repairing storage. Both use the fixed
+[hold inspection allowances](EVIDENCE_HOLDS.md#read-current-holds-during-ingest): 256 MiB of
+aggregate payload reads, 65,536 read attempts and a cooperative 60-second runtime deadline.
+The same budget pays for final metadata/custody/head checks before any JSON is released;
+exhaustion, cancellation, damaged history or a changed head refuses the entire result. This
+runtime deadline does not supply or alter the owner-attested current-time interval.
+
 | Readiness | Meaning |
 |---|---|
 | `not_due` | Even the latest attested time is before the deadline. |
@@ -69,9 +77,11 @@ Eligibility compares the earliest bound directly with the deadline, with no over
 subtraction. An uncertain interval never becomes permission. Deletion consults committed hold
 state, not elapsed wall time: merely passing a deadline or running `due` changes nothing.
 
-The existing retention prepare/commit capabilities, exact principal/site/anchor/request-bound
-approvals, reserved authority family and object namespace, and exclusive deployment writer
-lock remain the boundary. The local process supplies the CLI capabilities; `--principal` is
+Inspection uses `CAP-RETENTION-PREPARE-001` with an `ADP-REPLAY-001` read context. Approved
+mutations additionally require `CAP-RETENTION-COMMIT-001`, the exact
+principal/site/anchor/request-bound approval and the exclusive deployment writer lock.
+The reserved authority family and object namespace remain enforced. The local process
+supplies the CLI capabilities; `--principal` is
 an audit label, not remote authentication. All other hold restrictions remain, including no
 new mutation during incomplete deletion and no reuse of terminal identifiers.
 

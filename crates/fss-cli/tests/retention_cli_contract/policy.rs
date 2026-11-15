@@ -103,6 +103,14 @@ fn cli_adopts_inspects_and_executes_exact_policy_bound_cleanup_with_cold_retry()
         for identity in [old, young] {
             RetainedFileImport::open(&deployment, identity, RetainedReadLimits::default(), &cx)?;
         }
+        let temporary = root.join("LAYOUT.tmp.inspection-must-preserve");
+        fs::write(&temporary, b"inspection must not run recovery")?;
+        let before = files(&root)?;
+        let shown = policy_show(&root)?;
+        success(&shown);
+        assert_eq!(digest_field(&shown, "policy_digest")?, pin);
+        assert_eq!(files(&root)?, before);
+        fs::remove_file(temporary)?;
     }
     let current = policy_show(&root)?;
     assert_eq!(digest_field(&current, "policy_digest")?, pin);
@@ -172,6 +180,55 @@ fn cli_adopts_inspects_and_executes_exact_policy_bound_cleanup_with_cold_retry()
     success(&retry);
     assert!(std::str::from_utf8(&retry.stdout)?.contains("\"outcome\":\"already_complete\""));
     assert_eq!(files(&root)?, after);
+    Ok(())
+}
+
+#[test]
+fn filtered_policy_show_refuses_missing_custody_and_torn_history_without_partial_output()
+-> TestResult {
+    let dir = Directory::new("immutable-policy-refusal")?;
+    import(&dir, "old", SENSOR, Some(1_000_000_000), &movie(40)?)?;
+    let root = dir.root();
+    let proposed = policy_change(&root, "policy-plan", "enabled", None, None)?;
+    let pin = digest_field(&proposed, "policy_digest")?;
+    let impact = digest_field(&proposed, "affected_plan_digest")?;
+    let approve = digest_field(&proposed, "approval_digest")?;
+    success(&policy_change(
+        &root,
+        "policy-commit",
+        "enabled",
+        None,
+        Some(approve),
+    )?);
+    let cx = context(&root)?;
+    let writer = open(&root, &cx)?;
+    let filtered = || -> TestResult<Output> {
+        output(
+            Command::new(env!("CARGO_BIN_EXE_fss-event"))
+                .args(["delete", "policy-show", "--root"])
+                .arg(&root)
+                .args(["--site", SITE, "--sensor-id", "sensor:unrelated"]),
+        )
+    };
+    let empty = filtered()?;
+    success(&empty);
+    assert!(std::str::from_utf8(&empty.stdout)?.contains("\"policies\":[]"));
+    for digest in [pin, impact] {
+        let path = writer.publisher().spool().object_path(digest);
+        let bytes = fs::read(&path)?;
+        fs::remove_file(&path)?;
+        let before = files(&root)?;
+        refused(&filtered()?, "ERR-RETENTION-POLICY-STORAGE-001");
+        assert_eq!(files(&root)?, before);
+        fs::write(path, bytes)?;
+    }
+    let journal = root.join("effects/journal.fssj");
+    let mut bytes = fs::read(&journal)?;
+    bytes.extend_from_slice(b"torn");
+    fs::write(journal, bytes)?;
+    let before = files(&root)?;
+    refused(&filtered()?, "ERR-RETENTION-POLICY-STORAGE-001");
+    assert_eq!(files(&root)?, before);
     Ok(())
 }
 

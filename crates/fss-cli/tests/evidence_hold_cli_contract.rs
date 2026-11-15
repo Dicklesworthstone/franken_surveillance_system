@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 //! Real binaries compose hold preview/commit/release with the existing deletion command.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
@@ -62,6 +63,23 @@ fn approval(json: &str) -> TestResult<String> {
         .next()
         .ok_or("unterminated approval")?;
     Ok(ContentDigest::parse(value)?.to_text())
+}
+
+fn tree(root: &Path) -> TestResult<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+    let mut paths = vec![root.to_path_buf()];
+    let mut entries = BTreeMap::new();
+    while let Some(path) = paths.pop() {
+        let relative = path.strip_prefix(root)?.to_path_buf();
+        if fs::symlink_metadata(&path)?.file_type().is_dir() {
+            entries.insert(relative, None);
+            for entry in fs::read_dir(&path)? {
+                paths.push(entry?.path());
+            }
+        } else {
+            entries.insert(relative, Some(fs::read(&path)?));
+        }
+    }
+    Ok(entries)
 }
 
 #[test]
@@ -134,6 +152,10 @@ fn binary_hold_release_and_deletion_preview_share_authority() -> TestResult {
     let place = approval(&preview)?;
     assert!(hold("place", Some(&place))?.contains("\"status\":\"committed\""));
     assert!(hold("place", Some(&place))?.contains("\"status\":\"already_current\""));
+    let writer = ReferenceDeployment::open(&root, SITE, &cx)?;
+    let temporary = root.join("LAYOUT.tmp.inspection-must-preserve");
+    fs::write(&temporary, b"inspection must not run recovery")?;
+    let before_inspection = tree(&root)?;
     let listed = success(
         Command::new(HOLD)
             .arg("list")
@@ -143,6 +165,20 @@ fn binary_hold_release_and_deletion_preview_share_authority() -> TestResult {
             .output()?,
     )?;
     assert!(listed.contains("\"active_holds\":1"));
+    let due = success(
+        Command::new(HOLD)
+            .arg("due")
+            .arg("--root")
+            .arg(&root)
+            .args(["--site", SITE, "--attested-now-ns", "100:101"])
+            .output()?,
+    )?;
+    assert!(due.contains("\"status\":\"retention_evaluated\""));
+    assert!(due.contains("\"active_holds\":1"));
+    assert!(due.contains("\"eligible_for_expiry\":0"));
+    assert_eq!(tree(&root)?, before_inspection);
+    fs::remove_file(temporary)?;
+    drop(writer);
     let deletion = || -> TestResult<String> {
         success(
             Command::new(EVENT)
@@ -170,6 +206,28 @@ fn binary_hold_release_and_deletion_preview_share_authority() -> TestResult {
     )?;
     assert!(listed.contains("\"active_holds\":0"));
     assert!(listed.contains("\"state\":\"released\""));
+    let writer = ReferenceDeployment::open(&root, SITE, &cx)?;
+    let journal = root.join("ledger/journal.fssj");
+    let mut bytes = fs::read(&journal)?;
+    bytes.extend_from_slice(b"torn");
+    fs::write(journal, bytes)?;
+    let before = tree(&root)?;
+    for verb in ["list", "due"] {
+        let mut command = Command::new(HOLD);
+        command
+            .arg(verb)
+            .arg("--root")
+            .arg(&root)
+            .args(["--site", SITE]);
+        if verb == "due" {
+            command.args(["--attested-now-ns", "100:101"]);
+        }
+        let refused = command.output()?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+    }
+    assert_eq!(tree(&root)?, before);
+    drop(writer);
     Ok(())
 }
 

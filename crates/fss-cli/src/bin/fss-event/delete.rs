@@ -630,6 +630,16 @@ fn retention_preview(
     ))
 }
 
+/// Inspect retention metadata before any mutable deployment or publisher is constructed.
+pub(super) fn inspect(action: &DeleteAction, out: &mut impl Write) -> RunResult<()> {
+    let json = policy::inspect(action)?;
+    if json.len() > MAX_RETENTION_REPORT_BYTES {
+        return Err(std::io::Error::other("retention inspection output bound exceeded").into());
+    }
+    out.write_all(json.as_bytes())?;
+    Ok(())
+}
+
 /// Plans or commits and buffers the complete JSON report before writing stdout.
 pub(super) fn run(
     action: &DeleteAction,

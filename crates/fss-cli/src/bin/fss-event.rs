@@ -894,6 +894,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     ) {
         return retained::run(options, out);
     }
+    if let Action::Delete(request) = &options.action
+        && matches!(request.operation, delete::Operation::PolicyShow(_))
+    {
+        return delete::inspect(request, out);
+    }
     // The authenticated local process and filesystem are the boundary. The principal is an
     // audit label, not remote authentication; no model or device-control grant. Only `alert`
     // receives alert capabilities: prepare always, commit only with an explicit --dispatch.

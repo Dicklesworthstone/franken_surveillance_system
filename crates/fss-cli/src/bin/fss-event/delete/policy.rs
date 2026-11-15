@@ -5,11 +5,13 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use fss_core::region::ContextAuthority;
-use fss_core::{PrincipalId, SensorId};
+use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId, SensorId};
+use fss_reference::deletion::holds::CAP_HOLD_PREPARE;
+use fss_reference::deletion::inspection::{inspect_policies, inspection_limits};
 use fss_reference::deletion::retention::policy::{
     PolicyChangeRequest, PolicyOutcome, PolicyReceipt, RetentionPolicyRecord, commit_policy_change,
-    list_policies, preview_policy_change,
+    preview_policy_change,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -180,6 +182,50 @@ fn command(action: &DeleteAction, receipt: &PolicyReceipt) -> String {
     ))
 }
 
+fn show_json(records: &[RetentionPolicyRecord], sensor: Option<&SensorId>) -> String {
+    let records: Vec<_> = records
+        .iter()
+        .filter(|record| sensor.is_none_or(|sensor| &record.request().sensor == sensor))
+        .map(record_json)
+        .collect();
+    format!(
+        "{{\"format\":\"fss.retention_policy_cli.v1\",\"operation\":\"show\",\"policies\":[{}],\"writes\":\"none\",\"automatic_deletion_authorized\":false}}\n",
+        records.join(",")
+    )
+}
+
+pub(super) fn inspect(action: &DeleteAction) -> RunResult<String> {
+    let Operation::PolicyShow(sensor) = &action.operation else {
+        return Err(std::io::Error::other("policy-show requires immutable inspection").into());
+    };
+    let root = std::fs::canonicalize(&action.root)?;
+    let limits = inspection_limits();
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:event-cli".into(),
+        operation_id: OperationId::parse("operation:event-cli")?,
+        principal: action.principal.clone(),
+        capabilities: vec!["ADP-REPLAY-001".into(), CAP_HOLD_PREPARE.into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(limits.max_read_bytes as u64)
+            .storage_operations(limits.max_read_objects as u64)
+            .build()?,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(action.site.as_bytes()),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
+    let started = std::time::Instant::now();
+    let cancelled = || started.elapsed() >= std::time::Duration::from_secs(60);
+    let result = inspect_policies(&root, &authority, limits, &cx, &cancelled)
+        .map(|inspection| show_json(&inspection.records, sensor.as_ref()))
+        .map_err(Into::into);
+    cx.drain_and_finalize();
+    result
+}
+
 pub(super) fn run(
     action: &DeleteAction,
     deployment: &mut ReferenceDeployment,
@@ -192,22 +238,6 @@ pub(super) fn run(
         }
         Operation::PolicyCommit { request, approve } => {
             commit_policy_change(deployment, request, *approve, authority, cx)?
-        }
-        Operation::PolicyShow(sensor) => {
-            let records = list_policies(deployment, authority, cx)?;
-            let records: Vec<_> = records
-                .iter()
-                .filter(|record| {
-                    sensor
-                        .as_ref()
-                        .is_none_or(|sensor| &record.request().sensor == sensor)
-                })
-                .map(record_json)
-                .collect();
-            return Ok(format!(
-                "{{\"format\":\"fss.retention_policy_cli.v1\",\"operation\":\"show\",\"policies\":[{}],\"writes\":\"none\",\"automatic_deletion_authorized\":false}}\n",
-                records.join(",")
-            ));
         }
         _ => return Err(std::io::Error::other("invalid retention policy operation").into()),
     };

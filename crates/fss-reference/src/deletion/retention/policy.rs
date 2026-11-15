@@ -11,8 +11,8 @@ use std::fmt;
 use fss_core::region::ContextAuthority;
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
-    PrincipalId, SensorId, TimestampNs,
+    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor,
+    LedgerSnapshot, ObjectId, Plane, PrincipalId, SensorId, TimestampNs,
 };
 
 use super::{RetentionPlan, RetentionRequest};
@@ -21,6 +21,7 @@ use crate::deletion::{
     DeletionError, DeletionIndex, DeletionPlan, DeletionScope, MAX_DELETION_RECORD_BYTES,
 };
 use crate::reference_deployment::FAMILY_RETENTION_POLICY;
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Canonical immutable authority record.
@@ -326,6 +327,8 @@ pub enum PolicyError {
     Reference(Box<ReferenceError>),
     /// Underlying custody failure.
     Spool(fss_object::SpoolError),
+    /// Immutable retained metadata or custody inspection refused.
+    Source(Box<crate::ingest::FileIngestError>),
     /// Affected deletion selection or history refused.
     Deletion(Box<DeletionError>),
 }
@@ -372,6 +375,9 @@ impl fmt::Display for PolicyError {
             Self::Contract(error) => write!(out, "retention policy contract: {error}"),
             Self::Reference(error) => write!(out, "retention policy authority: {error}"),
             Self::Spool(error) => write!(out, "retention policy custody: {error}"),
+            Self::Source(_) => {
+                out.write_str("retention policy immutable custody inspection failed")
+            }
             Self::Deletion(error) => write!(out, "retention policy impact: {error}"),
         }
     }
@@ -390,6 +396,11 @@ impl From<ReferenceError> for PolicyError {
 impl From<fss_object::SpoolError> for PolicyError {
     fn from(error: fss_object::SpoolError) -> Self {
         Self::Spool(error)
+    }
+}
+impl From<crate::ingest::FileIngestError> for PolicyError {
+    fn from(error: crate::ingest::FileIngestError) -> Self {
+        Self::Source(Box::new(error))
     }
 }
 impl From<DeletionError> for PolicyError {
@@ -441,10 +452,30 @@ impl PolicyIndex {
         if cx.root_dir() != deployment.root() {
             return Err(PolicyError::Unauthorized);
         }
+        Self::from_history(
+            deployment.ledger().current(),
+            deployment.ledger().batches(),
+            cx,
+            |digest, limit| {
+                deployment
+                    .publisher()
+                    .spool()
+                    .read_bounded(digest, limit)
+                    .map_err(PolicyError::from)
+            },
+        )
+    }
+
+    fn from_history(
+        snapshot: &LedgerSnapshot,
+        batches: &[EvidenceDeltaBatch],
+        cx: &ReplayCx,
+        mut read: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>, PolicyError>,
+    ) -> Result<Self, PolicyError> {
         let mut index = Self::default();
         let mut entries = 0_u64;
         let mut bytes_read = 0_u64;
-        for batch in deployment.ledger().batches() {
+        for batch in batches {
             checkpoint(cx, STAGE_POLICY_READ)?;
             entries = entries
                 .checked_add(1 + batch.deltas.len() as u64)
@@ -467,15 +498,12 @@ impl PolicyIndex {
                     .ok_or(PolicyError::Limit)?;
                 let limit = usize::try_from(MAX_POLICY_RECORD_BYTES.min(remaining))
                     .map_err(|_| PolicyError::Limit)?;
-                let bytes = deployment
-                    .publisher()
-                    .spool()
-                    .read_bounded(delta.payload_digest, limit)?;
+                let bytes = read(delta.payload_digest, limit)?;
                 bytes_read = bytes_read
                     .checked_add(bytes.len() as u64)
                     .ok_or(PolicyError::Limit)?;
                 let record = RetentionPolicyRecord::from_bytes(&bytes, delta.payload_digest)?;
-                if record.site != deployment.site_lineage()
+                if record.site != snapshot.anchor.site_lineage
                     || record.basis != batch.basis_anchor
                     || batch.deltas.len() != 1
                     || *delta != record.delta()?
@@ -492,7 +520,7 @@ impl PolicyIndex {
                         .ok_or(PolicyError::Limit)?;
                     let limit = usize::try_from((MAX_DELETION_RECORD_BYTES as u64).min(remaining))
                         .map_err(|_| PolicyError::Limit)?;
-                    let bytes = deployment.publisher().spool().read_bounded(digest, limit)?;
+                    let bytes = read(digest, limit)?;
                     bytes_read = bytes_read
                         .checked_add(bytes.len() as u64)
                         .ok_or(PolicyError::Limit)?;
@@ -541,9 +569,7 @@ impl PolicyIndex {
                 .get(digest)
                 .ok_or(PolicyError::InvalidRecord)?;
             let object_id = record.object_id()?;
-            let current = deployment
-                .ledger()
-                .current()
+            let current = snapshot
                 .objects
                 .get(&object_id)
                 .ok_or(PolicyError::InvalidRecord)?;
@@ -558,6 +584,33 @@ impl PolicyIndex {
         index.bytes_read = bytes_read;
         Ok(index)
     }
+}
+
+/// Reuses the policy owner's exact history and impact checks without opening a publisher.
+/// The inspection owner performs authority admission and final custody/head revalidation.
+pub(crate) fn retained_policy_records(
+    source: &dyn RetainedSource,
+    cx: &ReplayCx,
+) -> Result<Vec<RetentionPolicyRecord>, PolicyError> {
+    checkpoint(cx, STAGE_POLICY_READ)?;
+    let ledger = source.ledger();
+    let index =
+        PolicyIndex::from_history(ledger.current(), ledger.batches(), cx, |digest, limit| {
+            source
+                .read_object_bounded(digest, limit)
+                .map_err(PolicyError::from)
+        })?;
+    index
+        .current
+        .values()
+        .map(|digest| {
+            index
+                .records
+                .get(digest)
+                .cloned()
+                .ok_or(PolicyError::InvalidRecord)
+        })
+        .collect()
 }
 
 /// Preparation or exact retry outcome.
@@ -665,7 +718,10 @@ pub fn preview_policy_change(
     };
     let receipt = preview_affected(deployment, request, authority, generation, cx)?;
     let record = &receipt.record;
-    let affected = receipt.affected.as_ref().ok_or(PolicyError::InvalidRecord)?;
+    let affected = receipt
+        .affected
+        .as_ref()
+        .ok_or(PolicyError::InvalidRecord)?;
     if record.to_bytes().len() as u64 > MAX_POLICY_RECORD_BYTES {
         return Err(PolicyError::Limit);
     }
@@ -725,9 +781,7 @@ fn preview_affected(
     let holds =
         crate::deletion::holds::HoldIndex::read(deployment, cx).map_err(DeletionError::from)?;
     let mut universe = crate::deletion::walk::Universe::scan(deployment, &deletions, cx)?;
-    let matches = |plan: &DeletionPlan| {
-        matches!(&plan.scope, DeletionScope::Retention(selection) if selection.request() == &inline)
-    };
+    let matches = |plan: &DeletionPlan| matches!(&plan.scope, DeletionScope::Retention(selection) if selection.request() == &inline);
     let plans: BTreeMap<_, _> = universe
         .proposed_plans()
         .filter(|(_, plan)| matches(plan))

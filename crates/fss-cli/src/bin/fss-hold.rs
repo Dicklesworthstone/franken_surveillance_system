@@ -13,13 +13,14 @@ use fss_cli::agent_json::{array, evidence_anchor, object, string};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
-    BudgetVector, CaptureInterval, ContentDigest, DigestAlgorithm, OperationId, PrincipalId,
-    TimestampNs,
+    BudgetVector, CaptureInterval, ContentDigest, DigestAlgorithm, LedgerAnchor, OperationId,
+    PrincipalId, TimestampNs,
 };
 use fss_reference::deletion::holds::{
     CAP_HOLD_COMMIT, CAP_HOLD_PREPARE, HoldError, HoldOutcome, HoldRecord, HoldRequest, HoldState,
-    RetentionReadiness, commit_hold, list_holds, preview_hold,
+    RetentionReadiness, commit_hold, preview_hold,
 };
+use fss_reference::deletion::inspection::{inspect_holds, inspection_limits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 const HELP: &str = "fss-hold <place|release|retain|expire|list|due> --root DIR --site SITE [--principal ID]\n\
@@ -27,6 +28,7 @@ const HELP: &str = "fss-hold <place|release|retain|expire|list|due> --root DIR -
   retain: --hold-id ID --import-id sha256:HEX --reason TEXT --until-ns NS [--approve DIGEST]\n\
   expire: same identity, --reason TEXT --until-ns NS --attested-now-ns EARLIEST:LATEST [--approve DIGEST]\n\
   due: --attested-now-ns EARLIEST:LATEST; read-only evaluation of every current hold.\n\
+  List and due can run while ingest owns the deployment; neither repairs retained state.\n\
   Deadlines and time attestations are signed Unix nanoseconds. Earliest must reach the original\n\
   deadline before expiry can be approved; overlapping uncertainty refuses expiry. The supplied\n\
   bounds are an OWNER ASSERTION, not an authenticated clock. No media timestamp or system-clock\n\
@@ -296,6 +298,8 @@ fn run(options: &Options) -> RunResult<String> {
     if options.approval.is_some() {
         capabilities.push(CAP_HOLD_COMMIT.to_owned());
     }
+    let inspection = options.request.is_none();
+    let limits = inspection_limits();
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:hold-cli".into(),
         operation_id: OperationId::parse("operation:hold-cli")?,
@@ -304,69 +308,91 @@ fn run(options: &Options) -> RunResult<String> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(8 * 1024 * 1024)
-            .storage_operations(8192)
+            .bytes(if inspection {
+                limits.max_read_bytes as u64
+            } else {
+                8 * 1024 * 1024
+            })
+            .storage_operations(if inspection {
+                limits.max_read_objects as u64
+            } else {
+                8192
+            })
             .build()?,
         privacy_scope: "privacy:local-authorized-files".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
     })?;
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    let cx = if inspection {
+        ReplayCx::from_context_authority_read_only(&authority, fs::canonicalize(&options.root)?)?
+    } else {
+        ReplayCx::from_context_authority(&authority, options.root.clone())?
+    };
     let result = run_with(options, &authority, &cx);
     cx.drain_and_finalize();
     result
 }
 
 fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> RunResult<String> {
-    let mut deployment = ReferenceDeployment::open(&options.root, &options.site, cx)?;
-    let detail = match &options.request {
-        None => {
-            let values = list_holds(&deployment, authority, cx)?;
-            match options.attested_now {
-                Some(now) => due_report(&values, now)?,
-                None => {
-                    let active = values
-                        .iter()
-                        .filter(|r| r.request().state.is_active())
-                        .count();
-                    let records: Vec<_> = values.iter().map(record).collect();
-                    object(&[
-                        ("status", string("listed")),
-                        ("active_holds", active.to_string()),
-                        ("records", array(&records)),
-                    ])
-                }
+    let Some(request) = &options.request else {
+        let started = std::time::Instant::now();
+        let cancelled = || started.elapsed() >= std::time::Duration::from_secs(60);
+        let inspection = inspect_holds(
+            cx.root_dir(),
+            authority,
+            inspection_limits(),
+            cx,
+            &cancelled,
+        )?;
+        let values = &inspection.records;
+        let detail = match options.attested_now {
+            Some(now) => due_report(values, now)?,
+            None => {
+                let active = values
+                    .iter()
+                    .filter(|r| r.request().state.is_active())
+                    .count();
+                let records: Vec<_> = values.iter().map(record).collect();
+                object(&[
+                    ("status", string("listed")),
+                    ("active_holds", active.to_string()),
+                    ("records", array(&records)),
+                ])
             }
-        }
-        Some(request) => {
-            let receipt = match options.approval {
-                None => preview_hold(&deployment, request, authority, cx)?,
-                Some(approval) => commit_hold(&mut deployment, request, approval, authority, cx)?,
-            };
-            object(&[
-                ("status", string(receipt.outcome.as_str())),
-                (
-                    "authority_changed",
-                    (receipt.outcome == HoldOutcome::Committed).to_string(),
-                ),
-                (
-                    "approval_digest",
-                    string(&receipt.record.approval().to_text()),
-                ),
-                ("record", record(&receipt.record)),
-            ])
-        }
+        };
+        return Ok(response(&options.site, &inspection.anchor, detail));
     };
-    Ok(object(&[
+    let mut deployment = ReferenceDeployment::open(&options.root, &options.site, cx)?;
+    let receipt = match options.approval {
+        None => preview_hold(&deployment, request, authority, cx)?,
+        Some(approval) => commit_hold(&mut deployment, request, approval, authority, cx)?,
+    };
+    let detail = object(&[
+        ("status", string(receipt.outcome.as_str())),
+        (
+            "authority_changed",
+            (receipt.outcome == HoldOutcome::Committed).to_string(),
+        ),
+        (
+            "approval_digest",
+            string(&receipt.record.approval().to_text()),
+        ),
+        ("record", record(&receipt.record)),
+    ]);
+    Ok(response(&options.site, deployment.current_anchor(), detail))
+}
+
+fn response(site: &str, anchor: &LedgerAnchor, detail: String) -> String {
+    object(&[
         ("format", string("fss.evidence_hold_cli.v1")),
-        ("site", string(&options.site)),
-        ("anchor", evidence_anchor(deployment.current_anchor())),
+        ("site", string(site)),
+        ("anchor", evidence_anchor(anchor)),
         ("result", detail),
         ("deletion_performed", "false".into()),
         ("hold_registry", string("enforced_import_closure_v1")),
         ("qualification", string("implemented_not_qualified")),
-    ]))
+    ])
 }
 
 fn main() -> ExitCode {

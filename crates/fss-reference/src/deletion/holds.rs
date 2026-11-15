@@ -30,6 +30,7 @@ use super::walk::Universe;
 use super::{DeletionError, DeletionIndex, DeletionPlan, Finding};
 use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use crate::reference_deployment::FAMILY_EVIDENCE_HOLD;
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Existing registered capability for inspection and preparation of retention changes.
@@ -477,6 +478,25 @@ pub(crate) fn verify_retained_hold_history(
     HoldIndex::from_history(snapshot, batches, cx, read).map(|_| ())
 }
 
+/// Rebuild exact hold transitions through an immutable, bounded native custody owner.
+/// The inspection owner admits authority and revalidates every payload and the final head.
+pub(crate) fn retained_hold_records(
+    source: &dyn RetainedSource,
+    cx: &ReplayCx,
+) -> Result<Vec<HoldRecord>, HoldError> {
+    let ledger = source.ledger();
+    Ok(
+        HoldIndex::from_history(ledger.current(), ledger.batches(), cx, |digest| {
+            source
+                .read_object_bounded(digest, MAX_HOLD_RECORD_BYTES)
+                .map_err(HoldError::from)
+        })?
+        .current
+        .into_values()
+        .collect(),
+    )
+}
+
 impl HoldIndex {
     /// Rebuild solely from validated authoritative batches; never infer missing custody as release.
     pub(super) fn read(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<Self, HoldError> {
@@ -587,8 +607,12 @@ impl HoldIndex {
             if let std::collections::btree_map::Entry::Vacant(entry) = closures.entry(held_import) {
                 let held = universe.plan(deployment, &super::DeletionScope::Import(held_import))?;
                 entry.insert(ProtectedClosure {
-                    objects: held.deletable.iter().map(|o| o.digest)
-                        .chain(held.retained.iter().map(|o| o.digest)).collect(),
+                    objects: held
+                        .deletable
+                        .iter()
+                        .map(|o| o.digest)
+                        .chain(held.retained.iter().map(|o| o.digest))
+                        .collect(),
                     slots: held.retractions.into_iter().map(|r| r.slot).collect(),
                     ledger_objects: held.tombstones.into_iter().map(|t| t.object_id).collect(),
                     findings: Vec::new(),
@@ -642,13 +666,23 @@ impl HoldProtection {
     ) -> Result<DeletionPlan, DeletionError> {
         let removed: BTreeSet<_> = plan.deletable.iter().map(|o| o.digest).collect();
         let retracted: BTreeSet<_> = plan.retractions.iter().map(|r| r.slot.as_str()).collect();
-        let tombstoned: BTreeSet<_> = plan.tombstones.iter().map(|t| t.object_id.as_str()).collect();
+        let tombstoned: BTreeSet<_> = plan
+            .tombstones
+            .iter()
+            .map(|t| t.object_id.as_str())
+            .collect();
         for (held_import, held) in &self.closures {
             checkpoint(cx, STAGE_HOLD_READ)?;
             let overlap = plan.imports.contains(held_import)
                 || held.objects.iter().any(|digest| removed.contains(digest))
-                || held.slots.iter().any(|slot| retracted.contains(slot.as_str()))
-                || held.ledger_objects.iter().any(|object| tombstoned.contains(object.as_str()));
+                || held
+                    .slots
+                    .iter()
+                    .any(|slot| retracted.contains(slot.as_str()))
+                || held
+                    .ledger_objects
+                    .iter()
+                    .any(|object| tombstoned.contains(object.as_str()));
             if overlap {
                 plan.blockers.extend(held.findings.iter().cloned());
             }

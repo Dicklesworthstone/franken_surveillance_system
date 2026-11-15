@@ -1,7 +1,7 @@
 # Indefinite evidence holds
 
-Status: implemented reference semantics, not production-qualified. Native Rust tests have been
-authored but were not executed in the authoring environment (no Rust toolchain). No legal
+Status: implemented reference semantics, not production-qualified. Native regression commands
+are listed below; dated execution results are in the [implementation status](../IMPLEMENTATION_STATUS.md). No legal
 compliance, storage durability beyond the existing journal, or evidence-quality claim is made.
 
 ## Operator workflow
@@ -40,6 +40,37 @@ Review and repeat with the newly proposed release approval. Release does not del
 it only removes this hold's blocker. Other holds and open-effect blockers still apply. Prepare
 a fresh deletion plan separately. A released identifier is terminal and cannot be reused.
 
+## Read current holds during ingest
+
+`fss-hold list` and [`fss-hold due`](RETENTION_DEADLINES.md) inspect existing retained authority
+while an ingest process holds the deployment writer lock. They do not initialize a missing
+deployment, acquire that lock, repair journals, recover unfinished work, or read original media.
+Both commands preserve the existing `fss.evidence_hold_cli.v1` output and include terminal
+records. The native history checks still verify placement, predecessor and release/expiry
+records; missing custody cannot become an empty list or an implied release.
+
+Each CLI invocation has fixed inspection ceilings:
+
+| Allowance | Default and maximum |
+|---|---|
+| Aggregate payload bytes | 268,435,456 bytes (256 MiB) |
+| Aggregate payload read attempts | 65,536 |
+| Cooperative elapsed-time deadline | 60 seconds |
+
+The same allowance covers opening metadata, reconstructing records and final verification.
+Read attempts count bounded payload reads, including metadata and final rereads, rather than
+filesystem syscalls. No result JSON is released until metadata, record custody and both journal
+heads pass the final checks. Cancellation, exhaustion, damaged history or an intervening
+authority change refuses the complete result; retry against a stable head after resolving the
+cause. These commands have no CLI flags to enlarge the inspection ceilings.
+
+Inspection uses `CAP-RETENTION-PREPARE-001` and the `ADP-REPLAY-001` read context. It requires
+matching principal, site and root authority, without granting retention commit or media access.
+Library callers use `deletion::inspection::inspect_holds` with a read-only `ReplayCx`; they may
+narrow `inspection_limits()` within their supplied authority budget. The result includes the
+verified anchor, native records and aggregate read usage. A successful inspection verifies the
+retention metadata; it does not certify that the referenced recording remains intact.
+
 ## Preservation and authority
 
 A hold covers the named import's current retained derivative closure, recalculated at deletion
@@ -53,15 +84,16 @@ wall-clock inference. Placement and release records are permanent authority hist
 an import after release does not erase the retention audit trail. Current records, including
 releases, are listed in stable hold-ID order.
 
-The library requires existing `CAP-RETENTION-PREPARE-001` and `CAP-RETENTION-COMMIT-001`
-capabilities, a matching site universe and I/O root, and an exact principal/anchor/request-bound
-approval. Generic authority append rejects both the `evidence_hold` family and its reserved
+Preparation requires `CAP-RETENTION-PREPARE-001`; committing an approved change additionally
+requires `CAP-RETENTION-COMMIT-001`, a matching site universe and I/O root, and an exact
+principal/anchor/request-bound approval. Generic authority append rejects both the
+`evidence_hold` family and its reserved
 object namespace. History reads verify each canonical record, generation, predecessor, batch,
 children and current ledger object. This is not an authentication server: the local CLI runs
 with the invoking process's filesystem access, and `--principal` is an audit label, not a way
 to gain remote access. Do not place secrets, unnecessary personal details, or media in a reason.
 
-The deployment's exclusive writer lock serializes holds with deletion. Once a deletion record
+The deployment's exclusive writer lock serializes hold changes with deletion. Once a deletion record
 is committed and incomplete, new hold changes are refused; the system cannot promise to
 preserve bytes whose removal has already begun. Resume or reconcile that deletion first.
 Cancellation before authority append leaves no effective hold or release. A post-commit
@@ -92,10 +124,14 @@ The contract and error identities are in `registries/evidence_holds.json`.
 ```sh
 cargo test -p fss-reference --lib deletion::holds
 cargo test -p fss-reference --test evidence_hold_contract
+cargo test -p fss-reference --test retention_cohort_contract inspection::
+cargo test -p fss-reference --lib deletion::inspection::tests
 cargo test -p fss-cli --bin fss-hold
 cargo test -p fss-cli --test evidence_hold_cli_contract
 ```
 
 The integration cases exercise real generated JPEG imports, authority journals, writer
 reservations, shared derivatives, cold reopen, deletion, stale approvals, independent releases,
-and cancellation/retry cut points. Their presence is not a claim that these commands have run.
+and cancellation/retry cut points. Immutable inspection cases additionally cover an active
+writer, absent source media, damaged history, shared final-read budgets and changes after
+reconstruction. Their presence is not a claim that these commands have run.
