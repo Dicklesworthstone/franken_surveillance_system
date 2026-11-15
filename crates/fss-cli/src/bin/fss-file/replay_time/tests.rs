@@ -57,6 +57,14 @@ fn retained_query_admits_explicit_era_and_independent_pins_without_io() -> Resul
     assert_eq!(options.query.ntp_era, 0);
     assert_eq!(options.query.limits, ReplayTimeLimits::default());
     assert_eq!(options.retained_limits.max_source_bytes, 64 * 1024 * 1024);
+    assert_eq!(
+        options.read_limits.max_read_bytes as u64,
+        DEFAULT_READ_BYTES
+    );
+    assert_eq!(
+        options.read_limits.max_read_objects as u64,
+        DEFAULT_READ_OBJECTS
+    );
     assert!(options.query.digest().is_ok());
     for key in [
         "--import-id",
@@ -104,6 +112,12 @@ fn retained_query_refuses_ambiguous_effectful_and_unbounded_options() {
         ("--max-source-bytes", "67108865"),
         ("--chunk-bytes", "0"),
         ("--max-segment-bytes", "67108865"),
+        ("--max-read-bytes", "0"),
+        ("--max-read-bytes", "4294967297"),
+        ("--max-read-bytes", "01"),
+        ("--max-read-objects", "0"),
+        ("--max-read-objects", "4000001"),
+        ("--max-read-objects", "01"),
         ("--timeout-ms", "600001"),
         ("--expected-replay-root", "sha256:bad"),
         ("--root", "/"),
@@ -125,4 +139,26 @@ fn retained_query_refuses_ambiguous_effectful_and_unbounded_options() {
     let mut oversized = args();
     set(&mut oversized, "--site", &"a".repeat(4097));
     assert!(parse(&oversized).is_err());
+}
+
+#[test]
+fn aggregate_read_limits_do_not_rewrite_native_query_identity() -> Result<()> {
+    let baseline = parse(&args())?;
+    let mut input = args();
+    set(&mut input, "--max-read-bytes", "1");
+    set(&mut input, "--max-read-objects", "1");
+    let narrowed = parse(&input)?;
+    assert_eq!(
+        narrowed
+            .query
+            .digest()
+            .map_err(|_| malformed("bounded fixture query"))?,
+        baseline
+            .query
+            .digest()
+            .map_err(|_| malformed("baseline fixture query"))?
+    );
+    assert_eq!(narrowed.read_limits.max_read_bytes, 1);
+    assert_eq!(narrowed.read_limits.max_read_objects, 1);
+    Ok(())
 }

@@ -18,15 +18,21 @@ use fss_core::{
     BudgetVector, ContentDigest, DigestAlgorithm, OperationId, PrincipalId, SensorId, StreamId,
 };
 use fss_publication::{PublishCancellation, PublishCutPoint};
+use fss_reference::ReplayCx;
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::ingest::rtsp_import::replay::query_retained_replay_time;
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::rtsp::recording::RecordingScope;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
 use fss_reference::rtsp::recording_replay::ReplayCodec;
 use fss_reference::rtsp::recording_replay::time::{ReplayTimeLimits, ReplayTimeQuery};
-use fss_reference::{ReferenceDeployment, ReplayCx};
 
 pub(super) const MAX_ARGUMENTS: usize = 64;
+const DEFAULT_READ_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_READ_BYTES: u64 = 4 * DEFAULT_READ_BYTES;
+const DEFAULT_READ_OBJECTS: u64 = 1_000_000;
+const MAX_READ_OBJECTS: u64 = 4_000_000;
 const HELP: &str = "fss-file query-replay-utc [options]\n\
   Required: --root EXISTING_ABSOLUTE_DEPLOYMENT --site SITE --import-id sha256:HEX\n\
             --codec avc|hevc --sensor ID --stream ID --generation N\n\
@@ -46,10 +52,13 @@ const HELP: &str = "fss-file query-replay-utc [options]\n\
                   4096 output rows. Every original reserves 32 MiB before source verification.\n\
   Retained media: [--max-source-bytes N] (default/max 64 MiB)\n\
                   [--chunk-bytes N] [--max-segment-bytes N] (default 16 MiB, max 64 MiB)\n\
+  Aggregate reads: [--max-read-bytes N] (default 1 GiB, max 4 GiB)\n\
+                   [--max-read-objects N] (default 1000000, max 4000000).\n\
   [--principal ID] [--timeout-ms N] (default 30000, max 600000).\n\
-  Whole proof and companion reads have separate fixed native ceilings. Output is at most 8 MiB.\n\
-  Existing deployment open may recover journals and holds its exclusive lock. The query publishes\n\
-  no new evidence, exports no original bytes, and cannot repair or resurrect deleted custody.\n\
+  One nonrenewing allowance covers metadata, proofs, originals and final revalidation. Native\n\
+  per-object ceilings still apply. Output is complete and at most 8 MiB.\n\
+  Immutable reads coexist with active ingest without locking, recovery or deployment changes.\n\
+  The query publishes no evidence, exports no original bytes and cannot restore deleted custody.\n\
   Deadline and cancellation are cooperative at native read and projection boundaries.\n";
 
 #[derive(Debug)]
@@ -89,6 +98,7 @@ struct Options {
     import_identity: ContentDigest,
     query: ReplayTimeQuery,
     retained_limits: RetainedReadLimits,
+    read_limits: ImmutableRetainedReadLimits,
     timeout: Duration,
 }
 
@@ -126,6 +136,8 @@ fn parse(args: &[OsString]) -> Result<Options> {
         "--max-source-bytes",
         "--chunk-bytes",
         "--max-segment-bytes",
+        "--max-read-bytes",
+        "--max-read-objects",
         "--timeout-ms",
     ];
     let mut values = BTreeMap::new();
@@ -171,6 +183,18 @@ fn parse(args: &[OsString]) -> Result<Options> {
         value
             .parse()
             .map_err(|_| malformed("Unix nanoseconds overflow"))
+    };
+    // Unlike historical query counters, newly introduced aggregate allowances use a
+    // canonical spelling so neither an alias nor platform truncation changes the grant.
+    let read_limit = |key, default, maximum| -> Result<usize> {
+        let value = unsigned(key, Some(default), 1, maximum)?;
+        if values
+            .get(key)
+            .is_some_and(|text| value.to_string() != *text)
+        {
+            return Err(malformed("canonical positive read allowance required"));
+        }
+        usize::try_from(value).map_err(|_| malformed("read allowance exceeds address range"))
     };
     let defaults = ReplayTimeLimits::default();
     let query = ReplayTimeQuery {
@@ -285,6 +309,15 @@ fn parse(args: &[OsString]) -> Result<Options> {
                 64 * 1024 * 1024,
             )?,
         },
+        read_limits: ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: read_limit("--max-read-bytes", DEFAULT_READ_BYTES, MAX_READ_BYTES)?,
+            max_read_objects: read_limit(
+                "--max-read-objects",
+                DEFAULT_READ_OBJECTS,
+                MAX_READ_OBJECTS,
+            )?,
+        },
         timeout: Duration::from_millis(unsigned("--timeout-ms", Some(30000), 1, 600000)?),
     })
 }
@@ -325,9 +358,8 @@ fn execute(options: &Options) -> Result<String> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            // Native original envelope plus repeated bounded proof/companion authority reads.
-            .bytes(options.query.limits.max_source_bytes + 128 * 1024 * 1024)
-            .storage_operations(1_000_000)
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
             .build()
             .map_err(|_| runtime("query authority budget refused"))?,
         privacy_scope: "privacy:local-authorized-files".into(),
@@ -343,7 +375,7 @@ fn execute(options: &Options) -> Result<String> {
         start: Instant::now(),
         timeout: options.timeout,
     };
-    // Refuse a missing/non-native store before ReplayCx can create destination directories.
+    // Inspect the existing namespace without acquiring its publisher or recovering journals.
     if !std::fs::symlink_metadata(&options.root).is_ok_and(|meta| meta.file_type().is_dir())
         || !std::fs::symlink_metadata(options.root.join("LAYOUT"))
             .is_ok_and(|meta| meta.file_type().is_file())
@@ -351,12 +383,19 @@ fn execute(options: &Options) -> Result<String> {
         return Err(runtime("existing retained deployment required"));
     }
     clock.check()?;
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())
+    let root = std::fs::canonicalize(&options.root)
+        .map_err(|_| runtime("existing retained deployment required"))?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())
         .map_err(|_| runtime("query context refused"))?;
     let result = (|| {
         clock.check()?;
-        let deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
-            .map_err(|_| runtime("existing deployment open refused"))?;
+        let stopped = || clock.cancel_requested(PublishCutPoint::AfterChildrenVerified);
+        let deployment =
+            ImmutableRetainedSource::open_cancellable(&root, options.read_limits, &cx, &stopped)
+                .map_err(|_| runtime("immutable retained deployment read refused"))?;
+        if deployment.history().site_lineage() != options.site {
+            return Err(runtime("retained deployment site differs from request"));
+        }
         let result = query_retained_replay_time(
             &deployment,
             options.import_identity,
@@ -403,6 +442,11 @@ fn execute(options: &Options) -> Result<String> {
         if final_retained != retained {
             return Err(runtime("retained source authority changed before report"));
         }
+        clock.check()?;
+        deployment
+            .revalidate()
+            .map_err(|_| runtime("retained source or authority changed before report"))?;
+        let usage = deployment.usage();
         let report = object(&[
             (
                 "schema",
@@ -415,13 +459,15 @@ fn execute(options: &Options) -> Result<String> {
             ),
             ("import_root", string(&retained.import_root().to_text())),
             ("source_archive_required", "false".into()),
+            ("deployment_mutated", "false".into()),
+            ("payload_read_bytes", usage.read_bytes.to_string()),
+            ("payload_read_attempts", usage.read_objects.to_string()),
             ("network", string("none")),
             ("report", report),
         ]);
         if report.len() > MAX_REPORT_BYTES {
             return Err(runtime("complete retained query report exceeds 8 MiB"));
         }
-        clock.check()?;
         Ok(report)
     })();
     cx.drain_and_finalize();

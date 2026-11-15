@@ -59,6 +59,8 @@ The outer JSON schema is `fss.retained_replay_time_operator_report.v1`:
 | `import_identity`, `import_root` | The current completed retained import that supplied the originals. |
 | `source_archive_required` | `false`. |
 | `network` | `none`. |
+| `deployment_mutated` | `false`; the inspection takes no writer lock and performs no recovery. |
+| `payload_read_bytes`, `payload_read_attempts` | Aggregate payload reads, including metadata and final verification. Repeated reads count again. |
 | `report` | The complete existing `fss.local_replay_time_operator_report.v1` projection. |
 
 For the same original bytes, independent pins, era, interval and query limits,
@@ -91,6 +93,8 @@ for packet ownership, timestamp conflict and interval details.
 | `--max-source-bytes` | 67,108,864 | 67,108,864 |
 | `--chunk-bytes` | 16,777,216 | 67,108,864 |
 | `--max-segment-bytes` | 16,777,216 | 67,108,864 |
+| `--max-read-bytes` | 1,073,741,824 | 4,294,967,296 |
+| `--max-read-objects` | 1,000,000 | 4,000,000 |
 | `--timeout-ms` | 30,000 | 600,000 |
 
 Every listed bound must be positive. Query admission reserves **32 MiB per native
@@ -104,19 +108,28 @@ The native proof has a separate 4 MiB read ceiling. Each companion readback is
 bounded by the existing 64 KiB receipt ceiling. `source_bytes_reserved` and
 `verified_source_bytes` in the inner report keep their archive-query meanings:
 conservative native-window reservation and actual verified original closure
-payload, respectively. Companion/proof authority reads remain separately bounded.
+payload, respectively. Companion/proof authority reads retain their individual bounds and also consume
+the shared nonrenewing `--max-read-bytes` / `--max-read-objects` allowance. Final
+metadata, payload, publication and authority rereads use that same allowance.
+These counters measure payload bytes and attempted reads, not unique objects or
+filesystem syscalls. Aggregate allowances must use canonical positive decimal spelling.
 
 The retained-media options admit the imported movie's declared source/chunk
 layout. They do not replace the native original-source allowance. The query
 reconstructs source packet and sample mappings without decoding pixels or
 emitting media bytes.
 
-`--principal` defaults to `principal:local-operator`. Opening an existing
-deployment holds its normal exclusive lock and may recover journals. Query
-processing publishes no evidence, import, export or deletion. Current completion,
-origin proof, native objects, companion bytes and deletion state are checked;
-companion and import authority are rechecked before the report is released.
-Damaged or deleted custody refuses instead of being repaired from another store.
+`--principal` defaults to `principal:local-operator` and is an audit label for the
+filesystem-authorized local process. The command uses the sealed immutable retained
+reader and a read-only authority constructor. It coexists with an open publisher,
+creates no deployment directories, acquires no writer lock, and never recovers a
+journal or reconciles an effect. Query processing publishes no evidence, import,
+export or deletion. Current completion, origin proof, native objects, companion
+bytes and deletion state are checked; all selected payloads, publication roots and
+authority are revalidated before the report is released. A changed authority or
+damaged journal refuses with no report and leaves the deployment untouched. This
+is a bounded observation, not an atomic filesystem snapshot or a lease preventing
+changes after final validation.
 
 Cancellation and deadline checks are cooperative at read, projection and rendering
 boundaries. The complete outer JSON must fit **8 MiB**, including its nested
@@ -146,8 +159,10 @@ cargo test --locked --offline -p fss-cli --test rtsp_replay_import_cli retained_
 
 Six reference contracts cover real timestamped AVC/HEVC sources, ONVIF pins,
 source-only lookahead, missing/malformed assertions, era/interval parity, offline
-custody, limits, cancellation, corruption and committed deletion. Two command
-parser cases and three real process cases cover the operator path. The existing
+custody, limits, cancellation, corruption and committed deletion. Three command
+parser cases and five real process cases cover the operator path, including AVC/HEVC
+parity while a publisher is open, exact aggregate allowance boundaries, and both
+torn journal tails remaining untouched. The existing
 recording lifecycle script includes the native and process targets.
 
 At the implementation checkpoint, source/API review, scoped formatting and

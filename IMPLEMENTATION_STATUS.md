@@ -4,6 +4,26 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native recorder UTC reads during active ingest — 2026-11-15
+
+`fss-file query-replay-utc` now uses the same sealed immutable custody boundary as
+canonical retained queries. The native command can inspect imported AVC/HEVC recorder
+history while the publisher is open, without creating directories, acquiring a
+writer lock, repairing journals or reconciling effects. One explicit nonrenewing
+byte/read-attempt allowance covers metadata, proofs, originals and final revalidation;
+the existing cooperative timeout covers native reads. Native query/index/report/row
+identities are unchanged. The wrapper adds consumed read work and `deployment_mutated=false`.
+
+The process contracts now cover writer-held AVC/HEVC parity, exact aggregate allowance
+success versus one-byte/read short refusal, and both torn journal tails remaining
+untouched with empty stdout. Parser tests preserve native query identity under changed
+read limits. Pinned formatting, scoped diff checks and source/API review passed.
+Native test execution is pending: after exact locked dependency provisioning on the
+workspace filesystem, a single-job test build and lower-memory `cargo check` were
+both killed by the host (SIGKILL) in unchanged `fss-core`, before checking these files.
+No native runtime pass or release qualification is inferred. See
+[retained recorder UTC queries](docs/RETAINED_RECORDER_TIMESTAMP_QUERY.md).
+
 ## Explicitly approved event metadata in alerts — 2026-11-14
 
 Native webhook alerts now admit an explicit `event-metadata-v1` disclosure

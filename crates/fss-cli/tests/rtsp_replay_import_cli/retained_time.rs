@@ -6,9 +6,12 @@ use std::fs;
 use std::process::{Command, Output};
 
 use fss_cli::json_input::{Value, parse};
-use fss_core::ContentDigest;
+use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_reference::ingest::rtsp_import::RtspImportCodec;
+use fss_reference::{ReferenceDeployment, ReplayCx};
 
+use super::footage::snapshot;
 use super::support::{Fixture, SITE, Test, approve, field, good, run, serial, set};
 
 fn item<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
@@ -127,6 +130,7 @@ fn retained_queries_match_archive_reports_for_both_codecs_with_the_archive_offli
             item(&online, "source_archive_required")?.boolean(),
             Some(false)
         );
+        assert_eq!(item(&online, "deployment_mutated")?.boolean(), Some(false));
         assert_eq!(field(&online, "network")?, "none");
         ContentDigest::parse(field(&online, "import_root")?)?;
         assert_eq!(item(&online, "report")?, &archived);
@@ -149,6 +153,83 @@ fn retained_queries_match_archive_reports_for_both_codecs_with_the_archive_offli
             !fixture.archive().exists(),
             "retained query recreated the source archive"
         );
+
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:retained-replay-query-writer".into(),
+            operation_id: OperationId::parse("operation:retained-replay-query-writer")?,
+            principal: "principal:local-operator".into(),
+            capabilities: vec!["ADP-REPLAY-001".into()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder().bytes(1024 * 1024 * 1024).build()?,
+            privacy_scope: "privacy:local-authorized-files".into(),
+            retention_scope: "retention:existing-deployment-policy".into(),
+            anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+            generation: 1,
+        })?;
+        let cx = ReplayCx::from_context_authority(&authority, fixture.target())?;
+        let writer = ReferenceDeployment::open(&fixture.target(), SITE, &cx)?;
+        let before = snapshot(&fixture.target())?;
+        let while_writing = parse(&good(retained_query(&args)?)?)?;
+        assert_eq!(while_writing, cold, "an active publisher changed the read");
+        assert_eq!(snapshot(&fixture.target())?, before);
+        drop(writer);
+        cx.drain_and_finalize();
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_query_aggregate_allowance_includes_final_revalidation() -> Test {
+    let _serial = serial();
+    let fixture = Fixture::new(RtspImportCodec::Avc, 1, 0)?;
+    let identity = import(&fixture)?;
+    let args = query_args(&fixture, Some(&identity));
+    let before = snapshot(&fixture.target())?;
+    let baseline = parse(&good(retained_query(&args)?)?)?;
+    let bytes = item(&baseline, "payload_read_bytes")?
+        .integer()
+        .ok_or("payload byte count")?;
+    let reads = item(&baseline, "payload_read_attempts")?
+        .integer()
+        .ok_or("payload read count")?;
+    assert!(bytes > 1 && reads > 1);
+    let mut exact = args;
+    set(&mut exact, "--max-read-bytes", &bytes.to_string());
+    set(&mut exact, "--max-read-objects", &reads.to_string());
+    assert_eq!(parse(&good(retained_query(&exact)?)?)?, baseline);
+    for (key, allowance) in [
+        ("--max-read-bytes", bytes - 1),
+        ("--max-read-objects", reads - 1),
+    ] {
+        let mut exhausted = exact.clone();
+        set(&mut exhausted, key, &allowance.to_string());
+        let output = retained_query(&exhausted)?;
+        assert!(!output.status.success(), "exhausted {key} was renewed");
+        assert!(output.stdout.is_empty(), "exhausted {key} released output");
+    }
+    assert_eq!(snapshot(&fixture.target())?, before);
+    Ok(())
+}
+
+#[test]
+fn retained_query_refuses_both_torn_journals_without_repair() -> Test {
+    let _serial = serial();
+    let fixture = Fixture::new(RtspImportCodec::Hevc, 1, 0)?;
+    let identity = import(&fixture)?;
+    let args = query_args(&fixture, Some(&identity));
+    for relative in ["ledger/journal.fssj", "effects/journal.fssj"] {
+        let path = fixture.target().join(relative);
+        let original = fs::read(&path)?;
+        let mut torn = original.clone();
+        torn.extend_from_slice(&[0x46, 0x53, 0x53]);
+        fs::write(&path, &torn)?;
+        let before = snapshot(&fixture.target())?;
+        let output = retained_query(&args)?;
+        assert!(!output.status.success(), "torn {relative} was admitted");
+        assert!(output.stdout.is_empty(), "torn {relative} released output");
+        assert_eq!(snapshot(&fixture.target())?, before, "repaired {relative}");
+        fs::write(path, original)?;
     }
     Ok(())
 }
