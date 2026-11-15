@@ -242,3 +242,9 @@ rch shim install --allow-local-fallback
 
 That is a two-second operation each way and a suite that took 25+ minutes through the queue ran in
 118 seconds locally. Leave the shim installed and on `--allow-local-fallback` when you are done.
+
+The adapter failure is narrowed: the capture child starts and emits its `started` row, then the
+*fixture* waits its full ten seconds at `accept` and returns the EAGAIN. So nothing ever dials the
+loopback listener — it is a connection-side problem in the child, not a broken accept loop, and it is
+not a DNS/IPv6 issue either (the fixture passes an explicit `127.0.0.1:port`). Next step is to run one
+capture child by hand with the fixture's own arguments and watch its stderr.
