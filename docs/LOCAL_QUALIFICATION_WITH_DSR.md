@@ -226,7 +226,7 @@ of the toolchain cargo suppresses it; the practical route is to retry later or o
 `confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
 fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
 suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is proven too: 43 tests green across its seven suites, `geometry` is proven (16 tests) and `threat` is proven (35 tests) and `model` is proven (28 tests); fixing `inference_cli_contract` exposed a stale read-allowance assumption — the reported payload bytes are now the exact allowance, because the empty final journal probe no longer consumes one. Wiring it exposed three stale `lab_ingest_cli` assertions (they demanded `first_frame_observed`, which a file import deliberately never reaches, and zero Annex-B omissions, when delimiters are reported) — fixed. Media and archive also
-run inside `full` and `release`. `adapter` is written but **not green**: 13 of its 77 capture tests pass on macOS and the rest fail with `os error 35` (EAGAIN) plus `ERR-CAPTURE-RTSP-ROOT-001`, identically single-threaded. It stays out of the gates until that is understood and are the next wiring targets, in that order of expected value.
+run inside `full` and `release`. `adapter` is written but **not green**: 64 of its 77 capture tests now pass; the remaining 13 are all `campaign::history::*` cases where the child never dials the fixture at all and the lane's own timeout reports it. It stays out of the gates until those pass and are the next wiring targets, in that order of expected value.
 
 ### When admission is refused repeatedly
 
@@ -243,11 +243,11 @@ rch shim install --allow-local-fallback
 That is a two-second operation each way and a suite that took 25+ minutes through the queue ran in
 118 seconds locally. Leave the shim installed and on `--allow-local-fallback` when you are done.
 
-The adapter failure is narrowed: the capture child starts and emits its `started` row, then the
-*fixture* waits its full ten seconds at `accept` and returns the EAGAIN. So nothing ever dials the
-loopback listener — it is a connection-side problem in the child, not a broken accept loop, and it is
-not a DNS/IPv6 issue either (the fixture passes an explicit `127.0.0.1:port`). Next step is to run one
-capture child by hand with the fixture's own arguments and watch its stderr.
+Resolved cause of the bulk of the adapter failures: a non-blocking listener hands `O_NONBLOCK` to the
+accepted socket on macOS, so every fixture's first `read` returned EAGAIN immediately and the failure
+was reported as the *fixture's* error instead of the child's. Clearing it on every accepted peer, plus
+tolerating a poll miss until the accept deadline, took the lane from 13 passed / 64 failed to 64 passed
+/ 13 failed. The 13 left are `campaign::history::*`, where the child never connects at all.
 
 Reproduced by hand: with a `nc` listener on 127.0.0.1 the child *does* connect in under a second and
 sends an 83-byte DESCRIBE (then fails only because `nc` never answers), and a plan-only run returns a
