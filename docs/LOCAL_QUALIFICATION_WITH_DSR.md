@@ -247,7 +247,7 @@ Resolved cause of the bulk of the adapter failures: a non-blocking listener hand
 accepted socket on macOS, so every fixture's first `read` returned EAGAIN immediately and the failure
 was reported as the *fixture's* error instead of the child's. Clearing it on every accepted peer, plus
 tolerating a poll miss until the accept deadline, took the lane from 13 passed / 64 failed to 64 passed
-/ 13 failed. The 13 left are `campaign::history::*`, where the child never connects at all.
+/ 13 failed. The 13 left are `campaign::history::*`: the child emits no `started` row at all and exits with the generic `ERR-CAPTURE-RTSP-ROOT-001`, so it fails during its own campaign/history argument validation before dialing. Creating the history root in the fixture (the child does not create it) did not change that; the next step is the validation in `campaign_history.rs::path` and its neighbours.
 
 Reproduced by hand: with a `nc` listener on 127.0.0.1 the child *does* connect in under a second and
 sends an 83-byte DESCRIBE (then fails only because `nc` never answers), and a plan-only run returns a
