@@ -1,25 +1,28 @@
 #![forbid(unsafe_code)]
-//! Whole-recording motion-independent sampling and retained numerical replay.
+//! Whole-recording sampling, immutable retained inspection and numerical replay.
 
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
 use fss_reference::ingest::long_sentinel::retained::{
-    LongSentinelReplayLimits, LongSentinelRetentionError, rerun_long_sentinel_detection,
+    LongSentinelReplayLimits, LongSentinelRetentionError, RetainedLongSentinel,
+    rerun_long_sentinel_detection,
 };
 use fss_reference::ingest::long_sentinel::{
     LongSentinelConfig, LongSentinelLimits, LongSentinelPlan, LongSentinelRequest,
 };
 use fss_reference::ingest::package_detect::{PackageDetectLimits, PackageDetectRequest};
 use fss_reference::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES;
-use fss_reference::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
+use fss_reference::{ExecBudget, ReplayCx, RetainedSource, ScalarExecCx};
 
-use super::{RunResult, Values, digest, export, number, text, value};
+use super::{RunResult, Values, digest, export, number, retained_read, text, value};
 
 pub(super) const RUN_OPTIONS: &[&str] = &[
     "--stream-sentinel",
@@ -166,12 +169,27 @@ pub(super) fn parse_run(
     Ok(Some(StreamOptions { config, limits }))
 }
 
+const READ_HELP: &str = "fss-infer sentinel-read [options]\n\
+  --root DIR --site SITE --report-digest sha256:HEX [--principal ID] [--report-out FILE]\n\
+  --max-read-bytes N --max-read-objects N --max-metadata-bytes N\n\
+  Inspect complete retained source/model/recipe/report/child custody without inference.\n\
+  Stdout is a custody receipt including replay_compatible and saved child-report handles.\n\
+  --report-out exports the exact saved computation JSON to a new file outside the deployment.\n\
+  A historical numerical profile remains inspectable; replay never substitutes current kernels.\n\
+  Both reads and replays use an immutable owner: no writer lock, initialization or recovery.\n\
+  The original shared allowance includes metadata, source/model payloads and final revalidation.\n\
+  Read defaults: 1073741824 bytes and 1000000 attempts; hard maxima: 4294967296 bytes and\n\
+  4000000 attempts. A cooperative 60-second deadline is checked at bounded read/replay\n\
+  boundaries; an ongoing decode, model computation or filesystem call is not preempted.\n\
+  Saved reservations must fit the current ceilings described by sentinel-replay --help.\n\
+  No calibration, coverage, absence or alert authority is created.\n";
+
 const REPLAY_HELP: &str = "fss-infer sentinel-replay [options]\n\
   --root DIR --site SITE --report-digest sha256:HEX [--principal ID] [--report-out FILE]\n\
   Independent current ceilings: --stream-read-bytes N --stream-pixel-budget N\n\
     --max-report-bytes N --max-frame-pixels N --max-macs N --max-tensor-bytes N\n\
     --max-output-bytes N (1..16777216; default 16777216)\n\
-    --max-metadata-bytes N\n\
+    --max-metadata-bytes N --max-read-bytes N --max-read-objects N\n\
   Reopens one retained whole-recording sentinel aggregate and reruns its exact native\n\
   source range, sample schedule, package, threshold and saved execution backend. No loose\n\
   model or source file is accepted; there are no downloads or implicit replacement models.\n\
@@ -186,11 +204,16 @@ const REPLAY_HELP: &str = "fss-infer sentinel-replay [options]\n\
   usage; the default video capacity is 9437184 samples per access unit. A current frame\n\
   ceiling must admit the saved recipe, and never changes its original execution settings.\n\
   Source-read limits govern analysis. Native retained-child custody verification keeps its\n\
-  separate bounded source-read contract. The owner reserves both before opening stores.\n\
+  separate bounded source-read contract; all physical payload reads also consume one shared\n\
+  byte/attempt allowance, including metadata, source/model verification and final rereads.\n\
+  Read defaults: 1073741824 bytes and 1000000 attempts; hard maxima: 4294967296 bytes and\n\
+  4000000 attempts. A cooperative 60-second deadline is checked at bounded read/replay\n\
+  boundaries; an ongoing decode, model computation or filesystem call is not preempted.\n\
   On success stdout is the exact reproduced computation JSON, after digest comparison.\n\
   An optional report export must be a new file outside the existing deployment.\n\
-  This opens the native deployment owner, which may finish existing restart recovery. It\n\
-  creates no new detection/event publication, calibration, coverage, absence or alert authority.\n";
+  This opens immutable native custody without a writer lock, initialization or recovery.\n\
+  Saved numerical generations must match this build; use sentinel-read to inspect older custody.\n\
+  It creates no detection/event publication, calibration, coverage, absence or alert authority.\n";
 
 #[derive(Debug)]
 struct ReplayOptions {
@@ -200,6 +223,7 @@ struct ReplayOptions {
     report_digest: ContentDigest,
     report: Option<PathBuf>,
     limits: LongSentinelReplayLimits,
+    read_limits: ImmutableRetainedReadLimits,
 }
 
 fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
@@ -213,7 +237,7 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
             Err("help takes no other arguments".into())
         };
     }
-    if args.len() > 26 || !args.len().is_multiple_of(2) {
+    if args.len() > 30 || !args.len().is_multiple_of(2) {
         return Err("bounded option/value pairs required".into());
     }
     let mut values = Values::new();
@@ -233,10 +257,12 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
             "--max-tensor-bytes",
             "--max-output-bytes",
             "--max-metadata-bytes",
+            "--max-read-bytes",
+            "--max-read-objects",
         ]
         .contains(&key)
         {
-            return Err("unknown or inapplicable sentinel-replay option".into());
+            return Err("unknown or inapplicable retained sentinel option".into());
         }
         if pair[1].is_empty()
             || pair[1]
@@ -283,7 +309,7 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
         maximum_metadata_bytes,
     };
     limits.validate().map_err(|error| error.to_string())?;
-    authority_bytes(&limits.execution, maximum_metadata_bytes)?;
+    let read_limits = retained_read::parse_limits(&values)?;
     Ok(Some(ReplayOptions {
         root: PathBuf::from(value(&values, "--root")?),
         site,
@@ -291,29 +317,11 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
         report_digest: digest(&values, "--report-digest")?,
         report: values.get("--report-out").map(PathBuf::from),
         limits,
+        read_limits,
     }))
 }
 
-fn replay(options: ReplayOptions, out: &mut impl Write) -> RunResult<()> {
-    let authority = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:long-sentinel-replay".into(),
-        operation_id: OperationId::parse("operation:long-sentinel-replay")?,
-        principal: options.principal,
-        capabilities: vec!["ADP-REPLAY-001".into()],
-        deadline: None,
-        priority: 10,
-        budgets: BudgetVector::builder()
-            .bytes(authority_bytes(
-                &options.limits.execution,
-                options.limits.maximum_metadata_bytes,
-            )?)
-            .build()?,
-        privacy_scope: "privacy:local-authorized-files".into(),
-        retention_scope: "retention:existing-deployment-policy".into(),
-        anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
-        generation: 1,
-    })?;
-    authority.validate()?;
+fn read(mut options: ReplayOptions, numerical_replay: bool, out: &mut impl Write) -> RunResult<()> {
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
         || !fs::symlink_metadata(options.root.join("LAYOUT"))?
             .file_type()
@@ -321,25 +329,90 @@ fn replay(options: ReplayOptions, out: &mut impl Write) -> RunResult<()> {
     {
         return Err(io::Error::other("existing non-symlink deployment required").into());
     }
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    options.root = fs::canonicalize(&options.root)?;
+    let started = Instant::now();
+    let stopped = || started.elapsed() >= retained_read::DEADLINE;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:long-sentinel-read".into(),
+        operation_id: OperationId::parse("operation:long-sentinel-read")?,
+        principal: options.principal,
+        capabilities: vec!["ADP-REPLAY-001".into(), "CAP-READ-MEDIA-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
+            .build()?,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
+        generation: 1,
+    })?;
+    authority.validate()?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, options.root.clone())?;
     let scalar = ScalarExecCx::new();
     let result = (|| -> RunResult<()> {
-        let deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
-        let report = rerun_long_sentinel_detection(
-            &deployment,
-            options.report_digest,
-            &options.limits,
+        let source = ImmutableRetainedSource::open_cancellable(
+            &options.root,
+            options.read_limits,
             &cx,
-            &scalar,
+            &stopped,
         )?;
-        if report.digest() != options.report_digest {
-            return Err(io::Error::other("retained sentinel replay identity mismatch").into());
+        if source.site_lineage() != options.site {
+            return Err(io::Error::other("retained sentinel site lineage mismatch").into());
         }
+        let (report_json, receipt) = if numerical_replay {
+            let report = rerun_long_sentinel_detection(
+                &source,
+                options.report_digest,
+                &options.limits,
+                &cx,
+                &scalar,
+            )?;
+            if report.digest() != options.report_digest {
+                return Err(io::Error::other("retained sentinel replay identity mismatch").into());
+            }
+            (report.json().as_bytes().to_vec(), None)
+        } else {
+            let retained =
+                RetainedLongSentinel::open(&source, options.report_digest, &options.limits, &cx)?;
+            let mut receipt = format!(
+                "operation=read\nreport_digest={}\nroot_digest={}\nrecipe_digest={}\npackage_digest={}\n\
+                 authority_sequence={}\nreplay_compatible={}\nnumerical_replay_verified=false\n\
+                 child_reports={}\n",
+                retained.report_digest(),
+                retained.root(),
+                retained.recipe_digest(),
+                retained.package_digest(),
+                retained.authority_anchor().commit_sequence,
+                retained.replay_compatible(),
+                retained.child_reports().len(),
+            );
+            for (index, child) in retained.child_reports().iter().enumerate() {
+                use std::fmt::Write as _;
+                writeln!(receipt, "child_report_{index}={child}")?;
+            }
+            (retained.report_json().to_vec(), Some(receipt))
+        };
+        // The original allowance pays for the final source/model/publication/privacy rereads.
+        // No stdout prefix or export is visible until this immutable observation is complete.
+        source.revalidate()?;
         if let Some(path) = &options.report {
-            export(path, report.json().as_bytes(), &options.root, &cx)?;
+            export(path, &report_json, &options.root, &cx)?;
         }
-        cx.checkpoint("long_sentinel:cli_replay_release")?;
-        out.write_all(report.json().as_bytes())?;
+        if let Some(mut receipt) = receipt {
+            use std::fmt::Write as _;
+            let used = source.usage();
+            writeln!(
+                receipt,
+                "payload_read_bytes={}\npayload_read_attempts={}\ndeployment_mutated=false\n\
+                 model_outputs=uncalibrated\nabsence_certifiable=false\neffects_authorized=false",
+                used.read_bytes, used.read_objects,
+            )?;
+            out.write_all(receipt.as_bytes())?;
+        } else {
+            out.write_all(&report_json)?;
+        }
         Ok(())
     })();
     scalar.drain_and_finalize();
@@ -348,18 +421,26 @@ fn replay(options: ReplayOptions, out: &mut impl Write) -> RunResult<()> {
 }
 
 pub(super) fn dispatch(args: &[OsString], out: &mut impl Write) -> Option<ExitCode> {
-    if args.first().and_then(|value| value.to_str()) != Some("sentinel-replay") {
-        return None;
-    }
+    let command = args.first().and_then(|value| value.to_str())?;
+    let numerical_replay = match command {
+        "sentinel-read" => false,
+        "sentinel-replay" => true,
+        _ => return None,
+    };
     Some(match parse_replay(&args[1..]) {
         Ok(None) => {
-            if out.write_all(REPLAY_HELP.as_bytes()).is_ok() {
+            let help = if numerical_replay {
+                REPLAY_HELP
+            } else {
+                READ_HELP
+            };
+            if out.write_all(help.as_bytes()).is_ok() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(fss_cli::ExitIdentity::RUNTIME_FAILURE.code)
             }
         }
-        Ok(Some(options)) => match replay(options, out) {
+        Ok(Some(options)) => match read(options, numerical_replay, out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 let id = error
@@ -371,7 +452,7 @@ pub(super) fn dispatch(args: &[OsString], out: &mut impl Write) -> Option<ExitCo
         },
         Err(reason) => {
             eprintln!(
-                "{}: {reason}; use fss-infer sentinel-replay --help",
+                "{}: {reason}; use fss-infer {command} --help",
                 fss_cli::ERR_CLI_MALFORMED_VALUE
             );
             ExitCode::from(fss_cli::ExitIdentity::MALFORMED_VALUE.code)
@@ -428,6 +509,10 @@ mod tests {
             ["--max-metadata-bytes", "134217729"],
             ["--max-frame-pixels", "255"],
             ["--max-frame-pixels", "9437185"],
+            ["--max-read-bytes", "0"],
+            ["--max-read-bytes", "4294967297"],
+            ["--max-read-objects", "01"],
+            ["--max-read-objects", "4000001"],
         ] {
             let mut input = args();
             input.extend(flags.map(OsString::from));
@@ -471,18 +556,25 @@ mod tests {
                 "principal:replay-output-bound",
                 "--report-out",
                 "/missing/exported-report.json",
+                "--max-read-bytes",
+                "67108864",
+                "--max-read-objects",
+                "20000",
             ]
             .map(OsString::from),
         );
         assert_eq!(
             input.len(),
-            26,
+            30,
             "all independently supported options fit the finite argument bound"
         );
         let mut excess = input.clone();
         excess.extend([OsString::from("--max-output-bytes"), OsString::from("4096")]);
         assert!(parse_replay(&excess).is_err());
-        let limits = parse_replay(&input)?.ok_or("replay request")?.limits;
+        let parsed = parse_replay(&input)?.ok_or("replay request")?;
+        assert_eq!(parsed.read_limits.max_read_bytes, 67108864);
+        assert_eq!(parsed.read_limits.max_read_objects, 20000);
+        let limits = parsed.limits;
         assert_eq!(limits.execution.maximum_source_chunk_bytes, 1048576);
         assert_eq!(limits.execution.maximum_pixel_samples, 262144);
         assert_eq!(limits.execution.maximum_report_bytes, 524288);

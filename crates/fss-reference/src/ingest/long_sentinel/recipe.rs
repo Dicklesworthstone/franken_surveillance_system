@@ -32,6 +32,11 @@ pub(super) struct Recipe {
     pub(super) graph: ContentDigest,
     pub(super) contract: ContentDigest,
     pub(super) backend: KernelBackend,
+    // Preserve saved numerical identities during custody-only inspection. Current source labels
+    // may change; decoding must not silently rewrite a historical recipe under those labels.
+    backend_generation: ContentDigest,
+    jpeg_rgb_generation: [u8; 32],
+    video_rgb_generation: ContentDigest,
 }
 
 impl Recipe {
@@ -51,6 +56,10 @@ impl Recipe {
             graph: package.graph_digest(),
             contract: contract(package, request.minimum_score_ppm)?,
             backend: package.model().backend(),
+            backend_generation: package.model().backend().generation(),
+            jpeg_rgb_generation: fss_codec_mjpeg::color::rgb_decoder_identity(),
+            video_rgb_generation:
+                crate::ingest::recorded_decode::video_rgb::video_rgb_transform_identity(),
         };
         value.validate()?;
         Ok(value)
@@ -81,8 +90,27 @@ impl Recipe {
             self.model,
             self.graph,
             self.contract,
+            self.backend_generation,
+            self.video_rgb_generation,
         ] {
             valid_digest(identity)?;
+        }
+        if self.jpeg_rgb_generation == [0; 32] {
+            return Err(Error::InvalidRecord);
+        }
+        Ok(())
+    }
+
+    pub(super) fn replay_compatible(&self) -> bool {
+        self.backend_generation == self.backend.generation()
+            && self.jpeg_rgb_generation == fss_codec_mjpeg::color::rgb_decoder_identity()
+            && self.video_rgb_generation
+                == crate::ingest::recorded_decode::video_rgb::video_rgb_transform_identity()
+    }
+
+    pub(super) fn verify_replay_profile(&self) -> Result<()> {
+        if !self.replay_compatible() {
+            return Err(Error::ProfileChanged);
         }
         Ok(())
     }
@@ -136,9 +164,9 @@ impl Recipe {
             e.digest(digest);
         }
         e.text(self.backend.stable_id());
-        e.digest(self.backend.generation());
-        e.bytes(&fss_codec_mjpeg::color::rgb_decoder_identity());
-        e.digest(crate::ingest::recorded_decode::video_rgb::video_rgb_transform_identity());
+        e.digest(self.backend_generation);
+        e.bytes(&self.jpeg_rgb_generation);
+        e.digest(self.video_rgb_generation);
         e.text(VIDEO_DECODE_WORK_MODEL);
         e.text(VIDEO_DECODE_SEPARATE_AXIS_POLICY);
         e.u64(DETECTOR_IMPORT_WORK_UNITS);
@@ -184,11 +212,10 @@ impl Recipe {
             "optimized-cpu.v1" => KernelBackend::OptimizedCpuV1,
             _ => return Err(Error::InvalidRecord),
         };
-        if d.digest()? != backend.generation()
-            || d.bytes()? != fss_codec_mjpeg::color::rgb_decoder_identity().as_slice()
-            || d.digest()?
-                != crate::ingest::recorded_decode::video_rgb::video_rgb_transform_identity()
-            || d.text()? != VIDEO_DECODE_WORK_MODEL
+        let backend_generation = digest(&mut d)?;
+        let jpeg_rgb_generation = d.bytes()?.try_into().map_err(|_| Error::InvalidRecord)?;
+        let video_rgb_generation = digest(&mut d)?;
+        if d.text()? != VIDEO_DECODE_WORK_MODEL
             || d.text()? != VIDEO_DECODE_SEPARATE_AXIS_POLICY
             || d.u64()? != DETECTOR_IMPORT_WORK_UNITS
         {
@@ -227,6 +254,9 @@ impl Recipe {
             graph,
             contract,
             backend,
+            backend_generation,
+            jpeg_rgb_generation,
+            video_rgb_generation,
         };
         value.validate()?;
         if value.encode() != bytes {
@@ -261,4 +291,91 @@ pub(super) fn digest(decoder: &mut CanonicalDecoder<'_>) -> Result<ContentDigest
 
 pub(super) fn usize_value(decoder: &mut CanonicalDecoder<'_>) -> Result<usize> {
     usize::try_from(decoder.u64()?).map_err(|_| Error::Limit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recipe() -> Recipe {
+        Recipe {
+            request: LongSentinelRequest {
+                import_identity: ContentDigest::sha256(b"source import"),
+                first_segment: 0,
+                segment_count: 3,
+                interpretation: ComponentInterpretation::YCbCr,
+                minimum_score_ppm: None,
+            },
+            config: LongSentinelConfig {
+                every_frames: 3,
+                burst_frames: 1,
+                max_inferences: 1,
+            },
+            limits: LongSentinelLimits::default(),
+            package: ContentDigest::sha256(b"archive"),
+            manifest: ContentDigest::sha256(b"manifest"),
+            model: ContentDigest::sha256(b"model"),
+            graph: ContentDigest::sha256(b"graph"),
+            contract: ContentDigest::sha256(b"contract"),
+            backend: KernelBackend::ScalarReference,
+            backend_generation: KernelBackend::ScalarReference.generation(),
+            jpeg_rgb_generation: fss_codec_mjpeg::color::rgb_decoder_identity(),
+            video_rgb_generation:
+                crate::ingest::recorded_decode::video_rgb::video_rgb_transform_identity(),
+        }
+    }
+
+    #[test]
+    fn historical_numerical_generations_roundtrip_exactly_but_refuse_execution() -> Result<()> {
+        let current = recipe();
+        assert!(Recipe::decode(&current.encode())?.replay_compatible());
+        for changed in 0..3 {
+            let mut saved = current.clone();
+            let historical = ContentDigest::sha256(b"historical numerical generation");
+            match changed {
+                0 => saved.backend_generation = historical,
+                1 => saved.jpeg_rgb_generation = historical.bytes(),
+                _ => saved.video_rgb_generation = historical,
+            }
+            let original = saved.encode();
+            let decoded = Recipe::decode(&original)?;
+            assert_eq!(
+                decoded.encode(),
+                original,
+                "inspection rewrote saved identity"
+            );
+            assert!(!decoded.replay_compatible());
+            assert!(matches!(
+                decoded.verify_replay_profile(),
+                Err(Error::ProfileChanged)
+            ));
+            assert_eq!(decoded.request, current.request);
+            assert_eq!(decoded.package, current.package);
+            assert_eq!(decoded.model, current.model);
+            assert_eq!(decoded.graph, current.graph);
+            assert_eq!(decoded.contract, current.contract);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn historical_profile_syntax_stays_strictly_bounded_and_nonzero() {
+        for invalid in 0..3 {
+            let mut saved = recipe();
+            match invalid {
+                0 => {
+                    saved.backend_generation = ContentDigest::new(DigestAlgorithm::Sha256, [0; 32])
+                }
+                1 => saved.jpeg_rgb_generation = [0; 32],
+                _ => {
+                    saved.video_rgb_generation =
+                        ContentDigest::new(DigestAlgorithm::Sha256, [0; 32])
+                }
+            }
+            assert!(Recipe::decode(&saved.encode()).is_err());
+        }
+        let mut trailing = recipe().encode();
+        trailing.push(0);
+        assert!(Recipe::decode(&trailing).is_err());
+    }
 }

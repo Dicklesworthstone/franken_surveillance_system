@@ -12,6 +12,7 @@ use fss_core::{
     BudgetVector, ContentDigest, EventKind, EventState, LedgerAnchor, OperationId, SensorId,
     StreamId, TimestampNs,
 };
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::ingest::long_sentinel::retained::{
     LongSentinelReplayLimits, LongSentinelRetentionError, RetainedLongSentinel,
     rerun_long_sentinel_detection, retain_long_sentinel_detection,
@@ -34,7 +35,11 @@ use fss_reference::ingest::{
     CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest, RetainedFileImport,
     RetainedReadLimits,
 };
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+
+#[path = "long_sentinel_contract/immutable.rs"]
+mod immutable;
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:long-sentinel-contract";
@@ -361,19 +366,20 @@ fn native_avc_and_hevc_replay_the_original_prefix_for_non_keyframe_late_children
             execution: limits,
             ..Default::default()
         };
-        assert_eq!(
-            RetainedLongSentinel::open(&f.deployment, digest, &ceilings, &f.cx)?.root(),
-            root
-        );
-        let replayed = rerun_long_sentinel_detection(
-            &f.deployment,
-            digest,
-            &ceilings,
-            &f.cx,
-            &ScalarExecCx::new(),
-        )?;
+        // The writer remains live while immutable custody drives the original decoder prefix.
+        let disk_before = immutable::snapshot(&deployment_root)?;
+        let source =
+            ImmutableRetainedSource::open(&deployment_root, immutable::read_limits(), &f.cx)?;
+        let restored = RetainedLongSentinel::open(&source, digest, &ceilings, &f.cx)?;
+        assert_eq!(restored.root(), root);
+        assert_eq!(restored.report_json(), json.as_bytes());
+        assert!(restored.replay_compatible());
+        let replayed =
+            rerun_long_sentinel_detection(&source, digest, &ceilings, &f.cx, &ScalarExecCx::new())?;
         assert_eq!(replayed.digest(), digest);
         assert_eq!(replayed.json(), json);
+        source.revalidate()?;
+        assert_eq!(immutable::snapshot(&deployment_root)?, disk_before);
         assert_eq!(f.snapshot(), before);
         assert_eq!(f.deployment.effects().operations().count(), 0);
     }

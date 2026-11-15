@@ -41,7 +41,7 @@ mod recording_cli;
 #[path = "fss-infer/retained_read.rs"]
 mod retained_read;
 
-const HELP: &str = "fss-infer <run|read|replay|activity|detect|track|analyze|import-onnx|package-detect|sentinel-replay> [options]\n\
+const HELP: &str = "fss-infer <run|read|replay|activity|detect|track|analyze|import-onnx|package-detect|sentinel-read|sentinel-replay> [options]\n\
   run/read/replay: --root DIR --site SITE --import-id sha256:HEX --segment N\n\
        --interpretation gray|ycbcr [--principal ID]\n\
   run: --model FILE --model-digest sha256:HEX [--decode-work-units N]\n\
@@ -57,7 +57,7 @@ const HELP: &str = "fss-infer <run|read|replay|activity|detect|track|analyze|imp
   analyze: use fss-infer analyze --help for bounded recording-to-report execution.\n\
   package-detect: use fss-infer package-detect --help (verified RGB detector package).\n\
   import-onnx: use fss-infer import-onnx --help (local source-preserving model provisioning).\n\
-  sentinel-replay: use fss-infer sentinel-replay --help (retained whole-recording sampling).\n\
+  sentinel-read/replay: use fss-infer sentinel-read --help (immutable whole-recording custody).\n\
   activity: use fss-infer activity --help (explicit native activity over two retained JPEG frames).\n\
   A run decodes the exact retained source and executes its frozen model. No models are\n\
   downloaded or activated. Outputs are uncalibrated tensors, not alerts or certified\n\

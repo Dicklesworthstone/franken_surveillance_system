@@ -188,6 +188,9 @@ of the campaign resource pools. Their current admission ceilings permit that
 recipe; they do not reconstruct or replace it. After successful retention, the
 original capture archives and loose model file can be offline. Recomputed native
 report bytes and their digest must match the retained aggregate exactly.
+[`sentinel-read`](LONG_RECORDING_SENTINEL.md#inspect-retained-custody) accepts the
+same report identity and ceilings for immutable custody inspection without model
+execution, including whether the saved numerical profile supports replay in this build.
 
 `--retain-analysis no` still imports originals and runs admitted model work, but
 does not retain model/report cognition or claim a retained replay command. Short,

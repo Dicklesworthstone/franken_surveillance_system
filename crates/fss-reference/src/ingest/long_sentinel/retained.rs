@@ -13,7 +13,7 @@ use fss_core::{
     BatchId, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
     ContractError, EvidenceDelta, LedgerAnchor, ObjectId, Plane, SensorId, TimestampNs,
 };
-use fss_object::{HostSpoolIo, ObjectManifest, read_verified_payload};
+use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 
 use super::recipe::{self, Recipe, digest, usize_value, valid_digest};
@@ -29,7 +29,7 @@ use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::recorded_watch::WatchError;
 use crate::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage, RgbPackageError};
 use crate::ingest::{FileIngestError, RetainedFileImport};
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx, ScalarExecCx};
+use crate::{ReferenceDeployment, ReferenceError, ReplayCx, RetainedSource, ScalarExecCx};
 
 /// Canonical ledger payload of a retained aggregate; child formats remain unchanged.
 pub const LONG_SENTINEL_RECORD_DOMAIN: &str = "fss.long_sentinel_record.v1";
@@ -52,8 +52,8 @@ pub struct LongSentinelReplayLimits {
     pub execution: LongSentinelLimits,
     /// Aggregate/recipe/archive/report and direct child manifest/record/report bytes read here,
     /// including the ordinary child reader's repeated direct metadata reads. Deployment open,
-    /// retained-import metadata and original-source verification belong to their existing bounded
-    /// custody owners, not to this metadata counter or the native replay's source-work counter.
+    /// retained-import metadata and original-source verification also consume the source owner's
+    /// shared allowance, independently of this metadata counter and replay's source-work counter.
     pub maximum_metadata_bytes: usize,
 }
 impl Default for LongSentinelReplayLimits {
@@ -86,6 +86,8 @@ pub enum LongSentinelRetentionError {
     AuthorityChanged,
     /// Current caller reservations do not admit the original complete recipe or metadata.
     Limit,
+    /// Saved numerical generations are valid custody but cannot run under this build.
+    ProfileChanged,
     /// Actual native replay differs from the saved aggregate or one of its child reports.
     Diverged,
     /// Cooperative cancellation; committed child custody can remain, but no success is invented.
@@ -104,7 +106,9 @@ impl LongSentinelRetentionError {
     pub fn stable_id(&self) -> &'static str {
         match self {
             Self::Unavailable => "ERR-PACKAGE-EVENT-UNAVAILABLE-001",
-            Self::InvalidRecord | Self::Diverged => "ERR-PACKAGE-EVENT-MISMATCH-001",
+            Self::InvalidRecord | Self::ProfileChanged | Self::Diverged => {
+                "ERR-PACKAGE-EVENT-MISMATCH-001"
+            }
             Self::Limit => "ERR-WATCH-LIMIT-001",
             Self::Cancelled => "ERR-PACKAGE-EVENT-CANCELLED-001",
             Self::AuthorityChanged => "ERR-PACKAGE-EVENT-001",
@@ -123,6 +127,9 @@ impl fmt::Display for LongSentinelRetentionError {
             Self::AuthorityChanged => f.write_str("long-sentinel authority or root changed"),
             Self::Limit => {
                 f.write_str("long-sentinel replay reservation or metadata bound exceeded")
+            }
+            Self::ProfileChanged => {
+                f.write_str("long-sentinel saved execution profile differs from this build")
             }
             Self::Diverged => {
                 f.write_str("long-sentinel native replay differs from retained report")
@@ -186,14 +193,13 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
     cx.checkpoint(stage)
         .map_err(|_| LongSentinelRetentionError::Cancelled)
 }
-fn check_context(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+fn check_context(deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
     checkpoint(cx, "long_sentinel_retained:begin")?;
     if cx.root_dir() != deployment.root() || !cx.io_authority().is_valid() {
         return Err(LongSentinelRetentionError::AuthorityChanged);
     }
     deployment
-        .ledger()
-        .verify_durable_head()
+        .verify_read_head()
         .map_err(|_| LongSentinelRetentionError::AuthorityChanged)
 }
 fn hex(digest: ContentDigest) -> String {
@@ -429,7 +435,7 @@ impl Record {
         }
         Ok(())
     }
-    fn verify_privacy(&self, deployment: &ReferenceDeployment) -> Result<()> {
+    fn verify_privacy(&self, deployment: &dyn RetainedSource) -> Result<()> {
         let mask = current_mask(deployment, &self.sensor)?;
         if mask.digest() != self.privacy || mask.generation() != self.privacy_generation {
             return Err(PrivacyMaskError::UnmaskedAccessRefused.into());
@@ -438,7 +444,7 @@ impl Record {
     }
     fn verify_source(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         recipe: &Recipe,
         cx: &ReplayCx,
     ) -> Result<()> {
@@ -493,7 +499,7 @@ impl MetadataReader {
     }
     fn read(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         identity: ContentDigest,
         maximum: usize,
         cx: &ReplayCx,
@@ -503,12 +509,7 @@ impl MetadataReader {
         if self.remaining == 0 || self.objects == MAX_METADATA_OBJECTS {
             return Err(LongSentinelRetentionError::Limit);
         }
-        let bytes = read_verified_payload(
-            deployment.publisher().spool().root(),
-            identity,
-            maximum.min(self.remaining),
-            &HostSpoolIo,
-        )?;
+        let bytes = deployment.read_object_bounded(identity, maximum.min(self.remaining))?;
         self.charge(bytes.len(), 1)?;
         Ok(bytes)
     }
@@ -530,7 +531,7 @@ impl RetainedLongSentinel {
     /// Read complete aggregate/child custody under independent current ceilings. Missing bytes
     /// are never repaired from loose files, nor is changed privacy accepted through a later head.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         limits: &LongSentinelReplayLimits,
         cx: &ReplayCx,
@@ -570,14 +571,11 @@ impl RetainedLongSentinel {
         children.dedup();
         if *delta != record.delta(delta.payload_digest, root)?
             || batch.children != children
-            || deployment
-                .publisher()
-                .root(&record.slot()?)
-                .is_none_or(|r| r.root != root)
             || reader.read(deployment, root, MAX_RECORD_BYTES, cx)? != manifest.canonical_bytes()
         {
             return Err(LongSentinelRetentionError::InvalidRecord);
         }
+        deployment.check_publication(&record.slot()?, root, manifest.children().len())?;
         let report_json = reader.read(
             deployment,
             record.report,
@@ -634,6 +632,18 @@ impl RetainedLongSentinel {
     /// Exact aggregate report identity, also the stable lookup handle.
     pub const fn report_digest(&self) -> ContentDigest {
         self.record.report
+    }
+    /// Exact saved computation JSON, with its complete retained custody verified by `open`.
+    /// This inspection does not claim the model computation was numerically replayed. An
+    /// immutable caller must complete its owner's final revalidation before releasing bytes.
+    pub fn report_json(&self) -> &[u8] {
+        &self.report_json
+    }
+    /// Whether the saved numerical generations are supported by this build. Inspection can
+    /// prove historical custody when this is false, but numerical replay refuses to substitute
+    /// current kernel or color-transform generations.
+    pub fn replay_compatible(&self) -> bool {
+        self.recipe.replay_compatible()
     }
     /// Root binding the complete source/model/recipe/report/child closure.
     pub const fn root(&self) -> ContentDigest {
@@ -875,7 +885,7 @@ pub fn retain_long_sentinel_detection(
 /// custody. No model/source pathname is accepted, no child range is independently decoded,
 /// and no caller ceiling silently replaces a saved setting. No writes or effects occur.
 pub fn rerun_long_sentinel_detection(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     report_digest: ContentDigest,
     limits: &LongSentinelReplayLimits,
     cx: &ReplayCx,
@@ -884,6 +894,7 @@ pub fn rerun_long_sentinel_detection(
     checkpoint(cx, "long_sentinel_replay:begin")?;
     let retained = RetainedLongSentinel::open(deployment, report_digest, limits, cx)?;
     let recipe = &retained.recipe;
+    recipe.verify_replay_profile()?;
     let package = RgbDetectorPackage::load_with_backend(
         &retained.archive,
         recipe.package,

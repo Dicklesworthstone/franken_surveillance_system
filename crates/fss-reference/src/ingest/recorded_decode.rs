@@ -1231,7 +1231,7 @@ struct InbandBootstrapRead<'a> {
 /// container helper validates the actual referenced tuple and random-access self-containment;
 /// earlier samples can neither substitute a missing definition nor charge unbounded reads.
 fn inband_parameter_sets(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     source: InbandBootstrapRead<'_>,
     entry: (usize, usize),
     codec: fss_container::demux::VideoCodec,

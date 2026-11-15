@@ -200,6 +200,10 @@ identity, destination, principal and caller ceilings. Copy that emitted command.
 uses the stored recipe and backend, verifies current custody and privacy, and emits the
 exact native sentinel JSON after numerical identity verification. It does not read a
 loose model path or reconnect the camera.
+For custody inspection without inference, use
+[`sentinel-read`](LONG_RECORDING_SENTINEL.md#inspect-retained-custody) with the same
+report identity and ceilings. Inspection and replay share finite byte/attempt read
+allowances and perform no writer acquisition or recovery.
 
 For `--retain-analysis no`, the imported originals remain durable, but no native
 aggregate/model retention is requested and replay commands are `null`. Generations

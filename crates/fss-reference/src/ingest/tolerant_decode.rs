@@ -45,7 +45,7 @@ use super::recorded_decode::{
 };
 use super::retained::SourceReadBudget;
 use super::{RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReplayCx, RetainedSource};
 
 /// One maximal run of retained segments whose decode was refused.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,7 +210,7 @@ impl TolerantSource {
     /// Opens the range. The first segment is the operator's choice and is never skipped: for
     /// H.264/H.265 it must open as an IDR/IRAP range exactly as without tolerance.
     pub(crate) fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: TolerantRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
@@ -219,7 +219,7 @@ impl TolerantSource {
 
     /// Streaming source with a single nonrenewable custody-read allowance.
     pub(crate) fn open_with_source_budget(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: TolerantRequest,
         source_budget: &SourceReadBudget,
         cx: &ReplayCx,
@@ -234,7 +234,7 @@ impl TolerantSource {
     /// The optional work owner survives every recovery range and charges decode-ahead before
     /// entering the codec. Existing callers retain their original source-only behavior.
     pub(crate) fn open_with_budgets(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: TolerantRequest,
         source_budget: &SourceReadBudget,
         video_budget: RecordedVideoDecodeBudget,
@@ -258,7 +258,7 @@ impl TolerantSource {
     }
 
     fn open_inner(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: TolerantRequest,
         source_budget: Option<&SourceReadBudget>,
         video_budget: Option<RecordedVideoDecodeBudget>,
@@ -321,7 +321,7 @@ impl TolerantSource {
 
     fn open_range(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         codec: Codec,
         start: usize,
         end: usize,
@@ -492,7 +492,7 @@ impl TolerantSource {
     /// starts at (or the range end when none opens) and installs it.
     fn resume(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         codec: Codec,
         candidate: usize,
         cx: &ReplayCx,
@@ -529,7 +529,7 @@ impl TolerantSource {
     /// Next frame or break; `None` once the range is exhausted.
     pub(crate) fn next(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<Option<TolerantItem>, RecordedDecodeError> {
@@ -717,7 +717,7 @@ impl TolerantSource {
     /// Decodes one independent JPEG frame; a tolerable refusal becomes a one-segment break.
     fn jpeg(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         segment: usize,
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,

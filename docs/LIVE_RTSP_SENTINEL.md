@@ -114,6 +114,9 @@ terminal output is not evidence of rollback.
 Successful `sentinel-replay` uses the deployment's retained model and source
 custody. It does not need the camera, original external archive or loose package
 file, and does not append evidence or effect journals.
+Use [`sentinel-read`](LONG_RECORDING_SENTINEL.md#inspect-retained-custody) with the
+same aggregate identity to inspect custody and replay compatibility without model
+execution. Both commands support bounded immutable reads alongside an active writer.
 
 ## Bounds and deadline semantics
 

@@ -10,7 +10,7 @@ it does not establish a real-world recall improvement or a production monitoring
 For recordings longer than 64 source segments, use the explicit
 [`--stream-sentinel yes` workflow](LONG_RECORDING_SENTINEL.md). It preserves the
 short-range behavior documented here and adds whole-range budgets, retained model
-custody and exact cold numerical replay.
+custody, immutable `sentinel-read` inspection and exact cold numerical replay.
 
 ## Run
 

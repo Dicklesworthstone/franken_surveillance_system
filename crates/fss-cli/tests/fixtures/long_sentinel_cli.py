@@ -176,7 +176,42 @@ def main():
 
     # Separate processes reconstruct from the root-last aggregate; loose inputs are gone.
     package.unlink()
+    inspect = [infer_bin, "sentinel-read", *base, "--report-digest", report_digest]
+    saved = scratch / "saved-sentinel.json"
+    read = run(inspect + ["--report-out", saved])
+    assert saved.read_bytes() == computed.stdout, "custody inspection rewrote the saved report"
+    assert one(read.stdout, "operation") == "read"
+    assert one(read.stdout, "report_digest") == report_digest
+    assert one(read.stdout, "root_digest") == one(retained.stderr, "root")
+    assert one(read.stdout, "recipe_digest") == one(retained.stderr, "recipe")
+    assert one(read.stdout, "package_digest") == PACKAGE_SHA
+    assert one(read.stdout, "replay_compatible") == "true"
+    assert one(read.stdout, "numerical_replay_verified") == "false"
+    assert one(read.stdout, "deployment_mutated") == "false"
+    assert one(read.stdout, "child_reports") == "2"
+    for index, burst in enumerate(bursts):
+        assert one(read.stdout, f"child_report_{index}") == burst["report_digest"]
+    assert int(one(read.stdout, "payload_read_bytes")) > 0
+    assert int(one(read.stdout, "payload_read_attempts")) > 0
+    run(inspect + ["--report-out", saved], ok=False)
+    assert saved.read_bytes() == computed.stdout
+    run(inspect + ["--report-out", root / "forbidden-report.json"], ok=False)
+    assert snapshot(root) == after_retention, "inspection mutated the deployment"
+
     replay = [infer_bin, "sentinel-replay", *base, "--report-digest", report_digest]
+    for command in (inspect, replay):
+        for option in ("--max-read-bytes", "--max-read-objects"):
+            denied_export = scratch / (command[1] + option + ".json")
+            run(command + [option, "1", "--report-out", denied_export], ok=False)
+            assert not denied_export.exists(), "refusal released a partial export"
+        wrong_site = list(command)
+        wrong_site[wrong_site.index("--site") + 1] = "site:wrong-sentinel"
+        run(wrong_site, ok=False)
+        absent = scratch / (command[1] + "-missing-root")
+        missing = list(command)
+        missing[missing.index("--root") + 1] = absent
+        run(missing, ok=False)
+        assert not absent.exists(), "read initialized an absent deployment"
     cold = run(replay)
     assert cold.stdout == computed.stdout, "cold numerical replay did not reproduce exact report bytes"
     assert snapshot(root) == after_retention, "replay published new authority"
@@ -192,8 +227,9 @@ def main():
     run([event_bin, "privacy-mask", "declare", *mask_args, "--approve", preview["approval_digest"]])
     after_mask = snapshot(root)
     run(replay, ok=False)
+    run(inspect, ok=False)
     assert snapshot(root) == after_mask, "stale-privacy refusal changed authority"
-    print("PASS: long native sentinel candidates, bounded work, independent bursts, aggregate custody and cold model replay")
+    print("PASS: long native sentinel candidates, bounded work, independent bursts, immutable aggregate inspection and cold model replay")
 
 
 if __name__ == "__main__":

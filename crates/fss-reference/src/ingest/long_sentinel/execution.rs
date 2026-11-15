@@ -22,7 +22,7 @@ use crate::ingest::retained::SourceReadBudget;
 use crate::ingest::rgb_detections::RgbDetectionBudget;
 use crate::ingest::rgb_package::RgbDetectorPackage;
 use crate::ingest::tolerant_decode::{TolerantItem, TolerantRequest, TolerantSource};
-use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ReplayCx, RetainedSource, ScalarExecCx};
 
 fn frame_error<E: Error + 'static>(segment: usize) -> impl FnOnce(E) -> PackageDetectError {
     move |error| PackageDetectError::Frame {
@@ -51,7 +51,7 @@ fn checkpoint(
 }
 
 fn source_owner(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     cx: &ReplayCx,
     segment: usize,
 ) -> Result<(), PackageDetectError> {
@@ -61,10 +61,7 @@ fn source_owner(
             "source context does not own this deployment",
         ));
     }
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(frame_error(segment))
+    deployment.verify_read_head().map_err(frame_error(segment))
 }
 
 fn charge_pixels(
@@ -101,7 +98,7 @@ fn charge_pixels(
 /// retainable/trackable. This function performs no writes and authorizes no effects.
 #[allow(clippy::too_many_arguments)]
 pub fn run_long_sentinel_detection(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     package: &RgbDetectorPackage,
     request: &LongSentinelRequest,
     config: LongSentinelConfig,

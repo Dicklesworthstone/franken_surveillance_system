@@ -3,6 +3,7 @@
 //! Cache one verified chunk, not one copy per frame. Final event publication re-proves closure.
 
 use super::*;
+use crate::RetainedSource;
 
 pub(crate) struct ChunkCursor {
     chunk: Option<(usize, Vec<u8>)>,
@@ -26,7 +27,7 @@ impl ChunkCursor {
     }
     pub(crate) fn segment(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         retained: &RetainedFileImport,
         index: usize,
         limits: RetainedReadLimits,
@@ -73,10 +74,7 @@ impl ChunkCursor {
                 charge(&mut self.bytes_read, expected_len, self.maximum)?;
                 checkpoint(cx, "long_dwell:chunk")?;
                 let maximum = usize::try_from(expected_len).map_err(|_| WatchError::Limit)?;
-                let chunk = deployment
-                    .publisher()
-                    .spool()
-                    .read_bounded(digest, maximum)?;
+                let chunk = deployment.read_object_bounded(digest, maximum)?;
                 if chunk.len() as u64 != expected_len || ContentDigest::sha256(&chunk) != digest {
                     return Err(RecordedDecodeError::InvalidReceipt.into());
                 }

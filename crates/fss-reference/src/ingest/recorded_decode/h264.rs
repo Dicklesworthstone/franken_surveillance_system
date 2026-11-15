@@ -28,13 +28,15 @@ use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, 
 
 use super::video_budget::RecordedVideoDecodeBudget;
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
+#[cfg(test)]
+use crate::ReferenceDeployment;
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::retained::SourceReadBudget;
 use crate::ingest::{
     MKV_PARAMETER_SET_REASON_PREFIX, MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
     MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits, VerifiedChunkCache,
 };
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReplayCx, RetainedSource};
 
 /// Maximum access units decoded by one range request.
 pub const MAX_H264_RANGE_SEGMENTS: usize = 1024;
@@ -425,7 +427,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// Validates the request, the import, the range bounds and gaps, and that the first segment
     /// carries an IDR slice. Reads only the first segment; decodes nothing yet.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
@@ -435,7 +437,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// [`Self::open`] with cumulative encoded-byte and coded-luma-capacity admission accounting.
     /// The same budget must accompany every [`Self::next_frame_with_budget`] call.
     pub fn open_with_budget(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         budget: &mut RecordedVideoDecodeBudget,
         cx: &ReplayCx,
@@ -454,7 +456,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// Reuse both owners for every span of one movie selection; opening a new random-access
     /// range must not renew either allowance. The source owner also follows cached reads.
     pub fn open_with_budgets(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         source_budget: &SourceReadBudget,
         budget: &mut RecordedVideoDecodeBudget,
@@ -474,7 +476,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// [`MAX_H264_STREAM_SEGMENTS`] segments, decoded one access unit at a time with the same
     /// custody, mask and refusal semantics. Memory grows only with per-segment bookkeeping.
     pub fn open_stream(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
@@ -490,7 +492,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
 
     /// Whole-recording source-read admission shared across all recovery ranges.
     pub(crate) fn open_stream_with_source_budget(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         source_budget: &SourceReadBudget,
         cx: &ReplayCx,
@@ -507,7 +509,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
 
     /// Whole-recording source custody and pre-codec work share nonrenewable owners.
     pub(crate) fn open_stream_with_budgets(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         source_budget: &SourceReadBudget,
         budget: &mut RecordedVideoDecodeBudget,
@@ -524,7 +526,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     }
 
     fn open_bounded(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         request: RecordedH264Request,
         cx: &ReplayCx,
         maximum_segments: usize,
@@ -707,7 +709,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// the range (the codec then waits for an IDR); frames already returned stay valid.
     pub fn next_frame(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH264Frame>, RecordedDecodeError> {
         self.next_frame_bounded(deployment, None, cx)
@@ -717,7 +719,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// for B pictures. Returned frames and consumed reservations survive a later refusal.
     pub fn next_frame_with_budget(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         budget: &mut RecordedVideoDecodeBudget,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH264Frame>, RecordedDecodeError> {
@@ -726,7 +728,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
 
     fn next_frame_bounded(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         budget: Option<&mut RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH264Frame>, RecordedDecodeError> {
@@ -747,7 +749,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
 
     fn next_frame_inner(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         mut budget: Option<&mut RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH264Frame>, RecordedDecodeError> {
@@ -825,7 +827,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// Binds one output picture to the retained segment that coded it.
     fn frame(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         picture: Picture,
         cx: &ReplayCx,
     ) -> Result<RecordedH264Frame, RecordedDecodeError> {
@@ -903,7 +905,7 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
 
 /// Decodes the whole range and returns every frame in display order, or the first refusal.
 pub fn decode_h264_range(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: RecordedH264Request,
     cx: &ReplayCx,
 ) -> Result<Vec<RecordedH264Frame>, RecordedDecodeError> {

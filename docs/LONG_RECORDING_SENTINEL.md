@@ -121,6 +121,37 @@ source, model, schedule and limits to reconcile them and finish the aggregate.
 Existing child roots are not republished. Missing or changed custody, owner
 replacement, conflicting authority or a new privacy generation refuses.
 
+## Inspect retained custody
+
+Use the aggregate report identity from `long_sentinel_retained` to inspect a saved
+computation without running its model:
+
+```sh
+fss-infer sentinel-read \
+  --root /path/to/deployment --site site:home \
+  --report-digest sha256:AGGREGATE_REPORT_DIGEST \
+  --stream-pixel-budget 8589934592 \
+  --report-out /path/outside/deployment/saved-sentinel.json
+```
+
+Stdout is a custody receipt with the saved report, root, recipe and package
+identities, authority sequence, ordered child-report handles and read usage.
+`numerical_replay_verified=false` distinguishes inspection from recomputation.
+The optional export is the exact saved JSON; its destination must be a new file
+outside the deployment.
+
+`replay_compatible` states whether the saved kernel and JPEG/video RGB generations
+match this build. An older numerical profile remains inspectable with its original
+identities and bytes. Numerical replay refuses an incompatible profile before model
+loading; it never substitutes current generations or rewrites saved metadata.
+
+Both `sentinel-read` and `sentinel-replay` use immutable native custody. They can run
+while ingest holds the writer, acquire no publisher lock, initialize no deployment
+and perform no journal recovery. The committed head must remain unchanged through
+final validation; a concurrent commit requires a fresh invocation. Damaged or
+incomplete custody, current privacy changes and exhausted allowances refuse before
+successful stdout or an export is released.
+
 ## Cold numerical replay
 
 Use the aggregate report identity from `long_sentinel_retained`:
@@ -141,17 +172,29 @@ independent native retention has succeeded.
 Independent current source, pixel, report, MAC, tensor and frame ceilings must
 admit the saved recipe; they do not replace its settings. The larger pixel
 allowance in the run example must therefore also be admitted on replay.
-`--max-metadata-bytes` independently bounds retained metadata reads (default
-67,108,864; maximum 134,217,728 bytes). Existing bounded child-custody reads and
-analysis share an explicitly reserved owner; custody checks do not renew analysis
-or inference budgets.
+Inspection admits the same saved reservations, even though it does not execute
+the model. Both commands also accept these read ceilings:
+
+| Option | Default | Maximum and scope |
+| --- | ---: | --- |
+| `--max-read-bytes` | 1,073,741,824 | 4,294,967,296 payload bytes across the entire read |
+| `--max-read-objects` | 1,000,000 | 4,000,000 payload read attempts across the entire read |
+| `--max-metadata-bytes` | 67,108,864 | 134,217,728 selected aggregate/recipe/archive/child metadata bytes |
+
+The shared byte/attempt allowance includes opening metadata, source and model
+verification, native replay reads and final revalidation. It is never replenished
+between stages. The narrower metadata and analysis-work ceilings remain independent;
+raising a read allowance does not relax the saved computation or its execution bounds.
+
+Both commands have a cooperative 60-second elapsed deadline, checked at bounded
+read/replay boundaries. It does not preempt an ongoing decode, model computation
+or filesystem call. Final validation checks the deadline before releasing a result.
 
 Cold open verifies retained history, root, manifest, recipe, archive, children,
 full source custody and current privacy. Native video replay reconstructs the
 original prefix. A narrowed current limit, damaged data, missing capsule, changed
 privacy or failed exact comparison refuses. Success prints the reproduced JSON.
-Native deployment opening can finish existing restart recovery; replay creates
-no new detection or event publication.
+Replay creates no new detection or event publication.
 
 ## Investigate a child
 
@@ -182,10 +225,13 @@ cargo test --locked -p fss-cli --test sentinel_detection_cli_contract
 Core contracts exercise long scheduling/overflow, shared budgets, late AVC/HEVC
 non-keyframe samples, strict suffix validation and decode-ahead, foreign authority,
 cancellation, source/model/privacy custody, root-last retries and cold package-event
-access. The process contract imports 170 static JPEG frames, verifies no foreground
+access. Immutable contracts cover a live writer, exact final-read allowances,
+corrupt or missing source/model/report custody, publication changes and privacy
+drift without filesystem mutation. The process contract imports 170 static JPEG frames, verifies no foreground
 candidate, samples beyond segment 64, compares an ordinary child, retains and
 investigates independent bursts, removes loose inputs and replays in another
-process. It also checks current ceilings and privacy changes.
+process. It also checks inspection receipts, exact saved-report export, current
+ceilings and privacy changes.
 
 The color-bar fixture's `tie` predictions test native wiring and exact reproduction,
 not recognition accuracy. Always-on monitoring, wall-clock cadence, tolerant video
