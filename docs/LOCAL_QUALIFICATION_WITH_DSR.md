@@ -251,7 +251,13 @@ tolerating a poll miss until the accept deadline, took the lane from 13 passed /
 the accepted peer inherited `O_NONBLOCK`; the canonicalised root was compared back to the configured
 text; the root was recorded lexically while consumers resolved it (refused as `Denied`); and the fixture
 pre-created the history root that the child creates exclusively. The last 5 are sentinel/watch capability
-refusals (`ERR-CAPTURE-RTSP-HISTORY-AUTHORITY-001`).
+refusals (`ERR-CAPTURE-RTSP-HISTORY-AUTHORITY-001`, which is `CampaignHistoryError::Denied`).
+
+That error has only two producers, both in `crates/fss-reference/src/rtsp/campaign_history.rs`: the guard
+in `check` at 319-326 (checkpoint stage, io-authority validity and principal, `cx.root_dir() != root`,
+`plan.history_path != root`, `authority.permit(operation, plan)`) and the `checkpoint(CAMPAIGN_APPEND)`
+at 909-911. Both sides of the path comparison are canonical now, so the live candidates are the
+checkpoint stage and `permit`.
 
 Reproduced by hand: with a `nc` listener on 127.0.0.1 the child *does* connect in under a second and
 sends an 83-byte DESCRIBE (then fails only because `nc` never answers), and a plan-only run returns a
