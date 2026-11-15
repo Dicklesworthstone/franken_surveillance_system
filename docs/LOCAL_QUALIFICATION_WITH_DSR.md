@@ -248,3 +248,10 @@ The adapter failure is narrowed: the capture child starts and emits its `started
 loopback listener — it is a connection-side problem in the child, not a broken accept loop, and it is
 not a DNS/IPv6 issue either (the fixture passes an explicit `127.0.0.1:port`). Next step is to run one
 capture child by hand with the fixture's own arguments and watch its stderr.
+
+Reproduced by hand: with a `nc` listener on 127.0.0.1 the child *does* connect in under a second and
+sends an 83-byte DESCRIBE (then fails only because `nc` never answers), and a plan-only run returns a
+valid approval digest. So the child and its two-phase approval are fine, and the suspect is the test's
+own fixture: it binds a listener, sets it non-blocking, spawns `serve` on a scoped thread and then runs
+the child — and that loop is what waits ten seconds. Next step is a blocking listener in `serve` (accept
+with a small poll only as a fallback) and re-run one test.
