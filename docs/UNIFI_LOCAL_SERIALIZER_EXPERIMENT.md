@@ -755,3 +755,83 @@ restart count remained 7. The camera certificate is a previously observed
 network pin, not independent identity; the checkpoint root is a trusted local
 storage domain. This does not prove actual stream delivery, restore semantics,
 continuous coverage, or attribution of any earlier recorder restart.
+
+The laboratory checkpoint owner now exposes a start adapter that retains its
+plan, baseline, key, spool, and journal while passing the same bound listener
+and the caller's committed permit into the native video archive driver. A
+preflight refusal returns the original capture inputs and permit; a later
+refusal retains its media or attachment owners. The adapter does not settle the
+camera effect, reconnect, or provide an unattended service. The current trial
+command does not yet call this adapter for a physical camera.
+
+In isolated v41 strict-remote job `j-30109207290184141`, the integration
+target built on `ts1` and passed 10/10 tests. Its combined case bound the
+listener, created and anchored the checkpoint through the owned worker,
+rejected a mismatched listener, reused the returned owners, accepted a
+synthetic camera stream, published the native archive, read it back, and Rust
+decoded a 2688 x 1512 frame. The executable SHA-256 was
+`21c2bab033e5e900c520e8703d492eae118d844632ede793623a2f783afe09df`.
+The deletion-denying trace under
+`/data/tmp/fss-unifi-v41-tests-20261115-receipt01` recorded six denied
+temporary-root unlink attempts; no deletion occurred. This is synthetic
+evidence and does not establish physical camera writes, restoration, audio,
+retention, or reliable continuous operation.
+
+The laboratory command now has an explicit `--lab-http-record` mode, requiring
+the existing automatic pinned-setup fence, anchored effect journal, and an
+encrypted HTTP checkpoint. It retains the same bound listener, prepares a
+journaled one-track camera setting effect, starts the native receiver, archives
+one video fragment, reads it back, and decodes a picture. It records neither
+audio nor continuous coverage; it reports unfinished source bytes and leaves
+the camera setting effect unresolved for reconciliation. It does not restore
+the previous physical camera setting.
+
+The first isolated end-to-end command fixture stopped because its loop failed
+to recognize buffered video as normal progress. The revised command built on
+`ts1` as job `j-30109207290184152`, executable SHA-256
+`f017e2eb4394f1d72e933fa7542b257d11e3cc48621fa1072b681840d22361bd`.
+The isolated fake-camera fixture SHA-256
+`0ff4c82d1db43455f424ed3898955a6ab518ee7369fd86be3c95027a8d18c648`
+passed 4/4: successful synthetic 2688 x 1512 archive/decode with one unresolved
+effect, changed serializer refused before writing, occupied listener refused
+before writing, and nonmatching readback refused with one unresolved effect.
+The fence inspector independently reopened the two effectful test histories;
+for the two pre-write refusals it correctly refused an absent effect checkpoint
+rather than proving an empty history. The deletion-denying trace at
+`/data/tmp/fss-unifi-record-fixture-20261115-04/fixture.trace` on `ts1`
+recorded three denied temporary-root unlinks. No physical camera setting was
+written by these tests. A later revision retains owners around archive readback
+failures; its build and tests are separate from this result.
+
+That later revision built on `ts1` as offline job `j-30109207290184162`,
+executable SHA-256
+`bc964fe5fba38d23b5aeee4dd0daefaa7f08b2018114c02abf3059067d1400b0`.
+Its isolated command fixture passed the same 4/4 synthetic cases, and its
+read-only observation regression passed 3/3. The command fixture's trace at
+`/data/tmp/fss-unifi-record-fixture-20261115-05/fixture.trace` recorded three
+denied temporary-root unlink attempts; no deletion occurred. These results
+precede the pending changes to G4 trailer framing, in-band AVC, and reported
+dimension checks; those changes require their own build and tests. None of
+these tests exercised the physical camera or established restoration.
+
+The HTTP recording laboratory now accepts the existing opt-in structured G4
+trailer policy and in-band AVC mode, and requires the selected profile's
+reported dimensions to match the encoded stream. The first synthetic G4 run
+failed because the fixture supplied a 12-byte rather than 16-byte extra
+trailer. After correcting the fixture, the next run reached archive readback
+but failed because that verifier used the non-in-band parser for an `avc3`
+clip. The verifier now selects the matching parser explicitly.
+
+The corrected version built on `ts1` as offline job `j-30109207290184180`,
+executable SHA-256
+`d584b1e291692b4706891cb6022dbdc6c6d05c998280221de07e84022b3c5b3e`.
+The separately copied fixture SHA-256
+`37380e6a77e213c47fb60a94df6dd35d5a8c9c3e9d88736a88f6d0f1a60d0822`
+passed 7/7 isolated synthetic cases: ordinary and G4-style 2688 x 1512
+archive/decode, changed baseline and busy listener refusals, bad readback,
+dimension mismatch, and bad trailer. The 3/3 read-only serializer regression
+also passed against this executable. The fixture trace at
+`/data/tmp/fss-unifi-record-fixture-20261115-08/fixture.trace` recorded nine
+denied temporary-root unlink attempts; the observation trace recorded no
+deletion calls. These are synthetic results, not a physical G4 stream,
+camera-setting restore, continuous recorder, audio, or retention proof.

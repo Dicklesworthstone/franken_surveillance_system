@@ -11,6 +11,8 @@ mod auth;
 mod trial_checkpoint;
 #[path = "trial_http_checkpoint/mod.rs"]
 mod trial_http_checkpoint;
+#[path = "trial_http_record/mod.rs"]
+mod trial_http_record;
 #[path = "trial_run_id/mod.rs"]
 mod trial_run_id;
 #[path = "trial_setup_fence/mod.rs"]
@@ -103,7 +105,7 @@ fn retain_output_on_receipt_failure<R, E: Into<Box<dyn Error>>>(
         },
     }
 }
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--uncorrelated-timesync|--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-http-checkpoint=DIR] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized\nAutomatic pinned setup defaults to a bounded continuing time-sync exchange; each reply remains a separately authorized journaled effect. --uncorrelated-timesync selects the conservative policy.";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--uncorrelated-timesync|--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-http-record] [--lab-http-checkpoint=DIR] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized\nAutomatic pinned setup defaults to a bounded continuing time-sync exchange; each reply remains a separately authorized journaled effect. --uncorrelated-timesync selects the conservative policy.";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
@@ -309,6 +311,7 @@ struct Options {
     observe_snapshot: bool,
     observe_serializers: bool,
     lab_http_checkpoint: Option<PathBuf>,
+    lab_http_record: bool,
     mac: Option<[u8; 6]>,
     cert: PathBuf,
     key: PathBuf,
@@ -464,6 +467,8 @@ fn options() -> ResultBox<Options> {
         args.pop();
         Some(path)
     } else { None };
+    let lab_http_record = args.last().is_some_and(|s| s == "--lab-http-record");
+    if lab_http_record { args.pop(); }
     let observe_serializers = args.last().is_some_and(|s| s == "--observe-serializers");
     if observe_serializers { args.pop(); }
     let observe_snapshot = args.last().is_some_and(|s| s == "--observe-snapshot");
@@ -653,8 +658,11 @@ fn options() -> ResultBox<Options> {
     if observe_serializers && !observe_only {
         return Err("serializer observation requires --observe-only".into());
     }
-    if lab_http_checkpoint.is_some() && (!observe_only || !observe_serializers || setup.is_none() || video_channel.is_some()) {
-        return Err("HTTP checkpoint requires read-only serializer observation and automatic video selection".into());
+    if lab_http_checkpoint.is_some() && ((!lab_http_record && (!observe_only || !observe_serializers)) || setup.is_none() || video_channel.is_some()) {
+        return Err("HTTP checkpoint requires serializer observation and automatic video selection".into());
+    }
+    if lab_http_record && (observe_only || observe_serializers || !lab_auto_pinned_setup || lab_http_checkpoint.is_none() || lab_owned_archive || lab_managed_archive || lab_video_only_archive || lab_decode_owned || lab_video_still.is_some() || lab_save_still.is_some()) {
+        return Err("HTTP recording requires anchored automatic setup and an HTTP checkpoint without controller archive flags".into());
     }
     if lab_auto_pinned_setup != lab_setup_fence.is_some()
         || (lab_auto_pinned_setup && (observe_only || anchored_journal.is_none() || setup.is_none() || discovery_prefix.is_none() || args.get(2).is_none_or(|mac| mac != "auto"))) {
@@ -665,7 +673,7 @@ fn options() -> ResultBox<Options> {
     }
     if lab_managed_archive && !lab_owned_archive {return Err("managed archive requires owned archive mode".into());}
     if lab_video_only_archive && !lab_owned_archive {return Err("video-only archive requires owned archive mode".into());}
-    if lab_inband_avc && !lab_owned_archive {return Err("in-band AVC requires owned archive mode".into());}
+    if lab_inband_avc && !lab_owned_archive && !lab_http_record {return Err("in-band AVC requires owned archive or HTTP recording mode".into());}
     if lab_av_history_records.is_some() && !lab_managed_archive {return Err("laboratory A/V history limit requires managed archive mode".into());}
     if lab_renew_batch.is_some() && !lab_managed_archive {return Err("laboratory renewal requires managed archive mode".into());}
     if lab_retained_video_generations && (!lab_managed_archive || !lab_video_only_archive || lab_anchor_root.is_none() || (lab_renew_batch.is_some() && lab_auto_retained_generations.is_none())) {return Err("retained video generations require managed video-only archive, an anchor root, and automatic mode for renewal".into());}
@@ -702,6 +710,8 @@ fn options() -> ResultBox<Options> {
             || std::fs::symlink_metadata(path).is_ok()
             || [&cert, &key, &journal, &output].iter().any(|other| path.starts_with(other) || other.starts_with(path))
             || setup.as_ref().is_some_and(|s| [&s.cert, &s.credential].iter().any(|other| path.starts_with(other) || other.starts_with(path)))
+            || lab_setup_fence.as_ref().is_some_and(|other| path.starts_with(other) || other.starts_with(path))
+            || anchored_journal.as_ref().is_some_and(|(keeper, root)| [keeper, root].iter().any(|other| path.starts_with(other) || other.starts_with(path)))
         {
             return Err("HTTP checkpoint path must be absent, absolute and distinct".into());
         }
@@ -768,6 +778,7 @@ fn options() -> ResultBox<Options> {
         observe_snapshot,
         observe_serializers,
         lab_http_checkpoint,
+        lab_http_record,
         mac,
         cert,
         key,
@@ -887,6 +898,14 @@ impl<F: Fn() -> Result<(), &'static str>> camera_api::HandoffAuthority for Setup
         plan.check_current(current).is_ok()
             && permit.fence() == self.fence
             && self.lease.revalidate(&self.check).is_ok()
+    }
+}
+struct HttpSerializerGuard<'a> {
+    check: &'a dyn Fn(&fss_reference::unifi_direct::http_stream::Plan, fss_reference::unifi_direct::http_stream::Preconditions, &CommittedEffect) -> bool,
+}
+impl camera_api::SerializerAuthority for HttpSerializerGuard<'_> {
+    fn permits(&self, plan: &fss_reference::unifi_direct::http_stream::Plan, current: fss_reference::unifi_direct::http_stream::Preconditions, permit: &CommittedEffect) -> bool {
+        (self.check)(plan, current, permit)
     }
 }
 struct Approval(Cell<bool>);
@@ -1093,7 +1112,7 @@ fn run(args: Options) -> ResultBox<()> {
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 128 * 1024 * 1024;
     budget.bytes = 128 * 1024 * 1024;
-    budget.storage_operations = if args.lab_owned_archive { 256 } else if args.lab_http_checkpoint.is_some() { 64 } else if args.lab_setup_fence.is_some() { 8 } else { 5 };
+    budget.storage_operations = if args.lab_owned_archive || args.lab_http_record { 512 } else if args.lab_http_checkpoint.is_some() { 64 } else if args.lab_setup_fence.is_some() { 8 } else { 5 };
     let mut caps = vec![
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
@@ -1112,7 +1131,7 @@ fn run(args: Options) -> ResultBox<()> {
             RuntimeGrant::CameraSettingCommit,
         ]);
     }
-    if args.lab_owned_archive { caps.push(RuntimeGrant::ObjectPublish); }
+    if args.lab_owned_archive || args.lab_http_record { caps.push(RuntimeGrant::ObjectPublish); }
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:unifi-direct-trial".into(),
@@ -1156,7 +1175,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let nonce=acquire_entropy(task,cx,clock,"trial:run-identity-entropy").await?.trial_public_nonce()?;
                 let run_id=TrialRunId::from_nonce(nonce)?;
                 println!("trial_run_id={}",run_id.as_str());
-                let config=if args.observe_only {None} else {
+                let config=if args.observe_only || args.lab_http_record {None} else {
                     task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
                     let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
                     let mut config=ServerConfig::builder_with_provider(Arc::new(scoped_provider(false))).with_protocol_versions(&[&rustls::version::TLS13])?.with_no_client_auth().with_single_cert(vec![CertificateDer::from(cert)],PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))?;
@@ -1254,7 +1273,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let management=management::Preconditions {camera,peer_admission:admission,session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
                 let stream_conditions=intent::Preconditions {camera,peer_admission:admission,stream_generation:1,previous_settings:None,lease_fence:fence};
                 let policy=Policy {local:*args.listen.ip(),camera:camera_address,mac};
-                let mut controller_listener=if args.observe_only {None} else {
+                let mut controller_listener=if args.observe_only || args.lab_http_record {None} else {
                     let listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
                     println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                     Some(listener)
@@ -1299,7 +1318,7 @@ fn run(args: Options) -> ResultBox<()> {
                     if let Some(limits)=auto_profile_limits { trace.require_reported_video(limits)?; }
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let mut setup_owner=setup::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&setup_approval,admission:&setup_policy,handoff_authority:&setup_policy};
-                    if args.observe_only {
+                    if args.observe_only || args.lab_http_record {
                         let observed=setup_owner.observe(&mut http,&setup_config).await?;
                         if setup_owner.effects.journal().operations().next().is_some() {return Err("read-only observation unexpectedly prepared an effect".into());}
                         println!("trial_projection_observation=matched reads=2 values=redacted");
@@ -1308,7 +1327,7 @@ fn run(args: Options) -> ResultBox<()> {
                             let selection=observed.select_reported_video(limits)?;
                             println!("trial_reported_video={:?} provenance=camera_claim delivery=unverified",selection.selected);
                         }
-                        if args.observe_serializers {
+                        if args.observe_serializers || args.lab_http_record {
                             // The public settings projection hides destination values. Compare
                             // independently authorized bindings without printing or retaining
                             // the values or their potentially sensitive digests.
@@ -1329,7 +1348,7 @@ fn run(args: Options) -> ResultBox<()> {
                             println!("trial_serializer_shapes={shapes:?} values=redacted restoration=unverified");
                             if let Some(root) = &args.lab_http_checkpoint {
                                 let limits = auto_profile_limits.ok_or("automatic video limits missing")?;
-                                let (channel, _) = observed.select_reported_video(limits)?.selected.ok_or("video profile unavailable")?;
+                                let (channel, profile) = observed.select_reported_video(limits)?.selected.ok_or("video profile unavailable")?;
                                 let listener = listener::Listener::bind(
                                     task, cx, clock, &policy, args.listen, &resource, Duration::from_secs(10),
                                 ).await?;
@@ -1351,8 +1370,26 @@ fn run(args: Options) -> ResultBox<()> {
                                 let prepared = trial_http_checkpoint::prepare(
                                     task, cx, clock, root.clone(), plan, second, ContentDigest::sha256(pin),
                                 ).await?;
-                                let _owners = (prepared.plan, prepared.baseline, prepared.anchored, prepared.key, prepared.spool, prepared.journal);
                                 println!("trial_http_checkpoint=anchored listener=bound camera_write=false restoration=unverified");
+                                if args.lab_http_record {
+                                    let (camera_api::VideoMetric::Reported(width), camera_api::VideoMetric::Reported(height)) = (profile.width, profile.height)
+                                        else { return Err("selected video dimensions unavailable".into()); };
+                                    let framing = if args.lab_zero_stream_id { SearchMode::ZeroStreamId } else if args.lab_g4_trailer { SearchMode::StructuredTrailer16AvFlag } else { SearchMode::Conservative };
+                                    let current_guard = |plan: &fss_reference::unifi_direct::http_stream::Plan, current: fss_reference::unifi_direct::http_stream::Preconditions, permit: &CommittedEffect| {
+                                        current.camera == camera && current.peer_admission == admission && current.lease_fence == fence
+                                            && plan.resource() == resource && permit.fence() == fence
+                                            && setup_policy.lease.revalidate(&setup_policy.check).is_ok()
+                                            && clock.now().is_ok_and(|now| leases.borrow_mut().check_fence(&resource, fence, now).is_ok())
+                                    };
+                                    let serializer_guard = HttpSerializerGuard { check: &current_guard };
+                                    let result = trial_http_record::run(
+                                        task, cx, clock, &mut http, listener, prepared, conditions,
+                                        &serializer_guard, &leases, &mut *setup_owner.effects, &run_id,
+                                        &args.output, &resource, &setup_approval.0, framing, args.lab_inband_avc, [width, height], &authorize,
+                                    ).await;
+                                    return result;
+                                }
+                                let _owners = (prepared.plan, prepared.baseline, prepared.anchored, prepared.key, prepared.spool, prepared.journal);
                                 drop(listener);
                             }
                             let custody = if args.lab_http_checkpoint.is_some() { "encrypted_checkpoint" } else { "memory_only" };
