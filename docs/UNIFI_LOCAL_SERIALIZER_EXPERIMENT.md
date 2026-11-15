@@ -695,3 +695,36 @@ tests. The integration executable SHA-256 was
 The v39 deletion-denying trace records six denied temporary-root unlinks,
 retained under `/data/tmp/fss-unifi-v39-tests-20261114-receipt01`. The v39
 revision has not passed a library-wide Clippy gate.
+
+The read-only laboratory command now has an optional encrypted HTTP checkpoint
+and a separate process can reopen and authenticate it. It stores the observed
+serializer values and a planned forward request before any camera write. The
+local root and its ancestors remain trusted, and the plan is based on the
+requested listener address; this observation does not bind a live listener or
+authorize dispatch or restore. The checkpoint worker is bounded and drained on
+timeout, and partial artifacts require inspection rather than blind retry.
+
+The isolated checkpoint snapshot built on `ts1` with offline-resolved
+dependencies as jobs `j-30109207290184101` (test binary) and
+`j-30109207290184106` (command binary). Its scoped serializer-shape unit test
+passed 1/1. The command binary SHA-256 was
+`6c7625dc4a07f192300a220588eaeb3d2f309fa405d376eb855c19c2857d56f9`;
+the exact offline lockfile SHA-256 was
+`ace3512c3ed4512f075f2c427091a8338d482a9297bd0acf58efc9c7b309ec10`.
+In a private network namespace the fake-camera fixture passed 2/2: the stable
+case saved a checkpoint and a second process authenticated it; the changed
+serializer case refused before creating the checkpoint. The successful
+fixture's key mode was 0600, and a bounded search of its 12 files found none of
+the selected synthetic destination and credential strings. The deletion-denying
+trace recorded zero deletion calls. Fixture and trace remain on `ts1` at
+`/data/tmp/fss-unifi-checkpoint-fixture-20261115-03`. This is synthetic
+recovery evidence, not evidence of a physical G4 write or restore.
+
+During the subsequent recorder check on `trj`, the existing Scrypted-based
+recorder was active but its restart count had risen from 5 to 7. Logs showed
+the video process exiting followed by systemd restarts; the cause is unknown.
+A later file freshness observation showed recent output. These observations do
+not prove uninterrupted recording or that the Rust changes caused the restarts.
+A read-only `ffprobe` of one file modified 156 seconds before the probe found
+H.264 video at 1280 x 720; this is one fallback recording, not a coverage or
+frame-decode qualification.

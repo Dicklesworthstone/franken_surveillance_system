@@ -46,8 +46,8 @@ def serve(peer, changed):
                      + b"\r\nConnection: keep-alive\r\n\r\n" + body)
 
 
-def run(binary, root, cert, changed):
-    case = root / ("changed" if changed else "stable")
+def run(binary, root, cert, changed, busy=False):
+    case = root / ("busy" if busy else "changed" if changed else "stable")
     case.mkdir(mode=0o700)
     credential = case / "credential.json"
     with credential.open("x") as handle:
@@ -76,6 +76,11 @@ def run(binary, root, cert, changed):
                                  capture_output=True, timeout=10)
         assert refused.returncode != 0 and b"serializer observation requires --observe-only" in refused.stderr
         assert not (case / "journal").exists() and not (case / "clip").exists()
+    occupied = None
+    if busy:
+        occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied.bind(("10.252.15.1", 7442))
+        occupied.listen(1)
     child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         query, source = udp.recvfrom(1024)
@@ -95,7 +100,11 @@ def run(binary, root, cert, changed):
         output, error = child.communicate(timeout=20)
         assert b"trial_video_destinations=[TcpOnly, NotReported, NotReported]" in output
         assert all(value not in output + error for value in (b"10.252.15.11", b"10.252.15.12"))
-        if changed:
+        if busy:
+            assert child.returncode != 0 and b"UniFi stream listener refused" in error
+            assert b"trial_http_checkpoint=anchored" not in output
+            assert not (case / "checkpoint").exists()
+        elif changed:
             assert child.returncode != 0 and b"serializer binding changed between reads" in error
             assert b"trial_serializer_observation=consistent" not in output
             assert b"trial_observation=complete" not in output
@@ -106,7 +115,7 @@ def run(binary, root, cert, changed):
             assert b'trial_serializer_shapes=["object", "null", "missing"] values=redacted restoration=unverified' in output
             assert b"trial_serializer_observation=consistent reads=2 values=redacted" in output
             assert b"trial_observation=complete" in output
-            assert b"trial_http_checkpoint=anchored camera_write=false restoration=unverified" in output
+            assert b"trial_http_checkpoint=anchored listener=bound camera_write=false restoration=unverified" in output
             assert (case / "checkpoint" / "key").is_file()
             assert (case / "checkpoint" / "spool").is_dir()
             assert (case / "checkpoint" / "journal").is_dir()
@@ -118,7 +127,7 @@ def run(binary, root, cert, changed):
             assert all(value not in inspected.stdout + inspected.stderr for value in
                        (b"10.252.15.11", b"10.252.15.12"))
         assert not (case / "journal").exists() and not (case / "clip").exists()
-        print(f"serializer_fixture case={'changed' if changed else 'stable'} result=pass", flush=True)
+        print(f"serializer_fixture case={'busy' if busy else 'changed' if changed else 'stable'} result=pass", flush=True)
     except Exception:
         if child.poll() is None:
             child.terminate()
@@ -132,6 +141,8 @@ def run(binary, root, cert, changed):
     finally:
         udp.close()
         https.close()
+        if occupied is not None:
+            occupied.close()
         if child.poll() is None:
             child.terminate()
             child.communicate(timeout=10)
@@ -147,7 +158,8 @@ def main():
     cert = certificate(root, "camera")
     run(binary, root, cert, False)
     run(binary, root, cert, True)
-    print("serializer_fixture passed=2 explicit_targets=0 camera=synthetic")
+    run(binary, root, cert, False, busy=True)
+    print("serializer_fixture passed=3 explicit_targets=0 camera=synthetic")
 
 
 if __name__ == "__main__":

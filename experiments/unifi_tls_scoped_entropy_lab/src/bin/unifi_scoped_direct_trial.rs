@@ -1099,7 +1099,7 @@ fn run(args: Options) -> ResultBox<()> {
         RuntimeGrant::AdapterAuth,
         RuntimeGrant::ObserveStatus,
     ];
-    if !args.observe_only || args.observe_snapshot {
+    if !args.observe_only || args.observe_snapshot || args.lab_http_checkpoint.is_some() {
         caps.extend([RuntimeGrant::ReadMedia, RuntimeGrant::MediaDecode]);
     }
     if args.lab_http_checkpoint.is_some() { caps.push(RuntimeGrant::ObjectStage); }
@@ -1330,8 +1330,12 @@ fn run(args: Options) -> ResultBox<()> {
                             if let Some(root) = &args.lab_http_checkpoint {
                                 let limits = auto_profile_limits.ok_or("automatic video limits missing")?;
                                 let (channel, _) = observed.select_reported_video(limits)?.selected.ok_or("video profile unavailable")?;
+                                let listener = listener::Listener::bind(
+                                    task, cx, clock, &policy, args.listen, &resource, Duration::from_secs(10),
+                                ).await?;
+                                let bound = listener.local_addr();
                                 let start = fss_reference::unifi_direct::StreamStart::new(
-                                    channel, args.listen, VideoCodec::H264, AudioCodec::Aac, &run_id.as_str()[..16],
+                                    channel, bound, VideoCodec::H264, AudioCodec::Aac, &run_id.as_str()[..16],
                                 )?;
                                 let conditions = fss_reference::unifi_direct::http_stream::Preconditions {
                                     camera,
@@ -1339,7 +1343,7 @@ fn run(args: Options) -> ResultBox<()> {
                                     session_generation: 1,
                                     lease_fence: fence,
                                     serializers: second.binding(&authorize)?,
-                                    listener: args.listen,
+                                    listener: bound,
                                 };
                                 let plan = fss_reference::unifi_direct::http_stream::Plan::new(
                                     camera_address, &start, conditions, &second, handoff::Framing::ContentLength,
@@ -1348,7 +1352,8 @@ fn run(args: Options) -> ResultBox<()> {
                                     task, cx, clock, root.clone(), plan, second, ContentDigest::sha256(pin),
                                 ).await?;
                                 let _owners = (prepared.plan, prepared.baseline, prepared.anchored, prepared.key, prepared.spool, prepared.journal);
-                                println!("trial_http_checkpoint=anchored camera_write=false restoration=unverified");
+                                println!("trial_http_checkpoint=anchored listener=bound camera_write=false restoration=unverified");
+                                drop(listener);
                             }
                             let custody = if args.lab_http_checkpoint.is_some() { "encrypted_checkpoint" } else { "memory_only" };
                             println!("trial_serializer_observation=consistent reads=2 values=redacted custody={custody}");
