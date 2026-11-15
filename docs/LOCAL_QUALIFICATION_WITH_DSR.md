@@ -225,8 +225,8 @@ of the toolchain cargo suppresses it; the practical route is to retry later or o
 
 `confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
 fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
-suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is proven too: 43 tests green across its seven suites, and `geometry` is proven: 16 tests green. Wiring it exposed three stale `lab_ingest_cli` assertions (they demanded `first_frame_observed`, which a file import deliberately never reaches, and zero Annex-B omissions, when delimiters are reported) — fixed. Media and archive also
-run inside `full` and `release`. The remaining claim lanes (`adapter`, `model`, `threat`) still fail closed and are the next wiring targets, in that order of expected value.
+suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is proven too: 43 tests green across its seven suites, `geometry` is proven (16 tests) and `threat` is proven (35 tests). Wiring it exposed three stale `lab_ingest_cli` assertions (they demanded `first_frame_observed`, which a file import deliberately never reaches, and zero Annex-B omissions, when delimiters are reported) — fixed. Media and archive also
+run inside `full` and `release`. The remaining claim lanes (`adapter`, `model`) still fail closed and are the next wiring targets, in that order of expected value.
 
 ### When admission is refused repeatedly
 
