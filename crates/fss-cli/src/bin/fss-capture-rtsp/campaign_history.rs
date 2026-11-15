@@ -235,7 +235,7 @@ impl Config {
             duration_limited: plan.capture_duration_ns.is_some(),
             attempts,
         };
-        campaign.validate().map_err(|_| ERROR)?;
+        campaign.validate().map_err(|e| { eprintln!("DBG validate {e:?}"); ERROR })?;
         Ok(campaign)
     }
 
@@ -389,7 +389,7 @@ impl Recorder {
     pub(super) fn new(config: &Config, plan: &ReconnectPlan) -> Result<Self, &'static str> {
         config.validate(plan)?;
         let campaign = config.campaign(plan)?;
-        let writer = CampaignWriter::new(campaign.clone(), config.limits).map_err(|_| ERROR)?;
+        let writer = CampaignWriter::new(campaign.clone(), config.limits).map_err(|e| { eprintln!("DBG writer {e:?}"); ERROR })?;
         let mut authority = Authority::new(
             &campaign.principal,
             campaign.approval,
@@ -432,7 +432,7 @@ impl Recorder {
         authority.check()?;
         let cx =
             ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
-        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|_| ERROR)?;
+        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|e| { eprintln!("DBG publisher {e:?}"); ERROR })?;
         authority.check()?;
         Ok(Self {
             writer,
@@ -485,7 +485,7 @@ impl Recorder {
         authority.check()?;
         let cx =
             ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
-        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|_| ERROR)?;
+        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|e| { eprintln!("DBG publisher {e:?}"); ERROR })?;
         authority.check()?;
         let mut work = WorkBudget::new(config.work);
         let writer = CampaignWriter::resume_from_prefix(
