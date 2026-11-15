@@ -367,6 +367,13 @@ fn response(closed: &ClosedPlan) -> Result<String, Box<dyn std::error::Error>> {
 /// its preparation.
 #[must_use]
 pub fn execute_close(args: &CloseArgs) -> (String, ExitIdentity) {
+    execute_close_with_time(args, None)
+}
+
+pub(crate) fn execute_close_with_time(
+    args: &CloseArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let request = CloseRequest {
         session_id: args.session.clone(),
         principal: args.principal.clone(),
@@ -389,7 +396,11 @@ pub fn execute_close(args: &CloseArgs) -> (String, ExitIdentity) {
     };
     let result = (|| -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
         let _lock = hold_deployment(&args.root, &args.principal)?;
-        let closed = close_plan(&args.root, &request, &episode_json)?;
+        let closed = close_plan(
+            crate::session_time::context(&args.root, clock),
+            &request,
+            &episode_json,
+        )?;
         Ok(response(&closed))
     })();
     finish(result, ExitIdentity::SUCCESS, &operation)

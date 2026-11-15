@@ -55,7 +55,8 @@ impl From<DurableSessionError> for SessionCancellationError {
 /// What this invocation established about session authority, never an external effect status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionCancellationOutcome {
-    /// The complete request is read-only; no clock, pin, lease or journal was changed.
+    /// The complete request was previewed without revocation. Runtime clock admission may
+    /// persist a new watermark; deterministic path callers perform no writes.
     Proposed,
     /// This invocation appended the request and revocation tombstone atomically.
     Cancelled,
@@ -131,13 +132,24 @@ fn lock_deployment(root: &Path) -> Result<SpoolLock, DeploymentSessionError> {
 /// Both acquisitions are nonblocking, so a competing owner is refused rather than labelled
 /// drained. No network I/O, deployment recovery or new effect authority is performed here.
 pub fn cancel_session(
-    root: &Path,
+    root: impl super::SessionRoot,
     session_id: &SessionId,
     authority: &ContextAuthority,
     approval: Option<ContentDigest>,
 ) -> Result<SessionCancellation, SessionCancellationError> {
+    cancel_session_in(root, session_id, authority, approval, false)
+}
+
+fn cancel_session_in(
+    root: impl super::SessionRoot,
+    session_id: &SessionId,
+    authority: &ContextAuthority,
+    approval: Option<ContentDigest>,
+    clock_admitted: bool,
+) -> Result<SessionCancellation, SessionCancellationError> {
+    let context = root.session_context();
     let principal = authorize(authority)?;
-    let root = ensure_agent_writable(root)?;
+    let root = ensure_agent_writable(context.root())?;
     let directory = root.join(SESSIONS_RELPATH);
     let lock_file = File::open(directory.join(SESSION_LOCK_FILE)).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -202,6 +214,54 @@ pub fn cancel_session(
     if history.site_lineage() != session.current_anchor.site_lineage {
         return Err(SessionCancellationError::Unauthorized);
     }
+    let previous = retained_receipt(&report, &principal, session_id)?;
+    if retained.closed && previous.is_none() {
+        return Err(DeploymentSessionError::SessionUnknown.into());
+    }
+    let runtime_now = if context.is_runtime() {
+        let head = history
+            .snapshot_at(history.head())
+            .map_err(DeploymentSessionError::from)?;
+        Some(context.now(&head, &principal)?)
+    } else {
+        None
+    };
+    if let Some(now) = runtime_now {
+        if previous.is_none()
+            && !retained.closed
+            && ((!clock_admitted && approval.is_none())
+                || now < retained.last_observed_at
+                || now.0 >= session.expires_at_ns)
+        {
+            // A live preview first retains its clock observation. Re-read the exact admitted
+            // prefix before computing approval, so a later commit can approve that stable
+            // checkpoint while independently checking fresh runtime expiry. Expiry/refusal
+            // transitions are pinned even when no approval is supplied.
+            let store = DurableSessionStore::open_existing_with_coordination(
+                &journal_path,
+                report.last_root(),
+                limits,
+                WorkClaimLimits::default(),
+            )?;
+            let mut journal = SessionJournal {
+                root: root.clone(),
+                directory: directory.clone(),
+                store,
+                _lock: lock,
+            };
+            let admitted = journal.admit(&principal, session_id, now);
+            drop(journal);
+            drop(_deployment_lock);
+            admitted?;
+            return cancel_session_in(context, session_id, authority, approval, true);
+        }
+        if now < retained.last_observed_at {
+            return Err(DeploymentSessionError::SessionStale(
+                "runtime session clock regressed below the durable watermark".into(),
+            )
+            .into());
+        }
+    }
     let workspace = recovered
         .workspace_revisions
         .iter()
@@ -209,7 +269,6 @@ pub fn cancel_session(
         .max_by_key(|revision| revision.capsule().revision)
         .cloned()
         .ok_or_else(|| DeploymentSessionError::StoreInvalid("session workspace missing".into()))?;
-    let previous = retained_receipt(&report, &principal, session_id)?;
     let (plan, previous) = if let Some(receipt) = previous {
         if !retained.closed || receipt.plan.session_digest != session.session_digest() {
             return Err(DurableSessionError::InvalidHistory.into());
@@ -222,7 +281,7 @@ pub fn cancel_session(
         let head = history
             .snapshot_at(history.head())
             .map_err(DeploymentSessionError::from)?;
-        let now = evidence_now(&head);
+        let now = runtime_now.unwrap_or_else(|| evidence_now(&head));
         if session.current_anchor.site_lineage != head.site_lineage
             || now.0 < retained.last_observed_at.0
             || now.0 >= session.expires_at_ns
@@ -273,7 +332,14 @@ pub fn cancel_session(
             basis_anchor,
             authority_root,
             effect_root,
-            observed_at: now,
+            // The approval binds the retained clock checkpoint, not the next host sample.
+            // Fresh `now` above still gates the commit; a changing wall clock cannot make
+            // every otherwise exact approval stale, and no approval can extend the lease.
+            observed_at: if context.is_runtime() {
+                retained.last_observed_at
+            } else {
+                now
+            },
             unresolved_obligations: unresolved.into_iter().collect(),
             retained_plans: briefs.into_iter().map(|brief| brief.plan_id).collect(),
         };

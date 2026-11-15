@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Native session lifecycle through fresh MCP processes, including durable follow delivery
-//! and read-only mission-bound orientation at the current head.
+//! and mission-bound orientation with durable live clock admission at the current head.
 //! Every opening, handoff and resume goes through MCP. Only the explicitly synthetic authority
 //! fixtures use native deployment APIs; no device, provider, remote service or affordance runs.
 
@@ -26,6 +26,10 @@ use fss_reference::agent_session::checkpoint::journal::{
 use fss_reference::agent_session::work_claims::WorkClaimLimits;
 use fss_reference::deployment_session::{HandoffRecord, MissionRecord, publication_limits};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
+
+#[path = "support/session_clock.rs"]
+mod session_clock;
+use session_clock::assert_only_clock_progress;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -84,6 +88,65 @@ fn raw_payload(body: &str) -> TestResult<&str> {
         .find(",\"payloadDigest\":")
         .ok_or("missing payload digest")?;
     Ok(&body[start..end])
+}
+
+fn assert_same_projection(root: &Path, before: &Reply, after: &Reply) -> TestResult {
+    assert_eq!(raw_payload(&before.body)?, raw_payload(&after.body)?);
+    let roots = session_clock::journal_roots(root)?;
+    fn normalize_roots(value: &mut Value, roots: &[String]) {
+        match value {
+            Value::Text(text) => {
+                for root in roots {
+                    *text = text.replace(root, "retained-session-clock-root");
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    normalize_roots(value, roots);
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values_mut() {
+                    normalize_roots(value, roots);
+                }
+            }
+            _ => {}
+        }
+    }
+    let normalize = |reply: &Reply| -> TestResult<Value> {
+        assert!(
+            array(&reply.value, "proofPointers")?
+                .iter()
+                .filter_map(Value::text)
+                .any(|pointer| roots.iter().any(|root| root == pointer))
+        );
+        let mut value = reply.value.clone();
+        let Value::Object(fields) = &mut value else {
+            return Err("response is not an object".into());
+        };
+        // Only the admitted journal proof and its presentation may change on an exact retry.
+        for field in ["proofPointers", "executionBoundary"] {
+            normalize_roots(fields.get_mut(field).ok_or("missing proof field")?, &roots);
+        }
+        if text(&reply.value, "operationId")? == "AOP-003" {
+            // Bound orientation request identity intentionally includes its journal proof.
+            let request = text(&reply.value, "requestId")?.strip_prefix("request:");
+            let trace = text(&reply.value, "traceId")?.strip_prefix("trace:");
+            assert!(request.is_some());
+            assert_eq!(request, trace);
+            fields.insert(
+                "requestId".to_owned(),
+                Value::Text("clock-bound-request".to_owned()),
+            );
+            fields.insert(
+                "traceId".to_owned(),
+                Value::Text("clock-bound-trace".to_owned()),
+            );
+        }
+        Ok(value)
+    };
+    assert_eq!(normalize(before)?, normalize(after)?);
+    Ok(())
 }
 
 fn conforms(scratch: &Path, schema: &str, instance: &str) -> TestResult {
@@ -487,11 +550,8 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     let original_session = fixture.inspect()?.sessions[0].session.clone();
     let journal = fixture.journal()?;
     let duplicate = fixture.open(MISSION, Some(100_000))?;
-    assert_eq!(
-        duplicate.body, opened.body,
-        "same full head is an exact retry"
-    );
-    assert_eq!(fixture.journal()?, journal);
+    assert_same_projection(&fixture.root, &opened, &duplicate)?;
+    assert_only_clock_progress(&fixture.root, &journal)?;
 
     for _ in 0..3 {
         fixture.append()?;
@@ -515,7 +575,7 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     let repeat = fixture.call(PRINCIPAL, "session_follow", &arguments, "AOP-004", false)?;
     assert_eq!(repeat.receipt()?, receipt);
     assert_eq!(repeat.payload()?, first.payload()?);
-    assert_eq!(fixture.journal()?, pending_journal, "disconnect never ACKs");
+    assert_only_clock_progress(&fixture.root, &pending_journal)?;
 
     let arguments = follow_args(&since, &session, Some(receipt));
     let second = fixture.call(PRINCIPAL, "session_follow", &arguments, "AOP-004", false)?;
@@ -531,7 +591,7 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     let lost_ack = fixture.call(PRINCIPAL, "session_follow", &arguments, "AOP-004", false)?;
     assert_eq!(lost_ack.receipt()?, second.receipt()?);
     assert_eq!(lost_ack.payload()?, second.payload()?);
-    assert_eq!(fixture.journal()?, acknowledged_journal);
+    assert_only_clock_progress(&fixture.root, &acknowledged_journal)?;
     let retained_follow = fixture.inspect()?.follows;
 
     let note = "Next operator: preserve the unacknowledged successor";
@@ -600,8 +660,8 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     assert_eq!(recovered.follows, retained_follow);
     let resumed_journal = fixture.journal()?;
     let repeated = fixture.call(PRINCIPAL, "session_resume", &resume_args, "AOP-002", false)?;
-    assert_eq!(repeated.body, resumed.body, "resume never rebases twice");
-    assert_eq!(fixture.journal()?, resumed_journal);
+    assert_same_projection(&fixture.root, &resumed, &repeated)?;
+    assert_only_clock_progress(&fixture.root, &resumed_journal)?;
 
     // Handoff/rebase is not an implicit transfer of an old subscription's semantic history.
     let refused = fixture.call(
@@ -703,10 +763,11 @@ fn mcp_mission_is_literal_even_when_it_names_an_existing_outside_file() -> TestR
     assert_eq!(fs::read(&outside)?, bytes);
     let journal = fixture.journal()?;
     let repeated = fixture.open(literal, None)?;
-    assert_eq!(repeated.body, opened.body);
-    assert_eq!(fixture.journal()?, journal);
+    assert_same_projection(&fixture.root, &opened, &repeated)?;
+    assert_only_clock_progress(&fixture.root, &journal)?;
 
     // A remote caller cannot replace either launch-pinned scope with a tool argument.
+    let journal = fixture.journal()?;
     for extra in [
         format!("\"root\":{}", quote(literal)),
         format!("\"principal\":{}", quote(STRANGER)),
@@ -733,8 +794,9 @@ fn mcp_open_identity_binds_effect_history_and_exact_retries() -> TestResult {
     let first = fixture.open(MISSION, Some(100_000))?;
     let initial = AnchorToken::parse(&first.opening_anchor()?).ok_or("initial anchor")?;
     let initial_journal = fixture.journal()?;
-    assert_eq!(fixture.open(MISSION, Some(100_000))?.body, first.body);
-    assert_eq!(fixture.journal()?, initial_journal);
+    let repeated = fixture.open(MISSION, Some(100_000))?;
+    assert_same_projection(&fixture.root, &first, &repeated)?;
+    assert_only_clock_progress(&fixture.root, &initial_journal)?;
 
     fixture.prepare()?;
     let authority = authority_tree(&fixture.root)?;
@@ -759,8 +821,9 @@ fn mcp_open_identity_binds_effect_history_and_exact_retries() -> TestResult {
     );
     assert_eq!(fixture.inspect()?.sessions.len(), 2);
     let current_journal = fixture.journal()?;
-    assert_eq!(fixture.open(MISSION, Some(100_000))?.body, next.body);
-    assert_eq!(fixture.journal()?, current_journal);
+    let repeated = fixture.open(MISSION, Some(100_000))?;
+    assert_same_projection(&fixture.root, &next, &repeated)?;
+    assert_only_clock_progress(&fixture.root, &current_journal)?;
     assert_eq!(authority_tree(&fixture.root)?, authority);
     Ok(())
 }
@@ -784,13 +847,28 @@ fn retained_tree(root: &Path) -> TestResult<BTreeMap<PathBuf, ContentDigest>> {
     Ok(result)
 }
 
+fn assert_only_clock_files(
+    root: &Path,
+    before: &BTreeMap<PathBuf, ContentDigest>,
+    journal: &[u8],
+) -> TestResult {
+    let mut before = before.clone();
+    let mut after = retained_tree(root)?;
+    for path in ["agent/sessions/journal.fssj", "agent/sessions/ROOT"] {
+        assert!(before.remove(Path::new(path)).is_some());
+        assert!(after.remove(Path::new(path)).is_some());
+    }
+    assert_eq!(before, after, "every non-clock file is byte-identical");
+    assert_only_clock_progress(root, journal)
+}
+
 #[test]
-fn mcp_bound_orientation_reads_current_head_without_rebase_or_durable_writes() -> TestResult {
+fn mcp_bound_orientation_reads_current_head_without_rebase_or_semantic_changes() -> TestResult {
     let mut fixture = Fixture::new("bound-orient")?;
     let opened = fixture.open(MISSION, Some(100_000))?;
     let session = text(&opened.value, "sessionId")?.to_owned();
     let mission = text(&opened.value, "missionId")?.to_owned();
-    let original = fixture.inspect()?;
+    let original = fixture.journal()?;
     let opening_anchor = field(opened.payload()?, "anchor")?.clone();
     let source = field(field(opened.payload()?, "objectiveContract")?, "source")?.clone();
     let args = format!("{{\"session\":{}}}", quote(&session));
@@ -811,12 +889,8 @@ fn mcp_bound_orientation_reads_current_head_without_rebase_or_durable_writes() -
                 .is_ok_and(|content| content.contains(MISSION) && content.contains(OBJECTIVE)))
     );
     let repeated = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
-    assert_eq!(
-        repeated.body, first.body,
-        "fresh processes recover the same bound projection"
-    );
-    assert_eq!(fixture.inspect()?, original);
-    assert_eq!(retained_tree(&fixture.root)?, before);
+    assert_same_projection(&fixture.root, &first, &repeated)?;
+    assert_only_clock_files(&fixture.root, &before, &original)?;
 
     fixture.append()?;
     fixture.append()?;
@@ -846,18 +920,14 @@ fn mcp_bound_orientation_reads_current_head_without_rebase_or_durable_writes() -
             .filter_map(Value::text)
             .any(|line| line.contains("assumption:anchor-current") && line.contains("revalidation"))
     );
-    assert_eq!(
-        fixture.inspect()?,
-        original,
-        "orient does not rebase, renew, charge or rewrite retained state"
-    );
-    assert_eq!(retained_tree(&fixture.root)?, before);
+    assert_only_clock_files(&fixture.root, &before, &original)?;
     let repeated = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
-    assert_eq!(repeated.body, current.body);
-    assert_eq!(retained_tree(&fixture.root)?, before);
+    assert_same_projection(&fixture.root, &current, &repeated)?;
+    assert_only_clock_files(&fixture.root, &before, &original)?;
 
     // No selected session means the existing stateless read. It must not acquire this private
     // mission merely because a durable session is present under the server's deployment root.
+    let before = retained_tree(&fixture.root)?;
     let stateless = fixture.call(
         PRINCIPAL,
         "session_orient",
@@ -891,6 +961,7 @@ fn mcp_bound_orientation_rejects_unknown_sessions_and_scope_overrides_read_only(
     let opened = fixture.open(MISSION, Some(100_000))?;
     let session = text(&opened.value, "sessionId")?.to_owned();
     let before = retained_tree(&fixture.root)?;
+    let journal = fixture.journal()?;
     let constrained = fixture.call(
         PRINCIPAL,
         "session_orient",
@@ -903,7 +974,8 @@ fn mcp_bound_orientation_rejects_unknown_sessions_and_scope_overrides_read_only(
         "ERR-AGENT-CONTEXT-INCOMPLETE-001"
     );
     assert_eq!(constrained.payload()?, &Value::Null);
-    assert_eq!(retained_tree(&fixture.root)?, before);
+    assert_only_clock_files(&fixture.root, &before, &journal)?;
+    let before = retained_tree(&fixture.root)?;
     for extra in [
         format!(
             "\"root\":{}",

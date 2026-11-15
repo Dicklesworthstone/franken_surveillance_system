@@ -14,8 +14,9 @@
 //! the session's committed workspace revision at that anchor (the runtime-verified record of the
 //! move). Old citations then need readmission before they can support an assessment.
 //!
-//! **Clock.** `now` is the deployment evidence clock (as for sessions), so decision deadlines and
-//! the case store's clock watermark are measured on committed evidence time.
+//! **Clock.** `now` is selected by the session context: explicit runtime time for live owners,
+//! committed evidence time for deterministic path callers. Both use durable deadline and
+//! watermark checks independently of the evidence anchor being investigated.
 //!
 //! **Refusals.** A refused command can still advance session or case clock watermarks; the
 //! journal commits (and the root pin is replaced) before the refusal is returned.
@@ -30,7 +31,7 @@ use fss_core::{
 
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, OrientCaseBrief,
-    OrientLimits, SESSION_PRIVACY_SCOPE, SessionJournal, digest_of, evidence_now, orient_bound,
+    OrientLimits, SESSION_PRIVACY_SCOPE, SessionJournal, digest_of, orient_bound,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::evolution::{
     InvestigationCitation, InvestigationEvolution, InvestigationEvolutionRequest,
@@ -46,9 +47,9 @@ pub const CASE_PRIVACY_CLASS: &str = SESSION_PRIVACY_SCOPE;
 /// How the decision deadline of a new case is given.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaseDeadline {
-    /// Absolute deployment evidence time, in nanoseconds.
+    /// Absolute session admission time, in nanoseconds (Unix time for live owners).
     At(i128),
-    /// Nanoseconds after the current deployment evidence time.
+    /// Nanoseconds after the original case admission, preserved on identical retries.
     After(i128),
 }
 
@@ -192,7 +193,7 @@ pub struct CaseAnswer {
     pub journal_root: ContentDigest,
     /// Canonical request digest.
     pub request_digest: ContentDigest,
-    /// Deployment evidence time the command ran at.
+    /// Session admission time the command ran at.
     pub now: TimestampNs,
     /// True when the deployment head has moved past the session's anchor (hand off and resume
     /// to rebase the session, then rebase each case).
@@ -445,13 +446,15 @@ fn encode_action(encoder: &mut fss_core::CanonicalEncoder, action: &CaseAction) 
 /// root is pinned before the answer (or the refusal) is returned. The situation returned is the
 /// one as of the session's anchor, the anchor every case revision is bound to.
 pub fn investigate(
-    root: &std::path::Path,
+    root: impl super::SessionRoot,
     request: &InvestigateRequest,
 ) -> Result<CaseAnswer, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let request_digest = digest_of("fss.reference_investigate_request.v1", |encoder| {
         request.session_id.encode_canonical(encoder);
         request.principal.encode_canonical(encoder);
@@ -488,9 +491,21 @@ pub fn investigate(
     let outcome = match &request.action {
         CaseAction::List => None,
         CaseAction::Open(draft) => {
+            // A relative opening is bound once. Recomputing it from a later retry's clock
+            // would either conflict with the original intent or silently renew its deadline.
+            // The owning engine still checks every field and current session visibility.
+            let opened_at = journal
+                .store
+                .investigation_opening(&draft.case_id)
+                .filter(|opening| {
+                    opening.principal() == &session.principal_id
+                        && opening.record().mission_id == session.mission_id
+                        && session.privacy_scope.contains(opening.privacy_class())
+                })
+                .map_or(now, |opening| opening.changed_at());
             let deadline = match draft.deadline {
                 CaseDeadline::At(at) => Some(at),
-                CaseDeadline::After(after) if after > 0 => now.0.checked_add(after),
+                CaseDeadline::After(after) if after > 0 => opened_at.0.checked_add(after),
                 CaseDeadline::After(_) => None,
             };
             let Some(deadline) = deadline else {

@@ -25,6 +25,10 @@ use fss_reference::agent_session::checkpoint::journal::{
 use fss_reference::agent_session::work_claims::WorkClaimLimits;
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
+#[path = "support/session_clock.rs"]
+mod session_clock;
+use session_clock::assert_only_clock_progress;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SITE: &str = "site:follow-subscription-cli";
 const PRINCIPAL: &str = "principal:follow-subscription-cli";
@@ -540,18 +544,16 @@ fn waiting_cli_and_mcp_replay_exact_pending_receipts_and_only_explicitly_acknowl
             field(&retry.value, "payload")?,
             field(&first.value, "payload")?
         );
-        assert_eq!(
-            pointer(&retry.value, "follow-journal:")?,
-            pointer(&first.value, "follow-journal:")?
+        let root = pointer(&retry.value, "follow-journal:")?;
+        assert!(
+            session_clock::journal_roots(&fixture.root)?
+                .iter()
+                .any(|value| value == root)
         );
         assert!(retry.body.contains("0 completed parks"));
         assert!(retry.body.contains("Durable bounded wait"));
     }
-    assert_eq!(
-        fixture.journal()?,
-        before,
-        "waiting does not acknowledge a pending page"
-    );
+    assert_only_clock_progress(&fixture.root, &before)?;
     let mut args = fixture.args("wait-watch", 64, Some(receipt));
     args.extend(["--wait-ms", "10000"].map(OsString::from));
     let second = fixture.command(&args, 0)?;
@@ -657,16 +659,14 @@ fn pending_delivery_survives_cli_restart_and_mcp_resume_with_exact_ack_identity(
             field(&retry.value, "payload")?,
             field(&first.value, "payload")?
         );
-        assert_eq!(
-            pointer(&retry.value, "follow-journal:")?,
-            pointer(&first.value, "follow-journal:")?
+        let root = pointer(&retry.value, "follow-journal:")?;
+        assert!(
+            session_clock::journal_roots(&fixture.root)?
+                .iter()
+                .any(|value| value == root)
         );
     }
-    assert_eq!(
-        fixture.journal()?,
-        first_journal,
-        "redelivery records no implicit ACK"
-    );
+    assert_only_clock_progress(&fixture.root, &first_journal)?;
     assert_eq!(authority_tree(&fixture.root)?, original_authority);
 
     // A new committed head does not replace the original replay window. The explicit MCP ACK
@@ -689,7 +689,7 @@ fn pending_delivery_survives_cli_restart_and_mcp_resume_with_exact_ack_identity(
         field(&lost_ack_retry.value, "payload")?,
         field(&second.value, "payload")?
     );
-    assert_eq!(fixture.journal()?, after_ack);
+    assert_only_clock_progress(&fixture.root, &after_ack)?;
     let third = fixture.follow("watch", 64, Some(second.receipt()?))?;
     assert_eq!(commit(&third.value, "basisAnchor")?, 2);
     assert_eq!(commit(&third.value, "resultAnchor")?, 3);
@@ -795,12 +795,9 @@ fn wrong_ack_scope_and_principal_cannot_consume_an_existing_pending_page() -> Te
                 .filter_map(Value::text)
                 .all(|p| !p.starts_with("follow-acknowledged:"))
         );
-        assert_eq!(
-            fixture.journal()?,
-            before,
-            "a conflicting request cannot advance delivery"
-        );
+        assert_only_clock_progress(&fixture.root, &before)?;
     }
+    let before = fixture.journal()?;
     let mut other = fixture.args("watch", 64, Some(first.receipt()?));
     let index = other
         .iter()
@@ -923,7 +920,7 @@ fn populated_case_follow_redelivers_across_transports_and_classifies_evidence_ad
         assert_eq!(raw_payload(&retry.body)?, raw_payload(&first.body)?);
         assert_eq!(case_purpose(retry)?, case_purpose(&first)?);
     }
-    assert_eq!(fixture.journal()?, journal);
+    assert_only_clock_progress(&fixture.root, &journal)?;
     assert_eq!(authority_tree(&fixture.root)?, authority);
 
     // Fully published evidence advances independently of the retained case revision. Keep
@@ -958,7 +955,7 @@ fn populated_case_follow_redelivers_across_transports_and_classifies_evidence_ad
         raw_payload(&lost_ack_reply.body)?,
         raw_payload(&advanced.body)?
     );
-    assert_eq!(fixture.journal()?, journal);
+    assert_only_clock_progress(&fixture.root, &journal)?;
     assert_eq!(authority_tree(&fixture.root)?, authority);
     Ok(())
 }
@@ -991,11 +988,7 @@ fn current_doctor_drift_requires_resnapshot_without_consuming_a_populated_pendin
     for reply in [&refused, &repeated] {
         assert_resnapshot_without_ack(reply)?;
     }
-    assert_eq!(
-        fixture.journal()?,
-        journal,
-        "retry cannot consume the changed page"
-    );
+    assert_only_clock_progress(&fixture.root, &journal)?;
 
     let current = fixture.orient()?;
     assert!(
@@ -1026,13 +1019,13 @@ fn populated_case_follow_requires_current_head_for_a_new_subscription() -> TestR
     fixture.open_case()?;
     fixture.append()?;
     let refused = fixture.command(&fixture.args("historical", 64, None), 5)?;
-    // Live admission can persist the newer evidence clock even on refusal. Once admitted,
+    // Live admission can persist the newer runtime clock even on refusal. Once admitted,
     // another transport must neither add a subscription nor acknowledge any delivery.
     let before = fixture.journal()?;
     let mcp_refused = fixture.mcp("historical", 64, None, true)?;
     assert_resnapshot_without_ack(&refused)?;
     assert_resnapshot_without_ack(&mcp_refused)?;
-    assert_eq!(fixture.journal()?, before);
+    assert_only_clock_progress(&fixture.root, &before)?;
     assert!(fixture.inspect()?.follows.is_empty());
 
     // Resnapshot is an explicit read; the fresh subscription starts at that exact head.
@@ -1066,7 +1059,7 @@ fn populated_case_mutation_requires_resnapshot_without_consuming_pending_ack() -
     let mcp_refused = fixture.mcp("before-mutation", 64, Some(pending), true)?;
     assert_resnapshot_without_ack(&refused)?;
     assert_resnapshot_without_ack(&mcp_refused)?;
-    assert_eq!(fixture.journal()?, before);
+    assert_only_clock_progress(&fixture.root, &before)?;
     let inspection = fixture.inspect()?;
     let old = inspection
         .follows

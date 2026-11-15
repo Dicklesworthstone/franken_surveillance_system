@@ -517,7 +517,9 @@ fn semantic_history(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // clock authority, native state and delivery policy stay explicit
 fn revalidate<C: FollowSessionControl, P: DeliveryPolicy<C>>(
+    context: super::SessionContext<'_>,
     binding: &FollowSessionBinding<'_>,
     journal: &mut SessionJournal,
     session: &AgentSession,
@@ -525,7 +527,7 @@ fn revalidate<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     control: &mut C,
     progress: &mut FollowSessionFailure,
     policy: &mut P,
-) -> Result<(), FollowSessionError> {
+) -> Result<TimestampNs, FollowSessionError> {
     control
         .admit_session(binding, FollowSessionBoundary::RevalidateHistory)
         .map_err(FollowSessionError::Denied)?;
@@ -538,14 +540,20 @@ fn revalidate<C: FollowSessionControl, P: DeliveryPolicy<C>>(
         .clone()
         .ok_or(FollowSessionError::ChangedDelivery)?;
     progress.head = Some(current_head.clone());
+    let now = context
+        .now_at(current_head.observed_at, binding.principal)
+        .map_err(FollowSessionError::Session)?;
+    journal
+        .admit(binding.principal, &session.session_id, now)
+        .map_err(FollowSessionError::Session)?;
     if current_head.token != head.token
         || !same_generations(&session.current_anchor, &current_head.anchor)
-        || semantic_history(binding.root, journal, session, head.observed_at)?.digest
+        || semantic_history(binding.root, journal, session, now)?.digest
             != state.registration().semantic_history
     {
         return Err(FollowSessionError::ChangedDelivery);
     }
-    Ok(())
+    Ok(now)
 }
 
 /// Delivers one adjacent delta page and persists its receipt before release.
@@ -556,7 +564,7 @@ fn revalidate<C: FollowSessionControl, P: DeliveryPolicy<C>>(
 /// Populated semantic state is admitted only at a new current-head baseline; semantic drift
 /// refuses before an ACK is consumed and requires an explicit new baseline/subscription.
 pub fn follow_session(
-    root: &Path,
+    root: impl super::SessionRoot,
     principal: &PrincipalId,
     request: &FollowSessionRequest,
     limits: &OrientLimits,
@@ -564,7 +572,7 @@ pub fn follow_session(
 ) -> Result<FollowSessionDelivery, Box<FollowSessionFailure>> {
     let mut progress = initial_progress();
     match execute(
-        root,
+        root.session_context(),
         principal,
         request,
         limits,
@@ -628,7 +636,7 @@ impl<C: FollowSessionControl> DeliveryPolicy<C> for Immediate {}
 type Attempt = Option<FollowSessionDelivery>;
 
 fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
-    root: &Path,
+    context: super::SessionContext<'_>,
     principal: &PrincipalId,
     request: &FollowSessionRequest,
     limits: &OrientLimits,
@@ -636,6 +644,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     progress: &mut FollowSessionFailure,
     policy: &mut P,
 ) -> Result<Attempt, FollowSessionError> {
+    let root = context.root();
     let mut registration = request.registration(ContentDigest::sha256(&[]));
     registration
         .validate()
@@ -681,10 +690,12 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     control
         .admit_session(&binding, FollowSessionBoundary::ReadSubscription)
         .map_err(FollowSessionError::Denied)?;
+    let mut now = context
+        .now_at(head.observed_at, principal)
+        .map_err(FollowSessionError::Session)?;
     let session = journal
-        .store
-        .session(principal, &request.session_id, head.observed_at)
-        .map_err(|e| FollowSessionError::Session(e.into()))?;
+        .admit(principal, &request.session_id, now)
+        .map_err(FollowSessionError::Session)?;
     if !same_generations(&session.current_anchor, &head.anchor) {
         return Err(FollowSessionError::StaleAuthority);
     }
@@ -694,10 +705,10 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
             principal,
             &request.session_id,
             &request.subscription_id,
-            head.observed_at,
+            now,
         )
         .map_err(FollowSessionError::Store)?;
-    let semantics = semantic_history(root, &mut journal, &session, head.observed_at)?;
+    let semantics = semantic_history(root, &mut journal, &session, now)?;
     registration.semantic_history = semantics.digest;
     if let Some(retained) = &retained {
         progress.since_anchor = AnchorToken::parse(retained.acknowledged_anchor());
@@ -712,7 +723,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     }
     let workspace = journal
         .store
-        .workspace_head(principal, &session.session_id, head.observed_at)
+        .workspace_head(principal, &session.session_id, now)
         .map_err(|error| FollowSessionError::Session(error.into()))?
         .result
         .revision;
@@ -720,7 +731,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
         .map_err(FollowSessionError::Session)?;
     let mut state = journal
         .store
-        .register_follow(principal, registration, head.observed_at)
+        .register_follow(principal, registration, now)
         .map_err(FollowSessionError::Store)?;
     journal.commit_pin().map_err(FollowSessionError::Session)?;
     progress.since_anchor = AnchorToken::parse(state.acknowledged_anchor());
@@ -745,7 +756,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
                     store: &journal.store,
                     session: &session,
                     mission: &mission,
-                    admission_now: head.observed_at,
+                    admission_now: now,
                     populated: semantics.populated,
                 },
                 &horizon,
@@ -758,7 +769,8 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
             }
             // A newly accepted ACK must still refer to the admitted authority at commit time.
             // A concurrent deletion/privacy or agent-semantic change cannot consume the page.
-            revalidate(
+            now = revalidate(
+                context,
                 &binding,
                 &mut journal,
                 &session,
@@ -778,7 +790,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
                 &request.session_id,
                 &request.subscription_id,
                 receipt,
-                head.observed_at,
+                now,
             )
             .map_err(FollowSessionError::Store)?;
         // The ACK is durable even if the atomic pin replacement or subsequent delivery fails.
@@ -809,7 +821,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
             store: &journal.store,
             session: &session,
             mission: &mission,
-            admission_now: head.observed_at,
+            admission_now: now,
             populated: semantics.populated,
         },
         &horizon,
@@ -841,7 +853,8 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
 
     // Source availability is current even for an old prefix. Refuse concurrent journal movement
     // instead of releasing a page compiled across a deletion or authority-generation change.
-    revalidate(
+    now = revalidate(
+        context,
         &binding,
         &mut journal,
         &session,
@@ -866,7 +879,7 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
             .map_err(FollowSessionError::Denied)?;
         journal
             .store
-            .publish_follow_delivery(principal, &state, pending, head.observed_at)
+            .publish_follow_delivery(principal, &state, pending, now)
             .map_err(FollowSessionError::Store)?;
         journal.commit_pin().map_err(FollowSessionError::Session)?;
         receipt
@@ -875,6 +888,12 @@ fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
         .admit_session(&binding, FollowSessionBoundary::Deliver)
         .map_err(FollowSessionError::Denied)?;
     policy.before_release(control)?;
+    let now = context
+        .now_at(head.observed_at, principal)
+        .map_err(FollowSessionError::Session)?;
+    journal
+        .admit(principal, &request.session_id, now)
+        .map_err(FollowSessionError::Session)?;
     Ok(Some(FollowSessionDelivery {
         follow: step.follow,
         session,

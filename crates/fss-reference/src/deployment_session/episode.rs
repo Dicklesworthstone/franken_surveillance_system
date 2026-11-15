@@ -40,7 +40,7 @@ use super::plan::{PlanRecord, read_control_plan};
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, MAX_RECORD_BYTES,
     MAX_RECORD_ITEMS, ObligationFacts, OperationFacts, OrientLimits, SessionJournal, digest_of,
-    evidence_now, hex, operation_facts, orient_bound, publish_record, read_published,
+    hex, operation_facts, orient_bound, publish_record, read_published,
 };
 
 const EPISODE_RECORD_DOMAIN: &str = "fss.reference_agent_episode.v1";
@@ -926,14 +926,16 @@ fn close_in(
 /// `render` produces the public `fss.agent_execution_episode.v1` rendering published as the
 /// episode root's only other child; it is called only when the episode is first published.
 pub fn close_plan(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &CloseRequest,
     render: &dyn Fn(&ExecutionEpisode) -> String,
 ) -> Result<ClosedPlan, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let mut journal = SessionJournal::open(root)?;
     let position = super::session_position(
         &mut journal,

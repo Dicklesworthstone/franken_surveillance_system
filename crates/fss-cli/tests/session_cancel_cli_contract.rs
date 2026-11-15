@@ -306,11 +306,16 @@ fn tree(root: &Path, agent: bool) -> TestResult<FileState> {
 }
 
 #[test]
-fn preview_is_read_only_and_fresh_grant_owner_approval_and_lock_are_mandatory() -> TestResult {
+fn preview_admits_only_time_and_fresh_grant_owner_approval_and_lock_are_mandatory() -> TestResult {
     let fixture = Fixture::new("authority")?;
     let session = fixture.open("3000")?;
     let session_id = SessionId::parse(&session)?;
     let before = tree(&fixture.root, true)?;
+    let before_state = inspect_session_bytes(
+        &fixture.journal()?,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
     let preview = fixture.cancel(&session, None)?;
     assert_eq!(text(&preview, &["operationId"])?, "AOP-010");
     assert_eq!(
@@ -318,11 +323,37 @@ fn preview_is_read_only_and_fresh_grant_owner_approval_and_lock_are_mandatory() 
         "fss.agent_cognitive_envelope.v1"
     );
     let approval = pointer(&preview, "session-cancellation-approval:")?;
+    let after = tree(&fixture.root, true)?;
+    let without_clock = |tree: &FileState| {
+        tree.iter()
+            .filter(|(path, _)| {
+                path.as_path() != Path::new("agent/sessions/journal.fssj")
+                    && path.as_path() != Path::new("agent/sessions/ROOT")
+            })
+            .map(|(path, state)| (path.clone(), state.clone()))
+            .collect::<FileState>()
+    };
+    assert_eq!(without_clock(&after), without_clock(&before));
+    let after_state = inspect_session_bytes(
+        &fixture.journal()?,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
     assert_eq!(
-        tree(&fixture.root, true)?,
-        before,
-        "preview must not rewrite clocks or pins"
+        after_state.sessions[0].session,
+        before_state.sessions[0].session
     );
+    assert_eq!(
+        after_state.sessions[0].spent_tokens,
+        before_state.sessions[0].spent_tokens
+    );
+    assert!(!after_state.sessions[0].closed);
+    assert!(after_state.sessions[0].last_observed_at >= before_state.sessions[0].last_observed_at);
+    assert_eq!(
+        after_state.workspace_revisions,
+        before_state.workspace_revisions
+    );
+    let before = after;
     for grants in [Vec::new(), vec!["CAP-AGENT-SESSION-WRITE-001".into()]] {
         let denied = authority(OWNER, grants, SITE)?;
         assert!(matches!(
@@ -509,12 +540,17 @@ fn mcp_and_cli_share_exact_approval_and_preserve_unresolved_external_obligations
     let fixture = Fixture::new("mcp-obligation")?;
     fixture.prepare_obligation()?;
     let session = fixture.open("3000")?;
-    let before = tree(&fixture.root, true)?;
+    let before = tree(&fixture.root, false)?;
     let cli = fixture.cancel(&session, None)?;
     let mcp = fixture.mcp(OWNER, &format!(r#"{{"session":"{session}"}}"#))?;
-    assert_eq!(mcp, cli, "MCP must render the same native preview");
-    assert_eq!(tree(&fixture.root, true)?, before);
-    let approval = pointer(&cli, "session-cancellation-approval:")?;
+    assert_eq!(
+        field(&mcp, &["payload", "continuity", "unresolvedObligations"])?,
+        field(&cli, &["payload", "continuity", "unresolvedObligations"])?
+    );
+    assert_eq!(tree(&fixture.root, false)?, before);
+    // The later preview has its own admitted clock checkpoint. Approval must name that exact
+    // retained request; committing it later still does not renew the original session lease.
+    let approval = pointer(&mcp, "session-cancellation-approval:")?;
     let obligations = field(&cli, &["payload", "continuity", "unresolvedObligations"])?
         .array()
         .ok_or("obligations")?;
@@ -576,7 +612,7 @@ fn live_claim_is_reclaimed_with_new_fence_after_revocation_and_progress_is_prese
             "--work",
             "probe:probe:hallway-frames",
             "--lease-ms",
-            "60000",
+            "300000",
         ],
     )?;
     let propositions = field(&claimed, &["payload", "epistemic", "propositions"])?
@@ -614,7 +650,7 @@ fn live_claim_is_reclaimed_with_new_fence_after_revocation_and_progress_is_prese
         .find(|entry| entry.claim().claim_id == claim)
         .ok_or("claim")?;
     assert!(
-        original.lease_covers(TimestampNs(0)),
+        original.lease_covers(original.changed_at()),
         "lease has not expired"
     );
     let preview = fixture.cancel(&first, None)?;

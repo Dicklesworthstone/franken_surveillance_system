@@ -162,6 +162,16 @@ impl DurableSessionStore {
             .unwrap_or_default()
     }
 
+    /// Original acquisition for owner-side relative-lease retry reconstruction.
+    /// The subsequent coordination command must still admit the current session and lease.
+    pub(crate) fn work_claim_opening(&self, claim_id: &str) -> Option<WorkClaimRevision> {
+        self.coordination
+            .as_ref()?
+            .claims
+            .opening_revision(claim_id)
+            .cloned()
+    }
+
     /// Commits one coordination command, including refusal-side authority mutations, atomically.
     ///
     /// The result is withheld until its record is synchronized. An uncertain append fences BOTH

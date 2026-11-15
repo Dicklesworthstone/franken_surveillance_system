@@ -220,8 +220,18 @@ pub struct SupervisionSessionHead {
     pub ledger_root: ContentDigest,
     /// Exact effect journal root; observing it never authorizes an effect.
     pub effect_root: ContentDigest,
-    /// Existing deployment evidence-clock watermark, never an invented wall-clock time.
+    /// Session admission time: explicit runtime clock, or evidence time for replay callers.
+    /// Evidence timestamps and the authority roots remain unchanged.
     pub observed_at: TimestampNs,
+}
+
+impl SupervisionSessionHead {
+    /// Compare committed deployment history independently of the session admission clock.
+    pub(crate) fn same_history(&self, other: &Self) -> bool {
+        self.anchor == other.anchor
+            && self.ledger_root == other.ledger_root
+            && self.effect_root == other.effect_root
+    }
 }
 
 /// One complete result. Inspection, acknowledgement and discard never return a successor.
@@ -408,7 +418,7 @@ fn revalidate_history(
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
     let current = observe_head(&history)?;
     progress.head = Some(current.clone());
-    if &current != head || !same_generations(&session.current_anchor, &current.anchor) {
+    if !current.same_history(head) || !same_generations(&session.current_anchor, &current.anchor) {
         return Err(SupervisionSessionError::ChangedAuthority);
     }
     Ok(())
@@ -416,7 +426,7 @@ fn revalidate_history(
 
 /// Executes one finite operation. All source work has a prior durable full-cap reservation.
 pub fn supervise_session(
-    root: &Path,
+    root: impl super::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionSessionRequest,
     limits: &OrientLimits,
@@ -436,7 +446,7 @@ pub fn supervise_session(
 /// This is the second admission after configuration recovery: it cannot recreate missing state,
 /// reset a lifetime allowance or configure a new schedule between recovery and native execution.
 pub fn supervise_existing_session(
-    root: &Path,
+    root: impl super::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionSessionRequest,
     limits: &OrientLimits,
@@ -453,7 +463,7 @@ pub fn supervise_existing_session(
 }
 
 fn supervise(
-    root: &Path,
+    root: impl super::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionSessionRequest,
     limits: &OrientLimits,
@@ -471,7 +481,7 @@ fn supervise(
         journal_may_have_changed: false,
     };
     match execute(
-        root,
+        root.session_context(),
         principal,
         request,
         limits,
@@ -488,7 +498,7 @@ fn supervise(
 }
 
 fn execute(
-    root: &Path,
+    context: super::SessionContext<'_>,
     principal: &PrincipalId,
     request: &SupervisionSessionRequest,
     limits: &OrientLimits,
@@ -496,6 +506,7 @@ fn execute(
     progress: &mut SupervisionSessionFailure,
     admission: SubscriptionAdmission,
 ) -> Result<SupervisionSessionDelivery, SupervisionSessionError> {
+    let root = context.root();
     let require_existing = admission.requires_existing();
     request
         .registration
@@ -540,7 +551,10 @@ fn execute(
     admit(control, &binding, SupervisionSessionBoundary::ReadHistory)?;
     let history = DeploymentHistory::read(root, limits)
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
-    let head = observe_head(&history)?;
+    let mut head = observe_head(&history)?;
+    head.observed_at = context
+        .now_at(head.observed_at, principal)
+        .map_err(SupervisionSessionError::Session)?;
     progress.head = Some(head.clone());
     if head.anchor.state_root != request.expected_authority_root {
         return Err(SupervisionSessionError::ChangedAuthority);
@@ -554,13 +568,12 @@ fn execute(
         SupervisionSessionBoundary::ReadSubscription,
     )?;
     let session = journal
-        .store
-        .session(
+        .admit(
             principal,
             &request.registration.session_id,
             head.observed_at,
         )
-        .map_err(|error| SupervisionSessionError::Session(error.into()))?;
+        .map_err(SupervisionSessionError::Session)?;
     if !same_generations(&session.current_anchor, &head.anchor) {
         return Err(SupervisionSessionError::StaleAuthority);
     }
@@ -823,6 +836,17 @@ fn execute(
     binding.active_window_count = state.active_window_count();
     revalidate_history(&binding, &head, &session, control, progress)?;
     admit(control, &binding, SupervisionSessionBoundary::Deliver)?;
+    // A later successful observation must not insert a record between the native result and
+    // its sealed case citation. Refusals still persist expiry/regression under this writer.
+    let delivery_now = context
+        .now_at(head.observed_at, principal)
+        .map_err(SupervisionSessionError::Session)?;
+    if delivery_now.0 < head.observed_at.0 || delivery_now.0 >= session.expires_at_ns {
+        journal
+            .admit(principal, &session.session_id, delivery_now)
+            .map_err(SupervisionSessionError::Session)?;
+        return Err(SupervisionSessionError::InvalidRequest);
+    }
     Ok(SupervisionSessionDelivery {
         session,
         head,

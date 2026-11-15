@@ -2,8 +2,9 @@
 //! `fss orient` (AOP-003 `session.orient`) and `fss explain` (AOP-011 `explain`): read-only agent
 //! reads of an existing deployment root, answered as the registered `AgentResponseEnvelope`.
 //!
-//! Both commands open no file for writing. Session-bound orientation may hold a read-only
-//! journal lock while it authenticates a coherent snapshot. The situation is compiled by
+//! Stateless reads and deterministic replay open no file for writing. Live session-bound reads
+//! persist clock admission/expiry under the journal lock while authenticating a coherent
+//! snapshot; they do not change evidence, workspace or effects. The situation is compiled by
 //! [`fss_reference::agent_orient`]; this module only decodes arguments, binds the compiled typed
 //! values into [`AgentResponseEnvelope`] (and, for explain, [`AgentCognitiveEnvelope`]) through
 //! their validated constructors, and renders them with [`crate::agent_json`]. Affordances are
@@ -390,7 +391,9 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         };
     let question = match take(&values, "--question") {
         None => "why",
-        Some((_, value, _)) if matches!(value.as_str(), "why" | "what_changed" | "what_if") => value.as_str(),
+        Some((_, value, _)) if matches!(value.as_str(), "why" | "what_changed" | "what_if") => {
+            value.as_str()
+        }
         Some((_, value, index)) => {
             return Err(malformed(
                 "--question",
@@ -410,8 +413,14 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
     }
     let target = if question == "what_if" {
         for option in [
-            "--at", "--session", "--learning-root", "--custody", "--score-calibration",
-            "--fusion-policy", "--from-revision-digest", "--to-revision-digest",
+            "--at",
+            "--session",
+            "--learning-root",
+            "--custody",
+            "--score-calibration",
+            "--fusion-policy",
+            "--from-revision-digest",
+            "--to-revision-digest",
         ] {
             if let Some((_, _, index)) = take(&values, option) {
                 return Err(malformed(
@@ -422,19 +431,27 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
                 ));
             }
         }
-        let (_, raw, index) = take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
-            option: "--event-id".to_owned(),
-            command: Some("explain".to_owned()),
-            expected: "the exact retained event for hypothetical source loss".to_owned(),
-        })?;
+        let (_, raw, index) =
+            take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
+                option: "--event-id".to_owned(),
+                command: Some("explain".to_owned()),
+                expected: "the exact retained event for hypothetical source loss".to_owned(),
+            })?;
         let event_id = EventId::parse(raw.clone()).map_err(|_| {
-            malformed("--event-id", "[redacted]", *index, "expected an exact event identity")
+            malformed(
+                "--event-id",
+                "[redacted]",
+                *index,
+                "expected an exact event identity",
+            )
         })?;
-        let (_, raw, index) = take(&values, "--counterfactual").ok_or_else(|| CliError::MissingValue {
-            option: "--counterfactual".to_owned(),
-            command: Some("explain".to_owned()),
-            expected: "a complete inline fss.event_counterfactual_request.v1 JSON object".to_owned(),
-        })?;
+        let (_, raw, index) =
+            take(&values, "--counterfactual").ok_or_else(|| CliError::MissingValue {
+                option: "--counterfactual".to_owned(),
+                command: Some("explain".to_owned()),
+                expected: "a complete inline fss.event_counterfactual_request.v1 JSON object"
+                    .to_owned(),
+            })?;
         let scenario = crate::event_counterfactual::EventCounterfactualRequest::parse(raw)
             .map_err(|_| malformed(
                 "--counterfactual",
@@ -981,7 +998,8 @@ pub(crate) fn build_localizations_response(
         return Err(RenderError("invalid localizations query response profile").into());
     }
     let mut projection = privacy_projection(&parts.anchor);
-    projection.purpose = "read-only discovery of retained localization recipe and receipt metadata".to_owned();
+    projection.purpose =
+        "read-only discovery of retained localization recipe and receipt metadata".to_owned();
     projection.visible_domains.extend([
         "retained-localization-recipe-and-receipt-metadata".to_owned(),
         "localization-publication-and-source-custody-metadata".to_owned(),
@@ -1667,14 +1685,25 @@ fn orient_response(
                 read.workspace_anchor_token, orientation.anchor_token, read.invalidated.len(),
             ));
         }
-        degradation.push(format!(
-            "Read-only session snapshot: workspace revision {} and its original anchor remain unchanged. previousAnchor identifies that retained workspace; meaningfulDelta is null because historical session state was not reconstructed.",
-            workspace.revision,
-        ));
-        degradation.push(format!(
-            "The session lease expires at evidence time {} ns; this read does not extend it or consume its durable token budget.",
-            read.session.expires_at_ns,
-        ));
+        if read.runtime_time {
+            degradation.push(format!(
+                "Session workspace snapshot: workspace revision {} and its original anchor remain unchanged. Runtime clock admission is durably pinned; previousAnchor identifies the retained workspace and meaningfulDelta is null because historical session state was not reconstructed.",
+                workspace.revision,
+            ));
+            degradation.push(format!(
+                "The session lease expires at admitted runtime time {} ns; this read does not extend it or consume its durable token budget.",
+                read.session.expires_at_ns,
+            ));
+        } else {
+            degradation.push(format!(
+                "Read-only session snapshot: workspace revision {} and its original anchor remain unchanged. previousAnchor identifies that retained workspace; meaningfulDelta is null because historical session state was not reconstructed.",
+                workspace.revision,
+            ));
+            degradation.push(format!(
+                "The session lease expires at evidence time {} ns; this read does not extend it or consume its durable token budget.",
+                read.session.expires_at_ns,
+            ));
+        }
         let payload = situation_capsule_payload(
             orientation,
             &CapsuleOverrides {
@@ -1695,7 +1724,11 @@ fn orient_response(
             ],
             possibly_occurred: Vec::new(),
             preserved_truth: vec![
-                "Existing deployment and session files were read under a temporary journal lock; no file was created, written, or repaired.".to_owned(),
+                if read.runtime_time {
+                    "Runtime time was admitted and pinned in the session journal. Evidence, effects, workspace, grants and cumulative token spend were unchanged.".to_owned()
+                } else {
+                    "Existing deployment and session files were read under a temporary journal lock; no file was created, written, or repaired.".to_owned()
+                },
             ],
             invalidated: read.invalidated.clone(),
         };
@@ -1817,8 +1850,15 @@ pub(crate) fn rendered(
 /// Executes `orient`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_orient(args: &OrientArgs) -> (String, ExitIdentity) {
+    execute_orient_with_time(args, None)
+}
+
+pub(crate) fn execute_orient_with_time(
+    args: &OrientArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     if let Some(session_id) = &args.session {
-        return execute_session_orient(args, session_id);
+        return execute_session_orient(args, session_id, clock);
     }
     let limits = OrientLimits::default();
     let snapshot = match read_deployment(&args.root, &limits) {
@@ -1981,8 +2021,12 @@ fn session_orient_operation(
     }
 }
 
-/// A current situation for one authenticated durable session, without opening a writer.
-fn execute_session_orient(args: &OrientArgs, session_id: &SessionId) -> (String, ExitIdentity) {
+/// A current situation for one authenticated durable session, after any runtime clock admission.
+fn execute_session_orient(
+    args: &OrientArgs,
+    session_id: &SessionId,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     use fss_reference::deployment_session::orient::{OrientSessionRequest, orient_session};
 
     let request = OrientSessionRequest {
@@ -1992,7 +2036,7 @@ fn execute_session_orient(args: &OrientArgs, session_id: &SessionId) -> (String,
         budget_tokens: args.budget_tokens,
     };
     let operation = session_orient_operation(args, session_id);
-    match orient_session(&args.root, &request) {
+    match orient_session(crate::session_time::context(&args.root, clock), &request) {
         Ok(read) => {
             if let Some(reason) = session_orient_wire_refusal(&read) {
                 return crate::session_cmd::refuse_typed_with_boundary(
@@ -2009,7 +2053,11 @@ fn execute_session_orient(args: &OrientArgs, session_id: &SessionId) -> (String,
                         completed: vec!["Authenticated the current session snapshot; its complete response exceeds registered wire bounds.".to_owned()],
                         not_started: vec!["Situation response delivery and every listed action.".to_owned()],
                         possibly_occurred: Vec::new(),
-                        preserved_truth: vec!["No deployment or session file was created, written or repaired; workspace, lease and durable budget remain unchanged.".to_owned()],
+                        preserved_truth: vec![if clock.is_some() {
+                            "Session clock admission was persisted; evidence, effects, workspace, lease and durable budget remain unchanged.".to_owned()
+                        } else {
+                            "No deployment or session file was created, written or repaired; workspace, lease and durable budget remain unchanged.".to_owned()
+                        }],
                         invalidated: Vec::new(),
                     }),
                 );
@@ -2478,12 +2526,19 @@ fn unknown_event_response(
 /// Executes `explain`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
+    execute_explain_with_time(args, None)
+}
+
+pub(crate) fn execute_explain_with_time(
+    args: &ExplainArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let event_id = match &args.target {
         ExplainTarget::Learning {
             session,
             publication_root,
         } => {
-            return learning_explain::execute(args, session, *publication_root);
+            return learning_explain::execute(args, session, *publication_root, clock);
         }
         ExplainTarget::Event(event_id) => event_id,
         ExplainTarget::EventCounterfactual { event_id, scenario } => {

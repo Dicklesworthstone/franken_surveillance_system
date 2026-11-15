@@ -460,8 +460,8 @@ fn open_response(opened: &OpenedSession) -> Result<String, Box<dyn std::error::E
             .to_owned(),
     );
     degradation.push(format!(
-        "Session lease and handoff lifetimes run on the deployment evidence clock; this session \
-         expires at evidence time {} ns.",
+        "Session lease and handoff lifetimes use the admitted session clock: host Unix time for \
+         live commands, committed evidence time for explicit replay. This session expires at {} ns.",
         opened.session.expires_at_ns
     ));
     build_response(ResponseParts {
@@ -1073,6 +1073,17 @@ pub(crate) struct Refusal {
 
 pub(crate) fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionError> {
     Ok(match error {
+        DeploymentSessionError::Time(reason) => Refusal {
+            error_id: if reason == fss_reference::deployment_session::SessionTimeError::Denied {
+                ERR_AUTH_DENIED
+            } else {
+                ERR_CLOCK_UNCERTAIN
+            },
+            reason: reason.to_string(),
+            guidance: "Restore the runtime clock owner before retrying; request timestamps cannot renew session authority.",
+            recovery_class: "operator_action_required",
+            safe_retry: ResponseSafeRetry::No,
+        },
         DeploymentSessionError::SessionUnknown => Refusal {
             error_id: ERR_AGENT_SESSION_NOT_FOUND,
             reason: error.to_string(),
@@ -1264,7 +1275,7 @@ fn case_refusal(case: InvestigationError, reason: String) -> Refusal {
         ),
         InvestigationError::DeadlineElapsed => (
             ERR_OP_TIMEOUT,
-            "The decision deadline elapsed on the deployment evidence clock: only \
+            "The decision deadline elapsed on the admitted session clock: only \
              indeterminate, cancelled, or closed remain available.",
             "operator_action_required",
             ResponseSafeRetry::No,
@@ -1305,7 +1316,7 @@ fn case_refusal(case: InvestigationError, reason: String) -> Refusal {
         ),
         InvestigationError::ClockRegression => (
             ERR_CLOCK_UNCERTAIN,
-            "The deployment evidence clock regressed below the case store's watermark.",
+            "The admitted session clock regressed below the case store's watermark.",
             "operator_action_required",
             ResponseSafeRetry::No,
         ),
@@ -1357,7 +1368,7 @@ fn claim_refusal(
         ),
         ClaimError::InvalidLease => (
             ERR_OP_PRECONDITION_FAILED,
-            "The lease is lapsed, terminal, or out of bounds (1..=300000 ms on the evidence \
+            "The lease is lapsed, terminal, or out of bounds (1..=300000 ms on the admission \
              clock, within the session's expiry, and a renewal must strictly extend it): expire \
              or reclaim a lapsed claim.",
             "never_unchanged",
@@ -1384,7 +1395,7 @@ fn claim_refusal(
         ),
         ClaimError::ClockRegression => (
             ERR_CLOCK_UNCERTAIN,
-            "The deployment evidence clock regressed below the claim store's watermark.",
+            "The admitted session clock regressed below the claim store's watermark.",
             "operator_action_required",
             ResponseSafeRetry::No,
         ),
@@ -1532,7 +1543,10 @@ pub(crate) fn refuse_typed_with_boundary(
     )
 }
 
-fn execute_open(args: &SessionOpenArgs) -> (String, ExitIdentity) {
+fn execute_open(
+    args: &SessionOpenArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let request = OpenSessionRequest {
         mission: args.mission.clone(),
         objective: args.objective.clone(),
@@ -1540,7 +1554,7 @@ fn execute_open(args: &SessionOpenArgs) -> (String, ExitIdentity) {
         view: args.view,
         token_budget: args.budget_tokens,
     };
-    match open_session(&args.root, &request) {
+    match open_session(crate::session_time::context(&args.root, clock), &request) {
         Ok(opened) => rendered(
             open_response(&opened),
             ExitIdentity::SUCCESS,
@@ -1563,7 +1577,10 @@ fn execute_open(args: &SessionOpenArgs) -> (String, ExitIdentity) {
     }
 }
 
-fn execute_handoff(args: &SessionHandoffArgs) -> (String, ExitIdentity) {
+fn execute_handoff(
+    args: &SessionHandoffArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let operation = Operation {
         command: "session",
         name: "handoff",
@@ -1579,7 +1596,8 @@ fn execute_handoff(args: &SessionHandoffArgs) -> (String, ExitIdentity) {
         principal: args.principal.clone(),
         note: args.note.clone(),
     };
-    let prepared = match prepare_handoff(&args.root, &request) {
+    let prepared = match prepare_handoff(crate::session_time::context(&args.root, clock), &request)
+    {
         Ok(prepared) => prepared,
         Err(error) => return refuse(&operation, error),
     };
@@ -1588,7 +1606,11 @@ fn execute_handoff(args: &SessionHandoffArgs) -> (String, ExitIdentity) {
     let objective = prepared.orientation.objective.desired_outcome.clone();
     let journal_root = prepared.journal_root;
     let request_digest = prepared.request_digest;
-    match prepared.publish(&children) {
+    let published = match clock {
+        Some(clock) => prepared.publish_with_time(&children, clock),
+        None => prepared.publish(&children),
+    };
+    match published {
         Ok(published) => rendered(
             handoff_response(
                 &orientation,
@@ -1606,12 +1628,15 @@ fn execute_handoff(args: &SessionHandoffArgs) -> (String, ExitIdentity) {
     }
 }
 
-fn execute_resume(args: &SessionResumeArgs) -> (String, ExitIdentity) {
+fn execute_resume(
+    args: &SessionResumeArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let request = ResumeRequest {
         handoff_id: args.handoff.clone(),
         principal: args.principal.clone(),
     };
-    match resume_session(&args.root, &request) {
+    match resume_session(crate::session_time::context(&args.root, clock), &request) {
         Ok(resumed) => rendered(
             resume_response(&resumed),
             ExitIdentity::SUCCESS,
@@ -1637,9 +1662,16 @@ fn execute_resume(args: &SessionResumeArgs) -> (String, ExitIdentity) {
 /// Executes one `fss session` subcommand, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_session(command: &SessionCommand) -> (String, ExitIdentity) {
+    execute_session_with_time(command, None)
+}
+
+pub(crate) fn execute_session_with_time(
+    command: &SessionCommand,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     match command {
-        SessionCommand::Open(args) => execute_open(args),
-        SessionCommand::Handoff(args) => execute_handoff(args),
-        SessionCommand::Resume(args) => execute_resume(args),
+        SessionCommand::Open(args) => execute_open(args, clock),
+        SessionCommand::Handoff(args) => execute_handoff(args, clock),
+        SessionCommand::Resume(args) => execute_resume(args, clock),
     }
 }

@@ -38,10 +38,10 @@ pub mod effect_cmd;
 /// `fss plan --close`: the immutable execution episode of a terminal plan (AOP-007 `close`).
 pub mod episode_cmd;
 pub mod error;
-/// Source-bound calibrated class advice over native watch and corroboration reports.
-pub mod event_fusion;
 /// Exact event-metadata source-loss scenarios with explicit caller score assumptions.
 pub mod event_counterfactual;
+/// Source-bound calibrated class advice over native watch and corroboration reports.
+pub mod event_fusion;
 /// Session-owned H0/H1 event evidence hydration through canonical AOP-005.
 pub mod event_hydration_query_cmd;
 /// `fss feedback` (AOP-013): advisory, evidence-linked proposals; never a policy mutation.
@@ -63,6 +63,8 @@ pub mod json_input;
 /// Deterministic JSON primitives for pure bounded query adapters.
 pub mod json_output;
 pub mod lab_cmd;
+/// Canonical bounded discovery of retained recorded-localization metadata.
+pub mod localizations_query_cmd;
 /// Explicit, proof-backed plan-outcome mission contracts under AOP-007.
 pub mod mission_cmd;
 /// Explicitly owned bounded local-daemon synchronization for native source clocks.
@@ -88,10 +90,6 @@ pub mod redact;
 pub mod replay_time_json;
 /// Metadata-only discovery of retained detector and zone-report handles.
 pub mod report_catalog_query_cmd;
-/// Canonical bounded retained-source metadata and historical continuity query.
-pub mod sources_query_cmd;
-/// Canonical bounded discovery of retained recorded-localization metadata.
-pub mod localizations_query_cmd;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
 /// Exact owner-approved session authority revocation through AOP-010.
@@ -99,6 +97,7 @@ pub mod session_cancel_cmd;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
 pub mod session_cmd;
+pub mod session_time;
 /// Read-only site manifests and exact native capture plans; no device or credential access.
 pub mod site_cmd;
 /// Protected historical ONVIF handoff bindings for atomic site capture planning.
@@ -111,6 +110,8 @@ pub mod site_probe;
 pub mod site_probe_cmd;
 /// Protected exact UniFi export bindings for atomic site capture planning.
 pub mod site_unifi;
+/// Canonical bounded retained-source metadata and historical continuity query.
+pub mod sources_query_cmd;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
 pub mod status_cmd;
 /// Bounded multi-camera supervisor coordinator with explicit sequential fusion (`fss-becce`).
@@ -143,8 +144,8 @@ pub use follow_cmd::{
     ERR_AGENT_FOLLOW_ANCHOR_UNKNOWN, ERR_AGENT_FOLLOW_CONTINUATION, FollowArgs, execute_follow,
 };
 pub use fss_cmd::{
-    DoctorArgs, FssCommand, execute_fss, execute_fss_with_exit, help_text as fss_help_text,
-    parse_fss_args, parse_fss_tokens,
+    DoctorArgs, FssCommand, execute_fss, execute_fss_with_exit, execute_fss_with_time,
+    execute_live_fss_with_exit, help_text as fss_help_text, parse_fss_args, parse_fss_tokens,
 };
 pub use hydration_cmd::{
     HydrationAction, VALID_HYDRATION_SCENARIOS, help_text as hydration_help_text,

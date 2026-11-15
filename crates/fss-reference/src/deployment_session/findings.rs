@@ -29,8 +29,8 @@ use crate::agent_orient::OrientFindingBrief;
 use super::investigation::visible_cases;
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, MAX_RECORD_BYTES,
-    MAX_RECORD_ITEMS, OrientLimits, SessionJournal, digest_of, evidence_now, hex, orient_bound,
-    publish_record, read_published,
+    MAX_RECORD_ITEMS, OrientLimits, SessionJournal, digest_of, hex, orient_bound, publish_record,
+    read_published,
 };
 
 const FINDING_RECORD_DOMAIN: &str = "fss.reference_agent_finding.v1";
@@ -614,14 +614,16 @@ fn same_content(candidate: &FindingRecord, published: &FindingRecord) -> bool {
 /// and the full case/request basis are always checked before admitting a retry.
 /// `render` produces the `fss.agent_finding.v1` rendering published beside a new record.
 pub fn finding(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &FindingRequest,
     render: &dyn Fn(&FindingRecord) -> Result<String, ContractError>,
 ) -> Result<FindingAnswer, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let mut journal = SessionJournal::open(root)?;
     let position = super::session_position(
         &mut journal,

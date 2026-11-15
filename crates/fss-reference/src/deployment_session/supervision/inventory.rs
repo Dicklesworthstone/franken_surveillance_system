@@ -3,12 +3,12 @@
 
 use fss_core::{AgentSession, SessionId};
 
-use crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry;
 use super::{
     ContentDigest, DeploymentHistory, DigestAlgorithm, OrientLimits, Path, PrincipalId,
     SessionJournal, SupervisionAdapterError, SupervisionSessionError, SupervisionSessionHead,
     observe_head, same_generations, valid_history_limits,
 };
+use crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry;
 
 /// Explicit current authority and existing session whose bounded work inventory is requested.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,13 +29,21 @@ pub struct SupervisionInventoryBinding<'a> {
 
 impl<'a> SupervisionInventoryBinding<'a> {
     /// Existing deployment namespace.
-    pub const fn root(&self) -> &'a Path { self.root }
+    pub const fn root(&self) -> &'a Path {
+        self.root
+    }
     /// Authenticated session owner.
-    pub const fn principal(&self) -> &'a PrincipalId { self.principal }
+    pub const fn principal(&self) -> &'a PrincipalId {
+        self.principal
+    }
     /// Existing session and explicitly admitted current root.
-    pub const fn request(&self) -> &'a SupervisionInventoryRequest { self.request }
+    pub const fn request(&self) -> &'a SupervisionInventoryRequest {
+        self.request
+    }
     /// Bounded history admission; independent of native source-work budgets.
-    pub const fn limits(&self) -> &'a OrientLimits { self.limits }
+    pub const fn limits(&self) -> &'a OrientLimits {
+        self.limits
+    }
 }
 
 /// Every metadata operation requires explicit context admission.
@@ -81,7 +89,9 @@ fn admit(
     binding: &SupervisionInventoryBinding<'_>,
     boundary: SupervisionInventoryBoundary,
 ) -> Result<(), SupervisionSessionError> {
-    control.admit_inventory(binding, boundary).map_err(SupervisionSessionError::Denied)
+    control
+        .admit_inventory(binding, boundary)
+        .map_err(SupervisionSessionError::Denied)
 }
 
 /// Discover durable work after context loss without knowing a label or retaining a plan file.
@@ -91,12 +101,14 @@ fn admit(
 /// and no subscription is created, acknowledged or advanced. Session clock/expiry observations
 /// and journal root-pin recovery can remain durable even if the command subsequently refuses.
 pub fn list_supervision(
-    root: &Path,
+    root: impl super::super::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionInventoryRequest,
     limits: &OrientLimits,
     control: &mut impl SupervisionInventoryControl,
 ) -> Result<SupervisionInventoryDelivery, SupervisionSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     if root.as_os_str().is_empty()
         || request.expected_authority_root.algorithm() != DigestAlgorithm::Sha256
         || request.expected_authority_root.bytes() == [0; 32]
@@ -104,46 +116,80 @@ pub fn list_supervision(
     {
         return Err(SupervisionSessionError::InvalidRequest);
     }
-    let binding = SupervisionInventoryBinding { root, principal, request, limits };
+    let binding = SupervisionInventoryBinding {
+        root,
+        principal,
+        request,
+        limits,
+    };
     admit(control, &binding, SupervisionInventoryBoundary::ReadHistory)?;
     let history = DeploymentHistory::read(root, limits)
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
-    let head = observe_head(&history)?;
+    let mut head = observe_head(&history)?;
+    head.observed_at = context
+        .now_at(head.observed_at, principal)
+        .map_err(SupervisionSessionError::Session)?;
     if head.anchor.state_root != request.expected_authority_root {
         return Err(SupervisionSessionError::ChangedAuthority);
     }
     admit(control, &binding, SupervisionInventoryBoundary::OpenJournal)?;
     let mut journal = SessionJournal::open(root).map_err(SupervisionSessionError::Session)?;
     let recovered = (|| {
-        admit(control, &binding, SupervisionInventoryBoundary::ReadInventory)?;
-        let session = journal.store.session(principal, &request.session_id, head.observed_at)
-            .map_err(|error| SupervisionSessionError::Session(error.into()))?;
+        admit(
+            control,
+            &binding,
+            SupervisionInventoryBoundary::ReadInventory,
+        )?;
+        let session = journal
+            .admit(principal, &request.session_id, head.observed_at)
+            .map_err(SupervisionSessionError::Session)?;
         if !same_generations(&session.current_anchor, &head.anchor) {
             return Err(SupervisionSessionError::StaleAuthority);
         }
-        let subscriptions = journal.store.supervision_inventory(&session, head.observed_at)
+        let subscriptions = journal
+            .store
+            .supervision_inventory(&session, head.observed_at)
             .map_err(SupervisionSessionError::Store)?;
-        admit(control, &binding, SupervisionInventoryBoundary::RevalidateHistory)?;
+        admit(
+            control,
+            &binding,
+            SupervisionInventoryBoundary::RevalidateHistory,
+        )?;
         let current = DeploymentHistory::read(root, limits)
             .map_err(|error| SupervisionSessionError::Session(error.into()))?;
-        if observe_head(&current)? != head {
+        if !observe_head(&current)?.same_history(&head) {
             return Err(SupervisionSessionError::ChangedAuthority);
         }
         Ok((session, subscriptions))
     })();
-    journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+    journal
+        .commit_pin()
+        .map_err(SupervisionSessionError::Session)?;
     let (session, subscriptions) = recovered?;
     admit(control, &binding, SupervisionInventoryBoundary::Deliver)?;
     // The delivery admission can observe cancellation or allow the caller's authority to
     // advance. Check the complete bounded history once more after that callback so an older
     // inventory cannot escape with a falsely current head after this last admission boundary.
-    admit(control, &binding, SupervisionInventoryBoundary::RevalidateHistory)?;
+    admit(
+        control,
+        &binding,
+        SupervisionInventoryBoundary::RevalidateHistory,
+    )?;
     let current = DeploymentHistory::read(root, limits)
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
-    if observe_head(&current)? != head {
+    if !observe_head(&current)?.same_history(&head) {
         return Err(SupervisionSessionError::ChangedAuthority);
     }
+    head.observed_at = context
+        .now_at(head.observed_at, principal)
+        .map_err(SupervisionSessionError::Session)?;
+    journal
+        .admit(principal, &request.session_id, head.observed_at)
+        .map_err(SupervisionSessionError::Session)?;
     Ok(SupervisionInventoryDelivery {
-        session, head, journal_root: journal.store.committed_root(), subscriptions,
+        session,
+        head,
+        journal_root: journal.store.committed_root(),
+        subscriptions,
     })
 }

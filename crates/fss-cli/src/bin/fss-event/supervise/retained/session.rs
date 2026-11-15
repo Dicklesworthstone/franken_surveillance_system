@@ -11,9 +11,8 @@ use fss_cli::supervisor::retained::session::{
     checked_payload, execute_native_supervision, recover_native_supervision, scoped_request,
 };
 use fss_cli::{ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
-use fss_core::{
-    CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SessionId,
-};
+use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SessionId};
+use fss_reference::ReplayCx;
 use fss_reference::agent_session::checkpoint::journal::supervision::{
     MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery, SupervisionRegistration,
 };
@@ -22,7 +21,6 @@ use fss_reference::deployment_session::supervision::{
     SupervisionSessionDelivery, SupervisionSessionError, SupervisionSessionOutcome,
     SupervisionSessionRequest, SupervisionValidation,
 };
-use fss_reference::ReplayCx;
 
 use super::{Failure, InputPlan, NativeRequest, Options, Result};
 
@@ -186,8 +184,10 @@ pub(super) fn recover(
         subscription_id: session.subscription.clone(),
         expected_authority_root: session.expected_root,
     };
+    let clock = fss_cli::session_time::HostSessionTime::default();
     let (discovery, registration) = recover_native_supervision(
-        &options.root, &principal, &request, cx,
+        fss_reference::deployment_session::SessionContext::runtime(&options.root, &clock),
+        &principal, &request, cx,
     )
     .map_err(|error| {
         // Recovery's only Evaluation error is strict stored-configuration decoding. Preserve
@@ -564,8 +564,14 @@ pub(super) fn run(
         action,
     };
     let principal = PrincipalId::parse(&options.principal).map_err(Failure::malformed)?;
+    let clock = fss_cli::session_time::HostSessionTime::default();
     let delivery = execute_native_supervision(
-        &options.root, &principal, &command, discovery, session.resume, cx,
+        fss_reference::deployment_session::SessionContext::runtime(&options.root, &clock),
+        &principal,
+        &command,
+        discovery,
+        session.resume,
+        cx,
     );
     match delivery {
         Ok(delivery) => render(&delivery, discovery).map_err(|error| Failure {

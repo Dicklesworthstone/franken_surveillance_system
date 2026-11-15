@@ -1126,12 +1126,19 @@ fn case_response(
 /// Executes `fss investigate`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_investigate(args: &InvestigateArgs) -> (String, ExitIdentity) {
+    execute_investigate_with_time(args, None)
+}
+
+pub(crate) fn execute_investigate_with_time(
+    args: &InvestigateArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let request = InvestigateRequest {
         session_id: args.session.clone(),
         principal: args.principal.clone(),
         action: args.action.clone(),
     };
-    match investigate(&args.root, &request) {
+    match investigate(crate::session_time::context(&args.root, clock), &request) {
         Ok(answer) => rendered(
             case_response(args, &answer),
             ExitIdentity::SUCCESS,

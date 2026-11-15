@@ -557,7 +557,18 @@ fn response(answer: &FindingAnswer) -> Result<String, Box<dyn std::error::Error>
 /// Executes one finding transition, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_finding(args: &FindingArgs) -> (String, ExitIdentity) {
-    match finding(&args.root, &args.request, &finding_json) {
+    execute_finding_with_time(args, None)
+}
+
+pub(crate) fn execute_finding_with_time(
+    args: &FindingArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
+    match finding(
+        crate::session_time::context(&args.root, clock),
+        &args.request,
+        &finding_json,
+    ) {
         Ok(answer) => rendered(
             response(&answer),
             ExitIdentity::SUCCESS,

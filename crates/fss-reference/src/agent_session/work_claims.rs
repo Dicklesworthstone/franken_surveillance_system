@@ -305,6 +305,13 @@ impl ReferenceWorkClaimStore {
         self.claims.values().map(|entry| &entry.head)
     }
 
+    /// Original acquisition revision for trusted retry reconstruction, without admission.
+    pub(crate) fn opening_revision(&self, claim_id: &str) -> Option<&WorkClaimRevision> {
+        self.claims
+            .get(claim_id)
+            .map(|entry| entry.history.first().unwrap_or(&entry.head))
+    }
+
     /// Reserves exact work once. An identical live opening retry returns the CURRENT revision,
     /// never resets progress, and never renews the lease. Existing scope reservations are retained
     /// after expiry/release, so recovery cannot reset a resource's fence using a new claim ID.

@@ -466,6 +466,7 @@ pub(super) fn capture(
     history: &DeploymentHistory,
     head: &DeploymentSnapshot,
     store: &mut DurableSessionStore,
+    now: fss_core::TimestampNs,
 ) -> Result<PublishedLearning, DeploymentSessionError> {
     let FeedbackTarget::Plan(plan_id) = &request.target else {
         return Err(refused(
@@ -628,10 +629,7 @@ pub(super) fn capture(
         ));
     }
     if existing.is_none()
-        && captured_inventory(root, store, session, super::evidence_now(head))?
-            .briefs
-            .len()
-            >= MAX_CAPTURED_LEARNING
+        && captured_inventory(root, store, session, now)?.briefs.len() >= MAX_CAPTURED_LEARNING
     {
         return Err(refused(
             "the admitted captured-learning inventory is full; feedback remains retained and no new learning publication was started",
@@ -665,7 +663,7 @@ pub(super) fn capture(
                 &session.principal_id,
                 &session.session_id,
                 retained.workspace_digest,
-                super::evidence_now(head),
+                now,
             )?
             .result
             .revision;

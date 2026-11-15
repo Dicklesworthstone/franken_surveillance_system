@@ -231,6 +231,73 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn assert_clock_only_admission(
+        &self,
+        before_tree: &BTreeMap<PathBuf, ContentDigest>,
+        before_journal: &[u8],
+        session: &str,
+    ) -> TestResult {
+        let mut unchanged_before = before_tree.clone();
+        let mut unchanged_after = tree(&self.root, &[""])?;
+        for path in ["agent/sessions/journal.fssj", "agent/sessions/ROOT"] {
+            unchanged_before.remove(Path::new(path));
+            unchanged_after.remove(Path::new(path));
+        }
+        assert_eq!(unchanged_after, unchanged_before);
+        let after_journal = fs::read(self.root.join("agent/sessions/journal.fssj"))?;
+        assert!(after_journal.starts_with(before_journal));
+        let limits = DurableSessionLimits::default();
+        let before = inspect_session_bytes(before_journal, limits, WorkClaimLimits::default())?;
+        let after = inspect_session_bytes(&after_journal, limits, WorkClaimLimits::default())?;
+        let admitted = after
+            .sessions
+            .iter()
+            .find(|entry| entry.session.session_id.as_str() == session)
+            .ok_or("missing clock-admitted session")?;
+        let prior = before
+            .sessions
+            .iter()
+            .find(|entry| entry.session.session_id == admitted.session.session_id)
+            .ok_or("missing prior session")?;
+        assert!(admitted.last_observed_at >= prior.last_observed_at);
+        assert_eq!(after.inspection.incomplete_tail, None);
+        assert_eq!(
+            after.inspection.records,
+            before.inspection.records
+                + usize::from(admitted.last_observed_at > prior.last_observed_at)
+        );
+        assert_eq!(
+            fs::read_to_string(self.root.join("agent/sessions/ROOT"))?.trim(),
+            after.inspection.root.to_text()
+        );
+        let mut expected = fss_reference::agent_session::ReferenceSessionStore::restore_checkpoint(
+            &before.checkpoint_bytes,
+            before.inspection.checkpoint_digest,
+            limits.sessions,
+            limits.max_checkpoint_bytes,
+        )?;
+        expected.session(
+            &admitted.session.principal_id,
+            &admitted.session.session_id,
+            admitted.last_observed_at,
+        )?;
+        assert_eq!(
+            expected.checkpoint(limits.max_checkpoint_bytes)?.as_bytes(),
+            after.checkpoint_bytes.as_slice()
+        );
+        assert_eq!(after.workspace_revisions, before.workspace_revisions);
+        assert_eq!(
+            after.workspace_checkpoint_digest,
+            before.workspace_checkpoint_digest
+        );
+        assert_eq!(after.claims, before.claims);
+        assert_eq!(after.cases, before.cases);
+        assert_eq!(after.follows, before.follows);
+        assert_eq!(after.supervisions, before.supervisions);
+        assert_eq!(after.missions, before.missions);
+        Ok(())
+    }
+
     fn new(tag: &str) -> TestResult<Self> {
         let directory = Directory::new(tag)?;
         let root = directory.0.join("deployment");
@@ -892,6 +959,8 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
         FeedbackTarget::Operation("operation:missing".into()),
         FeedbackTarget::Plan("plan:missing".into()),
     ] {
+        let admitted_before = tree(&fixture.root, &[""])?;
+        let journal_before = fs::read(fixture.root.join("agent/sessions/journal.fssj"))?;
         let mut unknown = input.clone();
         unknown.target = target;
         let reply = fixture.call(
@@ -903,16 +972,18 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
         )?;
         assert_eq!(text(&reply.value, &["outcome"])?, "refused");
         assert_eq!(field(&reply.value, &["payload"])?, &Value::Null);
-        assert_eq!(tree(&fixture.root, &[""])?, before);
+        fixture.assert_clock_only_admission(&admitted_before, &journal_before, &session)?;
     }
+    let before_foreign = tree(&fixture.root, &[""])?;
     let foreign = fixture.call(STRANGER, "feedback", &arguments, "AOP-013", true)?;
     assert_eq!(text(&foreign.value, &["outcome"])?, "refused");
     assert_eq!(text(&foreign.value, &["principalId"])?, STRANGER);
     assert_eq!(field(&foreign.value, &["payload"])?, &Value::Null);
-    assert_eq!(tree(&fixture.root, &[""])?, before);
+    assert_eq!(tree(&fixture.root, &[""])?, before_foreign);
 
     let foreign_session = fixture.open_for(STRANGER, 30_000)?;
     let foreign_before = tree(&fixture.root, &[""])?;
+    let foreign_journal = fs::read(fixture.root.join("agent/sessions/journal.fssj"))?;
     let foreign_case = fixture.call(
         STRANGER,
         "feedback",
@@ -922,7 +993,7 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
     )?;
     assert_eq!(text(&foreign_case.value, &["outcome"])?, "refused");
     assert_eq!(field(&foreign_case.value, &["payload"])?, &Value::Null);
-    assert_eq!(tree(&fixture.root, &[""])?, foreign_before);
+    fixture.assert_clock_only_admission(&foreign_before, &foreign_journal, &foreign_session)?;
     Ok(())
 }
 

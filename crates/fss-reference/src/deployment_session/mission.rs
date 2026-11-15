@@ -62,11 +62,11 @@ const REQUIRED_CAPABILITIES: [&str; 7] = [
 /// One explicit mission intent. There is no caller-selected lifecycle state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MissionAction {
-    /// Enroll one exact own-session plan and an immutable evidence-clock decision deadline.
+    /// Enroll one exact own-session plan and an immutable admission-clock decision deadline.
     Adopt {
         /// Existing root-last plan identity.
         plan_id: String,
-        /// Absolute deadline on the deployment's evidence clock, in nanoseconds.
+        /// Absolute deadline in the session's admission clock domain, in nanoseconds.
         decision_deadline: TimestampNs,
     },
     /// Assess only the enrolled plan against exactly the named retained mission head.
@@ -773,6 +773,7 @@ fn assess_facts(
     session: &AgentSession,
     selected: &SelectedPlan,
     original_event_root: ContentDigest,
+    now: TimestampNs,
 ) -> Result<MissionAssessmentFacts, MissionError> {
     let facts = checked_operation(snapshot, selected, original_event_root)?;
     let episode = checked_episode(root, &selected.record, facts.as_ref())?.map(|pair| pair.0);
@@ -800,7 +801,7 @@ fn assess_facts(
             store,
             session,
             &selected.record.plan_id,
-            evidence_now(snapshot),
+            now,
             false,
         )?
         .0,
@@ -910,7 +911,12 @@ pub(super) fn projection_current(
 
 /// Enroll or assess an explicitly selected plan while the caller holds the deployment lock.
 /// Exact retries preserve the original criterion, all budgets, and every immutable revision.
-pub fn execute(root: &Path, request: &MissionRequest) -> Result<MissionAnswer, MissionError> {
+pub fn execute(
+    root: impl super::SessionRoot,
+    request: &MissionRequest,
+) -> Result<MissionAnswer, MissionError> {
+    let context = root.session_context();
+    let root = context.root();
     let plan_id = request.action.plan_id();
     if plan_id.is_empty() || plan_id.len() > PLAN_ID_LIMIT || !plan_id.starts_with("plan:") {
         return Err(MissionError::Contract(ContractError::InvalidIdentifier));
@@ -928,7 +934,7 @@ pub fn execute(root: &Path, request: &MissionRequest) -> Result<MissionAnswer, M
     let head = history
         .snapshot_at(history.head())
         .map_err(DeploymentSessionError::from)?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let mut journal = SessionJournal::open(root)?;
     let result = (|| {
         let position = super::session_position(
@@ -1024,6 +1030,7 @@ pub fn execute(root: &Path, request: &MissionRequest) -> Result<MissionAnswer, M
                     &session,
                     &selected,
                     original_event_root,
+                    now,
                 )?;
                 if current.state().is_terminal() && current.digest() == *expected {
                     // Terminal history is an as-of proof. Revalidation may mark its projection

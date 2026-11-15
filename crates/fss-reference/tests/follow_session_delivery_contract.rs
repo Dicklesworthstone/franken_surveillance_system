@@ -40,6 +40,9 @@ use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAu
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SITE: &str = "site:follow-session-contract";
 
+#[path = "follow_session_delivery_contract/runtime_clock.rs"]
+mod runtime_clock;
+
 struct Fixture {
     root: PathBuf,
     cx: ReplayCx,

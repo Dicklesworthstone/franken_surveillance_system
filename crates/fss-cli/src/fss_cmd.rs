@@ -5,23 +5,20 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::effect_cmd::{
-    EffectCommand, execute_effect, parse_cancel_args, parse_commit_args, parse_plan_args,
-    parse_wait_args,
+    EffectCommand, parse_cancel_args, parse_commit_args, parse_plan_args, parse_wait_args,
 };
 use crate::error::{CliError, ExitIdentity};
-use crate::event_hydration_query_cmd::{EventHydrationQueryArgs, execute_event_hydration_query};
-use crate::feedback_cmd::{FeedbackArgs, execute_feedback, parse_feedback_args};
-use crate::follow_cmd::{FollowArgs, execute_follow, parse_follow_args};
+use crate::event_hydration_query_cmd::EventHydrationQueryArgs;
+use crate::feedback_cmd::{FeedbackArgs, parse_feedback_args};
+use crate::follow_cmd::{FollowArgs, parse_follow_args};
 use crate::footage_query_cmd::{FootageQueryArgs, execute_footage_query, parse_query_command};
-use crate::investigate_cmd::{InvestigateArgs, execute_investigate, parse_investigate_args};
+use crate::investigate_cmd::{InvestigateArgs, parse_investigate_args};
 use crate::localizations_query_cmd::{LocalizationsQueryArgs, execute_localizations_query};
 use crate::negative_evidence_cmd::{
     NegativeEvidenceAction, execute_negative_evidence, parse_negative_evidence_tokens,
 };
 use crate::onvif_query_cmd::{OnvifQueryArgs, execute_onvif_query};
-use crate::orient_cmd::{
-    ExplainArgs, OrientArgs, execute_explain, execute_orient, parse_explain_args, parse_orient_args,
-};
+use crate::orient_cmd::{ExplainArgs, OrientArgs, parse_explain_args, parse_orient_args};
 use crate::qsr_query_cmd::{QsrQueryArgs, execute_qsr_query};
 use crate::query_cmd::{QueryArgs, execute_query};
 use crate::recording_query_cmd::discover::{
@@ -46,7 +43,7 @@ use crate::recording_query_cmd::utc_set::{
 };
 use crate::recording_query_cmd::{RecordingQueryArgs, execute_recording_query};
 use crate::report_catalog_query_cmd::{ReportCatalogQueryArgs, execute_report_catalog_query};
-use crate::session_cmd::{SessionCommand, execute_session, parse_handoff, parse_session_args};
+use crate::session_cmd::{SessionCommand, parse_handoff, parse_session_args};
 use crate::site_cmd::{SiteCommand, execute_site, parse_site_args};
 use crate::sources_query_cmd::{SourcesQueryArgs, execute_sources_query};
 use crate::status_cmd::{StatusArgs, execute_status, parse_status_args};
@@ -489,6 +486,29 @@ pub fn execute_fss(command: FssCommand) -> String {
 /// Executes a validated `FssCommand` and returns output text along with exit identity.
 #[must_use]
 pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
+    execute_fss_with_clock(command, None)
+}
+
+/// Execute a local live command with a fresh transport-owned host clock capability.
+#[must_use]
+pub fn execute_live_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
+    let clock = crate::session_time::HostSessionTime::default();
+    execute_fss_with_time(command, &clock)
+}
+
+/// Execute using an explicit runtime clock; no request field supplies current time.
+#[must_use]
+pub fn execute_fss_with_time(
+    command: FssCommand,
+    clock: &dyn fss_reference::deployment_session::SessionTimeAuthority,
+) -> (String, ExitIdentity) {
+    execute_fss_with_clock(command, Some(clock))
+}
+
+fn execute_fss_with_clock(
+    command: FssCommand,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     match command {
         FssCommand::Help => (help_text().to_owned(), ExitIdentity::SUCCESS),
         FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
@@ -523,9 +543,9 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Status(ref args) => execute_status(args),
         FssCommand::Site(ref command) => execute_site(command),
         FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
-        FssCommand::Orient(ref args) => execute_orient(args),
-        FssCommand::Explain(ref args) => execute_explain(args),
-        FssCommand::Follow(ref args) => execute_follow(args),
+        FssCommand::Orient(ref args) => crate::orient_cmd::execute_orient_with_time(args, clock),
+        FssCommand::Explain(ref args) => crate::orient_cmd::execute_explain_with_time(args, clock),
+        FssCommand::Follow(ref args) => crate::follow_cmd::execute_follow_with_time(args, clock),
         FssCommand::Query(ref args) => execute_query(args),
         FssCommand::FootageQuery(ref args) => execute_footage_query(args),
         FssCommand::OnvifQuery(ref args) => execute_onvif_query(args),
@@ -534,7 +554,9 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::ReportCatalogQuery(ref args) => execute_report_catalog_query(args),
         FssCommand::SourcesQuery(ref args) => execute_sources_query(args),
         FssCommand::LocalizationsQuery(ref args) => execute_localizations_query(args),
-        FssCommand::EventHydrationQuery(ref args) => execute_event_hydration_query(args),
+        FssCommand::EventHydrationQuery(ref args) => {
+            crate::event_hydration_query_cmd::execute_event_hydration_query_with_time(args, clock)
+        }
         FssCommand::RecordingQuery(ref args) => execute_recording_query(args),
         FssCommand::RecordingReplayQuery(ref args) => execute_recording_replay_query(args),
         FssCommand::RetainedRecordingReplayQuery(ref args) => {
@@ -550,13 +572,21 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::RecordingUtcSessionsQuery(ref args) => {
             execute_recording_utc_sessions_query(args)
         }
-        FssCommand::Investigate(ref args) => execute_investigate(args),
-        FssCommand::Probe(ref args) => crate::probe_cmd::execute_probe(args),
-        FssCommand::Claim(ref args) => crate::claim_cmd::execute_claim(args),
-        FssCommand::Finding(ref args) => crate::finding_cmd::execute_finding(args),
-        FssCommand::Effect(ref command) => execute_effect(command),
-        FssCommand::Feedback(ref args) => execute_feedback(args),
-        FssCommand::Session(ref command) => execute_session(command),
+        FssCommand::Investigate(ref args) => {
+            crate::investigate_cmd::execute_investigate_with_time(args, clock)
+        }
+        FssCommand::Probe(ref args) => crate::probe_cmd::execute_probe_with_time(args, clock),
+        FssCommand::Claim(ref args) => crate::claim_cmd::execute_claim_with_time(args, clock),
+        FssCommand::Finding(ref args) => crate::finding_cmd::execute_finding_with_time(args, clock),
+        FssCommand::Effect(ref command) => {
+            crate::effect_cmd::execute_effect_with_time(command, clock)
+        }
+        FssCommand::Feedback(ref args) => {
+            crate::feedback_cmd::execute_feedback_with_time(args, clock)
+        }
+        FssCommand::Session(ref command) => {
+            crate::session_cmd::execute_session_with_time(command, clock)
+        }
     }
 }
 

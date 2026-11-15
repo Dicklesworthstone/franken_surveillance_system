@@ -84,8 +84,11 @@ feedback and plan digests, the captured workspace digest, and `capturedSessionId
 identify the original capture even when its source session is closed. Neither the source session
 nor the candidate's review or expiry deadline is renewed.
 
-Successful reads leave journals, ROOT pins, publications, workspaces, grants and budgets
-unchanged. Exact retries recover the same original capture without recreating missing custody.
+Live reads may append and pin runtime clock admission in the session journal; publications,
+workspaces, grants and budgets remain unchanged. Explicit path/replay reads also leave the
+journal and ROOT pin unchanged. `observedEvidenceTimeNs` keeps the evidence time; live
+`admissionTimeNs` supplies the separate freshness comparison for review and expiry flags.
+Exact retries recover the same original capture without recreating missing custody.
 Missing or inconsistent selected records, tombstones, foreign ownership or a different mission
 produce a refusal without private candidate details.
 

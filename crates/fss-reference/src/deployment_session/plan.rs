@@ -23,7 +23,7 @@ use crate::agent_orient::{DeploymentSnapshot, OrientPlanBrief};
 
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, MAX_RECORD_BYTES,
-    OrientLimits, SessionJournal, evidence_now, hex, orient_bound, publish_record, read_published,
+    OrientLimits, SessionJournal, hex, orient_bound, publish_record, read_published,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::{
     InvestigationError, InvestigationRevision,
@@ -143,7 +143,7 @@ fn validate_case_basis(
 /// Fails with `SessionUnknown`/`SessionStale` for an unknown or unresolvable session and with
 /// `CaseRefused(Unavailable)` when a named case is not visible to the session.
 pub fn planning_context(
-    root: &Path,
+    root: impl super::SessionRoot,
     principal: &PrincipalId,
     session_id: &SessionId,
     case_id: Option<&str>,
@@ -156,15 +156,17 @@ pub fn planning_context(
 /// A named case must be applicable at the session's exact anchor and current contract basis.
 /// The caller bounds the lifetime of this guard; it must not outlive its owned operation.
 pub fn hold_planning_context(
-    root: &Path,
+    root: impl super::SessionRoot,
     principal: &PrincipalId,
     session_id: &SessionId,
     case_id: Option<&str>,
 ) -> Result<PlanningContextGuard, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, principal)?;
     let mut journal = SessionJournal::open(root)?;
     let position = super::session_position(&mut journal, &history, principal, session_id, now);
     // Refused admission can still advance durable session clock watermarks.

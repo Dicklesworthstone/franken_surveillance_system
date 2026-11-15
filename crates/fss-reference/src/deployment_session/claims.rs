@@ -11,11 +11,11 @@
 //!
 //! **Identity.** The work root is derived from the case and the exact work item, and the claim
 //! identity from the work root, so two sessions claiming the same work name the same claim and
-//! the second is refused as a conflict. Leases run on the deployment evidence clock (the clock
-//! sessions already use) and are bounded by the engine's ceiling and the session's own expiry.
+//! the second is refused as a conflict. Leases use the selected session admission clock:
+//! explicit runtime time, or committed evidence time for deterministic path callers. The
+//! engine's ceiling and the session's original expiry bound every lease.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use crate::agent_session::checkpoint::journal::projection::SessionProjection;
 
@@ -37,7 +37,7 @@ pub use crate::agent_session::work_claims::{CAPABILITY_WORK_CLAIM, WorkClaimErro
 use super::investigation::{CASE_PRIVACY_CLASS, visible_cases};
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, OrientLimits, SessionJournal,
-    digest_of, evidence_now, hex, orient_bound,
+    digest_of, hex, orient_bound,
 };
 
 const WORK_SCOPE_DOMAIN: &str = "fss.reference_agent_work_scope.v1";
@@ -102,7 +102,7 @@ pub enum ClaimChange {
     Complete(ContentDigest),
     /// Stop coordinating the work.
     Release,
-    /// Extend the lease to `lease_ms` past the evidence clock (strictly later than before).
+    /// Extend the lease to `lease_ms` past current admission time (strictly later than before).
     Renew {
         /// Lease length from now.
         lease_ms: u64,
@@ -192,7 +192,7 @@ pub struct ClaimAnswer {
     pub journal_root: ContentDigest,
     /// Canonical request digest.
     pub request_digest: ContentDigest,
-    /// Deployment evidence time the command ran at.
+    /// Session admission time the command ran at.
     pub now: TimestampNs,
     /// True when the deployment head lies past the session's anchor.
     pub head_moved: bool,
@@ -372,12 +372,20 @@ fn command(
                 return Err(WorkClaimError::Unavailable);
             }
             let (claim_id, work_root) = claim_identity(case_id, work);
+            let opened_at = store
+                .work_claim_opening(&claim_id)
+                .filter(|opening| {
+                    opening.principal() == &session.principal_id
+                        && opening.mission() == &session.mission_id
+                        && session.privacy_scope.contains(opening.privacy_class())
+                })
+                .map_or(now, |opening| opening.changed_at());
             CoordinationCommand::Acquire(WorkClaimRequest {
                 claim_id,
                 case_id: CaseId::parse(case_id.clone())?,
                 work_root,
                 privacy_class: CASE_PRIVACY_CLASS.to_owned(),
-                expires_at: lease(*lease_ms)?,
+                expires_at: lease_end(opened_at, *lease_ms).ok_or(WorkClaimError::InvalidLease)?,
                 dependencies: dependencies.clone(),
             })
         }
@@ -427,13 +435,15 @@ fn command(
 /// refusal-side session change is committed and pinned before the answer is returned. The
 /// situation returned is the one as of the session's anchor.
 pub fn work_claim(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &ClaimRequest,
 ) -> Result<ClaimAnswer, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let request_digest = digest_of(CLAIM_REQUEST_DOMAIN, |encoder| {
         request.session_id.encode_canonical(encoder);
         request.principal.encode_canonical(encoder);

@@ -22,7 +22,7 @@ use crate::session_cmd::{Operation, Refusal};
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const ERR_LEARNING_UNSUPPORTED: &str = "ERR-AGENT-LEARNING-UNSUPPORTED-001";
 
-fn boundary(completed: &str) -> ExecutionBoundary {
+fn boundary(completed: &str, runtime_time: bool) -> ExecutionBoundary {
     ExecutionBoundary {
         completed: vec![completed.to_owned()],
         not_started: vec![
@@ -31,9 +31,14 @@ fn boundary(completed: &str) -> ExecutionBoundary {
         ],
         possibly_occurred: Vec::new(),
         preserved_truth: vec![
-            "Existing session and publication locks protected this read; no file, journal, pin, \
-             workspace revision, lease, grant, or durable token charge was created or changed."
-                .to_owned(),
+            if runtime_time {
+                "Existing session and publication locks protected this read. Workspace, lease, \
+                 grants, durable token spend and publications are unchanged; the runtime owns \
+                 session clock/expiry admission separately.".to_owned()
+            } else {
+                "Existing session and publication locks protected this read; no file, journal, pin, \
+                 workspace revision, lease, grant, or durable token charge was created or changed.".to_owned()
+            },
             "The retained candidate and its original review/expiry times remain unchanged."
                 .to_owned(),
         ],
@@ -71,6 +76,7 @@ fn refuse(
     session: &SessionId,
     root: ContentDigest,
     error: DeploymentSessionError,
+    runtime_time: bool,
 ) -> (String, ExitIdentity) {
     let operation = operation(args, session, root);
     let refusal = match error {
@@ -99,6 +105,7 @@ fn refuse(
         ExitIdentity::AGENT_REFUSED,
         Some(boundary(
             "Selected learning inspection was refused without publishing private detail.",
+            runtime_time,
         )),
     )
 }
@@ -107,6 +114,7 @@ fn context_refusal(
     args: &ExplainArgs,
     session: &SessionId,
     root: ContentDigest,
+    runtime_time: bool,
 ) -> (String, ExitIdentity) {
     crate::session_cmd::refuse_typed_with_boundary(
         &operation(args, session, root),
@@ -124,6 +132,7 @@ fn context_refusal(
         ExitIdentity::AGENT_REFUSED,
         Some(boundary(
             "Verified selected metadata; the complete response was withheld at its bound.",
+            runtime_time,
         )),
     )
 }
@@ -210,56 +219,62 @@ fn propositions(read: &LearningInspection) -> Vec<EnvelopeProposition> {
         ),
         proposition(
             "learning:status",
-            agent_json::object(&[
-                (
-                    "promotionState",
-                    agent_json::string(proposal.promotion_state.as_str()),
-                ),
-                (
-                    "confidenceNumerator",
-                    proposal.confidence_numerator.to_string(),
-                ),
-                ("confidenceDenominator", "1000000".to_owned()),
-                ("helpfulOutcomes", proposal.helpful_outcomes.to_string()),
-                ("harmfulOutcomes", proposal.harmful_outcomes.to_string()),
-                ("reviewAfterNs", optional_time(proposal.review_after_ns)),
-                ("expiryNs", optional_time(proposal.expiry_ns)),
-                ("observedEvidenceTimeNs", read.observed_at_ns.to_string()),
-                (
-                    "reviewDue",
-                    proposal.review_after_ns.map_or_else(
-                        || "null".to_owned(),
-                        |time| (read.observed_at_ns >= time).to_string(),
+            agent_json::object(&{
+                let mut fields = vec![
+                    (
+                        "promotionState",
+                        agent_json::string(proposal.promotion_state.as_str()),
                     ),
-                ),
-                (
-                    "expired",
-                    proposal.expiry_ns.map_or_else(
-                        || "null".to_owned(),
-                        |time| (read.observed_at_ns >= time).to_string(),
+                    (
+                        "confidenceNumerator",
+                        proposal.confidence_numerator.to_string(),
                     ),
-                ),
-                (
-                    "supportingCount",
-                    proposal.supporting_evidence.len().to_string(),
-                ),
-                (
-                    "contradictingCount",
-                    proposal.contradicting_evidence.len().to_string(),
-                ),
-                (
-                    "counterexampleCount",
-                    proposal.counterexamples.len().to_string(),
-                ),
-                (
-                    "validationCount",
-                    proposal.required_validation.len().to_string(),
-                ),
-                (
-                    "revivalCount",
-                    proposal.revival_conditions.len().to_string(),
-                ),
-            ]),
+                    ("confidenceDenominator", "1000000".to_owned()),
+                    ("helpfulOutcomes", proposal.helpful_outcomes.to_string()),
+                    ("harmfulOutcomes", proposal.harmful_outcomes.to_string()),
+                    ("reviewAfterNs", optional_time(proposal.review_after_ns)),
+                    ("expiryNs", optional_time(proposal.expiry_ns)),
+                    ("observedEvidenceTimeNs", read.observed_at_ns.to_string()),
+                    (
+                        "reviewDue",
+                        proposal.review_after_ns.map_or_else(
+                            || "null".to_owned(),
+                            |time| (read.admission_at_ns >= time).to_string(),
+                        ),
+                    ),
+                    (
+                        "expired",
+                        proposal.expiry_ns.map_or_else(
+                            || "null".to_owned(),
+                            |time| (read.admission_at_ns >= time).to_string(),
+                        ),
+                    ),
+                    (
+                        "supportingCount",
+                        proposal.supporting_evidence.len().to_string(),
+                    ),
+                    (
+                        "contradictingCount",
+                        proposal.contradicting_evidence.len().to_string(),
+                    ),
+                    (
+                        "counterexampleCount",
+                        proposal.counterexamples.len().to_string(),
+                    ),
+                    (
+                        "validationCount",
+                        proposal.required_validation.len().to_string(),
+                    ),
+                    (
+                        "revivalCount",
+                        proposal.revival_conditions.len().to_string(),
+                    ),
+                ];
+                if read.runtime_time {
+                    fields.push(("admissionTimeNs", read.admission_at_ns.to_string()));
+                }
+                fields
+            }),
             KnowledgeState::Known,
             "derived",
             &proposal_evidence,
@@ -674,6 +689,7 @@ fn render(
         safe_retry: ResponseSafeRetry::YesSameRequest,
         boundary: boundary(
             "Verified and read the complete selected learning metadata under current authority.",
+            read.runtime_time,
         ),
         created_at_ns: read.observed_at_ns,
         workspace_revision: Some(read.revision.capsule().revision),
@@ -685,6 +701,7 @@ pub(super) fn execute(
     args: &ExplainArgs,
     session: &SessionId,
     publication_root: ContentDigest,
+    clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
     // Also protect internal typed callers; the public parser rejects mixed selectors before I/O.
     if args.at.is_some()
@@ -695,7 +712,7 @@ pub(super) fn execute(
         return super::internal_failure("explain", &args.root);
     }
     let read = match inspect_learning(
-        &args.root,
+        crate::session_time::context(&args.root, clock),
         &InspectLearningRequest {
             session_id: session.clone(),
             principal: args.principal.clone(),
@@ -705,7 +722,7 @@ pub(super) fn execute(
         },
     ) {
         Ok(read) => read,
-        Err(error) => return refuse(args, session, publication_root, error),
+        Err(error) => return refuse(args, session, publication_root, error, clock.is_some()),
     };
     let request_digest =
         super::request_identity("fss.cli.learning_explain.request.v1", |encoder| {
@@ -748,12 +765,12 @@ pub(super) fn execute(
     for _ in 0..8 {
         let answer = match render(args, &read, request_digest, decision_digest, &consumed) {
             Ok(answer) => answer,
-            Err(_) => return context_refusal(args, session, publication_root),
+            Err(_) => return context_refusal(args, session, publication_root, clock.is_some()),
         };
         let bytes = u64::try_from(answer.len()).unwrap_or(u64::MAX);
         let tokens = bytes.saturating_add(3) / 4;
         if answer.len() > MAX_RESPONSE_BYTES || tokens > read.effective_budget_tokens {
-            return context_refusal(args, session, publication_root);
+            return context_refusal(args, session, publication_root, clock.is_some());
         }
         let total_bytes = read.bytes_read.saturating_add(bytes);
         if consumed.tokens == tokens && consumed.bytes == total_bytes {
@@ -762,5 +779,5 @@ pub(super) fn execute(
         consumed.tokens = tokens;
         consumed.bytes = total_bytes;
     }
-    context_refusal(args, session, publication_root)
+    context_refusal(args, session, publication_root, clock.is_some())
 }

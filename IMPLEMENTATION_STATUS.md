@@ -70,6 +70,47 @@ both killed by the host (SIGKILL) in unchanged `fss-core`, before checking these
 No native runtime pass or release qualification is inferred. See
 [retained recorder UTC queries](docs/RETAINED_RECORDER_TIMESTAMP_QUERY.md).
 
+## Live session admission clocks — 2026-11-15
+
+The live `fss`, `fss-mcp` and retained-session `fss-event` entry points now supply
+an explicit host-owned clock to the deployment session owner. `SessionContext`
+keeps that capability attached to nested operations; ordinary path-based APIs
+retain deterministic evidence-time replay. Agent requests cannot set current time.
+Live observations use Unix nanoseconds, reject unavailable/negative/regressing
+time and retain the existing durable watermark across commands and restart.
+
+Quiet expiry no longer depends on a new evidence record. Admission persists the
+clock/expiry transition before refusing an expired session, including refusals
+from orientation, learning inspection and native continuations. Exact opening
+retries and cold recovery preserve the original mission, lease, narrowed grants
+and cumulative token spend. Relative case deadlines and claim leases reuse their
+original opening on exact retries, including after progress. New live feedback
+uses admission time and retains its original creation time on retry, so review
+cases over historical evidence do not begin already expired. Delayed handoff
+publication/resume and approved cancellation recheck time without renewing authority.
+
+Durable follow samples time again after an unlocked wait and before disclosure.
+Native supervision/probe composition checks session and case deadlines at the
+final boundaries while preserving exact native receipt/citation adjacency and
+already charged attempts. Sealed reads keep the captured proof root until the
+final durable charge; requests cannot select this internal mode. Historical
+evidence timestamps and receipt identities remain separate from live admission.
+Live session reads may checkpoint the private clock, so MCP discovery and docs
+now describe that write accurately without implying workspace or evidence changes.
+
+Twenty-two focused contracts were authored: eight native lifecycle/cancellation,
+three live dispatcher, two host-clock and nine advanced follow/supervision/probe
+cases. Existing CLI/MCP contracts were adapted to the live clock domain. Pinned
+nightly-2026-08-31 formatting, scoped whitespace checks and independent source
+review passed. **Compilation and these session tests remain unverified.** Both
+exact locked Cargo attempts stopped with SIGKILL in unchanged `asupersync 0.5.0`
+before reaching the changed reference/CLI crates, including the one-job serial
+frontend/no-MIR-optimization retry. No dependency, feature, toolchain or gate was
+changed to bypass that failure. This is a source implementation increment, not
+completed FSS-203/FSS-204 or release qualification. Required follow-up commands
+and compatibility boundaries are retained in [session persistence](docs/reference_session_persistence.md#live-admission-time-and-deterministic-replay)
+and the [engineering handoff](docs/SESSION_HANDOFF_2026-11-15_MEDIA_MODEL_SESSION.json).
+
 ## ONNX opset 17 and native LayerNormalization — 2026-11-15
 
 The native importer now accepts explicit closed default-domain opset 13 and 17

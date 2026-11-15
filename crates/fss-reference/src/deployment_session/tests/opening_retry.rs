@@ -20,7 +20,7 @@ use fss_publication::SlotName;
 /// Recreate an actual opening crash prefix without duplicating production initialization.
 /// Mission publication precedes session open. The original pin still names workspace-store
 /// initialization when the session append commits and the first workspace append has not begun.
-fn interrupt_before_first_workspace(root: &Path) -> TestResult<Vec<u8>> {
+pub(super) fn interrupt_before_first_workspace(root: &Path) -> TestResult<Vec<u8>> {
     let full = journal_bytes(root)?;
     let report = fss_ledger::recover_bytes(&full)?;
     assert!(report.incomplete_tail().is_none());

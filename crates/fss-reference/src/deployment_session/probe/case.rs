@@ -134,13 +134,15 @@ fn current_head(root: &Path) -> Result<SupervisionSessionHead, DeploymentSession
 /// assertion, not an independently replayed interpretation of the recipe bytes. The expected
 /// report anchor is the existing pending anchor, or the current head for a new native report.
 pub fn preflight_probe_case(
-    root: &Path,
+    root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
     target: &ProbeCitationTarget,
     expected_subscription_state: ContentDigest,
     registration: &SupervisionRegistration,
     native_hypothesis: &str,
 ) -> Result<ProbeCaseAdmission, DeploymentSessionError> {
+    let session_context = root.session_context();
+    let root = session_context.root();
     request.validate()?;
     if request.action != SupervisionAction::Poll
         || expected_subscription_state.algorithm() != DigestAlgorithm::Sha256
@@ -157,9 +159,10 @@ pub fn preflight_probe_case(
         if head.anchor.state_root != request.expected_authority_root {
             return Err(refused("case probe authority changed before preflight"));
         }
+        let now = session_context.now_at(head.observed_at, &request.principal)?;
         let state = journal
             .store
-            .inspect_supervision(&request.principal, registration, head.observed_at)
+            .inspect_supervision(&request.principal, registration, now)
             .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?;
         if state.digest() != expected_subscription_state {
             return Err(refused(
@@ -175,7 +178,7 @@ pub fn preflight_probe_case(
             target,
             &request.subscription_id,
             report_anchor,
-            head.observed_at,
+            now,
         )?;
         if current_head(root)? != head {
             return Err(refused("case probe authority changed during preflight"));
@@ -246,10 +249,12 @@ pub struct ProbeCaseLinkFailure {
 
 /// Link only the native result of this preflight, with exact native-record adjacency.
 pub fn commit_probe_case(
-    root: &Path,
+    root: impl crate::deployment_session::SessionRoot,
     admission: &ProbeCaseAdmission,
     guarded: &GuardedSupervisionDelivery,
 ) -> Result<ProbeCaseLink, ProbeCaseLinkFailure> {
+    let session_context = root.session_context();
+    let root = session_context.root();
     let mut committed = None;
     let result = (|| {
         let request = &admission.request;
@@ -264,11 +269,34 @@ pub fn commit_probe_case(
         {
             return Err(invalid());
         }
+        super::admit_probe_continuation(session_context, request, delivery.journal_root)?;
         let mut journal = SessionJournal::open(root)?;
         if journal.store.committed_root() != delivery.journal_root
-            || current_head(root)? != delivery.head
+            || !current_head(root)?.same_history(&delivery.head)
         {
             return Err(refused("native probe result changed before case linkage"));
+        }
+        if session_context.is_runtime() {
+            // The case deadline can expire after native publication while the session remains
+            // live. Recheck the real case owner on a fork at fresh time without inserting a
+            // successful observation between the native record and its exact citation.
+            let now = session_context.now_at(delivery.head.observed_at, &request.principal)?;
+            let report_anchor = delivery
+                .subscription
+                .pending()
+                .ok_or_else(invalid)?
+                .anchor();
+            if let Err(error) = journal.store.preflight_supervision_citation(
+                &request.principal,
+                &request.session_id,
+                &admission.target,
+                &request.subscription_id,
+                report_anchor,
+                now,
+            ) {
+                journal.admit(&request.principal, &request.session_id, now)?;
+                return Err(error.into());
+            }
         }
         let linked = journal
             .store
@@ -294,7 +322,7 @@ pub fn commit_probe_case(
         }
         journal.commit_pin()?;
         linked?;
-        if current_head(root)? != delivery.head {
+        if !current_head(root)?.same_history(&delivery.head) {
             return Err(refused(
                 "authority changed after the durable probe case link",
             ));
@@ -345,10 +373,12 @@ pub struct ProbeCaseInspectionFailure {
 /// Recover an exact historical link even when a later case revision or new session is current.
 /// No pending report, native attempt, case revision or source-hydration cursor is changed.
 pub fn inspect_probe_case(
-    root: &Path,
+    root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
     target: &ProbeCitationTarget,
 ) -> Result<ProbeCaseInspection, ProbeCaseInspectionFailure> {
+    let session_context = root.session_context();
+    let root = session_context.root();
     let mut inspected = None;
     let result = (|| {
         request.validate()?;
@@ -357,16 +387,15 @@ pub fn inspect_probe_case(
         }
         let mut journal = SessionJournal::open(root)?;
         let result = (|| {
-            let head = current_head(root)?;
+            let mut head = current_head(root)?;
+            head.observed_at = session_context.now_at(head.observed_at, &request.principal)?;
             if head.anchor.state_root != request.expected_authority_root {
                 return Err(refused(
                     "probe citation lookup requires the exact current authority",
                 ));
             }
             let session =
-                journal
-                    .store
-                    .session(&request.principal, &request.session_id, head.observed_at)?;
+                journal.admit(&request.principal, &request.session_id, head.observed_at)?;
             if !session.capabilities.contains("CAP-AGENT-CASE-WRITE-001") {
                 return Err(DeploymentSessionError::CaseRefused(
                     InvestigationError::Denied,
@@ -393,7 +422,7 @@ pub fn inspect_probe_case(
         })();
         journal.commit_pin()?;
         let outcome = result?;
-        if current_head(root)? != outcome.head {
+        if !current_head(root)?.same_history(&outcome.head) {
             return Err(refused(
                 "authority changed after historical probe citation inspection",
             ));
@@ -405,7 +434,7 @@ pub fn inspect_probe_case(
 
 #[allow(clippy::too_many_arguments)] // every sealed authority and budget coordinate stays explicit
 fn charge_case_output(
-    root: &Path,
+    root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
     context: &ProbeContext,
     session: &AgentSession,
@@ -414,6 +443,8 @@ fn charge_case_output(
     quoted_tokens: u64,
     debit: impl FnOnce(&mut DurableSessionStore, TimestampNs) -> Result<u64, DeploymentSessionError>,
 ) -> Result<ProbeCharge, ProbeChargeFailure> {
+    let session_context = root.session_context();
+    let root = session_context.root();
     let mut committed = None;
     let result = (|| {
         if quoted_tokens == 0
@@ -432,12 +463,15 @@ fn charge_case_output(
             return Err(invalid());
         }
         let mut journal = SessionJournal::open(root)?;
-        if journal.store.committed_root() != expected_root || current_head(root)? != *head {
+        if journal.store.committed_root() != expected_root
+            || !current_head(root)?.same_history(head)
+        {
             return Err(refused(
                 "probe case projection changed before its durable quote",
             ));
         }
-        let charge = debit(&mut journal.store, head.observed_at);
+        let now = session_context.now_at(head.observed_at, &request.principal)?;
+        let charge = debit(&mut journal.store, now);
         if let Ok(remaining_tokens) = charge.as_ref() {
             committed = Some(ProbeCharge {
                 journal_root: journal.store.committed_root(),
@@ -447,7 +481,7 @@ fn charge_case_output(
         }
         journal.commit_pin()?;
         charge?;
-        if current_head(root)? != *head {
+        if !current_head(root)?.same_history(head) {
             return Err(refused(
                 "authority changed after probe case projection charge",
             ));
@@ -459,7 +493,7 @@ fn charge_case_output(
 
 /// Charge under the sealed post-link root without changing the original native delivery root.
 pub fn charge_linked_probe_delivery(
-    root: &Path,
+    root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
     context: &ProbeContext,
     delivery: &SupervisionSessionDelivery,
@@ -501,7 +535,7 @@ pub fn charge_linked_probe_delivery(
 
 /// Price metadata-only historical inspection under the current reader, without reviving its source.
 pub fn charge_probe_case_inspection(
-    root: &Path,
+    root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
     context: &ProbeContext,
     inspected: &ProbeCaseInspection,

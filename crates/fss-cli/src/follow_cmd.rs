@@ -638,8 +638,15 @@ fn anchor_refusal(refusal: AnchorRefusal, since: &AnchorToken) -> Refusal {
 /// Executes `follow`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_follow(args: &FollowArgs) -> (String, ExitIdentity) {
+    execute_follow_with_time(args, None)
+}
+
+pub(crate) fn execute_follow_with_time(
+    args: &FollowArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     if args.subscription.is_some() {
-        return subscription::execute(args);
+        return subscription::execute(args, clock);
     }
     if args.wait_ms.is_some() {
         return wait::execute(args);

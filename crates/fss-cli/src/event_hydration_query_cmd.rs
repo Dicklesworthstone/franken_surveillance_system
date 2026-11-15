@@ -232,9 +232,20 @@ fn failure(
 /// Execute the native session-owned transaction, then render its complete admitted result.
 #[must_use]
 pub fn execute_event_hydration_query(args: &EventHydrationQueryArgs) -> (String, ExitIdentity) {
+    execute_event_hydration_query_with_time(args, None)
+}
+
+pub(crate) fn execute_event_hydration_query_with_time(
+    args: &EventHydrationQueryArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let started = Instant::now();
     let cancelled = || started.elapsed() >= Duration::from_secs(60);
-    let answer = match hydrate_event_evidence(&args.root, &args.request, &cancelled) {
+    let answer = match hydrate_event_evidence(
+        crate::session_time::context(&args.root, clock),
+        &args.request,
+        &cancelled,
+    ) {
         Ok(answer) => answer,
         Err(error) => return failure(args, error),
     };

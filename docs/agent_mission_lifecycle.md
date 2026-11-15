@@ -16,7 +16,9 @@ fss plan --json --root DEPLOYMENT --session SESSION \
   --mission-bind PLAN --mission-deadline-ns DEADLINE
 ```
 
-`DEADLINE` is an explicit positive absolute timestamp in signed 128-bit evidence-clock nanoseconds.
+`DEADLINE` is an explicit positive absolute timestamp in signed 128-bit session admission-clock
+nanoseconds. Live CLI/MCP commands use Unix time; explicit path/replay APIs use committed
+evidence time. The requested deadline is a constraint, never authority to set current time.
 The enrollment freezes the plan identity, canonical record, root-last publication, control-plan
 rendering, selected event revision, operation, obligation, principal, session, original mission
 record, contract basis, baseline anchor, and decision deadline. Repeating the same enrollment

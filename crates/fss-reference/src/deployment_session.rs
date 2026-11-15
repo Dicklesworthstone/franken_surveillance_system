@@ -27,9 +27,10 @@
 //! record and its children are staged and verified, the root record is renamed into place last,
 //! so a crash at any publication cut point leaves the root either absent or complete.
 //!
-//! **Clock.** Every time is the deployment's evidence clock (the latest committed evidence time,
-//! as orientations use), never the wall clock, so equal committed bytes give equal answers.
-//! Session leases and handoff lifetimes are measured on that clock.
+//! **Clock.** Plain path callers use the deployment's evidence clock, preserving deterministic
+//! replay. Live owners pass a [`SessionContext`] with explicit [`SessionTimeAuthority`]; leases,
+//! handoff lifetimes and admission watermarks then advance even on a quiet deployment. Evidence
+//! timestamps and anchors remain those of the original committed evidence.
 //!
 //! **Anchors.** A session is bound to the orientation anchor token it was opened (or last rebased)
 //! at; its workspace revision records that token as the explicit anchor-bound assumption
@@ -94,6 +95,9 @@ pub mod evidence_hydration;
 /// Explicit plan-outcome mission enrollment and evidence-derived lifecycle assessments.
 pub mod mission;
 mod opening_retry;
+/// Explicit runtime clock authority, preserving deterministic path-based callers.
+pub mod time;
+pub use time::{SessionContext, SessionRoot, SessionTimeAuthority, SessionTimeError};
 /// Read-only current orientation of an existing admitted session.
 pub mod orient;
 #[cfg(test)]
@@ -194,6 +198,8 @@ const MAX_PIN_BYTES: usize = 256;
 /// Why a session command was refused. Refusals never carry private payload bytes.
 #[derive(Debug)]
 pub enum DeploymentSessionError {
+    /// The runtime refused to supply an authoritative current time.
+    Time(SessionTimeError),
     /// The deployment itself could not be read.
     Read(DeploymentReadError),
     /// The situation could not be compiled.
@@ -240,6 +246,7 @@ pub enum DeploymentSessionError {
 impl fmt::Display for DeploymentSessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Time(error) => write!(f, "{error}"),
             Self::Read(error) => write!(f, "{error}"),
             Self::Orient(error) => write!(f, "{error}"),
             Self::SessionUnknown => {
@@ -1094,6 +1101,19 @@ impl SessionJournal {
         self.pin(None)
     }
 
+    /// Pin clock/expiry transitions even when admission refuses the operation.
+    fn admit(
+        &mut self,
+        principal: &PrincipalId,
+        session_id: &SessionId,
+        now: TimestampNs,
+    ) -> Result<AgentSession, DeploymentSessionError> {
+        let previous = self.store.committed_root();
+        let session = self.store.session(principal, session_id, now);
+        self.pin(Some(previous))?;
+        session.map_err(Into::into)
+    }
+
     /// One-way, idempotent initialization of coordination and case history (fixed ceilings),
     /// committed and pinned before any case command runs.
     fn enable_cases(&mut self) -> Result<(), DeploymentSessionError> {
@@ -1430,7 +1450,10 @@ fn orient_bound(
                 Some(trauma_guard::derive_trauma_guard_warnings(
                     root,
                     principal,
-                    evidence_now(snapshot).0,
+                    briefs
+                        .admission_now
+                        .unwrap_or_else(|| evidence_now(snapshot))
+                        .0,
                 )?)
             }
             _ => None,
@@ -1451,6 +1474,7 @@ fn orient_bound(
 /// The session's own agent-plane state its situation lists: open cases, non-terminal claims,
 /// and active findings.
 struct SessionBriefs {
+    admission_now: Option<TimestampNs>,
     mission_progress: Option<crate::agent_orient::OrientMissionProgress>,
     cases: Vec<OrientCaseBrief>,
     claims: Vec<OrientClaimBrief>,
@@ -1466,6 +1490,7 @@ impl Default for SessionBriefs {
     fn default() -> Self {
         // Used only for the opening orientation, before this new identity can own work.
         Self {
+            admission_now: None,
             mission_progress: None,
             cases: Vec::new(),
             claims: Vec::new(),
@@ -1548,6 +1573,7 @@ fn session_briefs(
         None
     };
     Ok(SessionBriefs {
+        admission_now: Some(now),
         mission_progress,
         captured_learning,
         cases: investigation::case_briefs(store, session, anchor),
@@ -1657,7 +1683,7 @@ fn session_position(
     session_id: &SessionId,
     now: TimestampNs,
 ) -> Result<SessionPosition, DeploymentSessionError> {
-    let session = journal.store.session(principal, session_id, now)?;
+    let session = journal.admit(principal, session_id, now)?;
     let workspace = journal
         .store
         .workspace_head(principal, session_id, now)?
@@ -1869,9 +1895,11 @@ fn validate_open(request: &OpenSessionRequest) -> Result<(), DeploymentSessionEr
 /// request at the same head is an exact retry: the existing session and revision are returned and
 /// nothing new is committed.
 pub fn open_session(
-    root: &Path,
+    root: impl SessionRoot,
     request: &OpenSessionRequest,
 ) -> Result<OpenedSession, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     validate_open(request)?;
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
@@ -1879,8 +1907,8 @@ pub fn open_session(
     let token = snapshot_anchor_token(&snapshot);
     let (mission_id, session_id, request_digest) =
         open_identities(&snapshot.site_lineage, request, &token)?;
-    let now = evidence_now(&snapshot);
-    let mission = MissionRecord {
+    let now = context.now(&snapshot, &request.principal)?;
+    let mut mission = MissionRecord {
         mission_id: mission_id.clone(),
         session_id: session_id.clone(),
         principal: request.principal.clone(),
@@ -1892,7 +1920,6 @@ pub fn open_session(
         token_budget: request.token_budget,
         created_at: now,
     };
-    let mission_digest = mission.digest();
     // Existing identities need live authorization before private memory is recomposed. Keep
     // the journal locked after lookup. A fresh root still admits its initial context before
     // creating any session files, preserving the existing failed-open boundary.
@@ -1908,13 +1935,15 @@ pub fn open_session(
             journal,
             &snapshot,
             request,
-            &mission,
+            &mut mission,
             request_digest,
             &limits,
+            now,
         )? {
             return Ok(opened);
         }
     }
+    let mission_digest = mission.digest();
     let orientation = orient_bound(
         Some((root, &snapshot)),
         &snapshot,
@@ -1923,7 +1952,10 @@ pub fn open_session(
         &mission_id,
         &session_id,
         &limits,
-        SessionBriefs::default(),
+        SessionBriefs {
+            admission_now: Some(now),
+            ..SessionBriefs::default()
+        },
         &mission,
     )?;
     let mut journal = match existing_journal {
@@ -1954,8 +1986,8 @@ pub fn open_session(
             token_budget: request.token_budget,
             symbol_table_generation: 0,
             last_acknowledged_situation_fingerprint: Some(capsule.decision_fingerprint()?),
-            created_at_ns: now.0,
-            expires_at_ns: now.0.saturating_add(SESSION_LEASE_NS),
+            created_at_ns: mission.created_at.0,
+            expires_at_ns: mission.created_at.0.saturating_add(SESSION_LEASE_NS),
         },
         capsule.contract_basis.clone(),
         now,
@@ -2027,6 +2059,7 @@ pub struct HandoffRequest {
 pub struct PreparedHandoff {
     journal: SessionJournal,
     root: PathBuf,
+    runtime_time: bool,
     /// The record to publish.
     pub record: HandoffRecord,
     /// The session handed off, as read now.
@@ -2061,9 +2094,11 @@ pub struct PublishedHandoff {
 /// Seals a handoff of `request.session_id` as of the session's anchor (AOP-012). Nothing is
 /// published until [`PreparedHandoff::publish`].
 pub fn prepare_handoff(
-    root: &Path,
+    root: impl SessionRoot,
     request: &HandoffRequest,
 ) -> Result<PreparedHandoff, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     if request
         .note
         .as_ref()
@@ -2074,11 +2109,9 @@ pub fn prepare_handoff(
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let mut journal = SessionJournal::open(root)?;
-    let session = journal
-        .store
-        .session(&request.principal, &request.session_id, now)?;
+    let session = journal.admit(&request.principal, &request.session_id, now)?;
     let JournaledWorkspace {
         result: head_workspace,
         ..
@@ -2218,6 +2251,7 @@ pub fn prepare_handoff(
     Ok(PreparedHandoff {
         journal,
         root: root.to_path_buf(),
+        runtime_time: context.is_runtime(),
         record,
         session,
         workspace,
@@ -2238,12 +2272,36 @@ impl PreparedHandoff {
         self.publish_at(children, None)
     }
 
+    /// Re-admit a runtime handoff immediately before its root-last publication. A prepared
+    /// projection cannot retain a live lease while rendering or waiting outside the owner.
+    /// The published journal reference remains the exact historical preparation position.
+    pub fn publish_with_time(
+        mut self,
+        children: &[Vec<u8>],
+        authority: &dyn SessionTimeAuthority,
+    ) -> Result<PublishedHandoff, DeploymentSessionError> {
+        let now = SessionContext::runtime(&self.root, authority)
+            .now_at(self.record.capsule.created_at, &self.session.principal_id)?;
+        self.journal
+            .admit(&self.session.principal_id, &self.session.session_id, now)?;
+        if now >= self.record.capsule.expires_at {
+            return Err(DeploymentSessionError::HandoffInvalid(
+                "the prepared handoff expired before publication".to_owned(),
+            ));
+        }
+        self.runtime_time = false;
+        self.publish_at(children, None)
+    }
+
     /// [`Self::publish`] with a crash injected at one publication cut point (tests only).
     pub(crate) fn publish_at(
         self,
         children: &[Vec<u8>],
         crash: Option<PublishCutPoint>,
     ) -> Result<PublishedHandoff, DeploymentSessionError> {
+        if self.runtime_time {
+            return Err(SessionTimeError::Denied.into());
+        }
         let bytes = self.record.to_bytes()?;
         let mut retained = self.learning_children;
         for child in children {
@@ -2416,13 +2474,15 @@ fn invalidations(
 /// evidence position. Repeating a resume when both position and situation are current publishes
 /// no further workspace revision.
 pub fn resume_session(
-    root: &Path,
+    root: impl SessionRoot,
     request: &ResumeRequest,
 ) -> Result<ResumedSession, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let published = read_published(root, &HandoffRecord::slot(&request.handoff_id)?)?
         .ok_or(DeploymentSessionError::HandoffUnknown)?;
     let handoff = HandoffRecord::from_bytes(&published.record).map_err(|error| {
@@ -2440,11 +2500,6 @@ pub fn resume_session(
             "the resuming principal is outside the handoff's recipient scope".to_owned(),
         ));
     }
-    if now >= handoff.capsule.expires_at {
-        return Err(DeploymentSessionError::HandoffInvalid(
-            "the handoff expired on the deployment evidence clock".to_owned(),
-        ));
-    }
     let token = AnchorToken::parse(&handoff.anchor_token).ok_or_else(|| {
         DeploymentSessionError::HandoffInvalid("the handoff anchor token is malformed".to_owned())
     })?;
@@ -2459,9 +2514,8 @@ pub fn resume_session(
     let principal = &handoff.capsule.source_principal_id;
     let session_id = &handoff.capsule.source_session_id;
     let session = journal
-        .store
-        .session(principal, session_id, now)
-        .map_err(|error| match DeploymentSessionError::from(error) {
+        .admit(principal, session_id, now)
+        .map_err(|error| match error {
             DeploymentSessionError::SessionUnknown => DeploymentSessionError::HandoffInvalid(
                 "the handoff's session is not open in this deployment (foreign, closed, or \
                  expired)"
@@ -2469,6 +2523,11 @@ pub fn resume_session(
             ),
             other => other,
         })?;
+    if now >= handoff.capsule.expires_at {
+        return Err(DeploymentSessionError::HandoffInvalid(
+            "the handoff expired at the current admission time".to_owned(),
+        ));
+    }
     if session.mission_id != handoff.capsule.mission_id {
         return Err(DeploymentSessionError::HandoffInvalid(
             "the handoff's mission is not the session's mission".to_owned(),

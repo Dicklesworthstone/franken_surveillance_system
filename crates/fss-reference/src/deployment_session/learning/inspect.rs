@@ -57,6 +57,8 @@ pub struct InspectLearningRequest {
 /// The candidate remains historical advisory data; this read creates no publication or review.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LearningInspection {
+    /// Whether this read uses explicit runtime admission rather than deterministic evidence time.
+    pub runtime_time: bool,
     /// Exact original experience, proposal and source roots; committed is always false.
     pub learning: PublishedLearning,
     /// Unchanged currently admitted session; historical source grants confer no access.
@@ -75,6 +77,8 @@ pub struct LearningInspection {
     pub captured_session_id: SessionId,
     /// Current deployment evidence time; never wall time or a renewed candidate deadline.
     pub observed_at_ns: i128,
+    /// Current admission time used for freshness; runtime time never changes the evidence time.
+    pub admission_at_ns: i128,
     /// Remaining live session token allowance; this read does not spend or replenish it.
     pub remaining_tokens: u64,
     /// Response ceiling after clamping the default to the remaining live session allowance.
@@ -96,10 +100,11 @@ fn unavailable() -> DeploymentSessionError {
 }
 
 /// Inspect one captured candidate without replaying feedback, rebasing the workspace, spending
-/// the session budget, repairing a ROOT pin, or opening any journal/publication writer.
+/// the session budget or publishing advisory state. Runtime contexts first persist current
+/// clock admission/expiry; deterministic path callers perform no journal or pin writes.
 /// The original candidate's full source graph is required; partial or foreign reads fail closed.
 pub fn inspect_learning(
-    root: &Path,
+    root: impl super::super::SessionRoot,
     request: &InspectLearningRequest,
 ) -> Result<LearningInspection, DeploymentSessionError> {
     if !matches!(request.view, AgentView::DecisionDiff | AgentView::Forensic) {
@@ -147,7 +152,7 @@ fn inspect_admitted(
         .budget_tokens
         .unwrap_or(default_budget)
         .min(read.remaining_tokens);
-    let now = evidence_now(read.head);
+    let now = read.admission_now;
     let sessions = read
         .store
         .recovery_state_for_projection(read.session, now)?;
@@ -265,6 +270,7 @@ fn inspect_admitted(
     };
     objects.insert(request.publication_root, manifest_bytes);
     Ok(LearningInspection {
+        runtime_time: read.runtime_time,
         learning,
         session: read.session.clone(),
         revision: read.revision.clone(),
@@ -273,7 +279,8 @@ fn inspect_admitted(
         journal_root: read.store.root(),
         captured_workspace_digest,
         captured_session_id,
-        observed_at_ns: now.0,
+        observed_at_ns: evidence_now(read.head).0,
+        admission_at_ns: now.0,
         remaining_tokens: read.remaining_tokens,
         effective_budget_tokens,
         bytes_read: read.head.bytes_read + reader.bytes_read,
