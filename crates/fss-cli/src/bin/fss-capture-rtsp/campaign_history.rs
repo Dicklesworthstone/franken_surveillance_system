@@ -100,6 +100,12 @@ impl Config {
                 .remove("--history-root")
                 .ok_or("--history-root required")?,
         )?;
+        // Resolve the parent once. Every later stage records, compares and publishes this path, and on
+        // macOS the temp root is itself a symlink (`/var` -> `/private/var`), so leaving it lexical makes
+        // the recorded path disagree with the resolved one and the first write is refused as Denied.
+        let parent = std::fs::canonicalize(root.parent().ok_or("--history-root parent")?)
+            .map_err(|_| "--history-root parent must exist")?;
+        let root = parent.join(root.file_name().ok_or("--history-root name")?);
         let defaults = CampaignHistoryLimits::default();
         let mut bounded = |key: &str, default: u64, maximum: u64| {
             values
@@ -551,7 +557,7 @@ impl Recorder {
                 &self.cx,
                 &mut self.work,
             )
-            .map_err(|_| ERROR)
+            .map_err(|e| { eprintln!("DBG start_attempt {e:?}"); ERROR })
     }
 
     pub(super) fn finish(
