@@ -605,3 +605,93 @@ capacity snapshot, not a reservation for future retention.
   retention. This experiment alone does not replace Scrypted or Docker.
 
 No live serializer write is claimed by this document.
+
+On 2026-11-14 the isolated v36 snapshot built on `ts1` as RCH job
+`j-30109207290183938`. Its synthetic HTTP-stream unit tests passed 8/8, its
+HTTP dispatch integration tests passed 8/8, and the runtime async and drained
+blocking tests passed 7/7 and 5/5 respectively. The integration suite included
+publishing, reading back, and decoding synthetic 2688 x 1512 video through the
+native archive path. The test process ran with deletion syscalls denied: three
+attempts to unlink temporary root files were denied, and artifacts were kept
+under `/data/tmp/fss-unifi-v36-tests-20261114-receipt01` on `ts1`. This is
+fixture evidence, not a camera test or proof of unattended service or retention.
+The later combined startup preflight is not part of that v36 result and is
+tested separately below.
+
+The v37 snapshot including the combined startup preflight built on `ts1` as
+RCH job `j-30109207290183955`. Its synthetic tests passed 8/8 HTTP-stream
+unit, 9/9 HTTP dispatch integration, 7/7 runtime async, and 5/5 drained
+blocking cases. The integration executable SHA-256 was
+`fc0e328f0e5db23ec01b2401d7d1c0db916997bbdfbc2ee154fba814ae303375`.
+Deletion-denying traces retained under
+`/data/tmp/fss-unifi-v37-tests-20261114-receipt01` show three denied attempts
+to unlink test archive temporary roots and no other deletion attempts. This
+validates the tested synthetic paths, not a live camera handoff, unattended
+recording, audio, onboarding, or 30-day retention.
+
+On 2026-11-14 the read-only laboratory trial gained a redacted distinction
+between a missing serializer, explicit null, object and unsupported scalar or
+array. It reports the shapes only after two full serializer bindings match;
+it does not print private values or their digests. The source SHA-256 is
+`b3ea663777d864a96928ace189c1782194c99b34f5ce01acef198195efeead07`.
+The first strict-remote build stopped before compilation because the copied
+laboratory lockfile was stale. A subsequent offline build regenerated that
+isolated lockfile and completed on `ts1` as job `j-30109207290183978`; the
+lockfile SHA-256 was
+`ace3512c3ed4512f075f2c427091a8338d482a9297bd0acf58efc9c7b309ec10`.
+The focused Rust shape test passed 1/1 with zero deletion attempts. A regular
+binary then built as job `j-30109207290183987`; its SHA-256 was
+`7f83db5622dc80c49b1afc22b62cf86090fb78572d13351da9f5860defd6548c`.
+In a private network namespace, a fake camera fixture passed 2/2: stable
+values reported object, null and missing; a changed private destination with
+the same public shape was refused without reporting shapes. The fixture trace
+showed no deletion syscalls. Two earlier fixture attempts timed out before the
+fake camera received discovery because their network namespaces lacked the
+required synthetic neighbor entry; they are not successful fixture evidence.
+
+The same binary was create-only copied and hash-verified on `trj`, then used
+for one bounded read-only observation of the physical G4 with the existing
+network-observed certificate pin and local credential. The two serializer
+bindings matched, and the redacted shapes were `[object, object, object]`.
+The high-resolution profile was reported as video1 at 2688 x 1512, 30 fps;
+the destination shapes were `[NotReported, TcpOnly, NotReported]`. These are
+camera claims, not proof that video1 is inactive or that a serializer update
+and restore will work. The run prepared no camera effect and the deletion
+trace contained no calls; its private trace is at
+`/data/unifi-g4-recorder/fss-serializer-shapes-live-20261114-01/trace` on
+`trj`. Immediately afterward the existing recorder was running with restart
+count 5. One observation cannot establish future continuity or independent
+physical identity, and login-session expiry remains unknown.
+
+The v38 HTTP archive driver adds a bounded `run_slice`: each nonterminal media
+or archive result must be accepted by an observer before another step; a
+refused event is returned intact, and terminal or actionable events go to the
+caller. The caller still owns worker drainage and must explicitly authorize
+retries. It is not a reconnecting recorder or retention service.
+
+The isolated v38 snapshot built on `ts1` as strict-remote job
+`j-30109207290183996`. Its selected HTTP-stream unit tests passed 8/8 and its
+HTTP dispatch integration tests passed 10/10. One integration case uses the
+combined preflight/start owner all the way through synthetic 2688 x 1512
+publication, archive readback and Rust frame decode, while exercising the
+bounded runner's refusal and yield paths. The integration executable SHA-256
+was `d0dd4ca59fb0fd5f2c62ee6887e64d1c301f18a98085dd86d2f8d703e8081793`.
+Deletion-denying traces at `/data/tmp/fss-unifi-v38-tests-20261114-receipt01`
+record six denied attempts to unlink temporary roots from the two archive
+cases; no such deletion occurred. This fixture does not establish direct
+physical-camera capture, unattended operation, audio, or 30-day retention.
+
+The v38 library-wide Clippy run exited 101 with 30 denied `expect` usages in
+other existing library code and 859 warnings; it did not establish a clean
+lint gate. It also flagged the new runner's argument count. The subsequent
+v39 snapshot groups the slice bounds and archive admissions into one config;
+its source and fixture hashes are
+`52adb3ac7edbf8b5debd5aaf794493a60042cbcbe046f5ae705a452419e2814f` and
+`7b2d1ba17754b4d3c847d22665877fa5a3fb4fa0305bd49b263bcadcd0a558b6`.
+Strict-remote job `j-30109207290184005` built it on `ts1`; the exact resulting
+executables passed the same 8/8 selected unit tests and 10/10 integration
+tests. The integration executable SHA-256 was
+`cea3bf098abace1b24eff596677556de5dcfc12bb5aace688cff95726336952f`.
+The v39 deletion-denying trace records six denied temporary-root unlinks,
+retained under `/data/tmp/fss-unifi-v39-tests-20261114-receipt01`. The v39
+revision has not passed a library-wide Clippy gate.
