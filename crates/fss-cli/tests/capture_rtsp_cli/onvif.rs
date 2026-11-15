@@ -31,14 +31,19 @@ fn accept(listener: &TcpListener) -> Test<TcpStream> {
     loop {
         match listener.accept() {
             Ok((peer, _)) => {
-                peer.set_read_timeout(Some(Duration::from_secs(5)))?;
+                // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
+    peer.set_nonblocking(false)?;
+    peer.set_read_timeout(Some(Duration::from_secs(5)))?;
                 peer.set_write_timeout(Some(Duration::from_secs(5)))?;
                 return Ok(peer);
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < until => {
+            Err(_) if Instant::now() < until => {
+                // A poll miss can arrive as a raw EAGAIN on macOS; keep waiting until the deadline.
                 thread::sleep(Duration::from_millis(1))
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(format!("fixture accepted no connection in 10s: {error}").into())
+            }
         }
     }
 }

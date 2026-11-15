@@ -180,15 +180,16 @@ impl Camera {
         let mut peer = loop {
             match listener.accept() {
                 Ok((peer, _)) => break peer,
-                Err(error)
-                    if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-                {
-                    thread::sleep(Duration::from_millis(2));
-                }
-                Err(error) => return Err(error.into()),
+                Err(_) if Instant::now() < deadline => {
+                // A poll miss can arrive as a raw EAGAIN on macOS; keep waiting until the deadline.
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(format!("fixture accepted no connection in 10s: {error}").into()),
             }
         };
-        peer.set_read_timeout(Some(CAMERA_WAIT))?;
+        // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
+    peer.set_nonblocking(false)?;
+    peer.set_read_timeout(Some(CAMERA_WAIT))?;
         peer.set_write_timeout(Some(CAMERA_WAIT))?;
         peer.set_nodelay(true)?;
         for expected in ["DESCRIBE", "SETUP", "PLAY"] {

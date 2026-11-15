@@ -169,7 +169,9 @@ impl Camera {
                 Err(e) => return Err(e.into()),
             }
         };
-        peer.set_read_timeout(Some(Duration::from_secs(10)))?;
+        // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
+    peer.set_nonblocking(false)?;
+    peer.set_read_timeout(Some(Duration::from_secs(10)))?;
         peer.set_write_timeout(Some(Duration::from_secs(10)))?;
         peer.set_nodelay(true)?;
         for method in ["DESCRIBE", "SETUP", "PLAY"] {

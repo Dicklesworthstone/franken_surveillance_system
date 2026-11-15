@@ -168,14 +168,19 @@ fn auth_server(listener: TcpListener, scenario: Scenario, credential: PathBuf) -
     let mut peer = loop {
         match listener.accept() {
             Ok((peer, _)) => break peer,
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
+            Err(error) if Instant::now() < deadline => {
+                // macOS can report the poll miss as a raw EAGAIN through `accept`; any error before the
+                // deadline is a miss, not a verdict.
+                let _ = error;
                 thread::sleep(Duration::from_millis(2))
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(format!("fixture accepted no connection in 10s: {error}").into())
+            }
         }
     };
+    // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(10)))?;
     peer.set_write_timeout(Some(Duration::from_secs(10)))?;
     let first = read_request(&mut peer)?.ok_or("missing initial DESCRIBE")?;
