@@ -3,6 +3,7 @@
 
 use super::*;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 
 #[path = "campaign_watch.rs"]
@@ -25,11 +26,10 @@ fn set(input: &mut Vec<OsString>, key: &str, value: &str) {
 fn history_args(directory: &Directory, peer: SocketAddr) -> Vec<OsString> {
     let mut input = campaign_args(directory, peer);
     set(&mut input, "--max-attempts", "2");
-    set(
-        &mut input,
-        "--history-root",
-        directory.0.join("history").to_str().unwrap(),
-    );
+    let history = directory.0.join("history");
+    // The history root is a caller-owned directory; the child does not create it.
+    let _ = fs::create_dir_all(&history);
+    set(&mut input, "--history-root", history.to_str().unwrap());
     input
 }
 
