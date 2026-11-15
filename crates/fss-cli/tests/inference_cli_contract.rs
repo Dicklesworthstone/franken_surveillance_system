@@ -369,9 +369,9 @@ fn inference_inspection_uses_one_allowance_through_final_revalidation() -> TestR
         let bytes = field(&output, "payload_read_bytes")?.parse::<u64>()?;
         let attempts = field(&output, "payload_read_attempts")?.parse::<u64>()?;
         assert!(bytes > 1 && attempts > 1);
-        // A final empty journal probe needs one remaining byte of allowance, even though
-        // it returns no payload. All actual reads and rereads still share one counter.
-        let byte_allowance = bytes + 1;
+        // The reported payload bytes are the exact allowance: the empty final journal probe returns no
+        // payload and no longer consumes a byte. All reads and rereads still share one counter.
+        let byte_allowance = bytes;
         let exact = command(&root, action, &import_id)
             .args([
                 "--run-id",
@@ -393,7 +393,7 @@ fn inference_inspection_uses_one_allowance_through_final_revalidation() -> TestR
                 .arg("--output")
                 .arg(&destination)
                 .output()?;
-            assert!(!refused.status.success());
+            assert!(!refused.status.success(), "{key} with one less was accepted");
             assert!(refused.stdout.is_empty());
             assert!(!destination.exists());
             assert_eq!(deployment_bytes(&root)?, before);
