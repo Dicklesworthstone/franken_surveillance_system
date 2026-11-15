@@ -5,8 +5,6 @@
 //! layer adds the registered investigation capability and a protected current session context;
 //! it cannot register a recipe, broaden grants, claim a physical fact or execute an effect.
 
-use std::path::Path;
-
 use fss_core::{
     AgentView, CanonicalEncode, ContentDigest, DigestAlgorithm, PrincipalId, SessionId,
 };
@@ -124,15 +122,46 @@ pub struct ProbeContext {
 ///
 /// The existing read owner holds the session lock across complete replay, grant checks and
 /// protected context compilation. The native supervision owner separately rechecks its pinned
-/// complete authority projection before every action. No clock, budget, workspace or lease is
-/// changed here. The finite supervisor invocation is the only writer.
+/// complete authority projection before every action. Runtime admission can retain a clock or
+/// expiry transition; it never renews the lease, changes workspace or spends a native attempt.
 pub fn admit_probe(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &ProbeRequest,
+) -> Result<ProbeContext, DeploymentSessionError> {
+    probe_context(root, request, None)
+}
+
+/// Revalidate one sealed native continuation without inserting a successful read record.
+///
+/// Fresh runtime time still checks expiry and regression. A refusal durably records admission;
+/// success preserves the exact native root for a subsequent case link or quoted-token charge.
+/// This return value alone grants no delivery: the native continuation and final charge must
+/// still succeed under their own exact journal and deployment preconditions.
+pub fn admit_probe_continuation(
+    root: impl super::SessionRoot,
+    request: &ProbeRequest,
+    expected_root: ContentDigest,
+) -> Result<ProbeContext, DeploymentSessionError> {
+    probe_context(
+        root.session_context().pinned_read(),
+        request,
+        Some(expected_root),
+    )
+}
+
+fn probe_context(
+    root: impl super::SessionRoot,
+    request: &ProbeRequest,
+    expected_root: Option<ContentDigest>,
 ) -> Result<ProbeContext, DeploymentSessionError> {
     request.validate()?;
     let (mut context, bytes, _) =
         with_admitted_session_read(root, &request.principal, &request.session_id, |read| {
+            if expected_root.is_some_and(|expected| read.store.root() != expected) {
+                return Err(DeploymentSessionError::SessionStale(
+                    "probe continuation journal changed".to_owned(),
+                ));
+            }
             if !read
                 .session
                 .capabilities
@@ -203,12 +232,14 @@ impl std::error::Error for ProbeChargeFailure {}
 /// acknowledges, discards, advances, re-evaluates or replaces a pending report. An uncertain
 /// append may retain a charge without output; recovery never refunds it or redelivers itself.
 pub fn charge_probe_delivery(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &ProbeRequest,
     context: &ProbeContext,
     delivery: &SupervisionSessionDelivery,
     quoted_tokens: u64,
 ) -> Result<ProbeCharge, ProbeChargeFailure> {
+    let session_context = root.session_context();
+    let root = session_context.root();
     let mut committed = None;
     let result = (|| -> Result<ProbeCharge, DeploymentSessionError> {
         request.validate()?;
@@ -239,11 +270,14 @@ pub fn charge_probe_delivery(
         let history = super::DeploymentHistory::read(root, &limits)?;
         let head =
             observe_head(&history).map_err(|e| DeploymentSessionError::Internal(e.to_string()))?;
-        if head != delivery.head || head.anchor.state_root != request.expected_authority_root {
+        if !head.same_history(&delivery.head)
+            || head.anchor.state_root != request.expected_authority_root
+        {
             return Err(DeploymentSessionError::SessionStale(
                 "probe delivery authority changed".to_owned(),
             ));
         }
+        let now = session_context.now_at(head.observed_at, &request.principal)?;
         let charged = journal
             .store
             .charge_supervision_projection(
@@ -251,7 +285,7 @@ pub fn charge_probe_delivery(
                 &delivery.subscription,
                 request.view,
                 quoted_tokens,
-                head.observed_at,
+                now,
             )
             .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()));
         if let Ok(remaining_tokens) = charged.as_ref() {
@@ -265,8 +299,9 @@ pub fn charge_probe_delivery(
         journal.commit_pin()?;
         charged?;
         let current = super::DeploymentHistory::read(root, &limits)?;
-        if observe_head(&current).map_err(|e| DeploymentSessionError::Internal(e.to_string()))?
-            != head
+        if !observe_head(&current)
+            .map_err(|e| DeploymentSessionError::Internal(e.to_string()))?
+            .same_history(&head)
         {
             return Err(DeploymentSessionError::SessionStale(
                 "probe authority changed after durable token charge".to_owned(),

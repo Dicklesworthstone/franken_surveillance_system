@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 //! Read-only current orientation for an existing durable session (AOP-003).
 //!
-//! Captured session bytes are replayed without constructing a journal writer. Admission uses
-//! isolated session memory: no clock, expiry tombstone, workspace, budget, ROOT pin, publication,
-//! subscription or effect changes. The current situation is distinct from the retained workspace.
+//! Plain-path callers replay captured session bytes without constructing a journal writer.
+//! Runtime contexts first persist clock admission/expiry under the same lock, then project the
+//! captured journal. Neither path rebases a workspace, spends tokens or executes an effect.
 
 use super::*;
 use crate::agent_orient::{orient_deployment_for_probe, orient_deployment_for_workspace};
@@ -25,6 +25,8 @@ pub struct OrientSessionRequest {
 /// Current evidence and live agent metadata, with the unchanged retained workspace alongside it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrientedSession {
+    /// Whether this projection first admitted current runtime time in the session journal.
+    pub runtime_time: bool,
     /// Unchanged admitted session authority and anchor.
     pub session: AgentSession,
     /// Unchanged current workspace revision.
@@ -46,7 +48,7 @@ pub struct OrientedSession {
 /// Inspect an existing session at the current deployment head without performing a rebase.
 /// The caller supplies its ordinary local operator scope; possession of a session ID grants none.
 pub fn orient_session(
-    root: &Path,
+    root: impl SessionRoot,
     request: &OrientSessionRequest,
 ) -> Result<OrientedSession, DeploymentSessionError> {
     if !matches!(
@@ -109,7 +111,7 @@ fn project_session_read_for(
     let session = read.session;
     let revision = read.revision;
     let head = read.head;
-    let now = evidence_now(head);
+    let now = read.admission_now;
     let workspace_anchor_token = read.workspace_anchor_token;
     let invalidated = read.invalidated;
     let remaining_tokens = read.remaining_tokens;
@@ -169,9 +171,11 @@ fn project_session_read_for(
         encoder.digest(journal_root);
     });
     orientation.request_digest = request_digest;
-    orientation.degradation.push(
+    orientation.degradation.push(if read.runtime_time {
+        "Current session projection after durable runtime clock admission; retained workspace, assumptions, grants and budgets are unchanged. No rebase or historical semantic delta is claimed.".to_owned()
+    } else {
         "Current read-only session projection; retained workspace, assumptions, grants, clocks and budgets are unchanged. No rebase or historical semantic delta is claimed.".to_owned()
-    );
+    });
     orientation.degradation.push(
         "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.".to_owned()
     );
@@ -182,6 +186,7 @@ fn project_session_read_for(
     }
 
     Ok(OrientedSession {
+        runtime_time: read.runtime_time,
         session: session.clone(),
         revision: revision.clone(),
         orientation,
@@ -206,13 +211,15 @@ pub(super) struct AdmittedSessionRead<'a> {
     pub invalidated: &'a [String],
     pub remaining_tokens: u64,
     pub pinned_root: ContentDigest,
+    pub admission_now: TimestampNs,
+    pub runtime_time: bool,
 }
 
 /// Hold the existing lock across admission, a bounded read, and final prefix verification.
 /// The two counters report the actual session-journal and root-pin bytes/files read here.
 /// Deployment/fence reads and the caller's selected objects are accounted separately.
 pub(super) fn with_admitted_session_read<T>(
-    root: &Path,
+    root: impl SessionRoot,
     principal: &PrincipalId,
     session_id: &SessionId,
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
@@ -232,7 +239,7 @@ pub(super) fn with_admitted_session_read<T>(
 /// This path never invokes the global spool doctor or opens original media. Session journal
 /// and pin reads retain their separate existing bounds, reported by the returned counters.
 pub(super) fn with_admitted_session_metadata_read<T>(
-    root: &Path,
+    root: impl SessionRoot,
     principal: &PrincipalId,
     session_id: &SessionId,
     budget: &crate::agent_orient::MetadataReadBudget,
@@ -254,7 +261,7 @@ pub(super) fn with_admitted_session_metadata_read<T>(
 }
 
 fn with_admitted_session_history<T>(
-    root: &Path,
+    root: impl SessionRoot,
     principal: &PrincipalId,
     session_id: &SessionId,
     history: impl FnOnce(&Path, &OrientLimits) -> Result<DeploymentHistory, DeploymentReadError>,
@@ -262,9 +269,10 @@ fn with_admitted_session_history<T>(
     observed: impl FnOnce(&DeploymentSnapshot),
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
 ) -> Result<(T, u64, u64), DeploymentSessionError> {
+    let context = root.session_context();
     // These existing layout/restore-fence checks perform reads only. In particular a restored
     // historical checkpoint cannot regain live session authority through this read operation.
-    let root = ensure_agent_writable(root)?;
+    let root = ensure_agent_writable(context.root())?;
     let directory = root.join(SESSIONS_RELPATH);
     let lock_file = match File::open(directory.join(SESSION_LOCK_FILE)) {
         Ok(file) => file,
@@ -273,16 +281,18 @@ fn with_admitted_session_history<T>(
         }
         Err(error) => return Err(io_failure("read-only session lock", &error)),
     };
-    let _lock = match SpoolLock::try_acquire(lock_file, Arc::new(HostSpoolIo)) {
-        Ok(lock) => lock,
-        Err(TryLockError::WouldBlock) => return Err(DeploymentSessionError::StoreLocked),
-        Err(TryLockError::Error(error)) => {
-            return Err(io_failure("read-only session lock", &error));
-        }
-    };
+    let mut lock = Some(
+        match SpoolLock::try_acquire(lock_file, Arc::new(HostSpoolIo)) {
+            Ok(lock) => lock,
+            Err(TryLockError::WouldBlock) => return Err(DeploymentSessionError::StoreLocked),
+            Err(TryLockError::Error(error)) => {
+                return Err(io_failure("read-only session lock", &error));
+            }
+        },
+    );
     ensure_agent_writable(&root)?;
     let pin_path = directory.join(SESSION_ROOT_PIN_FILE);
-    let pin_bytes = read_bounded(&pin_path, MAX_PIN_BYTES)
+    let mut pin_bytes = read_bounded(&pin_path, MAX_PIN_BYTES)
         .map_err(|error| io_failure("session root pin", &error))?
         .ok_or_else(|| {
             DeploymentSessionError::StoreInvalid(
@@ -290,19 +300,19 @@ fn with_admitted_session_history<T>(
                     .to_owned(),
             )
         })?;
-    let pin = std::str::from_utf8(&pin_bytes)
+    let mut pin = std::str::from_utf8(&pin_bytes)
         .ok()
         .and_then(|text| ContentDigest::parse(text.trim_end()).ok())
         .ok_or_else(|| {
             DeploymentSessionError::StoreInvalid("the pinned session root is malformed".to_owned())
         })?;
     let journal_path = directory.join(SESSION_JOURNAL_FILE);
-    let bytes = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
+    let mut bytes = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
         .map_err(|error| io_failure("session journal", &error))?
         .ok_or_else(|| {
             DeploymentSessionError::StoreInvalid("the pinned session journal is missing".to_owned())
         })?;
-    let store = SessionProjectionSnapshot::from_bytes(
+    let mut store = SessionProjectionSnapshot::from_bytes(
         &bytes,
         pin,
         DurableSessionLimits::default(),
@@ -314,94 +324,189 @@ fn with_admitted_session_history<T>(
     // Preserve the already verified historical anchor for a payload-free refusal. The private
     // hydration adapter copies only this observation; it performs no second read or callback.
     observed(&head);
-    let now = evidence_now(&head);
-    let (session, revision, remaining_tokens) =
-        store.session_workspace(principal, session_id, now)?;
-    if !["CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SITUATION-READ-001"]
-        .iter()
-        .all(|capability| session.capabilities.contains(*capability))
-        || !session.privacy_scope.contains(SESSION_PRIVACY_SCOPE)
-    {
-        return Err(DurableSessionError::Session(ReferenceSessionError::GrantEscalation).into());
+    let now = context.now(&head, principal)?;
+    let mut latest_now = now;
+    let mut runtime_journal = None;
+    let mut admission_read_bytes = 0;
+    if context.is_runtime() && context.persist_read_watermark() {
+        // Open only the already verified existing prefix. Holding the original lock prevents
+        // a competing writer between admission, its durable pin and the disclosed projection.
+        let verified_tip = store.root();
+        let writer = DurableSessionStore::open_existing_with_coordination(
+            &journal_path,
+            verified_tip,
+            DurableSessionLimits::default(),
+            WorkClaimLimits::default(),
+        )?;
+        let mut journal = SessionJournal {
+            root: root.clone(),
+            directory: directory.clone(),
+            store: writer,
+            _lock: lock.take().ok_or_else(|| {
+                DeploymentSessionError::Internal("runtime session read lost its lock".into())
+            })?,
+        };
+        journal.admit(principal, session_id, now)?;
+        if journal.store.committed_root() == verified_tip {
+            journal.pin(Some(pin))?;
+        }
+        admission_read_bytes = bytes.len() as u64 + pin_bytes.len() as u64;
+        pin = journal.store.committed_root();
+        pin_bytes = read_bounded(&pin_path, MAX_PIN_BYTES)
+            .map_err(|error| io_failure("runtime session pin", &error))?
+            .ok_or_else(|| {
+                DeploymentSessionError::StoreInvalid("session pin disappeared".into())
+            })?;
+        bytes = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
+            .map_err(|error| io_failure("runtime session journal", &error))?
+            .ok_or_else(|| {
+                DeploymentSessionError::StoreInvalid("session journal disappeared".into())
+            })?;
+        store = SessionProjectionSnapshot::from_bytes(
+            &bytes,
+            pin,
+            DurableSessionLimits::default(),
+            WorkClaimLimits::default(),
+        )?;
+        runtime_journal = Some(journal);
     }
-    if !crate::agent_session::mission::same_generations(&session.current_anchor, &head.anchor) {
-        return Err(DeploymentSessionError::SessionStale(
-            "current interpretation generations differ from the retained session; explicit rebase is required".to_owned()
-        ));
-    }
-    let workspace_anchor_token = capsule_anchor_token(revision.capsule())
-        .ok_or_else(|| {
+    let result = (|| {
+        let (session, revision, remaining_tokens) =
+            store.session_workspace(principal, session_id, now)?;
+        if !["CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SITUATION-READ-001"]
+            .iter()
+            .all(|capability| session.capabilities.contains(*capability))
+            || !session.privacy_scope.contains(SESSION_PRIVACY_SCOPE)
+        {
+            return Err(
+                DurableSessionError::Session(ReferenceSessionError::GrantEscalation).into(),
+            );
+        }
+        if !crate::agent_session::mission::same_generations(&session.current_anchor, &head.anchor) {
+            return Err(DeploymentSessionError::SessionStale(
+                "current interpretation generations differ from the retained session; explicit rebase is required".to_owned()
+            ));
+        }
+        let workspace_anchor_token = capsule_anchor_token(revision.capsule())
+            .ok_or_else(|| {
+                DeploymentSessionError::StoreInvalid(
+                    "the workspace names no anchor-bound position".to_owned(),
+                )
+            })?
+            .to_owned();
+        let token = AnchorToken::parse(&workspace_anchor_token).ok_or_else(|| {
             DeploymentSessionError::StoreInvalid(
-                "the workspace names no anchor-bound position".to_owned(),
+                "the workspace anchor token is malformed".to_owned(),
             )
-        })?
-        .to_owned();
-    let token = AnchorToken::parse(&workspace_anchor_token).ok_or_else(|| {
-        DeploymentSessionError::StoreInvalid("the workspace anchor token is malformed".to_owned())
-    })?;
-    let position = resolve_anchor(&history, &token).map_err(|refusal| {
-        DeploymentSessionError::SessionStale(format!(
-            "the retained workspace does not resolve in this deployment ({})",
-            refusal.code()
+        })?;
+        let position = resolve_anchor(&history, &token).map_err(|refusal| {
+            DeploymentSessionError::SessionStale(format!(
+                "the retained workspace does not resolve in this deployment ({})",
+                refusal.code()
+            ))
+        })?;
+        let basis = history.snapshot_at_cancellable(position, cancelled)?;
+        if basis.anchor != session.current_anchor
+            || revision.capsule().current_anchor != session.current_anchor
+        {
+            return Err(DeploymentSessionError::SessionStale(
+                "the retained workspace and session anchors disagree".to_owned(),
+            ));
+        }
+        let anchor_moved = position != head.position;
+        let mut invalidated = Vec::new();
+        if anchor_moved {
+            invalidated.push(format!(
+                "Workspace revision {} remains at {}; this current read does not rebase it.",
+                revision.capsule().revision,
+                workspace_anchor_token
+            ));
+            for assumption in &revision.capsule().assumptions {
+                invalidated.push(format!(
+                    "Retained assumption {} requires revalidation at the current head.",
+                    split_assumption(assumption).0
+                ));
+            }
+            for action in &revision.capsule().next_actions {
+                invalidated.push(format!(
+                    "Retained next action {action} requires re-derivation at the current head."
+                ));
+            }
+        }
+
+        let result = read(&AdmittedSessionRead {
+            root: &root,
+            store: &store,
+            head: &head,
+            session: &session,
+            revision: &revision,
+            workspace_anchor_token: &workspace_anchor_token,
+            anchor_moved,
+            invalidated: &invalidated,
+            remaining_tokens,
+            pinned_root: pin,
+            admission_now: now,
+            runtime_time: context.is_runtime(),
+        })?;
+
+        // A cooperating writer is excluded by the existing lock. Out-of-contract drift observed
+        // during metadata/custody reads must still withhold the answer rather than mix prefixes.
+        ensure_agent_writable(&root)?;
+        let verified_journal = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
+            .map_err(|error| io_failure("session journal verification", &error))?;
+        let verified_pin = read_bounded(&pin_path, MAX_PIN_BYTES)
+            .map_err(|error| io_failure("session root pin verification", &error))?;
+        if verified_journal.as_deref() != Some(bytes.as_slice())
+            || verified_pin.as_deref() != Some(pin_bytes.as_slice())
+        {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "session history changed during read-only projection; retry from a stable prefix"
+                    .to_owned(),
+            ));
+        }
+        if context.is_runtime() {
+            let observed = context.now_at(now, principal)?;
+            if observed < latest_now {
+                return Err(SessionTimeError::Uncertain.into());
+            }
+            latest_now = observed;
+            // Preserve the captured proof root while checking the fresh release time.
+            // Any refusal below persists this observation under the same retained lock.
+            store.session_workspace(principal, session_id, latest_now)?;
+        }
+        let bytes_read = (bytes.len() as u64 + pin_bytes.len() as u64) * 2 + admission_read_bytes;
+        Ok((
+            result,
+            bytes_read,
+            if runtime_journal.is_some() { 6 } else { 4 },
         ))
-    })?;
-    let basis = history.snapshot_at_cancellable(position, cancelled)?;
-    if basis.anchor != session.current_anchor
-        || revision.capsule().current_anchor != session.current_anchor
-    {
-        return Err(DeploymentSessionError::SessionStale(
-            "the retained workspace and session anchors disagree".to_owned(),
-        ));
-    }
-    let anchor_moved = position != head.position;
-    let mut invalidated = Vec::new();
-    if anchor_moved {
-        invalidated.push(format!(
-            "Workspace revision {} remains at {}; this current read does not rebase it.",
-            revision.capsule().revision,
-            workspace_anchor_token
-        ));
-        for assumption in &revision.capsule().assumptions {
-            invalidated.push(format!(
-                "Retained assumption {} requires revalidation at the current head.",
-                split_assumption(assumption).0
-            ));
+    })();
+    if result.is_err() && context.is_runtime() {
+        // Sealed native continuations must keep their successful read at the native root.
+        // A refusal still records the fresh clock/expiry under this same exclusive lock.
+        if let Some(journal) = runtime_journal.as_mut() {
+            journal.admit(principal, session_id, latest_now)?;
+        } else {
+            let verified_tip = store.root();
+            let writer = DurableSessionStore::open_existing_with_coordination(
+                &journal_path,
+                verified_tip,
+                DurableSessionLimits::default(),
+                WorkClaimLimits::default(),
+            )?;
+            let mut journal = SessionJournal {
+                root,
+                directory,
+                store: writer,
+                _lock: lock.take().ok_or_else(|| {
+                    DeploymentSessionError::Internal("sealed session read lost its lock".into())
+                })?,
+            };
+            journal.admit(principal, session_id, latest_now)?;
+            if journal.store.committed_root() == verified_tip {
+                journal.pin(Some(pin))?;
+            }
         }
-        for action in &revision.capsule().next_actions {
-            invalidated.push(format!(
-                "Retained next action {action} requires re-derivation at the current head."
-            ));
-        }
     }
-
-    let result = read(&AdmittedSessionRead {
-        root: &root,
-        store: &store,
-        head: &head,
-        session: &session,
-        revision: &revision,
-        workspace_anchor_token: &workspace_anchor_token,
-        anchor_moved,
-        invalidated: &invalidated,
-        remaining_tokens,
-        pinned_root: pin,
-    })?;
-
-    // A cooperating writer is excluded by the existing lock. Out-of-contract drift observed
-    // during metadata/custody reads must still withhold the answer rather than mix prefixes.
-    ensure_agent_writable(&root)?;
-    let verified_journal = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
-        .map_err(|error| io_failure("session journal verification", &error))?;
-    let verified_pin = read_bounded(&pin_path, MAX_PIN_BYTES)
-        .map_err(|error| io_failure("session root pin verification", &error))?;
-    if verified_journal.as_deref() != Some(bytes.as_slice())
-        || verified_pin.as_deref() != Some(pin_bytes.as_slice())
-    {
-        return Err(DeploymentSessionError::StoreInvalid(
-            "session history changed during read-only projection; retry from a stable prefix"
-                .to_owned(),
-        ));
-    }
-    let bytes_read = (bytes.len() as u64 + pin_bytes.len() as u64) * 2;
-    Ok((result, bytes_read, 4))
+    result
 }

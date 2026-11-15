@@ -11,11 +11,11 @@ pub(super) fn resume_if_present(
     journal: &mut SessionJournal,
     snapshot: &DeploymentSnapshot,
     request: &OpenSessionRequest,
-    expected_mission: &MissionRecord,
+    expected_mission: &mut MissionRecord,
     request_digest: ContentDigest,
     limits: &OrientLimits,
+    now: TimestampNs,
 ) -> Result<Option<OpenedSession>, DeploymentSessionError> {
-    let now = evidence_now(snapshot);
     let existing = journal.store.opening_workspace_for_retry(
         &request.principal,
         &expected_mission.session_id,
@@ -54,6 +54,10 @@ pub(super) fn resume_if_present(
             ));
         }
     }
+    // A runtime clock advances between exact retries without changing their immutable mission
+    // identity, opening digest, original lease or budget. This also recovers an interrupted
+    // opening whose mission was published before its first workspace was committed.
+    expected_mission.created_at = TimestampNs(session.created_at_ns);
     let digest = match &opening {
         Some(revision) => {
             ContentDigest::parse(&revision.capsule().objective_digest).map_err(|_| {
@@ -86,7 +90,7 @@ pub(super) fn resume_if_present(
             "the retained opening mission is not canonical".to_owned(),
         )
     })?;
-    if &mission != expected_mission {
+    if &mission != &*expected_mission {
         return Err(DeploymentSessionError::SessionStale(
             "the requested opening differs from the immutable retained mission".to_owned(),
         ));

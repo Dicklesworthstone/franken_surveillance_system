@@ -173,7 +173,7 @@ fn lease_ms(values: &[(String, String, usize)]) -> Result<u64, CliError> {
                 malformed(
                     "--lease-ms",
                     raw,
-                    "lease must be 1..=300000 milliseconds on the evidence clock",
+                    "lease must be 1..=300000 milliseconds on the session admission clock",
                     *index,
                 )
             }),
@@ -401,7 +401,7 @@ pub(crate) fn claim_proposition(
         "it holds no lease".to_owned()
     } else if revision.lease_covers(now) {
         format!(
-            "its lease (incarnation {}) covers the evidence clock until {} ns",
+            "its lease (incarnation {}) covers the session admission clock until {} ns",
             claim.lease_incarnation, claim.expires_at_ns
         )
     } else {
@@ -489,8 +489,8 @@ fn response(answer: &ClaimAnswer) -> Result<String, Box<dyn std::error::Error>> 
                     .map(|revision| claim_proposition(revision, answer.now))
                     .collect(),
                 assumptions: vec![
-                    "Leases run on the deployment evidence clock: a lease lapses only as \
-                     committed evidence advances that clock."
+                    "Leases use current runtime admission time in live commands and committed \
+                     evidence time in explicit replay; no new evidence is needed for live expiry."
                         .to_owned(),
                 ],
                 invalidators: vec![
@@ -601,7 +601,17 @@ fn response(answer: &ClaimAnswer) -> Result<String, Box<dyn std::error::Error>> 
 /// Executes one work-claim transition, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_claim(args: &ClaimArgs) -> (String, ExitIdentity) {
-    match work_claim(&args.root, &args.request) {
+    execute_claim_with_time(args, None)
+}
+
+pub(crate) fn execute_claim_with_time(
+    args: &ClaimArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
+    match work_claim(
+        crate::session_time::context(&args.root, clock),
+        &args.request,
+    ) {
         Ok(answer) => rendered(
             response(&answer),
             ExitIdentity::SUCCESS,

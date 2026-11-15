@@ -41,6 +41,9 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 #[path = "deployment_supervision_orientation_contract/guarded.rs"]
 mod guarded;
 
+#[path = "deployment_supervision_orientation_contract/runtime_clock.rs"]
+mod runtime_clock;
+
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 const SITE: &str = "site:supervision-orientation-contract";
 const SUBSCRIPTION: &str = "overnight-patrol";

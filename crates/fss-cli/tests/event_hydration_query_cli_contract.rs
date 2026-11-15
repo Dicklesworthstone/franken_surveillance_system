@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
 use fss_cli::query_cmd::MAX_QUERY_OUTPUT_BYTES;
-use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
+use fss_cli::{ExitIdentity, escape_json_str, execute_live_fss_with_exit, parse_fss_args};
 use fss_core::json_input::{Value, parse};
 use fss_core::{
     AgentView, BudgetVector, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
@@ -374,8 +374,9 @@ impl Fixture {
 
     fn expected(&self, session: &str) -> Test<EventHydrationCatalog> {
         let snapshot = read_deployment(&self.root, &OrientLimits::default())?;
+        let clock = fss_cli::session_time::HostSessionTime::default();
         let oriented = orient_session(
-            &self.root,
+            fss_reference::deployment_session::SessionContext::runtime(&self.root, &clock),
             &OrientSessionRequest {
                 session_id: SessionId::parse(session)?,
                 principal: PrincipalId::parse(PRINCIPAL)?,
@@ -808,7 +809,8 @@ fn library_cli_and_cold_mcp_deliver_exact_h0_h1_and_preserve_durable_accounting(
     );
     let before = authority_tree(&fixture.root)?;
     let expected = fixture.expected(&first)?;
-    let (body, exit) = execute_fss_with_exit(parse_fss_args(fixture.args(&first, "H0", &[])?)?);
+    let (body, exit) =
+        execute_live_fss_with_exit(parse_fss_args(fixture.args(&first, "H0", &[])?)?);
     assert_eq!(exit, ExitIdentity::SUCCESS, "{body}");
     let h0 = accepted(&fixture, &first, &body, &expected, "H0", 0)?;
     let (descriptor, cursor) = next(&h0)?;

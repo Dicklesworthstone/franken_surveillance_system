@@ -7,7 +7,6 @@
 //! journal. A later refusal may withhold the payload, but never refunds a committed disclosure.
 
 use std::fmt;
-use std::path::Path;
 
 use fss_core::{
     AgentSession, AgentView, BudgetVector, ContentDigest, ContextAuthority, ContinuationCursor,
@@ -315,16 +314,17 @@ fn retain_event_custody(
 /// The shared metadata allowance includes admission snapshots and final revalidation. Existing
 /// journal/pin verification and restore-fence checks retain their separate native owner bounds.
 pub fn hydrate_event_evidence(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &EvidenceHydrationRequest,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<EvidenceHydrationAnswer, EvidenceHydrationFailure> {
+    let context = root.session_context();
     let mut committed = None;
     let mut observed = None;
     let result = (|| -> Result<EvidenceHydrationAnswer, EvidenceHydrationError> {
         request.validate()?;
         cancelled_check(cancelled)?;
-        let root = ensure_agent_writable(root)?;
+        let root = ensure_agent_writable(context.root())?;
         // The initial authority snapshots and every later immutable payload read consume one
         // allowance. Existing session-journal/pin I/O keeps its independent bounded owner rules.
         let read_budget = MetadataReadBudget::new(
@@ -334,7 +334,7 @@ pub fn hydrate_event_evidence(
         // This read never creates a missing session journal or grants a capability. All stored
         // session and workspace checks precede descriptor construction and the writer boundary.
         let (oriented, _, _) = with_admitted_session_metadata_read(
-            &root,
+            context,
             &request.principal,
             &request.session_id,
             &read_budget,
@@ -417,7 +417,7 @@ pub fn hydrate_event_evidence(
             return Err(EvidenceHydrationError::Stale);
         }
         let anchor_token = request.expected_anchor.clone();
-        let now = evidence_now(snapshot);
+        let now = context.now(snapshot, &request.principal)?;
         let mut built = build_event_hydration_catalog(
             snapshot,
             &oriented.orientation,

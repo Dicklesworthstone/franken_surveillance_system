@@ -16,8 +16,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use fss_cli::json_input::{Value, parse};
-use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
-use fss_core::{ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_time, parse_fss_args};
+use fss_core::{
+    ContentDigest, ContextAuthority, OperationId, PrincipalId, RootAuthoritySpec, TimestampNs,
+};
+use fss_reference::deployment_session::{SessionTimeAuthority, SessionTimeError};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
@@ -482,8 +485,8 @@ impl Agent {
         self.ok("inspect", &[("case", quote(CASE))])
     }
 
-    /// Compare both transports from identical owned input bytes. Native inspect durably
-    /// records its command witness, so sequential calls have different journal-root proofs.
+    /// Compare both transports from identical owned input bytes and the actual MCP admission
+    /// time. Inspect records its command witness and any newly advanced clock watermark.
     fn assert_inspect_parity(&self, previous: &Answer) -> TestResult {
         use fss_reference::agent_session::checkpoint::journal::{
             DurableSessionLimits, inspect_session_bytes,
@@ -526,6 +529,23 @@ impl Agent {
         }
         assert_eq!(snapshot(&native_root)?, input);
         let mcp = self.inspect()?;
+        let journal_after = fs::read(&journal_path)?;
+        let after = inspect_session_bytes(
+            &journal_after,
+            DurableSessionLimits::default(),
+            WorkClaimLimits::default(),
+        )?;
+        let admitted = after
+            .sessions
+            .iter()
+            .find(|entry| entry.session.session_id.as_str() == self.session)
+            .ok_or("missing admitted session")?;
+        let prior = before
+            .sessions
+            .iter()
+            .find(|entry| entry.session.session_id == admitted.session.session_id)
+            .ok_or("missing original session")?;
+        assert!(admitted.last_observed_at >= prior.last_observed_at);
         assert_eq!(
             raw_payload(&mcp.semantic)?,
             raw_payload(&previous.semantic)?
@@ -545,20 +565,41 @@ impl Agent {
             "--case".into(),
             CASE.into(),
         ];
-        let (native, exit) = execute_fss_with_exit(parse_fss_args(args)?);
+        struct CapturedClock<'a> {
+            root: &'a Path,
+            now: TimestampNs,
+        }
+        impl SessionTimeAuthority for CapturedClock<'_> {
+            fn observe(
+                &self,
+                root: &Path,
+                principal: &PrincipalId,
+            ) -> Result<TimestampNs, SessionTimeError> {
+                if root != self.root || principal.as_str() != PRINCIPAL {
+                    return Err(SessionTimeError::Denied);
+                }
+                Ok(self.now)
+            }
+        }
+        let (native, exit) = execute_fss_with_time(
+            parse_fss_args(args)?,
+            &CapturedClock {
+                root: &native_root,
+                now: admitted.last_observed_at,
+            },
+        );
         assert_eq!(exit, ExitIdentity::SUCCESS, "{native}");
         assert_eq!(mcp.semantic, native);
         assert_eq!(snapshot(&self.root)?, snapshot(&native_root)?);
 
-        let journal_after = fs::read(&journal_path)?;
         assert!(journal_after.starts_with(&journal_before));
-        let after = inspect_session_bytes(
-            &journal_after,
-            DurableSessionLimits::default(),
-            WorkClaimLimits::default(),
-        )?;
         assert_eq!(after.inspection.incomplete_tail, None);
-        assert_eq!(after.inspection.records, before.inspection.records + 1);
+        assert_eq!(
+            after.inspection.records,
+            before.inspection.records
+                + 1
+                + usize::from(admitted.last_observed_at > prior.last_observed_at)
+        );
         assert_ne!(after.inspection.root, before.inspection.root);
         assert_eq!(
             ContentDigest::parse(
@@ -570,10 +611,24 @@ impl Agent {
             texts(&mcp.envelope, &["proofPointers"])?.contains(&after.inspection.root.to_text()),
             "both complete responses must prove the independently replayed post-call root"
         );
-        // One command witness is appended; session authority, workspace state and every
-        // retained case/claim/follow head remain exactly the same.
-        assert_eq!(after.checkpoint_bytes, before.checkpoint_bytes);
-        assert_eq!(after.sessions, before.sessions);
+        // Reproduce only clock admission through the native checkpoint owner. Exact equality
+        // proves that symbols, authority, lease and token spend did not change with the read.
+        let limits = DurableSessionLimits::default();
+        let mut expected = fss_reference::agent_session::ReferenceSessionStore::restore_checkpoint(
+            &before.checkpoint_bytes,
+            before.inspection.checkpoint_digest,
+            limits.sessions,
+            limits.max_checkpoint_bytes,
+        )?;
+        expected.session(
+            &admitted.session.principal_id,
+            &admitted.session.session_id,
+            admitted.last_observed_at,
+        )?;
+        assert_eq!(
+            expected.checkpoint(limits.max_checkpoint_bytes)?.as_bytes(),
+            after.checkpoint_bytes.as_slice()
+        );
         assert_eq!(after.workspace_revisions, before.workspace_revisions);
         assert_eq!(
             after.workspace_checkpoint_digest,
@@ -582,6 +637,8 @@ impl Agent {
         assert_eq!(after.claims, before.claims);
         assert_eq!(after.cases, before.cases);
         assert_eq!(after.follows, before.follows);
+        assert_eq!(after.supervisions, before.supervisions);
+        assert_eq!(after.missions, before.missions);
         Ok(())
     }
 }

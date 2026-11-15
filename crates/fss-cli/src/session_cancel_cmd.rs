@@ -262,6 +262,13 @@ fn response(answer: &SessionCancellation) -> Result<String, Box<dyn std::error::
 /// Execute through the same native owner used by MCP, with a fresh local capability boundary.
 #[must_use]
 pub fn execute_session_cancel(args: &SessionCancelArgs) -> (String, ExitIdentity) {
+    execute_session_cancel_with_time(args, None)
+}
+
+pub(crate) fn execute_session_cancel_with_time(
+    args: &SessionCancelArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let operation = Operation {
         command: "cancel",
         name: "cancel",
@@ -298,7 +305,7 @@ pub fn execute_session_cancel(args: &SessionCancelArgs) -> (String, ExitIdentity
         Ok(authority) => authority,
         Err(_) => return internal_failure("cancel", &args.root),
     };
-    match cancel_session(&args.root, &args.session, &authority, args.approve) {
+    match cancel_session(crate::session_time::context(&args.root, clock), &args.session, &authority, args.approve) {
         Ok(answer) => rendered(response(&answer), ExitIdentity::SUCCESS, "cancel", &args.root),
         Err(SessionCancellationError::Session(error)) => refuse(&operation, error),
         Err(SessionCancellationError::Unauthorized) => refuse_typed(&operation, Refusal {

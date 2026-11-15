@@ -4,9 +4,9 @@
 use fss_core::SessionId;
 
 use super::{
-    ContentDigest, DigestAlgorithm, OrientLimits, Path, PrincipalId, SessionJournal,
-    SupervisionAdapterError, SupervisionRegistration, SupervisionSessionError,
-    DeploymentHistory, observe_head, same_generations, valid_history_limits,
+    ContentDigest, DeploymentHistory, DigestAlgorithm, OrientLimits, Path, PrincipalId,
+    SessionJournal, SupervisionAdapterError, SupervisionRegistration, SupervisionSessionError,
+    observe_head, same_generations, valid_history_limits,
 };
 
 /// Existing subscription selected under an explicitly supplied current deployment authority.
@@ -30,13 +30,21 @@ pub struct SupervisionRecoveryBinding<'a> {
 
 impl<'a> SupervisionRecoveryBinding<'a> {
     /// Existing deployment namespace.
-    pub const fn root(&self) -> &'a Path { self.root }
+    pub const fn root(&self) -> &'a Path {
+        self.root
+    }
     /// Authenticated session owner.
-    pub const fn principal(&self) -> &'a PrincipalId { self.principal }
+    pub const fn principal(&self) -> &'a PrincipalId {
+        self.principal
+    }
     /// Exact requested subscription and current authority.
-    pub const fn request(&self) -> &'a SupervisionRecoveryRequest { self.request }
+    pub const fn request(&self) -> &'a SupervisionRecoveryRequest {
+        self.request
+    }
     /// Explicit bounded metadata-history admission, independent of the stored native recipe.
-    pub const fn limits(&self) -> &'a OrientLimits { self.limits }
+    pub const fn limits(&self) -> &'a OrientLimits {
+        self.limits
+    }
 }
 
 /// Every recovery operation is admitted explicitly by its caller's context owner.
@@ -69,7 +77,9 @@ fn admit(
     binding: &SupervisionRecoveryBinding<'_>,
     boundary: SupervisionRecoveryBoundary,
 ) -> Result<(), SupervisionSessionError> {
-    control.admit_recovery(binding, boundary).map_err(SupervisionSessionError::Denied)
+    control
+        .admit_recovery(binding, boundary)
+        .map_err(SupervisionSessionError::Denied)
 }
 
 /// Recover exact stored configuration and immutable limits without an external recipe file.
@@ -81,12 +91,14 @@ fn admit(
 /// The caller must parse the returned exact bytes and use `supervise_existing_session` for its
 /// subsequent operation; this return value grants no source access or effect authority.
 pub fn recover_supervision_registration(
-    root: &Path,
+    root: impl super::super::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionRecoveryRequest,
     limits: &OrientLimits,
     control: &mut impl SupervisionRecoveryControl,
 ) -> Result<SupervisionRegistration, SupervisionSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     if root.as_os_str().is_empty()
         || fss_core::validate_id(&request.subscription_id).is_err()
         || request.expected_authority_root.algorithm() != DigestAlgorithm::Sha256
@@ -95,37 +107,68 @@ pub fn recover_supervision_registration(
     {
         return Err(SupervisionSessionError::InvalidRequest);
     }
-    let binding = SupervisionRecoveryBinding { root, principal, request, limits };
+    let binding = SupervisionRecoveryBinding {
+        root,
+        principal,
+        request,
+        limits,
+    };
     admit(control, &binding, SupervisionRecoveryBoundary::ReadHistory)?;
     let history = DeploymentHistory::read(root, limits)
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
-    let head = observe_head(&history)?;
+    let mut head = observe_head(&history)?;
+    head.observed_at = context
+        .now_at(head.observed_at, principal)
+        .map_err(SupervisionSessionError::Session)?;
     if head.anchor.state_root != request.expected_authority_root {
         return Err(SupervisionSessionError::ChangedAuthority);
     }
     admit(control, &binding, SupervisionRecoveryBoundary::OpenJournal)?;
     let mut journal = SessionJournal::open(root).map_err(SupervisionSessionError::Session)?;
     let recovered = (|| {
-        admit(control, &binding, SupervisionRecoveryBoundary::ReadRegistration)?;
-        let session = journal.store.session(principal, &request.session_id, head.observed_at)
-            .map_err(|error| SupervisionSessionError::Session(error.into()))?;
+        admit(
+            control,
+            &binding,
+            SupervisionRecoveryBoundary::ReadRegistration,
+        )?;
+        let session = journal
+            .admit(principal, &request.session_id, head.observed_at)
+            .map_err(SupervisionSessionError::Session)?;
         if !same_generations(&session.current_anchor, &head.anchor) {
             return Err(SupervisionSessionError::StaleAuthority);
         }
-        let registration = journal.store.recover_supervision_registration(
-            principal, &request.session_id, &request.subscription_id, head.observed_at,
-        ).map_err(SupervisionSessionError::Store)?;
-        admit(control, &binding, SupervisionRecoveryBoundary::RevalidateHistory)?;
+        let registration = journal
+            .store
+            .recover_supervision_registration(
+                principal,
+                &request.session_id,
+                &request.subscription_id,
+                head.observed_at,
+            )
+            .map_err(SupervisionSessionError::Store)?;
+        admit(
+            control,
+            &binding,
+            SupervisionRecoveryBoundary::RevalidateHistory,
+        )?;
         let current = DeploymentHistory::read(root, limits)
             .map_err(|error| SupervisionSessionError::Session(error.into()))?;
-        if observe_head(&current)? != head {
+        if !observe_head(&current)?.same_history(&head) {
             return Err(SupervisionSessionError::ChangedAuthority);
         }
         Ok(registration)
     })();
     // Error-side session clock/expiry transitions are durable, too. Pin them before replying.
-    journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+    journal
+        .commit_pin()
+        .map_err(SupervisionSessionError::Session)?;
     let registration = recovered?;
     admit(control, &binding, SupervisionRecoveryBoundary::Deliver)?;
+    let now = context
+        .now_at(head.observed_at, principal)
+        .map_err(SupervisionSessionError::Session)?;
+    journal
+        .admit(principal, &request.session_id, now)
+        .map_err(SupervisionSessionError::Session)?;
     Ok(registration)
 }

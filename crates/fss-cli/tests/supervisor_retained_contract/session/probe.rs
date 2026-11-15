@@ -633,17 +633,24 @@ fn probe_refuses_foreign_missing_and_stale_scope_before_native_work_and_preserve
         case: None,
     };
     assert_ne!(
-        fss_cli::probe_cmd::execute_probe(&wrong).1,
+        fss_cli::fss_cmd::execute_live_fss_with_exit(fss_cli::fss_cmd::FssCommand::Probe(
+            Box::new(wrong.clone())
+        ),)
+        .1,
         fss_cli::ExitIdentity::SUCCESS
     );
     wrong.request.principal = fss_core::PrincipalId::parse(PRINCIPAL)?;
     wrong.request.expected_authority_root = ContentDigest::sha256(b"stale authority");
     assert_ne!(
-        fss_cli::probe_cmd::execute_probe(&wrong).1,
+        fss_cli::fss_cmd::execute_live_fss_with_exit(fss_cli::fss_cmd::FssCommand::Probe(
+            Box::new(wrong)
+        ),)
+        .1,
         fss_cli::ExitIdentity::SUCCESS
     );
+    let clock = fss_cli::session_time::HostSessionTime::default();
     let ordinary = fss_reference::deployment_session::orient::orient_session(
-        &f.root,
+        fss_reference::deployment_session::SessionContext::runtime(&f.root, &clock),
         &fss_reference::deployment_session::orient::OrientSessionRequest {
             session_id: fss_core::SessionId::parse(session.as_str())?,
             principal: fss_core::PrincipalId::parse(PRINCIPAL)?,

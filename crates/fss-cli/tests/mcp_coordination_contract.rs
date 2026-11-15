@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 //! Real-process MCP collaboration over one native mission. Every agent operation crosses a
-//! fresh MCP process; synthetic deployment setup and explicit evidence-clock advancement are
-//! the only native fixture writes. No device, provider, probe or effect is executed.
+//! fresh MCP process. The expiry fixture seeds native session/case/claim state at an explicitly
+//! past Unix time, then tests recovery through the live MCP clock without sleeping. No device,
+//! provider, probe or effect is executed.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -9,18 +10,30 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use fss_cli::claim_cmd::ClaimArgs;
 use fss_cli::json_input::{Value, parse};
+use fss_cli::{ExitIdentity, FssCommand, execute_fss_with_time};
 use fss_core::{
-    BatchId, BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, EvidenceDelta,
-    ObjectId, OperationId, Plane, RootAuthoritySpec, TimestampNs, WorkClaimState,
+    AgentView, BudgetVector, ContentDigest, ContextAuthority, OperationId, PrincipalId,
+    RootAuthoritySpec, SessionId, TimestampNs, WorkClaimState,
 };
 use fss_object::ObjectManifest;
 use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, inspect_session_bytes,
 };
 use fss_reference::agent_session::work_claims::{WorkClaimLimits, WorkClaimRevision};
+use fss_reference::deployment_session::claims::{
+    ClaimAction, ClaimRecovery, ClaimRequest, ClaimWork,
+};
 use fss_reference::deployment_session::findings::FindingRecord;
+use fss_reference::deployment_session::investigation::{
+    CaseAction, InvestigateRequest, investigate,
+};
+use fss_reference::deployment_session::{
+    OpenSessionRequest, SessionContext, SessionTimeAuthority, SessionTimeError, open_session,
+};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -36,6 +49,25 @@ const PRECONDITION: &str = "ERR-OP-PRECONDITION-FAILED-001";
 const CONFLICT: &str = "ERR-AGENT-WORK-CLAIM-CONFLICT-001";
 const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"mcp-coordination-contract","version":"1"}}}"#;
 const READY: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+const LIVE_LEASE_MS: u64 = 300_000;
+
+struct FixtureClock<'a> {
+    root: &'a Path,
+    now: TimestampNs,
+}
+
+impl SessionTimeAuthority for FixtureClock<'_> {
+    fn observe(
+        &self,
+        root: &Path,
+        principal: &PrincipalId,
+    ) -> Result<TimestampNs, SessionTimeError> {
+        if root != self.root || principal.as_str() != PRINCIPAL {
+            return Err(SessionTimeError::Denied);
+        }
+        Ok(self.now)
+    }
+}
 
 fn quote(value: &str) -> String {
     format!("\"{}\"", fss_cli::escape_json_str(value))
@@ -193,7 +225,7 @@ impl Reply {
 struct Fixture {
     directory: Directory,
     root: PathBuf,
-    cx: ReplayCx,
+    _cx: ReplayCx,
 }
 
 impl Fixture {
@@ -221,7 +253,7 @@ impl Fixture {
         Ok(Self {
             directory,
             root,
-            cx,
+            _cx: cx,
         })
     }
 
@@ -441,27 +473,32 @@ impl Fixture {
         Ok(())
     }
 
-    fn advance_evidence_clock(&self) -> TestResult {
-        let mut deployment = ReferenceDeployment::open(&self.root, SITE, &self.cx)?;
-        let payload = deployment.stage_payload(b"synthetic clock-bearing observation")?;
-        deployment.append_batch(
-            BatchId::parse("batch:mcp-coordination:clock")?,
-            vec![EvidenceDelta {
-                delta_id: "delta:mcp-coordination:clock".to_owned(),
-                family: "decode_receipt".to_owned(),
-                object_id: ObjectId::parse("object:mcp-coordination:clock")?,
-                prior_generation: None,
-                new_generation: 1,
-                validity: CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000))?,
-                plane: Plane::Cognition,
-                payload_digest: payload,
-                witness_digest: None,
-                operation_id: None,
-            }],
-            vec![payload],
-            &self.cx,
-        )?;
-        Ok(())
+    fn seed_claim_at(
+        &self,
+        clock: &FixtureClock<'_>,
+        session: &str,
+        action: ClaimAction,
+        error: Option<&str>,
+    ) -> TestResult<Reply> {
+        let (body, exit) = execute_fss_with_time(
+            FssCommand::Claim(ClaimArgs {
+                root: self.root.clone(),
+                request: ClaimRequest {
+                    session_id: SessionId::parse(session)?,
+                    principal: PrincipalId::parse(PRINCIPAL)?,
+                    action,
+                },
+            }),
+            clock,
+        );
+        assert_eq!(exit == ExitIdentity::SUCCESS, error.is_none(), "{body}");
+        let body = body.trim_end().to_owned();
+        let value = parse(&body)?;
+        if let Some(error) = error {
+            assert_eq!(text(&value, &["errorId"])?, error);
+            assert_eq!(field(&value, &["payload"])?, &Value::Null);
+        }
+        Ok(Reply { body, value })
     }
 
     fn finding_record(&self, reply: &Reply) -> TestResult<(FindingRecord, Vec<u8>)> {
@@ -515,7 +552,9 @@ fn mcp_claims_enforce_conflict_dependencies_lost_ack_and_transfer_fences() -> Te
     )?;
     let authority = fixture.authority()?;
 
-    let opening = format!(r#""case":"{CASE}","work":"probe:probe:hallway-frames","lease_ms":1000"#);
+    let opening = format!(
+        r#""case":"{CASE}","work":"probe:probe:hallway-frames","lease_ms":{LIVE_LEASE_MS}"#
+    );
     let claimed = fixture.investigate(&first, "claim", &opening, None)?;
     let probe = claimed.id()?;
     let original = fixture.claim(&probe)?;
@@ -533,7 +572,7 @@ fn mcp_claims_enforce_conflict_dependencies_lost_ack_and_transfer_fences() -> Te
         &second,
         "claim",
         &format!(
-            r#""case":"{CASE}","work":"discriminator:d:hallway","lease_ms":1000,"depends":[{}]"#,
+            r#""case":"{CASE}","work":"discriminator:d:hallway","lease_ms":{LIVE_LEASE_MS},"depends":[{}]"#,
             quote(&probe)
         ),
         None,
@@ -595,9 +634,18 @@ fn mcp_claims_enforce_conflict_dependencies_lost_ack_and_transfer_fences() -> Te
     );
 
     let running = fixture.change(&second, "claim-activate", &waiting, "", None)?;
-    let renewed = fixture.change(&second, "claim-renew", &running, "\"lease_ms\":2000", None)?;
+    let renewed = fixture.change(
+        &second,
+        "claim-renew",
+        &running,
+        &format!("\"lease_ms\":{LIVE_LEASE_MS}"),
+        None,
+    )?;
     let renewed_native = fixture.claim(&dependent)?;
-    assert_eq!(renewed_native.claim().expires_at_ns, 2_000_000_000);
+    assert_eq!(
+        renewed_native.claim().expires_at_ns,
+        renewed_native.changed_at().0 + i128::from(LIVE_LEASE_MS) * 1_000_000
+    );
     let transferred = fixture.change(
         &second,
         "claim-transfer",
@@ -629,24 +677,64 @@ fn mcp_claims_enforce_conflict_dependencies_lost_ack_and_transfer_fences() -> Te
 #[test]
 fn mcp_claim_expiry_is_explicit_and_reclaim_preserves_work_under_a_fresh_fence() -> TestResult {
     let fixture = Fixture::new("expiry")?;
-    let first = fixture.open(30_000)?;
-    let second = fixture.open(40_000)?;
-    fixture.investigate(
-        &first,
-        "open",
-        &format!("\"draft\":{}", case_document()),
-        None,
+    let current = i128::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos())?;
+    let clock = FixtureClock {
+        root: &fixture.root,
+        now: TimestampNs(current - 60_000_000_000),
+    };
+    let context = SessionContext::runtime(&fixture.root, &clock);
+    let open = |token_budget| -> TestResult<String> {
+        Ok(open_session(
+            context,
+            &OpenSessionRequest {
+                mission: MISSION.to_owned(),
+                objective: OBJECTIVE.to_owned(),
+                principal: PrincipalId::parse(PRINCIPAL)?,
+                view: AgentView::Brief,
+                token_budget,
+            },
+        )?
+        .session
+        .session_id
+        .to_string())
+    };
+    let first = open(30_000)?;
+    let second = open(40_000)?;
+    investigate(
+        context,
+        &InvestigateRequest {
+            session_id: SessionId::parse(&first)?,
+            principal: PrincipalId::parse(PRINCIPAL)?,
+            action: CaseAction::Open(Box::new(fss_cli::investigate_cmd::decode_case_draft(
+                &parse(&case_document())?,
+            )?)),
+        },
     )?;
-    let claimed = fixture.investigate(
+    let claimed = fixture.seed_claim_at(
+        &clock,
         &first,
-        "claim",
-        &format!(r#""case":"{CASE}","work":"case","lease_ms":1"#),
+        ClaimAction::Acquire {
+            case_id: CASE.to_owned(),
+            work: ClaimWork::Case,
+            lease_ms: 1,
+            dependencies: Default::default(),
+        },
         None,
     )?;
     let id = claimed.id()?;
     let original = fixture.claim(&id)?;
-    fixture.change(&second, "claim-expire", &claimed, "", Some(PRECONDITION))?;
-    fixture.advance_evidence_clock()?;
+    fixture.seed_claim_at(
+        &clock,
+        &second,
+        ClaimAction::Recover {
+            claim_id: id.clone(),
+            expected: original.digest(),
+            recovery: ClaimRecovery::Expire,
+        },
+        Some(PRECONDITION),
+    )?;
+    assert_eq!(original.claim().expires_at_ns, clock.now.0 + 1_000_000);
+    assert!(!original.lease_covers(TimestampNs(current)));
     let authority = fixture.authority()?;
     let inspected = fixture.investigate(
         &first,
@@ -660,7 +748,7 @@ fn mcp_claim_expiry_is_explicit_and_reclaim_preserves_work_under_a_fresh_fence()
         original,
         "reading a lapsed lease never expires or renews it"
     );
-    assert!(!fixture.claim(&id)?.lease_covers(TimestampNs(2_000_000)));
+    assert!(!fixture.claim(&id)?.lease_covers(TimestampNs(current)));
     fixture.change(&first, "claim-activate", &claimed, "", Some(PRECONDITION))?;
     let expired = fixture.change(&second, "claim-expire", &claimed, "", None)?;
     assert_eq!(fixture.claim(&id)?.claim().state, WorkClaimState::Expired);
@@ -668,7 +756,7 @@ fn mcp_claim_expiry_is_explicit_and_reclaim_preserves_work_under_a_fresh_fence()
         &second,
         "claim-reclaim",
         &expired,
-        "\"lease_ms\":1000",
+        &format!("\"lease_ms\":{LIVE_LEASE_MS}"),
         None,
     )?;
     let recovered = fixture.claim(&id)?;
@@ -678,7 +766,10 @@ fn mcp_claim_expiry_is_explicit_and_reclaim_preserves_work_under_a_fresh_fence()
         recovered.claim().lease_incarnation,
         original.claim().lease_incarnation + 1
     );
-    assert_eq!(recovered.claim().expires_at_ns, 1_002_000_000);
+    assert_eq!(
+        recovered.claim().expires_at_ns,
+        recovered.changed_at().0 + i128::from(LIVE_LEASE_MS) * 1_000_000
+    );
     fixture.change(&first, "claim-release", &expired, "", Some(STALE))?;
     fixture.change(&second, "claim-release", &reclaimed, "", None)?;
     assert_eq!(fixture.claim(&id)?.claim().state, WorkClaimState::Released);

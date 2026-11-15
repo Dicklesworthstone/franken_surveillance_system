@@ -18,7 +18,7 @@ use fss_reference::agent_follow::wait::{
 use fss_reference::agent_session::checkpoint::journal::follow::DurableFollowError;
 use fss_reference::deployment_session::DeploymentSessionError;
 use fss_reference::deployment_session::follow::wait::{
-    FollowSessionWaitBinding, follow_session_wait,
+    FollowSessionWaitBinding, follow_session_wait_with_context,
 };
 use fss_reference::deployment_session::follow::{
     FollowSessionBinding, FollowSessionBoundary, FollowSessionControl, FollowSessionDelivery,
@@ -215,7 +215,10 @@ impl FollowWaitControl for LocalControl<'_> {
     }
 }
 
-pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
+pub(super) fn execute(
+    args: &FollowArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let Some(scope) = &args.subscription else {
         return internal_failure("follow", &args.root);
     };
@@ -278,7 +281,11 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
         started: Instant::now(),
     };
     if let Some(wait) = wait {
-        return match follow_session_wait(&wait, &mut control) {
+        return match follow_session_wait_with_context(
+            crate::session_time::context(&args.root, clock),
+            &wait,
+            &mut control,
+        ) {
             Ok(result) => rendered(
                 delivery_response(args, &result.delivery, Some(&result.progress)),
                 ExitIdentity::SUCCESS,
@@ -292,7 +299,13 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
             ),
         };
     }
-    match follow_session(&args.root, &args.principal, &request, &limits, &mut control) {
+    match follow_session(
+        crate::session_time::context(&args.root, clock),
+        &args.principal,
+        &request,
+        &limits,
+        &mut control,
+    ) {
         Ok(delivery) => rendered(
             delivery_response(args, &delivery, None),
             ExitIdentity::SUCCESS,

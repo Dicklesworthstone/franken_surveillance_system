@@ -21,9 +21,11 @@ fss cancel --json --root /owner/deployment \
 ```
 
 The preview takes the existing session and deployment locks and verifies the bounded journal, its retained ROOT
-pin, the session owner, and the complete admitted plan and obligation inventory. It does not
-advance clocks, renew leases, consume session budget, append records, create a session store, or
-repair the pin. Both locks use nonblocking acquisition. A busy session or deployment writer must finish before cancellation can proceed; a lock refusal
+pin, the session owner, and the complete admitted plan and obligation inventory. A live preview
+first durably admits current host time and pins any clock/expiry transition. It does not renew
+leases, consume session budget, create a session store or revoke authority without approval.
+Explicit path-based reference/replay previews retain their no-write behavior. Both locks use
+nonblocking acquisition. A busy session or deployment writer must finish before cancellation can proceed; a lock refusal
 does not claim its work has drained.
 
 The response is the registered `fss.agent_response_envelope.v1`, with AOP-010 and the existing
@@ -38,9 +40,12 @@ fss cancel --json --root /owner/deployment \
 ```
 
 Approval binds the principal, session authority, complete session checkpoint and journal
-predecessor, deployment authority and effect prefixes, evidence-clock time, and the retained
+predecessor, deployment authority and effect prefixes, retained checkpoint time, and the retained
 plan and unresolved-obligation inventories. A changed live preview is refused without silently
-approving its new scope. Read and review another preview when the request has changed.
+approving its new scope. Read and review another preview when the request has changed. The
+approved invocation independently checks fresh runtime time against the unchanged session
+lease; ordinary elapsed time alone does not change the previously approved checkpoint. A new
+preview can advance that checkpoint, so use the approval from the latest reviewed preview.
 
 The approved transition appends one private journal command containing both the exact request
 and the resulting tombstone. The same journal commit clears session aliases. It preserves
@@ -52,7 +57,7 @@ Repeat the same command with the same approval after response loss. A cold proce
 the original cancellation witness and returns its original receipt. The proof pointer
 `session-cancellation-receipt:sha256:...` identifies that cancellation's journal record, even
 when later records from other sessions have been appended. Repeated approved retries do not
-append another tombstone, change its evidence time, or refill any allowance.
+append another tombstone, change its retained time, or refill any allowance.
 
 A ROOT-pin write can fail after the cancellation record commits. The response preserves the
 known committed receipt and explicitly reports the pending pin repair. The exact approved
@@ -120,6 +125,10 @@ response. Inventories recovered on exact retry are historical facts at the origi
 position, so later operation outcomes must be inspected through their own current owner.
 
 The implementation is covered by journal fault-cut and replay tests and by
-`session_cancel_cli_contract`: read-only preview, current owner/grant admission, stale approval,
+`session_cancel_cli_contract`: clock-only live preview, current owner/grant admission, stale approval,
 active-writer refusal, recovery across an append-before-pin crash, cold idempotent recovery, retained obligations,
 old-handoff refusal, expiry distinction, MCP parity, and live-claim reclamation.
+
+The runtime-clock additions and adjusted live contracts were authored and reviewed but were
+not executed in the 2026-11-15 session: the exact locked build was stopped by SIGKILL in the
+unchanged Asupersync dependency. See [runtime admission verification](reference_session_persistence.md#live-admission-time-and-deterministic-replay).

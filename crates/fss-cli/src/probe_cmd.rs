@@ -15,7 +15,8 @@ use fss_reference::agent_session::checkpoint::journal::coordination::investigati
 use fss_reference::deployment_session::DeploymentSessionError;
 use fss_reference::deployment_session::probe::case::CaseProbeAction;
 use fss_reference::deployment_session::probe::{
-    ProbeCharge, ProbeContext, ProbeRequest, admit_probe, charge_probe_delivery,
+    ProbeCharge, ProbeContext, ProbeRequest, admit_probe, admit_probe_continuation,
+    charge_probe_delivery,
 };
 use fss_reference::deployment_session::supervision::{
     SupervisionAction, SupervisionRecoveryRequest, SupervisionSessionDelivery,
@@ -414,16 +415,21 @@ fn fail_after_charge(
     )
 }
 
-fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
+fn run(
+    args: &ProbeArgs,
+    cx: &ReplayCx,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
+    let session_root = crate::session_time::context(&args.root, clock);
     if let Err(error) = cx.checkpoint("investigate_probe:admit") {
         return refusal(args, DeploymentSessionError::Internal(error.to_string()));
     }
-    let before = match admit_probe(&args.root, &args.request) {
+    let before = match admit_probe(session_root, &args.request) {
         Ok(context) => context,
         Err(error) => return refusal(args, error),
     };
     if args.case.is_some() {
-        return case::run(args, cx, before);
+        return case::run(args, cx, before, clock);
     }
     let recovery = SupervisionRecoveryRequest {
         session_id: args.request.session_id.clone(),
@@ -431,7 +437,7 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
         expected_authority_root: args.request.expected_authority_root,
     };
     let (native, registration) =
-        match recover_native_supervision(&args.root, &args.request.principal, &recovery, cx) {
+        match recover_native_supervision(session_root, &args.request.principal, &recovery, cx) {
             Ok(result) => result,
             Err(error) => {
                 return fail(
@@ -462,7 +468,7 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
         action: args.request.action,
     };
     let delivery = match execute_native_supervision(
-        &args.root,
+        session_root,
         &args.request.principal,
         &command,
         &native,
@@ -475,7 +481,7 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
     let mut context = match cx
         .checkpoint("investigate_probe:current_context")
         .map_err(|error| DeploymentSessionError::Internal(error.to_string()))
-        .and_then(|()| admit_probe(&args.root, &args.request))
+        .and_then(|()| admit_probe_continuation(session_root, &args.request, delivery.journal_root))
     {
         Ok(context)
             if context.oriented.session == delivery.session
@@ -543,7 +549,7 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
         );
     }
     let charge = match charge_probe_delivery(
-        &args.root,
+        session_root,
         &args.request,
         &context,
         &delivery,
@@ -603,6 +609,13 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
 /// Execute one explicitly selected existing retained probe; never register, auto-ACK or retry.
 #[must_use]
 pub fn execute_probe(args: &ProbeArgs) -> (String, ExitIdentity) {
+    execute_probe_with_time(args, None)
+}
+
+pub(crate) fn execute_probe_with_time(
+    args: &ProbeArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     if let Err(error) = args.validate() {
         return refusal(args, error);
     }
@@ -633,7 +646,7 @@ pub fn execute_probe(args: &ProbeArgs) -> (String, ExitIdentity) {
     })();
     match context {
         Ok(cx) => {
-            let result = run(args, &cx);
+            let result = run(args, &cx, clock);
             cx.drain_and_finalize();
             result
         }

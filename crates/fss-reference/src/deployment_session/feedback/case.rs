@@ -24,7 +24,9 @@ use crate::deployment_session::{
     SessionPosition, hex, read_published,
 };
 
-/// The original feedback evidence time, plus one evidence-clock day. Retrying never renews it.
+/// One day after the feedback's original creation in its owning clock domain.
+/// Runtime feedback uses admitted live time; deterministic replay uses evidence time.
+/// Retrying never renews this deadline.
 pub const CASE_REVIEW_LIFETIME_NS: i128 = 24 * 60 * 60 * 1_000_000_000;
 
 /// Original opening content and the current native case revision admitted by the case owner.

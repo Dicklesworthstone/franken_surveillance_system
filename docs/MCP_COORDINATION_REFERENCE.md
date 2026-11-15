@@ -40,8 +40,9 @@ The item after the first colon is preserved literally, so a case probe named
 `probe:hallway-frames` is selected by `"work":"probe:probe:hallway-frames"`.
 
 `lease_ms` is an unsigned decimal JSON integer in **1..300000**, defaulting to **60000**. Leases
-use the deployment evidence clock and must fit within the session expiry. Wall-clock waiting
-does not advance that clock. Numeric strings, fractions and exponent notation are refused.
+use the host Unix clock sampled at each live admission and must fit within the session expiry.
+They can lapse while the deployment has no new evidence. Explicit path/replay APIs retain the
+deterministic evidence clock. Numeric strings, fractions and exponent notation are refused.
 `depends` is an array of at most **64 distinct claim identities**; omission means no dependencies.
 
 Every mutation requires the exact `decisionFingerprint` returned for the current claim as
@@ -131,7 +132,7 @@ cannot be replayed completely; it does not claim ordered replay of those workspa
 
 `crates/fss-cli/tests/mcp_coordination_contract.rs` starts a fresh MCP process for every request
 and checks two sessions sharing a mission, exclusive claims, dependency gates, progress recovery
-after a lost acknowledgement, renewal/transfer fences, explicit evidence-clock expiry and
+after a lost acknowledgement, renewal/transfer fences, explicit admission-clock expiry and
 reclaim, immutable findings, symmetric disagreement, supersession, withdrawal and terminal audit
 visibility, including exact lost-response retries and stale competing successors. It verifies
 native recovered claim revisions, content-verified finding publications,

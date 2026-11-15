@@ -38,7 +38,7 @@ use fss_publication::SlotName;
 
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, OrientLimits, SessionJournal,
-    digest_of, evidence_now, hex, orient_bound, publish_record, read_published,
+    digest_of, hex, orient_bound, publish_record, read_published,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::InvestigationError;
 use crate::agent_session::checkpoint::journal::projection::SessionProjection;
@@ -411,9 +411,11 @@ pub(super) fn decode_proposal(bytes: &[u8]) -> Result<AgentFeedbackProposal, Con
 
 /// Validates the target against the deployment and publishes the proposal (AOP-013).
 pub fn publish_feedback(
-    root: &Path,
+    root: impl super::SessionRoot,
     request: &FeedbackRequest,
 ) -> Result<PublishedFeedback, DeploymentSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     if request.disposition == RequestedDisposition::CreateLearningProposal
         && matches!(&request.target, FeedbackTarget::Plan(_))
         && request.statement.len() > super::learning::MAX_LEARNING_STATEMENT_BYTES
@@ -436,7 +438,7 @@ pub fn publish_feedback(
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
-    let now = evidence_now(&head);
+    let now = context.now(&head, &request.principal)?;
     let mut journal = SessionJournal::open(root)?;
     let position = super::session_position(
         &mut journal,
@@ -492,11 +494,12 @@ pub fn publish_feedback(
     )?;
     journal.commit_pin()?;
     // Hold the admitted session lock through source validation and any advisory capture.
-    let (proposal, retained_root) =
+    let (mut proposal, retained_root) =
         match captured_feedback(root, request, &session, &journal.store, now)? {
             Some((proposal, retained_root)) => (proposal, Some(retained_root)),
             None => (
-                // New proposals retain their original anchor-dependent identity and time.
+                // The identity remains anchor-bound. Live creation uses admitted runtime
+                // time so a review deadline over historical evidence starts with this request.
                 AgentFeedbackProposal::new(
                     feedback_identity(request, &session.current_anchor),
                     session.principal_id.clone(),
@@ -509,15 +512,39 @@ pub fn publish_feedback(
                     handles(&request.contradicting),
                     request.disposition,
                     FeedbackPrivacyClass::Private,
-                    orientation.capsule().created_at.0.max(0),
+                    if context.is_runtime() {
+                        now.0
+                    } else {
+                        orientation.capsule().created_at.0.max(0)
+                    },
                 )?,
                 None,
             ),
         };
     let feedback_id = proposal.feedback_id.clone();
-    let record = proposal.try_canonical_bytes()?;
     let slot = slot(&feedback_id)?;
-    let published_root = match read_published(root, &slot)? {
+    let existing = read_published(root, &slot)?;
+    if context.is_runtime()
+        && retained_root.is_none()
+        && let Some(existing) = &existing
+    {
+        // Time is deliberately absent from the frozen request identity. Recover only the
+        // original creation time, then compare the complete canonical record below: elapsed
+        // time cannot renew a review deadline or mask a different occupied-slot intent.
+        let original = decode_proposal(&existing.record).map_err(|_| {
+            DeploymentSessionError::FeedbackRefused(
+                "the retained proposal is not a canonical feedback record".to_owned(),
+            )
+        })?;
+        if original.created_at_ns > now.0 {
+            return Err(DeploymentSessionError::FeedbackRefused(
+                "the retained proposal was created after the admitted runtime time".to_owned(),
+            ));
+        }
+        proposal.created_at_ns = original.created_at_ns;
+    }
+    let record = proposal.try_canonical_bytes()?;
+    let published_root = match existing {
         Some(existing)
             if existing.record == record
                 && retained_root.is_none_or(|expected| expected == existing.root) =>
@@ -573,6 +600,7 @@ pub fn publish_feedback(
             &history,
             &head,
             &mut journal.store,
+            now,
         ) {
             Ok(learning) => {
                 published.learning = Some(learning);

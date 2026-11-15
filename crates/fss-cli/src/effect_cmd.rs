@@ -1196,10 +1196,13 @@ pub fn control_plan_json(plan: &ControlPlan) -> String {
     ])
 }
 
-fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
+fn plan_answer(
+    args: &PlanArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
     // Keep the exact case and session owned through preparation and root-last publication.
     let planning = hold_planning_context(
-        &args.root,
+        crate::session_time::context(&args.root, clock),
         &args.principal,
         &args.session,
         args.case.as_deref(),
@@ -1555,9 +1558,9 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
     result
 }
 
-fn execute_plan(args: &PlanArgs) -> (String, ExitIdentity) {
+fn execute_plan(args: &PlanArgs, clock: crate::session_time::Clock<'_>) -> (String, ExitIdentity) {
     finish(
-        plan_answer(args),
+        plan_answer(args, clock),
         ExitIdentity::SUCCESS,
         &Operation {
             command: "plan",
@@ -1581,7 +1584,10 @@ fn execute_plan(args: &PlanArgs) -> (String, ExitIdentity) {
 // commit (AOP-008)
 // ---------------------------------------------------------------------------------------------
 
-fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
+fn commit_answer(
+    args: &CommitArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> Result<Answered, Failure> {
     let (record, plan_root) = read_plan(&args.root, &args.plan)?;
     if record.principal != args.principal {
         return Err(precondition(
@@ -1591,7 +1597,12 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
     }
     // Retain session ownership through the bounded commit/dispatch operation so a concurrent
     // case change or session rebase cannot race validation of the plan's witnesses.
-    let planning = hold_planning_context(&args.root, &record.principal, &record.session_id, None)?;
+    let planning = hold_planning_context(
+        crate::session_time::context(&args.root, clock),
+        &record.principal,
+        &record.session_id,
+        None,
+    )?;
     let context = planning.context();
     let principal_label = args.principal.as_str();
     let relay: SocketAddr = record.route.relay.parse().map_err(|_| Failure::Internal)?;
@@ -1917,7 +1928,10 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
     result
 }
 
-fn execute_commit(args: &CommitArgs) -> (String, ExitIdentity) {
+fn execute_commit(
+    args: &CommitArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let operation = Operation {
         command: "commit",
         name: "commit",
@@ -1928,7 +1942,7 @@ fn execute_commit(args: &CommitArgs) -> (String, ExitIdentity) {
         principal: args.principal.clone(),
         request: args.plan.as_bytes().to_vec(),
     };
-    match commit_answer(args) {
+    match commit_answer(args, clock) {
         Ok((answer, exit)) => finish(Ok(answer), exit, &operation),
         Err(failure) => finish(Err(failure), ExitIdentity::SUCCESS, &operation),
     }
@@ -2335,16 +2349,23 @@ fn execute_cancel(args: &CancelArgs) -> (String, ExitIdentity) {
 /// Executes one effect-grammar command, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_effect(command: &EffectCommand) -> (String, ExitIdentity) {
+    execute_effect_with_time(command, None)
+}
+
+pub(crate) fn execute_effect_with_time(
+    command: &EffectCommand,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     match command {
-        EffectCommand::Plan(args) => execute_plan(args),
-        EffectCommand::Commit(args) => execute_commit(args),
+        EffectCommand::Plan(args) => execute_plan(args, clock),
+        EffectCommand::Commit(args) => execute_commit(args, clock),
         EffectCommand::Reconcile(args) => execute_reconcile(args),
         EffectCommand::Wait(args) => execute_wait(args),
         EffectCommand::Cancel(args) => execute_cancel(args),
         EffectCommand::CancelSession(args) => {
-            crate::session_cancel_cmd::execute_session_cancel(args)
+            crate::session_cancel_cmd::execute_session_cancel_with_time(args, clock)
         }
-        EffectCommand::Close(args) => crate::episode_cmd::execute_close(args),
-        EffectCommand::Mission(args) => crate::mission_cmd::execute_mission(args),
+        EffectCommand::Close(args) => crate::episode_cmd::execute_close_with_time(args, clock),
+        EffectCommand::Mission(args) => crate::mission_cmd::execute_mission_with_time(args, clock),
     }
 }

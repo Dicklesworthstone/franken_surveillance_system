@@ -1,0 +1,149 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-15",
+  "timezone": "UTC",
+  "state": "media_model_component_verified_session_source_implemented_validation_blocked",
+  "mission": {
+    "goal": "Implement consequential functional gaps after reading the comprehensive plan and beads; publish meaningful checkpoints directly to main through GitHub without PRs.",
+    "initial_source_head": "86e90d198191648c502781b537cbdfff4fd26882",
+    "requirement_scope": [
+      "FSS-053 bounded media parameter probing",
+      "Native ONNX opset 17 and F32 LayerNormalization import",
+      "FSS-203/FSS-204 live session expiry and durable recovery slice"
+    ],
+    "broad_beads_closed": false,
+    "bead_scope": [
+      "FSS-053 / fss-x4a.12.2",
+      "FSS-203 / fss-x4a.24.3",
+      "FSS-204 / fss-x4a.24.4"
+    ]
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "media": "crates/fss-container/src/probe/parameters/matroska.rs",
+    "model": "crates/fss-model-ir/src/onnx/layer_normalization.rs",
+    "session_time": "crates/fss-reference/src/deployment_session/time.rs",
+    "live_clock": "crates/fss-cli/src/session_time.rs",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "b1ef66ad1e4cfc4d82a5d926d9ee6e1f7f0bcd5a",
+      "change": "Bounded native Matroska AVC/HEVC initialization parameters through fss-probe."
+    },
+    {
+      "commit": "3e474e9091d7678c01fcc886ef647fe14119f93c",
+      "change": "Closed ONNX opset-17 import profile and native ordered-F32 LayerNormalization lowering."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Explicit live session clock, durable expiry/refusal checkpoints, deadline-aware follow/probe/handoff and existing replay preservation."
+    }
+  ],
+  "authority": {
+    "user": "Implement and commit directly to main using GitHub; no PRs.",
+    "scope": "Repository code, retained deterministic fixtures and local verification. No live device operations or outbound effects.",
+    "release": "Repository-owned local qualification and retained DSR receipts remain required."
+  },
+  "cases": [
+    {
+      "id": "matroska-probe-format-gap",
+      "finding": "Native Matroska demux existed but bounded video-parameter inspection did not admit its AVC/HEVC codec-private records.",
+      "resolution": "Reuse native EBML/track/CRC and AVC/HEVC owners under finite prefix/element/track/NAL limits."
+    },
+    {
+      "id": "onnx-modern-normalization-gap",
+      "finding": "The importer only admitted opset 13; LayerNormalization and versioned opset-17 inference forms were unavailable.",
+      "resolution": "Add a closed version profile and bounded lowering through existing arithmetic owners, preserving separately rounded F32 reciprocal and multiplication."
+    },
+    {
+      "id": "quiet-session-expiry-gap",
+      "finding": "Live session authority could follow a frozen evidence clock while the deployment remained quiet.",
+      "resolution": "Pass trusted runtime time independently of evidence time; persist admitted watermarks and expired tombstones across commands and recovery."
+    },
+    {
+      "id": "native-citation-deadline-gap",
+      "finding": "A case deadline could expire after native work completed but before its result was linked.",
+      "resolution": "Revalidate fresh case/session deadlines under the citation owner while preserving native record adjacency and charged work."
+    }
+  ],
+  "findings": [
+    "Existing MP4/Annex-B behavior and retained parameter spans are preserved; Matroska results do not claim media decoding, timing or custody.",
+    "ONNX support remains a closed static F32 import profile, not arbitrary trained-model compatibility. Model IR operators and wire format are unchanged.",
+    "Live session reads may append a private clock checkpoint while workspaces, grants, token spend and evidence remain unchanged.",
+    "Exact open retry, cold recovery and handoff do not restart a session lease or replenish a budget.",
+    "Relative case/claim opening retries retain their original deadlines after progress. New live feedback binds admission time and preserves its original timestamp on exact retry, keeping historical evidence independent of current review deadlines.",
+    "No Cargo dependency, feature, toolchain pin or release gate was changed."
+  ],
+  "invalidations": [
+    "Live CLI/MCP admission no longer uses committed evidence time. Historical reference sessions in an old clock domain are not migrated or renewed; explicit path APIs retain deterministic replay.",
+    "Journal byte identity is no longer the successful live session-read contract; immutable semantic state plus monotonic private clock admission is the contract.",
+    "Two dependency build failures prevent claiming reference/CLI compilation or new session test execution."
+  ],
+  "budgets": {
+    "media": "Existing finite prefix/element/track/NAL and geometry bounds with caller narrowing and cancellation.",
+    "model": "LayerNormalization preflights the 11–16-node expansion, four generated constants, tensor/name/parameter/work limits and cancellation.",
+    "session": "Existing original lease, narrowed grants, cumulative token charges and native attempt accounting persist without renewal or refill."
+  },
+  "validation": {
+    "completed": [
+      "117 integrated container tests passed after preserving concurrent MPEG-TS changes.",
+      "16 fss-probe unit tests and 15 actual CLI subprocess checks passed.",
+      "34 normalization/executor tests, 22 model-IR unit tests and 15 artifact-export tests passed against pinned directly compiled production components.",
+      "Pinned formatting and scoped diff checks passed; independent source reviews covered clock propagation, native composition and identity preservation."
+    ],
+    "session_tests_authored": 22,
+    "session_tests_executed": false,
+    "session_changed_crates_compiled": false,
+    "attempts": [
+      {
+        "command": "cargo check --locked --offline -p fss-reference -p fss-cli",
+        "environment": "one Cargo job; development debug off; exact pinned toolchain/locked dependencies",
+        "result": "SIGKILL in unchanged asupersync 0.5.0 before changed crates."
+      },
+      {
+        "command": "cargo check --locked --offline -p fss-reference -p fss-cli",
+        "environment": "one Cargo job; incremental off; development debug off; RUSTFLAGS=-Zthreads=1 -Zmir-opt-level=0",
+        "result": "SIGKILL in unchanged asupersync 0.5.0 before changed crates.",
+        "elapsed_seconds": 139.36,
+        "peak_child_rss_kib": 4285984
+      }
+    ],
+    "release_qualified": false,
+    "required_followup_commands": [
+      "cargo test --locked --offline -p fss-reference --lib deployment_session::tests",
+      "cargo test --locked --offline -p fss-reference --test deployment_supervision_orientation_contract --test follow_session_delivery_contract",
+      "cargo test --locked --offline -p fss-cli --lib session_time::tests",
+      "cargo test --locked --offline -p fss-cli --test session_cli_contract --test session_cancel_cli_contract --test mcp_session_lifecycle_contract --test follow_subscription_cli_contract --test mcp_coordination_contract --test mcp_feedback_contract --test mcp_investigation_contract",
+      "cargo test --locked --offline -p fss-cli --test agent_effect_cli_contract --test event_hydration_query_cli_contract --test supervisor_retained_contract",
+      "cargo test --locked --offline -p fss-cli --bin fss-mcp",
+      "scripts/qualify.sh on the designated native qualification host before promotion"
+    ]
+  },
+  "obligations": [
+    {
+      "status": "blocked",
+      "task": "Compile changed reference/CLI crates and execute session contracts on a host that can build the exact locked Asupersync dependency without SIGKILL."
+    },
+    {
+      "status": "preserved",
+      "task": "Keep broad plan/bead and release gates open until complete acceptance evidence exists."
+    }
+  ],
+  "unknowns": [
+    "Session type-check and runtime behavior remain unproven by execution in this environment.",
+    "No full workspace, release, physical-device or arbitrary-model qualification was established."
+  ],
+  "continuations": [
+    {
+      "class": "information_gathering",
+      "action": "Run the retained focused verification commands with the pinned compiler and exact dependency closure; fix any failures before qualification."
+    }
+  ],
+  "integration": {
+    "observed_remote_head_before_session_checkpoint": "d09348fcf31c7843a64770ef8894d275c9ef0461",
+    "strategy": "Non-force GitHub main updates with expected parent; preserve concurrent source, status and manifest changes.",
+    "result": "Source scope has no overlap with concurrent main changes; preserve the latest status and manifest when publishing."
+  }
+}

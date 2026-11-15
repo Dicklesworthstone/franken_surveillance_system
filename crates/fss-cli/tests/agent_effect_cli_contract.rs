@@ -1654,7 +1654,6 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     let ledger_path = agent.root.join("ledger/journal.fssj");
     let effects_path = agent.root.join("effects/journal.fssj");
     let sessions_path = agent.root.join("agent/sessions/journal.fssj");
-    let session_pin = agent.root.join("agent/sessions/ROOT");
     let evidence_before = fs::read(&ledger_path)?;
     let effects_before = fs::read(&effects_path)?;
 
@@ -1694,15 +1693,19 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     let initial_head = texts(&bound, &["proofPointers"])?[0].clone();
     ContentDigest::parse(&initial_head)?;
     let bound_journal = fs::read(&sessions_path)?;
-    let bound_pin = fs::read(&session_pin)?;
     let (code, retry_stdout) = run_fss(&bind_args)?;
     assert_eq!(code, Some(0), "{retry_stdout}");
+    let retry = parse(retry_stdout.trim_end())?;
+    assert_eq!(field(&retry, &["payload"])?, field(&bound, &["payload"])?);
+    assert_eq!(texts(&retry, &["proofPointers"])?[0], initial_head);
     assert_eq!(
-        retry_stdout, bound_stdout,
-        "a cold exact bind retry is stable"
+        texts(&retry, &["degradation"])?,
+        texts(&bound, &["degradation"])?
     );
-    assert_eq!(fs::read(&sessions_path)?, bound_journal);
-    assert_eq!(fs::read(&session_pin)?, bound_pin);
+    assert_eq!(
+        session_without_clock(&fs::read(&sessions_path)?)?,
+        session_without_clock(&bound_journal)?
+    );
     assert_eq!(fs::read(&ledger_path)?, evidence_before);
     assert_eq!(fs::read(&effects_path)?, effects_before);
 
@@ -1733,18 +1736,15 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     assert!(text(summary, &["content"])?.contains(&format!(
         "Retained mission revision 0: awaiting_evidence at {initial_head}; current assessment"
     )));
-    assert_eq!(fs::read(&sessions_path)?, bound_journal);
-    assert_eq!(fs::read(&session_pin)?, bound_pin);
+    assert_eq!(
+        session_without_clock(&fs::read(&sessions_path)?)?,
+        session_without_clock(&bound_journal)?
+    );
 
     // Recover an exact immutable mission head after a lost command response using only a
     // read. The public revision number alone cannot supply the next assessment's CAS digest.
     let recover_head = |expected: &str, revision: u64, freshness: &str| -> TestResult<String> {
-        let before = [
-            fs::read(&sessions_path)?,
-            fs::read(&session_pin)?,
-            fs::read(&ledger_path)?,
-            fs::read(&effects_path)?,
-        ];
+        let before = clock_independent_tree(&agent.root)?;
         let (code, recovered) = agent.run("orient", &["--session", &agent.session])?;
         assert_eq!(code, Some(0), "{recovered:?}");
         assert_eq!(text(&recovered, &["operationId"])?, "AOP-003");
@@ -1791,14 +1791,9 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
         assert!(summary.contains(expected));
         assert!(summary.contains(freshness), "{summary}");
         assert_eq!(
-            [
-                fs::read(&sessions_path)?,
-                fs::read(&session_pin)?,
-                fs::read(&ledger_path)?,
-                fs::read(&effects_path)?,
-            ],
+            clock_independent_tree(&agent.root)?,
             before,
-            "recovering a mission head cannot write or repair agent/effect/evidence history"
+            "recovering a mission head may persist admission time but cannot change retained mission, grants, budgets, evidence or effects"
         );
         Ok(head)
     };
@@ -1890,15 +1885,22 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     let terminal_head = texts(&terminal, &["proofPointers"])?[0].clone();
     assert_ne!(terminal_head, pending_head);
     let terminal_journal = fs::read(&sessions_path)?;
-    let terminal_pin = fs::read(&session_pin)?;
     let (code, retry_stdout) = run_fss(&assess_args)?;
     assert_eq!(code, Some(0), "{retry_stdout}");
+    let retry = parse(retry_stdout.trim_end())?;
     assert_eq!(
-        retry_stdout, terminal_stdout,
-        "the exact predecessor request must recover its already-retained terminal result"
+        field(&retry, &["payload"])?,
+        field(&terminal, &["payload"])?
     );
-    assert_eq!(fs::read(&sessions_path)?, terminal_journal);
-    assert_eq!(fs::read(&session_pin)?, terminal_pin);
+    assert_eq!(texts(&retry, &["proofPointers"])?[0], terminal_head);
+    assert_eq!(
+        texts(&retry, &["degradation"])?,
+        texts(&terminal, &["degradation"])?
+    );
+    assert_eq!(
+        session_without_clock(&fs::read(&sessions_path)?)?,
+        session_without_clock(&terminal_journal)?
+    );
     assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
     assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
 
@@ -1923,8 +1925,10 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
         field(&recovered_retry, &["payload"])?,
         field(&terminal, &["payload"])?
     );
-    assert_eq!(fs::read(&sessions_path)?, terminal_journal);
-    assert_eq!(fs::read(&session_pin)?, terminal_pin);
+    assert_eq!(
+        session_without_clock(&fs::read(&sessions_path)?)?,
+        session_without_clock(&terminal_journal)?
+    );
     assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
     assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
 
@@ -1940,7 +1944,7 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
         texts(&handed, &["payload", "criteria", "stop"])?
             .iter()
             .any(|line| line.contains(&deadline)),
-        "the exact i128 evidence-clock deadline must survive the public contract"
+        "the exact i128 admission-clock deadline must survive the public contract"
     );
     assert!(text(&handed, &["payload", "objective"])?.contains(&plan_id));
     assert!(
@@ -2013,7 +2017,6 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     // disclose that its terminal result is historical instead of implying current completion.
     agent.open_case()?;
     let journal_with_case = fs::read(&sessions_path)?;
-    let pin_with_case = fs::read(&session_pin)?;
     let recovered_historical_head = recover_head(
         &terminal_head,
         2,
@@ -2056,9 +2059,20 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     );
     let (code, retry_stdout) = run_fss(&historical_args)?;
     assert_eq!(code, Some(0), "{retry_stdout}");
-    assert_eq!(retry_stdout, historical_stdout);
-    assert_eq!(fs::read(&sessions_path)?, journal_with_case);
-    assert_eq!(fs::read(&session_pin)?, pin_with_case);
+    let retry = parse(retry_stdout.trim_end())?;
+    assert_eq!(
+        field(&retry, &["payload"])?,
+        field(&historical, &["payload"])?
+    );
+    assert_eq!(texts(&retry, &["proofPointers"])?[0], terminal_head);
+    assert_eq!(
+        texts(&retry, &["degradation"])?,
+        texts(&historical, &["degradation"])?
+    );
+    assert_eq!(
+        session_without_clock(&fs::read(&sessions_path)?)?,
+        session_without_clock(&journal_with_case)?
+    );
     assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
     assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
     Ok(())
@@ -2192,6 +2206,60 @@ fn learning_tree(
         }
     }
     Ok(files)
+}
+
+/// Compare the retained semantic state independently of live read-admission watermarks.
+/// Replaying every journal record still verifies aliases, budgets, receipts and owner state.
+fn session_without_clock(
+    bytes: &[u8],
+) -> TestResult<fss_reference::agent_session::checkpoint::journal::SessionRecoveryState> {
+    use fss_reference::agent_session::checkpoint::journal::{
+        DurableSessionLimits, SessionJournalInspection, inspect_session_bytes,
+    };
+    let mut state = inspect_session_bytes(
+        bytes,
+        DurableSessionLimits::default(),
+        fss_reference::agent_session::work_claims::WorkClaimLimits::default(),
+    )?;
+    assert_eq!(state.inspection.incomplete_tail, None);
+    let zero = ContentDigest::sha256(b"clock-independent test comparison");
+    state.inspection = SessionJournalInspection {
+        root: zero,
+        checkpoint_digest: zero,
+        records: 0,
+        committed_bytes: 0,
+        incomplete_tail: None,
+    };
+    // The canonical checkpoint contains the clock itself. Its decoded grants, spend,
+    // immutable workspace, coordination, follow and mission state remain compared below.
+    state.checkpoint_bytes.clear();
+    for session in &mut state.sessions {
+        session.last_observed_at = fss_core::TimestampNs(0);
+    }
+    Ok(state)
+}
+
+fn clock_independent_tree(
+    root: &Path,
+) -> TestResult<(
+    std::collections::BTreeMap<PathBuf, ContentDigest>,
+    fss_reference::agent_session::checkpoint::journal::SessionRecoveryState,
+)> {
+    let mut files = learning_tree(root, &[""])?;
+    files.remove(Path::new("agent/sessions/journal.fssj"));
+    files.remove(Path::new("agent/sessions/ROOT"));
+    let bytes = fs::read(root.join("agent/sessions/journal.fssj"))?;
+    let inspected = fss_reference::agent_session::checkpoint::journal::inspect_session_bytes(
+        &bytes,
+        fss_reference::agent_session::checkpoint::journal::DurableSessionLimits::default(),
+        fss_reference::agent_session::work_claims::WorkClaimLimits::default(),
+    )?;
+    assert_eq!(
+        ContentDigest::parse(fs::read_to_string(root.join("agent/sessions/ROOT"))?.trim())?,
+        inspected.inspection.root,
+        "live clock admission must remain durably pinned"
+    );
+    Ok((files, session_without_clock(&bytes)?))
 }
 
 fn learning_experiences(root: &Path) -> TestResult<Vec<ContentDigest>> {

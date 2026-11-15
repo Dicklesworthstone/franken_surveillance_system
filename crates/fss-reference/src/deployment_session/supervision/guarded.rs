@@ -62,7 +62,7 @@ impl GuardedSupervisionDelivery {
 /// inspect retained progress and explicitly select its next expectation. Legacy entrypoints
 /// retain their existing behavior; this function never registers a missing subscription.
 pub fn supervise_existing_session_at(
-    root: &Path,
+    root: impl super::super::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionSessionRequest,
     expected_subscription_state: ContentDigest,

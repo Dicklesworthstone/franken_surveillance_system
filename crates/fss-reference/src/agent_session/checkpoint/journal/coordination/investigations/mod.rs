@@ -333,6 +333,13 @@ impl ReferenceInvestigationStore {
         self.entries.values().map(|entry| &entry.head)
     }
 
+    /// Original revision for owner-side retry reconstruction; no admission or disclosure.
+    pub(crate) fn opening_revision(&self, case_id: &str) -> Option<&InvestigationRevision> {
+        self.entries
+            .get(case_id)
+            .map(|entry| entry.history.first().unwrap_or(&entry.head))
+    }
+
     /// Executes using live session authority and a runtime clock, not an agent's claimed grants.
     /// Failed operations may advance clocks or expire a session, but never append a case revision.
     /// All input media/text/citations must already be scoped by their source owner before entry.

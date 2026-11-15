@@ -138,7 +138,7 @@ pub fn parse_mission_args(tokens: &[ArgToken]) -> Result<MissionArgs, CliError> 
         let (_, raw, index) = take(&values, "--mission-deadline-ns").ok_or_else(|| {
             missing(
                 "--mission-deadline-ns",
-                "an explicit evidence-clock decision deadline",
+                "an explicit session admission-clock decision deadline",
             )
         })?;
         let deadline = raw
@@ -237,7 +237,7 @@ fn response(answer: &MissionAnswer) -> Result<String, Box<dyn std::error::Error>
     }
     if revision.deadline_reached() {
         degradation.push(
-            "The decision deadline has elapsed on the evidence clock. Deadline passage does not prove cancellation, failure, or absence of a dispatched effect."
+            "The decision deadline has elapsed on the session admission clock. Deadline passage does not prove cancellation, failure, or absence of a dispatched effect."
                 .to_owned(),
         );
     }
@@ -365,6 +365,13 @@ fn mission_failure_boundary(retained: Option<(u64, ContentDigest)>) -> Execution
 /// Execute with the same deployment lock used by plan closure, without effect authority.
 #[must_use]
 pub fn execute_mission(args: &MissionArgs) -> (String, ExitIdentity) {
+    execute_mission_with_time(args, None)
+}
+
+pub(crate) fn execute_mission_with_time(
+    args: &MissionArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
     let request = MissionRequest {
         session_id: args.session.clone(),
         principal: args.principal.clone(),
@@ -403,7 +410,10 @@ pub fn execute_mission(args: &MissionArgs) -> (String, ExitIdentity) {
         Ok(deployment) => deployment,
         Err(failure) => return finish(Err(failure), ExitIdentity::SUCCESS, &operation),
     };
-    let result = fss_reference::deployment_session::mission::execute(&args.root, &request);
+    let result = fss_reference::deployment_session::mission::execute(
+        crate::session_time::context(&args.root, clock),
+        &request,
+    );
     // Refusal rendering may reread the deployment. Release only this command's lock after the
     // native owner has pinned its result, before that independent read.
     drop(deployment);

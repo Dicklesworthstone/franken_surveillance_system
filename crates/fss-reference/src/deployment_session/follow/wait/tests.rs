@@ -460,6 +460,60 @@ fn existing_quiet_delivery_is_replayed_without_waiting_or_changing_its_receipt()
 }
 
 #[test]
+fn runtime_clock_is_resampled_after_a_quiet_park_and_expiry_is_pinned() -> TestResult {
+    use crate::deployment_session::{SessionContext, SessionTimeAuthority, SessionTimeError};
+
+    struct Clock(std::cell::Cell<i128>);
+    impl SessionTimeAuthority for Clock {
+        fn observe(&self, _: &Path, _: &PrincipalId) -> Result<TimestampNs, SessionTimeError> {
+            Ok(TimestampNs(self.0.get()))
+        }
+    }
+    let fixture = Fixture::new("runtime-park-expiry")?;
+    let request = fixture.request()?;
+    let binding = fixture.binding(&request, 1000, MAX_FOLLOW_WAIT_READS)?;
+    let clock = Clock(std::cell::Cell::new(NOW.0));
+    let mut control = Control::new(&binding);
+    control.action = Some(Box::new(|| {
+        clock.0.set(fixture.opened.session.expires_at_ns);
+        Ok(())
+    }));
+    let failure = follow_session_wait_with_context(
+        SessionContext::runtime(&fixture.root, &clock),
+        &binding,
+        &mut control,
+    )
+    .expect_err("lease expires while the journal writer is released");
+    assert!(matches!(
+        failure.failure.error,
+        FollowSessionError::Session(_)
+    ));
+    assert_eq!(control.parks, [250]);
+    assert_eq!(control.lock_attempts, 2);
+    let retained = fixture.inspect()?;
+    assert!(
+        retained
+            .sessions
+            .iter()
+            .any(
+                |entry| entry.session.session_id == fixture.opened.session.session_id
+                    && entry.closed
+            )
+    );
+    assert!(
+        retained
+            .follows
+            .iter()
+            .all(|state| state.pending().is_none())
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("agent/sessions/ROOT"))?.trim(),
+        retained.inspection.root.to_text(),
+    );
+    Ok(())
+}
+
+#[test]
 fn acknowledgement_survives_cancelled_wait_and_cold_retry_without_advancing_a_successor()
 -> TestResult {
     let fixture = Fixture::new("ack-cancel-restart")?;

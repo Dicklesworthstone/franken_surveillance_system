@@ -363,7 +363,17 @@ fn response(published: &PublishedFeedback) -> Result<String, Box<dyn std::error:
 /// Executes `fss feedback`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_feedback(args: &FeedbackArgs) -> (String, ExitIdentity) {
-    match publish_feedback(&args.root, &args.request) {
+    execute_feedback_with_time(args, None)
+}
+
+pub(crate) fn execute_feedback_with_time(
+    args: &FeedbackArgs,
+    clock: crate::session_time::Clock<'_>,
+) -> (String, ExitIdentity) {
+    match publish_feedback(
+        crate::session_time::context(&args.root, clock),
+        &args.request,
+    ) {
         Ok(mut published) => {
             if let Some(error) = published.case_refusal.take() {
                 return rendered(

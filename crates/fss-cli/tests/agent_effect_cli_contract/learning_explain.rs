@@ -197,6 +197,80 @@ fn assert_selected(value: &Value, captured: &Captured) -> TestResult {
     assert_selected_for(value, captured, &captured.agent)
 }
 
+fn assert_same_selected_content(
+    before: &str,
+    after: &str,
+    captured: &Captured,
+    current: &Agent,
+) -> TestResult {
+    let before = parse(before.trim_end())?;
+    let after = parse(after.trim_end())?;
+    assert_selected_for(&before, captured, current)?;
+    assert_selected_for(&after, captured, current)?;
+    let previous = field(&before, &["payload", "epistemic", "propositions"])?
+        .array()
+        .ok_or("previous selected propositions")?;
+    let next = field(&after, &["payload", "epistemic", "propositions"])?
+        .array()
+        .ok_or("next selected propositions")?;
+    assert_eq!(previous.len(), next.len());
+    for expected in previous {
+        let id = text(expected, &["id"])?;
+        let actual = proposition(&after, id)?;
+        if matches!(id, "learning:status" | "current:authority") {
+            let mut expected_fields = parse(text(expected, &["statement"])?)?;
+            let mut actual_fields = parse(text(actual, &["statement"])?)?;
+            let key = if id == "learning:status" {
+                "admissionTimeNs"
+            } else {
+                "journalRoot"
+            };
+            if let (Value::Object(expected), Value::Object(actual)) =
+                (&mut expected_fields, &mut actual_fields)
+            {
+                if key == "admissionTimeNs" {
+                    assert!(
+                        actual
+                            .get(key)
+                            .and_then(Value::integer)
+                            .ok_or("current admission time")?
+                            >= expected
+                                .get(key)
+                                .and_then(Value::integer)
+                                .ok_or("previous admission time")?
+                    );
+                }
+                expected.remove(key);
+                actual.remove(key);
+            } else {
+                return Err("selected metadata must remain an object".into());
+            }
+            assert_eq!(
+                actual_fields, expected_fields,
+                "retained {id} metadata changed"
+            );
+        } else {
+            assert_eq!(actual, expected, "retained {id} changed");
+        }
+    }
+    for path in [
+        &["payload", "basisAnchor"][..],
+        &["payload", "coverage"][..],
+        &["payload", "continuity"][..],
+    ] {
+        assert_eq!(field(&after, path)?, field(&before, path)?);
+    }
+    let mut previous_proofs = texts(&before, &["proofPointers"])?;
+    let mut next_proofs = texts(&after, &["proofPointers"])?;
+    previous_proofs.pop();
+    next_proofs.pop();
+    assert_eq!(
+        next_proofs, previous_proofs,
+        "only the live admission proof may change"
+    );
+    Ok(())
+}
+
 fn assert_selected_for(value: &Value, captured: &Captured, current: &Agent) -> TestResult {
     assert_eq!(text(value, &["operationId"])?, "AOP-011");
     assert_eq!(text(value, &["outcome"])?, "ok");
@@ -398,13 +472,13 @@ fn assert_private_refusal(
     root: ContentDigest,
     extra: &[&str],
 ) -> TestResult<String> {
-    let before = learning_tree(&agent.root, &[""])?;
+    let before = clock_independent_tree(&agent.root)?;
     let (code, stdout) = run_fss(&args(agent, root, extra))?;
     let (code, result) = agent.answer(code, &stdout)?;
     assert_eq!(code, Some(5), "{stdout}");
     assert_eq!(text(&result, &["outcome"])?, "refused");
     assert!(!stdout.contains("PRIVATE_LEARNING_CANDIDATE_91c"));
-    assert_eq!(learning_tree(&agent.root, &[""])?, before);
+    assert_eq!(clock_independent_tree(&agent.root)?, before);
     Ok(stdout)
 }
 
@@ -413,7 +487,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
 {
     let (directory, event) = corroborated_event("selected-learning-explain")?;
     let captured = capture(&directory, &event)?;
-    let before = learning_tree(&captured.agent.root, &[""])?;
+    let before = clock_independent_tree(&captured.agent.root)?;
     // The request contains only the admitted session and exact retained publication root.
     // It does not reconstruct the old feedback statement, plan request, or source citations.
     let selected_args = args(
@@ -432,13 +506,10 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
             .ok_or("selected full-wire token estimate")?,
     )?;
     assert_eq!(reported_tokens, wire_estimate);
-    assert_eq!(learning_tree(&captured.agent.root, &[""])?, before);
+    assert_eq!(clock_independent_tree(&captured.agent.root)?, before);
     let (code, retry) = run_fss(&selected_args)?;
     assert_eq!(code, Some(0), "{retry}");
-    assert_eq!(
-        retry, first_stdout,
-        "cold root-only inspection is deterministic"
-    );
+    assert_same_selected_content(&first_stdout, &retry, &captured, &captured.agent)?;
     let mcp = mcp_answer(
         &captured.agent,
         &captured.principal,
@@ -446,12 +517,8 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
         r#","budget_tokens":16000"#,
         false,
     )?;
-    assert_eq!(
-        mcp,
-        first_stdout.trim_end(),
-        "CLI and MCP share the exact native answer"
-    );
-    assert_eq!(learning_tree(&captured.agent.root, &[""])?, before);
+    assert_same_selected_content(&retry, &mcp, &captured, &captured.agent)?;
+    assert_eq!(clock_independent_tree(&captured.agent.root)?, before);
     assert_eq!(captured.relay.connections(), 0);
 
     let tiny = assert_private_refusal(&captured.agent, captured.root, &["--budget-tokens", "1"])?;
@@ -463,7 +530,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
         true,
     )?;
     assert_eq!(tiny_mcp, tiny.trim_end());
-    assert_eq!(learning_tree(&captured.agent.root, &[""])?, before);
+    assert_eq!(clock_independent_tree(&captured.agent.root)?, before);
 
     // Possession of a root grants neither another mission nor another principal its contents.
     let other = open_with_budget(
@@ -507,7 +574,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
     ));
     let slot_record = fs::read(&selected_slot)?;
     fs::remove_file(&selected_slot)?;
-    let orphaned = learning_tree(&captured.agent.root, &[""])?;
+    let orphaned = clock_independent_tree(&captured.agent.root)?;
     assert_private_refusal(&captured.agent, captured.root, &[])?;
     mcp_answer(
         &captured.agent,
@@ -516,7 +583,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
         "",
         true,
     )?;
-    assert_eq!(learning_tree(&captured.agent.root, &[""])?, orphaned);
+    assert_eq!(clock_independent_tree(&captured.agent.root)?, orphaned);
     fs::write(&selected_slot, &slot_record)?;
     let indeterminate_slot = roots.join(format!(
         "{}{}{}",
@@ -534,7 +601,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
     for marker in [indeterminate_slot, indeterminate_tombstone] {
         assert!(!marker.exists());
         fs::write(&marker, b"selected custody is indeterminate\n")?;
-        let marked = learning_tree(&captured.agent.root, &[""])?;
+        let marked = clock_independent_tree(&captured.agent.root)?;
         assert_private_refusal(&captured.agent, captured.root, &[])?;
         mcp_answer(
             &captured.agent,
@@ -543,7 +610,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
             "",
             true,
         )?;
-        assert_eq!(learning_tree(&captured.agent.root, &[""])?, marked);
+        assert_eq!(clock_independent_tree(&captured.agent.root)?, marked);
         fs::remove_file(marker)?;
     }
 
@@ -564,7 +631,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
             *damaged.last_mut().ok_or("empty selected object")? ^= 1;
             fs::write(&path, damaged)?;
         }
-        let damaged = learning_tree(&captured.agent.root, &[""])?;
+        let damaged = clock_independent_tree(&captured.agent.root)?;
         assert_private_refusal(&captured.agent, captured.root, &[])?;
         mcp_answer(
             &captured.agent,
@@ -573,7 +640,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
             "",
             true,
         )?;
-        assert_eq!(learning_tree(&captured.agent.root, &[""])?, damaged);
+        assert_eq!(clock_independent_tree(&captured.agent.root)?, damaged);
         fs::write(path, original)?;
     }
 
@@ -581,23 +648,21 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
     let unrelated = roots.join("learning-unrelated-selected-read.root");
     assert!(!unrelated.exists());
     fs::write(&unrelated, b"unrelated malformed retained root record\n")?;
-    let unrelated_before = learning_tree(&captured.agent.root, &[""])?;
+    let unrelated_before = clock_independent_tree(&captured.agent.root)?;
     let (code, selected_stdout) = run_fss(&selected_args)?;
     let (code, selected) = captured.agent.answer(code, &selected_stdout)?;
     assert_eq!(code, Some(0), "{selected_stdout}");
     assert_selected(&selected, &captured)?;
+    let selected_mcp = mcp_answer(
+        &captured.agent,
+        &captured.principal,
+        captured.root,
+        r#","budget_tokens":16000"#,
+        false,
+    )?;
+    assert_same_selected_content(&selected_stdout, &selected_mcp, &captured, &captured.agent)?;
     assert_eq!(
-        mcp_answer(
-            &captured.agent,
-            &captured.principal,
-            captured.root,
-            r#","budget_tokens":16000"#,
-            false,
-        )?,
-        selected_stdout.trim_end(),
-    );
-    assert_eq!(
-        learning_tree(&captured.agent.root, &[""])?,
+        clock_independent_tree(&captured.agent.root)?,
         unrelated_before
     );
     fs::remove_file(unrelated)?;
@@ -639,22 +704,20 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
         full_orientation_refused,
         "fixture never exceeded complete orientation's protected budget"
     );
-    let after_growth = learning_tree(&captured.agent.root, &[""])?;
+    let after_growth = clock_independent_tree(&captured.agent.root)?;
     let (code, selected_stdout) = run_fss(&selected_args)?;
     let (code, selected) = captured.agent.answer(code, &selected_stdout)?;
     assert_eq!(code, Some(0), "{selected_stdout}");
     assert_selected(&selected, &captured)?;
-    assert_eq!(
-        mcp_answer(
-            &captured.agent,
-            &captured.principal,
-            captured.root,
-            r#","budget_tokens":16000"#,
-            false,
-        )?,
-        selected_stdout.trim_end(),
-    );
-    assert_eq!(learning_tree(&captured.agent.root, &[""])?, after_growth);
+    let selected_mcp = mcp_answer(
+        &captured.agent,
+        &captured.principal,
+        captured.root,
+        r#","budget_tokens":16000"#,
+        false,
+    )?;
+    assert_same_selected_content(&selected_stdout, &selected_mcp, &captured, &captured.agent)?;
+    assert_eq!(clock_independent_tree(&captured.agent.root)?, after_growth);
     assert_eq!(captured.relay.connections(), 0);
     Ok(())
 }

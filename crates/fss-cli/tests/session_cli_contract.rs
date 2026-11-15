@@ -8,12 +8,13 @@
 //!    invalidated assumption, and rebases the session onto the head exactly once;
 //! 3. unknown sessions, unknown, tampered, and foreign handoffs, and non-deployments are typed
 //!    refusals;
-//! 4. an identical open, handoff, or resume is an exact, byte-identical retry;
+//! 4. live open/resume retries preserve immutable session/workspace state while admission time
+//!    advances; each live handoff binds its own admission time;
 //! 5. every answer and refusal validates against its registered schemas
 //!    (`scripts/json_instance_validate.py`): the envelope, the situation capsule, the handoff
 //!    capsule, and the session and workspace revision published beside the handoff;
 //! 6. bound AOP-003 orientation reads mission/case context at the current head without rebasing
-//!    the session, rewriting its journal, or changing any deployment file;
+//!    the session or changing evidence; only durable clock admission may update its journal;
 //! 7. the authority ledger, the effect journal, and the deployment spool are byte-identical before
 //!    and after every session command: only agent-plane state under `agent/` is written.
 //!
@@ -31,6 +32,8 @@ use std::process::{Command, Output};
 use fss_core::{ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
+
+mod runtime_time;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -570,6 +573,56 @@ fn authority_tree(root: &Path) -> TestResult<BTreeMap<PathBuf, String>> {
         .collect())
 }
 
+/// Ordinary live reads may append a session clock record and atomically replace its pin.
+fn non_clock_tree(root: &Path) -> TestResult<BTreeMap<PathBuf, String>> {
+    Ok(tree_digest(root)?
+        .into_iter()
+        .filter(|(path, _)| {
+            path != Path::new("agent/sessions/journal.fssj")
+                && path != Path::new("agent/sessions/ROOT")
+        })
+        .collect())
+}
+
+fn retained_session_state(
+    root: &Path,
+) -> TestResult<fss_reference::agent_session::checkpoint::journal::SessionRecoveryState> {
+    use fss_reference::agent_session::checkpoint::journal::{
+        DurableSessionLimits, inspect_session_bytes,
+    };
+    use fss_reference::agent_session::work_claims::WorkClaimLimits;
+    Ok(inspect_session_bytes(
+        &fs::read(root.join("agent/sessions/journal.fssj"))?,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?)
+}
+
+fn assert_only_clock_progress(
+    before: &fss_reference::agent_session::checkpoint::journal::SessionRecoveryState,
+    after: &fss_reference::agent_session::checkpoint::journal::SessionRecoveryState,
+) {
+    assert_eq!(before.sessions.len(), after.sessions.len());
+    for (before, after) in before.sessions.iter().zip(&after.sessions) {
+        assert_eq!(before.session, after.session);
+        assert_eq!(before.opening_digest, after.opening_digest);
+        assert_eq!(before.basis, after.basis);
+        assert_eq!(before.spent_tokens, after.spent_tokens);
+        assert_eq!(before.closed, after.closed);
+        assert!(after.last_observed_at >= before.last_observed_at);
+    }
+    assert_eq!(before.workspace_revisions, after.workspace_revisions);
+    assert_eq!(
+        before.workspace_checkpoint_digest,
+        after.workspace_checkpoint_digest
+    );
+    assert_eq!(before.claims, after.claims);
+    assert_eq!(before.cases, after.cases);
+    assert_eq!(before.follows, after.follows);
+    assert_eq!(before.supervisions, after.supervisions);
+    assert_eq!(before.missions, after.missions);
+}
+
 /// Checks the registered envelope shape of one session answer or refusal.
 fn assert_session_envelope(
     stdout: &str,
@@ -991,11 +1044,11 @@ fn resume_after_a_watch_event_lists_the_change_and_every_invalidated_assumption(
         "resume writes no authority"
     );
 
-    // Resuming again is an exact retry: nothing is rebased twice and the answer is identical.
-    let journal = fs::read(root.join("agent/sessions/journal.fssj"))?;
-    let (again, _) = session_ok(&root, "resume", &["--handoff", &handoff_id], &scratch)?;
-    assert_eq!(again, stdout);
-    assert_eq!(fs::read(root.join("agent/sessions/journal.fssj"))?, journal);
+    // Resuming again admits current time without rebasing twice or renewing the lease.
+    let retained = retained_session_state(&root)?;
+    let (_, again) = session_ok(&root, "resume", &["--handoff", &handoff_id], &scratch)?;
+    assert_eq!(payload(&again)?, payload(&resumed)?);
+    assert_only_clock_progress(&retained, &retained_session_state(&root)?);
 
     // A handoff of the rebased session is sealed at the new head.
     let (_, rehanded) = handoff(&root, &session, &scratch)?;
@@ -1104,20 +1157,21 @@ fn unknown_tampered_and_foreign_handoffs_are_typed_refusals() -> TestResult {
 }
 
 #[test]
-fn identical_open_and_handoff_are_byte_identical_exact_retries() -> TestResult {
+fn live_open_retries_preserve_identity_and_handoffs_bind_their_admission_time() -> TestResult {
     let directory = OwnedDirectory::new("idempotent")?;
     let root = empty_deployment(&directory, SITE)?;
     let scratch = directory.0.clone();
-    let (first, opened) = open(&root, &scratch)?;
-    let journal = fs::read(root.join("agent/sessions/journal.fssj"))?;
-    let (second, _) = open(&root, &scratch)?;
-    assert_eq!(second, first, "an identical open is an exact retry");
-    assert_eq!(fs::read(root.join("agent/sessions/journal.fssj"))?, journal);
+    let (_, opened) = open(&root, &scratch)?;
+    let retained = retained_session_state(&root)?;
+    let (_, second) = open(&root, &scratch)?;
+    assert_eq!(second.get("sessionId")?, opened.get("sessionId")?);
+    assert_eq!(payload(&second)?, payload(&opened)?);
+    assert_only_clock_progress(&retained, &retained_session_state(&root)?);
 
     // The mission may be given as a file; its contents are the mission statement.
     let mission_file = directory.0.join("mission.txt");
     fs::write(&mission_file, MISSION)?;
-    let (from_file, _) = session_ok(
+    let (_, from_file) = session_ok(
         &root,
         "open",
         &[
@@ -1129,19 +1183,29 @@ fn identical_open_and_handoff_are_byte_identical_exact_retries() -> TestResult {
         &scratch,
     )?;
     assert_eq!(
-        from_file, first,
+        payload(&from_file)?,
+        payload(&opened)?,
         "the file's contents are the mission statement"
     );
 
     let session = opened.get("sessionId")?.text()?.to_owned();
-    let (handed, _) = handoff(&root, &session, &scratch)?;
-    let (again, _) = handoff(&root, &session, &scratch)?;
-    assert_eq!(again, handed, "an identical handoff republishes nothing");
+    let (_, handed) = handoff(&root, &session, &scratch)?;
+    let (_, again) = handoff(&root, &session, &scratch)?;
+    for field in [
+        "sourceSessionId",
+        "missionId",
+        "anchor",
+        "situationCapsuleRoot",
+    ] {
+        assert_eq!(payload(&again)?.get(field)?, payload(&handed)?.get(field)?);
+    }
+    assert_only_clock_progress(&retained, &retained_session_state(&root)?);
     Ok(())
 }
 
 #[test]
-fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -> TestResult {
+fn bound_orientation_preserves_mission_and_cases_while_only_clock_admission_is_written()
+-> TestResult {
     let directory = OwnedDirectory::new("bound-orient")?;
     let root = empty_deployment(&directory, SITE)?;
     let (_, opened) = session_ok(
@@ -1163,13 +1227,15 @@ fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -
     let source = payload(&opened)?
         .path(&["objectiveContract", "source"])?
         .clone();
-    let before = tree_digest(&root)?;
+    let before = non_clock_tree(&root)?;
+    let retained = retained_session_state(&root)?;
     let (_, first) = orient_ok(&root, &["--session", &session], &directory.0)?;
     assert_eq!(
-        tree_digest(&root)?,
+        non_clock_tree(&root)?,
         before,
-        "orientation writes no lock, pin, journal, or object"
+        "orientation changes only session clock custody"
     );
+    assert_only_clock_progress(&retained, &retained_session_state(&root)?);
     assert_eq!(first.get("sessionId")?.text()?, session);
     assert_eq!(first.get("missionId")?.text()?, mission);
     assert_eq!(first.get("workspaceRevision")?.number()?, 0);
@@ -1226,8 +1292,9 @@ fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -
         "--budget-tokens",
         "4096",
     ];
-    let before = tree_digest(&root)?;
-    let (case_body, with_case) = orient_ok(&root, &bound_args, &directory.0)?;
+    let before = non_clock_tree(&root)?;
+    let retained = retained_session_state(&root)?;
+    let (_, with_case) = orient_ok(&root, &bound_args, &directory.0)?;
     assert_eq!(payload(&with_case)?.get("anchor")?, &opening_anchor);
     assert!(
         payload(&with_case)?
@@ -1239,17 +1306,20 @@ fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -
         with_case.get("decisionFingerprint")?,
         first.get("decisionFingerprint")?
     );
-    let (again, _) = orient_ok(&root, &bound_args, &directory.0)?;
+    let (_, again) = orient_ok(&root, &bound_args, &directory.0)?;
     assert_eq!(
-        again, case_body,
+        payload(&again)?,
+        payload(&with_case)?,
         "a cold repeat recovers the same exact situation"
     );
-    assert_eq!(tree_digest(&root)?, before);
+    assert_eq!(non_clock_tree(&root)?, before);
+    assert_only_clock_progress(&retained, &retained_session_state(&root)?);
 
     // Committing new evidence changes the observed head, not the durable session's anchor.
     let import_id = import(&directory, "sensor:orientation-east", false)?;
     let event_id = publish_watch_candidate(&root, &import_id)?;
-    let before = tree_digest(&root)?;
+    let before = non_clock_tree(&root)?;
+    let retained = retained_session_state(&root)?;
     let (body, current) = orient_ok(&root, &bound_args, &directory.0)?;
     let situation = payload(&current)?;
     assert!(body.contains(&event_id));
@@ -1273,12 +1343,16 @@ fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -
             .contains(&CASE)
     );
     assert_eq!(
-        tree_digest(&root)?,
+        non_clock_tree(&root)?,
         before,
         "reading the head cannot rebase or rewrite the workspace"
     );
-    assert_eq!(orient_ok(&root, &bound_args, &directory.0)?.0, body);
-    assert_eq!(tree_digest(&root)?, before);
+    assert_eq!(
+        payload(&orient_ok(&root, &bound_args, &directory.0)?.1)?,
+        payload(&current)?
+    );
+    assert_eq!(non_clock_tree(&root)?, before);
+    assert_only_clock_progress(&retained, &retained_session_state(&root)?);
 
     // The legacy stateless mode remains distinct and cannot inherit the private mission.
     let (_, stateless) = orient_ok(&root, &[], &directory.0)?;
@@ -1291,7 +1365,7 @@ fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -
             .texts()?
             .contains(&CASE)
     );
-    assert_eq!(tree_digest(&root)?, before);
+    assert_eq!(non_clock_tree(&root)?, before);
     Ok(())
 }
 
@@ -1336,6 +1410,8 @@ fn bound_orientation_refuses_missing_foreign_and_mixed_requests_without_writes()
     )?;
     let session = opened.get("sessionId")?.text()?.to_owned();
     let before = tree_digest(&root)?;
+    let stable = non_clock_tree(&root)?;
+    let retained = retained_session_state(&root)?;
     for (extra, error) in [
         (
             vec!["--session", "session:unknown"],
@@ -1371,8 +1447,14 @@ fn bound_orientation_refuses_missing_foreign_and_mixed_requests_without_writes()
             "refusal must not disclose retained private text"
         );
         assert_answer_conforms(&stdout, "situation_capsule.v1.json", &directory.0, error)?;
-        assert_eq!(tree_digest(&root)?, before);
+        if error == "ERR-AGENT-CONTEXT-INCOMPLETE-001" {
+            assert_eq!(non_clock_tree(&root)?, stable);
+            assert_only_clock_progress(&retained, &retained_session_state(&root)?);
+        } else {
+            assert_eq!(tree_digest(&root)?, before);
+        }
     }
+    let before = tree_digest(&root)?;
     for extra in [
         vec!["--session", &session, "--since", "anchor:unavailable"],
         vec!["--session", &session, "--at", "anchor:unavailable"],

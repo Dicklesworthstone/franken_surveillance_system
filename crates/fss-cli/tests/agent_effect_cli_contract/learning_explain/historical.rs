@@ -97,7 +97,7 @@ fn selected_learning_replacement_recovers_cancelled_owners_exact_capture() -> Te
     )?;
     let current = open_selected_mission(&directory, &captured.principal, CAPTURE_OBJECTIVE)?;
     assert_ne!(current.session, captured.agent.session);
-    let before = learning_tree(&current.root, &[""])?;
+    let before = clock_independent_tree(&current.root)?;
     let selected_args = args(&current, captured.root, &["--budget-tokens", "16000"]);
     let (code, stdout) = run_fss(&selected_args)?;
     let (code, selected) = current.answer(code, &stdout)?;
@@ -146,18 +146,15 @@ fn selected_learning_replacement_recovers_cancelled_owners_exact_capture() -> Te
     );
     let (code, retry) = run_fss(&selected_args)?;
     assert_eq!(code, Some(0), "{retry}");
-    assert_eq!(retry, stdout, "cold historical reads are deterministic");
-    assert_eq!(
-        mcp_answer(
-            &current,
-            &captured.principal,
-            captured.root,
-            r#", "budget_tokens":16000"#,
-            false,
-        )?,
-        stdout.trim_end(),
-        "CLI and MCP use the same current admission and historical source closure"
-    );
+    assert_same_selected_content(&stdout, &retry, &captured, &current)?;
+    let mcp = mcp_answer(
+        &current,
+        &captured.principal,
+        captured.root,
+        r#", "budget_tokens":16000"#,
+        false,
+    )?;
+    assert_same_selected_content(&retry, &mcp, &captured, &current)?;
 
     let (code, orientation) = current.run(
         "orient",
@@ -180,7 +177,7 @@ fn selected_learning_replacement_recovers_cancelled_owners_exact_capture() -> Te
         );
     }
     assert_private_refusal(&captured.agent, captured.root, &[])?;
-    assert_eq!(learning_tree(&current.root, &[""])?, before);
+    assert_eq!(clock_independent_tree(&current.root)?, before);
     assert_eq!(captured.relay.connections(), 0);
     Ok(())
 }
@@ -296,14 +293,14 @@ fn selected_learning_replacement_requires_current_owner_mission_grants_and_custo
             }
             fs::write(&pin_path, format!("{}\n", store.committed_root()))?;
         }
-        let revoked_tree = learning_tree(&current.root, &[""])?;
+        let revoked_tree = clock_independent_tree(&current.root)?;
         let refused = assert_private_refusal(&current, captured.root, &[])?;
         assert_eq!(
             mcp_answer(&current, &captured.principal, captured.root, "", true)?,
             refused.trim_end(),
             "current {revoked} state must be enforced identically in both transports"
         );
-        assert_eq!(learning_tree(&current.root, &[""])?, revoked_tree);
+        assert_eq!(clock_independent_tree(&current.root)?, revoked_tree);
         // Restore only this test-owned baseline between independent native denial fixtures.
         fs::write(&journal_path, &journal_before)?;
         fs::write(&pin_path, &pin_before)?;
@@ -317,10 +314,10 @@ fn selected_learning_replacement_requires_current_owner_mission_grants_and_custo
     );
     let original = fs::read(&source)?;
     fs::remove_file(&source)?;
-    let missing = learning_tree(&current.root, &[""])?;
+    let missing = clock_independent_tree(&current.root)?;
     assert_private_refusal(&current, captured.root, &[])?;
     mcp_answer(&current, &captured.principal, captured.root, "", true)?;
-    assert_eq!(learning_tree(&current.root, &[""])?, missing);
+    assert_eq!(clock_independent_tree(&current.root)?, missing);
     assert!(
         !source.exists(),
         "historical reads never reconstruct lost custody"
@@ -348,16 +345,16 @@ fn selected_learning_replacement_requires_current_owner_mission_grants_and_custo
         ));
     let current_mission = fs::read(&current_mission_slot)?;
     fs::remove_file(&current_mission_slot)?;
-    let missing_current_mission = learning_tree(&current.root, &[""])?;
+    let missing_current_mission = clock_independent_tree(&current.root)?;
     assert_private_refusal(&current, captured.root, &[])?;
     mcp_answer(&current, &captured.principal, captured.root, "", true)?;
     assert_eq!(
-        learning_tree(&current.root, &[""])?,
+        clock_independent_tree(&current.root)?,
         missing_current_mission
     );
     fs::write(&current_mission_slot, current_mission)?;
 
-    let before = learning_tree(&current.root, &[""])?;
+    let before = clock_independent_tree(&current.root)?;
     let (code, stdout) = run_fss(&args(
         &current,
         captured.root,
@@ -366,7 +363,7 @@ fn selected_learning_replacement_requires_current_owner_mission_grants_and_custo
     let (code, restored) = current.answer(code, &stdout)?;
     assert_eq!(code, Some(0), "{stdout}");
     assert_selected_for(&restored, &captured, &current)?;
-    assert_eq!(learning_tree(&current.root, &[""])?, before);
+    assert_eq!(clock_independent_tree(&current.root)?, before);
     assert_eq!(captured.relay.connections(), 0);
     Ok(())
 }
@@ -414,7 +411,7 @@ fn selected_learning_replacement_can_read_an_expired_original_without_reviving_i
         );
         fs::write(&pin_path, format!("{}\n", store.committed_root()))?;
     }
-    let expired = learning_tree(&current.root, &[""])?;
+    let expired = clock_independent_tree(&current.root)?;
     let (code, stdout) = run_fss(&args(
         &current,
         captured.root,
@@ -423,18 +420,16 @@ fn selected_learning_replacement_can_read_an_expired_original_without_reviving_i
     let (code, answer) = current.answer(code, &stdout)?;
     assert_eq!(code, Some(0), "{stdout}");
     assert_selected_for(&answer, &captured, &current)?;
-    assert_eq!(
-        mcp_answer(
-            &current,
-            &captured.principal,
-            captured.root,
-            r#", "budget_tokens":16000"#,
-            false,
-        )?,
-        stdout.trim_end()
-    );
+    let mcp = mcp_answer(
+        &current,
+        &captured.principal,
+        captured.root,
+        r#", "budget_tokens":16000"#,
+        false,
+    )?;
+    assert_same_selected_content(&stdout, &mcp, &captured, &current)?;
     assert_private_refusal(&captured.agent, captured.root, &[])?;
-    assert_eq!(learning_tree(&current.root, &[""])?, expired);
+    assert_eq!(clock_independent_tree(&current.root)?, expired);
     let after =
         inspect_session_bytes(&fs::read(journal_path)?, limits, WorkClaimLimits::default())?;
     assert!(

@@ -17,6 +17,12 @@ tool arguments cannot override it or the launcher's principal. The principal is
 the native CLI's audit label, not remote authentication. The launching OS account
 provides local access. Session lifecycle calls, investigation revisions, work claims,
 findings, feedback proposals and explicit durable follow subscriptions write under `agent/`.
+Session-bound orientation and learning inspection also persist current host-clock admission or
+expiry in the session journal. Their discovery hints are conservatively non-read-only; ordinary
+deployment orientation and event-only explanation remain immutable. Each tool call samples
+fresh Unix nanoseconds rather than retaining startup time. Clients cannot supply authoritative
+current time. [Session persistence](reference_session_persistence.md#live-admission-time-and-deterministic-replay)
+describes the clock, recovery and replay boundaries.
 Alert control calls use the existing native effect journal and require the exact
 approvals described in [Native alert control through MCP](MCP_CONTROL_REFERENCE.md).
 
@@ -114,7 +120,7 @@ and, optionally, a nonempty note of at most 4096 UTF-8 bytes. The returned
 `fss-mcp` process for the same deployment and principal, initialize it, then
 call `session_resume` with that handoff ID.
 
-Resume uses native publication verification, recipient scope, evidence-clock
+Resume uses native publication verification, recipient scope, current host-clock
 expiry, historical-anchor and workspace checks. It reports assumptions invalidated
 by current world state before publishing any required workspace rebase. It does
 not interpret stale context as current truth.
@@ -392,7 +398,8 @@ The exact proposal statement, applicability JSON, supporting and contradicting c
 counterexamples, validation and revival requirements, original review/expiry times, experience
 fields, and original episode resource-use metadata are carried in the registered cognitive
 envelope. Historical assertions remain attributed and uncertain. Review and expiry flags use
-the current deployment evidence clock; reading never resets a deadline or promotes a candidate.
+the current runtime admission clock; the separately reported evidence time remains unchanged.
+Reading never resets a deadline or promotes a candidate.
 The response anchor is current authority, while the cognitive basis anchor identifies the
 original experience.
 
@@ -411,8 +418,8 @@ permission. Missing, foreign, corrupt, deleted, indeterminate, or orphaned selec
 fails closed, even if some immutable bytes remain on disk.
 
 Proposal and experience metadata are returned at H2; source manifest handles remain H0.
-No source media is disclosed. Existing locks protect the read; it appends no journal record,
-repairs no pin, changes no workspace or lease, and charges or replenishes no durable session
-budget. The learning selector cannot be combined with event-only `event_id`, `at`, or `custody`;
+No source media is disclosed. Existing locks protect the read; live clock/expiry admission may
+append and pin a session record, while the workspace, lease and durable token spend stay
+unchanged. The learning selector cannot be combined with event-only `event_id`, `at`, or `custody`;
 the CLI also refuses event score-calibration and fusion-policy options. The MCP launcher still
 fixes the deployment and principal.

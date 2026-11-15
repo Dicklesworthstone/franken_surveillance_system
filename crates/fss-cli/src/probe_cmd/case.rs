@@ -45,7 +45,12 @@ pub(super) fn fail(
 /// Execute exactly the selected case action. A failed/lost linked poll must use explicit
 /// `probe-citation` or inspect native state before choosing a new pre-work state; no fallback
 /// revalidation or automatic link is inferred from an absent citation.
-pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answer {
+pub(super) fn run(
+    args: &ProbeArgs,
+    cx: &ReplayCx,
+    before: ProbeContext,
+    clock: crate::session_time::Clock<'_>,
+) -> Answer {
     match args.case.as_ref() {
         Some(CaseProbeAction::Cite {
             target,
@@ -57,7 +62,7 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                 expected_authority_root: args.request.expected_authority_root,
             };
             let (native, registration) = match recover_native_supervision(
-                &args.root,
+                crate::session_time::context(&args.root, clock),
                 &args.request.principal,
                 &recovery,
                 cx,
@@ -101,7 +106,7 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                 );
             }
             let admission = match preflight_probe_case(
-                &args.root,
+                crate::session_time::context(&args.root, clock),
                 &args.request,
                 target,
                 *expected_subscription_state,
@@ -132,7 +137,7 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                 action: args.request.action,
             };
             let guarded = match execute_native_supervision_at(
-                &args.root,
+                crate::session_time::context(&args.root, clock),
                 &args.request.principal,
                 &command,
                 &native,
@@ -167,7 +172,11 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                     ),
                 );
             }
-            let link = match commit_probe_case(&args.root, &admission, &guarded) {
+            let link = match commit_probe_case(
+                crate::session_time::context(&args.root, clock),
+                &admission,
+                &guarded,
+            ) {
                 Ok(link) => link,
                 Err(failure) => {
                     return fail(
@@ -187,7 +196,7 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                     );
                 }
             };
-            deliver_link(args, cx, before, guarded.delivery(), &native, &link)
+            deliver_link(args, cx, before, guarded.delivery(), &native, &link, clock)
         }
         Some(CaseProbeAction::InspectCitation(target)) => {
             if let Err(error) = cx.checkpoint("investigate_probe:case_inspect") {
@@ -200,7 +209,11 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                     &ProbeFailure::stage("ERR-OP-PRECONDITION-FAILED-001", error, false),
                 );
             }
-            let inspected = match inspect_probe_case(&args.root, &args.request, target) {
+            let inspected = match inspect_probe_case(
+                crate::session_time::context(&args.root, clock),
+                &args.request,
+                target,
+            ) {
                 Ok(inspected) => inspected,
                 Err(failure) => {
                     return fail(
@@ -213,7 +226,7 @@ pub(super) fn run(args: &ProbeArgs, cx: &ReplayCx, before: ProbeContext) -> Answ
                     );
                 }
             };
-            deliver_inspection(args, cx, before, &inspected)
+            deliver_inspection(args, cx, before, &inspected, clock)
         }
         None => refusal(
             args,
@@ -229,10 +242,15 @@ fn current_context(
     cx: &ReplayCx,
     before: &ProbeContext,
     expected_root: ContentDigest,
+    clock: crate::session_time::Clock<'_>,
 ) -> Result<ProbeContext, DeploymentSessionError> {
     cx.checkpoint("investigate_probe:case_current_context")
         .map_err(|error| DeploymentSessionError::Internal(error.to_string()))?;
-    let mut context = admit_probe(&args.root, &args.request)?;
+    let mut context = admit_probe_continuation(
+        crate::session_time::context(&args.root, clock),
+        &args.request,
+        expected_root,
+    )?;
     if context.oriented.journal_root != expected_root {
         return Err(DeploymentSessionError::SessionStale(
             "case probe journal changed before complete projection".to_owned(),
@@ -251,8 +269,9 @@ fn deliver_link(
     delivery: &SupervisionSessionDelivery,
     native: &NativeSupervisionRequest,
     link: &ProbeCaseLink,
+    clock: crate::session_time::Clock<'_>,
 ) -> Answer {
-    let context = match current_context(args, cx, &before, link.journal_root()) {
+    let context = match current_context(args, cx, &before, link.journal_root(), clock) {
         Ok(context) => context,
         Err(error) => {
             return fail(
@@ -304,7 +323,7 @@ fn deliver_link(
         );
     }
     let charge = match charge_linked_probe_delivery(
-        &args.root,
+        crate::session_time::context(&args.root, clock),
         &args.request,
         &context,
         delivery,
@@ -372,8 +391,9 @@ fn deliver_inspection(
     cx: &ReplayCx,
     before: ProbeContext,
     inspection: &ProbeCaseInspection,
+    clock: crate::session_time::Clock<'_>,
 ) -> Answer {
-    let context = match current_context(args, cx, &before, inspection.journal_root()) {
+    let context = match current_context(args, cx, &before, inspection.journal_root(), clock) {
         Ok(context) => context,
         Err(error) => {
             return fail(
@@ -425,7 +445,7 @@ fn deliver_inspection(
         );
     }
     let charge = match charge_probe_case_inspection(
-        &args.root,
+        crate::session_time::context(&args.root, clock),
         &args.request,
         &context,
         inspection,

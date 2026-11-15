@@ -248,6 +248,20 @@ pub fn follow_session_wait<C: FollowSessionControl + FollowWaitControl>(
     binding: &FollowSessionWaitBinding,
     control: &mut C,
 ) -> Result<FollowSessionWaitDelivery, Box<FollowSessionWaitFailure>> {
+    follow_session_wait_with_context(
+        super::super::SessionContext::evidence(binding.read_scope.root()),
+        binding,
+        control,
+    )
+}
+
+/// Wait with an explicit runtime clock, sampled again after every unlocked park.
+/// The context must name the same deployment as the immutable wait binding.
+pub fn follow_session_wait_with_context<C: FollowSessionControl + FollowWaitControl>(
+    context: super::super::SessionContext<'_>,
+    binding: &FollowSessionWaitBinding,
+    control: &mut C,
+) -> Result<FollowSessionWaitDelivery, Box<FollowSessionWaitFailure>> {
     let mut durable = initial_progress();
     let mut policy = Waiting {
         binding: &binding.read_scope,
@@ -255,9 +269,12 @@ pub fn follow_session_wait<C: FollowSessionControl + FollowWaitControl>(
         last_follow: None,
     };
     let attempt = (|| {
+        if context.root() != binding.read_scope.root() {
+            return Err(FollowSessionError::InvalidRequest);
+        }
         loop {
             let result = execute(
-                binding.read_scope.root(),
+                context,
                 binding.read_scope.principal(),
                 &binding.request,
                 &binding.read_scope.read_limits(),

@@ -463,11 +463,13 @@ impl SupervisionEvaluator for NativeEvaluator<'_> {
 /// Recover an existing exact recipe under its live owner, without reserving or disclosing source.
 /// The stored configuration is admitted by the original strict native parser after recovery.
 pub fn recover_native_supervision(
-    root: &Path,
+    root: impl fss_reference::deployment_session::SessionRoot,
     principal: &PrincipalId,
     request: &SupervisionRecoveryRequest,
     cx: &ReplayCx,
 ) -> Result<(NativeSupervisionRequest, SupervisionRegistration), SupervisionSessionError> {
+    let context = root.session_context();
+    let root = context.root();
     let limits = OrientLimits {
         max_journal_bytes: 32 * 1024 * 1024,
         ..OrientLimits::default()
@@ -481,7 +483,7 @@ pub fn recover_native_supervision(
         boundaries: 0,
     };
     let registration =
-        recover_supervision_registration(root, principal, request, &limits, &mut control)?;
+        recover_supervision_registration(context, principal, request, &limits, &mut control)?;
     let native = NativeSupervisionRequest::from_configuration(
         &registration.configuration,
         registration.configuration_digest,
@@ -494,13 +496,15 @@ pub fn recover_native_supervision(
 /// `existing_only` is mandatory for recovered callers: an absent subscription never re-registers.
 /// All stored bounds, the recipe bytes and native profile are compared before native work.
 pub fn execute_native_supervision(
-    root: &Path,
+    root: impl fss_reference::deployment_session::SessionRoot,
     principal: &PrincipalId,
     command: &SupervisionSessionRequest,
     request: &NativeSupervisionRequest,
     existing_only: bool,
     cx: &ReplayCx,
 ) -> Result<SupervisionSessionDelivery, SupervisionSessionFailure> {
+    let context = root.session_context();
+    let root = context.root();
     let orient_limits = native_session_limits(command, request)?;
     let mut evaluator = NativeEvaluator {
         root,
@@ -513,10 +517,10 @@ pub fn execute_native_supervision(
         boundaries: 0,
     };
     if existing_only {
-        supervise_existing_session(root, principal, command, &orient_limits, &mut evaluator)
+        supervise_existing_session(context, principal, command, &orient_limits, &mut evaluator)
             .map_err(|failure| *failure)
     } else {
-        supervise_session(root, principal, command, &orient_limits, &mut evaluator)
+        supervise_session(context, principal, command, &orient_limits, &mut evaluator)
             .map_err(|failure| *failure)
     }
 }
@@ -524,13 +528,15 @@ pub fn execute_native_supervision(
 /// Existing native work with an explicit pre-work state, enforced under the journal lock.
 /// The sealed result lets a later case citation prove that the guard was actually consumed.
 pub fn execute_native_supervision_at(
-    root: &Path,
+    root: impl fss_reference::deployment_session::SessionRoot,
     principal: &PrincipalId,
     command: &SupervisionSessionRequest,
     request: &NativeSupervisionRequest,
     expected_subscription_state: ContentDigest,
     cx: &ReplayCx,
 ) -> Result<GuardedSupervisionDelivery, SupervisionSessionFailure> {
+    let context = root.session_context();
+    let root = context.root();
     let orient_limits = native_session_limits(command, request)?;
     let mut evaluator = NativeEvaluator {
         root,
@@ -543,7 +549,7 @@ pub fn execute_native_supervision_at(
         boundaries: 0,
     };
     supervise_existing_session_at(
-        root,
+        context,
         principal,
         command,
         expected_subscription_state,

@@ -107,6 +107,17 @@ impl DurableSessionStore {
             .unwrap_or_default()
     }
 
+    /// Retained first revision for trusted relative-deadline retry reconstruction.
+    /// This is not admission; the subsequent case command still checks all visibility.
+    pub(crate) fn investigation_opening(&self, case_id: &str) -> Option<InvestigationRevision> {
+        self.coordination
+            .as_ref()?
+            .cases
+            .as_ref()?
+            .opening_revision(case_id)
+            .cloned()
+    }
+
     /// Commits case and refusal-side session changes before delivering any case revision.
     ///
     /// Exact-root reopening, pending-append reconciliation and cold recovery use the existing

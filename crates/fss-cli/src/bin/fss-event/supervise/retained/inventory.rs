@@ -191,41 +191,49 @@ pub(super) fn run(values: &BTreeMap<String, OsString>) -> Result<()> {
     .map_err(Failure::runtime)?;
     let cx =
         ReplayCx::from_context_authority(&authority, root.clone()).map_err(Failure::runtime)?;
-    let result =
-        (|| {
-            let limits = OrientLimits {
-                max_journal_bytes: 32 * 1024 * 1024,
-                ..OrientLimits::default()
-            };
-            let mut control = Control {
-                root: &root,
-                principal: &principal,
-                request: &request,
-                limits,
-                cx: &cx,
-                boundaries: 0,
-            };
-            let delivery = list_supervision(&root, &principal, &request, &limits, &mut control)
-            .map_err(|error| Failure::runtime(format!(
+    let result = (|| {
+        let limits = OrientLimits {
+            max_journal_bytes: 32 * 1024 * 1024,
+            ..OrientLimits::default()
+        };
+        let mut control = Control {
+            root: &root,
+            principal: &principal,
+            request: &request,
+            limits,
+            cx: &cx,
+            boundaries: 0,
+        };
+        let clock = fss_cli::session_time::HostSessionTime::default();
+        let delivery = list_supervision(
+            fss_reference::deployment_session::SessionContext::runtime(&root, &clock),
+            &principal,
+            &request,
+            &limits,
+            &mut control,
+        )
+        .map_err(|error| {
+            Failure::runtime(format!(
                 "{error}; journal_may_have_changed=true; native_attempts_reserved_by_listing=0",
-            )))?;
-            if delivery.head.anchor.site_lineage != site {
-                return Err(Failure::malformed(
-                    "deployment site_lineage does not match --site",
-                ));
-            }
-            let rendered = render(&delivery)?;
-            cx.checkpoint("retained_supervisor_inventory:output")
+            ))
+        })?;
+        if delivery.head.anchor.site_lineage != site {
+            return Err(Failure::malformed(
+                "deployment site_lineage does not match --site",
+            ));
+        }
+        let rendered = render(&delivery)?;
+        cx.checkpoint("retained_supervisor_inventory:output")
+            .map_err(Failure::runtime)?;
+        if let Some(path) = values.get("--report-out") {
+            super::super::super::export(Path::new(path), rendered.as_bytes(), &root, &cx)
                 .map_err(Failure::runtime)?;
-            if let Some(path) = values.get("--report-out") {
-                super::super::super::export(Path::new(path), rendered.as_bytes(), &root, &cx)
-                    .map_err(Failure::runtime)?;
-            }
-            io::stdout()
-                .lock()
-                .write_all(rendered.as_bytes())
-                .map_err(Failure::runtime)
-        })();
+        }
+        io::stdout()
+            .lock()
+            .write_all(rendered.as_bytes())
+            .map_err(Failure::runtime)
+    })();
     cx.drain_and_finalize();
     result
 }
