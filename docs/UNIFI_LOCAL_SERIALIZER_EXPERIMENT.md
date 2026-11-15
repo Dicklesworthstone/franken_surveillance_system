@@ -853,3 +853,35 @@ Under a deletion-denying trace, 5/5 tests passed, including refusal before
 observation, refusal of a different proof, retained permit reuse, and refusal
 of verification by another task; the trace recorded zero deletion syscalls.
 This establishes the task-effect contract only, not physical camera effects.
+
+The HTTP recording trial now keeps the detached committed permit and original
+private readback together with the other owners until the trial ends. After
+archive readback and decoding it obtains a fresh serializer readback over the
+same authenticated HTTP session, compares its complete binding with the
+original post-write readback, and rechecks that the requested target-only
+change is still present. A changed value or unavailable observation refuses
+the trial and retains the owners in the error until it is reported. This is
+two reads from the same session, not an independent device identity or a
+durably retained postcondition proof; the effect remains unsettled, and these
+in-memory owners are not durable after process exit.
+
+The isolated build on `ts1` was job `j-30109207290184196`, executable SHA-256
+`ca095498dc0a0ced1a6497f4f824288e5632a609d22be187376b0ee6c7290980`.
+The synthetic fixture SHA-256
+`7f8a56d0fce2266ea9299e091ad08ea3ce91c7bcdc5fb2e99654827c0a8613ba`
+passed 8/8, including a post-capture change to another track that refused with
+the effect unresolved. The read-only serializer regression passed 3/3. The
+recording fixture trace at
+`/data/tmp/fss-unifi-record-fixture-20261115-09/fixture.trace` recorded 12
+denied temporary-root unlinks; no deletion occurred. No physical camera was
+used in these tests. Verified effect settlement and camera restoration still
+need independently retained observation evidence and separate authorization.
+
+An expanded fixture against that same binary added a disconnect before the
+post-recording read. Its SHA-256 was
+`577fad44402a5701b5e49a8619d871ffa81cb6dc304d79bf8d234d847b72793b`;
+9/9 synthetic cases passed, including refusal with the effect unresolved when
+that read was unavailable. The trace at
+`/data/tmp/fss-unifi-record-fixture-20261115-10/fixture.trace` recorded 15
+denied temporary-root unlinks; no deletion occurred. This does not exercise
+the physical camera or independently settle the effect.
