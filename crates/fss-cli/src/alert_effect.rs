@@ -16,12 +16,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fss_core::{
     ContentDigest, ContextAuthority, ContractError, EffectState, EventHypothesis, ObligationState,
-    OperationReceipt,
+    OperationReceipt, TimestampNs,
 };
 use fss_publication::LocalPublicationError;
 use fss_reference::webhook::retained::RetainedWebhookEvidence;
 use fss_reference::webhook::{
-    WebhookDisclosureProfile, WebhookEndpoint, WebhookEvidence, WebhookInterruption,
+    WebhookDenial, WebhookDisclosureProfile, WebhookEndpoint, WebhookEvidence, WebhookInterruption,
     WebhookOutcome, WebhookRequestPreview, preview_webhook_request,
 };
 use fss_reference::{
@@ -293,5 +293,41 @@ pub fn dispatch_prepared_alert(
         deadline_ms,
         authority,
         cx,
+        None,
+    )
+}
+
+/// An additional held-session restriction; never a substitute for native effect authority.
+///
+/// Live session expiry limits the network window. The callback resamples admission after
+/// source reads and at the final commit/socket boundary. Neither restriction applies to
+/// finite cleanup of an operation already committed.
+pub(crate) struct AlertDispatchAdmission<'a> {
+    pub deadline: Option<TimestampNs>,
+    pub check: &'a dyn Fn() -> Result<(), WebhookDenial>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dispatch_prepared_alert_with_admission(
+    deployment: &mut ReferenceDeployment,
+    plan: &ReferenceAlertPlan,
+    endpoint: &WebhookEndpoint,
+    operation: &OperationReceipt,
+    commit_granted: bool,
+    deadline_ms: u64,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+    admission: &AlertDispatchAdmission<'_>,
+) -> Result<AlertDispatch, AlertEffectError> {
+    runtime::dispatch(
+        deployment,
+        plan,
+        endpoint,
+        operation,
+        commit_granted,
+        deadline_ms,
+        authority,
+        cx,
+        Some(admission),
     )
 }

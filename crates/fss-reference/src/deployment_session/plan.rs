@@ -14,7 +14,8 @@
 //! approval digest, so replanning the same intent at the same anchor is an exact retry, while a
 //! new event revision, route, principal, or anchor yields a different plan.
 
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 
 use fss_core::{AgentSession, ContentDigest, MissionId, PrincipalId, SessionId, TimestampNs};
 use fss_publication::SlotName;
@@ -57,7 +58,7 @@ pub struct PlanningContext {
     pub case: Option<InvestigationRevision>,
     /// True when the deployment head lies past the session's anchor.
     pub head_moved: bool,
-    /// Deployment evidence time.
+    /// Session admission time from the selected runtime or deterministic evidence clock.
     pub now: TimestampNs,
     /// Deployment site lineage.
     pub site_lineage: String,
@@ -72,8 +73,11 @@ pub struct PlanningContext {
 /// This owns no effect capability and does not authorize any network operation.
 pub struct PlanningContextGuard {
     context: PlanningContext,
+    source_root: PathBuf,
+    runtime_time: bool,
+    last_observed: Cell<TimestampNs>,
     // Last field: context is retired before its session-journal ownership.
-    journal: SessionJournal,
+    journal: RefCell<SessionJournal>,
 }
 
 impl PlanningContextGuard {
@@ -81,6 +85,76 @@ impl PlanningContextGuard {
     #[must_use]
     pub fn context(&self) -> &PlanningContext {
         &self.context
+    }
+
+    /// The non-renewing live lease ceiling, in the runtime clock's domain.
+    ///
+    /// Deterministic evidence-clock callers do not export an absolute host deadline. A native
+    /// owner must apply this ceiling to commitment/network work, preserving its separately
+    /// bounded authority to retain observations and retire an already committed operation.
+    #[must_use]
+    pub fn runtime_deadline(&self) -> Option<TimestampNs> {
+        self.runtime_time
+            .then_some(TimestampNs(self.context.session.expires_at_ns))
+    }
+
+    /// Rechecks time under the held session owner without appending on each socket poll.
+    ///
+    /// The caller must propagate the same root and clock mode used to acquire this guard.
+    /// Exclusive journal ownership keeps grants, the lease and the case witness fixed; time
+    /// still advances. Regression, cancellation, uncertain time and exact-boundary expiry
+    /// refuse new work. Expiry is durably tombstoned before returning the refusal.
+    ///
+    /// Successful samples advance this guard's watermark only. Call [`Self::revalidate`] to
+    /// persist admission before preparing or entering a native effect owner. Subsequent native
+    /// checkpoints use this method after source reads and immediately before commitment/I/O.
+    pub fn check_time(
+        &self,
+        root: impl super::SessionRoot,
+    ) -> Result<TimestampNs, DeploymentSessionError> {
+        let context = root.session_context();
+        if context.root() != self.source_root || context.is_runtime() != self.runtime_time {
+            return Err(super::SessionTimeError::Denied.into());
+        }
+        let now = context.now_at(self.context.now, &self.context.session.principal_id)?;
+        if now < self.last_observed.get() {
+            return Err(super::SessionTimeError::Uncertain.into());
+        }
+        self.last_observed.set(now);
+        if now.0 >= self.context.session.expires_at_ns {
+            self.persist_time(now)?;
+            return Err(DeploymentSessionError::SessionUnknown);
+        }
+        Ok(now)
+    }
+
+    /// Persists fresh admission immediately before new consequential work, without renewal.
+    ///
+    /// This is an additional session prerequisite; it grants no effect or network authority.
+    pub fn revalidate(
+        &self,
+        root: impl super::SessionRoot,
+    ) -> Result<TimestampNs, DeploymentSessionError> {
+        let context = root.session_context();
+        let now = self.check_time(context)?;
+        self.persist_time(now)?;
+        // Persisting the watermark is itself I/O. Sample again after that work so a lease
+        // which expired during admission cannot authorize the next effect transition.
+        self.check_time(context)
+    }
+
+    fn persist_time(&self, now: TimestampNs) -> Result<(), DeploymentSessionError> {
+        let mut journal = self.journal.try_borrow_mut().map_err(|_| {
+            DeploymentSessionError::Internal("planning admission is already borrowed".into())
+        })?;
+        let expected = &self.context.session;
+        let admitted = journal.admit(&expected.principal_id, &expected.session_id, now)?;
+        if admitted.session_digest() != expected.session_digest() {
+            return Err(DeploymentSessionError::SessionStale(
+                "the held planning session changed during admission".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Revalidates a published plan's mission, anchor and optional exact case witness.
@@ -103,7 +177,10 @@ impl PlanningContextGuard {
             ));
         }
         if let Some((case_id, expected)) = &record.case {
-            let current = super::investigation::visible_cases(&self.journal.store, session)
+            let journal = self.journal.try_borrow().map_err(|_| {
+                DeploymentSessionError::Internal("planning admission is already borrowed".into())
+            })?;
+            let current = super::investigation::visible_cases(&journal.store, session)
                 .into_iter()
                 .find(|case| &case.record().investigation_id == case_id)
                 .ok_or_else(|| {
@@ -163,6 +240,8 @@ pub fn hold_planning_context(
 ) -> Result<PlanningContextGuard, DeploymentSessionError> {
     let context = root.session_context();
     let root = context.root();
+    let source_root = root.to_path_buf();
+    let runtime_time = context.is_runtime();
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
@@ -213,7 +292,13 @@ pub fn hold_planning_context(
         now,
         journal_root: journal.store.committed_root(),
     };
-    Ok(PlanningContextGuard { context, journal })
+    Ok(PlanningContextGuard {
+        context,
+        source_root,
+        runtime_time,
+        last_observed: Cell::new(now),
+        journal: RefCell::new(journal),
+    })
 }
 
 /// Publishes `record` root-last with the rendered control plan beside it. Republishing an

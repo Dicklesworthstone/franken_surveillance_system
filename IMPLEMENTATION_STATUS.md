@@ -4,6 +4,22 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Live session admission at the alert boundary — 2026-11-15
+
+A held planning context now resamples its original runtime clock before effect
+preparation and at native commit/send admission, including the checkpoint after
+source validation. Regression, uncertain time, clock-mode/root drift, cancellation
+and exact-boundary expiry refuse new work; expiry is durably pinned. Live session
+expiry narrows the network deadline without extending the original authority or
+preventing its separately bounded receipt/custody cleanup. Existing committed or
+indeterminate operations retain their no-resend behavior.
+
+Four real-journal contracts and three native-owner contracts were added. They
+remain uncompiled and unexecuted because the execution environment is unavailable;
+independent source review is not runtime qualification. This advances the held
+session/effect seam of `fss-x4a.24.3`, `fss-x4a.24.4` and `fss-x4a.24.20`; those
+broad beads remain open. No live device or external webhook was exercised.
+
 ## Compact MPEG-TS extraction provenance — 2026-11-15
 
 The finite native AVC/HEVC transport parser now retains its exact selection and

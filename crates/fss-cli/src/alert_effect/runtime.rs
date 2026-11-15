@@ -31,7 +31,8 @@ use fss_runtime::execution::{ExecutionError, TaskCompletion, TaskCx, TaskSpec, r
 use fss_runtime::obligation::{ObligationTerminal, new_obligation};
 
 use super::{
-    AlertDispatch, AlertEffectError, CAP_ALERT_COMMIT, DISPATCH_CLEANUP_MS, MAX_DEADLINE_MS,
+    AlertDispatch, AlertDispatchAdmission, AlertEffectError, CAP_ALERT_COMMIT, DISPATCH_CLEANUP_MS,
+    MAX_DEADLINE_MS,
     MAX_DISPATCH_NETWORK_BYTES, MAX_DISPATCH_STORAGE_OPERATIONS, not_eligible, wall_ns,
 };
 
@@ -82,16 +83,18 @@ fn network_deadline(
     base: u64,
     requested_ms: u64,
     original: Option<TimestampNs>,
+    held_session: Option<TimestampNs>,
 ) -> Result<u64, AlertEffectError> {
     let requested = requested_ms
         .checked_mul(1_000_000)
         .and_then(|duration| base.checked_add(duration))
         .ok_or(AlertEffectError::Clock)?;
-    let effective = original.map_or(i128::from(requested), |deadline| {
+    let ceiling = original.into_iter().chain(held_session).min();
+    let effective = ceiling.map_or(i128::from(requested), |deadline| {
         deadline.0.min(i128::from(requested))
     });
     if effective <= i128::from(base) {
-        return Err(refusal("original alert deadline reached"));
+        return Err(refusal("alert network deadline reached"));
     }
     u64::try_from(effective).map_err(|_| AlertEffectError::Clock)
 }
@@ -136,6 +139,7 @@ struct DispatchOwner<'a, 'task, C> {
     journal: PathBuf,
     prepared: &'a OperationReceipt,
     clock: &'a C,
+    admission: Option<&'a AlertDispatchAdmission<'a>>,
     base_ns: u64,
     network_deadline_ns: u64,
     last_ns: Cell<u64>,
@@ -170,6 +174,12 @@ impl<C: DispatchClock> DispatchOwner<'_, '_, C> {
         self.task
             .checkpoint(timestamp(self.last_ns.get()), &BudgetVector::ZERO)
             .map_err(|error| self.stop(denial(error)))?;
+        // The held session remains a live prerequisite after source reads, including the
+        // second Commit/Send checkpoint immediately before the irreversible boundary.
+        // Drain/Record deliberately bypass it so expiry cannot erase a committed outcome.
+        if let Some(admission) = self.admission {
+            (admission.check)().map_err(|reason| self.stop(reason))?;
+        }
         let now = self
             .clock
             .elapsed_ns()
@@ -586,6 +596,7 @@ fn execute<C: DispatchClock>(
     base: u64,
     network_deadline: u64,
     allowance: BudgetVector,
+    admission: Option<&AlertDispatchAdmission<'_>>,
 ) -> TaskCompletion<OwnedResult> {
     let mut runtime_error = None;
     let mut registered: Option<ObligationId> = None;
@@ -599,6 +610,7 @@ fn execute<C: DispatchClock>(
         journal: path,
         prepared,
         clock,
+        admission,
         base_ns: base,
         network_deadline_ns: network_deadline,
         last_ns: Cell::new(base),
@@ -845,6 +857,7 @@ pub(super) fn dispatch(
     deadline_ms: u64,
     source: &ContextAuthority,
     cx: &ReplayCx,
+    admission: Option<&AlertDispatchAdmission<'_>>,
 ) -> Result<AlertDispatch, AlertEffectError> {
     let allowance = validate(
         deployment,
@@ -864,7 +877,14 @@ pub(super) fn dispatch(
     let clock = NativeClock(Instant::now());
     // The native connect timeout uses this ceiling as well as the TaskCx checkpoints.
     // A longer requested dispatch window can never replace an earlier original deadline.
-    let network_deadline = network_deadline(base, deadline_ms, source.deadline)?;
+    let network_deadline = network_deadline(
+        base,
+        deadline_ms,
+        source.deadline,
+        admission.and_then(|held| held.deadline),
+    )?;
+    // A session lease only bounds new commitment and network activity. Original authority
+    // still bounds cleanup; do not shorten receipt/custody retirement to session expiry.
     let cleanup_deadline = base
         .checked_add(allowance.latency_ms * 1_000_000)
         .ok_or(AlertEffectError::Clock)?;
@@ -892,6 +912,7 @@ pub(super) fn dispatch(
             base,
             network_deadline,
             allowance,
+            admission,
         )
     })
     .map_err(|error| refusal(error.to_string()))?;

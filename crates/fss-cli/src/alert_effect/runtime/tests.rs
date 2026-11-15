@@ -111,6 +111,19 @@ impl Fixture {
         &self,
         work: impl FnOnce(&DispatchOwner<'_, '_, Clock>) -> Test,
     ) -> Test<(BudgetVector, QuiescenceProof)> {
+        self.run_with_admission(None, work)
+    }
+    fn run_with_admission(
+        &self,
+        admission: Option<&AlertDispatchAdmission<'_>>,
+        work: impl FnOnce(&DispatchOwner<'_, '_, Clock>) -> Test,
+    ) -> Test<(BudgetVector, QuiescenceProof)> {
+        let network_deadline = network_deadline(
+            BASE,
+            5,
+            None,
+            admission.and_then(|held| held.deadline),
+        )?;
         let allowance = self.source.budgets;
         let mut runtime = RuntimeOwner::new(
             &self.source,
@@ -133,8 +146,9 @@ impl Fixture {
                     journal: self.path.clone(),
                     prepared: &self.prepared,
                     clock: &self.clock,
+                    admission,
                     base_ns: BASE,
-                    network_deadline_ns: NETWORK_DEADLINE,
+                    network_deadline_ns: network_deadline,
                     last_ns: Cell::new(BASE),
                     interrupted: Cell::new(None),
                     cancellation_reflected: Cell::new(false),
@@ -175,17 +189,17 @@ fn allowance() -> BudgetVector {
 
 #[test]
 fn native_network_deadline_keeps_the_original_ceiling_and_refuses_expiry() -> Test {
-    assert_eq!(network_deadline(BASE, 5, None)?, NETWORK_DEADLINE);
+    assert_eq!(network_deadline(BASE, 5, None, None)?, NETWORK_DEADLINE);
     assert_eq!(
-        network_deadline(BASE, 5, Some(timestamp(BASE + 2_000_000)))?,
+        network_deadline(BASE, 5, Some(timestamp(BASE + 2_000_000)), None)?,
         BASE + 2_000_000
     );
     assert_eq!(
-        network_deadline(BASE, 5, Some(timestamp(CLEANUP_DEADLINE)))?,
+        network_deadline(BASE, 5, Some(timestamp(CLEANUP_DEADLINE)), None)?,
         NETWORK_DEADLINE
     );
-    assert!(network_deadline(BASE, 5, Some(timestamp(BASE))).is_err());
-    assert!(network_deadline(BASE, 5, Some(TimestampNs(-1))).is_err());
+    assert!(network_deadline(BASE, 5, Some(timestamp(BASE)), None).is_err());
+    assert!(network_deadline(BASE, 5, Some(TimestampNs(-1)), None).is_err());
     Ok(())
 }
 
@@ -530,5 +544,145 @@ fn a_fresh_retention_context_cannot_revive_revoked_dispatch_authority() -> Test 
         assert_eq!(owner.network_admissions.get(), 0);
         Ok(())
     })?;
+    Ok(())
+}
+
+
+#[test]
+fn held_session_deadline_only_narrows_the_network_window() -> Test {
+    let held = Some(timestamp(BASE + 2_000_000));
+    assert_eq!(network_deadline(BASE, 5, None, held)?, BASE + 2_000_000);
+    assert_eq!(
+        network_deadline(BASE, 5, Some(timestamp(BASE + 1_000_000)), held)?,
+        BASE + 1_000_000
+    );
+    assert_eq!(
+        network_deadline(BASE, 5, Some(timestamp(CLEANUP_DEADLINE)), held)?,
+        BASE + 2_000_000
+    );
+    assert_eq!(
+        network_deadline(BASE, 5, None, Some(timestamp(CLEANUP_DEADLINE)))?,
+        NETWORK_DEADLINE
+    );
+    assert!(network_deadline(BASE, 5, None, Some(timestamp(BASE))).is_err());
+    assert!(network_deadline(BASE, 5, None, Some(TimestampNs(-1))).is_err());
+    Ok(())
+}
+
+#[test]
+fn held_session_is_rechecked_after_sources_at_final_commit_and_send_admission() -> Test {
+    for boundary in [WebhookBoundary::Commit, WebhookBoundary::Send] {
+        let f = Fixture::new(allowance(), None)?;
+        let committed = f.committed();
+        let operation = if boundary == WebhookBoundary::Commit {
+            &f.prepared
+        } else {
+            &committed
+        };
+        let allowed = Cell::new(true);
+        let check = || {
+            if allowed.get() {
+                Ok(())
+            } else {
+                Err(WebhookDenial::Deadline)
+            }
+        };
+        let admission = AlertDispatchAdmission {
+            deadline: None,
+            check: &check,
+        };
+        let (consumed, _) = f.run_with_admission(Some(&admission), |owner| {
+            owner
+                .checkpoint(f.scope(operation), boundary, BASE, NETWORK_DEADLINE)
+                .map_err(|_| "first session admission")?;
+            owner.source_read()?;
+            owner.after_source_read()?;
+            let admitted = owner.network_admissions.get();
+            allowed.set(false);
+            // The native attempt makes this second checkpoint after its source revalidation.
+            // Losing the held lease must prevent the actual transition/socket call.
+            assert_eq!(
+                owner.checkpoint(f.scope(operation), boundary, BASE, NETWORK_DEADLINE),
+                Err(WebhookDenial::Deadline)
+            );
+            assert_eq!(owner.network_admissions.get(), admitted);
+            allowed.set(true);
+            assert_eq!(
+                owner.checkpoint(f.scope(operation), boundary, BASE, NETWORK_DEADLINE),
+                Err(WebhookDenial::Deadline)
+            );
+            if boundary == WebhookBoundary::Send {
+                assert_eq!(
+                    owner.checkpoint(
+                        f.scope(&committed),
+                        WebhookBoundary::Record,
+                        BASE,
+                        NETWORK_DEADLINE
+                    ),
+                    Ok(BASE)
+                );
+            }
+            Ok(())
+        })?;
+        assert_eq!(
+            consumed.network_bytes,
+            if boundary == WebhookBoundary::Send { IO_BYTES } else { 0 }
+        );
+        assert_eq!(f.prepared.state, EffectState::Prepared);
+    }
+    Ok(())
+}
+
+#[test]
+fn held_session_expiry_or_cancellation_preserves_only_finite_cleanup() -> Test {
+    for reason in [WebhookDenial::Deadline, WebhookDenial::Cancelled] {
+        let f = Fixture::new(allowance(), None)?;
+        let committed = f.committed();
+        let check_count = Cell::new(0);
+        let refused = Cell::new(false);
+        let check = || {
+            check_count.set(check_count.get() + 1);
+            if refused.get() { Err(reason) } else { Ok(()) }
+        };
+        let held_deadline = BASE + 2_000_000;
+        let admission = AlertDispatchAdmission {
+            deadline: Some(timestamp(held_deadline)),
+            check: &check,
+        };
+        let (consumed, proof) = f.run_with_admission(Some(&admission), |owner| {
+            assert_eq!(owner.network_deadline_ns, held_deadline);
+            owner
+                .checkpoint(f.scope(&committed), WebhookBoundary::Send, BASE, held_deadline)
+                .map_err(|_| "initial session send admission")?;
+            f.clock.elapsed.set(2_000_000);
+            refused.set(true);
+            assert_eq!(owner.active_time(), Err(reason));
+            let checks = check_count.get();
+            assert_eq!(
+                owner.checkpoint(
+                    f.scope(&committed),
+                    WebhookBoundary::Record,
+                    held_deadline,
+                    held_deadline
+                ),
+                Ok(held_deadline)
+            );
+            assert_eq!(check_count.get(), checks);
+            f.clock.elapsed.set(10_000_000);
+            assert_eq!(
+                owner.checkpoint(
+                    f.scope(&committed),
+                    WebhookBoundary::Record,
+                    CLEANUP_DEADLINE,
+                    held_deadline
+                ),
+                Err(WebhookDenial::Deadline)
+            );
+            assert_eq!(check_count.get(), checks);
+            Ok(())
+        })?;
+        assert_eq!(consumed.network_bytes, IO_BYTES);
+        assert_eq!(proof.total_tasks, 1);
+    }
     Ok(())
 }
