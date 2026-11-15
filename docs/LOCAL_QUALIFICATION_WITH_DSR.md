@@ -270,3 +270,9 @@ before creating anything. The run now reaches `Recorder::new` and fails one step
 `ERR-CAPTURE-RTSP-HISTORY-001`, having created the history directory and nothing inside it — so the
 next site is `CampaignWriter::new` or the `LocalRootPublisher::open` beside it in
 `campaign_history.rs::Recorder::new`.
+
+Where the campaign failures stand after another pass: the recorder *constructs* successfully (the
+history root is created and an `E`-stage marker prints), so the remaining failure is inside the capture
+run itself, not in setup. `reconnect.rs` builds `NativeEffects` and enters `run_from`, and the history
+error comes from the recording path (`campaign_history.rs` 460–520). Stage markers are left in the code
+on the error paths; strip them once the lane is green.

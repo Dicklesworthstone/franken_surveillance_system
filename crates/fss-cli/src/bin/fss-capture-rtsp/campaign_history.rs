@@ -387,9 +387,12 @@ pub(super) struct ContinuationSeed {
 
 impl Recorder {
     pub(super) fn new(config: &Config, plan: &ReconnectPlan) -> Result<Self, &'static str> {
-        config.validate(plan)?;
-        let campaign = config.campaign(plan)?;
+        eprintln!("DBG Recorder::new");
+        config.validate(plan).map_err(|e| { eprintln!("DBG config.validate {e}"); e })?;
+        let campaign = config.campaign(plan).map_err(|e| { eprintln!("DBG campaign {e}"); e })?;
+        eprintln!("DBG A");
         let writer = CampaignWriter::new(campaign.clone(), config.limits).map_err(|e| { eprintln!("DBG writer {e:?}"); ERROR })?;
+        eprintln!("DBG B");
         let mut authority = Authority::new(
             &campaign.principal,
             campaign.approval,
@@ -399,12 +402,15 @@ impl Recorder {
             None,
             true,
         )?;
+        eprintln!("DBG C");
         let root = resolved(&config.root, &authority)?;
         // The canonical history graph binds the resolved path from here on. Do not compare it back to
         // the configured text: on macOS the temp root is itself a symlink (`/var` -> `/private/var`), so
         // an ordinary path never compares equal and every campaign run refused with ROOT.
         for output in plan.output_paths()? {
+            eprintln!("DBG out {output:?}");
             if output != config.root && !separate(&root, &resolved(output, &authority)?) {
+                eprintln!("DBG notseparate {output:?}");
                 return Err(ROOT);
             }
         }
@@ -432,7 +438,9 @@ impl Recorder {
         authority.check()?;
         let cx =
             ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
+        eprintln!("DBG D {root:?}");
         let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|e| { eprintln!("DBG publisher {e:?}"); ERROR })?;
+        eprintln!("DBG E");
         authority.check()?;
         Ok(Self {
             writer,
@@ -452,10 +460,11 @@ impl Recorder {
         expected: CampaignPin,
     ) -> Result<(Self, ContinuationSeed), &'static str> {
         config.validate(plan)?;
-        let campaign = config.campaign(plan)?;
+        let campaign = config.campaign(plan).map_err(|e| { eprintln!("DBG campaign {e}"); e })?;
         if !campaign.continue_after_success && !plan.continue_retry_history {
             return Err(ERROR);
         }
+        eprintln!("DBG B");
         let mut authority = Authority::new(
             &campaign.principal,
             campaign.approval,
@@ -465,12 +474,15 @@ impl Recorder {
             Some(expected),
             true,
         )?;
+        eprintln!("DBG C");
         let root = resolved(&config.root, &authority)?;
         if root != config.root {
             return Err(ROOT);
         }
         for output in plan.output_paths()? {
+            eprintln!("DBG out {output:?}");
             if output != config.root && !separate(&root, &resolved(output, &authority)?) {
+                eprintln!("DBG notseparate {output:?}");
                 return Err(ROOT);
             }
         }
@@ -485,7 +497,9 @@ impl Recorder {
         authority.check()?;
         let cx =
             ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
+        eprintln!("DBG D {root:?}");
         let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|e| { eprintln!("DBG publisher {e:?}"); ERROR })?;
+        eprintln!("DBG E");
         authority.check()?;
         let mut work = WorkBudget::new(config.work);
         let writer = CampaignWriter::resume_from_prefix(
