@@ -1,14 +1,17 @@
 #![forbid(unsafe_code)]
 //! Cross-process file import, retained recovery and extraction contracts.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use fss_core::ContentDigest;
+use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_reference::ingest::{FileImportManifest, RetainedReadLimits};
+use fss_reference::{ReferenceDeployment, ReplayCx};
 
 const JPEG: &[u8] = include_bytes!("fixtures/retained_file_8x8.jpg");
 type TestResult = Result<(), Box<dyn Error>>;
@@ -239,6 +242,227 @@ fn import_and_inspect_show_the_retained_acquisition_lifecycle() -> TestResult {
         let refusal = field(output, "acquisition_absence_refusal")?;
         assert!(refusal.contains("cancelled"), "{refusal}");
         assert_eq!(field(output, "absence_certifiable")?, "false");
+    }
+    Ok(())
+}
+
+fn immutable_fixture(label: &str) -> Result<(OwnedTestDir, PathBuf, String), Box<dyn Error>> {
+    let temp = OwnedTestDir::new(label)?;
+    let root = temp.0.join("deployment");
+    let source = temp.0.join("camera.mjpeg");
+    fs::write(&source, [JPEG, JPEG].concat())?;
+    let imported = import(&root, &source, None)?;
+    success(&imported);
+    let identity = field(&imported, "import_identity")?;
+    fs::remove_file(source)?;
+    Ok((temp, root, identity))
+}
+
+fn read_command(
+    root: &Path,
+    identity: &str,
+    action: &str,
+    destination: &Path,
+) -> (Command, PathBuf, Option<PathBuf>) {
+    let manifest = destination.with_extension("manifest");
+    let mut command = command(root, action);
+    command
+        .args(["--import-id", identity])
+        .arg("--manifest-out")
+        .arg(&manifest);
+    let source = if action == "extract" {
+        let source = destination.with_extension("jpg");
+        command
+            .args(["--segment", "1"])
+            .arg("--output")
+            .arg(&source);
+        Some(source)
+    } else {
+        None
+    };
+    (command, manifest, source)
+}
+
+fn filesystem(root: &Path) -> Result<BTreeMap<PathBuf, Option<Vec<u8>>>, Box<dyn Error>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut result = BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path)?;
+        let relative = path.strip_prefix(root)?.to_path_buf();
+        if metadata.file_type().is_dir() {
+            result.insert(relative, None);
+            for entry in fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
+        } else if metadata.file_type().is_file() {
+            result.insert(relative, Some(fs::read(path)?));
+        } else {
+            return Err("unexpected fixture file type".into());
+        }
+    }
+    Ok(result)
+}
+
+#[test]
+fn immutable_inspect_verify_extract_match_cold_results_while_a_writer_is_open() -> TestResult {
+    let (temp, root, identity) = immutable_fixture("immutable-writer")?;
+    let mut expected = BTreeMap::new();
+    for action in ["inspect", "verify", "extract"] {
+        let (mut command, manifest, source) = read_command(
+            &root,
+            &identity,
+            action,
+            &temp.0.join(format!("cold-{action}")),
+        );
+        let output = command.output()?;
+        success(&output);
+        assert!(output.stderr.is_empty());
+        assert_eq!(field(&output, "deployment_mutated")?, "false");
+        if let Some(source) = source {
+            assert_eq!(fs::read(source)?, JPEG);
+        }
+        expected.insert(action, (output.stdout, fs::read(manifest)?));
+    }
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:file-cli-read-writer".into(),
+        operation_id: OperationId::parse("operation:file-cli-read-writer")?,
+        principal: "principal:local-operator".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder().bytes(1024 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(b"site:file-cli-test"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
+    let writer = ReferenceDeployment::open(&root, "site:file-cli-test", &cx)?;
+    let before = filesystem(&root)?;
+    for action in ["inspect", "verify", "extract"] {
+        let (mut command, manifest, source) = read_command(
+            &root,
+            &identity,
+            action,
+            &temp.0.join(format!("writer-{action}")),
+        );
+        let output = command.output()?;
+        success(&output);
+        assert!(output.stderr.is_empty());
+        let (expected_report, expected_manifest) = expected.get(action).ok_or("cold report")?;
+        assert_eq!(
+            &output.stdout, expected_report,
+            "writer-held {action} changed"
+        );
+        assert_eq!(&fs::read(manifest)?, expected_manifest);
+        if let Some(source) = source {
+            assert_eq!(fs::read(source)?, JPEG);
+        }
+        assert_eq!(filesystem(&root)?, before);
+    }
+    drop(writer);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn immutable_source_read_allowances_cover_final_validation_before_any_output() -> TestResult {
+    let (temp, root, identity) = immutable_fixture("immutable-allowance")?;
+    let before = filesystem(&root)?;
+    for action in ["inspect", "verify", "extract"] {
+        let (mut baseline, _, _) = read_command(
+            &root,
+            &identity,
+            action,
+            &temp.0.join(format!("baseline-{action}")),
+        );
+        let baseline = baseline.output()?;
+        success(&baseline);
+        let bytes = field(&baseline, "payload_read_bytes")?.parse::<u64>()?;
+        let reads = field(&baseline, "payload_read_attempts")?.parse::<u64>()?;
+        assert!(bytes > 1 && reads > 1);
+        let (mut exact, manifest, source) = read_command(
+            &root,
+            &identity,
+            action,
+            &temp.0.join(format!("exact-{action}")),
+        );
+        exact.args([
+            "--max-read-bytes",
+            &bytes.to_string(),
+            "--max-read-objects",
+            &reads.to_string(),
+        ]);
+        let output = exact.output()?;
+        success(&output);
+        assert_eq!(
+            output.stdout, baseline.stdout,
+            "exact {action} allowance changed"
+        );
+        assert!(manifest.exists());
+        if let Some(source) = source {
+            assert_eq!(fs::read(source)?, JPEG);
+        }
+        for (key, allowance) in [
+            ("--max-read-bytes", bytes - 1),
+            ("--max-read-objects", reads - 1),
+        ] {
+            let (mut exhausted, manifest, source) = read_command(
+                &root,
+                &identity,
+                action,
+                &temp.0.join(format!("refused-{action}-{key}")),
+            );
+            exhausted.args([key, &allowance.to_string()]);
+            let output = exhausted.output()?;
+            assert!(!output.status.success(), "renewed {action} {key}");
+            assert!(
+                output.stdout.is_empty(),
+                "partial {action} report for {key}"
+            );
+            assert!(!manifest.exists(), "partial {action} manifest for {key}");
+            if let Some(source) = source {
+                assert!(!source.exists(), "partial {action} media for {key}");
+            }
+            assert_eq!(filesystem(&root)?, before);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn immutable_source_reads_refuse_both_torn_journals_without_recovery_or_exports() -> TestResult {
+    let (temp, root, identity) = immutable_fixture("immutable-tail")?;
+    for (index, relative) in ["ledger/journal.fssj", "effects/journal.fssj"]
+        .into_iter()
+        .enumerate()
+    {
+        let path = root.join(relative);
+        let original = fs::read(&path)?;
+        let mut torn = original.clone();
+        torn.extend_from_slice(&[0x46, 0x53, 0x53]);
+        fs::write(&path, torn)?;
+        let before = filesystem(&root)?;
+        for action in ["inspect", "verify", "extract"] {
+            let (mut command, manifest, source) = read_command(
+                &root,
+                &identity,
+                action,
+                &temp.0.join(format!("torn-{index}-{action}")),
+            );
+            let output = command.output()?;
+            assert!(
+                !output.status.success(),
+                "accepted torn {relative} for {action}"
+            );
+            assert!(output.stdout.is_empty());
+            assert!(!manifest.exists());
+            if let Some(source) = source {
+                assert!(!source.exists());
+            }
+            assert_eq!(filesystem(&root)?, before, "repaired {relative}");
+        }
+        fs::write(path, original)?;
     }
     Ok(())
 }

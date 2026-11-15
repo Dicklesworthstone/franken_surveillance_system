@@ -74,7 +74,8 @@ use fss_core::{
 };
 
 use crate::ingest::file_adapter::{FileIngestError, default_adapter_identity};
-use crate::reference_deployment::{FAMILY_ACQUISITION_TRANSITION, ReferenceDeployment};
+use crate::reference_deployment::FAMILY_ACQUISITION_TRANSITION;
+use crate::retained_source::RetainedSource;
 
 /// Object-id prefix of retained file acquisition transitions:
 /// `object:acquisition-transition:<import hex>:<index, 4 digits>`.
@@ -239,7 +240,7 @@ impl AcquisitionRetention {
     /// The import is not complete, a retained object is missing, oversized or mismatched, or the
     /// replay does not reproduce the retained records exactly.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         import_identity: ContentDigest,
     ) -> Result<Self, FileIngestError> {
         if import_identity.algorithm() != DigestAlgorithm::Sha256 {
@@ -819,14 +820,10 @@ fn decode_domain<T: CanonicalDecode>(
 }
 
 fn read_bounded(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     digest: ContentDigest,
 ) -> Result<Vec<u8>, FileIngestError> {
-    let bytes = deployment.publisher().spool().read(digest)?;
-    if bytes.len() > MAX_RETAINED_ACQUISITION_OBJECT_BYTES {
-        return Err(invalid("retained acquisition object exceeds its ceiling"));
-    }
-    Ok(bytes)
+    deployment.read_object_bounded(digest, MAX_RETAINED_ACQUISITION_OBJECT_BYTES)
 }
 
 fn hex(digest: ContentDigest) -> String {

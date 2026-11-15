@@ -593,7 +593,7 @@ pub fn superseded_bindings(
 /// Fails closed with [`PrivacyMaskError::UnmaskedAccessRefused`] when the sensor has a retained
 /// policy: the raw retained source cannot be masked without re-encoding, so it is not exported.
 pub fn refuse_unmasked_source(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     sensor: &SensorId,
 ) -> Result<(), PrivacyMaskError> {
     match current_mask(deployment, sensor)? {

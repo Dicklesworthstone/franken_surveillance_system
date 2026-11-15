@@ -23,9 +23,10 @@ use fss_reference::ingest::retained::{MAX_RETAINED_ENTRIES, MAX_RETAINED_PAYLOAD
 use fss_reference::ingest::rtpdump::import::{ImportEnd, RtpFileImportReceipt, load_rtp_import};
 use fss_reference::ingest::rtpdump::replay::{H264Mode, RtpReplayConfig};
 use fss_reference::ingest::{
-    AcquisitionRetention, CaptureHint, FileFormatHint, FileImport, FileIngestAdapter,
-    FileIngestLimits, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
+    CaptureHint, FileFormatHint, FileImport, FileIngestAdapter, FileIngestLimits,
+    FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-file/localization_replay.rs"]
@@ -40,6 +41,8 @@ mod movie;
 mod replay_origin;
 #[path = "fss-file/replay_time.rs"]
 mod replay_time;
+#[path = "fss-file/source_read.rs"]
+mod source_read;
 
 const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
@@ -59,6 +62,11 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
   inspect/verify: --import-id sha256:HEX\n\
           Recorder imports expose verified retained replay metadata, including requested and\n\
           acknowledged UTC ranges; verify also reconstructs every original recording.\n\
+          inspect/verify/extract use immutable custody and coexist with an open writer.\n\
+          [--max-read-bytes N] [--max-read-objects N] bound metadata, payload and final rereads\n\
+          together (defaults 1 GiB/1,000,000 attempts; maxima 4 GiB/4,000,000).\n\
+          No journal recovery; no stdout or export before final validation; a cooperative\n\
+          60-second read deadline applies. Payload loss refuses verify/extract, not metadata alone.\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
           Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
@@ -188,6 +196,7 @@ struct Options {
     principal: String,
     manifest_output: Option<PathBuf>,
     limits: RetainedReadLimits,
+    read_limits: ImmutableRetainedReadLimits,
     action: Action,
 }
 
@@ -284,6 +293,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             || (command == "import" && import.contains(&key))
             || (command != "import" && !replay && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
+            || (source_read::is_command(command)
+                && matches!(key, "--max-read-bytes" | "--max-read-objects"))
             || media::accepts_option(command, key)
             || movie::accepts_option(command, key)
             || localize::accepts_option(command, key)
@@ -479,6 +490,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         principal,
         manifest_output: values.get("--manifest-out").map(PathBuf::from),
         limits,
+        read_limits: source_read::parse_limits(&values)?,
         action,
     }))
 }
@@ -509,6 +521,12 @@ fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -
 }
 
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
+    if matches!(
+        &options.action,
+        Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. }
+    ) {
+        return source_read::run(&options, out);
+    }
     if let Action::LocalizationReplay(action) = &options.action
         && action.is_read_only()
     {
@@ -574,9 +592,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                     }
                 }
             }
-            Action::Inspect(id) => (*id, "inspect"),
-            Action::Verify(id) => (*id, "verify"),
-            Action::Extract { identity, .. } => (*identity, "extract"),
+            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } => {
+                return Err("source reads require the immutable inspection path".into());
+            }
             Action::Media(action) => (action.identity(), action.name()),
             Action::Movie(action) => (action.identity(), "select-movie"),
             Action::Localize(action) => (action.identity(), "localize"),
@@ -592,78 +610,15 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             }
         };
         let retained = RetainedFileImport::open(&deployment, identity, options.limits, &cx)?;
+        source_read::metadata(&deployment, &retained, identity, operation, out)?;
         let manifest = retained.manifest();
-        writeln!(out, "operation={operation}")?;
-        writeln!(out, "import_identity={}", retained.import_identity())?;
-        writeln!(out, "import_root={}", retained.import_root())?;
-        writeln!(out, "manifest_digest={}", retained.manifest_digest())?;
-        writeln!(
-            out,
-            "authority_sequence={}",
-            retained.authority_anchor().commit_sequence
-        )?;
-        writeln!(out, "input_sha256={}", manifest.input_sha256)?;
-        writeln!(out, "input_bytes={}", manifest.input_bytes)?;
-        writeln!(out, "media_format={}", manifest.format)?;
-        writeln!(out, "segment_count={}", manifest.segment_spans.len())?;
-        // MP4/Matroska container structure (boxes or elements, other tracks, parameter sets) is
-        // accounted source, not lost media: it is counted apart from omissions.
-        let structure = manifest
-            .omission_spans
-            .iter()
-            .filter(|span| span.is_container_structure())
-            .count();
-        writeln!(
-            out,
-            "omission_count={}",
-            manifest.omission_spans.len() - structure
-        )?;
-        writeln!(out, "container_structure_count={structure}")?;
-        writeln!(out, "capture_time_class={}", manifest.capture_time_label)?;
-        // The retained acquisition lifecycle, replayed through the core session; its absence
-        // gate decides `absence_certifiable` (a file session never certifies absence).
-        let acquisition = AcquisitionRetention::open(&deployment, identity)?;
-        match acquisition.history() {
-            Some(history) => {
-                writeln!(out, "acquisition_history={}", history.kinds_text())?;
-                writeln!(out, "acquisition_terminal={}", history.terminal().as_str())?;
-                writeln!(out, "acquisition_ending={}", history.ending().as_str())?;
-                let refusal = match history.absence_claim() {
-                    Ok(()) => "none".to_owned(),
-                    Err(refusal) => refusal.to_string(),
-                };
-                writeln!(out, "acquisition_absence_refusal={refusal}")?;
-            }
-            None => writeln!(out, "acquisition_history=not_recorded")?,
-        }
-        let absence_certifiable = acquisition
-            .history()
-            .is_some_and(|history| history.absence_claim().is_ok());
-        writeln!(out, "absence_certifiable={absence_certifiable}")?;
         match &options.action {
-            Action::Import(_) | Action::Verify(_) => {
+            Action::Import(_) => {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
                 writeln!(out, "verified_source_sha256={verified}")?;
             }
-            Action::Extract {
-                segment, output, ..
-            } => {
-                // Raw retained source cannot be masked without re-encoding: a sensor with a
-                // retained privacy mask has no unmasked export path.
-                let capsule = fss_reference::ingest::recorded_decode::retained_source_capsule(
-                    &deployment,
-                    &retained,
-                    *segment,
-                )?;
-                fss_reference::ingest::privacy_mask::refuse_unmasked_source(
-                    &deployment,
-                    &capsule.sensor_id,
-                )?;
-                let bytes = retained.read_segment(&deployment, *segment, options.limits, &cx)?;
-                write_new(output, &bytes, &options.root, &cx)?;
-                writeln!(out, "extracted_segment={segment}")?;
-                writeln!(out, "extracted_bytes={}", bytes.len())?;
-                writeln!(out, "extracted_sha256={}", ContentDigest::sha256(&bytes))?;
+            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } => {
+                return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => {
                 media::run(action, &retained, &mut deployment, &options.root, &cx, out)?
@@ -674,12 +629,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Localize(action) => {
                 localize::run(action, &retained, &mut deployment, &options.root, &cx, out)?
             }
-            Action::Inspect(_) | Action::LocalizationReplay(_) => {}
-        }
-        if matches!(&options.action, Action::Inspect(_) | Action::Verify(_))
-            && manifest.adapter_id == fss_reference::ingest::rtsp_import::replay::ADAPTER
-        {
-            replay_origin::report(&deployment, identity, options.limits, &cx, out)?;
+            Action::LocalizationReplay(_) => {}
         }
         if let Some(path) = &options.manifest_output {
             write_new(path, &manifest.canonical_bytes(), &options.root, &cx)?;

@@ -4,14 +4,15 @@
 use std::io::Write;
 
 use fss_core::ContentDigest;
+use fss_reference::ReplayCx;
 use fss_reference::ingest::RetainedReadLimits;
 use fss_reference::ingest::rtsp_import::replay::retained_replay_receipt;
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::retained_source::RetainedSource;
 
 use super::RunResult;
 
 pub(super) fn report(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     import_identity: ContentDigest,
     limits: RetainedReadLimits,
     cx: &ReplayCx,

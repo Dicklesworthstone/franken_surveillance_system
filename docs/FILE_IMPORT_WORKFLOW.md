@@ -56,6 +56,33 @@ writing bytes. JPEG/MJPEG extraction produces the original encoded JPEG segment,
 image. Metadata can be exported by any command with `--manifest-out FILE`; it is the existing
 `fss.file_import.manifest.v1` canonical binary, not a new JSON or agent-envelope dialect.
 
+`inspect`, `verify` and `extract` use immutable retained custody and can run while the
+deployment publisher remains open. They do not acquire its writer lock, create a missing
+deployment, repair journals or reconcile effects. Acquisition history and recorder-origin
+metadata use the same bounded reader as the source manifest. `inspect` can read valid metadata
+when original media is unavailable; `verify` and `extract` still require their selected source
+bytes and enforce current deletion and privacy authority.
+
+These three commands buffer their complete report and any requested source/manifest export
+until final payload, publication and authority checks succeed. A custody, deadline or read-budget
+refusal leaves stdout empty and creates no export. Successful output adds `deployment_mutated=false`,
+`payload_read_bytes` and `payload_read_attempts`; existing source identities and metadata fields
+are preserved. Final verification is a bounded observation, not a lease preventing subsequent
+changes to the deployment.
+
+| Aggregate option | Default | Maximum |
+| --- | ---: | ---: |
+| `--max-read-bytes` | 1,073,741,824 | 4,294,967,296 |
+| `--max-read-objects` | 1,000,000 | 4,000,000 |
+
+Allowances must use canonical positive decimal spelling. One nonrenewing allowance covers
+opening metadata, acquisition and origin receipts, selected source reads and final rereads;
+repeated reads count again. These limits are independent of the per-source and per-object
+limits below, so inspecting a large source may need an explicit larger aggregate allowance.
+A cooperative 60-second deadline is checked at retained-read boundaries; it does not preempt
+an ongoing filesystem call. Import and other publication commands keep their operational
+deployment ownership and approval behavior.
+
 For retained AVC/HEVC MP4/MOV files, `select-movie --start-movie-tick N --end-movie-tick N`
 selects a half-open interval on the container's movie timeline. It verifies the retained
 original and reports presentation samples, explicit gaps and required coding-order decode
@@ -69,7 +96,9 @@ audit label, not remote authentication. The reference context grants filesystem 
 there is no network-camera discovery, model execution, alert dispatch, or automatic repair here.
 Only a completed final authority batch matching the currently visible import root is recoverable.
 Missing, inconsistent, tombstoned or incomplete publications fail closed; no root is silently
-substituted. These commands do not truncate damaged history or change retention policy.
+substituted. Immutable inspection refuses damaged history without truncating it or changing
+retention policy. Operational deployment opening for publication commands retains its existing
+recovery behavior.
 
 Limits default to 512 MiB per source, 16 MiB per chunk and 16 MiB per returned segment. Set
 `--max-source-bytes`, `--chunk-bytes` and `--max-segment-bytes` explicitly to narrow or change

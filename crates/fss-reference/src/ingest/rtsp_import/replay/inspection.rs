@@ -3,9 +3,10 @@
 
 use fss_core::ContentDigest;
 
+use crate::ReplayCx;
 use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
+use crate::retained_source::RetainedSource;
 use crate::rtsp::recording_replay::ReplayReceipt;
-use crate::{ReferenceDeployment, ReplayCx};
 
 use super::{ADAPTER, GENERATION, checkpoint, corrupt, provenance};
 
@@ -21,7 +22,7 @@ use super::{ADAPTER, GENERATION, checkpoint, corrupt, provenance};
 /// source archive, recorder connection or visible native replay slot is needed. Other
 /// retained import profiles return `None` after their ordinary metadata authority checks.
 pub fn retained_replay_receipt(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     import_identity: ContentDigest,
     limits: RetainedReadLimits,
     cx: &ReplayCx,
