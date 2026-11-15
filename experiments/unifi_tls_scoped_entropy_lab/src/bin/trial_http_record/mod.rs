@@ -23,7 +23,7 @@ use fss_reference::{
     unifi_direct::{
         archive,
         camera_api::SerializerAuthority,
-        camera_http, evidence,
+        camera_http, evidence, handoff,
         http_stream::{
             Preconditions,
             media_archive::{self, Step},
@@ -55,6 +55,15 @@ use super::{
     trial_http_checkpoint::{self, Capture, Prepared, StartState},
     trial_run_id::TrialRunId,
 };
+
+/// Inputs for a separate encrypted post-change observation checkpoint.
+/// These are caller claims, not device identity or authority to dispatch.
+pub struct ObservationCheckpoint<'a> {
+    pub peer: Ipv4Addr,
+    pub start: &'a fss_reference::unifi_direct::StreamStart,
+    pub root: &'a Path,
+    pub certificate: ContentDigest,
+}
 
 struct Access(ContentDigest);
 impl archive::RetainAuthority for Access {
@@ -142,6 +151,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     framing: SearchMode,
     inband: bool,
     dimensions: [u32; 2],
+    observation: ObservationCheckpoint<'_>,
     authorize: impl Fn(Ipv4Addr, u64) -> bool,
 ) -> Result<(), Box<dyn Error>> {
     let parent = root.parent().ok_or("archive parent missing")?;
@@ -501,6 +511,74 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             ),
         ));
     }
+    // Reuse the encrypted snapshot format with the observed values as its
+    // baseline. This plan is only an input to checkpoint creation: it is not
+    // dispatched, and the separately anchored snapshot does not settle an
+    // effect or prove that the peer is the intended physical camera.
+    let observation_plan = (|| {
+        let binding = reread.binding(&authorize).ok()?;
+        let observed_conditions = Preconditions {
+            serializers: binding,
+            ..conditions
+        };
+        let plan = fss_reference::unifi_direct::http_stream::Plan::new(
+            observation.peer,
+            observation.start,
+            observed_conditions,
+            &reread,
+            handoff::Framing::ContentLength,
+        )
+        .ok()?;
+        (plan.request_digest() == checkpoint.plan.request_digest()).then_some(plan)
+    })();
+    let observation_plan = match observation_plan {
+        Some(plan) => plan,
+        None => {
+            return Err(stopped(
+                "serializer observation checkpoint scope refused",
+                (
+                    checkpoint,
+                    published,
+                    detached,
+                    reread,
+                    source_owner,
+                    resources,
+                    video_owner,
+                    source,
+                    video,
+                ),
+            ));
+        }
+    };
+    let observed_checkpoint = match trial_http_checkpoint::prepare(
+        task,
+        cx,
+        clock,
+        observation.root.join("observation"),
+        observation_plan,
+        reread,
+        observation.certificate,
+    )
+    .await
+    {
+        Ok(checkpoint) => checkpoint,
+        Err(reason) => {
+            return Err(stopped(
+                "serializer observation checkpoint requires inspection",
+                (
+                    checkpoint,
+                    published,
+                    detached,
+                    source_owner,
+                    resources,
+                    video_owner,
+                    source,
+                    video,
+                    reason,
+                ),
+            ));
+        }
+    };
     let fss_reference::unifi_direct::http_stream::media::Detached {
         camera_claim,
         permit,
@@ -532,7 +610,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                 .map_or(0, |value| value.bytes().len()),
         );
     println!(
-        "trial_http_record=published decoded_width={} decoded_height={} source_unclosed_bytes={} source_unframed_bytes={} audio=false continuous=false readbacks=consistent effect=reconciliation_required",
+        "trial_http_record=published decoded_width={} decoded_height={} source_unclosed_bytes={} source_unframed_bytes={} audio=false continuous=false readbacks=consistent observation_checkpoint=anchored effect=reconciliation_required",
         width, height, unclosed, unframed
     );
     let _custody = (
@@ -548,7 +626,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         permit,
         readback,
         comparison,
-        reread,
+        observed_checkpoint,
     );
     Ok(())
 }

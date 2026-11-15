@@ -125,22 +125,24 @@ def run(binary, root, cert, avc, mode):
                 change = json.loads(body)
                 if set(change) != {"av"} or set(change["av"]["video"]) != {"video1"}:
                     raise ValueError("update widened its scope")
-                if mode in ("success", "g4", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure"):
+                if mode in ("success", "g4", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure", "checkpoint_blocked"):
                     settings["av"]["video"]["video1"]["avSerializer"] = change["av"]["video"]["video1"]["avSerializer"]
                 reply(peer, {})
                 line, _ = request(peer)
                 if not line.startswith(b"GET /api/1.1/settings"): raise ValueError("missing readback")
                 reply(peer, settings)
-                if mode in ("success", "g4", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure"):
+                if mode in ("success", "g4", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure", "checkpoint_blocked"):
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as media:
                         media.bind(("10.252.15.2", 0)); media.settimeout(10)
                         media.connect(("10.252.15.1", 7442))
                         media.sendall(flv(avc, mode in ("g4", "bad_trailer"), mode == "bad_trailer"))
-                if mode in ("success", "g4", "stale_after_stream"):
+                if mode in ("success", "g4", "stale_after_stream", "checkpoint_blocked"):
                     line, _ = request(peer)
                     if not line.startswith(b"GET /api/1.1/settings"): raise ValueError("missing post-recording readback")
                     if mode == "stale_after_stream":
                         settings["av"]["video"]["video2"]["avSerializer"]["destinations"] = ["tcp://10.252.15.12:7000"]
+                    if mode == "checkpoint_blocked":
+                        (case / "checkpoint" / "observation").mkdir(mode=0o700)
                     reply(peer, settings)
         output, error = child.communicate(timeout=90)
         assert all(value not in output + error for value in (b"10.252.15.11", b"10.252.15.12", b"fixture-cookie"))
@@ -150,6 +152,13 @@ def run(binary, root, cert, avc, mode):
             assert b"trial_http_record=published decoded_width=2688 decoded_height=1512" in output
             assert b"readbacks=consistent" in output and b"effect=reconciliation_required" in output and b"trial_task_outcome=effect_unsettled" in output
             assert (case / "checkpoint" / "key").is_file() and (case / "archive").is_dir()
+            assert b"observation_checkpoint=anchored" in output
+            for checkpoint in (case / "checkpoint", case / "checkpoint" / "observation"):
+                inspected = subprocess.run([binary, "--inspect-http-checkpoint", str(checkpoint),
+                                            "--owner-authorized"], capture_output=True, timeout=30)
+                assert inspected.returncode == 0, inspected.stderr.decode(errors="replace")
+                assert b"trial_http_checkpoint_inspection=authenticated camera_write=false" in inspected.stdout
+                assert all(value not in inspected.stdout + inspected.stderr for value in (b"10.252.15.11", b"10.252.15.12"))
         elif mode == "bad_readback":
             assert child.returncode != 0 and b"HTTP stream start refused; reconcile effect" in error
             assert b"trial_http_record=published" not in output and b"trial_task_outcome=effect_unsettled" in output
@@ -162,13 +171,16 @@ def run(binary, root, cert, avc, mode):
         elif mode == "post_read_failure":
             assert child.returncode != 0 and b"serializer observation unavailable" in error
             assert b"readbacks=consistent" not in output and b"trial_task_outcome=effect_unsettled" in output
+        elif mode == "checkpoint_blocked":
+            assert child.returncode != 0 and b"serializer observation checkpoint requires inspection" in error
+            assert b"observation_checkpoint=anchored" not in output and b"trial_task_outcome=effect_unsettled" in output
         else:
             assert child.returncode != 0 and b"trial_http_record=published" not in output
             assert (b"serializer binding changed between reads" if mode == "changed" else b"UniFi stream listener refused") in error
             assert not (case / "checkpoint").exists() and not (case / "archive").exists()
         inspection = subprocess.run([binary, "--inspect-setup-fence", str(case / "fence"), str(cert[2]),
                                      str(case), "--owner-authorized"], capture_output=True, timeout=30)
-        if mode in ("success", "g4", "bad_readback", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure"):
+        if mode in ("success", "g4", "bad_readback", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure", "checkpoint_blocked"):
             if inspection.returncode != 0: raise ValueError("fence inspection failed: " + inspection.stderr.decode(errors="replace"))
             assert b"operations=1 unresolved=1" in inspection.stdout
         else:
@@ -188,9 +200,9 @@ def main():
         raise SystemExit("expected private root")
     cert = certificate(root, "camera")
     avc = Path(__file__).resolve().parent / "tests/support/synthetic_g4_resolution.264"
-    for mode in ("success", "g4", "changed", "busy", "bad_readback", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure"):
+    for mode in ("success", "g4", "changed", "busy", "bad_readback", "dimensions_mismatch", "bad_trailer", "stale_after_stream", "post_read_failure", "checkpoint_blocked"):
         run(binary, root, cert, avc, mode)
-    print("http_record_fixture passed=9 camera=synthetic resolution=2688x1512")
+    print("http_record_fixture passed=10 camera=synthetic resolution=2688x1512")
 
 
 if __name__ == "__main__": main()

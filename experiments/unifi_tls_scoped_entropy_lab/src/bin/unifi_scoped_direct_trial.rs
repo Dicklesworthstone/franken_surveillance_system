@@ -1385,7 +1385,8 @@ fn run(args: Options) -> ResultBox<()> {
                                     let result = trial_http_record::run(
                                         task, cx, clock, &mut http, listener, prepared, conditions,
                                         &serializer_guard, &leases, &mut *setup_owner.effects, &run_id,
-                                        &args.output, &resource, &setup_approval.0, framing, args.lab_inband_avc, [width, height], &authorize,
+                                        &args.output, &resource, &setup_approval.0, framing, args.lab_inband_avc, [width, height],
+                                        trial_http_record::ObservationCheckpoint { peer: camera_address, start: &start, root, certificate: ContentDigest::sha256(pin) }, &authorize,
                                     ).await;
                                     return result;
                                 }
