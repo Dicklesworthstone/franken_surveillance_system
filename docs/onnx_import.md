@@ -34,7 +34,8 @@ including hand-computed dense and convolution/pooling results.
 
 ## Admitted source profile
 
-- ONNX IR versions 7 through 9, with exactly the default-domain opset 13 import.
+- ONNX IR versions 7 through 9, with exactly one default-domain opset import,
+  either 13 or 17. Intermediate and newer opsets are not implicitly admitted.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers, Constant values and bounded static shape programs
@@ -44,7 +45,7 @@ including hand-computed dense and convolution/pooling results.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
-  BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
+  BatchNormalization, InstanceNormalization, LayerNormalization (opset 17), MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   DepthToSpace, SpaceToDepth,
   Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
@@ -73,6 +74,71 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Opset 17 and LayerNormalization
+
+The importer has an explicit opset-17 operator allowlist. Existing lowerers still
+check every attribute, dtype, shape and numerical restriction. Schema changes
+that only add types do not broaden the admitted F32 data or bounded INT64/BOOL
+control profile. Existing valid opset-13 graphs keep their native graph encoding
+and exact parameter values. Safetensors metadata continues to bind the original
+ONNX digest and importer identity; the importer identity changes with its source.
+
+| Source operator | Schema selected by opset 13 | Schema selected by opset 17 | Additional admission |
+| --- | --- | --- | --- |
+| Reshape | 13 | [14](https://onnx.ai/onnx/operators/onnx__Reshape.html#reshape-14) | Explicit integer `allowzero=0`; other values refuse. |
+| BatchNormalization | 9 | [15](https://onnx.ai/onnx/operators/onnx__BatchNormalization.html#batchnormalization-15) | Explicit integer `training_mode=0`; only inference with one output is admitted. |
+| Shape | 13 | [15](https://onnx.ai/onnx/operators/onnx__Shape.html#shape-15) | Static integer `start`/`end`, independently clamped after resolving negative bounds; reversed/equal bounds produce an empty control vector. |
+| LayerNormalization | Unavailable | [17](https://onnx.ai/onnx/operators/onnx__LayerNormalization.html#layernormalization-17) | F32 `stash_type=1` inference as specified below. |
+
+The new mode attributes remain invalid under opset 13. Unknown attributes and
+operators still refuse, including later operators that are absent from the
+closed allowlist. This is a versioned compatibility increment, not arbitrary
+opset-17 or trained-model qualification.
+
+LayerNormalization accepts positive static F32 input shapes of rank one through
+eight. `axis` defaults to `-1` and must lie in `[-rank, rank)`; normalization
+covers that axis and every following axis. `epsilon` is a positive finite ONNX
+FLOAT, with the exact binary32 default `1e-5`. `stash_type` must be absent or the
+integer `1`. Required Scale and optional bias may be constants or runtime F32
+inputs, including scalars and any shape unidirectionally broadcastable to X.
+An affine input cannot introduce a leading axis or expand X. Bias may be omitted
+or represented by an empty final input name. Only Y is produced: requested Mean
+or InvStdDev outputs refuse, while their empty optional placeholders are accepted.
+
+The native graph follows the ONNX function's separately rounded F32 stages:
+population mean, subtraction, square, population variance, epsilon addition,
+square root, reciprocal, multiplication by the centered input, Scale multiplication,
+and optional bias addition. In particular, `D * (1 / StdDev)` is retained as two
+operations; it is not reassociated to `D / StdDev`. The existing frozen LayerNorm
+uses binary64 statistics and would give different results, so this source
+operator lowers to existing arithmetic and layout primitives instead. Sqrt
+selects the existing Model IR v2 contract, without a new runtime operator or wire
+format.
+
+Both means share one `[width, 1]` vector of exact F32 ones and one exactly
+representable F32 divisor. Their MatMul sums each contiguous normalized row from
+positive zero in ascending F32 order, followed by division, matching the existing
+ReduceMean lowering. There is no universal bitwise-equivalence claim against
+external implementations with different reduction orders. Finite inputs can
+overflow a sum or square; no higher-precision or overflow repair is substituted.
+Generated parameters total `4 * width + 12` bytes: ones, divisor, epsilon and
+reciprocal numerator. Depending on necessary reshapes and optional bias, the
+expansion has 11–16 native nodes. The importer preflights the entire node/value
+and parameter allocation, preserves source names against helper collisions, and
+checks cumulative work and cancellation throughout allocation and lowering.
+
+The `opset17` tests in `onnx_normalization_execution` exercise production scalar
+and optimized executors, exact F32 staging, runtime affine broadcasting,
+negative/multiple axes, singleton axes, optional arguments and native
+graph/Safetensors reload. They also compare old/new canonical graph and parameter payload bytes,
+version-sensitive inference attributes, Shape slice bounds, malformed controls,
+statistics/precision refusals, exact resource limits, every observed import
+cancellation checkpoint and source-name collisions.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_normalization_execution
+```
 
 ## Spatial and channel rearrangement
 
@@ -236,7 +302,7 @@ source-bound importer identity; Model IR v1 and operator IDs remain unchanged.
 
 An exported HardSwish graph represented by HardSigmoid with alpha one-sixth and
 beta one-half followed by Mul now executes through the native path. The raw
-HardSwish operator belongs to newer opsets and remains outside this opset-13
+HardSwish operator belongs to newer opsets and remains outside this closed
 profile. The implementation does not rewrite or approximate an unsupported
 source operator.
 
@@ -790,8 +856,9 @@ epsilon and variance, and a strictly positive finite variance-plus-epsilon sum.
 Zero epsilon is admitted when every variance is positive. Nonfinite source values
 and overflow in the constant sum refuse. Negative statistics and zero denominators
 refuse before a model artifact can be emitted. Finite FLOAT momentum is validated
-but has no effect on one-output inference. Training outputs and attributes from
-other schemas, including `training_mode`, `spatial` and `is_test`, refuse.
+but has no effect on one-output inference. Training outputs, `spatial` and
+`is_test` refuse. `training_mode` is invalid under opset 13; opset 17 admits only
+its explicit integer inference value zero, as described in the version table.
 
 Scale, bias and mean use immutable channel-shaped views for right-aligned
 broadcasting across batch and spatial axes. Import reshaping shares source storage
@@ -848,7 +915,7 @@ simplifier or adding integer execution to the frozen runtime IR.
 
 | Source operation | Admitted compile-time behavior |
 |---|---|
-| [Shape-13](https://onnx.ai/onnx/operators/onnx__Shape.html#shape-13) | Read the exact shape of an already-known tensor into an INT64 vector. No attributes; `start` and `end` belong to later schemas. |
+| [Shape-13](https://onnx.ai/onnx/operators/onnx__Shape.html#shape-13) / Shape-15 | Read the exact shape of an already-known tensor into an INT64 vector. Opset 13 admits no attributes; opset 17 also admits bounded integer `start`/`end` metadata slicing. |
 | [Gather-13](https://onnx.ai/onnx/operators/onnx__Gather.html#gather-13) | Index an INT64 vector with an INT64 scalar or vector, preserving order, duplicates and negative indices. Axis is zero or minus one. |
 | [Squeeze-13](https://onnx.ai/onnx/operators/onnx__Squeeze.html#squeeze-13) / [Unsqueeze-13](https://onnx.ai/onnx/operators/onnx__Unsqueeze.html#unsqueeze-13) | Convert scalar/vector layouts using constant axis vectors. Omitted Squeeze axes remove singleton dimensions; an explicitly empty vector is a no-op. |
 | [Concat-13](https://onnx.ai/onnx/operators/onnx__Concat.html#concat-13) | Join INT64 vectors, including empty vectors, with an explicit zero or minus-one axis. Scalars are not silently promoted to vectors. |
@@ -1173,7 +1240,8 @@ Reshape supports a zero entry copying the corresponding input dimension, one inf
 element. Squeeze with omitted axes removes every singleton dimension; an explicitly
 empty axes vector removes none. Negative axes are normalized against the input rank
 for Squeeze and the output rank for Unsqueeze. Duplicated, out-of-range or incompatible
-axes refuse. Opset 13 has no Reshape `allowzero` attribute; it is not silently accepted.
+axes refuse. Opset 13 has no Reshape `allowzero` attribute; opset 17 admits only
+the explicitly requested integer value zero. Literal-zero mode still refuses.
 
 Slice accepts optional axes and steps, including empty optional input-name slots.
 It normalizes negative axes and endpoints, clamps endpoints to the static dimension,

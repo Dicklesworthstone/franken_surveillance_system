@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded evaluation of opset-13 shape programs from already-validated static
+//! Bounded evaluation of opset-13/17 shape programs from already-validated static
 //! dimensions and embedded INT64 values. No input data or runtime integer graph
 //! is evaluated. Every produced control joins ordinary constant admission.
 //!
@@ -107,13 +107,30 @@ fn vector(values: Vec<i64>) -> Result<Control> {
 
 fn shape(source: &SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<Control> {
     arity(source, 1)?;
-    // start/end attributes belong to later Shape schemas, not opset 13.
-    no_attributes(source)?;
+    // The version gate refuses attributes for Shape-13. Shape-15, selected by
+    // opset 17, clamps start/end independently after resolving negative axes.
+    if source
+        .attrs
+        .keys()
+        .any(|key| key != "start" && key != "end")
+    {
+        return Err(OnnxError::Unsupported);
+    }
     let name = &source.inputs[0];
     let input = lowering.known.get(name).ok_or(OnnxError::Graph)?;
-    let values = input
-        .shape()
-        .dims()
+    let dims = input.shape().dims();
+    let rank = dims.len() as i64;
+    let bound = |name: &str, default: i64| -> Result<usize> {
+        let raw = match source.attrs.get(name) {
+            None => default,
+            Some(AttrValue::Int(value)) => *value,
+            Some(_) => return Err(OnnxError::Graph),
+        };
+        Ok((if raw < 0 { raw + rank } else { raw }).clamp(0, rank) as usize)
+    };
+    let start = bound("start", 0)?;
+    let end = bound("end", rank)?.max(start);
+    let values = input.shape().dims()[start..end]
         .iter()
         .map(|&dimension| i64::try_from(dimension).map_err(|_| OnnxError::Limit))
         .collect::<Result<Vec<_>>>()?;

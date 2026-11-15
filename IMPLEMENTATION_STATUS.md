@@ -70,6 +70,38 @@ both killed by the host (SIGKILL) in unchanged `fss-core`, before checking these
 No native runtime pass or release qualification is inferred. See
 [retained recorder UTC queries](docs/RETAINED_RECORDER_TIMESTAMP_QUERY.md).
 
+## ONNX opset 17 and native LayerNormalization — 2026-11-15
+
+The native importer now accepts explicit closed default-domain opset 13 and 17
+profiles. Opset 17 admits inference BatchNormalization `training_mode=0`,
+Reshape `allowzero=0`, bounded static Shape `start`/`end` slicing and
+LayerNormalization. Other versions, unknown schema attributes, training behavior,
+literal-zero reshaping and unsupported operators still refuse.
+
+LayerNormalization lowers to the existing Model IR v2 arithmetic/layout owners.
+It preserves ordered F32 population means, centered squares, epsilon addition,
+square root, a separately rounded reciprocal, normalization multiplication and
+affine operations. It does not substitute native LayerNorm's F64 statistics.
+Static positive F32 ranks one through eight, trailing/negative axes, runtime or
+constant Scale/bias and omitted optional arguments are supported. Requested
+statistics outputs and other stash precision modes remain outside the profile.
+The 11–16-node expansion preflights four shared constants, all tensor/name/node
+limits and parameter bytes, with work/cancellation checks throughout.
+
+Existing admitted opset-13 canonical graphs and parameter payloads retain their
+behavior. Safetensors metadata still binds the exact source digest and importer
+identity; the identity includes both new implementation modules. No dependency,
+frozen operator ID or wire-format change is introduced.
+
+Pinned nightly-2026-08-31 direct production component builds passed, followed by
+all 34 normalization/executor tests, 22 model-IR library tests and 15 artifact-export
+tests. The normalization suite includes ten new opset-17 contracts covering both
+executors, artifact reload, F32 precision/order, broadcasting, versioned attributes,
+Shape slicing, exact limits, cancellation and generated-name collisions. Pinned
+formatting and scoped whitespace checks passed. Full Cargo/workspace qualification
+and arbitrary trained-model compatibility are not inferred. See
+[ONNX import](docs/onnx_import.md#opset-17-and-layernormalization).
+
 ## Bounded Matroska initialization parameter probing — 2026-11-15
 
 The FSS-053 implementation extends `fss-probe --parameters` and the borrowed

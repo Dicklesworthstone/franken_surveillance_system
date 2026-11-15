@@ -543,10 +543,11 @@ status is recorded separately in `IMPLEMENTATION_STATUS.md`.
 
 ## Admitted model profile and bounds
 
-The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
+The command accepts ONNX IR 7–9 with exactly one default-domain opset import,
+either 13 or 17, under the bounded static F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
 Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
-BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
+BatchNormalization, InstanceNormalization, LayerNormalization (opset 17), MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
 Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
@@ -554,6 +555,26 @@ their values are evaluated during import and never require runtime integer execu
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
 profiles outside the explicit DFL or split-head assembly contracts and unsupported operators
 refuse explicitly. The command does not claim that an arbitrary ONNX detector can be imported.
+
+The opset-17 profile admits explicit inference `BatchNormalization.training_mode=0`,
+`Reshape.allowzero=0`, and Shape's static `start`/`end` metadata slices. These
+attributes remain invalid under opset 13. Training mode, literal-zero Reshape
+mode, and other source opsets refuse. The existing F32/INT64 restrictions remain
+in force when a newer schema adds other dtypes.
+
+Opset-17 LayerNormalization accepts static positive F32 tensors of rank one
+through eight, a trailing normalization axis (default `-1`), positive finite F32
+epsilon (default `1e-5`), and `stash_type=1`. Scale and optional bias may be
+constant or runtime F32 tensors that broadcast to the input shape. Its native
+expansion preserves ordered F32 population means and the separate square,
+epsilon addition, square root, reciprocal, normalization multiplication and
+affine operations. The existing native LayerNorm uses F64 statistics and is not
+substituted. This expansion selects Model IR v2 and uses four shared generated
+parameters, with all node, tensor, byte and work limits enforced. Requested
+Mean/InvStdDev outputs and other precision modes refuse; omitted bias and empty
+optional output placeholders are admitted. See
+[opset 17 and LayerNormalization](onnx_import.md#opset-17-and-layernormalization)
+for exact bounds, compatibility and execution tests.
 
 Sqrt and Erf admit unary static F32 tensors with no attributes and select the
 separate **Model IR v2** numerical contract. Sqrt preserves signed zero, uses

@@ -54,6 +54,9 @@ type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Outputs = BTreeMap<String, Vec<f32>>;
 const GENERATION: Generation = Generation(57);
 
+#[path = "onnx_normalization_execution/opset17.rs"]
+mod opset17;
+
 fn varint(mut value: u64) -> Vec<u8> {
     let mut output = Vec::new();
     loop {

@@ -8,7 +8,7 @@ use fss_tensor::DType;
 use super::{ImportedOnnx, OnnxError, Result};
 
 const MIB: usize = 1024 * 1024;
-const IMPLEMENTATION: [&[u8]; 32] = [
+const IMPLEMENTATION: [&[u8]; 34] = [
     include_bytes!("../onnx.rs"),
     include_bytes!("gemm.rs"),
     include_bytes!("conv_transpose.rs"),
@@ -20,6 +20,8 @@ const IMPLEMENTATION: [&[u8]; 32] = [
     include_bytes!("reduce.rs"),
     include_bytes!("batch_normalization.rs"),
     include_bytes!("instance_normalization.rs"),
+    include_bytes!("layer_normalization.rs"),
+    include_bytes!("opset.rs"),
     include_bytes!("pooling.rs"),
     include_bytes!("pow.rs"),
     include_bytes!("padding.rs"),

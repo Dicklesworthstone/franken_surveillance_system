@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Offline ONNX IR 7..=9 / default-domain opset 13 import into the frozen Model IR.
+//! Offline ONNX IR 7..=9 / default-domain opset 13 or 17 import into the frozen Model IR.
 //!
 //! This is deliberately a closed profile, not an ONNX interpreter. It supports static,
 //! positive F32 runtime shapes, finite F32 parameters, bounded static INT64 shape controls,
@@ -29,7 +29,9 @@ mod hard_sigmoid;
 mod head_assembly;
 mod head_softmax;
 mod instance_normalization;
+mod layer_normalization;
 mod leaky_relu;
+mod opset;
 mod pad;
 mod padding;
 mod pooling;
@@ -467,6 +469,7 @@ struct SourceNode<'a> {
 fn source_node<'a>(
     bytes: &'a [u8],
     ordinal: usize,
+    version: u64,
     a: &mut Admission<'_>,
 ) -> Result<SourceNode<'a>> {
     let mut wire = Wire(bytes);
@@ -483,7 +486,15 @@ fn source_node<'a>(
                 };
                 push(&mut inputs, input, 256)?;
             }
-            2 => push(&mut outputs, name(value.bytes()?)?, split::MAX_OUTPUTS)?,
+            2 => {
+                let bytes = value.bytes()?;
+                let output = if bytes.is_empty() {
+                    String::new()
+                } else {
+                    name(bytes)?
+                };
+                push(&mut outputs, output, split::MAX_OUTPUTS)?;
+            }
             5 => {
                 push(&mut attributes, value.bytes()?, 16)?;
             }
@@ -512,10 +523,25 @@ fn source_node<'a>(
         }
     }
     let op = op.ok_or(OnnxError::Malformed)?;
-    // Split alone admits multiple source outputs. Keep the historical refusal
-    // for every other operator, including MaxPool's optional indices output.
-    if op != "Split" && outputs.len() > 1 {
-        return Err(OnnxError::Limit);
+    if op == "LayerNormalization" && version == 17 {
+        // Empty optional output placeholders are not values. Requested statistics
+        // have their own observable contract and are outside this inference profile.
+        if outputs.is_empty() || outputs.len() > 3 || outputs[0].is_empty() {
+            return Err(OnnxError::Graph);
+        }
+        if outputs[1..].iter().any(|name| !name.is_empty()) {
+            return Err(OnnxError::Unsupported);
+        }
+        outputs.truncate(1);
+    } else {
+        if outputs.iter().any(String::is_empty) {
+            return Err(OnnxError::Limit);
+        }
+        // Preserve historical refusal of other optional outputs, including
+        // MaxPool indices and BatchNormalization running statistics.
+        if op != "Split" && outputs.len() > 1 {
+            return Err(OnnxError::Limit);
+        }
     }
     let id = format!("onnx-node-{ordinal:04}");
     if !matches!(
@@ -529,7 +555,8 @@ fn source_node<'a>(
             | "Pad"
             | "Clip"
             | "ReduceSum"
-    ) && inputs.iter().any(String::is_empty)
+    ) && !(op == "LayerNormalization" && version == 17)
+        && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
     }
@@ -797,7 +824,7 @@ fn reserve_name(reserved: &mut BTreeSet<String>, name: &str, a: &mut Admission<'
     Ok(())
 }
 
-fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
+fn parse_opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<u64> {
     let mut wire = Wire(bytes);
     let (mut seen, mut version) = (0, None);
     while let Some((tag, value)) = wire.next(a)? {
@@ -812,20 +839,23 @@ fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
             _ => return Err(OnnxError::Unsupported),
         }
     }
-    if version != Some(13) {
-        return Err(OnnxError::Unsupported);
+    match version {
+        Some(version @ (13 | 17)) => Ok(version),
+        _ => Err(OnnxError::Unsupported),
     }
-    Ok(())
 }
 
 /// Import an exact ONNX source into native graph/parameters, without executing it.
 ///
-/// Only default-domain opset 13 is accepted. Runtime inputs and initializers must be
+/// Only the closed default-domain opset 13 and 17 profiles are accepted.
+/// Runtime inputs and initializers must be
 /// disjoint: this API does not silently freeze an overridable ONNX graph input.
 /// Every declared output/intermediate is checked against native shape inference.
 /// Unused initializers, duplicate outputs, forward references and custom facilities refuse.
 /// Gemm expands into bounded native transpose/matmul/multiply/add nodes and scalar parameters.
 /// Inference BatchNormalization uses constant channel parameters and ordered native F32 math.
+/// Opset-17 LayerNormalization preserves F32 stash_type=1 arithmetic stages,
+/// including a separately rounded reciprocal before normalization multiplication.
 /// LeakyRelu admits exact finite F32 slopes in [0, 1] through existing native operators.
 /// Clip admits optional scalar F32 bounds, preserving finite values without overflow.
 /// HardSigmoid admits finite coefficients whose full finite F32 affine range cannot overflow.
@@ -876,7 +906,7 @@ pub fn import_onnx<'a>(
         return Err(OnnxError::Digest);
     }
     let mut wire = Wire(source);
-    let (mut seen, mut ir_version, mut graph_bytes) = (0, None, None);
+    let (mut seen, mut ir_version, mut graph_bytes, mut source_opset) = (0, None, None, None);
     while let Some((tag, value)) = wire.next(&mut a)? {
         singular(&mut seen, tag)?;
         match tag {
@@ -888,13 +918,14 @@ pub fn import_onnx<'a>(
                 value.integer()?;
             }
             7 => graph_bytes = Some(value.bytes()?),
-            8 => opset(value.bytes()?, &mut a)?,
+            8 => source_opset = Some(parse_opset(value.bytes()?, &mut a)?),
             _ => return Err(OnnxError::Unsupported),
         }
     }
     if !matches!(ir_version, Some(7..=9)) || seen & (1 << 8) == 0 {
         return Err(OnnxError::Unsupported);
     }
+    let source_opset = source_opset.ok_or(OnnxError::Unsupported)?;
     let mut wire = Wire(graph_bytes.ok_or(OnnxError::Malformed)?);
     let (mut seen, mut graph_name) = (0, "onnx-graph".to_owned());
     let (mut node_sources, mut inputs, mut outputs, mut declared) =
@@ -984,7 +1015,8 @@ pub fn import_onnx<'a>(
     }
     let mut sources = Vec::new();
     for (ordinal, source) in node_sources.into_iter().enumerate() {
-        let parsed = source_node(source, ordinal, &mut a)?;
+        let mut parsed = source_node(source, ordinal, source_opset, &mut a)?;
+        opset::admit(source_opset, &mut parsed)?;
         for name in parsed.inputs.iter().chain(&parsed.outputs) {
             reserve_name(&mut reserved, name, &mut a)?;
         }
@@ -1018,6 +1050,8 @@ pub fn import_onnx<'a>(
             batch_normalization::lower(source, &mut lowering)?;
         } else if source.op == "InstanceNormalization" {
             instance_normalization::lower(source, &mut lowering)?;
+        } else if source.op == "LayerNormalization" {
+            layer_normalization::lower(source, &mut lowering)?;
         } else if source.op == "HardSigmoid" {
             hard_sigmoid::lower(source, &mut lowering)?;
         } else if source.op == "Clip" {
