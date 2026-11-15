@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod matroska;
 mod mp4;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

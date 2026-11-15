@@ -26,6 +26,7 @@ pub use inband::{
     ParameterSetSource, SampleConfiguration,
 };
 mod matroska;
+pub(crate) use matroska::probe_configuration as probe_matroska_configuration;
 pub use matroska::{MatroskaElement, MatroskaSample, MatroskaTrack, MatroskaVideo};
 mod timeline;
 pub use timeline::{

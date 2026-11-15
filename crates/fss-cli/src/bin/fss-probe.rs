@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! fss-probe: bounded container-family, Annex-B or MP4 initialization inspection.
+//! fss-probe: bounded container-family, Annex-B, MP4 or Matroska initialization inspection.
 //!
 //! Reads at most --bytes from stdin. The default is 189 bytes for signatures,
 //! or 4096 for --parameters. No decoding, networking or source retention occurs.
@@ -165,6 +165,9 @@ where
                 )?;
                 if let Some(track) = report.track_id {
                     write!(out, " track_id={track}")?;
+                }
+                if let Some(track) = report.track_number {
+                    write!(out, " track_number={track}")?;
                 }
                 writeln!(out, " bytes={read}")?;
                 Ok(EXIT_OK)
@@ -430,6 +433,58 @@ mod tests {
             .ok_or("fixture avc1 entry")?;
         bytes[at..at + 4].copy_from_slice(b"avc3");
         assert_eq!(invoke(&["--parameters"], &bytes).0, EXIT_UNSUPPORTED);
+        Ok(())
+    }
+
+    #[test]
+    fn matroska_parameters_report_track_and_stop_at_the_complete_tracks_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for bytes in [
+            include_bytes!("../../../fss-container/tests/fixtures/avc_av.mkv").as_slice(),
+            include_bytes!("../../../fss-container/tests/fixtures/avc_live.mkv"),
+            include_bytes!("../../../fss-container/tests/fixtures/hevc_av.mkv"),
+        ] {
+            let report = probe_parameters(bytes, false, ParameterLimits::default(), || false)?;
+            let end = report.inspected_bytes;
+            let (code, line) = invoke(&["--parameters"], bytes);
+            assert_eq!(code, EXIT_OK, "{line}");
+            assert!(
+                line.starts_with("parameters container=matroska codec="),
+                "{line}"
+            );
+            assert!(line.contains("track_number=1"), "{line}");
+            assert!(!line.contains("track_id="), "{line}");
+            assert!(line.contains(&format!("inspected_bytes={end}")), "{line}");
+            let exact = end.to_string();
+            let short = (end - 1).to_string();
+            assert_eq!(
+                invoke(&["--parameters", "--bytes", &exact], bytes).0,
+                EXIT_OK
+            );
+            assert_eq!(
+                invoke(&["--parameters", "--bytes", &short], bytes).0,
+                EXIT_LIMIT
+            );
+            assert_eq!(
+                invoke(&["--parameters"], &bytes[..end - 1]).0,
+                EXIT_INSUFFICIENT
+            );
+            assert_eq!(
+                invoke(&["--parameters", "--units", "1"], bytes).0,
+                EXIT_LIMIT
+            );
+            let mut input = &bytes[..];
+            let mut out = Vec::new();
+            assert_eq!(
+                run(
+                    ["--parameters".into(), "--bytes".into(), exact],
+                    &mut input,
+                    &mut out,
+                ),
+                EXIT_OK
+            );
+            assert_eq!(input.len(), bytes.len() - end);
+        }
         Ok(())
     }
 

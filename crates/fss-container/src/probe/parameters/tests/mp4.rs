@@ -47,7 +47,7 @@ fn field(bytes: &[u8], kind: &[u8; 4]) -> Test<usize> {
         + 4)
 }
 
-fn record(bytes: &[u8], kind: &[u8; 4]) -> Test<Vec<u8>> {
+pub(super) fn record(bytes: &[u8], kind: &[u8; 4]) -> Test<Vec<u8>> {
     let start = field(bytes, kind)?;
     let size = u32::from_be_bytes(bytes[start - 8..start - 4].try_into()?);
     Ok(bytes[start..start - 8 + size as usize].to_vec())
@@ -92,7 +92,7 @@ fn movie(tracks: &[Vec<u8>]) -> Vec<u8> {
     bytes
 }
 
-fn hevc_record(depth: u8) -> Test<Vec<u8>> {
+pub(super) fn hevc_record(depth: u8) -> Test<Vec<u8>> {
     let (vps, sps) = if depth == 8 {
         (VPS8, SPS8)
     } else {

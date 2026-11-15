@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded Annex-B and MP4 initialization probing with borrowed source bindings.
+//! Bounded Annex-B, MP4 and Matroska initialization probing with borrowed source bindings.
 //!
 //! The first complete AVC SPS/PPS or HEVC VPS/SPS/PPS tuple is interpreted by
 //! the packet owner's existing parsers. No picture is decoded, no source is
@@ -19,6 +19,8 @@ use fss_packet::{
 
 use super::{ContainerKind, MAX_PROBE_BYTES, ProbeLimits, ProbeOutcome, probe};
 
+mod configuration;
+mod matroska;
 mod mp4;
 
 /// Independent byte, work and geometry ceilings; invalid policies fail closed.
@@ -112,7 +114,7 @@ impl ParameterCodec {
 /// One exact original NAL. The borrow prevents reuse/mutation while the result lives.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ParameterSource<'a> {
-    /// Range in the original head, excluding Annex-B delimiters/padding or MP4 length fields.
+    /// Range in the original head, excluding Annex-B delimiters/padding or configuration length fields.
     pub range: Range<usize>,
     bytes: &'a [u8],
 }
@@ -136,8 +138,10 @@ impl fmt::Debug for ParameterSource<'_> {
 pub struct VideoParameters<'a> {
     /// Container whose bounded initialization supplied the tuple.
     pub container: ContainerKind,
-    /// Selected MP4 track identifier; elementary streams have no container track.
+    /// Selected MP4 track identifier; other containers do not use this namespace.
     pub track_id: Option<u32>,
+    /// Selected Matroska track number; retains its full unsigned 64-bit representation.
+    pub track_number: Option<u64>,
     /// Codec whose native parameter parser accepted the tuple.
     pub codec: ParameterCodec,
     /// Coded luma dimensions before the signalled crop.
@@ -156,9 +160,9 @@ pub struct VideoParameters<'a> {
     pub sps: ParameterSource<'a>,
     /// Original PPS, checked against the SPS.
     pub pps: ParameterSource<'a>,
-    /// Consumed prefix extent, including a terminating delimiter or the complete MP4 `moov`.
+    /// Consumed prefix extent, through a delimiter, complete MP4 `moov` or Matroska `Tracks`.
     pub inspected_bytes: usize,
-    /// Complete NAL units considered, including skipped Annex-B units or MP4 SEI arrays.
+    /// Complete NAL units considered, including skipped Annex-B units or configuration SEI arrays.
     pub inspected_units: usize,
 }
 
@@ -190,6 +194,7 @@ impl<'a> ParameterTuple<'a> {
         VideoParameters {
             container,
             track_id,
+            track_number: None,
             codec: self.codec,
             coded_dimensions: metadata.coded,
             display_dimensions: metadata.display,
@@ -306,10 +311,11 @@ fn save<'a>(
     Ok(())
 }
 
-/// Inspect Annex-B configuration or complete MP4 initialization within a bounded prefix.
-/// Cancellation is checked between boxes/units, every 128 delimiter-scan bytes,
+/// Inspect Annex-B, MP4 or Matroska initialization within a bounded prefix.
+/// Cancellation is checked between boxes/elements/units, every 128 delimiter-scan bytes,
 /// and before/after native parsing. MP4 requires one video track in a complete `moov`;
-/// a later `mdat`, sample timeline and subsequent configuration are not inspected.
+/// Matroska requires a complete EBML header and first `Tracks` before any `Cluster`.
+/// Media payloads, sample timelines and subsequent configurations are not inspected.
 ///
 /// end_of_source may be true only when the supplied bytes end at an observed EOF.
 /// Reaching a byte allowance is not EOF: the final undelimited NAL is then incomplete.
@@ -344,6 +350,10 @@ pub fn probe_parameters<'a>(
             container: ContainerKind::IsoBmff,
             ..
         } => return mp4::probe(window, complete, incomplete, limits, &mut cancelled),
+        ProbeOutcome::Identified {
+            container: ContainerKind::Matroska,
+            ..
+        } => return matroska::probe(window, incomplete, limits, &mut cancelled),
         ProbeOutcome::Identified { .. } | ProbeOutcome::Unsupported => {
             return Err(ParameterError::Unsupported);
         }

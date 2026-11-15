@@ -10,6 +10,7 @@ fss-probe --bytes 189 < source.ts
 fss-probe --parameters < source.264
 fss-probe --parameters --bytes 4096 --units 16 < source.265
 fss-probe --parameters < initialization.mp4
+fss-probe --parameters < recording.mkv
 ```
 
 The command reads only stdin and writes one diagnostic line. There is no network access, source retention, decoding, model execution or automatic fallback. The original family-only invocation remains available.
@@ -17,7 +18,7 @@ The command reads only stdin and writes one diagnostic line. There is no network
 | Mode | Default byte allowance | Result |
 | --- | --- | --- |
 | Family | 189 | Container-family signature, payload domain and ISO-BMFF major brand when present |
-| `--parameters` | 4096 | First complete admitted Annex-B tuple or MP4 initialization, signalled dimensions/profile/level/depth, original parameter spans and inspection counts |
+| `--parameters` | 4096 | First complete admitted Annex-B tuple, MP4 initialization or Matroska Tracks, signalled dimensions/profile/level/depth, original parameter spans and inspection counts |
 
 `--bytes` accepts 1 through 4096 for family mode and 12 through 4096 for parameter mode. `--units` is available only with `--parameters` and accepts 1 through 64. Invalid or repeated options refuse before reading stdin. Short reads are accumulated within the original allowance. Interrupted reads have a fixed retry ceiling, and output failures return an error status.
 
@@ -29,7 +30,7 @@ parameters container=annex-b codec=h264 scope=configuration-prefix coded_width=1
 
 The numerical spans and counts come from the actual input. Spans are half-open byte offsets in that input, excluding Annex-B delimiters and trailing zero bytes. Source bytes are not printed. Non-alphanumeric ISO-BMFF brand bytes, except `.`, `_` and `-`, are percent-escaped so untrusted metadata cannot inject output lines or fields.
 
-MP4 output reports `container=iso-bmff` and adds `track_id=N`; its parameter spans point directly into the original `avcC` or `hvcC` record, excluding NAL length fields. The native `VideoParameters` API exposes the same container and optional track identifier. Existing Annex-B results retain `container=annex-b` and have no container track.
+MP4 output reports `container=iso-bmff` and adds `track_id=N`; Matroska reports `container=matroska` and adds `track_number=N`. Their parameter spans point directly into the original `avcC` or `hvcC` record, excluding NAL length fields. The native `VideoParameters` API keeps the MP4 `track_id: Option<u32>` and exposes the separate Matroska `track_number: Option<u64>` without narrowing its identifier. Existing Annex-B results retain `container=annex-b` and have neither container track identifier.
 
 ## Two different claims
 
@@ -68,17 +69,39 @@ The prefix may end exactly at the declared `moov` boundary without EOF: its box 
 
 In addition to the caller's byte, NAL and geometry ceilings, MP4 traversal has hard limits of 128 visited box headers and 16 declared tracks. Traversal follows a fixed initialization hierarchy, with no unbounded recursion. The complete selected configuration record is checked before a result is returned; its SEI NAL arrays consume the NAL allowance even though they do not supply reported parameters.
 
+## Matroska Tracks within the prefix
+
+A Matroska prefix may supply parameters through a complete EBML header, a Segment header and the complete first Tracks element before any Cluster. Known-size and unknown-size Segments are admitted. Tracks must have a declared complete extent within the byte allowance; neither media frames nor the Segment's remaining bytes are needed to close this metadata result. The existing demux owner's EBML header and track grammar are reused, including its admitted `matroska` and `webm` DocType values, reader-version bounds, required track fields and checksums.
+
+Exactly one video track must declare `V_MPEG4/ISO/AVC` or `V_MPEGH/ISO/HEVC` with a complete CodecPrivate `avcC` or `hvcC` record. Audio and other nonvideo tracks may coexist. Every entry's track number/type, child extents and applicable metadata CRCs are examined before returning, so a later duplicate identifier or malformed declared structure cannot be hidden by an earlier configuration. Multiple video tracks are unsupported in this operation, which has no implicit track preference. Duplicate required fields are contradictory; duplicate or zero track numbers and corrupt metadata are malformed.
+
+Matroska and MP4 share the native configuration-record interpretation and original parameter bindings. HEVC parameter arrays must declare complete VPS/SPS/PPS content; incomplete arrays that would require later in-band state are unsupported. The reported coded and cropped dimensions come from native SPS interpretation. Matroska PixelWidth/PixelHeight must satisfy the existing track grammar, but container display dimensions, pixel cropping, aspect-ratio transforms and timing do not override or expand this codec-prefix result.
+
+| Matroska initialization feature | Probe behavior |
+| --- | --- |
+| Known-size or unknown-size Segment | Admitted without waiting for the media tail |
+| Complete first Tracks at the exact byte allowance | Admitted without observing EOF |
+| Unknown-size Tracks, TrackEntry or other Segment metadata | Unsupported |
+| ContentEncodings or TrackOperation on the selected video | Unsupported |
+| CRC in complete EBML/Tracks/TrackEntry and selected-video Video metadata | Verified by the existing demux grammar |
+| Leading CRC of a skipped Segment-level master | Verified over that complete master's bytes |
+| Segment-level CRC | Unsupported; a bounded prefix cannot verify the unread media covered by it |
+| Cluster reached before Tracks | Unsupported; the probe does not seek through media |
+| Samples, another Tracks or changed parameters after the completed first Tracks | Outside the reported configuration-prefix scope |
+
+Traversal is bounded by 128 visited element headers and 16 declared tracks, in addition to the caller's original byte/NAL/geometry limits. Nested track parsing has a fixed hierarchy. A parsed initialization child extending beyond a complete parent is malformed even when more source bytes follow; an incomplete first Tracks within an unfinished prefix remains insufficient or byte-limited. No external resource is followed, no frame is decoded, and success does not certify a complete or playable Matroska recording.
+
 ## EOF, bounds and ownership
 
-The native parameter API takes an explicit `end_of_source` observation. A caller may set it only after observing EOF; exhausting an allowance is not EOF. A final undelimited Annex-B NAL is incomplete until either its next delimiter or actual EOF is observed. If an entire source is longer than the allowed prefix, its EOF cannot close the clipped prefix. The CLI never reads an extra byte just to decide whether EOF occurred. Consequently, an undelimited tuple ending exactly at `--bytes` needs a larger allowance to observe EOF, or a following delimiter within the allowance. MP4 uses its declared complete box boundaries, except that top-level size-zero boxes still require EOF.
+The native parameter API takes an explicit `end_of_source` observation. A caller may set it only after observing EOF; exhausting an allowance is not EOF. A final undelimited Annex-B NAL is incomplete until either its next delimiter or actual EOF is observed. If an entire source is longer than the allowed prefix, its EOF cannot close the clipped prefix. The CLI never reads an extra byte just to decide whether EOF occurred. Consequently, an undelimited tuple ending exactly at `--bytes` needs a larger allowance to observe EOF, or a following delimiter within the allowance. MP4 uses its declared complete box boundaries, except that top-level size-zero boxes still require EOF. Matroska uses the complete declared Tracks boundary inside its Segment.
 
 `ParameterLimits` independently limits head bytes, NAL count, coded width, coded height and coded luma samples. Defaults are 4096 bytes, 64 NAL units, 8192 by 8192 coded dimensions and 67,108,864 luma samples. Dimensions are metadata bounds; probing allocates no pixel buffers. Native parser allocations are confined to the bounded parameter bytes. Invalid limits fail closed rather than widening or clamping policy.
 
-Delimiter scanning is linear in the inspected prefix. Cancellation is checked on entry, between boxes and units, every 128 delimiter-scan bytes and before/after native parsing; a final cancellation withholds the result. The caller supplies that cancellation observation. The stdin CLI does not install a separate cancellation runtime or signal handler.
+Delimiter scanning is linear in the inspected prefix. Cancellation is checked on entry, between boxes/elements and units, every 128 delimiter-scan bytes and before/after native parsing; a final cancellation withholds the result. The caller supplies that cancellation observation. The stdin CLI does not install a separate cancellation runtime or signal handler.
 
 `VideoParameters` borrows the exact parameter bytes through `ParameterSource`; Rust prevents those backing bytes being mutated or reused while the result is live. Debug output exposes ranges, not payloads. This lifetime binding is not a durable custody record: an ingest owner must still bind stream/configuration generations and retained source evidence before using metadata in its own publication protocol.
 
-The cost boundary is the admitted source prefix plus at most 64 bounded native NAL inspections and one successful configuration parse, with the additional fixed MP4 traversal bounds above. `inspected_bytes` is the consumed prefix extent, including a terminating Annex-B delimiter or the completed MP4 `moov`; skipped bounded MP4 boxes remain within that extent. `inspected_units` counts complete units considered. These are inspection accounting, not measured CPU-time or decoding-cost claims.
+The cost boundary is the admitted source prefix plus at most 64 bounded native NAL inspections and one successful configuration parse, with the additional fixed container traversal bounds above. `inspected_bytes` is the consumed prefix extent, including a terminating Annex-B delimiter, the completed MP4 `moov` or the completed Matroska Tracks; skipped bounded container metadata remains within that extent. `inspected_units` counts complete units considered. These are inspection accounting, not measured CPU-time or decoding-cost claims.
 
 ## Exit statuses
 
@@ -105,6 +128,10 @@ cargo test --locked --offline -p fss-cli --bin fss-probe
 The focused contracts cover retained AVC baseline/cropped fixtures, retained HEVC Main/Main10 metadata, exact source ranges, budget-tail noninterference, one-byte-short and one-unit-short refusals, geometry ceilings, EOF-versus-budget behavior, all cancellation checkpoints, contradictory candidates, cross-codec header aliases, native corruption/unsupported refusal, three-/four-byte Annex-B delimiters, trailing zero bytes, short/interrupted stdin reads, escaped brands and failed stdout writes. Native execution and broader qualification remain separately evidenced; the presence of these tests is not a passing qualification claim.
 
 MP4 contracts additionally use retained baseline/cropped initializations and fragmented AVC/HEVC audio-plus-video fixtures, plus the independently retained HEVC Main/Main10 tuples. They exercise complete-moov release, exact original configuration spans, late-moov refusal, hidden/competing tracks, unsupported and encrypted entries, ordinary/extended/size-zero boxes, internal truncation, record-versus-native metadata contradictions, box/track ceilings and cancellation at every observed checkpoint. All fixture bytes are checked in; no foreign decoder or media tool runs in these tests.
+
+Matroska contracts use retained AVC/HEVC audio-plus-video files and an unknown-size live Segment, plus independently retained Main10/cropped parameter tuples. They cover complete-Tracks release, full-width track numbers, exact source spans, altered-tail noninterference, malformed later tracks, checksums, transformed-track refusal, unknown metadata sizes, parent-boundary crossings, record contradictions, element/track ceilings and cancellation at every observed checkpoint. CLI tests exercise successful metadata output, byte/unit exhaustion, EOF distinctions and exact input consumption on all three retained Matroska files.
+
+**Executed component verification (2026-11-15):** the pinned nightly-2026-08-31 toolchain compiled the core, packet and container libraries and both affected unit-test targets directly with `rustc` in Rust 2024 mode. The complete container library unit target passed **117 tests**, including all 12 new Matroska contracts and the existing MP4/Annex-B/demux regressions; the `fss-probe` unit target passed **16 tests**. A separately compiled `fss-probe` binary also passed 15 subprocess checks across the retained AVC, HEVC and live Matroska fixtures: successful metadata, exact prefix boundaries, short observed EOF and byte/NAL exhaustion. Pinned `rustfmt` and `git diff --check` also passed. These component results do not establish full Cargo/workspace CI or media qualification.
 
 ## Qualification
 

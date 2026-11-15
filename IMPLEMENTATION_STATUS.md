@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-11-14 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-15 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -23,6 +23,33 @@ workspace filesystem, a single-job test build and lower-memory `cargo check` wer
 both killed by the host (SIGKILL) in unchanged `fss-core`, before checking these files.
 No native runtime pass or release qualification is inferred. See
 [retained recorder UTC queries](docs/RETAINED_RECORDER_TIMESTAMP_QUERY.md).
+
+## Bounded Matroska initialization parameter probing — 2026-11-15
+
+The FSS-053 implementation extends `fss-probe --parameters` and the borrowed
+native parameter API to Matroska AVC/HEVC initialization metadata. The prefix walk
+reuses the existing EBML header, track-selection, CRC and codec-private record
+owners, then the existing native AVC/HEVC parameter parsers. Results retain exact
+original parameter spans, coded/cropped geometry and a full-width Matroska track
+number. Existing Annex-B and MP4 output formats remain unchanged.
+
+The operation enforces independent prefix, element, track, NAL and geometry bounds,
+cancellation checkpoints, and explicit refusals for incomplete input, malformed
+parsed metadata, competing video tracks, unsupported transforms and corrupt
+metadata checksums. It inspects the first complete Tracks element; later media,
+timing, configuration changes, container display transforms and retained-source
+custody remain outside this operation's claim.
+
+The pinned nightly-2026-08-31 compiled the actual core, packet and container
+libraries and both affected unit-test targets directly with Rust 2024 `rustc`.
+All 117 container tests and all 16 `fss-probe` tests passed, including 12 new
+Matroska contracts and the existing MP4/Annex-B/demux regressions. A separately
+compiled `fss-probe` binary also passed 15 subprocess checks over retained AVC,
+HEVC and unknown-size live Matroska fixtures, covering successful metadata, exact
+prefix boundaries, short observed EOF and byte/NAL exhaustion. Pinned formatting
+and scoped whitespace checks passed. These component results do not establish
+full Cargo/workspace CI or release qualification. FSS-053 and the media
+qualification gates remain open. See [media probing](docs/MEDIA_PROBE.md).
 
 ## Explicitly approved event metadata in alerts — 2026-11-14
 

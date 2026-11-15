@@ -20,6 +20,9 @@ use super::tables::{avc_configuration, hevc_configuration};
 use super::{DemuxError, DemuxLimits, VideoCodec, validate_sample};
 use std::ops::Range;
 
+mod probe;
+pub(crate) use probe::probe_configuration;
+
 const EBML: u32 = 0x1A45_DFA3;
 const SEGMENT: u32 = 0x1853_8067;
 const SEEK_HEAD: u32 = 0x114D_9B74;
