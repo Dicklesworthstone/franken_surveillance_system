@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use fss_cli::agent_json::{evidence_anchor, object, string};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
@@ -15,16 +16,24 @@ use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
     BudgetVector, ContentDigest, DigestAlgorithm, EventId, OperationId, PrincipalId, TimestampNs,
 };
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::evidence_export::{
     CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportRequest, ExportError, commit_export,
     preview_export, read_export,
 };
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-export/media.rs"]
 mod media;
 #[path = "fss-export/review.rs"]
 mod review;
+
+const DEFAULT_SHOW_READ_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SHOW_READ_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_SHOW_READ_OBJECTS: u64 = 65_536;
+const MAX_SHOW_READ_OBJECTS: u64 = 1_000_000;
+const MAX_SHOW_REPORT_BYTES: usize = 1024 * 1024;
 
 const HELP: &str = "fss-export event --root DIR --site SITE --event-id ID \
   --expected-revision sha256:HEX --recipient ID --purpose TEXT --expires-at-ns I128 \
@@ -37,7 +46,13 @@ model tensors, or the live archive namespace. There is no override or include-al
 expires-at-ns is retained policy metadata; this reference has no trusted wall clock or auto-delete.\n\
 Publication is local only. No email/upload/provider dispatch occurs.\n\
 fss-export show --root DIR --site SITE --export-root sha256:HEX [--principal ID]\n\
-show verifies the committed reserved authority delta, root manifest and redacted record after restart.\n";
+  [--max-read-bytes N] (default 64 MiB, max 1 GiB)\n\
+  [--max-read-objects N] (default 65536, max 1000000)\n\
+  [--timeout-ms N] (default 30000, max 600000).\n\
+show verifies committed authority, the root manifest and the redacted record, including final\n\
+custody revalidation under one nonrenewing read allowance and a cooperative deadline.\n\
+It works during active ingest without locking, journal repair, deployment changes or raw media\n\
+reads. Complete output is at most 1 MiB. Missing roots and incomplete journals are refused.\n";
 
 type RunResult<T> = Result<T, Box<dyn Error>>;
 
@@ -56,6 +71,8 @@ struct ShowOptions {
     site: String,
     principal: String,
     export_root: ContentDigest,
+    read_limits: ImmutableRetainedReadLimits,
+    timeout: Duration,
 }
 
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
@@ -144,10 +161,18 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
 }
 
 fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
-    if args.len() > 9 || args.first().and_then(|v| v.to_str()) != Some("show") {
+    if args.len() > 15 || args.first().and_then(|v| v.to_str()) != Some("show") {
         return Err("expected bounded 'show' export command".into());
     }
-    let allowed = ["--root", "--site", "--principal", "--export-root"];
+    let allowed = [
+        "--root",
+        "--site",
+        "--principal",
+        "--export-root",
+        "--max-read-bytes",
+        "--max-read-objects",
+        "--timeout-ms",
+    ];
     let mut values = BTreeMap::new();
     let mut index = 1;
     while index < args.len() {
@@ -158,7 +183,10 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
         let value = args
             .get(index + 1)
             .ok_or_else(|| format!("missing value for {key}"))?;
-        if value.is_empty() || value.to_str().is_some_and(|v| v.starts_with("--")) {
+        if value.is_empty()
+            || value.len() > 4096
+            || value.to_str().is_some_and(|v| v.starts_with("--"))
+        {
             return Err(format!("missing value for {key}"));
         }
         if values.insert(key.to_owned(), value.clone()).is_some() {
@@ -177,15 +205,45 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
         .unwrap_or("principal:local-operator")
         .to_owned();
     PrincipalId::parse(&principal).map_err(|_| "invalid principal")?;
+    let limit = |key: &str, default: u64, maximum: u64| -> Result<u64, String> {
+        let Some(value) = values.get(key) else {
+            return Ok(default);
+        };
+        let value = value.to_str().ok_or("read limits require decimal UTF-8")?;
+        let parsed = value
+            .parse::<u64>()
+            .map_err(|_| "read limits require canonical positive decimal")?;
+        if parsed == 0 || parsed > maximum || parsed.to_string() != value {
+            return Err("read limits require bounded canonical positive decimal".into());
+        }
+        Ok(parsed)
+    };
     Ok(ShowOptions {
         root,
         site,
         principal,
         export_root: digest(text(&values, "--export-root")?)?,
+        read_limits: ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: usize::try_from(limit(
+                "--max-read-bytes",
+                DEFAULT_SHOW_READ_BYTES,
+                MAX_SHOW_READ_BYTES,
+            )?)
+            .map_err(|_| "read byte allowance exceeds address range")?,
+            max_read_objects: usize::try_from(limit(
+                "--max-read-objects",
+                DEFAULT_SHOW_READ_OBJECTS,
+                MAX_SHOW_READ_OBJECTS,
+            )?)
+            .map_err(|_| "read attempt allowance exceeds address range")?,
+        },
+        timeout: Duration::from_millis(limit("--timeout-ms", 30_000, 600_000)?),
     })
 }
 
 fn run_show(options: &ShowOptions) -> RunResult<String> {
+    let start = Instant::now();
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
         || !fs::symlink_metadata(options.root.join("LAYOUT"))?
             .file_type()
@@ -201,8 +259,8 @@ fn run_show(options: &ShowOptions) -> RunResult<String> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(64 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
             .build()?,
         privacy_scope: "privacy:redacted-event-export-v1".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
@@ -210,22 +268,46 @@ fn run_show(options: &ShowOptions) -> RunResult<String> {
         generation: 1,
     })?;
     authority.validate()?;
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    let root = fs::canonicalize(&options.root)?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
     let result = (|| -> RunResult<String> {
-        let deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
+        let stopped = || start.elapsed() >= options.timeout;
+        let read_error = || {
+            if stopped() {
+                ExportError::Cancelled
+            } else {
+                ExportError::CustodyMismatch
+            }
+        };
+        let deployment =
+            ImmutableRetainedSource::open_cancellable(&root, options.read_limits, &cx, &stopped)
+                .map_err(|_| read_error())?;
+        if deployment.history().site_lineage() != options.site {
+            return Err(ExportError::Unauthorized.into());
+        }
         let (record, anchor) = read_export(&deployment, options.export_root, &authority, &cx)?;
-        Ok(object(&[
+        let package = record.to_redacted_json();
+        deployment.revalidate().map_err(|_| read_error())?;
+        let usage = deployment.usage();
+        let report = object(&[
             ("format", string("fss.evidence_export_cli.v1")),
             ("site", string(&options.site)),
             ("status", string("verified_committed_export")),
             ("export_root", string(&options.export_root.to_text())),
             ("record_digest", string(&record.digest().to_text())),
             ("authority_anchor", evidence_anchor(&anchor)),
-            ("package", record.to_redacted_json()),
+            ("package", package),
+            ("deployment_mutated", "false".into()),
+            ("payload_read_bytes", usage.read_bytes.to_string()),
+            ("payload_read_attempts", usage.read_objects.to_string()),
             ("external_transport_performed", "false".into()),
             ("raw_media_read", "false".into()),
             ("qualification", string("implemented_not_qualified")),
-        ]))
+        ]);
+        if report.len() > MAX_SHOW_REPORT_BYTES {
+            return Err(ExportError::Limit.into());
+        }
+        Ok(report)
     })();
     cx.drain_and_finalize();
     result
@@ -472,9 +554,47 @@ mod tests {
         .collect::<Vec<_>>();
         let options = parse_show(&args)?;
         assert_eq!(options.export_root, root);
+        assert_eq!(
+            options.read_limits.max_read_bytes as u64,
+            DEFAULT_SHOW_READ_BYTES
+        );
+        assert_eq!(
+            options.read_limits.max_read_objects as u64,
+            DEFAULT_SHOW_READ_OBJECTS
+        );
+        assert_eq!(options.timeout, Duration::from_millis(30_000));
         let mut bad = args.clone();
         bad.extend(["--approve".into(), root.to_text().into()]);
         assert!(parse_show(&bad).is_err());
+        for (key, value) in [
+            ("--max-read-bytes", "0"),
+            ("--max-read-bytes", "1073741825"),
+            ("--max-read-bytes", "01"),
+            ("--max-read-objects", "0"),
+            ("--max-read-objects", "1000001"),
+            ("--max-read-objects", "+1"),
+            ("--timeout-ms", "0"),
+            ("--timeout-ms", "600001"),
+            ("--timeout-ms", "01"),
+        ] {
+            let mut bad = args.clone();
+            bad.extend([key.into(), value.into()]);
+            assert!(parse_show(&bad).is_err(), "accepted {key}={value}");
+        }
+        let mut narrow = args;
+        narrow.extend([
+            "--max-read-bytes".into(),
+            "1".into(),
+            "--max-read-objects".into(),
+            "1".into(),
+            "--timeout-ms".into(),
+            "1".into(),
+        ]);
+        let bounded = parse_show(&narrow)?;
+        assert_eq!(bounded.export_root, root);
+        assert_eq!(bounded.read_limits.max_read_bytes, 1);
+        assert_eq!(bounded.read_limits.max_read_objects, 1);
+        assert_eq!(bounded.timeout, Duration::from_millis(1));
         Ok(())
     }
 }

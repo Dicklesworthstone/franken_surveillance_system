@@ -29,6 +29,10 @@ type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:portable-export-cli";
 const ACTOR: &str = "principal:portable-export-cli";
 const RECIPIENT: &str = "recipient:case-7";
+
+#[path = "export_package_cli/show.rs"]
+mod show;
+
 // Avoid another fixture's briefly inherited deployment lock while a test forks a CLI child.
 static SERIAL: Mutex<()> = Mutex::new(());
 

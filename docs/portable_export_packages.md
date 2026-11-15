@@ -17,6 +17,11 @@ reviewed event revision, recipient, purpose, expiry and principal and returns `e
 A preview-only root, or a root published without the reserved export authority record, cannot
 be packaged. This new command does not approve an event export on your behalf.
 
+To inspect that committed root during active ingestion, use the immutable
+[`fss-export show`](EVIDENCE_EXPORT.md#verified-readback) reader. Its aggregate read allowances,
+cooperative deadline and final custody revalidation apply to inspection only. Package preparation
+and file publication retain the approval and deployment-lock behavior described below.
+
 Prepare a private output directory outside the deployment, then preview the file handoff:
 
 ```sh

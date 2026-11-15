@@ -18,6 +18,9 @@ type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:evidence-export";
 const ACTOR: &str = "principal:evidence-export";
 
+#[path = "evidence_export_contract/immutable.rs"]
+mod immutable;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> Test<Self> {

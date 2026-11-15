@@ -5,6 +5,8 @@
 //! zone/track identifiers, model tensors, and live archive roots are never manifest children.
 //! Existing event/source custody is referenced by digest text only.
 
+use crate::ingest::FileIngestError;
+use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 use fss_core::region::ContextAuthority;
 use fss_core::{
@@ -564,7 +566,7 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), ExportError> {
     cx.checkpoint(stage).map_err(|_| ExportError::Cancelled)
 }
 fn authorize(
-    d: &ReferenceDeployment,
+    d: &dyn RetainedSource,
     a: &ContextAuthority,
     cx: &ReplayCx,
     cap: &str,
@@ -582,17 +584,21 @@ fn authorize(
     }
     Ok(())
 }
-fn verify_custody(d: &ReferenceDeployment, record: &EventExportRecord) -> Result<(), ExportError> {
+fn read_error(error: FileIngestError) -> ExportError {
+    match error {
+        FileIngestError::CancellationRequested { .. } => ExportError::Cancelled,
+        _ => ExportError::CustodyMismatch,
+    }
+}
+fn verify_custody(d: &dyn RetainedSource, record: &EventExportRecord) -> Result<(), ExportError> {
     let slot = record.slot()?;
     let manifest = record.manifest()?;
-    let visible = d
-        .publisher()
-        .root(&slot)
-        .ok_or(ExportError::CustodyMismatch)?;
-    if visible.root != manifest.root() {
-        return Err(ExportError::CustodyMismatch);
-    }
-    if d.publisher().spool().read(record.digest())? != record.to_bytes() {
+    d.check_publication(&slot, manifest.root(), manifest.children().len())
+        .map_err(read_error)?;
+    if d.read_object_bounded(record.digest(), MAX_EXPORT_RECORD_BYTES)
+        .map_err(read_error)?
+        != record.to_bytes()
+    {
         return Err(ExportError::CustodyMismatch);
     }
     Ok(())
@@ -684,8 +690,10 @@ pub fn preview_export(
 ///
 /// This verifies the reserved authority delta, redacted root manifest, canonical record bytes,
 /// and derived identities. It never follows event/source custody or executes a model.
+/// An immutable caller must complete [`crate::retained_source::ImmutableRetainedSource::revalidate`]
+/// before exposing the record, using the same owner and nonrenewing allowance.
 pub fn read_export(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     export_root: ContentDigest,
     authority: &ContextAuthority,
     cx: &ReplayCx,
@@ -699,6 +707,7 @@ pub fn read_export(
     if deployment.ledger().batches().len() > MAX_EXPORT_LEDGER_BATCHES {
         return Err(ExportError::Limit);
     }
+    deployment.verify_read_head().map_err(read_error)?;
     let mut found = None;
     for batch in deployment.ledger().batches() {
         checkpoint(cx, "evidence_export:readback")?;
@@ -719,7 +728,9 @@ pub fn read_export(
         }
     }
     let (object_id, record_digest, anchor) = found.ok_or(ExportError::CustodyMismatch)?;
-    let manifest_bytes = deployment.publisher().spool().read(export_root)?;
+    let manifest_bytes = deployment
+        .read_object_bounded(export_root, MAX_EXPORT_RECORD_BYTES)
+        .map_err(read_error)?;
     let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
     if manifest.root() != export_root
         || manifest.kind() != EXPORT_PROFILE
@@ -728,13 +739,19 @@ pub fn read_export(
     {
         return Err(ExportError::CustodyMismatch);
     }
-    let bytes = deployment.publisher().spool().read(record_digest)?;
+    let bytes = deployment
+        .read_object_bounded(record_digest, MAX_EXPORT_RECORD_BYTES)
+        .map_err(read_error)?;
     let record = EventExportRecord::from_bytes(&bytes, record_digest)?;
-    if record.object_id()? != object_id || record.manifest()? != manifest {
+    if record.object_id()? != object_id
+        || record.manifest()? != manifest
+        || record.site() != deployment.site_lineage()
+    {
         return Err(ExportError::CustodyMismatch);
     }
     verify_custody(deployment, &record)?;
     checkpoint(cx, "evidence_export:readback_complete")?;
+    deployment.verify_read_head().map_err(read_error)?;
     Ok((record, anchor))
 }
 

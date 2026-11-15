@@ -19,8 +19,11 @@ fss-export event --root "$ROOT" --site "$SITE" --event-id "$EVENT" \
   --purpose 'Owner-authorized incident review' --expires-at-ns "$EXPIRY_NS"
 ```
 
-Preview writes nothing. Review the returned `package`, `export_root`, and
-`approval_digest`. Repeat the exact command with `--approve "$APPROVAL"` to commit.
+Preview publishes no new export. Review the returned `package`, `export_root`, and
+`approval_digest`. Repeat the exact command with `--approve "$APPROVAL"` to commit. This
+prepare/commit path keeps its existing operational deployment open, including exclusive writer
+ownership and normal restart reconciliation. Use `show` below to inspect an existing export
+while ingestion is active.
 
 The fixed profile `event-summary-redacted-v1` includes event lifecycle state/class, conservative
 capture interval and uncertainty text, probability bounds, evidence/model digests, hashed failure
@@ -43,8 +46,35 @@ fss-export show --root "$ROOT" --site "$SITE" --export-root "$EXPORT_ROOT"
 
 Readback requires prepare/read authority only. It verifies the reserved `evidence_export` delta,
 its generation and object namespace, the root manifest's one-child redaction closure, the canonical
-record bytes, and the record-derived root/object identities. Missing, duplicated, altered, or
-noncanonical custody fails closed. It still does not hydrate raw evidence or follow the event root.
+record bytes, and the record-derived root/object identities. It opens an immutable retained owner
+without taking the writer lock, repairing journals, or creating deployment files. An active writer
+can remain open. Missing roots, incomplete journals, deleted custody, and missing, duplicated,
+altered or noncanonical records are refused without partial output. Raw evidence and model
+payloads remain unopened; their unavailability does not prevent redacted export inspection.
+
+The optional read bounds apply to `show`:
+
+| Option | Default | Maximum |
+|---|---:|---:|
+| `--max-read-bytes` | `67108864` (64 MiB) | `1073741824` (1 GiB) |
+| `--max-read-objects` | `65536` | `1000000` |
+| `--timeout-ms` | `30000` | `600000` |
+
+Values must be positive decimal integers without signs or leading zeros. One nonrenewing
+allowance covers deployment metadata, redacted manifest/record payloads, publication records and
+all final rereads. Object counts measure payload read attempts, not filesystem syscalls. The
+cooperative deadline is checked at native read boundaries.
+
+Before releasing the complete JSON report, `show` rehashes the selected objects, checks publication
+and deletion state again, and verifies that the layout and both journal roots still match the
+opening authority. A concurrent authority change or exhausted allowance refuses the result. The
+report is at most 1 MiB and includes `deployment_mutated: false`, `payload_read_bytes`, and
+`payload_read_attempts`; the usage includes final revalidation. The export root, record digest,
+redaction profile and canonical package bytes are unchanged.
+
+The immutable read flags do not change `fss-export event` preparation/commit or
+[`fss-export-package pack`](portable_export_packages.md). Those commands retain their existing
+approval and operational publication/recovery paths.
 
 ## Authority and recovery
 
@@ -67,6 +97,7 @@ transport is performed.
 cargo test -p fss-reference --lib evidence_export
 cargo test -p fss-reference --test evidence_export_contract
 cargo test -p fss-cli --bin fss-export
+cargo test -p fss-cli --test export_package_cli show::
 ```
 
 These are reference contracts over synthetic event evidence. They do not establish detection
