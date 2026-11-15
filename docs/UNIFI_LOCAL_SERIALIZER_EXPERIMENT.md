@@ -728,3 +728,30 @@ not prove uninterrupted recording or that the Rust changes caused the restarts.
 A read-only `ffprobe` of one file modified 156 seconds before the probe found
 H.264 video at 1280 x 720; this is one fallback recording, not a coverage or
 frame-decode qualification.
+
+The next laboratory checkpoint revision binds the requested native listener
+before constructing the forward plan and holds it through checkpoint creation.
+It closes that listener when the read-only trial ends; the retained checkpoint
+does not keep a listener alive or authorize a later camera write. The isolated
+source built on `vmi1153651` as offline job `j-30109207290184121`; its command
+binary SHA-256 was
+`9432b69b1f0cdbc74e689c7732038de39d896033d6f15f170fefe6ba098c76c8`.
+The simulated-camera fixture passed 3/3 cases: stable settings with cold
+checkpoint authentication, changed settings refused, and an occupied listener
+port refused before checkpoint creation. The deletion-denying trace at
+`/data/tmp/fss-unifi-bound-fixture-20261115-01/fixture.trace` on that worker
+recorded no deletion syscalls. The physical camera was not used in this run.
+
+The same hash-verified binary was subsequently copied create-only to `trj` and
+run once against the physical G4 in read-only checkpoint mode. Two serializer
+bindings matched, the high profile was reported as 2688 x 1512 at 30 fps, a
+separate listener bound, and a second process authenticated the saved
+checkpoint. The camera received no setting write, and the deletion-denying
+trace contained zero calls. The checkpoint and trace are retained in the
+private `trj` directory
+`/data/unifi-g4-recorder/fss-bound-checkpoint-live-20261115-01`. At the end of
+the trial the listener was closed, the existing recorder was active, and its
+restart count remained 7. The camera certificate is a previously observed
+network pin, not independent identity; the checkpoint root is a trusted local
+storage domain. This does not prove actual stream delivery, restore semantics,
+continuous coverage, or attribution of any earlier recorder restart.

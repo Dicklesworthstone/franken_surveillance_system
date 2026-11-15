@@ -10,25 +10,161 @@ use std::{
     time::Duration,
 };
 
-use asupersync::Cx;
+use asupersync::{
+    Cx,
+    io::{AsyncRead, AsyncWrite},
+};
 use fss_core::{BudgetVector, ContentDigest, RuntimeGrant};
 use fss_object::{
     HostSpoolIo, SpoolLimits, StagingSpool,
     effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
 };
+use fss_packet::extended_flv::stream::Framer;
 use fss_reference::unifi_direct::{
-    camera_api::VideoSerializers,
+    camera_api::{SerializerAuthority, VideoSerializers},
+    camera_http,
     http_stream::{
-        Plan,
+        Plan, Preconditions,
         checkpoint::{self, Action, Anchored, Authority, Scope, Sealed, Stored, keyfile::KeyLease},
+        media, media_archive,
     },
+    listener,
     metered::MeteredClock,
+    recording::Recorder,
+    recording_storage, video_bootstrap,
 };
 use fss_runtime::{
     drained_blocking::{self, WorkOutcome},
+    effect::CommittedEffect,
     effect_journal::{EffectPinRetainer, PinRetainedEffectJournal},
     execution::TaskCx,
 };
+
+/// Capture inputs are returned on a preflight refusal before any camera write.
+pub struct Capture {
+    pub framer: Framer,
+    pub recorder: Recorder,
+    pub storage: recording_storage::Created,
+    pub policy: video_bootstrap::Policy,
+    pub wait: Duration,
+    pub chunk_bytes: usize,
+    pub max_bytes: u64,
+}
+
+/// Outcome after attempting a start with the same live listener and checkpoint.
+#[must_use = "retain checkpoint custody and reconcile any camera effect"]
+pub struct StartOutcome {
+    pub checkpoint: Prepared,
+    pub state: StartState,
+}
+
+/// All outcomes preserve the remaining capture and effect owners.
+#[must_use]
+pub enum StartState {
+    Started(media_archive::Driver),
+    Preflight {
+        reason: media_archive::StartPreflight,
+        capture: Capture,
+        permit: CommittedEffect,
+    },
+    Media {
+        refusal: media::Refusal,
+        storage: recording_storage::Created,
+        policy: video_bootstrap::Policy,
+    },
+    Attach(media_archive::AttachRefusal),
+}
+
+/// Start with the checkpoint, effect permit, and the listener that remained
+/// bound during checkpointing. No retry or effect settlement is performed.
+pub async fn start<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    http: &mut camera_http::Owner<'_, '_, '_, IO>,
+    listener: &mut listener::Listener<'_, '_, '_>,
+    checkpoint: Prepared,
+    current: Preconditions,
+    authority: &dyn SerializerAuthority,
+    capture: Capture,
+    permit: CommittedEffect,
+    authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
+) -> StartOutcome {
+    let Capture {
+        framer,
+        recorder,
+        storage,
+        policy,
+        wait,
+        chunk_bytes,
+        max_bytes,
+    } = capture;
+    let request = media::Request {
+        plan: &checkpoint.plan,
+        current,
+        baseline: &checkpoint.baseline,
+        checkpoint: &checkpoint.anchored,
+        authority,
+        wait,
+        framer,
+        recorder,
+        chunk_bytes,
+        max_bytes,
+    };
+    let state = match media_archive::start(
+        task,
+        cx,
+        clock,
+        http,
+        listener,
+        media_archive::Start {
+            request,
+            storage,
+            policy,
+        },
+        permit,
+        authorize_observation,
+    )
+    .await
+    {
+        Ok(driver) => StartState::Started(driver),
+        Err(media_archive::StartRefusal::Preflight {
+            reason,
+            inputs,
+            permit,
+        }) => {
+            let media_archive::Start {
+                request,
+                storage,
+                policy,
+            } = *inputs;
+            StartState::Preflight {
+                reason,
+                capture: Capture {
+                    framer: request.framer,
+                    recorder: request.recorder,
+                    storage,
+                    policy,
+                    wait: request.wait,
+                    chunk_bytes: request.chunk_bytes,
+                    max_bytes: request.max_bytes,
+                },
+                permit,
+            }
+        }
+        Err(media_archive::StartRefusal::Media {
+            refusal,
+            storage,
+            policy,
+        }) => StartState::Media {
+            refusal,
+            storage,
+            policy,
+        },
+        Err(media_archive::StartRefusal::Attach(refusal)) => StartState::Attach(refusal),
+    };
+    StartOutcome { checkpoint, state }
+}
 
 /// Owners needed by a later start, kept together with the anchored checkpoint.
 #[must_use]
