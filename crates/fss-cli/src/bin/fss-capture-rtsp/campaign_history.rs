@@ -400,11 +400,9 @@ impl Recorder {
             true,
         )?;
         let root = resolved(&config.root, &authority)?;
-        // The canonical history graph binds the exact approved path. Refuse a
-        // symlinked ancestor before creating anything rather than rebinding it.
-        if root != config.root {
-            return Err(ROOT);
-        }
+        // The canonical history graph binds the resolved path from here on. Do not compare it back to
+        // the configured text: on macOS the temp root is itself a symlink (`/var` -> `/private/var`), so
+        // an ordinary path never compares equal and every campaign run refused with ROOT.
         for output in plan.output_paths()? {
             if output != config.root && !separate(&root, &resolved(output, &authority)?) {
                 return Err(ROOT);
