@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![cfg(target_os = "linux")]
 //! Synthetic journaled local serializer dispatch and reconciliation contracts.
+#[path = "../../../experiments/unifi_tls_scoped_entropy_lab/src/bin/trial_http_checkpoint/mod.rs"]
+mod trial_http_checkpoint;
 use asupersync::{
     http::h1::Response,
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -958,6 +960,7 @@ fn exercise(
     let mut budget = BudgetVector::ZERO;
     budget.bytes = 64 * 1024 * 1024;
     budget.network_bytes = 1_000_000;
+    budget.storage_operations = 64;
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:serializer-test".into(),
@@ -1667,6 +1670,64 @@ fn exercise(
                                         );
                                     }
                                 };
+                            }
+                            if combined_start && archive_media {
+                                let (storage, archive_policy) = preflight_archive_storage(
+                                    task, cx, clock, &dir, "combined-archive", conditions.camera,
+                                )?;
+                                let checkpoint_parent = dir.join("live-checkpoint-parent");
+                                std::fs::DirBuilder::new().mode(0o700).create(&checkpoint_parent)?;
+                                let checkpoint = trial_http_checkpoint::prepare(
+                                    task,
+                                    cx,
+                                    clock,
+                                    checkpoint_parent.join("checkpoint"),
+                                    plan,
+                                    observed,
+                                    ContentDigest::sha256(b"fixture certificate"),
+                                ).await?;
+                                let capture = trial_http_checkpoint::Capture {
+                                    framer: Framer::new(FlvLimits::default(), 1024 * 1024)?,
+                                    recorder: recording::Recorder::new(
+                                        SourceKey { connection: 1, generation: 1 },
+                                        recording::Limits::default(),
+                                    )?,
+                                    storage,
+                                    policy: archive_policy,
+                                    wait: Duration::from_secs(5),
+                                    chunk_bytes: 4096,
+                                    max_bytes: 1024 * 1024,
+                                };
+                                let mut wrong = conditions;
+                                wrong.listener.set_port(if wrong.listener.port() == u16::MAX { 1 } else { wrong.listener.port() + 1 });
+                                let refused = trial_http_checkpoint::start(
+                                    task, cx, clock, &mut owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    checkpoint, wrong, &Guard(true), capture, permit,
+                                    |p, g| p == peer && g == 1,
+                                ).await;
+                                let (capture, permit) = match refused.state {
+                                    trial_http_checkpoint::StartState::Preflight { reason, capture, permit } => {
+                                        assert_eq!(reason, fss_reference::unifi_direct::http_stream::media_archive::StartPreflight::Binding);
+                                        (capture, permit)
+                                    }
+                                    _ => return Err("checkpointed start accepted wrong listener".into()),
+                                };
+                                let started = trial_http_checkpoint::start(
+                                    task, cx, clock, &mut owner,
+                                    native_listener.as_mut().ok_or("missing media listener")?,
+                                    refused.checkpoint, conditions, &Guard(true), capture, permit,
+                                    |p, g| p == peer && g == 1,
+                                ).await;
+                                let driver = match started.state {
+                                    trial_http_checkpoint::StartState::Started(driver) => driver,
+                                    _ => return Err("checkpointed archive start refused".into()),
+                                };
+                                let _checkpoint = started.checkpoint;
+                                archive_http_media(None, Some(driver), task, cx, clock, &dir, conditions.camera).await?;
+                                drop(owner);
+                                fixture.join().map_err(|_| "fixture panic")??;
+                                return Ok(());
                             }
                             let request = media::Request {
                                 plan: &plan,
