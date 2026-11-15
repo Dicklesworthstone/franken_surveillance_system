@@ -8,7 +8,7 @@ use fss_container::demux::{
 use fss_core::ContentDigest;
 use fss_reference::ingest::retained::{MAX_MOVIE_ORIGIN_READ_BYTES, RetainedMovieSelection};
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReplayCx, RetainedSource};
 use std::io::Write;
 use std::ops::Range;
 
@@ -28,7 +28,7 @@ impl Action {
     pub(super) fn select(
         &self,
         retained: &RetainedFileImport,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         read_limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> RunResult<RetainedMovieSelection> {
@@ -128,7 +128,7 @@ pub(super) fn parse_with_decode_limit(
 pub(super) fn run(
     action: &Action,
     retained: &RetainedFileImport,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     read_limits: RetainedReadLimits,
     cx: &ReplayCx,
     out: &mut impl Write,

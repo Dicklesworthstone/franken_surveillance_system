@@ -6,6 +6,7 @@ use crate::{Action, parse, run};
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
@@ -214,6 +215,10 @@ fn source_or_preroll_budget_failure_never_releases_selection_rows_or_completion(
             "{limit}"
         );
         let output = String::from_utf8(output)?;
+        assert!(
+            output.is_empty(),
+            "refusal leaked metadata for {limit}: {output}"
+        );
         assert!(!output.contains("movie_sample="), "{limit}: {output}");
         assert!(
             !output.contains("selection_complete=true"),
@@ -322,4 +327,164 @@ fn exact_rational_output_preserves_endpoints_beyond_float_integer_precision() {
         }),
         "10000000000000000001/3,10000000000000000003/3",
     );
+}
+
+fn open_writer(root: &Path) -> Test<(ReplayCx, ReferenceDeployment)> {
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:movie-cli-writer".into(),
+        operation_id: OperationId::parse("operation:movie-cli-writer")?,
+        principal: "principal:movie-cli-writer".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"site:movie-selection-cli"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority(&authority, root.to_path_buf())?;
+    let writer = ReferenceDeployment::open(root, "site:movie-selection-cli", &cx)?;
+    Ok((cx, writer))
+}
+
+fn tree(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut entries = BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        let name = path.strip_prefix(root)?.to_path_buf();
+        if fs::symlink_metadata(&path)?.is_dir() {
+            entries.insert(name, None);
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        } else {
+            entries.insert(name, Some(fs::read(path)?));
+        }
+    }
+    Ok(entries)
+}
+
+fn selection(identity: &str) -> Vec<OsString> {
+    text_args(&[
+        "--import-id",
+        identity,
+        "--start-movie-tick",
+        "400",
+        "--end-movie-tick",
+        "800",
+    ])
+}
+
+#[test]
+fn immutable_movie_selection_coexists_with_writer_and_counts_final_read_allowances() -> Test {
+    let directory = Directory::new()?;
+    let (root, identity) = imported_without_external_source(&directory)?;
+    let (cx, _writer) = open_writer(&root)?;
+    fs::write(
+        root.join("LAYOUT.tmp.movie-must-not-recover"),
+        b"preserve this entry",
+    )?;
+    let before = tree(&root)?;
+    let base = selection(&identity);
+    let mut output = Vec::new();
+    execute(&root, "select-movie", &base, &mut output)?;
+    let rendered = std::str::from_utf8(&output)?;
+    assert_eq!(field(rendered, "deployment_mutated")?, "false");
+    assert_eq!(field(rendered, "selection_complete")?, "true");
+    assert!(rendered.contains("movie_sample=0 segment=3 "));
+    assert!(rendered.contains("movie_sample=1 segment=1 "));
+    let used_bytes = field(rendered, "payload_read_bytes")?.parse::<usize>()?;
+    let used_objects = field(rendered, "payload_read_attempts")?.parse::<usize>()?;
+    let mut exact = base.clone();
+    exact.extend(text_args(&[
+        "--max-read-bytes",
+        &used_bytes.to_string(),
+        "--max-read-objects",
+        &used_objects.to_string(),
+    ]));
+    let mut repeated = Vec::new();
+    execute(&root, "select-movie", &exact, &mut repeated)?;
+    assert_eq!(repeated, output);
+    for (key, amount) in [
+        ("--max-read-bytes", used_bytes - 1),
+        ("--max-read-objects", used_objects - 1),
+    ] {
+        let manifest = directory.0.join(format!("refused-{key}.bin"));
+        let mut short = base.clone();
+        short.extend(text_args(&[key, &amount.to_string(), "--manifest-out"]));
+        short.push(manifest.as_os_str().to_owned());
+        let mut refused = Vec::new();
+        assert!(execute(&root, "select-movie", &short, &mut refused).is_err());
+        assert!(refused.is_empty());
+        assert!(!manifest.exists());
+    }
+    assert_eq!(tree(&root)?, before);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn movie_selection_refuses_wrong_site_missing_root_source_loss_and_torn_history_atomically() -> Test
+{
+    let directory = Directory::new()?;
+    let (root, identity) = imported_without_external_source(&directory)?;
+    let (cx, writer) = open_writer(&root)?;
+    let manifest = directory.0.join("must-not-export.bin");
+    let mut extra = selection(&identity);
+    extra.push("--manifest-out".into());
+    extra.push(manifest.as_os_str().to_owned());
+    let before = tree(&root)?;
+    let mut wrong = parse(&arguments(&root, "select-movie", &extra))
+        .map_err(|(code, reason)| io::Error::other(format!("{code}: {reason}")))?
+        .ok_or("missing movie request")?;
+    wrong.site = "site:foreign-movie".into();
+    let mut output = Vec::new();
+    assert!(run(wrong, &mut output).is_err());
+    assert!(output.is_empty());
+    assert!(!manifest.exists());
+    let missing = directory.0.join("absent-deployment");
+    assert!(execute(&missing, "select-movie", &extra, &mut output).is_err());
+    assert!(output.is_empty());
+    assert!(!missing.exists());
+    assert!(!manifest.exists());
+    assert_eq!(tree(&root)?, before);
+
+    let retained = RetainedFileImport::open(
+        &writer,
+        ContentDigest::parse(&identity)?,
+        RetainedReadLimits::default(),
+        &cx,
+    )?;
+    let last = *retained
+        .manifest()
+        .ordered_chunks
+        .last()
+        .ok_or("source chunk")?;
+    let source_path = writer.publisher().spool().object_path(last);
+    for path in [
+        source_path,
+        root.join("ledger/journal.fssj"),
+        root.join("effects/journal.fssj"),
+    ] {
+        let original = fs::read(&path)?;
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "fssj")
+        {
+            let mut damaged = original.clone();
+            damaged.extend_from_slice(b"torn");
+            fs::write(&path, damaged)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+        let damaged = tree(&root)?;
+        assert!(execute(&root, "select-movie", &extra, &mut output).is_err());
+        assert!(output.is_empty());
+        assert!(!manifest.exists());
+        assert_eq!(tree(&root)?, damaged);
+        fs::write(path, original)?;
+    }
+    cx.drain_and_finalize();
+    Ok(())
 }

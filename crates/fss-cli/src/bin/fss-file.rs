@@ -62,16 +62,18 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
   inspect/verify: --import-id sha256:HEX\n\
           Recorder imports expose verified retained replay metadata, including requested and\n\
           acknowledged UTC ranges; verify also reconstructs every original recording.\n\
-          inspect/verify/extract use immutable custody and coexist with an open writer.\n\
+          inspect/verify/extract/select-movie use immutable custody alongside an open writer.\n\
           [--max-read-bytes N] [--max-read-objects N] bound metadata, payload and final rereads\n\
           together (defaults 1 GiB/1,000,000 attempts; maxima 4 GiB/4,000,000).\n\
           No journal recovery; no stdout or export before final validation; a cooperative\n\
-          60-second read deadline applies. Payload loss refuses verify/extract, not metadata alone.\n\
+          60-second deadline is checked at read boundaries, without preempting bounded work.\n\
+          Payload loss refuses verify/extract/select-movie, not metadata-only inspection.\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
           Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
           Verifies retained source bytes; reports exact rational presentation intervals,\n\
           empty/unrepresented gaps and required decode ranges, without returning media.\n\
+          The shared --max-read-bytes/--max-read-objects allowances above also apply.\n\
           Original files and completed native RTSP window/catalog/page imports are admitted;\n\
           packet/index reconstruction must verify the entire MP4 before selection.\n\
           [--selection-work-units N --max-selection-rows N --max-decode-samples N]\n\
@@ -523,7 +525,7 @@ fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     if matches!(
         &options.action,
-        Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. }
+        Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_)
     ) {
         return source_read::run(&options, out);
     }
@@ -592,11 +594,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                     }
                 }
             }
-            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } => {
+            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) => {
                 return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => (action.identity(), action.name()),
-            Action::Movie(action) => (action.identity(), "select-movie"),
             Action::Localize(action) => (action.identity(), "localize"),
             Action::LocalizationReplay(action) => {
                 return localization_replay::run(
@@ -617,14 +618,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
                 writeln!(out, "verified_source_sha256={verified}")?;
             }
-            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } => {
+            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) => {
                 return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => {
                 media::run(action, &retained, &mut deployment, &options.root, &cx, out)?
-            }
-            Action::Movie(action) => {
-                movie::run(action, &retained, &deployment, options.limits, &cx, out)?
             }
             Action::Localize(action) => {
                 localize::run(action, &retained, &mut deployment, &options.root, &cx, out)?

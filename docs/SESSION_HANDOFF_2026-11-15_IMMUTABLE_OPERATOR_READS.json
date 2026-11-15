@@ -1,0 +1,162 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-15",
+  "timezone": "UTC",
+  "state": "source_implemented_native_validation_blocked",
+  "mission": {
+    "goal": "Close important operator functionality gaps identified from the comprehensive plan, beads and current implementation; publish meaningful checkpoints directly to main.",
+    "initial_source_head": "86e90d198191648c502781b537cbdfff4fd26882",
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8",
+      "VIT-015 / fss-vit-je36t.15",
+      "VIT-022 retained recorder timestamp queries"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "retained_owner": "crates/fss-reference/src/retained_source.rs",
+    "source_operator": "crates/fss-cli/src/bin/fss-file/source_read.rs",
+    "sentinel_operator": "crates/fss-cli/src/bin/fss-infer/long_sentinel_cli.rs",
+    "retention_inspection": "crates/fss-reference/src/deletion/inspection.rs",
+    "export_operator": "crates/fss-cli/src/bin/fss-export.rs",
+    "status": "IMPLEMENTATION_STATUS.md",
+    "movie_selection": "crates/fss-reference/src/ingest/retained/movie.rs"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "7277a8a603c16aaa1208881106cf296a86729939",
+      "change": "Immutable retained recorder UTC queries, shared allowances, unchanged native time-query identities and active-writer/budget/journal regressions."
+    },
+    {
+      "commit": "3a1976f0f14ff838aca6a901ee69419cc26015b9",
+      "change": "Immutable file inspect/verify/extract, bounded acquisition/origin reads and output/export withholding through final custody validation."
+    },
+    {
+      "commit": "670b84b346c03780a4ad3630d1afd6a2d06a9469",
+      "change": "Saved sentinel report inspection, historical numerical identity preservation and immutable JPEG/AVC/HEVC numerical replay."
+    },
+    {
+      "commit": "10f1cd4f0c5e12216ed6a8545c10c1a264066825",
+      "change": "Immutable native hold and retention-policy inspection with complete history and final authority verification."
+    },
+    {
+      "commit": "ccbdbdbe5813197e7edcfbb65601a25e9fe34da0",
+      "change": "Immutable redacted export inspection independent of raw source/model availability."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Immutable MP4/MOV movie interval selection, native and operator parity/refusal contracts, and consolidated implementation/validation evidence."
+    }
+  ],
+  "cases": [
+    {
+      "id": "operator-reads-required-writer",
+      "finding": "Native operator inspection still opened ReferenceDeployment and could contend with an active publisher or perform journal recovery.",
+      "resolution": "Use the existing sealed ImmutableRetainedSource and read-only ReplayCx; share finite read allowances and revalidate before successful output/export."
+    },
+    {
+      "id": "saved-sentinel-report-not-directly-inspectable",
+      "finding": "Retained whole-recording aggregates had a numerical replay command but no direct saved-report inspection command. Historical numerical generations were rejected while decoding recipes.",
+      "resolution": "Add sentinel-read, preserve exact saved generations and bytes, expose replay_compatible, and enforce current profiles before model execution."
+    },
+    {
+      "id": "host-compilation-killed",
+      "finding": "Pinned native test and check attempts terminated with SIGKILL in unchanged prerequisite crates before changed targets compiled.",
+      "resolution": "Provision exact locked dependencies on available workspace storage and use one compiler job/serial frontend; this passed fss-core but then failed in unchanged asupersync. Keep native validation explicitly blocked."
+    }
+  ],
+  "authority": {
+    "user": "Implement and commit directly to main using GitHub; no PRs.",
+    "scope": "Repository code, deterministic fixtures and local verification. No live fleet operation, credential use, model activation or retention/privacy policy change.",
+    "native_boundary": "Filesystem-authorized local operator; principal is an audit label.",
+    "release": "Repository-owned local qualification and retained DSR receipts remain the release authority."
+  },
+  "findings": [
+    "Final payload, publication, deletion/privacy and journal validation occurs before selected read commands release successful reports or exports.",
+    "Repeated reads, metadata and final rereads consume the same original byte/read-attempt allowance; failed owners do not refill.",
+    "Metadata-only redacted export inspection does not hydrate original media or model tensors.",
+    "Policy sensor filters apply after native history validation, including superseded records and retained impact plans.",
+    "Saved sentinel kernel and color-transform generations round-trip unchanged; unsupported numerical generations remain inspectable but cannot be silently replayed under current profiles.",
+    "No Cargo.lock, dependency version, toolchain pin, codec profile or numerical kernel source was changed.",
+    "Movie selection preserves original source coordinates, edit-list gaps, rational intervals and codec-owned decode ranges; completed native RTSP origins remain independently source-verified."
+  ],
+  "invalidations": [
+    "The older immutable-inference handoff described needing one spare allowance byte for a final empty journal. Current MetadataReadBudget::allowance uses bytes > max_bytes and permits a zero-byte empty read; new exact-budget tests use measured bytes with no spare byte.",
+    "The previous missing ctutils v0.4.3 dependency blocker was resolved by exact cargo fetch --locked. The remaining native-validation blocker is SIGKILL during compilation, not missing dependencies."
+  ],
+  "budgets": {
+    "source_and_sentinel": "Default 1 GiB and 1000000 read attempts; maximum 4 GiB and 4000000. Existing per-object and computation ceilings remain independent.",
+    "recorder_utc": "Same aggregate source allowances; existing timeout default 30000 ms, maximum 600000 ms.",
+    "holds_and_policies": "CLI 256 MiB, 65536 read attempts and cooperative 60 seconds; library callers can narrow.",
+    "redacted_export": "Default 64 MiB and 65536 attempts; maximum 1 GiB and 1000000; timeout default 30000 ms, maximum 600000 ms; complete output at most 1 MiB.",
+    "deadline": "Cooperative read/replay boundaries; no hard preemption of a decode, model computation or filesystem call."
+  },
+  "validation": {
+    "completed": [
+      "Scoped pinned nightly-2026-08-31 rustfmt checks passed for all 47 changed Rust source and test files.",
+      "git diff --check across all published changes.",
+      "Independent cross-review of retention, sentinel, export and basic source-read boundaries.",
+      "Python AST parsing of the expanded long_sentinel_cli.py fixture.",
+      "GitHub commit creation and non-force direct main updates, verified by fetching the remote branch."
+    ],
+    "attempts": [
+      {
+        "command": "cargo test --locked --offline -p fss-reference --lib ingest::inference::tests --no-run",
+        "result": "SIGKILL in unchanged fss-core; changed code not compiled."
+      },
+      {
+        "command": "cargo check --locked --offline -p fss-reference --lib",
+        "environment": "one Cargo job; incremental off; development debug off; one codegen unit",
+        "result": "SIGKILL in unchanged fss-core; changed code not compiled."
+      },
+      {
+        "command": "cargo check --locked --offline -p fss-reference --lib",
+        "environment": "same low-memory settings; RUSTFLAGS=-Zthreads=1; MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1",
+        "result": "fss-core passed; unchanged asupersync 0.5.0 terminated with SIGKILL; exit 101 before edited crates.",
+        "elapsed_seconds": 347.6,
+        "peak_child_rss_kib": 1373400
+      }
+    ],
+    "native_tests_executed": false,
+    "release_qualified": false,
+    "required_followup_commands": [
+      "cargo test --locked --offline -p fss-cli --bin fss-file --bin fss-infer --bin fss-hold --bin fss-export --bin fss-event",
+      "cargo test --locked --offline -p fss-cli --test file_cli_contract --test rtsp_replay_import_cli --test evidence_hold_cli_contract --test retention_cli_contract --test export_package_cli --test long_sentinel_cli_contract",
+      "cargo test --locked --offline -p fss-reference --test long_sentinel_contract --test retention_cohort_contract --test evidence_export_contract --test rtsp_retained_replay_time_contract --test retained_movie_selection_contract",
+      "cargo test --locked --offline -p fss-reference --test rtsp_import_contract movie_selection::",
+      "cargo test --locked --offline -p fss-reference --lib ingest::long_sentinel::recipe::tests",
+      "cargo test --locked --offline -p fss-reference --lib deletion::inspection::tests",
+      "scripts/qualify.sh on the designated native qualification host before promotion"
+    ]
+  },
+  "obligations": [
+    {
+      "status": "blocked",
+      "task": "Compile and run new native contracts on a host that can compile pinned asupersync and fss-reference without SIGKILL."
+    },
+    {
+      "status": "preserved",
+      "task": "Keep broad VIT requirements open until their complete acceptance and qualification evidence exists."
+    }
+  ],
+  "unknowns": [
+    "Native type-check and runtime results for the changed targets remain unproven in this environment.",
+    "No physical device compatibility, live camera soak, complete archive retrieval or release qualification was established."
+  ],
+  "next_affordances": [
+    {
+      "class": "information_gathering",
+      "action": "Run the focused native commands with the exact locked dependency closure on sufficient native capacity."
+    },
+    {
+      "class": "blocked",
+      "action": "Always-on site run/status still requires the separately undecided VIT-D7 standing-capture doctrine and its implementation prerequisites; this session does not decide or activate them."
+    }
+  ],
+  "integration": {
+    "observed_remote_head_before_final_checkpoint": "b1ef66ad1e4cfc4d82a5d926d9ee6e1f7f0bcd5a",
+    "result": "Non-force final updates correctly refused concurrent main advancement. Preserved independent MPEG-TS extraction, Matroska probing and local serializer experiment changes, including the concurrent implementation-status section. Applied this session movie slice on top; concurrent work is not counted as this session implementation or validation."
+  }
+}

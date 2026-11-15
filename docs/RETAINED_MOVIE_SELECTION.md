@@ -6,7 +6,7 @@ offsets, preserves exact rational boundaries, and reports both the requested pre
 occurrences and the coding-order ranges required to start the existing Annex-B extraction
 path. The result contains metadata and source handles, not media bytes or pixels.
 
-This is a local operator command over a completed ADP-FILE-001 MP4/MOV import. It advances
+This is a local operator command over completed file or supported native RTSP MP4/MOV imports. It advances
 the recorded-file retrieval part of FSS-068 and VIT-008. It does not add a UTC archive query
 or change the metadata-only canonical `fss query --target footage` command.
 
@@ -40,6 +40,7 @@ The report contains:
 | `movie_gap` | Declared `empty_edit` or `unrepresented` movie time |
 | `decode_span` | Original `start_segment`, `segment_count`, selected segment subset, and quoted source/Annex-B byte costs |
 | `selection_complete=true` | All selection, custody and budget checks completed |
+| `deployment_mutated=false`, `payload_read_bytes`, `payload_read_attempts` | Immutable read result and aggregate usage, including final verification |
 
 Every printed `movie_interval=A/D,B/D` means `[A/D, B/D)` **movie ticks**. The denominator
 is the media timescale. Numerators are integers and remain exact even where division would
@@ -94,10 +95,12 @@ every demuxed sample with the retained segment ranges and digests. It rechecks t
 completion binding before releasing a result. Cancellation or any corrupted, missing,
 tombstoned, stale or inconsistent source refuses the whole selection.
 
-The first admitted scope is original ADP-FILE-001 `mp4avc` and `mp4hevc` imports. Partitioned
+The admitted scope includes original ADP-FILE-001 `mp4avc` and `mp4hevc` imports. Partitioned
 manifests use the existing retained part-resolution and custody path. Recoverable fragmented
 tails use the file adapter's existing prefix policy; unrepresented requested time remains a gap.
-Reconstructed native-origin imports are refused rather than treated as original file imports.
+Completed native RTSP window, catalog, page and recorder-replay imports retain their original
+adapter identities. Their complete packet/index/proof closure must reconstruct the entire
+MP4 byte-for-byte, including unselected content, before selection can succeed.
 
 Reading the whole container is necessary for the admitted parser and source-identity check.
 The source admission ceiling (`--max-source-bytes`) is independent of the selected decode
@@ -111,20 +114,24 @@ meaning. The selector additionally exposes:
 | `--max-decode-samples` | Whole coding samples across the required decode spans |
 | `--max-decode-bytes` | Original sample bytes across those decode spans |
 | `--max-annex-b-bytes` | Quoted Annex-B output including bootstrap parameter sets and start codes |
+| `--max-origin-read-bytes` | Native packet/catalog/replay proof allowance; default and maximum 132 MiB |
+| `--max-read-bytes` | Shared payload allowance, including metadata, source/origin reads and final revalidation; default 1 GiB, maximum 4 GiB |
+| `--max-read-objects` | Shared payload read attempts, including repeated reads; default 1,000,000, maximum 4,000,000 |
 
 All limits must be positive and obey library hard ceilings. The existing parser's independent
 input, metadata, box, track, sample, table and NAL limits also apply. A refusal cannot become
-an empty successful answer. The command emits no `movie_sample` rows or completion marker
-until the native selection has passed its checks. Report delivery also checks cancellation
-between rows and selected-segment references, and immediately before the terminal marker.
-Cancellation or an output error can leave a partial report; without `selection_complete=true`
-it is not a completed selection report.
+an empty successful answer. The complete report and optional `--manifest-out` export stay
+buffered until final source, publication and authority checks succeed. Wrong-site, missing-root,
+damaged-history, source-loss and read-budget refusals print no stdout and create no export.
+An output-device error can still interrupt delivery of an already verified report.
 
-This utility opens the existing operator deployment through its normal startup/recovery owner.
-It is **not** the sealed metadata-only reader used by canonical agent footage discovery. It
-does not publish new evidence, export raw media, decode pixels, modify policy or activate
-calibration. Its metadata is a source-bound selection aid, not an authorization for a later
-export or effect.
+Selection uses the sealed immutable retained owner and can run while the recorder holds its
+writer. It acquires no publisher lock, creates no deployment and performs no journal recovery.
+One read allowance covers the complete operation; verification never renews it. A cooperative
+60-second deadline is checked at retained-read boundaries and final validation; it does not
+preempt container parsing or a filesystem call. A concurrent committed-head change requires a
+fresh invocation. Selection publishes no evidence, exports no raw media and decodes no pixels.
+Its metadata remains a source-bound selection aid, not authorization for a later export or effect.
 
 An empty edit is a container declaration. An unrepresented interval has no selected sample in
 this container. Neither establishes physical absence, live continuity or acquisition coverage.
@@ -135,7 +142,9 @@ The report always labels `selection_absence_certifiable=false`.
 `fss_container::demux::AvcMp4::select_movie_interval` provides the pure borrowed-source
 planner, with a checkpointed variant and `MovieSelectionLimits::validate` for pre-I/O admission.
 `fss_reference::ingest::RetainedFileImport::select_movie_interval` adds retained source
-verification and returns `RetainedMovieSelection` with the exact custody bindings. Existing
+verification through `RetainedSource` and returns `RetainedMovieSelection` with the exact custody
+bindings. Immutable API callers must complete their owner's final revalidation before releasing
+the result. Existing
 parsing, ordinal extraction, manifest and publication formats are unchanged.
 
 The container tests cover timing, edit lists, reordering, byte costs, random access, limits
