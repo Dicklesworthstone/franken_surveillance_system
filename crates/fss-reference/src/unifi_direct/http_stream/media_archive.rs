@@ -113,6 +113,70 @@ pub enum Step {
     Halted,
 }
 
+/// Receives each nonterminal result before any further recording work starts.
+/// In particular, the observer must inspect archive completions and decide
+/// whether it is appropriate to continue; publication is not implied by a
+/// completed worker. A refused event is returned intact to the caller.
+pub trait Observer {
+    /// Accept the complete result and choose whether this slice continues.
+    fn observe(
+        &mut self,
+        event: Box<Step>,
+    ) -> Result<super::super::source_coordinator::Decision, Box<Step>>;
+}
+
+/// Bounds and archive authority for one recorder slice.
+#[derive(Clone, Copy)]
+pub struct SliceConfig<'a> {
+    /// Maximum wait per media or archive decision.
+    pub wait: Duration,
+    /// Maximum number of decisions before yielding.
+    pub max_steps: usize,
+    /// Resource and cost for source archival work.
+    pub source_archive: ArchiveAdmission<'a>,
+    /// Resource and cost for video archival work.
+    pub video_archive: ArchiveAdmission<'a>,
+}
+
+/// The bounded recorder stopped with its driver and outstanding work retained.
+#[must_use = "account for any returned event and drain or resume the same driver"]
+pub enum SliceStop {
+    /// Invalid bounds; no work was polled.
+    Configuration,
+    /// The step budget was exhausted.
+    Yielded,
+    /// The observer accepted an event and requested a resumable yield.
+    ObserverYielded,
+    /// The observer accepted an event and requested a stop.
+    ObserverStopped,
+    /// The observer returned an event intact.
+    ObserverRefused(Box<Step>),
+    /// Recording requires caller action or has reached a terminal event.
+    Halted(Box<Step>),
+}
+
+fn requires_caller(event: &Step) -> bool {
+    matches!(
+        event,
+        Step::SourceRefused(_)
+            | Step::ConfigurationCopyRefused(_)
+            | Step::ConfigurationRefused(_)
+            | Step::ConfigurationChanged(_)
+            | Step::SegmentBeforeConfiguration(_)
+            | Step::WorkerRefused(_)
+            | Step::RecoveredWorkerRefused { .. }
+            | Step::VideoRefused(_)
+            | Step::StartRefused(_)
+            | Step::SourceRetryRequired
+            | Step::VideoRetryRequired
+            | Step::ArchiveUnavailable
+            | Step::Media(pipeline::Step::Eof | pipeline::Step::LimitReached)
+            | Step::MediaError(_)
+            | Step::Configuration
+            | Step::Halted
+    )
+}
+
 /// One bounded owner for a native media pipeline and its archive workers.
 #[must_use = "abort and join workers before recovering all owners"]
 pub struct Driver {
@@ -257,6 +321,54 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
 }
 
 impl Driver {
+    /// Drive a bounded number of media and archive decisions in the owning
+    /// task. Every nonterminal event is handed to the observer before another
+    /// step. This is not a reconnect loop, retention policy, or service.
+    /// Stopping does not drain workers or authorize retry: callers must keep
+    /// the driver, account for returned events, and resume or explicitly join.
+    pub async fn run_slice<'scope, 'task>(
+        &mut self,
+        task: &'scope TaskCx<'task>,
+        cx: &'scope Cx,
+        clock: MeteredClock<'scope, 'task>,
+        config: SliceConfig<'_>,
+        observer: &mut dyn Observer,
+    ) -> SliceStop {
+        if config.wait.is_zero()
+            || config.wait > Duration::from_secs(30)
+            || !(1..=65_536).contains(&config.max_steps)
+        {
+            return SliceStop::Configuration;
+        }
+        for _ in 0..config.max_steps {
+            let event = Box::new(
+                self.step(
+                    task,
+                    cx,
+                    clock,
+                    config.wait,
+                    config.source_archive,
+                    config.video_archive,
+                )
+                .await,
+            );
+            if requires_caller(&event) {
+                return SliceStop::Halted(event);
+            }
+            match observer.observe(event) {
+                Ok(super::super::source_coordinator::Decision::Continue) => (),
+                Ok(super::super::source_coordinator::Decision::Yield) => {
+                    return SliceStop::ObserverYielded;
+                }
+                Ok(super::super::source_coordinator::Decision::Stop) => {
+                    return SliceStop::ObserverStopped;
+                }
+                Err(event) => return SliceStop::ObserverRefused(event),
+            }
+        }
+        SliceStop::Yielded
+    }
+
     /// Attach fresh storage to the caller-bound stream without starting I/O.
     pub fn attach(
         connected: media::Connected,

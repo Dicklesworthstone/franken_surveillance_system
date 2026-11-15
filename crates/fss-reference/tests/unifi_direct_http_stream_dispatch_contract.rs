@@ -475,8 +475,14 @@ fn owned_http_archive_starts_media_with_preflight() -> Test {
     exercise(false, false, true, true, true, false, true)
 }
 
+#[test]
+fn owned_http_preflight_starts_and_archives_high_resolution_video() -> Test {
+    exercise(false, false, true, true, true, true, true)
+}
+
 async fn archive_http_media<'scope, 'task>(
-    connected: media::Connected,
+    connected: Option<media::Connected>,
+    started: Option<fss_reference::unifi_direct::http_stream::media_archive::Driver>,
     task: &'scope fss_runtime::execution::TaskCx<'task>,
     cx: &'scope asupersync::Cx,
     clock: MeteredClock<'scope, 'task>,
@@ -488,7 +494,7 @@ async fn archive_http_media<'scope, 'task>(
         DeploymentLimits, ReplayCx,
         unifi_direct::{
             archive, evidence,
-            http_stream::media_archive::{Driver, Step},
+            http_stream::media_archive::{Driver, Observer, SliceConfig, SliceStop, Step},
             recording_storage,
             source_coordinator::ArchiveAdmission,
             source_worker, video_bootstrap, video_worker,
@@ -505,107 +511,161 @@ async fn archive_http_media<'scope, 'task>(
             true
         }
     }
-    let replay_authority = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:http-media-archive".into(),
-        operation_id: OperationId::parse("operation:http-media-archive")?,
-        principal: "principal:fixture".into(),
-        capabilities: vec!["ADP-REPLAY-001".into()],
-        deadline: None,
-        priority: 1,
-        budgets: BudgetVector::builder().bytes(256 * 1024 * 1024).build()?,
-        privacy_scope: "privacy:test".into(),
-        retention_scope: "retention:test".into(),
-        anchor_universe: ContentDigest::sha256(b"HTTP media archive fixture"),
-        generation: 1,
-    })?;
-    let source_replay = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
-    let video_replay = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
-    let root = dir.join("media-archive");
-    let retention = ContentDigest::sha256(b"HTTP media retention");
-    let cfg = recording_storage::Configuration {
-        root: &root,
-        site_lineage: "site:http-media-fixture",
-        source: SourceKey {
-            connection: 1,
+    let mut driver = if let Some(driver) = started {
+        if connected.is_some() {
+            return Err("both archive inputs supplied".into());
+        }
+        driver
+    } else {
+        let connected = connected.ok_or("missing connected media")?;
+        let replay_authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:http-media-archive".into(),
+            operation_id: OperationId::parse("operation:http-media-archive")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec!["ADP-REPLAY-001".into()],
+            deadline: None,
+            priority: 1,
+            budgets: BudgetVector::builder().bytes(256 * 1024 * 1024).build()?,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"HTTP media archive fixture"),
             generation: 1,
-        },
-        camera_claim: camera,
-        source_retention: retention,
-        source_scope: ContentDigest::sha256(b"HTTP source scope"),
-        av_scope: ContentDigest::sha256(b"HTTP video scope"),
-        source_deployment_limits: DeploymentLimits::standard(),
-        av_deployment_limits: DeploymentLimits::standard(),
-        source_history_limits: EffectJournalLimits::default(),
-        av_history_limits: EffectJournalLimits::default(),
-        limits: archive::Limits::default(),
-        max_source_bytes: 1024 * 1024,
-        work_limit: 4_000_000_000,
-    };
-    let storage = recording_storage::create(
-        task,
-        cx,
-        clock,
-        cfg,
-        source_replay,
-        video_replay,
-        Arc::new(Access),
-    )?;
-    let policy = video_bootstrap::Policy {
-        inband: false,
-        retention,
-        media_limits: fss_container::Mp4Limits::default(),
-        evidence_limits: evidence::Limits::default(),
-    };
-    let other_camera = ContentDigest::sha256(b"different camera");
-    let other_root = dir.join("other-media-archive");
-    let other_cfg = recording_storage::Configuration {
-        root: &other_root,
-        camera_claim: other_camera,
-        ..cfg
-    };
-    let other_source = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
-    let other_video = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
-    let other_storage = recording_storage::create(
-        task,
-        cx,
-        clock,
-        other_cfg,
-        other_source,
-        other_video,
-        Arc::new(Access),
-    )?;
-    let mismatch = match Driver::attach(connected, other_storage, policy, other_camera) {
-        Err(refusal) => refusal,
-        Ok(_) => return Err("wrong camera archive binding accepted".into()),
-    };
-    let _other_storage = mismatch.storage;
-    let mut incompatible_policy = policy;
-    incompatible_policy.inband = true;
-    let incompatible =
-        match Driver::attach(mismatch.connected, storage, incompatible_policy, camera) {
-            Err(refusal) => refusal,
-            Ok(_) => return Err("incompatible video format accepted".into()),
+        })?;
+        let source_replay = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+        let video_replay = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+        let root = dir.join("media-archive");
+        let retention = ContentDigest::sha256(b"HTTP media retention");
+        let cfg = recording_storage::Configuration {
+            root: &root,
+            site_lineage: "site:http-media-fixture",
+            source: SourceKey {
+                connection: 1,
+                generation: 1,
+            },
+            camera_claim: camera,
+            source_retention: retention,
+            source_scope: ContentDigest::sha256(b"HTTP source scope"),
+            av_scope: ContentDigest::sha256(b"HTTP video scope"),
+            source_deployment_limits: DeploymentLimits::standard(),
+            av_deployment_limits: DeploymentLimits::standard(),
+            source_history_limits: EffectJournalLimits::default(),
+            av_history_limits: EffectJournalLimits::default(),
+            limits: archive::Limits::default(),
+            max_source_bytes: 1024 * 1024,
+            work_limit: 4_000_000_000,
         };
-    let storage = incompatible.storage;
-    let mut connected = incompatible.connected;
-    connected
-        .begin_name_probe(fss_packet::extended_flv::stream::NameProbeOwner::new(
-            "event1",
-            "0123456789abcdef",
-            256 * 1024,
-            4,
-            1_000_000,
-        )?)
-        .map_err(|_| "name probe installation refused")?;
-    let pending = match Driver::attach(connected, storage, policy, camera) {
-        Err(refusal) => refusal,
-        Ok(_) => return Err("unfinished name probe accepted".into()),
+        let storage = recording_storage::create(
+            task,
+            cx,
+            clock,
+            cfg,
+            source_replay,
+            video_replay,
+            Arc::new(Access),
+        )?;
+        let policy = video_bootstrap::Policy {
+            inband: false,
+            retention,
+            media_limits: fss_container::Mp4Limits::default(),
+            evidence_limits: evidence::Limits::default(),
+        };
+        let other_camera = ContentDigest::sha256(b"different camera");
+        let other_root = dir.join("other-media-archive");
+        let other_cfg = recording_storage::Configuration {
+            root: &other_root,
+            camera_claim: other_camera,
+            ..cfg
+        };
+        let other_source = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+        let other_video = ReplayCx::from_context_authority(&replay_authority, dir.to_path_buf())?;
+        let other_storage = recording_storage::create(
+            task,
+            cx,
+            clock,
+            other_cfg,
+            other_source,
+            other_video,
+            Arc::new(Access),
+        )?;
+        let mismatch = match Driver::attach(connected, other_storage, policy, other_camera) {
+            Err(refusal) => refusal,
+            Ok(_) => return Err("wrong camera archive binding accepted".into()),
+        };
+        let _other_storage = mismatch.storage;
+        let mut incompatible_policy = policy;
+        incompatible_policy.inband = true;
+        let incompatible =
+            match Driver::attach(mismatch.connected, storage, incompatible_policy, camera) {
+                Err(refusal) => refusal,
+                Ok(_) => return Err("incompatible video format accepted".into()),
+            };
+        let storage = incompatible.storage;
+        let mut connected = incompatible.connected;
+        connected
+            .begin_name_probe(fss_packet::extended_flv::stream::NameProbeOwner::new(
+                "event1",
+                "0123456789abcdef",
+                256 * 1024,
+                4,
+                1_000_000,
+            )?)
+            .map_err(|_| "name probe installation refused")?;
+        let pending = match Driver::attach(connected, storage, policy, camera) {
+            Err(refusal) => refusal,
+            Ok(_) => return Err("unfinished name probe accepted".into()),
+        };
+        let mut connected = pending.connected;
+        let _probe = connected.take_name_probe().ok_or("missing name probe")?;
+        Driver::attach(connected, pending.storage, policy, camera)
+            .map_err(|_| "HTTP media archive attachment refused")?
     };
-    let mut connected = pending.connected;
-    let _probe = connected.take_name_probe().ok_or("missing name probe")?;
-    let mut driver = Driver::attach(connected, pending.storage, policy, camera)
-        .map_err(|_| "HTTP media archive attachment refused")?;
     let cost = BudgetVector::ZERO;
+    struct RecorderObserver {
+        event: Option<Box<Step>>,
+        refuse_once: bool,
+    }
+    impl Observer for RecorderObserver {
+        fn observe(
+            &mut self,
+            event: Box<Step>,
+        ) -> Result<fss_reference::unifi_direct::source_coordinator::Decision, Box<Step>> {
+            if self.refuse_once {
+                self.refuse_once = false;
+                return Err(event);
+            }
+            self.event = Some(event);
+            Ok(fss_reference::unifi_direct::source_coordinator::Decision::Yield)
+        }
+    }
+    let mut observer = RecorderObserver {
+        event: None,
+        refuse_once: true,
+    };
+    let admission = ArchiveAdmission {
+        resource: "fixture:archive",
+        cost: &cost,
+    };
+    if !matches!(
+        driver
+            .run_slice(
+                task,
+                cx,
+                clock,
+                SliceConfig {
+                    wait: Duration::from_secs(1),
+                    max_steps: 0,
+                    source_archive: admission,
+                    video_archive: admission,
+                },
+                &mut observer
+            )
+            .await,
+        SliceStop::Configuration
+    ) || observer.event.is_some()
+        || !observer.refuse_once
+    {
+        return Err("invalid slice began archive work".into());
+    }
     if !matches!(
         driver
             .step(
@@ -718,29 +778,32 @@ async fn archive_http_media<'scope, 'task>(
     let mut pin = None;
     let mut source_count = 0;
     for _ in 0..512 {
-        let event = timeout(
+        let result = timeout(
             cx.now(),
             Duration::from_secs(30),
-            driver.step(
+            driver.run_slice(
                 task,
                 cx,
                 clock,
-                if release.is_some() {
-                    Duration::from_millis(50)
-                } else {
-                    Duration::from_secs(5)
+                SliceConfig {
+                    wait: if release.is_some() {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_secs(5)
+                    },
+                    max_steps: 8,
+                    source_archive: admission,
+                    video_archive: admission,
                 },
-                ArchiveAdmission {
-                    resource: "fixture:archive",
-                    cost: &cost,
-                },
-                ArchiveAdmission {
-                    resource: "fixture:archive",
-                    cost: &cost,
-                },
+                &mut observer,
             ),
         )
         .await?;
+        let event = match result {
+            SliceStop::ObserverYielded => *observer.event.take().ok_or("missing observed event")?,
+            SliceStop::ObserverRefused(event) | SliceStop::Halted(event) => *event,
+            _ => return Err("unexpected archive slice result".into()),
+        };
         match event {
             Step::SourceRunning if release.is_some() => {
                 observed_bounded_wait = true;
@@ -825,6 +888,9 @@ async fn archive_http_media<'scope, 'task>(
         }
     }
     let pin = pin.ok_or("no video archive publication")?;
+    if observer.refuse_once {
+        return Err("observer refusal was not exercised".into());
+    }
     if !observed_bounded_wait || !blocker.is_done() {
         return Err("bounded archive wait did not retain the running worker".into());
     }
@@ -1649,6 +1715,21 @@ fn exercise(
                                     Ok(driver) => driver,
                                     Err(_) => return Err("combined archive start refused".into()),
                                 };
+                                if archive_media {
+                                    archive_http_media(
+                                        None,
+                                        Some(driver),
+                                        task,
+                                        cx,
+                                        clock,
+                                        &dir,
+                                        conditions.camera,
+                                    )
+                                    .await?;
+                                    drop(owner);
+                                    fixture.join().map_err(|_| "fixture panic")??;
+                                    return Ok(());
+                                }
                                 let parts = driver
                                     .into_parts()
                                     .map_err(|_| "new driver unexpectedly running")?;
@@ -1686,7 +1767,8 @@ fn exercise(
                             assert!(connected.comparison().requested_fields_match);
                             if archive_media {
                                 archive_http_media(
-                                    connected,
+                                    Some(connected),
+                                    None,
                                     task,
                                     cx,
                                     clock,
