@@ -262,3 +262,11 @@ second with `ERR-CAPTURE-RTSP-ROOT-001` and **creates neither `--root` nor `--pi
 pre-flight path validation before any socket work. Planning succeeds and the approval digest is
 accepted. The candidates are `Failure::Root` sites in `driver.rs` (1483–1492 and the `_ =>` at 1472),
 and pre-creating or omitting `--history-root` makes no difference.
+
+Progress on the 13: the ROOT refusal was a real macOS bug and is fixed. `campaign_history` compared the
+*canonicalised* root back to the configured text; on macOS the temp root is itself a symlink
+(`/var` -> `/private/var`), so an ordinary path never compares equal and every campaign run refused
+before creating anything. The run now reaches `Recorder::new` and fails one step later with
+`ERR-CAPTURE-RTSP-HISTORY-001`, having created the history directory and nothing inside it — so the
+next site is `CampaignWriter::new` or the `LocalRootPublisher::open` beside it in
+`campaign_history.rs::Recorder::new`.
