@@ -226,7 +226,7 @@ of the toolchain cargo suppresses it; the practical route is to retry later or o
 `confirm`-style claim lanes are resolved from `scripts/lanes/<lane>.sh`; a lane whose script is absent
 fails closed. Present now: `media` (probe contract, six fixtures), `archive` (six cold archive process
 suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is proven too: 43 tests green across its seven suites, `geometry` is proven (16 tests) and `threat` is proven (35 tests) and `model` is proven (28 tests); fixing `inference_cli_contract` exposed a stale read-allowance assumption — the reported payload bytes are now the exact allowance, because the empty final journal probe no longer consumes one. Wiring it exposed three stale `lab_ingest_cli` assertions (they demanded `first_frame_observed`, which a file import deliberately never reaches, and zero Annex-B omissions, when delimiters are reported) — fixed. Media and archive also
-run inside `full` and `release`. `adapter` is written but **not green**: 64 of its 77 capture tests now pass; the remaining 13 are all `campaign::history::*` cases where the child never dials the fixture at all and the lane's own timeout reports it. It stays out of the gates until those pass and are the next wiring targets, in that order of expected value.
+run inside `full` and `release`. `adapter` is written but **not green**: 72 of its 77 capture tests pass; the remaining 5 are all `campaign::history::sentinel` / `::watch` cases, which now reach the run and fail with `ERR-CAPTURE-RTSP-HISTORY-AUTHORITY-001` (a capability refusal in the sentinel path). It stays out of the gates until those pass and are the next wiring targets, in that order of expected value.
 
 ### When admission is refused repeatedly
 
@@ -247,7 +247,11 @@ Resolved cause of the bulk of the adapter failures: a non-blocking listener hand
 accepted socket on macOS, so every fixture's first `read` returned EAGAIN immediately and the failure
 was reported as the *fixture's* error instead of the child's. Clearing it on every accepted peer, plus
 tolerating a poll miss until the accept deadline, took the lane from 13 passed / 64 failed to 64 passed
-/ 13 failed. The 13 left are `campaign::history::*`: the child emits no `started` row at all and exits with the generic `ERR-CAPTURE-RTSP-ROOT-001`, so it fails during its own campaign/history argument validation before dialing. Creating the history root in the fixture (the child does not create it) did not change that; the next step is the validation in `campaign_history.rs::path` and its neighbours.
+/ 13 failed. Four separate macOS-visible defects were found and fixed getting this far, all of them invisible on Linux:
+the accepted peer inherited `O_NONBLOCK`; the canonicalised root was compared back to the configured
+text; the root was recorded lexically while consumers resolved it (refused as `Denied`); and the fixture
+pre-created the history root that the child creates exclusively. The last 5 are sentinel/watch capability
+refusals (`ERR-CAPTURE-RTSP-HISTORY-AUTHORITY-001`).
 
 Reproduced by hand: with a `nc` listener on 127.0.0.1 the child *does* connect in under a second and
 sends an 83-byte DESCRIBE (then fails only because `nc` never answers), and a plan-only run returns a
