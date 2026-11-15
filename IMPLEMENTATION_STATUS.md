@@ -4,6 +4,25 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Operator MPEG-TS import command — 2026-11-15
+
+`fss-file import-ts` now exposes the finite native transport import through the
+existing local operator owner. Explicit program/PID selection, independent parser
+ceilings and one cancellable cumulative work allowance are available. The command
+reopens retained custody, compares it to the receipt and verifies original plus
+reconstructed bytes before publishing any successful report or manifest export.
+The returned import identity enters existing verification, decode and event paths;
+PES media time remains untrusted and the report counts access units, not frames.
+
+Six focused command contracts were authored for AVC/HEVC dispatch, exact retry,
+cold verification, bounds, native OS paths and output/export refusal on damaged
+originals or final cancellation. All 25 new contracts across this session remain
+uncompiled/unexecuted because the executor is unavailable. Source reviews and
+blob-content checks passed; supplementary Actions supplied no passing execution
+result. Broad beads and qualification gates remain open. See
+[operator workflow](docs/FILE_IMPORT_WORKFLOW.md) and the
+[engineering handoff](docs/SESSION_HANDOFF_2026-11-15_TS_EFFECT_INTEGRATION.json).
+
 ## Native retained MPEG-TS import — 2026-11-15
 
 The new `ingest::mpeg_ts_import` backend connects finite MPEG-TS extraction to the

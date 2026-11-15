@@ -20,7 +20,7 @@ synthetic one-second reference timeline, not a real capture timestamp. Without a
 `unknown`. A supplied tuple is explicitly an `operator_assumption`, never hardware clock proof.
 The import's output reports `absence_certifiable=false` in either case.
 
-Each import drives the core acquisition lifecycle, and a completed import retains it in its
+Each ordinary `import` drives the core acquisition lifecycle, and a completed import retains it in its
 completing ledger batch. `import`, `inspect` and `verify` print it after replaying it through the
 core session: `acquisition_history=requested,authenticated,adapter_accepted,degraded,cancelled`,
 `acquisition_terminal=cancelled` and `acquisition_ending=end_of_file_source`. A file is not
@@ -36,6 +36,60 @@ coverage is labelled `recorded file source; no live continuity` (fss-dt3qf; see
 The command reports the actual retained manifest and completion anchor, rather than treating a
 newly reconstructed retry receipt as stored truth. A successful import also performs a complete
 source-byte verification. Save the printed `import_identity=sha256:...` for subsequent commands.
+
+## Import a finite MPEG-TS recording
+
+Use the explicit `import-ts` operation for a bounded, owner-provided transport file:
+
+```sh
+cargo run -p fss-cli --bin fss-file -- import-ts \
+  --root ./camera-evidence --site site:home \
+  --input ./recording.ts --sensor sensor:driveway --stream stream:main \
+  --receive-time-ns 1000000000
+```
+
+The command selects one unambiguous AVC or HEVC program/video stream. If the
+recording contains multiple candidates, supply `--ts-program N` and/or
+`--ts-video-pid N` using decimal numbers. Generic `--media-format` and recorded-RTP
+binding options do not apply to this operation.
+
+Both the original transport file and reconstructed elementary stream have separate
+64 MiB ceilings. The original includes unselected audio, transport headers, exact
+duplicate packets and other retained bytes; the import never replaces it with a
+reconstructed copy. Its versioned origin proof and original chunks enter the same
+root-last publication as the native AVC/HEVC access units. A partial publication
+can resume, while a retry refuses to repair corrupted bytes behind a visible root.
+An exact completed retry reuses the original identity without new ledger entries.
+
+The output includes the retained import identity, original digest/length, selected
+codec/program/PID, elementary length and access-unit count. Successful output waits
+for complete retained source verification. Save `import_identity` for the existing
+`verify`, `extract`, retained decode, watch, sentinel and event workflows. A cold
+reader can reconstruct source provenance without the loose `.ts` file. Direct
+manifest-only segment helpers refuse this adapter because they cannot establish
+original transport custody.
+
+PES packet groups are not frames. Native splitters identify access units, and the
+existing decoders separately decide whether supported pictures can be decoded.
+Raw PTS/DTS values remain in the extraction commitment; they are never converted to
+capture time. Capture remains `unknown` unless the complete existing capture-hint
+tuple supplies an explicit `operator_assumption`. This finite-file adapter does not
+establish live continuity or camera absence, and reports no recorded acquisition
+lifecycle when one is not present.
+
+Transport limits can be narrowed independently with `--max-ts-packets`,
+`--max-ts-psi-sections`, `--max-ts-pes`, `--max-ts-pes-bytes`,
+`--max-ts-spans` and `--max-elementary-bytes`. `--max-source-bytes`
+bounds the original, and existing chunk/segment ceilings continue to apply.
+`--work-units` supplies one nonrenewing allowance for conservative native pass and
+I/O reservations, including final verification; it defaults to 1 GiB and is capped
+at 4 GiB. These units are not elapsed time or CPU instructions. Cancellation is
+checked at bounded native work and publication boundaries.
+
+Source implementation and focused contracts are present, but the new import and
+CLI tests were not compiled or executed during the execution-environment outage.
+Decoder support remains the existing native subset. See
+[MPEG_TS_RECEIPTS.md](MPEG_TS_RECEIPTS.md) for the extraction receipt contract.
 
 ## Reopen, verify and extract
 

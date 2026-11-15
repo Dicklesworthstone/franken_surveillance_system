@@ -37,6 +37,8 @@ mod localize;
 mod media;
 #[path = "fss-file/movie.rs"]
 mod movie;
+#[path = "fss-file/mpeg_ts.rs"]
+mod mpeg_ts;
 #[path = "fss-file/replay_origin.rs"]
 mod replay_origin;
 #[path = "fss-file/replay_time.rs"]
@@ -44,7 +46,7 @@ mod replay_time;
 #[path = "fss-file/source_read.rs"]
 mod source_read;
 
-const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
+const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
   Query retained recorder timestamps without the archive: fss-file query-replay-utc --help.\n\
   Source commands also accept --manifest-out FILE.\n\
@@ -55,6 +57,19 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-
           auto reads the container's video track and refuses an Annex-B stream whose first NAL\n\
           header fits both codecs)\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
+  import-ts: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
+          Finite 188-byte MPEG-TS with one AVC/HEVC program/video PID; originals are retained.\n\
+          [--ts-program N (1..65535)] [--ts-video-pid N (16..8190)]; omitted selection must\n\
+          be unambiguous. Same explicit capture hint as import; PTS/DTS are media ticks,\n\
+          never UTC or trusted capture time. Segments are native Annex-B access units,\n\
+          not decoded frames. No --media-format or RTP binding options.\n\
+          --max-source-bytes and --max-elementary-bytes each default/max 64 MiB.\n\
+          [--max-ts-packets N --max-ts-psi-sections N --max-ts-pes N]\n\
+          [--max-ts-pes-bytes N --max-ts-spans N]; all retain native hard ceilings.\n\
+          [--work-units N] (default 1 GiB, max 4 GiB) shares cancellable byte-work admission\n\
+          through import and reopened source verification. Zero refuses work.\n\
+          Reports import/root/manifest/origin digests, original and elementary sizes,\n\
+          selected codec/program/PID and segment count only after retained verification.\n\
   rtpplay (rtpdump #!rtpplay1.0) also requires the owner's stream binding, never read from\n\
           the capture: --rtp-generation N (>= 1) --rtp-ssrc N --rtp-payload-type N (96..127)\n\
           --rtp-mode single-nal|non-interleaved; capsules are per recorded access unit;\n\
@@ -178,6 +193,7 @@ type RunResult<T> = Result<T, Box<dyn Error>>;
 #[derive(Debug)]
 enum Action {
     Import(Box<FileIngestRequest>),
+    ImportTs(Box<mpeg_ts::Action>),
     Inspect(ContentDigest),
     Verify(ContentDigest),
     Extract {
@@ -246,14 +262,14 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
     }
     if !matches!(
         command,
-        "import" | "inspect" | "verify" | "extract" | "select-movie"
+        "import" | "import-ts" | "inspect" | "verify" | "extract" | "select-movie"
     ) && !media::is_command(command)
         && command != "localize"
         && !localization_replay::is_command(command)
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
-            "expected import, inspect, verify, extract, select-movie, export-movie or a decoded-media command"
+            "expected import, import-ts, inspect, verify, extract, select-movie, export-movie or a decoded-media command"
                 .to_owned(),
         ));
     }
@@ -293,7 +309,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         let allowed = (common.contains(&key)
             && !((replay || command == "export-movie") && key == "--manifest-out"))
             || (command == "import" && import.contains(&key))
-            || (command != "import" && !replay && key == "--import-id")
+            || mpeg_ts::accepts_option(command, key)
+            || (!matches!(command, "import" | "import-ts") && !replay && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
             || (source_read::is_command(command)
                 && matches!(key, "--max-read-bytes" | "--max-read-objects"))
@@ -334,7 +351,11 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         max_source_bytes: number(
             &values,
             "--max-source-bytes",
-            Some(defaults.max_source_bytes),
+            Some(if command == "import-ts" {
+                mpeg_ts::MAX_SOURCE_BYTES
+            } else {
+                defaults.max_source_bytes
+            }),
         )?,
         max_chunk_bytes: number(&values, "--chunk-bytes", Some(defaults.max_chunk_bytes))?,
         max_segment_bytes: number(
@@ -353,7 +374,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             "positive limits required; chunks and returned segments are capped at 64 MiB",
         ));
     }
-    let action = if command == "import" {
+    let action = if matches!(command, "import" | "import-ts") {
         let sensor = SensorId::parse(text(&values, "--sensor")?)
             .map_err(|_| malformed("invalid sensor ID"))?;
         let stream = StreamId::parse(text(&values, "--stream")?)
@@ -464,7 +485,11 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 .map_err(|_| malformed("assumed fps must be finite and positive"))?,
             );
         }
-        Action::Import(Box::new(request))
+        if command == "import-ts" {
+            Action::ImportTs(Box::new(mpeg_ts::parse(request, &values)?))
+        } else {
+            Action::Import(Box::new(request))
+        }
     } else if localization_replay::is_command(command) {
         Action::LocalizationReplay(localization_replay::parse(command, &values)?)
     } else {
@@ -541,7 +566,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             out,
         );
     }
-    let importing = matches!(&options.action, Action::Import(_));
+    let importing = matches!(&options.action, Action::Import(_) | Action::ImportTs(_));
     if !importing {
         let layout = fs::symlink_metadata(options.root.join("LAYOUT"))?;
         if !layout.file_type().is_file() {
@@ -577,6 +602,17 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     let result = (|| -> RunResult<()> {
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let (identity, operation) = match &options.action {
+            Action::ImportTs(action) => {
+                return mpeg_ts::run(
+                    action,
+                    &mut deployment,
+                    options.limits,
+                    &options.root,
+                    options.manifest_output.as_deref(),
+                    &cx,
+                    out,
+                );
+            }
             Action::Import(request) => {
                 match FileIngestAdapter::ingest_file((**request).clone(), &cx, &mut deployment)? {
                     FileImport::Media(receipt) => {
@@ -614,6 +650,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         source_read::metadata(&deployment, &retained, identity, operation, out)?;
         let manifest = retained.manifest();
         match &options.action {
+            Action::ImportTs(_) => {
+                return Err("MPEG-TS imports require the verified transport path".into());
+            }
             Action::Import(_) => {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
                 writeln!(out, "verified_source_sha256={verified}")?;
@@ -726,6 +765,11 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
                 Err(error) => {
                     eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
+                    if let Some(refusal) = error
+                        .downcast_ref::<fss_reference::ingest::mpeg_ts_import::MpegTsImportError>()
+                    {
+                        eprintln!("refusal_id={}", refusal.stable_id());
+                    }
                     if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::twin_localization::RecordedLocalizationError>() {
                         eprintln!("refusal_id={}", refusal.stable_id());
                     }
