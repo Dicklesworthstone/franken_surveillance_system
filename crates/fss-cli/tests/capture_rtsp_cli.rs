@@ -505,18 +505,22 @@ fn video_nals(
 }
 
 fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
+    // Bounded poll: a blocking accept hangs the suite when a child dies before connecting, and a plain
+    // blocking call is what the `no_connection` helpers rely on being non-blocking. A missed connect is
+    // retried until the deadline; the deadline itself is a failure.
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut peer = loop {
         match listener.accept() {
             Ok((peer, _)) => break peer,
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(2));
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+            Err(error) => {
+                return Err(format!("fixture accepted no connection in 10s: {error}").into());
             }
-            Err(error) => return Err(error.into()),
         }
     };
+    // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer, so the first read
+    // would return EAGAIN instead of waiting for the request.
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(10)))?;
     peer.set_write_timeout(Some(Duration::from_secs(10)))?;
     peer.set_nodelay(true)?;
