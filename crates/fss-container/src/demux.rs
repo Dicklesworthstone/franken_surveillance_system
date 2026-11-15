@@ -125,14 +125,8 @@ impl std::fmt::Display for DemuxError {
 }
 impl std::error::Error for DemuxError {}
 
-/// Video coding of the selected sample entry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VideoCodec {
-    /// H.264 (`avc1` with `avcC`).
-    Avc,
-    /// H.265 (`hvc1` or `hev1` with `hvcC`); base layer only.
-    Hevc,
-}
+/// Shared video coding identity, preserved at its historical public path.
+pub use crate::video_codec::VideoCodec;
 
 /// Reuse the demuxer's exact configuration-record grammar for bounded initialization probes.
 /// The supplied range contains an `avcC`/`hvcC` body in the original source, not a reconstructed
