@@ -6,7 +6,7 @@ use super::{
     RetainedReadLimits, checkpoint, invalid, verified_chunk,
 };
 use crate::ingest::rtsp_import;
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReplayCx, RetainedSource};
 use fss_container::demux::{
     AvcMp4, DemuxError, MAX_MP4_INPUT_BYTES, MovieSelection, MovieSelectionLimits, VideoCodec,
 };
@@ -86,6 +86,8 @@ impl RetainedFileImport {
     /// a small selection does not authorize an unbounded full-file read. Each chunk, the full
     /// original, every retained sample index/range/digest, and final root/completion authority
     /// are checked before any result is released. Cancellation or any refusal is atomic.
+    /// An immutable owner shares its original read allowance across this operation and the
+    /// caller's required final revalidation before releasing a report or optional export.
     ///
     /// Supports original `ADP-FILE-001` MP4/MOV imports and completed native RTSP window,
     /// catalog, catalog-page and recorder-replay imports. Native origins additionally replay every retained packet,
@@ -97,7 +99,7 @@ impl RetainedFileImport {
     /// boundary rebases the timeline or refills a budget. Movie ticks never imply UTC or a capture origin.
     pub fn select_movie_interval(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         query: Range<u64>,
         read_limits: RetainedReadLimits,
         selection_limits: MovieSelectionLimits,
@@ -122,7 +124,7 @@ impl RetainedFileImport {
     /// refuse before I/O. Other proof/import-authority reads retain their existing separate bounds.
     pub fn select_movie_interval_with_origin_limit(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         query: Range<u64>,
         read_limits: RetainedReadLimits,
         selection_limits: MovieSelectionLimits,
@@ -156,10 +158,7 @@ impl RetainedFileImport {
                 checkpoint(cx, STAGE_SOURCE)?;
                 let length = usize::try_from(length)
                     .map_err(|_| invalid("movie source chunk length overflow"))?;
-                Ok(deployment
-                    .publisher()
-                    .spool()
-                    .read_bounded(digest, length)?)
+                deployment.read_object_bounded(digest, length)
             })?;
             if source
                 .len()

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Immutable source inspection and exact local extraction, without publisher ownership.
+//! Immutable source inspection, movie-time selection and extraction, without publisher ownership.
 
 use std::fs;
 use std::io::Write;
@@ -23,7 +23,7 @@ const DEFAULT_READS: u64 = 1_000_000;
 const MAX_READS: u64 = 4_000_000;
 
 pub(super) fn is_command(command: &str) -> bool {
-    matches!(command, "inspect" | "verify" | "extract")
+    matches!(command, "inspect" | "verify" | "extract" | "select-movie")
 }
 
 pub(super) fn parse_limits(values: &Values) -> ParseResult<ImmutableRetainedReadLimits> {
@@ -64,6 +64,7 @@ pub(super) fn run(options: &Options, out: &mut impl Write) -> RunResult<()> {
         Action::Inspect(id) => (*id, "inspect"),
         Action::Verify(id) => (*id, "verify"),
         Action::Extract { identity, .. } => (*identity, "extract"),
+        Action::Movie(action) => (action.identity(), "select-movie"),
         _ => return Err("immutable source inspection requires a read command".into()),
     };
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
@@ -128,6 +129,10 @@ pub(super) fn run(options: &Options, out: &mut impl Write) -> RunResult<()> {
                 Some((output, bytes))
             }
             Action::Inspect(_) => None,
+            Action::Movie(action) => {
+                super::movie::run(action, &retained, &owner, options.limits, &cx, &mut report)?;
+                None
+            }
             _ => return Err("immutable source inspection requires a read command".into()),
         };
         if matches!(&options.action, Action::Inspect(_) | Action::Verify(_))

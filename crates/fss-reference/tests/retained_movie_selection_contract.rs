@@ -5,6 +5,9 @@
 #[path = "support/import_integrity.rs"]
 mod support;
 
+#[path = "retained_movie_selection_contract/immutable.rs"]
+mod immutable;
+
 use std::{
     fs,
     ops::Range,

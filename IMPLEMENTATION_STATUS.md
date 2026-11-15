@@ -4,6 +4,52 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Immutable operator inspection during active ingest — 2026-11-15
+
+The native investigation and retention paths now share the existing sealed retained-source
+owner instead of requiring the publisher. Inspection can coexist with active ingest without
+creating missing stores, taking the writer lock, recovering journal tails or reconciling effects.
+The changes address concrete gaps found after reading the comprehensive plan and VIT beads;
+they do not close the broad footage-plane or site-recorder requirements.
+
+| Operator path | Functional change |
+| --- | --- |
+| `fss-file inspect`, `verify`, `extract` | Bounded acquisition/origin metadata and selected source reads; complete report and exports withheld until final custody validation. |
+| `fss-file query-replay-utc` | Immutable AVC/HEVC recorder-time queries with native query/index/report identities preserved. |
+| `fss-file select-movie` | Source-verified MP4/MOV interval selection during ingest, preserving exact presentation/edit/gap/decode-range semantics and final output withholding. |
+| `fss-infer sentinel-read` | New direct inspection of saved whole-recording reports, exact saved-JSON export, child handles and explicit numerical replay compatibility. |
+| `fss-infer sentinel-replay` | Immutable JPEG/AVC/HEVC source custody through replay; exact saved numerical profiles enforced before model execution. |
+| `fss-event delete policy-show`, `fss-hold list`, `due` | Reuse native policy/hold history validators, including superseded records and impact plans, with final verification even for empty/filtered results. |
+| `fss-export show` | Verify committed redacted export custody during ingest without requiring original media or model payloads. |
+
+One nonrenewing aggregate byte/read-attempt allowance covers metadata, selected payloads and
+final rereads. Existing source, codec and computation ceilings remain independent. Wrong site,
+missing custody, damaged journals, cancellation and final authority changes refuse complete
+results. Original source identities, saved report bytes, codec/kernel profiles and mutation
+approval paths remain intact. Historical sentinel generations round-trip unchanged for custody
+inspection; unsupported generations refuse numerical replay rather than substitute current ones.
+Final validation is a bounded observation, not an atomic filesystem snapshot or a lease.
+
+New native contracts exercise writer-held/cold parity, exact versus one-less aggregate budgets,
+no writes or partial output on custody refusal, historical profile binding, late payload/root/head
+changes, unavailable raw media, privacy drift and cancellation. Existing AVC/HEVC and real-process
+contracts were extended. Pinned formatting, changed-diff checks, fixture Python syntax and
+independent source/API review passed. **Native type-check and runtime verification remain
+blocked:** exact locked dependencies were provisioned, but initial single-job test/check attempts
+were killed in unchanged `fss-core`. A serial-frontend check with allocator memory settings passed that
+stage and was then SIGKILLed compiling unchanged `asupersync` 0.5.0 before edited crates (exit
+101; 347.60 seconds; peak child RSS 1,373,400 KiB). No dependency pins, release gates or numerical
+profiles were weakened, and no native test pass or release qualification is claimed.
+
+See [file reads](docs/FILE_IMPORT_WORKFLOW.md), [movie selection](docs/RETAINED_MOVIE_SELECTION.md),
+[saved sentinel reports](docs/LONG_RECORDING_SENTINEL.md),
+[retention inspection](docs/retention_cleanup.md), [holds](docs/EVIDENCE_HOLDS.md), and
+[redacted exports](docs/EVIDENCE_EXPORT.md). The
+[typed handoff](docs/SESSION_HANDOFF_2026-11-15_IMMUTABLE_OPERATOR_READS.json) records exact commits,
+validation attempts, the corrected empty-journal allowance assumption and remaining commands.
+Always-on `site run/status` still has the separate undecided VIT-D7 standing-capture doctrine;
+this work grants no standing capture or automatic retention/effect authority.
+
 ## Native recorder UTC reads during active ingest — 2026-11-15
 
 `fss-file query-replay-utc` now uses the same sealed immutable custody boundary as

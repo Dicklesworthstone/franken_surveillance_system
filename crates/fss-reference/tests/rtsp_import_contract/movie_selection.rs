@@ -7,8 +7,10 @@ mod integrity;
 
 use super::*;
 use fss_container::demux::{AvcMp4, DemuxError, DemuxLimits, MovieSelectionLimits, VideoCodec};
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::ingest::FileIngestError;
 use fss_reference::ingest::retained::MAX_MOVIE_ORIGIN_READ_BYTES;
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use integrity::snapshot;
 
 fn original_bytes(fixture: &Fixture) -> u64 {
@@ -78,7 +80,51 @@ fn both_native_origins_select_after_archive_removal_and_destination_restart() ->
             assert_eq!(selected.source.start as u64, span.offset);
             assert_eq!(selected.source.len() as u64, span.len);
         }
+        let limits = ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: 64 * 1024 * 1024,
+            max_read_objects: 20_000,
+        };
+        let source = ImmutableRetainedSource::open(&f.target_dir.0, limits, &f.cx)?;
+        let immutable = retained.select_movie_interval(
+            &source,
+            0..90_000,
+            RetainedReadLimits::default(),
+            MovieSelectionLimits::default(),
+            &f.cx,
+        )?;
+        assert_eq!(immutable, report);
+        source.revalidate()?;
         assert_eq!(snapshot(&f.target_dir.0)?, before);
+        // Select the source-pack leaf by its canonical schema, not the root manifest or
+        // derivative media: it contains the actual retained original RTP datagrams.
+        let original = f
+            .original
+            .iter()
+            .find_map(|(digest, bytes)| {
+                let mut decoder = fss_core::CanonicalDecoder::new(bytes);
+                (decoder.text().ok()? == "fss.recording_window.source.v1"
+                    && decoder.u64().ok()? > 0)
+                    .then_some(*digest)
+            })
+            .ok_or("native original RTP source pack")?;
+        assert_ne!(original, f.request.root);
+        fs::remove_file(f.target()?.publisher().spool().object_path(original))?;
+        let damaged = snapshot(&f.target_dir.0)?;
+        assert!(source.revalidate().is_err());
+        let fresh = ImmutableRetainedSource::open(&f.target_dir.0, limits, &f.cx)?;
+        assert!(
+            retained
+                .select_movie_interval(
+                    &fresh,
+                    0..90_000,
+                    RetainedReadLimits::default(),
+                    MovieSelectionLimits::default(),
+                    &f.cx,
+                )
+                .is_err()
+        );
+        assert_eq!(snapshot(&f.target_dir.0)?, damaged);
     }
     Ok(())
 }
