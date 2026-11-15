@@ -835,3 +835,21 @@ also passed against this executable. The fixture trace at
 denied temporary-root unlink attempts; the observation trace recorded no
 deletion calls. These are synthetic results, not a physical G4 stream,
 camera-setting restore, continuous recorder, audio, or retention proof.
+
+The runtime now exposes task-owned verification of a committed effect against
+the coordinator's already-recorded observation. A refusal returns the original
+permit, and task ownership, lifecycle, deadline, coordinator, and exact proof
+checks still apply. This API does not establish independent evidence or wire
+the camera experiment to effect settlement or restoration.
+
+An isolated `fss-runtime` test workspace built on `ts1` as job
+`j-30109207290184192`; its exact `execution.rs` SHA-256 was
+`6c87f0a929fa4157bd6e89532347c9dda69d02a48c1b6d4e1018ecdf36f95a79`,
+and its contract test source SHA-256 was
+`e53f3ae5f18f8ad74a6c4c1b970603e2a3200001f4a0e4c343c3bf16ffc552da`.
+The test executable SHA-256 was
+`cf0410c331727220d068e51ecc77915c01f5e2edda04bc1a1d7c1ddd541aea43`.
+Under a deletion-denying trace, 5/5 tests passed, including refusal before
+observation, refusal of a different proof, retained permit reuse, and refusal
+of verification by another task; the trace recorded zero deletion syscalls.
+This establishes the task-effect contract only, not physical camera effects.

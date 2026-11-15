@@ -161,7 +161,7 @@ fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit
                         TimestampNs(4),
                     )?;
                     let approved = approval(&prepared);
-                    let mut effect = task.commit_effect(
+                    let effect = task.commit_effect(
                         cx,
                         &mut effects,
                         &mut leases,
@@ -169,10 +169,15 @@ fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit
                         TimestampNs(5),
                         approved,
                     )?;
-                    effects.adapter_accepted(&mut effect, None, TimestampNs(6))?;
-                    effects.observed(&mut effect, proof, TimestampNs(7))?;
                     let refused = task
-                        .verify_effect(cx, &mut effects, effect, wrong, TimestampNs(8))
+                        .verify_effect(cx, &mut effects, effect, proof, TimestampNs(6))
+                        .expect_err("an unobserved effect must not be verified");
+                    assert!(matches!(refused.reason, TaskEffectError::Coordinator(_)));
+                    let mut effect = refused.into_effect();
+                    effects.adapter_accepted(&mut effect, None, TimestampNs(7))?;
+                    effects.observed(&mut effect, proof, TimestampNs(8))?;
+                    let refused = task
+                        .verify_effect(cx, &mut effects, effect, wrong, TimestampNs(9))
                         .expect_err("different proof must not settle the effect");
                     assert!(matches!(refused.reason, TaskEffectError::Coordinator(_)));
                     assert_eq!(
@@ -188,7 +193,7 @@ fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit
                         &mut effects,
                         refused.into_effect(),
                         proof,
-                        TimestampNs(9),
+                        TimestampNs(10),
                     )?;
                     Ok(())
                 })();
@@ -200,7 +205,7 @@ fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit
                 TaskCompletion {
                     output,
                     outcome,
-                    completed_at: TimestampNs(10),
+                    completed_at: TimestampNs(11),
                 }
             },
         )
@@ -215,6 +220,111 @@ fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit
     assert_eq!(record.state, fss_core::EffectState::Verified);
     assert_eq!(record.result_digest, Some(proof));
     assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn another_task_cannot_verify_the_committed_effect() -> Test {
+    let (mut authority, mut tree, mut leases, fence) = setup()?;
+    let mut effects = EffectCoordinator::new();
+    let operation = OperationId::parse("operation:foreign-verify")?;
+    let proof = ContentDigest::sha256(b"fixture observed outcome");
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let effect = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:verification-owner")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
+                let output = (|| {
+                    let prepared = task.prepare_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        spec(&operation, fence)?,
+                        TimestampNs(4),
+                    )?;
+                    let approved = approval(&prepared);
+                    let mut effect = task.commit_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        prepared,
+                        TimestampNs(5),
+                        approved,
+                    )?;
+                    effects.adapter_accepted(&mut effect, None, TimestampNs(6))?;
+                    effects.observed(&mut effect, proof, TimestampNs(7))?;
+                    Ok::<_, Box<dyn Error>>(effect)
+                })();
+                TaskCompletion {
+                    output,
+                    outcome: TaskOutcome::Indeterminate("fixture observation retained".into()),
+                    completed_at: TimestampNs(8),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })?;
+    let effect = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:foreign-verifier")?,
+                started_at: TimestampNs(9),
+            },
+            &cx,
+            async |task, cx| {
+                let refused = task
+                    .verify_effect(cx, &mut effects, effect, proof, TimestampNs(10))
+                    .expect_err("a foreign task must not verify the effect");
+                let output = if matches!(
+                    refused.reason,
+                    TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
+                ) {
+                    Ok(refused.into_effect())
+                } else {
+                    Err("unexpected foreign-verification refusal")
+                };
+                TaskCompletion {
+                    output,
+                    outcome: TaskOutcome::Success,
+                    completed_at: TimestampNs(11),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result
+            .output
+            .map_err(|error| -> Box<dyn Error> { error.into() })
+    })?;
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&operation)
+            .ok_or("missing effect")?
+            .state,
+        fss_core::EffectState::Observed
+    );
+    effects.verified(&mut tree, &authority, effect, proof, TimestampNs(12))?;
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&operation)
+            .ok_or("missing effect")?
+            .state,
+        fss_core::EffectState::Verified
+    );
     Ok(())
 }
 
