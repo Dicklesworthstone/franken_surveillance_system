@@ -4,6 +4,24 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native retained MPEG-TS import — 2026-11-15
+
+The new `ingest::mpeg_ts_import` backend connects finite MPEG-TS extraction to the
+existing retained AVC/HEVC split and decode owners. It preserves complete original
+transport chunks, extraction policy/mappings and native capsule authority in one
+root-last publication. Retained readers replay the original before returning
+reconstructed ranges; exact retry preserves visible custody and refuses loose-file
+repair of damaged published evidence. Footage queries recognize the explicit
+`ADP-MPEGTS-FILE-001` origin. Capture stays unknown or an operator assumption.
+
+Original and reconstructed streams are independently capped at 64 MiB. One native
+work owner reserves requested file I/O before reading and carries conservative
+pass/preparation/publication debits throughout. Five real AVC/HEVC retained-import
+contracts were authored, covering restart/decode, damaged originals/proof,
+partitioned resume/deletion closure, limits/cancellation and capture identity.
+They remain uncompiled/unexecuted during the executor outage. Independent source
+reviews found no blocker; no broad media bead or release gate is closed.
+
 ## Live session admission at the alert boundary — 2026-11-15
 
 A held planning context now resamples its original runtime clock before effect

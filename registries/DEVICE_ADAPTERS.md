@@ -4,6 +4,7 @@ See `DEVICE_ADAPTER_MATRIX.md` for research details.
 
 | ID | Surface | Tier | Current state | Promotion gate |
 |---|---|---:|---|---|
+| `ADP-MPEGTS-FILE-001` | finite MPEG-TS file to source-closed native AVC/HEVC import | T4 | source implemented; original transport retained, capture time unknown unless explicitly assumed; execution qualification pending | `GATE-040` |
 | `ADP-REPLAY-001` | deterministic replay | T0 | specified | `GATE-010` |
 | `ADP-FILE-001` | bounded media import | T0/T4 | specified | `GATE-010` |
 | `ADP-UVC-001` | UVC/UAC | T1 | specified | `GATE-020` |

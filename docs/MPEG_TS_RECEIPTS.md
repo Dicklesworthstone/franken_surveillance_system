@@ -56,6 +56,29 @@ used to establish camera continuity, absence evidence or decoded-picture support
 The existing parser's finite-file subset and explicit refusals remain unchanged.
 Changes to the extraction/encoding semantics require a new receipt version.
 
+## Native retained-import integration
+
+`fss_reference::ingest::mpeg_ts_import::import_mpeg_ts_file` uses this receipt to
+publish one bounded original transport recording through the existing native
+retained-media owners. `MpegTsImportRequest` carries a `FileIngestRequest`, an
+explicit or unambiguous `TsSelection`, and independent `TsLimits`. The caller also
+supplies its existing `ReplayCx` and one cumulative `WorkBudget`.
+
+The `ADP-MPEGTS-FILE-001` publication retains the complete original transport,
+canonical origin proof, reconstructed elementary chunks, access-unit and omission
+map, and sensor capsules together. Retained range reads first replay the original
+under the admitted finite profile; full verification rereads originals. The
+verified cursor cache holds at most one 64 MiB elementary stream and never claims
+continuous health of stored bytes. Original transport and elementary output have
+separate 64 MiB ceilings, with at most 65,536 native access units and original
+chunks. Retry can complete an unpublished suffix but cannot repair corrupted
+already-published originals from the loose input.
+
+Five integration contracts in `mpeg_ts_import_contract.rs` exercise this path
+using real native AVC/HEVC decoder fixtures. They are authored but unexecuted;
+run `cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test mpeg_ts_import_contract`
+on the qualification host before claiming retained decode success.
+
 ## Validation status
 
 Seven focused Rust contracts cover both retained AVC/HEVC transport fixtures,

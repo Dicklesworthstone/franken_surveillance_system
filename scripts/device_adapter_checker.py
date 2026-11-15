@@ -35,9 +35,9 @@ ERR_ADAPTER_REPLAY_DIVERGED = "ERR-ADAPTER-REPLAY-DIVERGED-001"
 DEVICE_ADAPTERS_JSON_PATH = "architecture/device_adapters.json"
 DEVICE_ADAPTERS_MD_PATH = "registries/DEVICE_ADAPTERS.md"
 
-# Current generation: v3 adds retained JPEG and whole-receipt recorder replay profiles.
-# v1/v2 remain superseded history with their original frozen digests.
-CURRENT_GENERATION = "gen:fss1:adapters-v3"
+# Current generation: v4 adds finite MPEG-TS file import with retained original transport.
+# v1/v2/v3 remain superseded history with their original frozen digests.
+CURRENT_GENERATION = "gen:fss1:adapters-v4"
 SCHEMA_DEVICE_ADAPTERS_V1 = "fss.device_adapters.v1"
 SEMANTIC_PROTOCOL_V1 = "fss/1"
 
@@ -68,6 +68,7 @@ EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     "gen:fss1:adapters-v1": "sha256:475127cbcbdff684e7f778ab25b1c7883cfdddafd6bf07f881da50c4f4cf0ff9",
     "gen:fss1:adapters-v2": "sha256:ff11d7d98704225532c8e8411094c5356dd18908145d676636c57c4fa2706cc1",
     "gen:fss1:adapters-v3": "sha256:bd81e61933f6fa2f8dfd62a9d63a582a74b04693aa3a44c407e04633eda11e54",
+    "gen:fss1:adapters-v4": "sha256:946ad28a1e769afe02fdabd5d8a394314975d40e7b1f7b1b52ecbe9b9a8aedd3",
 }
 
 VALID_TIERS = {"T0", "T0/T4", "T1", "T2", "T3", "T3/T4", "T4"}
@@ -85,7 +86,7 @@ REQUIRED_ROW_FIELDS = (
 BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     "ADP-AOSU-P1MAX-LAB-001": {
         "currentState": "research target",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-AOSU-P1MAX-LAB-001",
         "promotionGate": "GATE-090",
         "surface": "AOSU P1 Max owner-auth lab",
@@ -93,7 +94,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-DJI-FLIP-LAB-001": {
         "currentState": "research target",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-DJI-FLIP-LAB-001",
         "promotionGate": "GATE-100",
         "surface": "DJI Flip manual capture/import lab (NEG-001 non-SDK)",
@@ -101,7 +102,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-FILE-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-FILE-001",
         "promotionGate": "GATE-010",
         "surface": "bounded media import",
@@ -109,15 +110,23 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-INSTA-LINK-001": {
         "currentState": "researched, unimplemented",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-INSTA-LINK-001",
         "promotionGate": "GATE-020",
         "surface": "Insta360 Link via UVC/UAC",
         "tier": "T1",
     },
+    "ADP-MPEGTS-FILE-001": {
+        "currentState": "source implemented; original transport retained, capture time unknown unless explicitly assumed; execution qualification pending",
+        "generation": "gen:fss1:adapters-v4",
+        "id": "ADP-MPEGTS-FILE-001",
+        "promotionGate": "GATE-040",
+        "surface": "finite MPEG-TS file to source-closed native AVC/HEVC import",
+        "tier": "T4",
+    },
     "ADP-ONVIF-M-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-ONVIF-M-001",
         "promotionGate": "GATE-030",
         "surface": "ONVIF Profile M metadata",
@@ -125,7 +134,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-ONVIF-T-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-ONVIF-T-001",
         "promotionGate": "GATE-030",
         "surface": "ONVIF Profile T",
@@ -133,7 +142,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-REPLAY-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-REPLAY-001",
         "promotionGate": "GATE-010",
         "surface": "deterministic replay",
@@ -141,7 +150,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-RTSP-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-RTSP-001",
         "promotionGate": "GATE-030",
         "surface": "RTSP/RTP",
@@ -149,7 +158,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-RTSP-JPEG-ARCHIVE-001": {
         "currentState": "finite native reference profile; independent physical mapping and unknown capture time",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-RTSP-JPEG-ARCHIVE-001",
         "promotionGate": "GATE-040",
         "surface": "exact retained RTP/JPEG prefix to source-closed MJPEG import",
@@ -157,7 +166,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-RTSP-REPLAY-ARCHIVE-001": {
         "currentState": "finite native reference profile; recorder provenance retained and capture time unknown unless separately declared",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-RTSP-REPLAY-ARCHIVE-001",
         "promotionGate": "GATE-040",
         "surface": "whole-receipt AVC/HEVC replay to source-closed MP4 import",
@@ -165,7 +174,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-S3-IMPORT-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-S3-IMPORT-001",
         "promotionGate": "GATE-040",
         "surface": "S3-compatible import",
@@ -173,7 +182,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-UVC-001": {
         "currentState": "specified",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-UVC-001",
         "promotionGate": "GATE-020",
         "surface": "UVC/UAC",
@@ -181,7 +190,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-WYZE-V4-LAB-001": {
         "currentState": "research target",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-WYZE-V4-LAB-001",
         "promotionGate": "GATE-090",
         "surface": "Wyze Cam v4 owner-auth lab",
@@ -189,7 +198,7 @@ BASELINE_ADAPTERS: dict[str, dict[str, str]] = {
     },
     "ADP-YI-IPC-LAB-001": {
         "currentState": "research target",
-        "generation": "gen:fss1:adapters-v3",
+        "generation": "gen:fss1:adapters-v4",
         "id": "ADP-YI-IPC-LAB-001",
         "promotionGate": "GATE-090",
         "surface": "Yi IPC owner-auth lab (ONVIF gated pre-provisioning)",
