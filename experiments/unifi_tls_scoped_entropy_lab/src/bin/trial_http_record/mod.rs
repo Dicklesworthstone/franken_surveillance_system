@@ -252,7 +252,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         authority,
         capture,
         permit,
-        authorize,
+        &authorize,
     )
     .await;
     let mut driver = match started.state {
@@ -436,7 +436,79 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
             ));
         }
     };
-    let retirement = connected.into_parts().pipeline.retire();
+    let detached = connected.into_parts();
+    let reread = async {
+        task.checkpoint_for(
+            RuntimeGrant::ObserveStatus,
+            resource,
+            clock
+                .now()
+                .map_err(|_| "serializer observation clock unavailable")?,
+            &BudgetVector::ZERO,
+        )
+        .map_err(|_| "serializer observation authority refused")?;
+        http.settings_serializers(Duration::from_secs(10))
+            .await
+            .map(|(_, observed)| observed)
+            .map_err(|_| "serializer observation unavailable")
+    }
+    .await;
+    let reread = match reread {
+        Ok(reread) => reread,
+        Err(reason) => {
+            return Err(stopped(
+                reason,
+                (
+                    checkpoint,
+                    published,
+                    detached,
+                    source_owner,
+                    resources,
+                    video_owner,
+                    source,
+                    video,
+                ),
+            ));
+        }
+    };
+    let consistent = (|| {
+        let original = detached.readback.binding(&authorize).ok()?;
+        let current = reread.binding(&authorize).ok()?;
+        let comparison = checkpoint
+            .plan
+            .observe_readback(&checkpoint.baseline, &reread, &authorize)
+            .ok()?;
+        Some(
+            original == current
+                && comparison.change
+                    == fss_reference::unifi_direct::http_stream::ReadbackChange::TargetTrackOnly
+                && comparison.requested_fields_match,
+        )
+    })();
+    if consistent != Some(true) {
+        return Err(stopped(
+            "serializer observation changed after recording",
+            (
+                checkpoint,
+                published,
+                detached,
+                reread,
+                source_owner,
+                resources,
+                video_owner,
+                source,
+                video,
+            ),
+        ));
+    }
+    let fss_reference::unifi_direct::http_stream::media::Detached {
+        camera_claim,
+        permit,
+        readback,
+        comparison,
+        pipeline,
+    } = detached;
+    let retirement = pipeline.retire();
     let unclosed = retirement
         .recorder
         .pending
@@ -460,7 +532,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                 .map_or(0, |value| value.bytes().len()),
         );
     println!(
-        "trial_http_record=published decoded_width={} decoded_height={} source_unclosed_bytes={} source_unframed_bytes={} audio=false continuous=false effect=reconciliation_required",
+        "trial_http_record=published decoded_width={} decoded_height={} source_unclosed_bytes={} source_unframed_bytes={} audio=false continuous=false readbacks=consistent effect=reconciliation_required",
         width, height, unclosed, unframed
     );
     let _custody = (
@@ -472,6 +544,11 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         source,
         video,
         retirement,
+        camera_claim,
+        permit,
+        readback,
+        comparison,
+        reread,
     );
     Ok(())
 }
