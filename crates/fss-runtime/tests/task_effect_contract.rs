@@ -134,6 +134,91 @@ fn owning_task_cancels_prepared_effect_with_caller_evidence() -> Test {
 }
 
 #[test]
+fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit() -> Test {
+    let (mut authority, mut tree, mut leases, fence) = setup()?;
+    let mut effects = EffectCoordinator::new();
+    let operation = OperationId::parse("operation:verify-observed")?;
+    let proof = ContentDigest::sha256(b"independently retained observation");
+    let wrong = ContentDigest::sha256(b"different observation");
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:verify-observed")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = (|| {
+                    let prepared = task.prepare_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        spec(&operation, fence)?,
+                        TimestampNs(4),
+                    )?;
+                    let approved = approval(&prepared);
+                    let mut effect = task.commit_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        prepared,
+                        TimestampNs(5),
+                        approved,
+                    )?;
+                    effects.adapter_accepted(&mut effect, None, TimestampNs(6))?;
+                    effects.observed(&mut effect, proof, TimestampNs(7))?;
+                    let refused = task
+                        .verify_effect(cx, &mut effects, effect, wrong, TimestampNs(8))
+                        .expect_err("different proof must not settle the effect");
+                    assert!(matches!(refused.reason, TaskEffectError::Coordinator(_)));
+                    assert_eq!(
+                        effects
+                            .journal()
+                            .operation(&operation)
+                            .ok_or("missing effect")?
+                            .state,
+                        fss_core::EffectState::Observed
+                    );
+                    task.verify_effect(
+                        cx,
+                        &mut effects,
+                        refused.into_effect(),
+                        proof,
+                        TimestampNs(9),
+                    )?;
+                    Ok(())
+                })();
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("verification fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(10),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })?;
+    let record = effects
+        .journal()
+        .operation(&operation)
+        .ok_or("missing effect")?;
+    assert_eq!(record.state, fss_core::EffectState::Verified);
+    assert_eq!(record.result_digest, Some(proof));
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn observed_task_can_prepare_and_commit_with_retained_failed_approval() -> Test {
     let (mut authority, mut tree, mut leases, fence) = setup()?;
     let mut effects = EffectCoordinator::new();

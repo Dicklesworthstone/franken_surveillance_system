@@ -200,6 +200,27 @@ impl std::fmt::Display for TaskEffectCancellationRefusal {
 }
 impl std::error::Error for TaskEffectCancellationRefusal {}
 
+/// A refused verification retains the committed effect for reconciliation.
+#[must_use]
+#[derive(Debug)]
+pub struct TaskEffectVerificationRefusal {
+    /// Why the effect was not verified.
+    pub reason: TaskEffectError,
+    effect: CommittedEffect,
+}
+impl TaskEffectVerificationRefusal {
+    /// Recover the original committed effect without authorizing another dispatch.
+    pub fn into_effect(self) -> CommittedEffect {
+        self.effect
+    }
+}
+impl std::fmt::Display for TaskEffectVerificationRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "task effect verification refused: {}", self.reason)
+    }
+}
+impl std::error::Error for TaskEffectVerificationRefusal {}
+
 impl From<AuthorityError> for ExecutionError {
     fn from(error: AuthorityError) -> Self {
         Self::Authority(error)
@@ -510,6 +531,54 @@ impl<'a> TaskCx<'a> {
                 TaskEffectCancellationRefusal {
                     reason: TaskEffectError::Coordinator(reason),
                     prepared,
+                }
+            })
+    }
+
+    /// Verify this task's committed effect against its already recorded
+    /// observation. The caller must independently establish and retain the
+    /// evidence behind `proof`; the digest alone does not establish truth.
+    /// Refusal retains the exact committed effect and grants no new dispatch.
+    /// Like preparation and commit, durable journal writes may block.
+    pub fn verify_effect(
+        &self,
+        runtime_cx: &asupersync::Cx,
+        effects: &mut EffectCoordinator,
+        effect: CommittedEffect,
+        proof: ContentDigest,
+        now: TimestampNs,
+    ) -> Result<(), TaskEffectVerificationRefusal> {
+        let admission = (|| -> Result<_, TaskEffectError> {
+            runtime_cx
+                .checkpoint()
+                .map_err(|_| TaskEffectError::Execution(ExecutionError::RuntimeCancelled))?;
+            let mut state = self.state().map_err(TaskEffectError::Execution)?;
+            self.check_registration(&state)
+                .map_err(TaskEffectError::Execution)?;
+            Self::observe_time(&mut state, now).map_err(TaskEffectError::Execution)?;
+            self.check_deadline(&mut state, now)
+                .map_err(TaskEffectError::Execution)?;
+            if !state.effect_operations.contains(effect.operation()) {
+                return Err(TaskEffectError::Execution(
+                    ExecutionError::ObligationOwnerMismatch,
+                ));
+            }
+            Ok(state)
+        })();
+        let mut state = match admission {
+            Ok(state) => state,
+            Err(reason) => return Err(TaskEffectVerificationRefusal { reason, effect }),
+        };
+        let ExecutionState {
+            authority, tree, ..
+        } = &mut *state;
+        effects
+            .verified(tree, authority, effect, proof, now)
+            .map_err(|error| {
+                let (reason, effect) = error.into_parts();
+                TaskEffectVerificationRefusal {
+                    reason: TaskEffectError::Coordinator(reason),
+                    effect,
                 }
             })
     }
