@@ -255,3 +255,10 @@ valid approval digest. So the child and its two-phase approval are fine, and the
 own fixture: it binds a listener, sets it non-blocking, spawns `serve` on a scoped thread and then runs
 the child — and that loop is what waits ten seconds. Next step is a blocking listener in `serve` (accept
 with a small poll only as a fallback) and re-run one test.
+
+The 13 are reproducible outside the harness, which matters: running
+`fss-capture-rtsp reconnect … --approve <digest>` by hand against a `nc` listener fails in about a
+second with `ERR-CAPTURE-RTSP-ROOT-001` and **creates neither `--root` nor `--pins`**, so it dies in
+pre-flight path validation before any socket work. Planning succeeds and the approval digest is
+accepted. The candidates are `Failure::Root` sites in `driver.rs` (1483–1492 and the `_ =>` at 1472),
+and pre-creating or omitting `--history-root` makes no difference.
