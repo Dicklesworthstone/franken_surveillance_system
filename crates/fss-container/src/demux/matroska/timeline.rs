@@ -132,6 +132,16 @@ pub(super) struct TrackTiming {
     unsupported: bool,
 }
 impl TrackTiming {
+    pub(super) const fn default_duration_ns(&self) -> Option<u64> {
+        self.default_duration
+    }
+
+    /// The export-capable MovieSelection profile is intentionally narrower than metadata
+    /// selection: it cannot silently apply CodecDelay or promote inferred/unknown durations.
+    pub(super) fn supports_explicit_movie_profile(&self) -> bool {
+        !self.unsupported && self.codec_delay.unwrap_or(0) == 0
+    }
+
     pub(super) fn observe(&mut self, id: u32, bytes: &[u8]) {
         match id {
             DEFAULT_DURATION => {
@@ -172,9 +182,32 @@ pub(super) struct BlockTiming {
     pub(super) is_group: bool,
     duration: Option<u64>,
     seen_padding: bool,
+    // Only the stricter movie export profile refuses this presence. The established
+    // metadata selector's admission and its uncertainty semantics remain unchanged.
+    seen_additions: bool,
     unsupported: bool,
 }
 impl BlockTiming {
+    pub(super) const fn block_duration_ticks(&self) -> Option<u64> {
+        self.duration
+    }
+
+    pub(super) fn explicit_duration_ns(
+        &self,
+        default_duration_ns: Option<u64>,
+        timestamp_scale_ns: u64,
+    ) -> Result<Option<u128>, DemuxError> {
+        if self.unsupported || self.seen_padding || self.seen_additions {
+            return Err(DemuxError::Unsupported);
+        }
+        Ok(if self.is_group {
+            self.block_duration_ticks()
+                .map(|ticks| u128::from(ticks) * u128::from(timestamp_scale_ns))
+        } else {
+            default_duration_ns.map(u128::from)
+        })
+    }
+
     pub(super) fn observe(&mut self, id: u32, bytes: &[u8]) {
         match id {
             BLOCK_DURATION => {
@@ -188,6 +221,7 @@ impl BlockTiming {
                 self.unsupported |= self.seen_padding || unsigned(bytes) != Some(0);
                 self.seen_padding = true;
             }
+            0x75A1 => self.seen_additions = true,
             _ => {}
         }
     }
@@ -196,9 +230,11 @@ fn unsigned(bytes: &[u8]) -> Option<u64> {
     if bytes.is_empty() || bytes.len() > 8 {
         return None;
     }
-    Some(bytes.iter().fold(0_u64, |value, byte| {
-        (value << 8) | u64::from(*byte)
-    }))
+    Some(
+        bytes
+            .iter()
+            .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte)),
+    )
 }
 
 struct Budget<'a> {
@@ -389,7 +425,7 @@ impl MatroskaVideo<'_> {
         let mut bootstrap = None;
         for (index, sample) in self.samples.iter().enumerate() {
             budget.step()?;
-            match random_access(self, sample, &mut budget)? {
+            match random_access(self, sample, &mut || budget.step())? {
                 Access::Idr => bootstrap = Some(index),
                 Access::BrokenLink => bootstrap = None,
                 Access::None => {}
@@ -429,9 +465,13 @@ impl MatroskaVideo<'_> {
                 .ok_or(DemuxError::Limit)?;
             for sample in &self.samples[span.first_sample..end] {
                 budget.step()?;
-                span.source_bytes =
-                    bytes_add(span.source_bytes, sample.source.len(), limits.max_source_bytes)?;
-                decode_bytes = bytes_add(decode_bytes, sample.source.len(), limits.max_source_bytes)?;
+                span.source_bytes = bytes_add(
+                    span.source_bytes,
+                    sample.source.len(),
+                    limits.max_source_bytes,
+                )?;
+                decode_bytes =
+                    bytes_add(decode_bytes, sample.source.len(), limits.max_source_bytes)?;
             }
         }
         (budget.check)()?;
@@ -450,7 +490,7 @@ impl MatroskaVideo<'_> {
     }
 }
 
-enum Access {
+pub(super) enum Access {
     None,
     Idr,
     BrokenLink,
@@ -460,16 +500,20 @@ enum Access {
 /// CRA suppresses RASL pictures and can omit their previous-GOP references. Keep the prior IDR
 /// across CRA, and refuse across BLA because it breaks references even during continuous decode.
 /// Header scans are over already validated source ranges, with explicit bounded work.
-fn random_access(
+pub(super) fn random_access(
     video: &MatroskaVideo<'_>,
     sample: &MatroskaSample,
-    budget: &mut Budget<'_>,
+    checkpoint: &mut dyn FnMut() -> Result<(), DemuxError>,
 ) -> Result<Access, DemuxError> {
     if !sample.contains_idr {
         return Ok(Access::None);
     }
     if video.codec == VideoCodec::Avc {
-        return Ok(if sample.keyframe { Access::Idr } else { Access::None });
+        return Ok(if sample.keyframe {
+            Access::Idr
+        } else {
+            Access::None
+        });
     }
     let bytes = video
         .source
@@ -479,8 +523,10 @@ fn random_access(
     let mut idr = false;
     let mut broken_link = false;
     while at < bytes.len() {
-        budget.step()?;
-        let data = at.checked_add(video.length_bytes).ok_or(DemuxError::Limit)?;
+        checkpoint()?;
+        let data = at
+            .checked_add(video.length_bytes)
+            .ok_or(DemuxError::Limit)?;
         let length = bytes
             .get(at..data)
             .ok_or(DemuxError::Nal)?

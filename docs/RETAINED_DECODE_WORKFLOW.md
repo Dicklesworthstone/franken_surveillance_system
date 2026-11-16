@@ -408,7 +408,8 @@ ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma 
 
 ## Exporting an exact movie-time selection
 
-`fss-file export-movie` connects the authenticated MP4/MOV timeline selector to
+`fss-file export-movie` connects authenticated MP4/MOV and explicitly timed
+AVC/HEVC MKV/WebM timeline selection to
 the production AVC and HEVC range decoders. It writes only the selected, current
 privacy-screened luma pictures in movie presentation order. Use `select-movie`
 first to inspect the source's movie timescale, exact rational intervals, edits,
@@ -461,9 +462,11 @@ or backward edits reuse the same screened luma without decoding it again.
 
 Only unique selected luma is cached. The cache is checked before allocation and
 copied/hashed with cancellation checkpoints. All selected frames must be present
-before the first output byte is created. In particular, selecting a RASL picture
-that a CRA/BLA entry point skips refuses the export; it cannot silently shorten
-the requested movie sequence. Empty selections also refuse media output, while
+before the first output byte is created. In particular, an MP4 selection of a RASL
+picture that its CRA/BLA entry point skips refuses the export; it cannot silently
+shorten the requested movie sequence. Matroska movie selection retains the earlier
+IDR across CRA so those leading pictures can be decoded, and a BLA invalidates
+that reference chain until a later IDR. Empty selections also refuse media output, while
 their gaps remain inspectable with `select-movie`.
 
 | Allowance | Default and hard limit | Accounting |
@@ -521,9 +524,13 @@ nor UTC and do not change the retained capture assumptions.
 
 The report pairs `movie_output_index` and original `frame_segment` with native
 decode receipts, source capsules, pixel hashes and the existing exact `movie_sample`
-rows. `movie_output_lineage_sha256`, under `fss.file_movie_output.v1`, binds the
+rows. New `movie_output_lineage_sha256` values, under `fss.file_movie_output.v2`, bind the
 authenticated source pins, query/timescales, selection intervals, edits/gaps,
-occurrence order and decoded-frame pins. Movie-timed Matroska additionally emits
+occurrence order and decoded-frame pins. Version 2 retains the full 64-bit Matroska
+track number; historical v1 materializations keep their original identities. The same
+selection/export path accepts explicitly timed AVC/HEVC MKV/WebM sources with movie
+ticks in nanoseconds; see [retained movie selection](RETAINED_MOVIE_SELECTION.md#matroska-and-webm-recordings).
+Movie-timed Matroska additionally emits
 `movie_output_start_ns`/`movie_output_end_ns`,
 `gray_mkv_timing=source_movie_intervals`, `gray_mkv_movie_lineage_sha256`, the
 complete `gray_mkv_duration_ns` and the separate `gray_mkv_last_frame_end_ns`.

@@ -123,10 +123,10 @@ pub struct MovieGap {
 
 /// A complete decode-order span accepted by the existing Annex-B extraction bootstrap.
 ///
-/// A span begins at the closest preceding sample with both the container sync assertion and
-/// an AVC IDR or HEVC IRAP NAL. That is the same admission rule as [`AvcMp4::annex_b`], not an
-/// independent proof that every picture decodes. In particular, HEVC CRA leading-picture
-/// behavior remains the decoder's responsibility. Samples outside `requested_samples` are
+/// A span begins at a preceding sample admitted by its container's random-access policy.
+/// MP4 uses the closest container-sync AVC IDR or HEVC IRAP; Matroska retains a preceding
+/// container-keyframe IDR across HEVC CRA pictures to preserve leading-picture references.
+/// A valid bootstrap is not an independent proof that every picture decodes. Samples outside `requested_samples` are
 /// decode prerequisites/intervening samples, and their presentation times can precede or
 /// follow the query because of reordering. No edit is silently applied to elementary bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,7 +150,8 @@ pub struct MovieSelection {
     pub query: Range<u64>,
     /// Movie ticks per second, not a sensor or wall clock.
     pub movie_timescale: u32,
-    /// Original sample ticks per second, also the exact interval denominator.
+    /// Sample timeline ticks per second, also the exact interval denominator.
+    /// MP4 uses its declared media timescale; Matroska uses exact normalized nanoseconds.
     pub media_timescale: u32,
     /// Presentation order: interval start/end, edit index, then original sample index.
     pub samples: Vec<MovieSampleSelection>,
@@ -158,7 +159,7 @@ pub struct MovieSelection {
     pub edits: Vec<MovieEditSelection>,
     /// Sorted, disjoint intervals outside the union of selected sample presentations.
     pub gaps: Vec<MovieGap>,
-    /// Nonoverlapping source spans in decode order, independently quoted through `annex_b`.
+    /// Nonoverlapping source spans in decode order, quoted by the source's Annex-B planner.
     pub decode_spans: Vec<MovieDecodeSpan>,
     /// Charged work units, not CPU time or a physical source-I/O measurement.
     pub work: usize,

@@ -234,7 +234,7 @@ fn export_with_oracle(
         import_root: ContentDigest::sha256(b"component test import root metadata"),
         manifest_digest: ContentDigest::sha256(b"component test manifest metadata"),
         input_sha256: ContentDigest::sha256(source),
-        track_id: parsed.track_id(),
+        track_id: u64::from(parsed.track_id()),
         codec: parsed.codec(),
     };
     let mut output = MovieOutput::new(&selection, binding, movie_output::DEFAULT_LUMA_BYTES)?;

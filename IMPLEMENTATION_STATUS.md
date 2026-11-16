@@ -32,6 +32,46 @@ changed owners. This is implementation progress, not release qualification or
 closure of the broader event/runtime beads.
 
 
+## Retained Matroska selection and review output — 2026-11-16
+
+Retained AVC/HEVC MKV/WebM files now enter the existing `fss-file select-movie`
+and `export-movie` paths. Queries use exact nanoseconds, with explicit durations,
+signed timestamps, reordered presentation, declared gaps and bounded decode
+prerequisites. Missing or unsupported timing refuses selection while preserving
+the previous ordinal import/extraction admission. Complete original-source
+hashing, every retained sample range/digest and truncated-tail omissions are
+checked before selection; immutable reads retain their original cumulative
+allowance through final validation. Native RTSP origins remain MP4-only.
+
+Full-width Matroska track identifiers enter the versioned
+`fss.file_movie_output.v2` lineage. Historical imports and v1 receipts retain
+their identities. Screened grayscale review output reuses the existing native
+decoders and output owners; movie-timed Matroska preserves clipped intervals and
+holes without creating replacement pictures. Matroska HEVC decode spans retain the
+preceding IDR across CRA to recover selected leading pictures; a BLA breaks that
+reference chain. The separate `select-matroska` metadata command retains its
+duration-provenance and unresolved-interval profile. See
+[retained movie selection](docs/RETAINED_MOVIE_SELECTION.md).
+
+**Verification:** the exact pinned nightly's locked offline container and packet
+suites passed on the integrated source: 812 tests passed, none failed and five
+existing external-oracle cases remained ignored. This includes 152 container unit
+tests (18 strict movie-selection and all 10 metadata-selection contracts), all 14
+movie-output tests and all seven native RTSP movie-timeline regressions. Four new
+production-component Matroska contracts check retained independent I420 hashes,
+exact selected pixels and timed output bytes, including the HEVC leading picture
+decoded from its earlier IDR. These component tests do not authenticate
+retained custody or qualify CLI execution. The retained/CLI integration tests are
+authored but unexecuted: both test compilation and metadata-only checking were
+SIGKILLed inside pinned `asupersync 0.5.0` before reaching those owners. Allocator
+and single-frontend diagnostic retries did not remove that resource blocker.
+No dependency, feature, compiler pin or qualification gate changed. Broad
+FSS-068, VIT-008 and VIT-023 acceptance remains open.
+
+Pinned formatting and changed-file manifest hashes pass. The repository-wide
+layered manifest audit still fails existing drift; comparison with published
+main found no introduced findings (3,395 remain, versus 3,401 at the baseline).
+
 ## Larger and multidimensional ONNX Gather — 2026-11-16
 
 Static F32 Gather now accepts bounded embedded INT64 index tensors from scalars
@@ -80,9 +120,11 @@ leading picture at 728 ms; a CRC-resealed BLA mutation exercises refusal.
 
 Twenty-one authored tests cover native timing/dependencies, retained index/custody
 checks and CLI behavior, including path deletion, an active writer, exact limits,
-source/history loss and cancellation. Source/API review completed; these new
-Matroska tests have not yet been compiled or executed. The hosted ONNX evidence
-below applies only to its identified earlier commit. See
+source/history loss and cancellation. Source/API review completed. The later
+integrated native run passed all 10 metadata-selection tests; the retained and
+CLI tests remain uncompiled and unexecuted because the pinned Asupersync dependency
+was killed during compilation. The hosted ONNX evidence below applies only to its
+identified earlier commit. See
 [retained Matroska selection](docs/RETAINED_MATROSKA_SELECTION.md) for usage and
 test commands. Broad media/container qualification remains open.
 

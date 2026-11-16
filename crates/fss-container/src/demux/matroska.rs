@@ -22,6 +22,7 @@ use std::ops::Range;
 
 mod probe;
 pub(crate) use probe::probe_configuration;
+mod movie_timeline;
 mod timeline;
 pub use timeline::{
     MatroskaDecodeSpan, MatroskaDurationSource, MatroskaPresentation, MatroskaSelection,
@@ -105,6 +106,7 @@ pub struct MatroskaTrack {
 #[derive(Debug)]
 pub struct MatroskaVideo<'a> {
     source: &'a [u8],
+    limits: DemuxLimits,
     doc_type: &'static str,
     codec: VideoCodec,
     track: u64,
@@ -288,7 +290,14 @@ impl<'a> MatroskaVideo<'a> {
             cluster_frames(&mut r, kids, true, &frames, &mut samples, &mut block_timing)?;
         }
         if let Some((_, kids)) = partial {
-            cluster_frames(&mut r, kids, false, &frames, &mut samples, &mut block_timing)?;
+            cluster_frames(
+                &mut r,
+                kids,
+                false,
+                &frames,
+                &mut samples,
+                &mut block_timing,
+            )?;
         }
         if samples.is_empty() {
             return Err(DemuxError::Layout);
@@ -296,6 +305,7 @@ impl<'a> MatroskaVideo<'a> {
         r.checkpoint()?;
         Ok(Self {
             source,
+            limits,
             doc_type,
             codec: selection.codec,
             track: selection.number,
@@ -337,6 +347,12 @@ impl<'a> MatroskaVideo<'a> {
     /// Nanoseconds per block-timestamp tick; not a UTC or sensor clock.
     pub const fn timestamp_scale_ns(&self) -> u64 {
         self.timestamp_scale
+    }
+    /// Recognized nonzero DefaultDuration in nanoseconds, independent of TimestampScale.
+    /// No duration is estimated from timestamps. Explicit timeline operations separately
+    /// refuse malformed or ambiguous timing fields retained by the ordinal parser.
+    pub const fn default_duration_ns(&self) -> Option<u64> {
+        self.track_timing.default_duration_ns()
     }
     /// Track PixelWidth and PixelHeight, not decoder-verified dimensions.
     pub const fn dimensions(&self) -> [u16; 2] {
@@ -801,7 +817,8 @@ fn select_track(
     if track.is_none() && videos != 1 {
         return Err(DemuxError::TrackSelection);
     }
-    let (number, codec, private, dimensions, timing) = selected.ok_or(DemuxError::TrackSelection)?;
+    let (number, codec, private, dimensions, timing) =
+        selected.ok_or(DemuxError::TrackSelection)?;
     Ok(Selection {
         number,
         codec,

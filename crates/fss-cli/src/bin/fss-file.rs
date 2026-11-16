@@ -93,7 +93,8 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
           [--selection-work-units N] [--max-selection-rows N]\n\
           [--max-decode-samples N] [--max-decode-bytes N]\n\
   select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
-          Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
+          Selects a half-open retained AVC/HEVC interval: MP4/MOV movie ticks or\n\
+          MKV/WebM nanoseconds. Neither is UTC; Matroska requires explicit durations.\n\
           Verifies retained source bytes; reports exact rational presentation intervals,\n\
           empty/unrepresented gaps and required decode ranges, without returning media.\n\
           The shared --max-read-bytes/--max-read-objects allowances above also apply.\n\
@@ -106,7 +107,7 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
           movie presentation ticks are distinct; windows/pages never rebase the clock.\n\
   export-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
           --interpretation ycbcr --output FILE [--output-format pgm|mjpeg|gray-mkv]\n\
-          Natively decodes the verified MP4/MOV prerequisite spans, then exports only selected\n\
+          Natively decodes verified MP4/MOV or MKV/WebM prerequisite spans, then exports selected\n\
           masked pictures in movie presentation order, including repeated/backward edits.\n\
           Shared selection/decode/source-read/output bounds; at most 1024 coded samples and\n\
           1024 output occurrences. Selected luma is cached only until complete native EOF.\n\
@@ -271,7 +272,13 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
     }
     if !matches!(
         command,
-        "import" | "import-ts" | "inspect" | "verify" | "extract" | "select-movie" | "select-matroska"
+        "import"
+            | "import-ts"
+            | "inspect"
+            | "verify"
+            | "extract"
+            | "select-movie"
+            | "select-matroska"
     ) && !media::is_command(command)
         && command != "localize"
         && !localization_replay::is_command(command)
@@ -561,7 +568,11 @@ fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     if matches!(
         &options.action,
-        Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) | Action::Matroska(_)
+        Action::Inspect(_)
+            | Action::Verify(_)
+            | Action::Extract { .. }
+            | Action::Movie(_)
+            | Action::Matroska(_)
     ) {
         return source_read::run(&options, out);
     }
@@ -641,7 +652,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                     }
                 }
             }
-            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) | Action::Matroska(_) => {
+            Action::Inspect(_)
+            | Action::Verify(_)
+            | Action::Extract { .. }
+            | Action::Movie(_)
+            | Action::Matroska(_) => {
                 return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => (action.identity(), action.name()),
@@ -668,7 +683,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
                 writeln!(out, "verified_source_sha256={verified}")?;
             }
-            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) | Action::Matroska(_) => {
+            Action::Inspect(_)
+            | Action::Verify(_)
+            | Action::Extract { .. }
+            | Action::Movie(_)
+            | Action::Matroska(_) => {
                 return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => {
@@ -777,8 +796,8 @@ fn main() -> ExitCode {
                 Err(error) => {
                     eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
                     if let Some(refusal) = error
-                        .downcast_ref::<fss_reference::ingest::mpeg_ts_import::MpegTsImportError>()
-                    {
+                        .downcast_ref::<fss_reference::ingest::mpeg_ts_import::MpegTsImportError>(
+                    ) {
                         eprintln!("refusal_id={}", refusal.stable_id());
                     }
                     if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::twin_localization::RecordedLocalizationError>() {
