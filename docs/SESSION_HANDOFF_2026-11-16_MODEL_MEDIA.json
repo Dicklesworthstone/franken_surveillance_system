@@ -1,0 +1,204 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-16",
+  "timezone": "UTC",
+  "state": "high_impact_source_implemented_vector_checkpoint_verified_further_execution_pending",
+  "mission": {
+    "goal": "Implement consequential remaining functional gaps after reading the comprehensive plan and Beads; commit meaningful increments directly to main through GitHub without PRs.",
+    "initial_source_head": "1485cd10d08d7e6fd16c890c035b96e85a1cdeb1",
+    "requirement_scope": [
+      "FSS-139 native model compatibility and executor semantics",
+      "FSS-142 tiled CPU kernels with scalar semantics",
+      "FSS-137 frozen operator identities",
+      "FSS-115 finite container/media integration"
+    ],
+    "bead_scope": [
+      "fss-x4a.14.10",
+      "fss-x4a.14.13",
+      "fss-x4a.14.8",
+      "fss-x4a.12.14"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "onnx_vector": "crates/fss-model-ir/src/onnx/matmul.rs",
+    "onnx_gather": "crates/fss-model-ir/src/onnx/gather.rs",
+    "native_kernel": "crates/fss-reference/src/optimized_executor/matmul.rs",
+    "matroska_timeline": "crates/fss-container/src/demux/matroska/timeline.rs",
+    "retained_matroska": "crates/fss-reference/src/ingest/retained/matroska.rs",
+    "operator_command": "crates/fss-cli/src/bin/fss-file/matroska.rs",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "implementation_checkpoints": [
+    {
+      "commit": "dab0ce3b11e4e960e1d13dbba7f116ce598d3b4c",
+      "change": "ONNX vector/vector, vector/matrix and matrix/vector products through exact frozen reshapes and MatMul."
+    },
+    {
+      "commit": "05aa5dd5d65bdfec6d07c13bf5af16a270cc9577",
+      "change": "Bounded 4x8 output tiles for native broadcast MatMul, preserving each scalar reduction order."
+    },
+    {
+      "commit": "553d93c38363a45ef237d3f6479d6f2a265667ff",
+      "change": "Native, retained-custody and immutable CLI Matroska presentation selection with conservative HEVC prerequisites."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Larger and multidimensional constant Gather indices, preserved shape-control bounds, integration cases and scoped verification record."
+    }
+  ],
+  "authority": {
+    "user": "Implement and commit directly to main using GitHub; no PRs.",
+    "scope": "Repository source, deterministic fixtures and test execution only. No live-device, credential, remote camera or alert operation.",
+    "publication": "Expected-parent non-force GitHub main updates. New immutable blobs/trees/commits may precede ref publication when API rate limiting intervenes.",
+    "release": "Repository-owned qualification and retained local DSR evidence remain required; hosted Actions are supplementary."
+  },
+  "cases": [
+    {
+      "id": "vector-products-refused-by-static-importer",
+      "finding": "Native MatMul operates on matrices but ONNX vector promotion was absent.",
+      "resolution": "Promote only vector operands with existing Reshape, execute native MatMul, and remove only the introduced dimensions. Existing matrix graph bytes remain unchanged."
+    },
+    {
+      "id": "all-matmul-nodes-used-scalar-fallback",
+      "finding": "The optimized executor tiled Conv but routed every MatMul node through the scalar reference.",
+      "resolution": "Prepare broadcast strides and checked products once, then execute independent 4x8 accumulator tiles with the exact ordered reduction and bounded cancellation. Runtime attention operands are admitted."
+    },
+    {
+      "id": "gather-controls-artificially-limited-to-eight",
+      "finding": "F32 Gather accepted only small scalar/vector INT64 controls, rejecting larger and multidimensional selections.",
+      "resolution": "Admit bounded static index tensors, coalesce ascending runs, preserve the full output index shape, and enforce byte, node, tensor and work ceilings. Other shape-control profiles remain narrow."
+    },
+    {
+      "id": "retained-matroska-time-query-missing",
+      "finding": "Matroska import retained source frames and timestamps but lacked a presentation selector and operator command.",
+      "resolution": "Track timing separately from historical manifests; authenticate the original and index, select intervals with explicit duration provenance and uncertainty, then release only after final custody validation."
+    },
+    {
+      "id": "hevc-cra-leading-rasl-needs-earlier-history",
+      "finding": "Independent byte inspection found the checked-in HEVC sample 5 at 728 ms is leading RASL after CRA sample 3. Starting at CRA would omit prerequisites or suppress that picture.",
+      "resolution": "Retain the earlier declared IDR across CRA. HEVC IDR types 19/20 may begin spans; BLA types 16–18 clears the prerequisite until a later IDR. Add real-fixture and CRC-resealed BLA regressions."
+    }
+  ],
+  "findings": [
+    "ONNX dot products produce scalar outputs and preserve pre-existing singleton/batch dimensions; helpers create no new arithmetic operator or generated weight.",
+    "Tiled MatMul uses no reassociation, explicit fused multiply-add, synthetic padding arithmetic, new thread or foreign library. Non-NaN differential assertions compare exact F32 bits; NaN classification is compared without portable payload claims.",
+    "Gather preserves repeated/negative indices and exact sample copies. A contiguous 4,096-index selection needs one Slice; separate runs are bounded by the 512-node budget.",
+    "Generated native Concat permits more than 256 inputs under graph bounds; the 256-input ceiling belongs to source ONNX node parsing.",
+    "Matroska selection returns metadata, source ranges and coding prerequisites. It does not export a clip, alter sentinel selection, infer UTC/capture time or certify physical absence.",
+    "Historical native graph/operator identities and Matroska import metadata encodings remain unchanged. Source-bound importer/kernel generation identities change to reflect implementation changes.",
+    "The shared constant-parser change is accompanied by execution of existing Model IR library/control tests in the repository's focused ONNX check script."
+  ],
+  "budgets": {
+    "onnx": "Original limits remain authoritative:16 MiB source/aggregate controls,64 MiB per tensor,512 nodes,4,096 names,rank ≤ 8 and cumulative deterministic import work. Empty/dynamic Gather indices remain unsupported.",
+    "matmul": "Existing cumulative logical tensor-byte and MAC budgets/liveness remain in force. 32 independent F32 accumulators add 128 bytes of reported scratch; cancellation at most 256 reduction terms per output cell between checks. Scratch is payload accounting, not RSS.",
+    "matroska": "Complete original admitted before allocation, at most 512 MiB. Selection defaults:16,777,216 work units,262,144 aggregate result rows,65,536 decode samples,128 MiB decode bytes. Immutable CLI reads and final revalidation share one allowance."
+  },
+  "validation": {
+    "local_baseline": {
+      "command": "cargo +nightly-2026-08-31 check --locked --offline -p fss-model-ir -p fss-container --lib",
+      "result": "passed before edits",
+      "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30), nightly-2026-08-31"
+    },
+    "local_execution_blocker": "Baseline test code generation was killed for memory use. The execution environment subsequently became unavailable. No changed-code local compile, rustfmt or test execution was obtained.",
+    "supplementary_vector_execution": {
+      "commit": "dab0ce3b11e4e960e1d13dbba7f116ce598d3b4c",
+      "run_url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43786125301",
+      "job_id": 133034044725,
+      "attention_integration": {
+        "passed": 88,
+        "failed": 0,
+        "includes_new_vector_tests": 6
+      },
+      "onnx_package_import": {
+        "passed": 19,
+        "failed": 0
+      },
+      "onnx_cli": {
+        "passed": 14,
+        "failed": 0
+      },
+      "onnx_reference_import_execution": {
+        "passed": 12,
+        "failed": 0
+      },
+      "broader_rust_qualification": "failed policy prerequisites; complete Model IR package step skipped",
+      "scope": "Applies only to the identified vector source checkpoint, before tiled-kernel, expanded Gather and Matroska changes."
+    },
+    "source_review": [
+      "Independent reviews of vector lowering, tiled matrix kernel, expanded Gather plus legacy-control guards, and corrected native Matroska timeline/tests.",
+      "Cross-file retained/CLI review of source authentication, complete-original admission, immutable writer coexistence, cumulative reads and final revalidation.",
+      "Independent real AVC/HEVC fixture inspection checked timestamps, keyframe/NAL types and the CRA/RASL prerequisite defect.",
+      "Reconstructed final source strings match independently computed SHA256 digests; manifest hashing verified against empty/abc/million-a vectors and existing repository source hashes."
+    ],
+    "new_tests": {
+      "onnx_vectors": 6,
+      "matmul_kernel": 8,
+      "gather_indices": 8,
+      "matroska_native": 10,
+      "matroska_retained": 4,
+      "matroska_cli": 7,
+      "total_ordinary": 43,
+      "ignored_same_binary_benchmark": 1
+    },
+    "later_components_executed": {
+      "matmul_kernel": false,
+      "gather": false,
+      "matroska_native": false,
+      "matroska_retained": false,
+      "matroska_cli": false
+    },
+    "performance_measurements_obtained": false,
+    "release_qualified": false,
+    "required_followup_commands": [
+      "bash scripts/check_onnx_package.sh all",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-container --lib demux::matroska::timeline::tests",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::retained::matroska::tests",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file matroska::tests",
+      "cargo +nightly-2026-08-31 test --release --locked --offline -p fss-model-ir --test onnx_attention_execution profile_matmul_same_binary -- --ignored --nocapture",
+      "Run scoped rustfmt and repository-owned manifest/qualification checks before promotion."
+    ]
+  },
+  "invalidations": [
+    "Earlier passing execution does not validate later source changes; source review and blob integrity are not runtime evidence.",
+    "Hosted targeted success does not override the failing broader policy gate or establish local release qualification.",
+    "Matroska gaps and unknown frame ends cannot establish scene absence, capture time or live continuity.",
+    "No performance speedup follows until paired same-binary measurements are retained."
+  ],
+  "obligations": [
+    {
+      "status": "open",
+      "task": "Compile and execute the latest kernel, Gather, Matroska and CLI tests on the pinned dependency closure, then fix any concrete failures."
+    },
+    {
+      "status": "open",
+      "task": "Run the same-binary release benchmark and retain output equality, timings and cost observations before making a speedup claim."
+    },
+    {
+      "status": "preserved",
+      "task": "Keep broad feature Beads and release qualification open; existing dependency/registry/schema/domain drift remains a separate owner decision."
+    }
+  ],
+  "unknowns": [
+    "Latest changed-code compilation, runtime behavior and formatting remain unverified until actual executions are observed.",
+    "Real trained-model compatibility and accuracy across a broad exporter/model corpus remain unqualified.",
+    "Matroska CRA-only/BLA-only starts, nonunit track scale, nonzero offset/seek-preroll/discard-padding, duplicate PTS and incomplete originals are outside the explicit temporal profile."
+  ],
+  "continuations": [
+    {
+      "class": "verification",
+      "action": "Observe the exact published head's native regression runs and reproduce locally when execution returns; keep successful target evidence separate from broader qualification."
+    },
+    {
+      "class": "performance",
+      "action": "Measure scalar and tiled MatMul in the existing single executable before deciding further tile or parallelization changes."
+    },
+    {
+      "class": "functional",
+      "action": "Expand trained-model/exporter coverage and retained-media selection only through explicit, source-bound contracts with dependency/uncertainty tests."
+    }
+  ]
+}

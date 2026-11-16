@@ -394,7 +394,11 @@ fn value_info(
     if dtype == Some(1) && !dims.contains(&0) {
         return port(id, dims, generation, a);
     }
-    if dims.len() > 1 || dims.first().is_some_and(|&n| n > 8) {
+    // INT64 declarations may witness bounded constant Gather index tensors.
+    // BOOL and empty F32 controls retain their scalar/vector-only profile.
+    if (dtype != Some(7) && (dims.len() > 1 || dims.first().is_some_and(|&n| n > 8)))
+        || (dims.contains(&0) && dims != [0])
+    {
         return Err(OnnxError::Unsupported);
     }
     let dtype = match dtype {

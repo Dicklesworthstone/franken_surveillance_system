@@ -6,6 +6,8 @@
 
 #[path = "onnx_attention_execution/dfl_pyramid.rs"]
 mod dfl_pyramid;
+#[path = "onnx_attention_execution/gather_indices.rs"]
+mod gather_indices;
 #[path = "onnx_attention_execution/head_softmax.rs"]
 mod head_softmax;
 #[path = "onnx_attention_execution/matmul_vectors.rs"]
@@ -1013,11 +1015,11 @@ fn gather_and_mean_refuse_invalid_controls_attributes_and_output_witnesses() {
         Some(OnnxError::Unsupported)
     );
     assert_eq!(
-        refusal(&gather_model(&[2, 3], &[1, 1], &[0], 1, &[2, 1, 1])),
+        refusal(&gather_model(&[2, 3], &[1; 8], &[0], 1, &[2, 1, 1])),
         Some(OnnxError::Unsupported)
     );
     assert_eq!(
-        refusal(&gather_model(&[2, 3], &[9], &[0; 9], 1, &[2, 9])),
+        refusal(&gather_model(&[2, 3], &[512], &[0; 512], 1, &[2, 512])),
         Some(OnnxError::Limit)
     );
     assert_eq!(

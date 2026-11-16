@@ -74,9 +74,6 @@ fn finish(
             Tensor::from_values(shape.clone(), &values, generation)
         }
         (None, Some(values)) => {
-            if shape.rank() > 1 || count > 8 {
-                return Err(OnnxError::Unsupported);
-            }
             if values.len() != count {
                 return Err(OnnxError::Malformed);
             }
@@ -113,7 +110,7 @@ pub(super) fn tensor(
                 integers(
                     value,
                     &mut integer_values,
-                    (a.limits.parameter_bytes / 8).min(8),
+                    a.limits.parameter_bytes.min(a.limits.tensor_bytes) / 8,
                     a,
                 )?;
             }
@@ -166,7 +163,7 @@ pub(super) fn tensor(
                     push(
                         &mut integer_values,
                         i64::from_le_bytes(*bytes),
-                        (a.limits.parameter_bytes / 8).min(8),
+                        a.limits.parameter_bytes.min(a.limits.tensor_bytes) / 8,
                     )?;
                 }
             }
@@ -197,7 +194,7 @@ fn attribute(
                 integers(
                     value,
                     &mut integer_values,
-                    (a.limits.parameter_bytes / 8).min(8),
+                    a.limits.parameter_bytes.min(a.limits.tensor_bytes) / 8,
                     a,
                 )?;
             }
@@ -216,7 +213,7 @@ fn attribute(
                         push(
                             &mut integer_values,
                             value.integer()? as i64,
-                            (a.limits.parameter_bytes / 8).min(8),
+                            a.limits.parameter_bytes.min(a.limits.tensor_bytes) / 8,
                         )?;
                     }
                     5 => embedded = Some(value.bytes()?),
@@ -356,6 +353,11 @@ impl Lowering<'_, '_> {
 
     fn control_vector(&mut self, name: &str, dtype: DType) -> Result<Tensor> {
         let tensor = self.constants.get(name).ok_or(OnnxError::Unsupported)?;
+        // Higher-rank INT64 constants are admitted only as F32 Gather indices.
+        // Ordinary shape/axis controls keep their historical vector profile.
+        if tensor.dtype() == DType::I64 && tensor.shape().rank() > 1 {
+            return Err(OnnxError::Unsupported);
+        }
         if tensor.dtype() != dtype || tensor.shape().rank() != 1 {
             return Err(OnnxError::Graph);
         }

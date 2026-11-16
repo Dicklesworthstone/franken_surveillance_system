@@ -4,6 +4,31 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Larger and multidimensional ONNX Gather — 2026-11-16
+
+Static F32 Gather now accepts bounded embedded INT64 index tensors from scalars
+through rank eight, with a resulting native rank of at most eight. The output
+replaces the selected data axis with the complete index shape, preserving negative
+indices, repetitions, permutations and exact F32 sample bits. Consecutive ascending
+indices coalesce into Slice runs; a contiguous 4,096-index selection needs one
+Slice. The ordinary aggregate byte/node/tensor/work limits bound larger inputs
+and helper expansion. Scalar/vector graph bytes remain unchanged.
+
+Widening embedded index parsing does not widen ordinary shape programs:
+their scalar/vector and eight-value bounds remain explicit, including Shape and
+ConstantOfShape guards. Eight authored cases exercise both production executors,
+real graph/Safetensors reload, all admitted index layouts, a Gather-to-vector-MatMul
+projection, exact legacy graphs, 257/511-input native Concats, node/byte limits and
+cancellation. The focused ONNX check script also runs existing Model IR library
+tests to detect regressions in the shared constant/control parser.
+
+Independent source review completed. Expanded Gather and the later tiled kernel
+remain unexecuted at this checkpoint; the 88-test hosted success recorded below
+belongs to the earlier vector-only commit. No release or model-quality claim is
+made. See [ONNX import](docs/onnx_import.md#static-attention-selection-and-pooled-features)
+and the [session handoff](docs/SESSION_HANDOFF_2026-11-16_MODEL_MEDIA.json).
+FSS-139 (`fss-x4a.14.10`) remains open pending broader acceptance.
+
 ## Retained Matroska presentation selection — 2026-11-16
 
 The native Matroska parser, retained source reader and `fss-file select-matroska`

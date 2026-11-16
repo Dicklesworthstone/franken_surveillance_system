@@ -498,6 +498,15 @@ and exact import limits and every cancellation checkpoint.
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution matmul_vectors
 ```
 
+Hosted [Actions run 43786125301](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43786125301)
+at commit `dab0ce3b11e4e960e1d13dbba7f116ce598d3b4c` passed the complete
+88-test `onnx_attention_execution` target, including all six vector MatMul
+tests, plus 19 package-import tests, 14 ONNX CLI tests and 12 reference ONNX
+import-execution tests. This evidence is scoped to that source commit and
+predates the subsequent optimized MatMul and expanded Gather changes. The
+broader Rust qualification step failed; this focused success does not establish
+full-workspace or release qualification.
+
 ## Static attention selection and pooled features
 
 The importer adds [Gather-13](https://onnx.ai/onnx/operators/onnx__Gather.html#gather-13)
@@ -507,22 +516,52 @@ and elementwise operations, these express packed Q/K/V selection, attention,
 token or channel pooling, and fixed feature selection before a dense head.
 They add no native operator, dynamic integer executor or foreign runtime.
 
-Gather accepts positive F32 data shapes of rank one through eight and an
-embedded INT64 scalar or vector containing one through eight indices. Constant
-nodes and the existing static shape programs may produce those indices. Axis
-defaults to zero and accepts negative axes; each index must be within the
-selected axis, with negative values counting from its end. A scalar index
-removes the selected dimension, while a length-one vector keeps that dimension.
-Repeated indices and arbitrary index order remain intact. Empty indices,
-runtime indices, other control dtypes or ranks and out-of-range values refuse.
-The existing INT64-only shape-program Gather keeps its separate semantics.
+Gather accepts positive F32 data shapes of rank one through eight and embedded
+INT64 index tensors from scalars through rank eight. The resulting rank must
+also fit the eight-dimensional native profile. Indices may come from an
+initializer or Constant node; raw little-endian and packed/unpacked INT64
+payloads and matching value-info declarations are accepted. Constant
+`value_ints` supplies a vector. Existing static shape programs may still
+produce scalar/vector indices within their unchanged eight-value profile.
+Axis defaults to zero and accepts negative axes; each index must be within the
+selected axis, with negative values counting from its end.
 
-Selection lowers to one Slice per consecutive ascending index run, followed
-by Concat when necessary. Scalar selection adds a Reshape. At most nine native
-nodes are needed for the admitted vector; helper count does not grow with the
-size of a selected token or feature block. No generated F32 weight is required.
-These operators copy data without numerical changes, preserving signed zeros,
-subnormals and finite extrema.
+The output replaces the selected data dimension with the complete index shape:
+`data[..axis] + indices.shape + data[axis+1..]`. A scalar removes the selected
+dimension, a length-one vector keeps it, and multidimensional indices insert
+all their dimensions, including singletons. Repeated indices and arbitrary
+index order remain intact. Empty or runtime indices, other control dtypes,
+out-of-range values, and oversized result shapes refuse.
+
+Index count is bounded by the aggregate embedded-parameter allowance and
+per-tensor byte ceiling. Selection lowers to one Slice per consecutive
+ascending index run, followed by Concat when necessary. Scalar and
+multidimensional selection add a Reshape; vector selections retain their
+existing graph bytes. A contiguous 4096-index selection uses one Slice.
+The run schedule is bounded by the node allowance before allocating another
+entry, and the complete lowered node/tensor expansion must fit the remaining
+admission limits. With the default 512-node ceiling and no other runtime nodes,
+a vector selection admits at most 511 separate runs; a multidimensional selection
+admits 510 because its final Reshape also consumes a node. Contiguous selections
+remain bounded by bytes rather than that run count. Long index scans have
+cancellation checkpoints. No generated
+F32 weight is required. These operators copy data without numerical changes,
+preserving signed zeros, subnormals and finite extrema. The INT64-only shape
+program and other shape/axis controls keep their separate scalar/vector
+eight-value limits.
+
+The eight authored `gather_indices` tests in `onnx_attention_execution` cover
+every admitted result rank, every data axis, all embedded integer encodings,
+matching type declarations, constant-only data, long contiguous selections,
+multidimensional permutations, native Concat input lists beyond the source-node
+arity ceiling, and Gather-to-batched-vector-MatMul composition.
+Both production executors and actual canonical/Safetensors reload are used;
+separate cases freeze earlier scalar/vector graph bytes, preserve the shape
+program limits, and exercise exact aggregate bounds and cancellation checkpoints.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution gather_indices
+```
 
 ReduceMean accepts static positive F32 shapes from scalars through rank eight.
 Its `axes` attribute may contain distinct positive or negative axes. Omitted
