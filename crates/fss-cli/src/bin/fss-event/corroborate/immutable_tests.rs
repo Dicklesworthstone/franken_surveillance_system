@@ -514,3 +514,112 @@ fn read_allowances_never_route_publication_or_whole_recordings_to_an_immutable_o
     }
     Ok(())
 }
+
+#[test]
+fn a_committed_companion_privacy_change_at_delivery_withholds_the_stale_pair() -> Test {
+    use fss_core::SensorId;
+    use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
+
+    let mut fixture = Fixture::new("immutable-corroboration-privacy-drift")?;
+    let imports = ingest_pair(
+        &mut fixture,
+        "sensor:immutable-policy",
+        &scene()?,
+        FileFormatHint::JpegStream,
+    )?;
+    let root = fixture.deployment.root().to_path_buf();
+    let mut action = request(&root, imports)?;
+    let scalar = ScalarExecCx::new();
+
+    // Build a real committed authority successor with the ordinary owner API. Replaying its
+    // journal bytes at the chosen boundary changes valid policy, rather than corrupting bytes.
+    let journal = root.join(fss_reference::reference_deployment::RELATIVE_PATH_LEDGER);
+    let old_journal = fs::read(&journal)?;
+    let policy = PrivacyMaskPolicy::new(
+        SensorId::parse("sensor:immutable-policy-west")?,
+        [96, 48],
+        &[[64, 0, 32, 32]],
+    )?;
+    let approval = preview_mask(&fixture.deployment, &policy)?.approval;
+    declare_mask(&mut fixture.deployment, &policy, approval, &fixture.cx)?;
+    let new_journal = fs::read(&journal)?;
+    assert_ne!(new_journal, old_journal);
+    let current = read_context(&root)?;
+    let mut masked = Vec::new();
+    run_with(&action, &root, &current, &scalar, &|| false, &mut masked)?;
+    assert!(
+        !masked.is_empty(),
+        "committed successor is not a readable deployment"
+    );
+    current.drain_and_finalize();
+
+    // The policy object stays immutable and readable; only the committed prefix is restored
+    // until the simulated concurrent writer publishes the valid successor. Calibrate after
+    // restoration so the final run sees exactly the same metadata and extra immutable objects.
+    fs::write(&journal, &old_journal)?;
+    let calibration = read_context(&root)?;
+    calibration.set_cancel_at_checkpoint("corroborate_preview:delivery");
+    let calls = AtomicUsize::new(0);
+    let count = || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    assert!(
+        run_with(
+            &action,
+            &root,
+            &calibration,
+            &scalar,
+            &count,
+            &mut Vec::new(),
+        )
+        .is_err()
+    );
+    let selected_calls = calls.load(Ordering::SeqCst);
+    assert!(selected_calls > 0);
+    calibration.drain_and_finalize();
+
+    let mut expected = tree(&root)?;
+    expected.insert(
+        PathBuf::from(fss_reference::reference_deployment::RELATIVE_PATH_LEDGER),
+        new_journal.clone(),
+    );
+    calls.store(0, Ordering::SeqCst);
+    let fired = AtomicBool::new(false);
+    let advance_after_analysis = || {
+        if calls.fetch_add(1, Ordering::SeqCst) == selected_calls {
+            fired.store(fs::write(&journal, &new_journal).is_ok(), Ordering::SeqCst);
+        }
+        false
+    };
+    let report = fixture.directory.0.join("stale-pair-report.json");
+    action.report_out = Some(report.clone());
+    let cx = read_context(&root)?;
+    let mut output = Vec::new();
+    assert!(
+        run_with(
+            &action,
+            &root,
+            &cx,
+            &scalar,
+            &advance_after_analysis,
+            &mut output,
+        )
+        .is_err()
+    );
+    assert!(
+        fired.load(Ordering::SeqCst),
+        "authority advance was not reached"
+    );
+    assert!(output.is_empty());
+    assert!(!report.exists());
+    assert_eq!(
+        tree(&root)?,
+        expected,
+        "preview repaired or rewrote current policy"
+    );
+    scalar.drain_and_finalize();
+    cx.drain_and_finalize();
+    fixture.cx.drain_and_finalize();
+    Ok(())
+}

@@ -1219,6 +1219,8 @@ fn associate_entries(
 impl CorroborationReport {
     /// Tracks, projects, associates and prepares proposals. Reads retained custody only; writes
     /// no objects, ledger batches or events. Publication state is read from the ledger.
+    /// Immutable callers keep the same source owner through derived-source revalidation and
+    /// its final metadata/custody checks before releasing any report or proposal.
     pub fn analyze(
         deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
