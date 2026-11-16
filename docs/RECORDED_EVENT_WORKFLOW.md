@@ -160,6 +160,30 @@ candidate the zone, tracker-local track id, entry segment, frame range, per-fram
 id, proposal digest, provenance root, status (`prepared`, `published`, `already_published`) and,
 for prepared candidates, the exact rerun command with `--approve`.
 
+Short entry previews can run while a capture process holds the deployment's publisher lock.
+They open one immutable retained snapshot without acquiring a writer or repairing state. This
+includes the existing optional detector cascade, calibrated class advice, privacy masking,
+conservative sensor-health screening and tolerant decode mode. The original plan, candidate,
+coverage and approval identities are unchanged. The source must already be a completed retained
+import, and the selected range remains at most 128 segments.
+
+`--max-read-bytes N` and `--max-read-objects N` bound the entire retained read, including metadata,
+source verification and final custody/authority checks. Defaults are 1 GiB and 1,000,000 payload
+read attempts; explicit maxima are 4 GiB and 4,000,000. These are cumulative allowances, not
+per-frame limits, and repeated verification consumes them. A cooperative 60-second deadline is
+checked at the bounded retained-read admissions. The complete JSON report is buffered until the
+original source, selected capsules, privacy policy and authority snapshot pass final validation.
+An exhausted allowance, cancellation, changed authority, damaged payload or incomplete journal
+tail produces neither stdout nor a new `--report-out` file; the preview leaves deployment files
+untouched. An authority change during capture requires a fresh preview of a stable completed
+snapshot rather than delivering a mixed result.
+
+These aggregate-read options apply only to short entry previews without `--approve` or retention
+flags. Their approval hints omit the preview-only options. Publication, coverage/health
+retention, dwell, whole-recording watch and incremental checkpoint commands keep their existing
+owners and approval rules. This preview reads an explicit completed import once; it does not
+install a standing watch or start capture.
+
 Publication keeps this document's authority model: nothing is written without the exact
 proposal digest. `--approve sha256:P[,sha256:Q]` checks every digest against the fresh analysis
 before any write (`ERR-WATCH-APPROVAL-STALE-001` otherwise), retains the provenance graph

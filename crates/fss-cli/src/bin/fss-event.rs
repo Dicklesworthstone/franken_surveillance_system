@@ -134,7 +134,13 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     coverage pipeline generation binds the detector generation. Without it, output is unchanged.\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
-    Event/retention approval or explicit incremental checkpointing may write deployment state.\n\
+    Short entry previews without approval or retention use immutable retained custody while a\n\
+    capture writer is open. --max-read-bytes N and --max-read-objects N bound metadata, source reads and\n\
+    final verification together (default 1 GiB and 1,000,000 reads; maximum 4 GiB/4,000,000).\n\
+    Source, privacy and authority must still match before a report or export is delivered.\n\
+    Concurrent authority commits refuse the complete preview; retry at a stable committed head.\n\
+    These read limits apply only to unapproved short entry previews; their approval hints omit\n\
+    them. Event/retention approval or explicit incremental checkpointing may write deployment state.\n\
     Each prepared candidate lists the exact rerun\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
@@ -893,6 +899,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. }
     ) {
         return retained::run(options, out);
+    }
+    if let Action::Watch(action) = &options.action
+        && action.is_immutable_preview()
+    {
+        return watch::run_immutable_preview(action, out);
     }
     if let Action::Delete(request) = &options.action
         && matches!(request.operation, delete::Operation::PolicyShow(_))

@@ -8,9 +8,9 @@ use fss_core::{ContentDigest, SensorId};
 
 use super::{Result, WatchError};
 use crate::ingest::privacy_mask::{MaskBinding, current_mask};
-use crate::ingest::recorded_decode::RecordedDecodeError;
-use crate::ingest::{RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::ingest::recorded_decode::{MAX_RECORDED_DECODE_RECEIPT_BYTES, RecordedDecodeError};
+use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
+use crate::{ReplayCx, RetainedSource};
 
 /// Ephemeral publication preconditions. These do not alter historical report or proposal bytes.
 #[derive(Clone, Debug)]
@@ -29,7 +29,7 @@ pub(crate) struct SourcePublicationGuard {
 
 impl SourcePublicationGuard {
     pub(crate) fn capture(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         source: &RetainedFileImport,
         sensor: &SensorId,
         privacy: &MaskBinding,
@@ -57,7 +57,7 @@ impl SourcePublicationGuard {
 
     /// Check every precondition before staging, including on an already-published retry.
     /// Source verification streams at most one chunk and retains the analysis's read ceilings.
-    pub(crate) fn revalidate(&self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+    pub(crate) fn revalidate(&self, deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
         cx.checkpoint("recorded_analysis:publication_revalidate")
             .map_err(|_| RecordedDecodeError::Cancelled)?;
         if deployment.root() != self.root.as_path()
@@ -69,10 +69,11 @@ impl SourcePublicationGuard {
                 "analysis publication requires its original deployment and principal",
             ));
         }
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
+        deployment.verify_read_head().map_err(|error| match error {
+            // The mutable owner keeps its existing native refusal shape.
+            FileIngestError::Reference(error) => WatchError::from(error),
+            error => WatchError::from(error),
+        })?;
         let privacy = current_mask(deployment, &self.sensor).map_err(RecordedDecodeError::from)?;
         if privacy.digest() != self.privacy.digest()
             || privacy.generation() != self.privacy.generation()
@@ -96,10 +97,11 @@ impl SourcePublicationGuard {
             cx.checkpoint("recorded_analysis:publication_capsule")
                 .map_err(|_| RecordedDecodeError::Cancelled)?;
             let bytes = deployment
-                .publisher()
-                .spool()
-                .read(*digest)
-                .map_err(RecordedDecodeError::from)?;
+                .read_object_bounded(*digest, MAX_RECORDED_DECODE_RECEIPT_BYTES)
+                .map_err(|error| match error {
+                    FileIngestError::Spool(error) => RecordedDecodeError::from(error),
+                    error => RecordedDecodeError::from(error),
+                })?;
             if ContentDigest::sha256(&bytes) != *digest {
                 return Err(RecordedDecodeError::InvalidReceipt.into());
             }

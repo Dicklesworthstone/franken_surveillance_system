@@ -119,7 +119,7 @@ use super::ground_visibility::{
 use super::recorded_health::{RecordedHealthCoverageReceipt, RecordedHealthSummary};
 use super::tolerant_decode::DecodeRefusal;
 use crate::reference_deployment::FAMILY_COVERAGE_WITNESS;
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::{ReferenceDeployment, ReferenceError, ReplayCx, RetainedSource};
 
 /// Decoded frames the running-variance background model needs before its foreground output is
 /// counted as coverage: the first frame only initializes the mean, and the next three establish
@@ -1987,7 +1987,7 @@ impl From<ReferenceError> for CoverageError {
 
 /// Payload digest of the committed coverage delta of `record`'s analysis, if any.
 pub fn committed_record(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     record: &CoverageRecord,
 ) -> Result<Option<ContentDigest>, ContractError> {
     let object = record.object_id()?;
@@ -2002,7 +2002,7 @@ pub fn committed_record(
 
 /// Current retention state of `records` (all retained, or proposed).
 pub fn coverage_status(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     records: &[&CoverageRecord],
 ) -> Result<CoverageStatus, ContractError> {
     for record in records {

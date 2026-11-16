@@ -15,6 +15,10 @@
 //! `Unclassified` and `Indeterminate`, abstains, carries non-supporting derived evidence from one
 //! failure domain (never corroborated), and authorizes no alert or other effect. An already
 //! published candidate is reported, never republished.
+//! Read APIs accept the sealed [`RetainedSource`] contract. An immutable caller must keep its
+//! original owner through [`WatchReport::revalidate_derived_source`] and that owner's final
+//! snapshot/custody revalidation before delivering a report. These checks share its original
+//! read allowance; analysis alone does not certify that custody remained current until delivery.
 //!
 //! Synthetic scenes prove the wiring, not detection quality: foreground thresholds and zones are
 //! uncalibrated operator choices, and a missing candidate never certifies absence by itself.
@@ -105,6 +109,7 @@ use super::tracker::{
 use super::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+    RetainedSource,
 };
 
 mod publication;
@@ -740,7 +745,7 @@ impl WatchReport {
     /// Decode, detect, track and gate the plan's range. Reads retained custody only; writes no
     /// objects, ledger batches or events. Candidate publication state is read from the ledger.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         limits: &WatchLimits,
         cx: &ReplayCx,
@@ -751,7 +756,7 @@ impl WatchReport {
     /// [`Self::analyze`] plus an optional detector cascade over the frames the cheap stage
     /// selected. `None` is byte-for-byte [`Self::analyze`].
     pub fn analyze_with_detector(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -771,7 +776,7 @@ impl WatchReport {
     /// byte-for-byte [`Self::analyze_with_detector`]; a tolerant run that meets no refusal or gap
     /// is byte-identical to it too.
     pub fn analyze_with_options(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -786,7 +791,7 @@ impl WatchReport {
     /// after it. A clear screen is never evidence of sensor health. `None` preserves all
     /// existing analysis, candidate, report and coverage bytes.
     pub fn analyze_with_health(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1420,7 +1425,7 @@ impl WatchReport {
     /// previously computed report must not be used to derive a fresh decision-bearing result.
     pub fn revalidate_derived_source(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<()> {
         self.publication_guard.revalidate(deployment, cx)
@@ -1774,7 +1779,7 @@ fn json_string(value: &str) -> String {
 impl FrameSource {
     fn next(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         limits: &WatchLimits,
         budget: &mut DecodeBudget<'_>,
@@ -2216,10 +2221,7 @@ fn provenance(
     })
 }
 
-fn current_status(
-    deployment: &ReferenceDeployment,
-    event: &EventHypothesis,
-) -> Result<WatchStatus> {
+fn current_status(deployment: &dyn RetainedSource, event: &EventHypothesis) -> Result<WatchStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
     let Some(current) = deployment.ledger().current().objects.get(&object) else {
         return Ok(WatchStatus::Prepared);

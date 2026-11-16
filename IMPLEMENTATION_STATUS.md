@@ -4,6 +4,34 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+
+## Immutable recorded watch previews — 2026-11-16
+
+Unapproved short `fss-event watch` entry previews now use the sealed immutable
+retained source owner, allowing analysis while the capture publisher remains
+open. Native detection, tracking, detector cascade, class advice, current privacy
+masks and optional sensor-health screening retain their existing analysis and
+report contracts. Approval, retention, dwell and incremental work retain their
+existing mutation owners.
+
+One nonrenewing byte/read allowance includes source metadata, original payloads
+and final verification. Complete reports remain buffered until source/capsule,
+privacy, snapshot and authority checks succeed. A concurrent authority commit,
+damaged quiet supporting capsule, cancellation or exhausted allowance releases no
+report or export; an authority change requires retry at a stable committed head.
+No recovery, standing watch or new effect authority is introduced. See
+[recorded event workflow](docs/RECORDED_EVENT_WORKFLOW.md).
+
+Six regression contracts cover native MJPEG/AVC/HEVC and screened-report parity
+with an open writer, exact final-read budgets, final cancellation, late source or
+quiet-capsule damage, torn journal tails and mutation routing. Independent source
+review and pinned-nightly formatting passed. Full library/CLI compilation and
+these tests remain unexecuted because unchanged pinned `asupersync 0.5.0` was
+SIGKILLed during both test builds and metadata-only checks before reaching the
+changed owners. This is implementation progress, not release qualification or
+closure of the broader event/runtime beads.
+
+
 ## Larger and multidimensional ONNX Gather — 2026-11-16
 
 Static F32 Gather now accepts bounded embedded INT64 index tensors from scalars
