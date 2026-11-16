@@ -4,6 +4,25 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Tiled broadcast MatMul — 2026-11-16
+
+The optimized CPU executor now prepares nonempty F32 MatMul as bounded 4-by-8
+output tiles, covering runtime attention operands and broadcast batch dimensions.
+Each output retains the scalar reduction order and initial positive zero; odd
+tails perform no synthetic padding arithmetic. Shape products are checked,
+cancellation reaches long reductions, and the extra 128-byte accumulator payload
+is included in scratch accounting. Empty geometries retain the scalar path.
+The kernel's source and tile geometry participate in implementation identity.
+
+Eight authored regression tests and one ignored same-binary timing experiment
+are included in the existing production-source attention execution target.
+Independent source review found no blocking defect. Changed-code compilation,
+execution, rustfmt and performance measurement remain blocked by the unavailable
+runner; the earlier baseline check does not cover this implementation. No
+speedup or qualification is claimed. See
+[bounded tiled MatMul](docs/OPTIMIZED_MATMUL.md) for exact contracts and commands.
+FSS-142 (`fss-x4a.14.13`) and FSS-139 (`fss-x4a.14.10`) remain open.
+
 ## ONNX vector MatMul — 2026-11-16
 
 The static F32 ONNX importer now accepts vector/vector dot products,
