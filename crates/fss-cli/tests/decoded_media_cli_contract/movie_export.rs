@@ -20,6 +20,9 @@ const AVC: &[u8] = include_bytes!("../../../fss-container/tests/fixtures/indexed
 const HEVC: &[u8] = include_bytes!("../../../fss-container/tests/fixtures/hevc_av.mp4");
 const SITE: &str = "site:media-cli";
 
+#[path = "movie_export/matroska.rs"]
+mod matroska;
+
 struct Movie {
     directory: OwnedDirectory,
     root: PathBuf,

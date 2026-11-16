@@ -151,6 +151,15 @@ pub(super) fn report(
 ) -> RunResult<()> {
     writeln!(out, "selection_time_basis=container_movie_timeline")?;
     writeln!(out, "selection_interval=half_open")?;
+    writeln!(out, "selection_source_format={}", result.source_format)?;
+    writeln!(
+        out,
+        "selection_movie_tick_unit={}",
+        match result.source_format.as_str() {
+            "mkvavc" | "mkvhevc" => "nanosecond",
+            _ => "declared_movie_timescale",
+        }
+    )?;
     writeln!(out, "selection_source_adapter={}", result.source_adapter_id)?;
     writeln!(
         out,

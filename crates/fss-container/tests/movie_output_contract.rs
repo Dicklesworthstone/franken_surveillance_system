@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
-//! Exact production movie materialization, MP4 demux, native sample driver and lossless writer.
+//! Exact production movie materialization, MP4/Matroska demux, native driver and lossless writer.
 //! This target does not substitute for retained custody, privacy authorization, async runtime,
 //! filesystem durability or CLI process tests. Source/receipt pins below are test metadata;
 //! native pictures and the exercised production implementations are real, not codec stubs.
 
+#[path = "movie_output_contract/matroska.rs"]
+mod matroska;
 #[path = "../../fss-reference/src/review_media/render/output.rs"]
 mod movie_output;
 #[path = "../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs"]
@@ -67,8 +69,6 @@ fn native_frames(
     parsed: &AvcMp4<'_>,
     selection: &MovieSelection,
 ) -> Test<(Vec<NativeFrame>, Vec<usize>)> {
-    let mut frames = Vec::new();
-    let mut skipped = Vec::new();
     for span in &selection.decode_spans {
         // Exercise real indexed extraction too, including its random-access and quote checks.
         assert_eq!(
@@ -78,22 +78,47 @@ fn native_frames(
                 .len() as u64,
             span.annex_b_bytes
         );
+    }
+    let ranges: Vec<_> = parsed
+        .samples()
+        .iter()
+        .map(|sample| sample.source.clone())
+        .collect();
+    native_frames_from_parts(
+        parsed.source(),
+        parsed.codec(),
+        parsed.nal_length_bytes(),
+        parsed.parameter_sets(),
+        &ranges,
+        selection,
+    )
+}
+
+/// Shared fixture driver over production-demuxed source ranges, with real native sample
+/// boundaries and codec output. This does not fabricate retained receipts or custody.
+fn native_frames_from_parts(
+    bytes: &[u8],
+    codec: VideoCodec,
+    length_bytes: usize,
+    parameter_sets: &[std::ops::Range<usize>],
+    samples: &[std::ops::Range<usize>],
+    selection: &MovieSelection,
+) -> Test<(Vec<NativeFrame>, Vec<usize>)> {
+    let mut frames = Vec::new();
+    let mut skipped = Vec::new();
+    for span in &selection.decode_spans {
         let mut segments = Vec::new();
-        match parsed.codec() {
+        match codec {
             VideoCodec::Avc => {
                 let mut decoder = avc::Decoder::new(avc::DecoderLimits::default())?;
-                for parameter in parsed.parameter_sets() {
-                    assert!(
-                        decoder
-                            .decode_nal(&parsed.source()[parameter.clone()])?
-                            .is_none()
-                    );
+                for parameter in parameter_sets {
+                    assert!(decoder.decode_nal(&bytes[parameter.clone()])?.is_none());
                 }
                 let mut pictures = Vec::new();
                 for segment in span.first_sample..span.first_sample + span.sample_count {
-                    let bytes = &parsed.source()[parsed.samples()[segment].source.clone()];
-                    let ranges = length_prefixed_nals(bytes, parsed.nal_length_bytes())?;
-                    let nals: Vec<_> = ranges.iter().map(|range| &bytes[range.clone()]).collect();
+                    let sample = &bytes[samples[segment].clone()];
+                    let ranges = length_prefixed_nals(sample, length_bytes)?;
+                    let nals: Vec<_> = ranges.iter().map(|range| &sample[range.clone()]).collect();
                     pictures.extend(
                         video_access_unit::h264(&mut decoder, &nals, &mut || Ok(()))
                             .map_err(|error| format!("AVC sample {segment}: {error:?}"))?,
@@ -113,18 +138,14 @@ fn native_frames(
             }
             VideoCodec::Hevc => {
                 let mut decoder = hevc::Decoder::new(hevc::DecoderLimits::default())?;
-                for parameter in parsed.parameter_sets() {
-                    assert!(
-                        decoder
-                            .decode_nal(&parsed.source()[parameter.clone()])?
-                            .is_none()
-                    );
+                for parameter in parameter_sets {
+                    assert!(decoder.decode_nal(&bytes[parameter.clone()])?.is_none());
                 }
                 let mut pictures = Vec::new();
                 for segment in span.first_sample..span.first_sample + span.sample_count {
-                    let bytes = &parsed.source()[parsed.samples()[segment].source.clone()];
-                    let ranges = length_prefixed_nals(bytes, parsed.nal_length_bytes())?;
-                    let nals: Vec<_> = ranges.iter().map(|range| &bytes[range.clone()]).collect();
+                    let sample = &bytes[samples[segment].clone()];
+                    let ranges = length_prefixed_nals(sample, length_bytes)?;
+                    let nals: Vec<_> = ranges.iter().map(|range| &sample[range.clone()]).collect();
                     let unit = video_access_unit::h265(&mut decoder, &nals, &mut || Ok(()))
                         .map_err(|error| format!("HEVC sample {segment}: {error:?}"))?;
                     if unit.skipped_rasl {
@@ -642,7 +663,7 @@ fn lineage_binds_source_receipts_movie_intervals_edits_gaps_and_repeated_occurre
         materialize(&selection, binding, &reversed)?.lineage_digest(),
         reference
     );
-    for case in 0..7 {
+    for case in 0..8 {
         let mut changed = selection.clone();
         let mut changed_source = binding;
         let mut changed_frames = [pixels(0, [2, 2], 12), pixels(1, [2, 2], 21)];
@@ -658,7 +679,9 @@ fn lineage_binds_source_receipts_movie_intervals_edits_gaps_and_repeated_occurre
                 changed.query.end += 1;
                 changed.gaps[0].interval.end_numerator += 1;
             }
-            _ => changed.movie_timescale = 2,
+            6 => changed.movie_timescale = 2,
+            // Matroska track numbers must not collide when their low 32 bits match.
+            _ => changed_source.track_id += 1_u64 << 32,
         }
         assert_ne!(
             materialize(&changed, changed_source, &changed_frames)?.lineage_digest(),

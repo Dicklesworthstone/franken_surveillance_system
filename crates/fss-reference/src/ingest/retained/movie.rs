@@ -8,7 +8,8 @@ use super::{
 use crate::ingest::rtsp_import;
 use crate::{ReplayCx, RetainedSource};
 use fss_container::demux::{
-    AvcMp4, DemuxError, MAX_MP4_INPUT_BYTES, MovieSelection, MovieSelectionLimits, VideoCodec,
+    AvcMp4, DemuxError, MAX_MP4_INPUT_BYTES, MatroskaVideo, MovieSelection, MovieSelectionLimits,
+    VideoCodec,
 };
 use fss_core::{ContentDigest, ContractError, DigestAlgorithm, LedgerAnchor, Sha256Hasher};
 use std::ops::Range;
@@ -45,11 +46,14 @@ pub struct RetainedMovieSelection {
     pub source_adapter_id: String,
     /// Exact adapter generation, including the native origin-proof identity when present.
     pub source_adapter_generation: String,
-    /// SHA-256 of the complete retained MP4/MOV, recomputed from ordered custody chunks.
+    /// Exact verified retained format: `mp4avc`, `mp4hevc`, `mkvavc` or `mkvhevc`.
+    /// MP4/MOV selections use their original movie timescale; Matroska/WebM uses nanoseconds.
+    pub source_format: String,
+    /// SHA-256 of the complete retained container, recomputed from ordered custody chunks.
     pub input_sha256: ContentDigest,
-    /// Complete retained MP4/MOV length, including unselected tracks, structure and unread tail.
+    /// Complete retained container length, including unselected tracks, structure and unread tail.
     pub input_bytes: u64,
-    /// Retained MP4/MOV payload bytes read, including unselected media; exactly `input_bytes`.
+    /// Retained container payload bytes read, including unselected media; exactly `input_bytes`.
     /// Metadata reads additionally consume any installed cumulative spool read allowance.
     pub source_bytes_read: u64,
     /// Native origin-replay reservations before I/O, independent of the reconstructed MP4.
@@ -61,7 +65,7 @@ pub struct RetainedMovieSelection {
     /// Nonrefillable allowance for the separate native-origin replay reservations.
     pub maximum_origin_read_bytes: u64,
     /// The unique selected video track of the authenticated original.
-    pub track_id: u32,
+    pub track_id: u64,
     /// Codec reparsed from that track and checked against the retained format.
     pub codec: VideoCodec,
     /// Unchanged import classification (`unknown` or `operator_assumption`).
@@ -77,10 +81,24 @@ fn demux_refusal(refusal: DemuxError, stage: &'static str) -> FileIngestError {
     }
 }
 
+fn container_refusal(format: &str, refusal: DemuxError, stage: &'static str) -> FileIngestError {
+    match refusal {
+        DemuxError::Cancelled => FileIngestError::CancellationRequested { stage },
+        refusal if matches!(format, "mkvavc" | "mkvhevc") => {
+            FileIngestError::MatroskaRefused { refusal }
+        }
+        refusal => demux_refusal(refusal, stage),
+    }
+}
+
 impl RetainedFileImport {
-    /// Select a half-open interval in the original MP4/MOV movie timescale after custody checks.
+    /// Select an exact half-open container presentation interval after custody checks.
     ///
-    /// The complete retained MP4/MOV is read once, bounded by `read_limits.max_source_bytes` and the
+    /// MP4/MOV requests use the original movie timescale. Matroska/WebM requests use nanoseconds,
+    /// with durations taken only from explicit BlockDuration or track DefaultDuration. Neither
+    /// timebase is a capture clock, and missing or unsupported timing refuses the whole selection.
+    ///
+    /// The complete retained container is read once, bounded by `read_limits.max_source_bytes` and the
     /// demuxer's absolute input ceiling **before** source allocation. The independent
     /// `selection_limits.max_source_bytes` bounds the quoted decode samples and their preroll;
     /// a small selection does not authorize an unbounded full-file read. Each chunk, the full
@@ -89,7 +107,7 @@ impl RetainedFileImport {
     /// An immutable owner shares its original read allowance across this operation and the
     /// caller's required final revalidation before releasing a report or optional export.
     ///
-    /// Supports original `ADP-FILE-001` MP4/MOV imports and completed native RTSP window,
+    /// Supports original `ADP-FILE-001` MP4/MOV or AVC/HEVC Matroska/WebM imports and completed native RTSP window,
     /// catalog, catalog-page and recorder-replay imports. Native origins additionally replay every retained packet,
     /// index, catalog and remux object, then match the complete MP4 byte-for-byte before selection.
     /// Their independent read allowance defaults to [`MAX_MOVIE_ORIGIN_READ_BYTES`]; use
@@ -117,7 +135,7 @@ impl RetainedFileImport {
 
     /// Select with an independently bounded native-origin replay allowance.
     ///
-    /// The complete retained MP4/MOV read keeps its existing `read_limits` admission. For a
+    /// The complete retained container read keeps its existing `read_limits` admission. For a
     /// native origin, every original root/child length is additionally reserved before its I/O,
     /// without refill; catalog/page replay first reserves its maximum proof length. Zero permits
     /// ordinary files but refuses native replay; values above [`MAX_MOVIE_ORIGIN_READ_BYTES`]
@@ -131,14 +149,15 @@ impl RetainedFileImport {
         maximum_origin_read_bytes: u64,
         cx: &ReplayCx,
     ) -> Result<RetainedMovieSelection, FileIngestError> {
+        let refusal = |error, stage| container_refusal(&self.manifest.format, error, stage);
         selection_limits
             .validate()
-            .map_err(|error| demux_refusal(error, STAGE_SELECT))?;
+            .map_err(|error| refusal(error, STAGE_SELECT))?;
         if maximum_origin_read_bytes > MAX_MOVIE_ORIGIN_READ_BYTES {
-            return Err(demux_refusal(DemuxError::Limit, STAGE_ORIGIN));
+            return Err(refusal(DemuxError::Limit, STAGE_ORIGIN));
         }
         if query.start >= query.end {
-            return Err(demux_refusal(DemuxError::Timeline, STAGE_SELECT));
+            return Err(refusal(DemuxError::Timeline, STAGE_SELECT));
         }
         let maximum = source_admission(&self.manifest, read_limits)?;
         checkpoint(cx, STAGE_SOURCE)?;
@@ -151,7 +170,7 @@ impl RetainedFileImport {
         let mut source = Vec::new();
         source
             .try_reserve_exact(maximum)
-            .map_err(|_| demux_refusal(DemuxError::Limit, STAGE_SOURCE))?;
+            .map_err(|_| refusal(DemuxError::Limit, STAGE_SOURCE))?;
         let mut source_hash = Sha256Hasher::new();
         for index in 0..self.manifest.ordered_chunks.len() {
             let bytes = verified_chunk(&self.manifest, index, &mut |digest, length| {
@@ -189,7 +208,7 @@ impl RetainedFileImport {
             checkpoint(cx, STAGE_ORIGIN)?;
             let required = origin_read_bytes_charged
                 .checked_add(bytes)
-                .ok_or_else(|| demux_refusal(DemuxError::Limit, STAGE_ORIGIN))?;
+                .ok_or_else(|| refusal(DemuxError::Limit, STAGE_ORIGIN))?;
             if required > maximum_origin_read_bytes {
                 return Err(FileIngestError::SpoolCapacityExceeded {
                     limit: "movie_origin_read_bytes",
@@ -228,27 +247,8 @@ impl RetainedFileImport {
             &mut reserve_origin,
         )?;
 
-        let mut check = || {
-            cx.checkpoint(STAGE_PARSE)
-                .map_err(|_| DemuxError::Cancelled)
-        };
-        let movie = AvcMp4::parse_inband_recovering_tail(
-            &source,
-            None,
-            super::super::file_adapter::mp4_demux_limits(self.manifest.segment_spans.len()),
-            &mut check,
-        )
-        .map_err(|error| demux_refusal(error, STAGE_PARSE))?;
-        verify_sample_index(&self.manifest, &source, &movie, || {
-            checkpoint(cx, STAGE_INDEX)
-        })?;
-        let mut check = || {
-            cx.checkpoint(STAGE_SELECT)
-                .map_err(|_| DemuxError::Cancelled)
-        };
-        let selection = movie
-            .select_movie_interval_with_checkpoint(query, selection_limits, &mut check)
-            .map_err(|error| demux_refusal(error, STAGE_SELECT))?;
+        let (track_id, codec, selection) =
+            select_container(&self.manifest, &source, query, selection_limits, cx)?;
 
         // Never release cached metadata after its witnessed custody becomes unavailable.
         // Reopening checks deletion, root/part closure and the exact completion binding again.
@@ -261,16 +261,59 @@ impl RetainedFileImport {
             authority_anchor: self.authority_anchor.clone(),
             source_adapter_id: self.manifest.adapter_id.clone(),
             source_adapter_generation: self.manifest.adapter_generation.clone(),
+            source_format: self.manifest.format.clone(),
             input_sha256,
             input_bytes: self.manifest.input_bytes,
             source_bytes_read: source.len() as u64,
             origin_read_bytes_charged,
             maximum_origin_read_bytes,
-            track_id: movie.track_id(),
-            codec: movie.codec(),
+            track_id,
+            codec,
             capture_time_label: self.manifest.capture_time_label.clone(),
             selection,
         })
+    }
+}
+
+fn select_container(
+    manifest: &FileImportManifest,
+    source: &[u8],
+    query: Range<u64>,
+    limits: MovieSelectionLimits,
+    cx: &ReplayCx,
+) -> Result<(u64, VideoCodec, MovieSelection), FileIngestError> {
+    let refusal = |error, stage| container_refusal(&manifest.format, error, stage);
+    let parse_limits = super::super::file_adapter::mp4_demux_limits(manifest.segment_spans.len());
+    let mut parse_check = || {
+        cx.checkpoint(STAGE_PARSE)
+            .map_err(|_| DemuxError::Cancelled)
+    };
+    let mut select_check = || {
+        cx.checkpoint(STAGE_SELECT)
+            .map_err(|_| DemuxError::Cancelled)
+    };
+    match manifest.format.as_str() {
+        "mp4avc" | "mp4hevc" => {
+            let movie =
+                AvcMp4::parse_inband_recovering_tail(source, None, parse_limits, &mut parse_check)
+                    .map_err(|error| refusal(error, STAGE_PARSE))?;
+            verify_sample_index(manifest, source, &movie, || checkpoint(cx, STAGE_INDEX))?;
+            let selection = movie
+                .select_movie_interval_with_checkpoint(query, limits, &mut select_check)
+                .map_err(|error| refusal(error, STAGE_SELECT))?;
+            Ok((u64::from(movie.track_id()), movie.codec(), selection))
+        }
+        "mkvavc" | "mkvhevc" => {
+            let movie =
+                MatroskaVideo::parse_recovering_tail(source, None, parse_limits, &mut parse_check)
+                    .map_err(|error| refusal(error, STAGE_PARSE))?;
+            verify_matroska_sample_index(manifest, source, &movie, || checkpoint(cx, STAGE_INDEX))?;
+            let selection = movie
+                .select_movie_interval_with_checkpoint(query, limits, &mut select_check)
+                .map_err(|error| refusal(error, STAGE_SELECT))?;
+            Ok((movie.track_number(), movie.codec(), selection))
+        }
+        _ => Err(refusal(DemuxError::Unsupported, STAGE_PARSE)),
     }
 }
 
@@ -278,25 +321,32 @@ fn source_admission(
     manifest: &FileImportManifest,
     limits: RetainedReadLimits,
 ) -> Result<usize, FileIngestError> {
-    let supported_origin = (manifest.adapter_id == ADP_FILE_ROW_ID
-        && manifest.adapter_generation == ADP_FILE_GENERATION)
-        || matches!(
-            manifest.adapter_id.as_str(),
-            rtsp_import::ADAPTER
-                | rtsp_import::catalog::ADAPTER
-                | rtsp_import::pages::ADAPTER
-                | rtsp_import::gaps::ADAPTER
-                | rtsp_import::replay::ADAPTER
-        );
-    if !supported_origin || !matches!(manifest.format.as_str(), "mp4avc" | "mp4hevc") {
-        return Err(demux_refusal(DemuxError::Unsupported, STAGE_SOURCE));
+    let file_origin = manifest.adapter_id == ADP_FILE_ROW_ID
+        && manifest.adapter_generation == ADP_FILE_GENERATION;
+    let native_origin = matches!(
+        manifest.adapter_id.as_str(),
+        rtsp_import::ADAPTER
+            | rtsp_import::catalog::ADAPTER
+            | rtsp_import::pages::ADAPTER
+            | rtsp_import::gaps::ADAPTER
+            | rtsp_import::replay::ADAPTER
+    );
+    let supported = match manifest.format.as_str() {
+        "mp4avc" | "mp4hevc" => file_origin || native_origin,
+        // Existing native origins reconstruct an MP4. Their authority cannot be used to
+        // authenticate a differently packaged source, even when its sample bytes agree.
+        "mkvavc" | "mkvhevc" => file_origin,
+        _ => false,
+    };
+    let refusal = |error| container_refusal(&manifest.format, error, STAGE_SOURCE);
+    if !supported {
+        return Err(refusal(DemuxError::Unsupported));
     }
     if manifest.input_bytes > MAX_MP4_INPUT_BYTES as u64 {
-        return Err(demux_refusal(DemuxError::Limit, STAGE_SOURCE));
+        return Err(refusal(DemuxError::Limit));
     }
     manifest.validate_structure(limits)?;
-    usize::try_from(manifest.input_bytes)
-        .map_err(|_| demux_refusal(DemuxError::Limit, STAGE_SOURCE))
+    usize::try_from(manifest.input_bytes).map_err(|_| refusal(DemuxError::Limit))
 }
 
 /// The import metadata is authenticated, but it is not a substitute for the sample tables.
@@ -367,15 +417,78 @@ fn verify_sample_index(
             });
         }
     }
+    verify_tail(manifest, source.len(), movie.truncated_tail())
+}
+
+/// Matroska durations augment the transient timeline, never the original import identity.
+/// Every ordinal and exact block-payload range must still match the completed import before
+/// selecting any interval, including blocks not requested by the caller.
+fn verify_matroska_sample_index(
+    manifest: &FileImportManifest,
+    source: &[u8],
+    movie: &MatroskaVideo<'_>,
+    mut check: impl FnMut() -> Result<(), FileIngestError>,
+) -> Result<(), FileIngestError> {
+    let format = match movie.codec() {
+        VideoCodec::Avc => "mkvavc",
+        VideoCodec::Hevc => "mkvhevc",
+    };
+    if manifest.format != format || manifest.segment_spans.len() != movie.samples().len() {
+        return Err(invalid(
+            "movie track or sample count differs from retained segments",
+        ));
+    }
+    for (index, (sample, segment)) in movie
+        .samples()
+        .iter()
+        .zip(&manifest.segment_spans)
+        .enumerate()
+    {
+        check()?;
+        if sample.index != index
+            || segment.segment_index != index
+            || sample.source.start as u64 != segment.offset
+            || sample.source.len() as u64 != segment.len
+            || segment.gap_before
+        {
+            return Err(invalid(
+                "movie sample index or range differs from retained segment",
+            ));
+        }
+        let bytes = source
+            .get(sample.source.clone())
+            .ok_or_else(|| invalid("movie sample outside retained source"))?;
+        let mut hasher = Sha256Hasher::new();
+        for part in bytes.chunks(HASH_CHECKPOINT_BYTES) {
+            check()?;
+            hasher.update(part);
+        }
+        let actual = ContentDigest::new(DigestAlgorithm::Sha256, hasher.finalize()?);
+        if actual != segment.segment_sha256 {
+            return Err(FileIngestError::SegmentDigestMismatch {
+                segment_index: index,
+                expected: segment.segment_sha256,
+                actual,
+            });
+        }
+    }
+    verify_tail(manifest, source.len(), movie.truncated_tail())
+}
+
+fn verify_tail(
+    manifest: &FileImportManifest,
+    source_bytes: usize,
+    truncated_tail: Option<usize>,
+) -> Result<(), FileIngestError> {
     let mut tails = manifest
         .omission_spans
         .iter()
         .filter(|span| span.reason == super::super::CONTAINER_TRUNCATED_TAIL_REASON);
-    match (movie.truncated_tail(), tails.next(), tails.next()) {
+    match (truncated_tail, tails.next(), tails.next()) {
         (None, None, None) => Ok(()),
         (Some(offset), Some(span), None)
             if span.offset == offset as u64
-                && span.offset.checked_add(span.len) == Some(source.len() as u64) =>
+                && span.offset.checked_add(span.len) == Some(source_bytes as u64) =>
         {
             Ok(())
         }

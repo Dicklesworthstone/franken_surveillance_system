@@ -80,7 +80,7 @@ fn assert_binding(
     assert_eq!(report.selection.movie_timescale, SCALE);
     assert_eq!(report.selection.media_timescale, SCALE);
     let parsed = AvcMp4::parse(&f.mp4, None, DemuxLimits::default())?;
-    assert_eq!(report.track_id, parsed.track_id());
+    assert_eq!(report.track_id, u64::from(parsed.track_id()));
     assert_eq!(report.codec, parsed.codec());
     assert_eq!(
         report.selection,

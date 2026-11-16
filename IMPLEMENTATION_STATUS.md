@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Retained Matroska selection and review output — 2026-11-16
+
+Retained AVC/HEVC MKV/WebM files now enter the existing `fss-file select-movie`
+and `export-movie` paths. Queries use exact nanoseconds, with explicit durations,
+signed timestamps, reordered presentation, declared gaps and bounded decode
+prerequisites. Missing or unsupported timing refuses selection while preserving
+the previous ordinal import/extraction admission. Complete original-source
+hashing, every retained sample range/digest and truncated-tail omissions are
+checked before selection; immutable reads retain their original cumulative
+allowance through final validation. Native RTSP origins remain MP4-only.
+
+Full-width Matroska track identifiers enter the versioned
+`fss.file_movie_output.v2` lineage. Historical imports and v1 receipts retain
+their identities. Screened grayscale review output reuses the existing native
+decoders and output owners; movie-timed Matroska preserves clipped intervals and
+holes without creating replacement pictures. A selected HEVC leading picture
+skipped after CRA still refuses export. See
+[retained movie selection](docs/RETAINED_MOVIE_SELECTION.md).
+
+**Verification:** the exact pinned nightly's locked offline container and packet
+suites passed, including all 139 container unit tests and 15 new Matroska timing
+contracts. The extended movie-output target then passed all 14 tests, including
+four new production-component Matroska contracts against retained independent
+I420 hashes, exact selected pixels and timed output bytes; all seven native RTSP
+movie-timeline regressions also passed. These component tests do not authenticate
+retained custody or qualify CLI execution. The retained/CLI integration tests are
+authored but unexecuted: both test compilation and metadata-only checking were
+SIGKILLed inside pinned `asupersync 0.5.0` before reaching those owners. Allocator
+and single-frontend diagnostic retries did not remove that resource blocker.
+No dependency, feature, compiler pin or qualification gate changed. Broad
+FSS-068, VIT-008 and VIT-023 acceptance remains open.
+
 ## Tiled broadcast MatMul — 2026-11-16
 
 The optimized CPU executor now prepares nonempty F32 MatMul as bounded 4-by-8

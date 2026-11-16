@@ -521,9 +521,13 @@ nor UTC and do not change the retained capture assumptions.
 
 The report pairs `movie_output_index` and original `frame_segment` with native
 decode receipts, source capsules, pixel hashes and the existing exact `movie_sample`
-rows. `movie_output_lineage_sha256`, under `fss.file_movie_output.v1`, binds the
+rows. New `movie_output_lineage_sha256` values, under `fss.file_movie_output.v2`, bind the
 authenticated source pins, query/timescales, selection intervals, edits/gaps,
-occurrence order and decoded-frame pins. Movie-timed Matroska additionally emits
+occurrence order and decoded-frame pins. Version 2 retains the full 64-bit Matroska
+track number; historical v1 materializations keep their original identities. The same
+selection/export path accepts explicitly timed AVC/HEVC MKV/WebM sources with movie
+ticks in nanoseconds; see [retained movie selection](RETAINED_MOVIE_SELECTION.md#matroska-and-webm-recordings).
+Movie-timed Matroska additionally emits
 `movie_output_start_ns`/`movie_output_end_ns`,
 `gray_mkv_timing=source_movie_intervals`, `gray_mkv_movie_lineage_sha256`, the
 complete `gray_mkv_duration_ns` and the separate `gray_mkv_last_frame_end_ns`.

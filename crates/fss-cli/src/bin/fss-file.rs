@@ -85,7 +85,8 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
           Payload loss refuses verify/extract/select-movie, not metadata-only inspection.\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
-          Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
+          Selects a half-open retained AVC/HEVC interval: MP4/MOV movie ticks or\n\
+          MKV/WebM nanoseconds. Neither is UTC; Matroska requires explicit durations.\n\
           Verifies retained source bytes; reports exact rational presentation intervals,\n\
           empty/unrepresented gaps and required decode ranges, without returning media.\n\
           The shared --max-read-bytes/--max-read-objects allowances above also apply.\n\
@@ -766,8 +767,8 @@ fn main() -> ExitCode {
                 Err(error) => {
                     eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
                     if let Some(refusal) = error
-                        .downcast_ref::<fss_reference::ingest::mpeg_ts_import::MpegTsImportError>()
-                    {
+                        .downcast_ref::<fss_reference::ingest::mpeg_ts_import::MpegTsImportError>(
+                    ) {
                         eprintln!("refusal_id={}", refusal.stable_id());
                     }
                     if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::twin_localization::RecordedLocalizationError>() {
