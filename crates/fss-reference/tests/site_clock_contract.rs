@@ -8,7 +8,9 @@ use fss_reference::site::clock::{
     ClockCorrelation, ClockCorrelationError as E, ClockCorrelationPolicy, ClockOffsetInterval,
     HostClockSample, UtcInterval,
 };
-use fss_reference::site::{ClockOffsetDirection, MAX_CLOCK_UNCERTAINTY_NS};
+use fss_reference::site::{
+    ClockOffsetDirection, MAX_CLOCK_UNCERTAINTY_NS, MIN_PLAUSIBLE_WALL_CLOCK_UNIX_NS,
+};
 
 const EPOCH: u64 = 1_800_000_000_000_000_000;
 
@@ -256,6 +258,107 @@ fn forward_and_backward_wall_steps_invalidate_all_projections() -> Result<(), Bo
         assert_eq!(clock.witness_at(5_000), Err(E::Invalidated));
         assert_eq!(clock.observe_later_sample(sample()), Err(E::Invalidated));
     }
+    Ok(())
+}
+
+#[test]
+fn implausible_wall_resets_permanently_invalidate_the_previous_correlation()
+-> Result<(), Box<dyn Error>> {
+    for wall_clock_unix_ns in [0, MIN_PLAUSIBLE_WALL_CLOCK_UNIX_NS - 1] {
+        let mut clock = correlation()?;
+        assert_eq!(
+            clock.observe_later_sample(HostClockSample {
+                monotonic_before_ns: 2_020,
+                monotonic_after_ns: 2_040,
+                wall_clock_unix_ns,
+            }),
+            Err(E::WallClockDiscontinuity)
+        );
+        assert!(clock.is_invalidated());
+        assert_eq!(clock.last_sample(), sample());
+        assert_eq!(clock.project(1_020), Err(E::Invalidated));
+        assert_eq!(clock.witness_at(5_000), Err(E::Invalidated));
+        assert_eq!(clock.observe_later_sample(sample()), Err(E::Invalidated));
+    }
+    Ok(())
+}
+
+#[test]
+fn independent_shape_errors_cannot_hide_a_cross_sample_monotonic_regression()
+-> Result<(), Box<dyn Error>> {
+    for (span, wall_clock_unix_ns) in [(101, EPOCH + 1), (20, 0), (101, 0)] {
+        let mut clock = correlation()?;
+        assert_eq!(
+            clock.observe_later_sample(HostClockSample {
+                monotonic_before_ns: 1_019,
+                monotonic_after_ns: 1_019 + span,
+                wall_clock_unix_ns,
+            }),
+            Err(E::MonotonicDiscontinuity)
+        );
+        assert!(clock.is_invalidated());
+        assert_eq!(clock.last_sample(), sample());
+        assert_eq!(clock.project(2_000), Err(E::Invalidated));
+        assert_eq!(clock.observe_later_sample(sample()), Err(E::Invalidated));
+    }
+    Ok(())
+}
+
+#[test]
+fn oversized_ordered_samples_neither_poison_nor_refresh_the_correlation()
+-> Result<(), Box<dyn Error>> {
+    let mut clock = correlation()?;
+    let before = clock.clone();
+    assert_eq!(
+        clock.observe_later_sample(HostClockSample {
+            monotonic_before_ns: 2_020,
+            monotonic_after_ns: 2_121,
+            wall_clock_unix_ns: EPOCH + 1_070,
+        }),
+        Err(E::InvalidSample)
+    );
+    assert_eq!(clock, before);
+    assert_eq!(clock.project(2_020)?, before.project(2_020)?);
+    clock.observe_later_sample(HostClockSample {
+        monotonic_before_ns: 2_020,
+        monotonic_after_ns: 2_040,
+        wall_clock_unix_ns: EPOCH + 1_020,
+    })?;
+    Ok(())
+}
+
+#[test]
+fn implausible_value_inside_the_conservative_windows_does_not_prove_a_step()
+-> Result<(), Box<dyn Error>> {
+    let origin = HostClockSample {
+        wall_clock_unix_ns: MIN_PLAUSIBLE_WALL_CLOCK_UNIX_NS,
+        ..sample()
+    };
+    let mut clock = ClockCorrelation::new(
+        origin,
+        ClockOffsetInterval {
+            lower_ns: 90,
+            upper_ns: 110,
+        },
+        source(),
+        ClockCorrelationPolicy {
+            max_drift_ppb: 500_000_000,
+            ..policy()
+        },
+    )?;
+    let before = clock.clone();
+    // Both allowed windows extend from floor-20 to floor+60. This reading
+    // violates the absolute plausibility floor, but not the sampled model.
+    assert_eq!(
+        clock.observe_later_sample(HostClockSample {
+            monotonic_before_ns: 1_020,
+            monotonic_after_ns: 1_040,
+            wall_clock_unix_ns: MIN_PLAUSIBLE_WALL_CLOCK_UNIX_NS - 1,
+        }),
+        Err(E::InvalidSample)
+    );
+    assert_eq!(clock, before);
+    assert_eq!(clock.project(1_020)?, before.project(1_020)?);
     Ok(())
 }
 

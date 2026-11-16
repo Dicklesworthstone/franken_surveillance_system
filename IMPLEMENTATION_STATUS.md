@@ -5,6 +5,27 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Site clock discontinuity invalidation — 2026-11-16
+
+The generic VIT-019 clock correlation now permanently rejects a later wall-clock
+reset or monotonic regression even when another field independently violates the
+sample format. An oversized chronological bracket remains a retryable refusal;
+its unreliable wall reading is not promoted to proof of a discontinuity. A
+below-floor wall value inside both conservative drift windows is likewise refused
+without falsely declaring a step. No accepted sample refreshes synchronization
+age or narrows the original uncertainty.
+
+Four new regression contracts cover these distinctions and subsequent projection,
+witness and retry behavior. All 19 site-clock contracts passed in a focused
+pinned-nightly harness compiling the actual production module, contract test file
+and existing fss-core artifacts. Pinned formatting and whitespace checks passed.
+The complete Cargo integration and qualification lanes did not finish before the
+execution host became unavailable. The native SynchronizedClock wrapper already
+failed closed on every sampling error; this repairs the generic correlation
+owner, not a demonstrated native capture bypass. VIT-019 remains open for its
+broader acceptance contract.
+
+
 ## Immutable recorded watch previews — 2026-11-16
 
 Unapproved short `fss-event watch` entry previews now use the sealed immutable

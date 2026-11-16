@@ -340,12 +340,20 @@ impl ClockCorrelation {
             self.invalidated = true;
             return Err(ClockCorrelationError::MonotonicDiscontinuity);
         }
-        validate_sample(sample, self.policy)?;
         if sample != self.last_sample
             && sample.monotonic_before_ns < self.last_sample.monotonic_after_ns
         {
             self.invalidated = true;
             return Err(ClockCorrelationError::MonotonicDiscontinuity);
+        }
+        // A cross-sample regression is conclusive even when the same input has
+        // an implausible wall value or an oversized bracket. Once chronological
+        // order is established, refuse an overly wide bracket without claiming
+        // that its wall value proves a discontinuity.
+        if sample.monotonic_after_ns - sample.monotonic_before_ns
+            > self.policy.max_sample_bracket_ns
+        {
+            return Err(ClockCorrelationError::InvalidSample);
         }
         self.check_live_at(sample.monotonic_after_ns)?;
         let from_origin = local_sample_window(self.origin, sample, self.policy.max_drift_ppb)?;
@@ -357,6 +365,12 @@ impl ClockCorrelation {
             self.invalidated = true;
             return Err(ClockCorrelationError::WallClockDiscontinuity);
         }
+        // Compare the actual wall reading before applying the plausibility
+        // floor. A reset to the Unix epoch is a contradiction, not merely a
+        // malformed sample which leaves the previous correlation usable.
+        // A value inside both conservative windows still has to satisfy the
+        // ordinary sample contract; that refusal alone does not prove a step.
+        validate_sample(sample, self.policy)?;
         let checked = ClockSampleCheck {
             previous: self.last_sample,
             current: sample,
