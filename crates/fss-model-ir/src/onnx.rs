@@ -664,6 +664,18 @@ fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<
         _ => return Err(OnnxError::Unsupported),
     };
     if matches!(opcode, OpCode::Conv2d | OpCode::MaxPool2d) {
+        // Keep automatic-padding ceil semantics outside this import profile.
+        // Explicit pads (including absent pads and NOTSET) have an exact
+        // representation in the frozen native MaxPool2d contract.
+        if opcode == OpCode::MaxPool2d
+            && attrs.get("ceil_mode") == Some(&AttrValue::Int(1))
+            && matches!(
+                attrs.get("auto_pad"),
+                Some(AttrValue::String(mode)) if mode != "NOTSET"
+            )
+        {
+            return Err(OnnxError::Unsupported);
+        }
         let input = inputs
             .first()
             .and_then(|name| known.get(name))
@@ -715,7 +727,19 @@ fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<
             ("Conv", "dilations") => "dilations",
             ("Conv", "group") => "groups",
             ("MaxPool", "kernel_shape") => "kernel_size",
-            ("MaxPool", "ceil_mode" | "storage_order") => {
+            ("MaxPool", "ceil_mode") => {
+                match value {
+                    // Preserve the canonical bytes of already supported
+                    // imports by continuing to omit the native default.
+                    AttrValue::Int(0) => {}
+                    AttrValue::Int(1) => {
+                        lowered.insert("ceil_mode".to_owned(), AttrValue::Bool(true));
+                    }
+                    _ => return Err(OnnxError::Unsupported),
+                }
+                continue;
+            }
+            ("MaxPool", "storage_order") => {
                 if value != AttrValue::Int(0) {
                     return Err(OnnxError::Unsupported);
                 }
@@ -733,11 +757,12 @@ fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<
         };
         lowered.insert(target.to_owned(), value);
     }
-    // Native MaxPool skips padding samples. Its shape admission requires each
-    // pad < kernel, so every floor-mode output window overlaps real input:
-    // first start > -kernel; last start <= input + trailing_pad - kernel < input.
-    // Thus the native empty-window fallback is unreachable, including for
-    // entirely negative inputs, and no explicit padding tensor is needed.
+    // Native MaxPool skips padding samples. Positive spatial input and each
+    // pad < kernel ensure the first window overlaps real input. Floor mode
+    // bounds the last start by input + trailing_pad - kernel < input; ceil
+    // mode discards a last window starting outside the input. Every admitted
+    // unit-dilation window therefore contains a real sample, including for
+    // entirely negative inputs, without allocating a padding tensor.
     if opcode == OpCode::Concat && !lowered.contains_key("axis") {
         return Err(OnnxError::Malformed);
     }

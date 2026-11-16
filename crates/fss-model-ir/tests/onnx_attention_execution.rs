@@ -12,6 +12,8 @@ mod gather_indices;
 mod head_softmax;
 #[path = "onnx_attention_execution/matmul_vectors.rs"]
 mod matmul_vectors;
+#[path = "onnx_attention_execution/maxpool_ceil.rs"]
+mod maxpool_ceil;
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]

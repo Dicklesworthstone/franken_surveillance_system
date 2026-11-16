@@ -59,8 +59,10 @@ including hand-computed dense and convolution/pooling results.
   groups use native validation. Static `auto_pad` modes `VALID`, `SAME_UPPER`, and
   `SAME_LOWER` lower to exact explicit native padding as described below.
 - MaxPool is 2-D, single-output, with explicit nonnegative padding smaller than
-  each corresponding kernel dimension, no dilation other than one, no ceil mode,
-  and default storage order. Concat requires an explicit axis.
+  each corresponding kernel dimension, no dilation other than one, floor or ceil
+  sizing, and default storage order. Ceil sizing accepts explicit/absent pads and
+  `auto_pad=NOTSET`; other automatic modes retain floor sizing only.
+  Concat requires an explicit axis.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 - AveragePool is 2-D with explicit padding, positive strides, floor output sizing,
   and either include-padding or exclude-padding means. GlobalAveragePool reduces
@@ -821,10 +823,10 @@ modes, malformed attributes, nonpositive strides/dilations, arithmetic overflow,
 unsupported ranks, and a declared output shape inconsistent with the computed
 shape refuse conversion. Existing size, work and cancellation ceilings apply.
 
-This does not widen the pooling numeric profile: MaxPool still skips padded
-positions, including for entirely negative input, and admits only unit dilation
-and floor output sizing. AveragePool keeps its explicit include/exclude-padding
-denominator and floor sizing. Both preserve the rule that every admitted pooling
+Automatic MaxPool padding skips padded positions, including for entirely negative
+input, and admits only unit dilation and floor output sizing. Its explicit-padding
+profile also admits ceil sizing as described below. AveragePool keeps its explicit
+include/exclude-padding denominator and floor sizing. Both preserve the rule that every admitted pooling
 window contains a real sample. Existing grouped/dilated Conv, bias, parameter
 bits and scalar accumulation order remain intact.
 
@@ -1070,13 +1072,33 @@ single-output restriction, including MaxPool's optional index output.
 
 The [MaxPool-12](https://onnx.ai/onnx/operators/onnx__MaxPool.html#maxpool-12) schema
 used by opset 13 now admits explicit padding through the existing native pooling
-operator. It excludes positions outside the input from the maximum. Because every
-pad is smaller than its kernel dimension and output sizing uses floor mode, every
-admitted window contains a real input sample; the executor's empty-window fallback
-is unreachable. This matters for negative feature maps: padding must not introduce
-zeros that can become the maximum. Asymmetric pads and spatial strides follow
-native shape validation. Automatic padding uses the static resolver described above. Ceil mode,
-dilated pooling and indices remain outside this profile.
+operator. It excludes positions outside the input from the maximum. Every pad is
+smaller than its kernel dimension and spatial inputs must be positive. Floor mode
+keeps complete padded windows; ceil mode also keeps a partial final window when
+its start is inside the real input. A candidate starting at or beyond the input's
+end is discarded. Every admitted window therefore contains a real input sample;
+the executor's empty-window fallback is unreachable. This matters for negative
+feature maps: padding must not introduce zeros that can become the maximum.
+
+`ceil_mode=1` lowers to the existing native Bool attribute without changing either
+frozen operator table or graph version. Absent and explicit-zero flags keep their
+previous canonical graph bytes. Shape inference handles a negative size numerator:
+an input of two samples with kernel three and stride two still produces one
+partial window. Nonpositive output dimensions and arithmetic overflow refuse.
+Asymmetric pads and unequal spatial strides follow native shape validation.
+Ceil sizing accepts absent `auto_pad` and `NOTSET`; `VALID`, `SAME_UPPER`, and
+`SAME_LOWER` combined with ceil mode remain unsupported. Their existing floor
+behavior uses the static resolver described above. Dilated pooling and indices
+remain outside this profile.
+
+`onnx_attention_execution::maxpool_ceil` exercises hand-computed partial windows,
+negative feature maps, asymmetric padding, wide strides and short inputs against
+an independent coordinate oracle. The tests invoke both production scalar and
+optimized executors before and after canonical graph and Safetensors reload.
+They also cover execution budgets, cancellation, malformed attributes, empty-input
+refusal, checked geometry and legacy default graph bytes. These numerical tests
+do not qualify trained detector quality or the complete asynchronous reference
+deployment.
 
 The retained untrained numerical fixture
 `crates/fss-model-ir/tests/fixtures/onnx/detector_split_pool.onnx` is 1,190 bytes with
