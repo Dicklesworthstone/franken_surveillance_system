@@ -1,8 +1,42 @@
 # Implementation status
 
-**As of:** 2026-11-15 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-16 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## ONNX vector MatMul — 2026-11-16
+
+The static F32 ONNX importer now accepts vector/vector dot products,
+vector/matrix products and matrix/vector products, including a vector broadcast
+across matrix batches through rank eight. Exact Reshape promotion/removal uses
+the existing native MatMul; a dot product produces a scalar and pre-existing
+singleton dimensions remain intact. Already admitted matrix/matrix graphs keep
+their canonical nodes and bytes. No operator IDs, native graph encoding,
+parameter values, dependencies or activation policy changed.
+
+The new lowering shares aggregate node/name/tensor/work admission, reserved-name
+collision handling and cancellation. Its source participates in the importer
+implementation identity. Six authored regression tests exercise both production
+executors, independent ordered arithmetic, actual canonical/Safetensors reload,
+constant operands, legacy graph bytes, malformed inputs, exact limits and every
+import cancellation checkpoint. See [ONNX import](docs/onnx_import.md#vector-matmul).
+
+**Verification boundary:** source reviewed independently; these new tests have
+not been compiled or executed. Before these edits, pinned
+`cargo check --locked --offline -p fss-model-ir -p fss-container --lib` passed on
+the unchanged baseline. Attempts to compile existing execution tests were killed
+by the runner's memory limit, after which the execution environment became
+unavailable. That baseline check does not validate this change. Run:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
+  --test onnx_attention_execution matmul_vectors
+```
+
+This is implementation progress under FSS-139 (`fss-x4a.14.10`) and the frozen
+operator contract FSS-137 (`fss-x4a.14.8`), not closure or release qualification.
+The pre-existing local qualification failures and broader model/exporter corpus
+remain open.
 
 ## Operator MPEG-TS import command — 2026-11-15
 

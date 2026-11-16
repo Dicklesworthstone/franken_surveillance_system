@@ -31,6 +31,7 @@ mod head_softmax;
 mod instance_normalization;
 mod layer_normalization;
 mod leaky_relu;
+mod matmul;
 mod opset;
 mod pad;
 mod padding;
@@ -1044,6 +1045,8 @@ pub fn import_onnx<'a>(
             shape_program::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {
             gemm::lower(source, &mut lowering)?;
+        } else if matmul::handles(&source, &lowering) {
+            matmul::lower(source, &mut lowering)?;
         } else if source.op == "ConvTranspose" {
             conv_transpose::lower(source, &mut lowering)?;
         } else if source.op == "BatchNormalization" {

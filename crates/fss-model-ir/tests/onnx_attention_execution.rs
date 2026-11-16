@@ -8,6 +8,8 @@
 mod dfl_pyramid;
 #[path = "onnx_attention_execution/head_softmax.rs"]
 mod head_softmax;
+#[path = "onnx_attention_execution/matmul_vectors.rs"]
+mod matmul_vectors;
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]

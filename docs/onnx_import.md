@@ -53,7 +53,8 @@ including hand-computed dense and convolution/pooling results.
   selection uses the separate static Gather profile described below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
-- MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
+- MatMul admits vector/vector, vector/matrix and matrix/vector products in addition
+  to batched matrix products; scalar operands remain unsupported. Conv is 2-D; declared `kernel_shape`
   must agree with the actual weight tensor. Explicit strides, dilation, pads and
   groups use native validation. Static `auto_pad` modes `VALID`, `SAME_UPPER`, and
   `SAME_LOWER` lower to exact explicit native padding as described below.
@@ -465,6 +466,36 @@ controls, and exact import/execution quota and cancellation boundaries.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_broadcast_execution
+```
+
+## Vector MatMul
+
+[MatMul-13](https://onnx.ai/onnx/operators/onnx__MatMul.html#matmul-13) accepts
+rank-one F32 operands with static positive dimensions in both admitted source
+opsets. A left vector is reshaped to a one-row matrix; a right vector becomes
+a one-column matrix. The existing native MatMul performs each ordered F32 dot
+product, and a final Reshape removes only the implicitly introduced dimensions.
+A vector/vector product produces a scalar. A vector broadcasts across the
+matrix operand's batch dimensions; existing singleton batch or output
+dimensions remain present.
+
+This lowering uses three nodes for one vector operand and four for two. It
+creates no weights, retains the exact binding of constant operands, and checks
+the complete node/tensor expansion before generating helpers. Contracting
+dimensions must agree, scalar operands and attributes refuse, and generated
+names cannot satisfy missing source inputs. Existing matrix/matrix graphs keep
+their original nodes and canonical graph bytes. The importer identity separately
+binds the new lowering source.
+
+The authored `matmul_vectors` tests in `onnx_attention_execution` compare direct
+source-coordinate dot products with both production executors before and after
+canonical graph and actual Safetensors reload. They cover opsets 13 and 17,
+scalar dot outputs, matrix ranks two through eight, singleton preservation,
+constant-only graphs, ordered arithmetic, malformed inputs, name reservation,
+and exact import limits and every cancellation checkpoint.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution matmul_vectors
 ```
 
 ## Static attention selection and pooled features
