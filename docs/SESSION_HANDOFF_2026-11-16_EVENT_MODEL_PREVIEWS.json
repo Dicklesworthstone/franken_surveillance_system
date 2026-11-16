@@ -1,0 +1,54 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-16",
+  "timezone": "UTC",
+  "state": "source_reviewed_execution_blocked",
+  "mission": {
+    "goal": "Close important functional gaps from the comprehensive plan and Beads; publish meaningful increments directly to main through GitHub.",
+    "initial_source_head": "e84bb7ca39604997e39db64b1edd5011ccd10a04",
+    "scope": [
+      "FSS-076 through FSS-078: retained event proposal ownership",
+      "FSS-139 and FSS-142: native ONNX pooling compatibility"
+    ],
+    "broad_beads_closed": false
+  },
+  "authority": {
+    "scope": "Repository source and deterministic fixtures; no live cameras or notification effects.",
+    "publication": "Non-force main updates with an expected-parent lease, through the GitHub connector.",
+    "release": "Local repository qualification and retained DSR evidence remain required."
+  },
+  "checkpoints": [
+    {
+      "commit": "this_commit",
+      "change": "Prepare recorded-luma and detector-package candidates through the immutable retained reader while capture owns the writer."
+    }
+  ],
+  "behavior": [
+    "Preparation shares one immutable source snapshot, cumulative retained-read allowance and final metadata/custody validation. No proposal text or JSON export is released on failed final checks.",
+    "Proposal digests, event bytes, policy semantics and publication authority are unchanged. Publication takes the exclusive writer and independently prepares the candidate again before checking approval.",
+    "Read byte/object flags now apply to prepare, remain bounded, and are rejected for publication. The external report keeps its separate existing max-report-bytes bound."
+  ],
+  "validation": {
+    "source_review": "Independent review of both widened proposal APIs, exact summary compatibility, parser routing, shared read allowances and final validation before exports.",
+    "regression_tests_added": [
+      "Prepare with an active capture writer, exact digest/event parity and later approved publication",
+      "No output/export or custody repair for corrupt source, incomplete journals or exhausted read limits",
+      "Immutable package preparation preserves an existing publication's exact digest and status",
+      "Read-limit parser admission for prepare and rejection for publish"
+    ],
+    "execution": "Not run: exact pinned toolchain installation was killed with exit 137; the execution environment subsequently became unavailable before compilation or rustfmt could complete.",
+    "compiler_pin": "nightly-2026-08-31, unchanged",
+    "dependency_or_gate_changes": false,
+    "formatting_verified": false,
+    "release_qualified": false,
+    "manifest": "Changed-file SHA-256 entries refreshed; whole-repository qualification and manifest-audit commands could not run after the environment became unavailable."
+  },
+  "remaining_work": [
+    "Execute recorded_event_cli_contract, package_event_reader_contract and fss-event unit tests on a host with the exact pinned toolchain.",
+    "Complete and review the independent immutable two-camera corroboration and native MaxPool ceil-mode increments.",
+    "Keep native MaxPool operator-table identity frozen; any future dilation extension needs a compatible explicit format contract."
+  ],
+  "preserved_concurrent_heads": [
+    "60642d52ae53e5c0412198a6fe52e56cebcedafd"
+  ]
+}

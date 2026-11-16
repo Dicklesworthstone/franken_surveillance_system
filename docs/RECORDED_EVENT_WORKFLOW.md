@@ -62,6 +62,15 @@ preconditions again, checks the exact approval digest, retains the provenance gr
 and delegates the final event revision to `ReferenceDeployment::publish_event`. It does not
 append the reserved event family through the generic ledger API.
 
+Preparation uses an immutable retained-source snapshot for both recorded-luma and detector-package
+reports, so it can run while capture holds the deployment's writer lock. `--max-read-bytes` and
+`--max-read-objects` bound retained reads, including final custody and head revalidation. A changed
+head, unavailable or damaged source, incomplete journal, cancellation or exhausted allowance
+withholds both stdout and the optional export; preparation never opens recovery or repairs custody.
+The proposal digest and canonical event bytes are unchanged by this reader choice. Publication
+still needs the exclusive writer and independently rebuilds the approved proposal against current
+authority before committing it.
+
 Every candidate is `unclassified` and `indeterminate`, with an uncalibrated probability
 interval [0,1] and an explicit policy abstention. Track confirmation does not upgrade this
 state. All event evidence edges are derived-from edges, not corroborating physical-presence

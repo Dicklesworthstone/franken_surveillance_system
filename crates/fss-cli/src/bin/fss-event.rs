@@ -98,7 +98,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     Source paths, thresholds, zones, detector packages and event approvals are not inputs.\n\
     Use fss-event verify --help for metadata, per-camera execution and report bounds.\n\
   Budgets: --detection-work-units N --association-work-units N --max-report-bytes N\n\
-  Native recorded-luma/package read and report: --max-read-bytes N --max-read-objects N\n\
+  Native recorded-luma/package read, report and prepare: --max-read-bytes N --max-read-objects N\n\
     Open immutable retained custody without taking the publisher lock or repairing state.\n\
     Metadata, source payloads and final revalidation share one allowance (default 1 GiB and\n\
     1,000,000 read attempts; maximum 4 GiB and 4,000,000), with a cooperative 60 s deadline.\n\
@@ -646,11 +646,9 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
                 && matches!(key, "--report" | "--report-digest" | "--track"))
             || (action == "publish" && key == "--proposal-digest")
             || (action == "read" && key == "--event-id")
-            || (matches!(action, "read" | "report")
-                && matches!(
-                    key,
-                    "--report-out" | "--max-read-bytes" | "--max-read-objects"
-                ))
+            || (matches!(action, "read" | "report") && key == "--report-out")
+            || (matches!(action, "read" | "report" | "prepare")
+                && matches!(key, "--max-read-bytes" | "--max-read-objects"))
             || (action == "report" && report_options.contains(&key));
         if !allowed {
             return Err("unknown or inapplicable option".into());
@@ -896,7 +894,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     }
     if matches!(
         &options.action,
-        Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. }
+        Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. } | Action::Prepare { .. }
     ) {
         return retained::run(options, out);
     }
@@ -1281,6 +1279,33 @@ mod tests {
         assert!(parse(&approved).is_ok());
     }
     #[test]
+    fn immutable_prepare_has_read_allowances_but_publication_does_not() {
+        for key in ["--max-read-bytes", "--max-read-objects"] {
+            let mut preview = args("prepare");
+            preview.extend([key, "1"].into_iter().map(OsString::from));
+            assert!(parse(&preview).is_ok());
+            let mut publish = args("publish");
+            publish.extend(
+                [
+                    "--proposal-digest",
+                    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                    key,
+                    "1",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            );
+            assert!(parse(&publish).is_err());
+        }
+        let mut preview = args("prepare");
+        preview.extend(
+            ["--report-out", "unexpected.bin"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        assert!(parse(&preview).is_err());
+    }
+    #[test]
     fn duplicate_unknown_inapplicable_and_unbounded_options_are_refused() {
         for extra in [
             ["--site", "other"],
@@ -1288,8 +1313,8 @@ mod tests {
             ["--proposal-digest", "bad"],
             ["--max-report-bytes", "0"],
             ["--max-report-bytes", "16777217"],
-            ["--max-read-bytes", "1"],
-            ["--max-read-objects", "1"],
+            ["--max-read-bytes", "0"],
+            ["--max-read-objects", "0"],
         ] {
             let mut argv = args("prepare");
             argv.extend(extra.into_iter().map(OsString::from));
