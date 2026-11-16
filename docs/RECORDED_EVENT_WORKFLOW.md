@@ -225,6 +225,27 @@ fss-event corroborate --root DIR --site SITE \
   [watch thresholds and budgets] [--approve sha256:P[,sha256:Q]] [--report-out FILE]
 ```
 
+Unapproved short corroboration previews can run while capture owns the deployment's publisher
+lock. Both recordings share one sealed immutable snapshot. The existing detector cascade,
+calibrated class advice, failure-domain declarations, owner poses, retained calibration
+adoptions, covariance-aware coverage, scene occlusion, privacy masks and sensor-health
+screening keep their existing report and approval identities.
+
+Use `--max-read-bytes N` and `--max-read-objects N` to bound the complete retained operation:
+defaults are 1 GiB and 1,000,000 read attempts, with explicit maxima of 4 GiB and 4,000,000.
+The allowance covers both cameras together, retained calibration and policy metadata, and
+every final custody read. Repeated verification consumes the same allowance. A cooperative
+60-second deadline is checked at retained-read admissions. The completed JSON remains buffered
+until both original sources, all supporting capsules (including quiet frames), current privacy,
+calibration currency, snapshot metadata and registered payloads pass final validation.
+
+A failed final check, exhausted allowance, cancellation or incomplete journal tail produces no
+stdout or new report export, and does not repair or mutate the deployment. Concurrent authority
+changes require a new preview at a stable committed snapshot. These aggregate limits apply only
+to short previews without `--approve`, `--retain-coverage` or `--retain-health`; approval hints
+omit preview-only limits. Approved publication, retention and `--stream-corroborate` keep their
+existing writer ownership and authority checks.
+
 Each recording (1..128 frames) runs the watch pipeline over the whole decoded frame. The foot
 point (bottom centre of each confirmed track's filtered box) is projected through the camera's
 `--ground` homography (row-major `h11..h33`, image pixels to owner ground units). The homography

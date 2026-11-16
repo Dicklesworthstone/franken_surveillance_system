@@ -217,6 +217,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
           [watch thresholds and budgets] [watch detector-cascade options] [--approve sha256:PROPOSAL[,...]]\n\
           [--retain-coverage sha256:APPROVAL] [--sensor-health conservative-v1] [--report-out FILE]\n\
           [--failure-domain KIND:ID=CAMERA[,CAMERA...]]...\n\
+    Unapproved short previews read immutable retained custody while capture holds the writer.\n\
+    --max-read-bytes N and --max-read-objects N share one allowance across both cameras,\n\
+    retained calibration metadata and final checks (default 1 GiB/1000000, max 4 GiB/4000000).\n\
+    A cooperative 60 s deadline applies. Complete JSON/export waits for source, capsule,\n\
+    privacy, calibration currency and snapshot validation, including quiet camera evidence.\n\
+    These limits require a short preview with no approval or retention; approval hints omit them.\n\
     --stream-corroborate (bare flag): scan both complete retained recordings, up to 65536\n\
     segments per camera, with native MJPEG/H.264/H.265 and persistent per-camera tracking.\n\
     Ground entries use actual confirmed matches; gaps reset tracking. The --stream-read-bytes,\n\
@@ -894,7 +900,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     }
     if matches!(
         &options.action,
-        Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. } | Action::Prepare { .. }
+        Action::Read(_)
+            | Action::Report { .. }
+            | Action::PackageReport { .. }
+            | Action::Prepare { .. }
     ) {
         return retained::run(options, out);
     }
@@ -902,6 +911,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         && action.is_immutable_preview()
     {
         return watch::run_immutable_preview(action, out);
+    }
+    if let Action::Corroborate(action) = &options.action
+        && action.is_immutable_preview()
+    {
+        return corroborate::run_immutable_preview(action, out);
     }
     if let Action::Delete(request) = &options.action
         && matches!(request.operation, delete::Operation::PolicyShow(_))

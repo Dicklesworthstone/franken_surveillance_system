@@ -22,7 +22,7 @@ use crate::ingest::recorded_coverage::{
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::recorded_watch::MAX_WATCH_FRAMES;
 use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 use super::GuardedCoverageSet;
 
@@ -146,7 +146,7 @@ fn check_adoption(
 
 impl GuardedCoverageSet {
     /// Current retention state without writing or claiming dependency currency.
-    pub fn status(&self, deployment: &ReferenceDeployment) -> Result<CoverageStatus> {
+    pub fn status(&self, deployment: &dyn RetainedSource) -> Result<CoverageStatus> {
         coverage_status(deployment, &self.records.iter().collect::<Vec<_>>())
             .map_err(GuardedCoverageRetentionError::Contract)
     }
@@ -158,7 +158,7 @@ impl GuardedCoverageSet {
     /// Corrupt or missing authority is an error, never "no policy" or "not adopted".
     pub fn revalidate(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> Result<()> {

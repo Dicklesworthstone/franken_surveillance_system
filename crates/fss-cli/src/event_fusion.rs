@@ -369,7 +369,7 @@ impl EventFusionReport {
         native: &CorroborationReport,
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         Self::corroborate_with_coverage(native, cascade, profile, None, deployment, cx)

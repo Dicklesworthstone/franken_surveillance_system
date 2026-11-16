@@ -65,7 +65,7 @@ use super::calibration_invalidation::{
 use super::retained::{RetainedFileImport, RetainedReadLimits};
 use super::site_calibration::{SiteCalibration, valid_camera_name};
 use crate::reference_deployment::{FAMILY_SENSOR_CAPSULE, FAMILY_TWIN_LOCALIZATION_RECEIPT};
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::{ReferenceDeployment, ReferenceError, ReplayCx, RetainedSource};
 
 /// Canonical adoption receipt domain (also tags the record bytes).
 pub const ADOPTION_RECEIPT_DOMAIN: &str = "fss.twin_localization_receipt.v1";
@@ -478,13 +478,11 @@ pub fn adoption_object_id(camera_handle: u64) -> Result<ObjectId, ContractError>
 /// naming its object's handle, superseding exactly its predecessor, keeping the sensor, and never
 /// lowering a generation. Damaged custody fails closed; it is never treated as "not adopted".
 pub fn retained_adoptions(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
 ) -> Result<BTreeMap<u64, Vec<RetainedAdoption>>, AdoptionError> {
     retained_adoptions_from_batches(deployment.ledger().batches(), |digest, maximum| {
         deployment
-            .publisher()
-            .spool()
-            .read_bounded(digest, maximum)
+            .read_object_bounded(digest, maximum)
             .map_err(|_| AdoptionError::InvalidRecord("calibration authority receipt unreadable"))
     })
 }
@@ -1019,7 +1017,7 @@ pub fn adopt(
 
 /// Sensor of a retained recording (its first segment's source capsule).
 pub fn recording_sensor(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     import_identity: ContentDigest,
     limits: RetainedReadLimits,
     cx: &ReplayCx,

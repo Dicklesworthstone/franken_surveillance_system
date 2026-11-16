@@ -138,7 +138,7 @@ use super::tolerant_decode::DecodeRefusal;
 use super::{FileIngestError, RetainedFileImport};
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
-    ZoneEntryCorroboration, ZoneEntryWitness, evaluate_zone_entry_corroboration,
+    RetainedSource, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_zone_entry_corroboration,
 };
 
 /// Maximum owner-drawn ground zones.
@@ -865,7 +865,7 @@ struct CameraAnalysisContext<'a> {
 }
 
 fn analyze_camera(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     context: &CameraAnalysisContext<'_>,
     index: usize,
     limits: &WatchLimits,
@@ -1220,7 +1220,7 @@ impl CorroborationReport {
     /// Tracks, projects, associates and prepares proposals. Reads retained custody only; writes
     /// no objects, ledger batches or events. Publication state is read from the ledger.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         cx: &ReplayCx,
@@ -1232,7 +1232,7 @@ impl CorroborationReport {
     /// frames, with one inference budget shared by both recordings. `None` is byte-for-byte
     /// [`Self::analyze`].
     pub fn analyze_with_detector(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1252,7 +1252,7 @@ impl CorroborationReport {
     /// coverage: sampling policy, optional owner calibrated poses and an optional owner scene
     /// mesh. Candidates, events and the non-coverage report are independent of these inputs.
     pub fn analyze_with_visibility(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1277,7 +1277,7 @@ impl CorroborationReport {
     /// A detector cascade decodes selected recovery epochs independently, using the same
     /// inference allowance across both cameras. Neither its evidence nor its budget bridges gaps.
     pub fn analyze_with_options(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1305,7 +1305,7 @@ impl CorroborationReport {
     /// [`Self::analyze_with_pose_uncertainty`]).
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_provenance(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1337,7 +1337,7 @@ impl CorroborationReport {
     /// none) or is refused as an invalid pose. Candidates and events never depend on it.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_pose_uncertainty(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1359,7 +1359,7 @@ impl CorroborationReport {
     /// `None` preserves the complete existing analysis and encoding.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_health(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         detector: Option<&mut DetectorCascade<'_>>,
@@ -1394,7 +1394,7 @@ impl CorroborationReport {
     /// sensor-only assumption; no declaration combination proves physical independence.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_dependencies(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         mut detector: Option<&mut DetectorCascade<'_>>,
@@ -1550,7 +1550,7 @@ impl CorroborationReport {
     /// derived analysis. This performs no publication and grants no effect authority.
     pub fn revalidate_derived_sources(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<()> {
         for guard in &self.publication_guards {
@@ -2147,7 +2147,7 @@ struct CandidateSupplement<'a> {
 }
 
 struct CandidateContext<'a> {
-    deployment: &'a ReferenceDeployment,
+    deployment: &'a dyn RetainedSource,
     plan: &'a CorroborationPlan,
     plan_digest: ContentDigest,
     cameras: &'a [CameraSummary],
@@ -2458,7 +2458,7 @@ fn publish_candidates(
 }
 
 fn current_status(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventHypothesis,
 ) -> Result<CorroborationStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;

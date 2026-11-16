@@ -5,6 +5,37 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Immutable two-camera corroboration previews — 2026-11-16
+
+Unapproved short `fss-event corroborate` previews now read through the sealed
+immutable retained source while an active capture publisher owns the writer lock.
+Both cameras share the same snapshot and cumulative byte/read allowance,
+including retained calibration adoptions, covariance-aware coverage and final
+custody checks. Existing detector, class-advice, visibility, dependency,
+health-screening and privacy behavior use the same analysis and rendering
+helpers as the publishing owner.
+
+Complete reports remain buffered until both source guards, all supporting
+capsules, calibration currency, snapshot metadata and registered payloads pass
+final verification. Quiet and health-degraded reports take the same final
+custody path. Failed checks, cancellation and exhausted allowances produce no
+stdout or new report export. Explicit event/coverage/health retention and
+whole-recording corroboration keep their mutation owners; preview limits are
+omitted from approval rerun hints.
+
+Six CLI regression contracts cover active-writer MJPEG/AVC/HEVC and screened,
+shared-domain and posed report parity; exact aggregate budgets including final
+reads; final cancellation; late second-camera source and quiet-capsule damage;
+torn-tail refusal without repair; and immutable/mutation routing. Two retained
+calibration coverage contracts cover active-writer parity, exact allowance,
+snapshot currency and late adoption-payload damage. These new contracts and the
+full changed crate graph remain unexecuted because the execution host became
+unavailable. Independent source review and pinned-nightly formatting completed;
+no release qualification or
+broader bead closure is claimed. See
+[recorded event workflow](docs/RECORDED_EVENT_WORKFLOW.md).
+
+
 ## Site clock discontinuity invalidation — 2026-11-16
 
 The generic VIT-019 clock correlation now permanently rejects a later wall-clock

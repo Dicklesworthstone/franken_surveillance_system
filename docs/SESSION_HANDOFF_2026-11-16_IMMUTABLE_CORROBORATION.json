@@ -1,0 +1,60 @@
+{
+  "date_utc": "2026-11-16",
+  "mission": "Implement high-value remaining functionality from the comprehensive plan and Beads; commit meaningful changes directly to main.",
+  "basis": {
+    "started_at": "e84bb7ca39604997e39db64b1edd5011ccd10a04",
+    "integrated_parent": "bdbeddbde5ddf77586e885e1613c399aecbc1688",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl"
+  },
+  "authority": {
+    "user": "Direct commits to main; no pull requests.",
+    "effects": "No new device, network, alert, retention, identity or model authority."
+  },
+  "findings": [
+    "Backlog labels lag implemented fusion and source-provenance features; implementation and acceptance evidence must both be inspected.",
+    "Short two-camera previews acquired the exclusive deployment writer, blocking read-only analyses during capture.",
+    "Generic clock correlation could retain an obsolete witness after a discontinuity masked by malformed sample fields; native synchronized clock already failed closed."
+  ],
+  "delivered": [
+    {
+      "feature": "VIT-019 generic clock invalidation",
+      "commit": "60642d52ae53e5c0412198a6fe52e56cebcedafd",
+      "evidence": "19 actual clock contract tests passed in a scoped pinned-nightly module harness; not a full Cargo integration result."
+    },
+    {
+      "feature": "Immutable short two-camera corroboration",
+      "scope": "Sealed shared snapshot, cumulative final-read budget, final custody/currency checks, active-writer routing, unchanged publication owner.",
+      "validation": "Independent source review complete. Six CLI and two calibrated-coverage regression contracts authored but unexecuted."
+    }
+  ],
+  "validation": {
+    "baseline": "66 fss-fusion tests passed using the exact pinned toolchain.",
+    "blocked": "Full changed-crate compilation, new preview tests and release qualification remain unverified after execution-host outage and resource exhaustion.",
+    "gates": "No dependency, toolchain pin, qualification gate or broad bead completion state changed.",
+    "formatting": "Pinned nightly formatting completed after the execution host recovered; full crate checks remain pending."
+  },
+  "continuations": [
+    {
+      "state": "in_progress",
+      "work": "Extend immutable previews to nonincremental whole-recording watch and dwell, preserving degraded-health custody validation and strict publication/fusion guards."
+    },
+    {
+      "state": "blocked",
+      "work": "Run pinned formatting, changed native/CLI regression contracts and required qualification on a functioning host with sufficient memory and disk."
+    }
+  ],
+  "invalidations": [
+    "Any source, capsule, privacy, calibration-currency, or retained-head change invalidates an in-flight immutable preview."
+  ],
+  "budgets": {
+    "immutable_defaults": "1 GiB and 1,000,000 retained reads shared across both cameras and final checks",
+    "immutable_maximum": "4 GiB and 4,000,000 retained reads",
+    "deadline": "Cooperative 60 seconds at retained read admissions"
+  },
+  "next_affordances": [
+    "Verify the new source and CLI regression contracts without changing dependency pins or acceptance gates.",
+    "Continue the whole-recording read-only integration without broadening mutation authority."
+  ],
+  "format": "engineering-session-handoff"
+}
