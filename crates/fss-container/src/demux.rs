@@ -27,7 +27,10 @@ pub use inband::{
 };
 mod matroska;
 pub(crate) use matroska::probe_configuration as probe_matroska_configuration;
-pub use matroska::{MatroskaElement, MatroskaSample, MatroskaTrack, MatroskaVideo};
+pub use matroska::{
+    MatroskaDecodeSpan, MatroskaDurationSource, MatroskaElement, MatroskaPresentation,
+    MatroskaSample, MatroskaSelection, MatroskaSelectionLimits, MatroskaTrack, MatroskaVideo,
+};
 mod timeline;
 pub use timeline::{
     MovieDecodeSpan, MovieEditSelection, MovieGap, MovieGapKind, MovieInterval,

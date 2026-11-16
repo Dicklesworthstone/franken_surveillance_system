@@ -22,6 +22,11 @@ use std::ops::Range;
 
 mod probe;
 pub(crate) use probe::probe_configuration;
+mod timeline;
+pub use timeline::{
+    MatroskaDecodeSpan, MatroskaDurationSource, MatroskaPresentation, MatroskaSelection,
+    MatroskaSelectionLimits,
+};
 
 const EBML: u32 = 0x1A45_DFA3;
 const SEGMENT: u32 = 0x1853_8067;
@@ -109,6 +114,9 @@ pub struct MatroskaVideo<'a> {
     length_bytes: usize,
     parameter_sets: Vec<Range<usize>>,
     samples: Vec<MatroskaSample>,
+    // Separate from the historical sample/manifest ABI; explicit selection owns timing.
+    track_timing: timeline::TrackTiming,
+    block_timing: Vec<timeline::BlockTiming>,
     elements: Vec<MatroskaElement>,
     tail: Option<usize>,
     elements_visited: usize,
@@ -274,12 +282,13 @@ impl<'a> MatroskaVideo<'a> {
             parameter_sets: &parameter_sets,
         };
         let mut samples = Vec::new();
+        let mut block_timing = Vec::new();
         for cluster in level_one.iter().filter(|e| e.id == CLUSTER) {
             let kids = children(&mut r, cluster.data.clone(), true)?;
-            cluster_frames(&mut r, kids, true, &frames, &mut samples)?;
+            cluster_frames(&mut r, kids, true, &frames, &mut samples, &mut block_timing)?;
         }
         if let Some((_, kids)) = partial {
-            cluster_frames(&mut r, kids, false, &frames, &mut samples)?;
+            cluster_frames(&mut r, kids, false, &frames, &mut samples, &mut block_timing)?;
         }
         if samples.is_empty() {
             return Err(DemuxError::Layout);
@@ -296,6 +305,8 @@ impl<'a> MatroskaVideo<'a> {
             length_bytes,
             parameter_sets,
             samples,
+            track_timing: selection.timing,
+            block_timing,
             elements,
             tail,
             elements_visited: r.boxes,
@@ -695,6 +706,7 @@ struct Selection {
     private: Element,
     dimensions: [u16; 2],
     tracks: Vec<MatroskaTrack>,
+    timing: timeline::TrackTiming,
 }
 
 /// Lists every TrackEntry and selects one video track: the only one, or `track`.
@@ -718,8 +730,10 @@ fn select_track(
         let (mut number, mut kind, mut codec, mut private, mut video) =
             (None, None, None, None, None);
         let mut transformed = false;
+        let mut timing = timeline::TrackTiming::default();
         for child in children(r, entry.data.clone(), false)? {
             let b = &r.bytes[child.data.clone()];
+            timing.observe(child.id, b);
             match child.id {
                 TRACK_NUMBER => set_once(&mut number, child.id, uint(b, 0)?)?,
                 TRACK_TYPE => set_once(&mut kind, child.id, uint(b, 0)?)?,
@@ -781,18 +795,20 @@ fn select_track(
                 dimension(width, PIXEL_WIDTH)?,
                 dimension(height, PIXEL_HEIGHT)?,
             ],
+            timing,
         ));
     }
     if track.is_none() && videos != 1 {
         return Err(DemuxError::TrackSelection);
     }
-    let (number, codec, private, dimensions) = selected.ok_or(DemuxError::TrackSelection)?;
+    let (number, codec, private, dimensions, timing) = selected.ok_or(DemuxError::TrackSelection)?;
     Ok(Selection {
         number,
         codec,
         private,
         dimensions,
         tracks: listed,
+        timing,
     })
 }
 
@@ -825,9 +841,11 @@ fn cluster_frames(
     complete: bool,
     frames: &Frames<'_>,
     samples: &mut Vec<MatroskaSample>,
+    timings: &mut Vec<timeline::BlockTiming>,
 ) -> Result<(), DemuxError> {
     let mut base = None;
     for child in kids {
+        let mut timing = timeline::BlockTiming::default();
         let (block, keyframe) = match child.id {
             CLUSTER_TIMESTAMP => {
                 let value = uint(&r.bytes[child.data.clone()], 0)?;
@@ -840,9 +858,11 @@ fn cluster_frames(
                 (child.data, flags & 0x80 != 0)
             }
             BLOCK_GROUP => {
+                timing.is_group = true;
                 let mut block = None;
                 let mut referenced = false;
                 for part in children(r, child.data.clone(), true)? {
+                    timing.observe(part.id, &r.bytes[part.data.clone()]);
                     match part.id {
                         BLOCK => set_once(&mut block, part.id, part.data)?,
                         REFERENCE_BLOCK => referenced = true,
@@ -886,6 +906,8 @@ fn cluster_frames(
             frames.parameter_sets,
             frame.clone(),
         )?;
+        timings.try_reserve(1).map_err(|_| DemuxError::Limit)?;
+        timings.push(timing);
         samples.push(MatroskaSample {
             index: samples.len(),
             source: frame,

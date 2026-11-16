@@ -149,7 +149,8 @@ pub use mjpeg::{
     OmissionReason, OmissionSpan, split_jpeg_stream,
 };
 pub use retained::{
-    RetainedFileImport, RetainedMovieSelection, RetainedReadLimits, VerifiedChunkCache,
+    RetainedFileImport, RetainedMatroskaSelection, RetainedMovieSelection, RetainedReadLimits,
+    VerifiedChunkCache,
 };
 
 /// Native JPEG RGB through privacy projection, resize and frozen neural graph execution.

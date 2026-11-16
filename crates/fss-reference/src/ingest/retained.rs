@@ -5,9 +5,11 @@
 //! A published root without final import authority is not a completed import. Custody of a
 //! recorded file never certifies live coverage, capture-time precision, or absence.
 
+mod matroska;
 mod movie;
 mod root_binding;
 
+pub use matroska::RetainedMatroskaSelection;
 pub use movie::{MAX_MOVIE_ORIGIN_READ_BYTES, RetainedMovieSelection};
 
 use super::{

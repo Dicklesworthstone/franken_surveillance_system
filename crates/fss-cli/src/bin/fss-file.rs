@@ -33,6 +33,8 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 mod localization_replay;
 #[path = "fss-file/localize.rs"]
 mod localize;
+#[path = "fss-file/matroska.rs"]
+mod matroska;
 #[path = "fss-file/media.rs"]
 mod media;
 #[path = "fss-file/movie.rs"]
@@ -46,7 +48,7 @@ mod replay_time;
 #[path = "fss-file/source_read.rs"]
 mod source_read;
 
-const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
+const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-movie|select-matroska|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
   Query retained recorder timestamps without the archive: fss-file query-replay-utc --help.\n\
   Source commands also accept --manifest-out FILE.\n\
@@ -77,13 +79,19 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
   inspect/verify: --import-id sha256:HEX\n\
           Recorder imports expose verified retained replay metadata, including requested and\n\
           acknowledged UTC ranges; verify also reconstructs every original recording.\n\
-          inspect/verify/extract/select-movie use immutable custody alongside an open writer.\n\
+          inspect/verify/extract/select-movie/select-matroska use immutable custody alongside an open writer.\n\
           [--max-read-bytes N] [--max-read-objects N] bound metadata, payload and final rereads\n\
           together (defaults 1 GiB/1,000,000 attempts; maxima 4 GiB/4,000,000).\n\
           No journal recovery; no stdout or export before final validation; a cooperative\n\
           60-second deadline is checked at read boundaries, without preempting bounded work.\n\
-          Payload loss refuses verify/extract/select-movie, not metadata-only inspection.\n\
+          Payload loss refuses verify/extract/select-movie/select-matroska, not metadata-only inspection.\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
+  select-matroska: --import-id sha256:HEX --start-presentation-ns N --end-presentation-ns N\n\
+          Selects retained MKV Segment presentation nanoseconds, independent of capture time.\n\
+          Reports source-linked frames, gaps, unknown final duration and bounded decode preroll.\n\
+          Uses immutable custody and shared read limits; preserves all capture-time uncertainty.\n\
+          [--selection-work-units N] [--max-selection-rows N]\n\
+          [--max-decode-samples N] [--max-decode-bytes N]\n\
   select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
           Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
           Verifies retained source bytes; reports exact rational presentation intervals,\n\
@@ -203,6 +211,7 @@ enum Action {
     },
     Media(media::Action),
     Movie(movie::Action),
+    Matroska(matroska::Action),
     Localize(Box<localize::Action>),
     LocalizationReplay(localization_replay::Action),
 }
@@ -262,14 +271,14 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
     }
     if !matches!(
         command,
-        "import" | "import-ts" | "inspect" | "verify" | "extract" | "select-movie"
+        "import" | "import-ts" | "inspect" | "verify" | "extract" | "select-movie" | "select-matroska"
     ) && !media::is_command(command)
         && command != "localize"
         && !localization_replay::is_command(command)
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
-            "expected import, import-ts, inspect, verify, extract, select-movie, export-movie or a decoded-media command"
+            "expected import, import-ts, inspect, verify, extract, select-movie, select-matroska, export-movie or a decoded-media command"
                 .to_owned(),
         ));
     }
@@ -316,6 +325,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 && matches!(key, "--max-read-bytes" | "--max-read-objects"))
             || media::accepts_option(command, key)
             || movie::accepts_option(command, key)
+            || matroska::accepts_option(command, key)
             || localize::accepts_option(command, key)
             || localization_replay::accepts_option(command, key);
         if !allowed {
@@ -507,6 +517,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 output: PathBuf::from(value(&values, "--output")?),
             },
             "select-movie" => Action::Movie(movie::parse(identity, &values)?),
+            "select-matroska" => Action::Matroska(matroska::parse(identity, &values)?),
             "localize" => Action::Localize(Box::new(localize::parse(identity, limits, &values)?)),
             _ => Action::Media(media::parse(command, identity, limits, &values)?),
         }
@@ -550,7 +561,7 @@ fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     if matches!(
         &options.action,
-        Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_)
+        Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) | Action::Matroska(_)
     ) {
         return source_read::run(&options, out);
     }
@@ -630,7 +641,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                     }
                 }
             }
-            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) => {
+            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) | Action::Matroska(_) => {
                 return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => (action.identity(), action.name()),
@@ -657,7 +668,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
                 writeln!(out, "verified_source_sha256={verified}")?;
             }
-            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) => {
+            Action::Inspect(_) | Action::Verify(_) | Action::Extract { .. } | Action::Movie(_) | Action::Matroska(_) => {
                 return Err("source reads require the immutable inspection path".into());
             }
             Action::Media(action) => {

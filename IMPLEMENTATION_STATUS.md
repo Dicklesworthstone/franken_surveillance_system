@@ -4,6 +4,35 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Retained Matroska presentation selection — 2026-11-16
+
+The native Matroska parser, retained source reader and `fss-file select-matroska`
+now provide bounded selection by half-open Segment presentation nanoseconds for
+AVC/HEVC originals. Results preserve exact source frame indices/ranges, display
+order, duration provenance, gaps, unknown final ends and required coding-order
+preroll. BlockDuration and DefaultDuration retain their distinct units; absent
+final duration stays unresolved. Capture time and continuity claims are unchanged.
+
+The retained path admits and authenticates the entire original, reparses its
+selected track, verifies every retained frame index/range/digest, then revalidates
+completion/root custody before release. The command uses the immutable reader
+alongside an active writer, shares cumulative read limits and buffers the complete
+report so refusals publish no success-looking rows or optional manifest export.
+
+Independent source review caught a concrete HEVC CRA/leading-RASL dependency
+problem in the checked-in fixture. The implemented correction keeps the earlier
+IDR across CRA, admits HEVC IDR types 19/20 as starts, and refuses a BLA chain until
+a later IDR. An exact fixture regression requires samples 0–5 to recover the
+leading picture at 728 ms; a CRC-resealed BLA mutation exercises refusal.
+
+Twenty-one authored tests cover native timing/dependencies, retained index/custody
+checks and CLI behavior, including path deletion, an active writer, exact limits,
+source/history loss and cancellation. Source/API review completed; these new
+Matroska tests have not yet been compiled or executed. The hosted ONNX evidence
+below applies only to its identified earlier commit. See
+[retained Matroska selection](docs/RETAINED_MATROSKA_SELECTION.md) for usage and
+test commands. Broad media/container qualification remains open.
+
 ## Tiled broadcast MatMul — 2026-11-16
 
 The optimized CPU executor now prepares nonempty F32 MatMul as bounded 4-by-8
@@ -40,16 +69,23 @@ executors, independent ordered arithmetic, actual canonical/Safetensors reload,
 constant operands, legacy graph bytes, malformed inputs, exact limits and every
 import cancellation checkpoint. See [ONNX import](docs/onnx_import.md#vector-matmul).
 
-**Verification boundary:** source reviewed independently; these new tests have
-not been compiled or executed. Before these edits, pinned
-`cargo check --locked --offline -p fss-model-ir -p fss-container --lib` passed on
-the unchanged baseline. Attempts to compile existing execution tests were killed
-by the runner's memory limit, after which the execution environment became
-unavailable. That baseline check does not validate this change. Run:
+**Observed verification:** supplementary GitHub Actions
+[run 43786125301](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43786125301)
+tested vector checkpoint `dab0ce3b11e4e960e1d13dbba7f116ce598d3b4c` on the
+pinned nightly. The complete attention/import target passed 88 tests, including
+all six new vector cases; ONNX package import passed 19, ONNX CLI passed 14,
+and native ONNX import execution passed 12. The broader Rust qualification step
+failed its policy prerequisites (existing dependency, registry/schema, domain and
+documentation drift), and the complete Model IR package step was skipped.
+These results do not cover later tiled-kernel, Gather or Matroska changes and do
+not establish local DSR/release qualification.
+
+The local baseline library check had passed before edits. Local test compilation
+was then killed for memory use and the execution environment became unavailable;
+hosted feedback supplies the scoped execution evidence above.
 
 ```sh
-cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
-  --test onnx_attention_execution matmul_vectors
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution matmul_vectors
 ```
 
 This is implementation progress under FSS-139 (`fss-x4a.14.10`) and the frozen
