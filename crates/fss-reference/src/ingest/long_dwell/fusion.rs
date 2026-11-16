@@ -31,8 +31,30 @@ impl LongDwellReport {
     /// This check applies to empty scans and performs no staging, repair or publication.
     pub fn revalidate_derived_source(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
+    ) -> Result<()> {
+        self.revalidate_source(deployment, cx, true)
+    }
+
+    /// Revalidate the original source for a read-only diagnostic preview.
+    ///
+    /// Findings and incomplete health screening remain visible in the native report.
+    /// They still block class advice and publication; this only verifies custody, privacy
+    /// and the exact original owner/authority before a caller may deliver that report.
+    pub fn revalidate_preview_source(
+        &self,
+        deployment: &dyn RetainedSource,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        self.revalidate_source(deployment, cx, false)
+    }
+
+    fn revalidate_source(
+        &self,
+        deployment: &dyn RetainedSource,
+        cx: &ReplayCx,
+        require_health_clearance: bool,
     ) -> Result<()> {
         checkpoint(cx, "long_dwell:derived_source")?;
         if deployment.root() != self.root.as_path()
@@ -43,7 +65,7 @@ impl LongDwellReport {
         {
             return Err(WatchError::Conflict);
         }
-        if self.publication_blocked() {
+        if require_health_clearance && self.publication_blocked() {
             return Err(WatchError::InvalidPlan(HEALTH_PUBLICATION_BLOCKED));
         }
         self.publication_guard.revalidate(deployment, cx)?;

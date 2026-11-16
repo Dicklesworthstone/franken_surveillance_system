@@ -134,13 +134,16 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     coverage pipeline generation binds the detector generation. Without it, output is unchanged.\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
-    Short entry previews without approval or retention use immutable retained custody while a\n\
-    capture writer is open. --max-read-bytes N and --max-read-objects N bound metadata, source reads and\n\
-    final verification together (default 1 GiB and 1,000,000 reads; maximum 4 GiB/4,000,000).\n\
-    Source, privacy and authority must still match before a report or export is delivered.\n\
+    Unapproved watch/dwell previews (short or whole recording, without checkpoints) use\n\
+    immutable retained custody while capture owns the writer. --max-read-bytes N and\n\
+    --max-read-objects N bound metadata, source reads and final verification together\n\
+    (default 1 GiB and 1,000,000 reads; maximum 4 GiB/4,000,000), with a cooperative 60 s deadline.\n\
+    Source, privacy and authority must still match before a complete report/export is delivered.\n\
+    Quiet scans and degraded-health diagnostics take the same final custody checks.\n\
+    Health findings remain readable but still block event publication and calibrated class advice.\n\
     Concurrent authority commits refuse the complete preview; retry at a stable committed head.\n\
-    These read limits apply only to unapproved short entry previews; their approval hints omit\n\
-    them. Event/retention approval or explicit incremental checkpointing may write deployment state.\n\
+    These limits supplement whole-scan budgets and require no approval, retention or checkpoint.\n\
+    Approval hints omit them. Event/retention approval and incremental checkpoints keep writer ownership.\n\
     Each prepared candidate lists the exact rerun\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\

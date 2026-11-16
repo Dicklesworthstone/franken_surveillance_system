@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Short entry previews over sealed custody while the capture publisher remains open.
+//! Entry and dwell previews over sealed custody while the capture publisher remains open.
 
 use std::time::Instant;
 
@@ -12,7 +12,7 @@ use super::*;
 pub(crate) fn run(action: &WatchAction, out: &mut impl Write) -> RunResult<()> {
     if !action.is_immutable_preview() {
         return Err(WatchError::InvalidPlan(
-            "immutable watch requires an unapproved short entry preview",
+            "immutable watch requires an unapproved, nonincremental preview",
         )
         .into());
     }
@@ -56,54 +56,109 @@ fn run_with(
     // immutable operation can acquire a publisher through this path.
     if !action.is_immutable_preview() {
         return Err(WatchError::InvalidPlan(
-            "immutable watch requires an unapproved short entry preview",
+            "immutable watch requires an unapproved, nonincremental preview",
         )
         .into());
     }
     super::super::detector::check_watch_fusion_mode(action.cascade.as_ref(), true, false)?;
-    let (profile, package) = load_short_inputs(action, cx, scalar)?;
-    let mut cascade = short_cascade(action, package.as_ref(), scalar)?;
+    // Load pinned external models and profiles before opening any retained recording.
+    let inputs = match (&action.stream_watch, &action.stream_dwell) {
+        (Some(_), None) => PreviewInputs::Whole(whole::Inputs::load(
+            action, whole::Scope::Watch, cx, scalar,
+        )?),
+        (None, Some(_)) => PreviewInputs::Whole(whole::Inputs::load(
+            action, whole::Scope::Dwell, cx, scalar,
+        )?),
+        (None, None) => {
+            if action.health_screen && action.dwell.is_some() {
+                return Err(WatchError::InvalidPlan(
+                    "short dwell sensor-health screening is unsupported",
+                ).into());
+            }
+            let (profile, package) = load_short_inputs(action, cx, scalar)?;
+            PreviewInputs::Short { profile, package }
+        }
+        _ => return Err(WatchError::InvalidPlan("choose one whole-recording analysis").into()),
+    };
     let source =
         ImmutableRetainedSource::open_cancellable(root, action.read_limits, cx, cancelled)?;
     if source.site_lineage() != action.site {
         return Err(WatchError::InvalidPlan("retained deployment site lineage mismatch").into());
     }
-    let plan = short_plan(action, &source, cx)?;
-    let report = WatchReport::analyze_with_health(
-        &source,
-        &plan,
-        &action.limits,
-        cascade.as_mut(),
-        action.options,
-        action
-            .health_screen
-            .then_some(RecordedHealthPolicy::ConservativeV1),
-        cx,
-    )?;
-    let fusion = match (&profile, cascade.as_ref()) {
-        (Some(profile), Some(cascade)) => Some(EventFusionReport::watch(
-            &report, cascade, profile, &source, cx,
-        )?),
-        (None, _) => None,
-        _ => return Err(EventFusionError::Scope.into()),
+    let json = match inputs {
+        PreviewInputs::Whole(inputs) => {
+            if let Some(limits) = &action.stream_watch {
+                let (report, fusion) = inputs.watch(action, &source, limits, cx, scalar)?;
+                let json = whole::render_watch(
+                    action, &report, source.current_anchor().commit_sequence, None, fusion.as_ref(),
+                )?;
+                // Diagnostic previews remain readable when health blocks publication.
+                // Fusion and the publishing owner retain their stricter health gates.
+                report.revalidate_preview_source(&source, cx)?;
+                json
+            } else {
+                let limits = action.stream_dwell.as_ref().ok_or(WatchError::InvalidPlan(
+                    "whole-recording dwell limits are missing",
+                ))?;
+                let (report, fusion) = inputs.dwell(action, &source, limits, cx, scalar)?;
+                let json = whole::render_dwell(
+                    action, &report, source.current_anchor().commit_sequence, None, fusion.as_ref(),
+                )?;
+                report.revalidate_preview_source(&source, cx)?;
+                json
+            }
+        }
+        PreviewInputs::Short { profile, package } => {
+            let mut cascade = short_cascade(action, package.as_ref(), scalar)?;
+            let plan = short_plan(action, &source, cx)?;
+            if let Some(rule) = action.dwell {
+                let report = DwellReport::analyze(
+                    &source, &plan, rule, &action.limits, cascade.as_mut(), action.options, cx,
+                )?;
+                let fusion = match (&profile, cascade.as_ref()) {
+                    (Some(profile), Some(cascade)) => Some(EventFusionReport::dwell(
+                        &report, cascade, profile, &source, cx,
+                    )?),
+                    (None, _) => None,
+                    _ => return Err(EventFusionError::Scope.into()),
+                };
+                let json = render_short_dwell(
+                    action, &report, source.current_anchor().commit_sequence, fusion.as_ref(),
+                )?;
+                report.revalidate_derived_source(&source, cx)?;
+                json
+            } else {
+                let report = WatchReport::analyze_with_health(
+                    &source,
+                    &plan,
+                    &action.limits,
+                    cascade.as_mut(),
+                    action.options,
+                    action.health_screen.then_some(RecordedHealthPolicy::ConservativeV1),
+                    cx,
+                )?;
+                let fusion = match (&profile, cascade.as_ref()) {
+                    (Some(profile), Some(cascade)) => Some(EventFusionReport::watch(
+                        &report, cascade, profile, &source, cx,
+                    )?),
+                    (None, _) => None,
+                    _ => return Err(EventFusionError::Scope.into()),
+                };
+                let json = render_short_watch(
+                    action, &report, &report, source.current_anchor().commit_sequence,
+                    fusion.as_ref(),
+                )?;
+                report.revalidate_derived_source(&source, cx)?;
+                json
+            }
+        }
     };
-    let json = format!(
-        "{}\n",
-        render_short_watch(
-            action,
-            &report,
-            &report,
-            source.current_anchor().commit_sequence,
-            fusion.as_ref(),
-        )?
-    );
+    let json = format!("{json}\n");
     if json.len() > super::super::MAX_ANALYSIS_REPORT_BYTES {
         return Err(WatchError::Limit.into());
     }
-    // Include every original and supporting capsule in final custody, even when the
-    // analysis was quiet, health-degraded or tolerant of a decode refusal. Budget and
-    // cancellation cannot turn failed verification into a successful report prefix.
-    report.revalidate_derived_source(&source, cx)?;
+    // Revalidate every source object actually read, including quiet frames and diagnostic
+    // support. Metadata, source reads and all final checks share this owner's original allowance.
     cx.checkpoint("watch_preview:delivery")?;
     source.revalidate_snapshot_metadata()?;
     source.revalidate()?;
@@ -112,6 +167,14 @@ fn run_with(
     }
     out.write_all(json.as_bytes())?;
     Ok(source.usage())
+}
+
+enum PreviewInputs {
+    Short {
+        profile: Option<EventFusionProfile>,
+        package: Option<RgbDetectorPackage>,
+    },
+    Whole(whole::Inputs),
 }
 
 #[cfg(test)]

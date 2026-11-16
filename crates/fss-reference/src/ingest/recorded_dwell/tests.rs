@@ -6,6 +6,7 @@ use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig};
 use crate::ingest::{CaptureHint, FileIngestAdapter, FileIngestRequest};
 use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+use crate::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, StreamId, TimestampNs};
 use std::fs;
@@ -404,6 +405,69 @@ fn cancellation_and_oversized_rerun_hint_return_no_partial_result() -> Test {
     let before = f.snapshot();
     f.cx.request_cancellation();
     assert!(f.analyze(rule()).is_err());
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn immutable_published_dwell_preview_rechecks_the_exact_retained_event_payload() -> Test {
+    let mut f = Fixture::new("immutable-published", &scene(None, false)?, true)?;
+    let mut report = f.analyze(rule())?;
+    let event = report.candidates()[0].event().clone();
+    let approval = report.candidates()[0].proposal_digest();
+    assert_eq!(
+        report.publish(&mut f.deployment, &BTreeSet::from([approval]), &f.cx)?,
+        1
+    );
+    let expected = f.analyze(rule())?;
+    let before = f.snapshot();
+    let sequence = f.deployment.current_anchor().commit_sequence;
+    let source = ImmutableRetainedSource::open(
+        f.deployment.root(),
+        ImmutableRetainedReadLimits {
+            snapshot: crate::agent_orient::OrientLimits::default(),
+            max_read_bytes: 64 * 1024 * 1024,
+            max_read_objects: 8192,
+        },
+        &f.cx,
+    )?;
+    let preview = DwellReport::analyze(
+        &source,
+        &f.plan,
+        rule(),
+        &WatchLimits::default(),
+        None,
+        WatchOptions::default(),
+        &f.cx,
+    )?;
+    assert_eq!(
+        preview.candidates()[0].status(),
+        WatchStatus::AlreadyPublished
+    );
+    assert_eq!(preview.candidates()[0].proposal_digest(), approval);
+    assert_eq!(
+        preview.to_json(sequence, None)?,
+        expected.to_json(sequence, None)?
+    );
+    preview.revalidate_derived_source(&source, &f.cx)?;
+    source.revalidate()?;
+    assert_eq!(f.snapshot(), before);
+
+    // The current-event payload is part of final read custody, not just a ledger witness.
+    let receipt = f.deployment.current_event_authority(&event.event_id)?.1;
+    let path = f
+        .deployment
+        .publisher()
+        .spool()
+        .object_path(receipt.event_object_digest);
+    let mut permissions = fs::metadata(&path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions)?;
+    fs::write(&path, b"damaged current dwell event")?;
+    assert!(source.revalidate().is_err());
+    assert!(f.analyze(rule()).is_err());
+    assert_eq!(fs::read(path)?, b"damaged current dwell event");
     assert_eq!(f.snapshot(), before);
     Ok(())
 }

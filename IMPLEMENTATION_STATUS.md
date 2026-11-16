@@ -5,6 +5,48 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Immutable temporal watch and dwell previews — 2026-11-16
+
+Unapproved `fss-event watch --stream-watch`, `--stream-dwell` and short dwell
+analyses now use the sealed retained source while capture owns the publisher.
+Whole-recording scans retain persistent foreground, tracking and temporal state,
+their native MJPEG/AVC/HEVC paths, existing detector/class-advice scope and
+whole-scan resource limits. Shared preparation and rendering keep preview and
+publishing report identities aligned.
+
+All modes buffer their complete report until final source, capsule, privacy,
+authority, snapshot metadata and registered-payload validation succeeds.
+Aggregate immutable-read budgets include these checks in addition to existing
+scan budgets. Quiet scans and health-degraded historical diagnostics receive
+the same custody validation. The new diagnostic source check allows those
+findings to be displayed; the original health gates for class advice and event
+publication remain strict. Approval, retention and incremental checkpoints keep
+the exclusive publisher. Short dwell still refuses health screening.
+
+Short-dwell previews verify any already-published current event through its
+canonical payload and full revision lineage. Late current-event damage cannot
+be accepted from a matching ledger witness alone. The original concrete
+publication-time status check remains unchanged.
+
+Four new CLI temporal contracts cover active-writer short/whole dwell and
+whole-watch report parity, MJPEG candidates beyond frame 128, AVC/HEVC paths,
+degraded diagnostics, exact final-read budgets, cancellation and late quiet
+capsule/source damage. Parser coverage retains mutation/checkpoint exclusion.
+A native dwell regression covers already-published parity and current-event
+damage; existing long-dwell fusion contracts now cover immutable advice parity,
+stale authority and health-strict advice alongside readable diagnostics.
+Explicit error conversions in extracted report helpers were corrected during
+cross-module review.
+
+Independent source reviews completed. Pinned formatting passed for the native
+owners and fusion helpers before a final scan-error compatibility adjustment.
+Formatting of that adjustment and the final CLI extension, full changed-crate compilation and these new tests remain unverified: the recovered host
+again exhausted shared disk/memory capacity before an isolated Cargo check
+could start, then became unavailable. Hosted checks had no completed execution
+result when inspected. No release qualification, broad bead closure, dependency
+change or weakened acceptance gate is claimed.
+
+
 ## Immutable two-camera corroboration previews — 2026-11-16
 
 Unapproved short `fss-event corroborate` previews now read through the sealed

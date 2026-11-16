@@ -408,7 +408,7 @@ fn an_uncommitted_journal_tail_refuses_without_recovery_or_a_partial_report() ->
 }
 
 #[test]
-fn read_allowances_never_route_publication_or_temporal_work_to_an_immutable_owner() -> Test {
+fn read_allowances_cover_temporal_previews_but_never_mutation_or_checkpoints() -> Test {
     let root = Path::new("/existing/deployment");
     let import = ContentDigest::sha256(b"request-only fixture");
     let base = request_args(root, import, "gray", "door:64,0,32,32");
@@ -419,26 +419,34 @@ fn read_allowances_never_route_publication_or_temporal_work_to_an_immutable_owne
         "--max-read-objects".into(),
         "100".into(),
     ]);
-    let action = super::super::parse(&preview)?;
-    assert!(action.is_immutable_preview());
-    assert_eq!(action.read_limits.max_read_bytes, 4096);
-    assert_eq!(action.read_limits.max_read_objects, 100);
-    assert!(
-        !action.rerun.contains("--max-read-"),
-        "approval hint carries preview-only options"
-    );
+    for suffix in [
+        vec![],
+        vec!["--stream-watch"],
+        vec!["--dwell-for-ns", "100", "--dwell-max-gap-ns", "200"],
+        vec!["--stream-dwell", "--dwell-for-ns", "100", "--dwell-max-gap-ns", "200"],
+    ] {
+        let mut args = preview.clone();
+        args.extend(suffix.iter().map(|value| OsString::from(*value)));
+        let action = super::super::parse(&args)?;
+        assert!(action.is_immutable_preview());
+        assert_eq!(action.read_limits.max_read_bytes, 4096);
+        assert_eq!(action.read_limits.max_read_objects, 100);
+        assert!(
+            !action.rerun.contains("--max-read-"),
+            "approval hint carries preview-only options"
+        );
+    }
     let approval = import.to_text();
     for suffix in [
         vec!["--approve", approval.as_str()],
         vec!["--retain-coverage", approval.as_str()],
-        vec!["--stream-watch"],
-        vec!["--dwell-for-ns", "100", "--dwell-max-gap-ns", "200"],
         vec![
-            "--stream-dwell",
-            "--dwell-for-ns",
-            "100",
-            "--dwell-max-gap-ns",
-            "200",
+            "--stream-watch", "--sensor-health", "conservative-v1",
+            "--retain-health", approval.as_str(),
+        ],
+        vec![
+            "--stream-dwell", "--dwell-for-ns", "100", "--dwell-max-gap-ns", "200",
+            "--dwell-step-frames", "4",
         ],
     ] {
         let mut legacy = base.clone();
@@ -455,3 +463,6 @@ fn read_allowances_never_route_publication_or_temporal_work_to_an_immutable_owne
     }
     Ok(())
 }
+
+#[path = "immutable_temporal_tests.rs"]
+mod temporal;

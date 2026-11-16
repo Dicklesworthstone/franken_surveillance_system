@@ -23,7 +23,7 @@ impl EventFusionReport {
         native: &fss_reference::ingest::recorded_dwell::DwellReport,
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;

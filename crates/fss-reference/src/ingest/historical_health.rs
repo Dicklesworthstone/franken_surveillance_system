@@ -397,7 +397,7 @@ pub struct HistoricalHealthDiagnostic {
 impl HistoricalHealthDiagnostic {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn from_scan(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: ScanRule,
         options: WatchOptions,
@@ -457,7 +457,7 @@ impl HistoricalHealthDiagnostic {
             read_retained_at(
                 deployment.ledger().batches(),
                 record.digest(),
-                |digest, bound| Ok(deployment.publisher().spool().read_bounded(digest, bound)?),
+                |digest, bound| Ok(deployment.read_object_bounded(digest, bound)?),
             )?;
         }
         Ok(Self {

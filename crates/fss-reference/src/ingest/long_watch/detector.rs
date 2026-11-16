@@ -29,7 +29,7 @@ use crate::ingest::rgb_detections::RgbDetectionBudget;
 use crate::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
 use crate::ingest::tolerant_decode::{TolerantItem, TolerantRequest, TolerantSource};
 use crate::ingest::tracker::TrackStatus;
-use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ReplayCx, RetainedSource, ScalarExecCx};
 
 pub mod recipe;
 pub use recipe::LongWatchDetectorRecipe;
@@ -255,7 +255,7 @@ impl AnalysisBudget {
 }
 
 pub(super) fn run(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     options: WatchOptions,
     scan: &ScanData,
@@ -286,7 +286,7 @@ pub(super) fn run(
 /// multi-camera caller passes the same allowance to every camera in its retained plan order.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ingest) fn run_selected(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     options: WatchOptions,
     scan: &ScanData,

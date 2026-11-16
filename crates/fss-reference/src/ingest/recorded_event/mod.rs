@@ -19,8 +19,8 @@ use fss_core::{
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationError, SlotName};
 
-use super::analysis::{AnalysisBudget, AnalysisError, AnalysisLimits, AnalysisReport};
 use super::FileIngestError;
+use super::analysis::{AnalysisBudget, AnalysisError, AnalysisLimits, AnalysisReport};
 use crate::retained_source::RetainedSource;
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
@@ -294,7 +294,7 @@ fn event_manifest(event: &EventHypothesis) -> Result<ObjectManifest> {
 
 // Read the current event through its authoritative object revision, never an unanchored file.
 // Historical revisions are checked with the event owner's full chain verifier.
-fn load_event(
+pub(super) fn load_event(
     deployment: &dyn RetainedSource,
     id: &EventId,
     cx: &ReplayCx,

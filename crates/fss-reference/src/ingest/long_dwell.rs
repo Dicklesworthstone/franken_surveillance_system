@@ -44,6 +44,7 @@ use super::zone_dwell::{DwellError, DwellPolicy, DwellSample, MAX_DWELL_EPISODES
 use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+    RetainedSource,
 };
 
 mod classify;
@@ -608,7 +609,7 @@ impl Scan<'_, '_> {
     #[allow(clippy::too_many_arguments)]
     fn inter_frames(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         first_capsule: &SensorCapsule,
         options: WatchOptions,
         end: usize,
@@ -1022,6 +1023,15 @@ impl ScanRule {
     }
 }
 
+// Keep the operational ledger owner's established error family while admitting immutable
+// source owners through the same final-head contract.
+fn verify_scan_head(deployment: &dyn RetainedSource) -> Result<()> {
+    deployment.verify_read_head().map_err(|error| match error {
+        super::FileIngestError::Reference(error) => WatchError::Reference(Box::new(error)),
+        error => WatchError::from(error),
+    })
+}
+
 fn source_read_error(error: WatchError) -> WatchError {
     if let WatchError::Decode(decode) = &error
         && let RecordedDecodeError::Source(source) = decode.as_ref()
@@ -1066,7 +1076,7 @@ pub(super) struct ScanData {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_scan(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     rule: ScanRule,
     options: WatchOptions,
@@ -1079,7 +1089,7 @@ pub(super) fn run_scan(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_zone_observed_scan(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     options: WatchOptions,
     limits: &LongDwellLimits,
@@ -1101,7 +1111,7 @@ pub(super) fn run_zone_observed_scan(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_observed_scan(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     options: WatchOptions,
     limits: &LongDwellLimits,
@@ -1133,7 +1143,7 @@ struct ScanPreparation {
 }
 
 fn prepare_scan(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     rule: ScanRule,
     options: WatchOptions,
@@ -1164,10 +1174,7 @@ fn prepare_scan(
         rule.validate().map_err(dwell_error)?;
     }
     limits.validate()?;
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(ReferenceError::from)?;
+    verify_scan_head(deployment)?;
     let retained = RetainedFileImport::open(
         deployment,
         plan.import_identity,
@@ -1322,7 +1329,7 @@ fn start_scan<'a, 'observer>(
 #[allow(clippy::too_many_arguments)]
 fn scan_mjpeg_range(
     scan: &mut Scan<'_, '_>,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     prepared: &ScanPreparation,
     options: WatchOptions,
     first: usize,
@@ -1414,7 +1421,7 @@ fn scan_mjpeg_range(
 #[allow(clippy::too_many_arguments)]
 fn finish_scan(
     scan: Scan<'_, '_>,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     prepared: &ScanPreparation,
     plan: &WatchPlan,
     rule: ScanRule,
@@ -1446,10 +1453,7 @@ fn finish_scan(
         return Err(RecordedDecodeError::Unavailable.into());
     }
     let (episodes, entries) = temporal.finish()?;
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(ReferenceError::from)?;
+    verify_scan_head(deployment)?;
     let health = health.map(|screen| screen.finish(plan.segment_count));
     // An entirely refused screened request still has historical source timing assertions, but
     // no screened-frame interval. Bind its requested capsule-hint hull explicitly; consumers
@@ -1526,7 +1530,7 @@ fn finish_scan(
 
 #[allow(clippy::too_many_arguments)]
 fn run_scan_inner(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     rule: ScanRule,
     options: WatchOptions,
@@ -1587,7 +1591,7 @@ impl LongDwellReport {
     /// Decode a whole native recording, preserving foreground/tracker/dwell state between frames.
     /// No 128-frame windows, model calls, pixel history, implicit retries, or coverage claims.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: DwellPolicy,
         options: WatchOptions,
@@ -1601,7 +1605,7 @@ impl LongDwellReport {
     /// Findings preserve diagnostic candidates but block publication of the entire request.
     /// No finding is a diagnosis; a complete screen with no findings is not proof of health.
     pub fn analyze_screened(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: DwellPolicy,
         options: WatchOptions,
@@ -1616,7 +1620,7 @@ impl LongDwellReport {
     /// work share one whole-invocation allowance. Publication retains the exact model package.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_detector(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: DwellPolicy,
         options: WatchOptions,
@@ -1639,7 +1643,7 @@ impl LongDwellReport {
 
     #[allow(clippy::too_many_arguments)]
     fn analyze_inner(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: DwellPolicy,
         options: WatchOptions,
@@ -1674,7 +1678,7 @@ impl LongDwellReport {
     }
 
     fn from_scan(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: DwellPolicy,
         options: WatchOptions,
@@ -2139,10 +2143,7 @@ pub(super) fn slot(prefix: &str, digest: ContentDigest) -> Result<SlotName> {
     SlotName::parse(&format!("{prefix}-{}", hex(digest)))
         .map_err(|_| WatchError::InvalidPlan("long dwell slot"))
 }
-pub(super) fn event_status(
-    d: &ReferenceDeployment,
-    event: &EventHypothesis,
-) -> Result<WatchStatus> {
+pub(super) fn event_status(d: &dyn RetainedSource, event: &EventHypothesis) -> Result<WatchStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
     let Some(current) = d.ledger().current().objects.get(&object) else {
         return Ok(WatchStatus::Prepared);
@@ -2163,7 +2164,7 @@ pub(super) fn event_status(
 }
 #[allow(clippy::too_many_arguments)]
 fn prepare_candidate(
-    d: &ReferenceDeployment,
+    d: &dyn RetainedSource,
     episode: Episode,
     plan: &WatchPlan,
     analysis_root: ContentDigest,

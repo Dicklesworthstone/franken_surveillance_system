@@ -146,6 +146,6 @@ impl ShortInputs {
             }
             None => json,
         };
-        super::super::detector::with_fusion(json, fusion)
+        Ok(super::super::detector::with_fusion(json, fusion)?)
     }
 }
