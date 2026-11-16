@@ -22,6 +22,7 @@ use std::ops::Range;
 
 mod probe;
 pub(crate) use probe::probe_configuration;
+mod timeline;
 
 const EBML: u32 = 0x1A45_DFA3;
 const SEGMENT: u32 = 0x1853_8067;
@@ -41,6 +42,10 @@ const TIMESTAMP_SCALE: u32 = 0x2A_D7B1;
 const TRACK_ENTRY: u32 = 0xAE;
 const TRACK_NUMBER: u32 = 0xD7;
 const TRACK_TYPE: u32 = 0x83;
+const DEFAULT_DURATION: u32 = 0x23_E383;
+const TRACK_TIMESTAMP_SCALE: u32 = 0x23_314F;
+const CODEC_DELAY: u32 = 0x56AA;
+const SEEK_PRE_ROLL: u32 = 0x56BB;
 const CODEC_ID: u32 = 0x86;
 const CODEC_PRIVATE: u32 = 0x63A2;
 const VIDEO: u32 = 0xE0;
@@ -53,6 +58,7 @@ const SIMPLE_BLOCK: u32 = 0xA3;
 const BLOCK_GROUP: u32 = 0xA0;
 const BLOCK: u32 = 0xA1;
 const REFERENCE_BLOCK: u32 = 0xFB;
+const BLOCK_DURATION: u32 = 0x9B;
 
 /// TimestampScale when Info omits it: one millisecond per tick.
 const DEFAULT_TIMESTAMP_SCALE: u64 = 1_000_000;
@@ -67,12 +73,23 @@ pub struct MatroskaSample {
     /// Cluster timestamp plus the block's signed offset, in TimestampScale ticks: a
     /// presentation time, not a capture clock.
     pub timestamp: i64,
+    /// Explicit BlockDuration in Track Ticks, before TimestampScale conversion. Only
+    /// BlockGroup can carry this field; a SimpleBlock uses the track's DefaultDuration.
+    pub block_duration_ticks: Option<u64>,
+    /// Explicit presentation duration in nanoseconds: BlockDuration times TimestampScale,
+    /// or DefaultDuration for a SimpleBlock. No next-timestamp duration is invented.
+    /// Kept wide so a source's unsigned tick product cannot wrap during parsing. Unsupported
+    /// nonunit track timing must still be refused before using this value for selection.
+    pub duration_ns: Option<u128>,
     /// Container keyframe assertion (SimpleBlock keyframe flag, or a BlockGroup without a
     /// ReferenceBlock), not proof of a decodable picture.
     pub keyframe: bool,
     /// A random-access picture NAL was present in the validated frame: an H.264 IDR slice or an
     /// H.265 IRAP slice segment.
     pub contains_idr: bool,
+    /// The block carries additional timing or codec data that this timeline profile cannot
+    /// apply. Ordinal source custody remains available; time selection refuses the track.
+    pub timeline_unsupported: bool,
 }
 
 /// One top-level region with its exact byte extent: the EBML header, the Segment header (ID and
@@ -100,11 +117,14 @@ pub struct MatroskaTrack {
 #[derive(Debug)]
 pub struct MatroskaVideo<'a> {
     source: &'a [u8],
+    limits: DemuxLimits,
     doc_type: &'static str,
     codec: VideoCodec,
     track: u64,
     tracks: Vec<MatroskaTrack>,
     timestamp_scale: u64,
+    default_duration: Option<u64>,
+    timeline_supported: bool,
     dimensions: [u16; 2],
     length_bytes: usize,
     parameter_sets: Vec<Range<usize>>,
@@ -272,6 +292,8 @@ impl<'a> MatroskaVideo<'a> {
             codec: selection.codec,
             length_bytes,
             parameter_sets: &parameter_sets,
+            timestamp_scale,
+            default_duration: selection.default_duration,
         };
         let mut samples = Vec::new();
         for cluster in level_one.iter().filter(|e| e.id == CLUSTER) {
@@ -287,11 +309,14 @@ impl<'a> MatroskaVideo<'a> {
         r.checkpoint()?;
         Ok(Self {
             source,
+            limits,
             doc_type,
             codec: selection.codec,
             track: selection.number,
             tracks: selection.tracks,
             timestamp_scale,
+            default_duration: selection.default_duration,
+            timeline_supported: selection.timeline_supported,
             dimensions: selection.dimensions,
             length_bytes,
             parameter_sets,
@@ -326,6 +351,11 @@ impl<'a> MatroskaVideo<'a> {
     /// Nanoseconds per block-timestamp tick; not a UTC or sensor clock.
     pub const fn timestamp_scale_ns(&self) -> u64 {
         self.timestamp_scale
+    }
+    /// Explicit DefaultDuration in nanoseconds, independent of TimestampScale. Absence is
+    /// preserved; the parser does not estimate duration from later presentation timestamps.
+    pub const fn default_duration_ns(&self) -> Option<u64> {
+        self.default_duration
     }
     /// Track PixelWidth and PixelHeight, not decoder-verified dimensions.
     pub const fn dimensions(&self) -> [u16; 2] {
@@ -624,6 +654,14 @@ fn set_once<T>(slot: &mut Option<T>, id: u32, value: T) -> Result<(), DemuxError
     Ok(())
 }
 
+/// Timing metadata did not govern ordinal import admission. Preserve that boundary while
+/// recording whether a new timeline operation can use an unambiguous unsigned field.
+fn timing_uint(slot: &mut Option<u64>, id: u32, bytes: &[u8]) -> bool {
+    uint(bytes, 0)
+        .and_then(|value| set_once(slot, id, value))
+        .is_ok()
+}
+
 /// An unsigned integer element; empty data denotes `default`.
 fn uint(b: &[u8], default: u64) -> Result<u64, DemuxError> {
     if b.is_empty() {
@@ -695,6 +733,8 @@ struct Selection {
     private: Element,
     dimensions: [u16; 2],
     tracks: Vec<MatroskaTrack>,
+    default_duration: Option<u64>,
+    timeline_supported: bool,
 }
 
 /// Lists every TrackEntry and selects one video track: the only one, or `track`.
@@ -718,6 +758,12 @@ fn select_track(
         let (mut number, mut kind, mut codec, mut private, mut video) =
             (None, None, None, None, None);
         let mut transformed = false;
+        let mut default_duration = None;
+        let mut track_scale = None;
+        let mut codec_delay = None;
+        let mut seek_pre_roll = None;
+        let mut track_offset = None;
+        let mut timing_valid = true;
         for child in children(r, entry.data.clone(), false)? {
             let b = &r.bytes[child.data.clone()];
             match child.id {
@@ -726,6 +772,23 @@ fn select_track(
                 CODEC_ID => set_once(&mut codec, child.id, text(b))?,
                 CODEC_PRIVATE => set_once(&mut private, child.id, child.clone())?,
                 VIDEO => set_once(&mut video, child.id, child.clone())?,
+                DEFAULT_DURATION => {
+                    timing_valid &= timing_uint(&mut default_duration, child.id, b);
+                }
+                TRACK_TIMESTAMP_SCALE => {
+                    timing_valid &= set_once(&mut track_scale, child.id, b).is_ok();
+                }
+                CODEC_DELAY => {
+                    timing_valid &= timing_uint(&mut codec_delay, child.id, b);
+                }
+                SEEK_PRE_ROLL => {
+                    timing_valid &= timing_uint(&mut seek_pre_roll, child.id, b);
+                }
+                // Reclaimed TrackOffset: do not silently interpret a historical shifted
+                // timeline as the unshifted Segment timeline.
+                0x537F => {
+                    timing_valid &= set_once(&mut track_offset, child.id, b).is_ok();
+                }
                 CONTENT_ENCODINGS | TRACK_OPERATION => transformed = true,
                 _ => {}
             }
@@ -750,6 +813,14 @@ fn select_track(
         if transformed {
             return Err(DemuxError::Unsupported);
         }
+        // RFC 9559 section 11.1 distinguishes Segment and Track ticks. The new selector
+        // admits exactly unit track scaling and no codec delay/preroll/legacy offset.
+        // Nonunit or unrecognized representations remain importable as ordinal samples.
+        let timeline_supported = timing_valid
+            && track_scale.is_none_or(|b| b == 1.0_f32.to_be_bytes() || b == 1.0_f64.to_be_bytes())
+            && codec_delay.is_none_or(|n| n == 0)
+            && seek_pre_roll.is_none_or(|n| n == 0)
+            && track_offset.is_none_or(|b| b.len() <= 8 && b.iter().all(|v| *v == 0));
         let codec = match codec.ok_or(DemuxError::MissingBox(CODEC_ID.to_be_bytes()))? {
             b"V_MPEG4/ISO/AVC" => VideoCodec::Avc,
             b"V_MPEGH/ISO/HEVC" => VideoCodec::Hevc,
@@ -781,18 +852,23 @@ fn select_track(
                 dimension(width, PIXEL_WIDTH)?,
                 dimension(height, PIXEL_HEIGHT)?,
             ],
+            default_duration,
+            timeline_supported,
         ));
     }
     if track.is_none() && videos != 1 {
         return Err(DemuxError::TrackSelection);
     }
-    let (number, codec, private, dimensions) = selected.ok_or(DemuxError::TrackSelection)?;
+    let (number, codec, private, dimensions, default_duration, timeline_supported) =
+        selected.ok_or(DemuxError::TrackSelection)?;
     Ok(Selection {
         number,
         codec,
         private,
         dimensions,
         tracks: listed,
+        default_duration,
+        timeline_supported,
     })
 }
 
@@ -802,6 +878,8 @@ struct Frames<'p> {
     codec: VideoCodec,
     length_bytes: usize,
     parameter_sets: &'p [Range<usize>],
+    timestamp_scale: u64,
+    default_duration: Option<u64>,
 }
 
 /// Block header: track number, signed timestamp offset, flags, and the frame bytes after it.
@@ -828,7 +906,9 @@ fn cluster_frames(
 ) -> Result<(), DemuxError> {
     let mut base = None;
     for child in kids {
-        let (block, keyframe) = match child.id {
+        let (block, keyframe, block_duration_ticks, duration_ns, timeline_unsupported) = match child
+            .id
+        {
             CLUSTER_TIMESTAMP => {
                 let value = uint(&r.bytes[child.data.clone()], 0)?;
                 let value = i64::try_from(value).map_err(|_| DemuxError::Timeline)?;
@@ -837,25 +917,43 @@ fn cluster_frames(
             }
             SIMPLE_BLOCK => {
                 let flags = block_header(r.bytes, &child.data)?.2;
-                (child.data, flags & 0x80 != 0)
+                (
+                    child.data,
+                    flags & 0x80 != 0,
+                    None,
+                    frames.default_duration.map(u128::from),
+                    false,
+                )
             }
             BLOCK_GROUP => {
                 let mut block = None;
                 let mut referenced = false;
+                let mut duration = None;
+                let mut timeline_unsupported = false;
                 for part in children(r, child.data.clone(), true)? {
                     match part.id {
                         BLOCK => set_once(&mut block, part.id, part.data)?,
                         REFERENCE_BLOCK => referenced = true,
+                        BLOCK_DURATION => {
+                            timeline_unsupported |=
+                                !timing_uint(&mut duration, part.id, &r.bytes[part.data.clone()]);
+                        }
                         // CodecState replaces the decoder configuration mid-stream.
                         0xA4 => return Err(DemuxError::Unsupported),
-                        // BlockDuration, ReferencePriority, DiscardPadding, BlockAdditions.
-                        0x9B | 0xFA | 0x75A2 | 0x75A1 | VOID | CRC32 => {}
+                        // Padding and codec additions can change presentation. Keep their
+                        // ordinal custody, but do not silently ignore them during selection.
+                        0x75A2 | 0x75A1 => timeline_unsupported = true,
+                        // ReferencePriority.
+                        0xFA | VOID | CRC32 => {}
                         _ => return Err(DemuxError::Unsupported),
                     }
                 }
                 (
                     block.ok_or(DemuxError::MissingBox(BLOCK.to_be_bytes()))?,
                     !referenced,
+                    duration,
+                    duration.map(|ticks| u128::from(ticks) * u128::from(frames.timestamp_scale)),
+                    timeline_unsupported,
                 )
             }
             // Position, PrevSize, SilentTracks.
@@ -890,8 +988,11 @@ fn cluster_frames(
             index: samples.len(),
             source: frame,
             timestamp,
+            block_duration_ticks,
+            duration_ns,
             keyframe,
             contains_idr,
+            timeline_unsupported,
         });
     }
     if complete && base.is_none() {
