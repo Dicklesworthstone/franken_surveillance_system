@@ -436,22 +436,33 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
         ContentDigest::sha256(b"owner approves the plaintext loopback relay").to_text();
 
     // 1. AOP-001: session_open
-    let opened = mcp.call(
-        "session_open",
-        &object(&[
-            (
-                "mission",
-                string("Execute full 14-operation fss/1 MCP mission rehearsal."),
-            ),
-            (
-                "objective",
-                string("Verify every AOP-001..AOP-014 transition over fss-mcp stdio."),
-            ),
-            ("view", string("pulse")),
-            ("budget_tokens", "20000".to_owned()),
-        ]),
-        Some("AOP-001"),
-    )?;
+    let open = |view| {
+        mcp.call(
+            "session_open",
+            &object(&[
+                (
+                    "mission",
+                    string("Execute full 14-operation fss/1 MCP mission rehearsal."),
+                ),
+                (
+                    "objective",
+                    string("Verify every AOP-001..AOP-014 transition over fss-mcp stdio."),
+                ),
+                ("view", string(view)),
+                ("budget_tokens", "20000".to_owned()),
+            ]),
+            Some("AOP-001"),
+        )
+    };
+    let refused = open("pulse")?;
+    assert!(refused.failed, "{}", refused.body);
+    assert_eq!(text(&refused.value, &["outcome"])?, "refused");
+    assert_eq!(
+        text(&refused.value, &["errorId"])?,
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001"
+    );
+    assert_eq!(field(&refused.value, &["payload"])?, &Value::Null);
+    let opened = open("brief")?;
     assert!(!opened.failed, "{}", opened.body);
     let session_id = text(&opened.value, &["sessionId"])?.to_owned();
     let opening_anchor = orientation_anchor(&opened.body)?;
