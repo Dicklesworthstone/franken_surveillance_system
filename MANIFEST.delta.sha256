@@ -121,7 +121,7 @@ a3b99dd3ce6644532633cbe37e6af5a517f55fda659c51edaf17b06d456a3145  crates/fss-cli
 f2ff0910e993cc4e9ca0fc625483dbaeab98bb7e2452780400b6c5168f1662d8  crates/fss-cli/src/bin/fss_mcp/localizations.rs
 400048d8de59a41041719ad74217fe115690928b8ad4f8f139f8a546e4f8e9b5  crates/fss-cli/src/bin/fss_mcp/onvif.rs
 d4582613ae65dc81a31d0b54f0eff403ff15fdee6c6b520b95fa279f41664c97  crates/fss-cli/src/bin/fss_mcp/onvif_tests.rs
-72e52b2bdf904120823f10c7e0ba6a50d17e8c49624ac0b95a264ea9c62b2986  crates/fss-cli/src/bin/fss_mcp/recording_replay_tests.rs
+29d8680eedd97344cc36691bb4daa86f723bcdf72ed8004ff37da6b479ff5cc9  crates/fss-cli/src/bin/fss_mcp/recording_replay_tests.rs
 90c2bbe795f2c68af10396e7df89cdd9004148c437c85ab74c0c3435f10491b5  crates/fss-cli/src/bin/fss_mcp/recording_tests.rs
 a64727359c624b075ab704d4e56ac8e67dba693a510ab91dfe00e43084bfe0a6  crates/fss-cli/src/bin/fss_mcp/recordings.rs
 fc7d5f6d75446e81f79b678428dbae49295006b099a6122dbb33a59e282312c4  crates/fss-cli/src/bin/fss_mcp/server.rs
