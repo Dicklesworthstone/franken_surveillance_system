@@ -15,6 +15,7 @@ use super::client::ClientRequest;
 use super::framed::{MAX_WIRE_CHUNK, WIRE_LIFETIME_NS};
 use fss_packet::StreamKey;
 
+#[path = "tcp/ssrc.rs"]
 mod ssrc;
 pub(super) use ssrc::SenderBinding;
 pub use ssrc::SsrcPolicy;
