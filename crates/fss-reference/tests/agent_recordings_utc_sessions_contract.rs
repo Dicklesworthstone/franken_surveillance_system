@@ -578,7 +578,7 @@ fn distinct_decode_scopes_cannot_reinterpret_the_same_recording_root_as_two_sess
         scope,
         catalogs: vec![RecordingCatalogPin {
             slot: catalog_slot,
-            root: catalog.root(),
+            root: catalog.manifest().root(),
         }],
         clock_slot,
         clock_root: clock.root(),

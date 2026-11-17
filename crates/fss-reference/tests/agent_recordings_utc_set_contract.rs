@@ -403,7 +403,7 @@ fn conflicting_catalog_descriptors_for_the_same_root_are_never_deduplicated() ->
             },
             RecordingCatalogPin {
                 slot,
-                root: conflict.root(),
+                root: conflict.manifest().root(),
             },
         ],
     );

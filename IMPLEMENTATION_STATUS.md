@@ -1,8 +1,27 @@
 # Implementation status
 
-**As of:** 2026-11-16 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-17 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Native event preparation and local agent rehearsal — 2026-11-17
+
+Package-event preparation now verifies a previous publication through either sealed
+retained-source reader, including while a capture writer is open. The renewed
+prepare uses the same canonical event, provenance and approval identity. Publishing
+still requires the exclusive writer and revalidates the approval.
+
+The local stdio MCP rehearsal preserves the typed refusal when a rich situation
+exceeds the `pulse` budget and completes the mission using `brief`. During resume,
+the reply parser admits the embedded native response under the existing MCP
+output ceiling. The same mission exercises all fourteen operations, including
+an approved loopback alert, reconciliation and follow. See
+[MCP transport limits](docs/MCP_READ_ONLY_REFERENCE.md#wire-behavior-and-limits).
+
+Pinned-nightly Linux checks compiled every workspace target. Focused fixture runs
+passed native capture, MPEG-TS import, recorded media export, recording discovery,
+UTC queries, immutable-event, and CLI/MCP session contracts. Physical coverage,
+production provider delivery, and aggregate local release qualification remain open.
 
 
 ## Immutable temporal watch and dwell previews — 2026-11-16

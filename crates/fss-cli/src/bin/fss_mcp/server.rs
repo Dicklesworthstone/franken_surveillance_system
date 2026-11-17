@@ -10,6 +10,7 @@ use fss_cli::session_cmd::SessionCommand;
 use fss_cli::{
     ExitIdentity, FssCommand, escape_json_str, execute_live_fss_with_exit, parse_fss_args,
 };
+use fss_core::json_input::MAX_MCP_TOOL_OUTPUT_BYTES;
 use fss_reference::deployment_session::{
     MAX_MISSION_BYTES, MAX_NOTE_BYTES, MAX_OBJECTIVE_BYTES, MAX_SESSION_TOKEN_BUDGET,
 };
@@ -17,7 +18,6 @@ use fss_reference::deployment_session::{
 use super::json::{self, MAX_FRAME_BYTES, Value};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BUDGET_TOKENS: u64 = 4096;
 const MAX_PAGE_ENTRIES: u64 = 4096;
 /// Read-only follow/wait calls block at most this long; approved dispatch retains its native deadline.
@@ -801,7 +801,7 @@ fn error(id: &str, code: i32, message: &str) -> String {
 }
 
 fn tool_result(output: &str, failed: bool) -> String {
-    let (output, failed) = if output.len() > MAX_TOOL_OUTPUT_BYTES {
+    let (output, failed) = if output.len() > MAX_MCP_TOOL_OUTPUT_BYTES {
         (
             "FSS response exceeded the MCP byte ceiling. No response was truncated. Native state or an effect may already be committed. Inspect retained operations with wait and follow native reconciliation or retry guidance before further action. Request a smaller view or page.",
             true,
@@ -2565,7 +2565,7 @@ mod tests {
         assert!(response.is_some_and(
             |r| r.contains("ERR-AGENT-EVENT-NOT-FOUND-001") && r.contains("\"isError\":true")
         ));
-        let bounded = tool_result(&"x".repeat(MAX_TOOL_OUTPUT_BYTES + 1), false);
+        let bounded = tool_result(&"x".repeat(MAX_MCP_TOOL_OUTPUT_BYTES + 1), false);
         assert!(bounded.len() < 1024 && bounded.contains("\"isError\":true"));
     }
 

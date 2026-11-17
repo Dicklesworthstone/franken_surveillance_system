@@ -29,10 +29,11 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use fss_core::{ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_core::{AgentView, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
+#[path = "session_cli_contract/runtime_time.rs"]
 mod runtime_time;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -447,22 +448,39 @@ fn run_fss(args: &[OsString]) -> TestResult<(Option<i32>, String, String)> {
 
 /// Every entry under `root`: mode, size, times, inode, and content digest (the doctor proof).
 fn tree_digest(root: &Path) -> TestResult<BTreeMap<PathBuf, String>> {
+    tree_digest_with_clock_refresh(root, false)
+}
+
+fn tree_digest_with_clock_refresh(
+    root: &Path,
+    allow_clock_refresh: bool,
+) -> TestResult<BTreeMap<PathBuf, String>> {
     let mut out = BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
         let meta = fs::symlink_metadata(&path)?;
         let relative = path.strip_prefix(root)?.to_path_buf();
-        let common = format!(
-            "mode={:o} size={} mtime={}.{} ctime={}.{} ino={} nlink={}",
+        let mut common = format!(
+            "mode={:o} size={} ino={} nlink={}",
             meta.mode(),
             meta.size(),
-            meta.mtime(),
-            meta.mtime_nsec(),
-            meta.ctime(),
-            meta.ctime_nsec(),
             meta.ino(),
             meta.nlink()
         );
+        // Atomically replacing the clock pin updates the containing directory's
+        // timestamps. Its identity, permissions and child names must still match.
+        if !(allow_clock_refresh
+            && relative == Path::new("agent/sessions")
+            && meta.file_type().is_dir())
+        {
+            common.push_str(&format!(
+                " mtime={}.{} ctime={}.{}",
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.ctime(),
+                meta.ctime_nsec()
+            ));
+        }
         let detail = if meta.file_type().is_dir() {
             let mut names = Vec::new();
             for entry in fs::read_dir(&path)? {
@@ -575,7 +593,7 @@ fn authority_tree(root: &Path) -> TestResult<BTreeMap<PathBuf, String>> {
 
 /// Ordinary live reads may append a session clock record and atomically replace its pin.
 fn non_clock_tree(root: &Path) -> TestResult<BTreeMap<PathBuf, String>> {
-    Ok(tree_digest(root)?
+    Ok(tree_digest_with_clock_refresh(root, true)?
         .into_iter()
         .filter(|(path, _)| {
             path != Path::new("agent/sessions/journal.fssj")
@@ -1284,13 +1302,14 @@ fn bound_orientation_preserves_mission_and_cases_while_only_clock_admission_is_w
         case_reply.path(&["payload", "investigationId"])?.text()?,
         CASE
     );
+    let view_budget = AgentView::EpistemicMap.maximum_tokens().to_string();
     let bound_args = [
         "--session",
         &session,
         "--view",
         "epistemic_map",
         "--budget-tokens",
-        "4096",
+        &view_budget,
     ];
     let before = non_clock_tree(&root)?;
     let retained = retained_session_state(&root)?;

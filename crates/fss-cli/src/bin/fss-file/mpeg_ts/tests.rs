@@ -199,7 +199,8 @@ fn recording(codec: VideoCodec) -> (Vec<u8>, Vec<u8>) {
     ]));
     let mut transport = packet(0, true, 0, &pat);
     transport.extend(packet(0x1000, true, 0, &pmt));
-    // Two syntax access units in one PES; a high PTS must never become UTC/capture time.
+    // Both copies of the elementary fixture share one PES. Its high PTS must not become
+    // UTC or capture time.
     let mut pes = vec![0, 0, 1, 0xe0, 0, 0, 0x80, 0x80, 5, 0x2f, 0xff, 0xff, 0xff, 0xff];
     pes.extend_from_slice(&media);
     for (index, body) in pes.chunks(184).enumerate() {
@@ -239,7 +240,13 @@ fn native_avc_and_hevc_dispatch_reopen_verified_custody_and_reuse_the_import() -
         assert_eq!(field(&report, "video_codec")?, if codec == VideoCodec::Avc { "h264" } else { "h265" });
         assert_eq!(field(&report, "ts_program")?, "1");
         assert_eq!(field(&report, "ts_video_pid")?, "256");
-        assert_eq!(field(&report, "segment_count")?, "2");
+        // Each AVC fixture has two pictures and each HEVC fixture has three. The PES
+        // contains two copies, so its single timestamp cannot stand in for segmentation.
+        let segments = match codec {
+            VideoCodec::Avc => "4",
+            VideoCodec::Hevc => "6",
+        };
+        assert_eq!(field(&report, "segment_count")?, segments);
         assert_eq!(field(&report, "segment_unit")?, "annexb_access_unit");
         assert_eq!(field(&report, "decoded_frames")?, "0");
         assert_eq!(field(&report, "capture_time_class")?, "unknown");

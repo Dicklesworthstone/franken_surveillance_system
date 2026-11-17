@@ -251,8 +251,8 @@ impl Fixture {
         })
     }
 
-    fn initial_root_reads(&self) -> u64 {
-        (self.windows.len() + self.catalogs.len()) as u64
+    fn initial_root_reads(&self) -> usize {
+        self.windows.len() + self.catalogs.len()
     }
 }
 impl Drop for Fixture {

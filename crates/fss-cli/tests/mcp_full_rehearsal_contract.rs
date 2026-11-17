@@ -21,6 +21,7 @@ use std::time::Duration;
 use fss_cli::agent_json::{object, string};
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
+use fss_core::json_input::parse_mcp_reply;
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -367,7 +368,7 @@ impl McpHarness {
         assert!(output.stderr.is_empty());
         let replies: Vec<Value> = String::from_utf8(output.stdout)?
             .lines()
-            .map(|line| parse(line).map_err(Into::into))
+            .map(|line| parse_mcp_reply(line).map_err(Into::into))
             .collect::<TestResult<Vec<Value>>>()?;
         assert_eq!(replies.len(), 2);
         let result = field(&replies[1], &["result"])?;

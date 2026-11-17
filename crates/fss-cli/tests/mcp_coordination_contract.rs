@@ -481,14 +481,14 @@ impl Fixture {
         error: Option<&str>,
     ) -> TestResult<Reply> {
         let (body, exit) = execute_fss_with_time(
-            FssCommand::Claim(ClaimArgs {
+            FssCommand::Claim(Box::new(ClaimArgs {
                 root: self.root.clone(),
                 request: ClaimRequest {
                     session_id: SessionId::parse(session)?,
                     principal: PrincipalId::parse(PRINCIPAL)?,
                     action,
                 },
-            }),
+            })),
             clock,
         );
         assert_eq!(exit == ExitIdentity::SUCCESS, error.is_none(), "{body}");

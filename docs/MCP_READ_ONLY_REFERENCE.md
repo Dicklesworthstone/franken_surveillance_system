@@ -319,6 +319,10 @@ may already have been committed or sent even if no MCP response arrived. Inspect
 its retained operation with `wait`, then use native reconciliation and retry
 guidance. Process shutdown does not implicitly acknowledge a follow page.
 
+Rust clients can use `fss_core::json_input::parse_mcp_reply` for the outer JSON-RPC
+reply. It accounts for the full tool output and JSON escaping. Decode the text
+inside the tool result using the applicable native response contract.
+
 ## Scope and qualification
 
 This dependency-free synchronous adapter projects the implemented native CLI

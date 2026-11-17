@@ -235,4 +235,5 @@ fn report_verified(
 }
 
 #[cfg(test)]
+#[path = "mpeg_ts/tests.rs"]
 mod tests;
