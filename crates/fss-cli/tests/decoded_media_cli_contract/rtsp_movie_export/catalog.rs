@@ -611,7 +611,7 @@ fn approved_catalog_and_pages_export_continuous_and_gapped_movie_pixels_with_col
         assert_eq!(field(&exported, "movie_export_complete")?, "true");
         assert_eq!(movie.journals()?, before);
 
-        let (original_paths, chunks) = movie.retained_objects()?;
+        let (originals, chunks) = movie.retained_objects()?;
         let images = catalog.images()?;
         let dimensions = images.get(&0).ok_or("first native image")?.dimensions;
         let cx = context(&movie.root)?;
@@ -634,8 +634,8 @@ fn approved_catalog_and_pages_export_continuous_and_gapped_movie_pixels_with_col
         assert_eq!(fs::read(path)?, expected);
         assert_eq!(values(&masked, "frame_segment")?, ["3", "4", "6", "5"]);
         assert_eq!(field(&masked, "movie_export_complete")?, "true");
-        for (path, (_, bytes)) in original_paths.iter().zip(&movie.originals) {
-            assert_eq!(&fs::read(path)?, bytes);
+        for (path, bytes) in originals {
+            assert_eq!(fs::read(path)?, bytes);
         }
         for (path, bytes) in chunks {
             assert_eq!(fs::read(path)?, bytes);

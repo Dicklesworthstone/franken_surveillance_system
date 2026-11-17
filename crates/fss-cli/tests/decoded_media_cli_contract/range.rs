@@ -7,6 +7,10 @@ use fss_codec_mjpeg::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, DecodedLuma, decode_luma,
 };
 use fss_container::matroska_gray::{GrayMatroskaConfig, PlaybackRate};
+use fss_publication::LOCAL_ROOTS_DIR;
+use fss_reference::reference_deployment::{RELATIVE_PATH_LEDGER, RELATIVE_PATH_OBJECTS};
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
 
 fn frames(dimensions: &[[u32; 2]]) -> TestResult<Vec<Vec<u8>>> {
@@ -108,11 +112,14 @@ fn values(output: &Output, name: &str) -> TestResult<Vec<String>> {
         .collect())
 }
 
-fn journals(root: &Path) -> TestResult<(Vec<u8>, Vec<u8>)> {
-    Ok((
-        fs::read(root.join("authority.fssb"))?,
-        fs::read(root.join("roots.fssr"))?,
-    ))
+fn custody_state(root: &Path) -> TestResult<(Vec<u8>, BTreeMap<OsString, Vec<u8>>)> {
+    let ledger = fs::read(root.join(RELATIVE_PATH_LEDGER))?;
+    let mut roots = BTreeMap::new();
+    for entry in fs::read_dir(root.join(RELATIVE_PATH_OBJECTS).join(LOCAL_ROOTS_DIR))? {
+        let entry = entry?;
+        roots.insert(entry.file_name(), fs::read(entry.path())?);
+    }
+    Ok((ledger, roots))
 }
 
 fn decoded(frames: &[Vec<u8>]) -> TestResult<Vec<DecodedLuma>> {
@@ -204,7 +211,7 @@ fn retained_jpeg_ranges_round_trip_every_output_format_and_reopen_without_author
         let bytes = expected(format, &images)?;
         let mut lineage = None;
         for action in ["decode", "read-decoded", "verify-decoded"] {
-            let before = journals(&root)?;
+            let before = custody_state(&root)?;
             let path = directory.0.join(format!("{format}-{action}"));
             let output = export(&root, action, &identity, format, &path, bytes.len()).output()?;
             success(&output);
@@ -245,7 +252,7 @@ fn retained_jpeg_ranges_round_trip_every_output_format_and_reopen_without_author
                 );
             }
             if action != "decode" {
-                assert_eq!(journals(&root)?, before);
+                assert_eq!(custody_state(&root)?, before);
             }
             if action == "read-decoded" {
                 assert_eq!(field(&output, "this_request_decode_work_units")?, "0");
@@ -272,7 +279,7 @@ fn decode_replay_and_encode_allowances_are_cumulative_and_never_complete_a_prefi
         .map(|v| v.parse::<u64>())
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(per_frame.iter().sum::<u64>(), work);
-    let before = journals(&root)?;
+    let before = custody_state(&root)?;
     for (index, limit) in [per_frame[0], work - 1, work].into_iter().enumerate() {
         let path = directory.0.join(format!("replay-{index}.mkv"));
         let result = export(
@@ -294,7 +301,7 @@ fn decode_replay_and_encode_allowances_are_cumulative_and_never_complete_a_prefi
             }
         }
         assert!(field(&result, "this_request_decode_work_units")?.parse::<u64>()? <= limit);
-        assert_eq!(journals(&root)?, before);
+        assert_eq!(custody_state(&root)?, before);
     }
     let encoded = export(
         &root,
@@ -318,7 +325,7 @@ fn decode_replay_and_encode_allowances_are_cumulative_and_never_complete_a_prefi
     .args(["--encode-work-units", &(encode_work - 1).to_string()])
     .output()?;
     incomplete(&short)?;
-    assert_eq!(journals(&root)?, before);
+    assert_eq!(custody_state(&root)?, before);
 
     let (directory, root, identity) = import_frames("range-first-budget", &frames)?;
     let path = directory.0.join("prefix.pgm");
@@ -368,7 +375,7 @@ fn source_windows_select_across_all_jpegs_and_refuse_empty_or_late_uncertain_bou
         }
         selection = Some(current);
     }
-    let before = journals(&root)?;
+    let before = custody_state(&root)?;
     for (name, interval, prefix) in [
         ("empty", "400000000:450000000", false),
         ("straddle", "0:200000000", true),
@@ -395,7 +402,7 @@ fn source_windows_select_across_all_jpegs_and_refuse_empty_or_late_uncertain_bou
         } else {
             assert!(!path.exists());
         }
-        assert_eq!(journals(&root)?, before);
+        assert_eq!(custody_state(&root)?, before);
     }
     Ok(())
 }
@@ -411,13 +418,13 @@ fn late_unsupported_source_or_unavailable_retained_decode_never_finishes_a_range
     frames[1][marker + 1] = 0xc1; // Splitter retains SOF1; the native decoder refuses it.
     let (directory, root, identity) = import_frames("range-unsupported", &frames)?;
     for action in ["decode", "read-decoded", "verify-decoded"] {
-        let before = journals(&root)?;
+        let before = custody_state(&root)?;
         let path = directory.0.join(format!("{action}.mkv"));
         let result = export(&root, action, &identity, "gray-mkv", &path, 1024 * 1024).output()?;
         incomplete(&result)?;
         assert_eq!(fs::read(path)?, expected("gray-mkv", &images)?);
         if action != "decode" {
-            assert_eq!(journals(&root)?, before);
+            assert_eq!(custody_state(&root)?, before);
         }
     }
     success(&range_command(&root, "read-decoded", &identity, 0, 1).output()?);
@@ -436,7 +443,7 @@ fn byte_quota_and_dimension_drift_never_certify_a_shorter_gray_video() -> TestRe
     let images = decoded(&frames)?;
     let (directory, root, identity) = import_frames("range-shape", &frames)?;
     success(&range_command(&root, "decode", &identity, 0, 3).output()?);
-    let before = journals(&root)?;
+    let before = custody_state(&root)?;
     let first = expected("gray-mkv", &images[..1])?;
     for (name, maximum) in [
         ("zero", first.len() - 1),
@@ -452,7 +459,7 @@ fn byte_quota_and_dimension_drift_never_certify_a_shorter_gray_video() -> TestRe
         } else {
             assert_eq!(fs::read(path)?, first);
         }
-        assert_eq!(journals(&root)?, before);
+        assert_eq!(custody_state(&root)?, before);
     }
     for format in ["pgm", "mjpeg"] {
         let bytes = expected(format, &images)?;
@@ -469,7 +476,7 @@ fn byte_quota_and_dimension_drift_never_certify_a_shorter_gray_video() -> TestRe
 fn range_admission_and_ambiguous_receipt_requests_cannot_publish_or_overwrite() -> TestResult {
     let frames = frames(&[[8, 8]; 3])?;
     let (directory, root, identity) = import_frames("range-preflight", &frames)?;
-    let before = journals(&root)?;
+    let before = custody_state(&root)?;
     for (first, count) in [(0, 4), (2, 2), (3, 2)] {
         let path = directory.0.join(format!("outside-{first}-{count}.pgm"));
         let result = range_command(&root, "decode", &identity, first, count)
@@ -478,7 +485,7 @@ fn range_admission_and_ambiguous_receipt_requests_cannot_publish_or_overwrite() 
             .output()?;
         incomplete(&result)?;
         assert!(!path.exists());
-        assert_eq!(journals(&root)?, before);
+        assert_eq!(custody_state(&root)?, before);
     }
     for action in ["decode", "read-decoded", "verify-decoded"] {
         let path = directory.0.join(format!("ambiguous-{action}.receipt"));
@@ -488,17 +495,17 @@ fn range_admission_and_ambiguous_receipt_requests_cannot_publish_or_overwrite() 
             .output()?;
         assert!(!result.status.success());
         assert!(!path.exists());
-        assert_eq!(journals(&root)?, before);
+        assert_eq!(custody_state(&root)?, before);
     }
     let path = directory.0.join("operator.pgm");
     fs::write(&path, b"operator-owned")?;
     incomplete(&export(&root, "decode", &identity, "pgm", &path, 1024 * 1024).output()?)?;
     assert_eq!(fs::read(path)?, b"operator-owned");
-    assert_eq!(journals(&root)?, before);
+    assert_eq!(custody_state(&root)?, before);
     let path = root.join("forbidden.pgm");
     incomplete(&export(&root, "decode", &identity, "pgm", &path, 1024 * 1024).output()?)?;
     assert!(!path.exists());
-    assert_eq!(journals(&root)?, before);
+    assert_eq!(custody_state(&root)?, before);
     Ok(())
 }
 
@@ -542,7 +549,7 @@ fn current_masks_apply_to_every_frame_and_a_late_stale_decode_refuses_the_clip()
     success(&range_command(&root, "decode", &identity, 0, 3).output()?);
     let policy = declare_full_mask(&root)?;
     success(&range_command(&root, "decode", &identity, 0, 1).output()?);
-    let before = journals(&root)?;
+    let before = custody_state(&root)?;
     for action in ["read-decoded", "verify-decoded"] {
         let result = export(
             &root,
@@ -555,7 +562,7 @@ fn current_masks_apply_to_every_frame_and_a_late_stale_decode_refuses_the_clip()
         .output()?;
         incomplete(&result)?;
         assert_eq!(values(&result, "frame_segment")?, ["0"]);
-        assert_eq!(journals(&root)?, before);
+        assert_eq!(custody_state(&root)?, before);
     }
     let config = GrayMatroskaConfig::new([8, 8], PlaybackRate::new(30_000, 1001)?)?;
     let mut expected = config.initialization()?.bytes().to_vec();

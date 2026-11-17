@@ -73,12 +73,19 @@ struct Directory(PathBuf);
 
 impl Directory {
     fn new(label: &str) -> Test<Self> {
+        let mut directory = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+
+            directory.mode(0o700);
+        }
         for attempt in 0..100 {
             let path = std::env::temp_dir().join(format!(
                 "fss-capture-rtsp-cli-{}-{label}-{attempt}",
                 std::process::id()
             ));
-            match fs::create_dir(&path) {
+            match directory.create(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.into()),
