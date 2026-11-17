@@ -21,11 +21,11 @@
 > JPEG/MJPEG, H.264 (Baseline, Main and High; progressive 4:2:0) and H.265 (Main, 8-bit 4:2:0), run small models on a scalar executor, detect, track
 > and publish event candidates (including a model-free `fss-event watch` pipeline), and keep a
 > crash-safe local ledger. It ships one trained detector package (YOLOX-Nano, COCO-80,
-> conformance-checked against its upstream ONNX graph; `fss-infer package-detect`), but does **not**
-> yet decode 10-bit or interlaced video, measure detection quality on real footage, expose more of
-> the agent protocol than `fss session orient`/`fss explain`/`fss session follow` and durable
-> `fss session open`/`fss handoff`/`fss session resume`, archive to the cloud, or have any release-qualified capability. The boundary is
-> explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
+> conformance-checked against its upstream ONNX graph; `fss-infer package-detect`). The CLI and
+> local stdio MCP server expose all 14 registered `fss/1` agent operations in the reference
+> deployment. Open gaps include 10-bit and interlaced decoding, detection quality measurement on
+> real footage, cloud archiving, and release qualification. See
+> [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
 ## The thesis
 
