@@ -139,8 +139,8 @@ impl UtcSessionsFixture {
             let mut known_slot = None;
             let mut unknown = None;
             for ordinal in 0..2 {
-                let slot = SlotName::parse(format!("session-{index}-window-{ordinal}"))?;
-                let page_slot = SlotName::parse(format!("session-{index}-page-{ordinal}"))?;
+                let slot = SlotName::parse(&format!("session-{index}-window-{ordinal}"))?;
+                let page_slot = SlotName::parse(&format!("session-{index}-page-{ordinal}"))?;
                 let admission = known_admission + 15_000_000 * ordinal as u64;
                 let (page, metadata, descriptor, root, quote, leaves) = match codec {
                     RecordingQueryCodec::Avc => {
