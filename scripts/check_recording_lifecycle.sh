@@ -60,8 +60,8 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
     --test live_hevc_archive_contract --test rtsp_replay_time_pinned_contract
   run_tests 'source-authorized recorder assertions with current deployment context' \
     -p fss-reference --test agent_recording_replay_context_contract
-  run_tests 'canonical recorder UTC CLI admission and MCP source authority' \
-    -p fss-cli --lib --bin fss-mcp recorder_utc
+  run_tests 'canonical recorder UTC CLI admission' \
+    -p fss-cli --lib recorder_utc
   run_tests 'MCP recorder UTC exact pins, schema and owner permission' \
     -p fss-cli --bin fss-mcp replay_
   run_tests 'actual CLI and MCP recorder UTC parity and whole-query refusals' \
