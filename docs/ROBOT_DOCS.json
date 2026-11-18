@@ -1122,8 +1122,8 @@
       "id": "ERR-DELETION-BLOCKED-001"
     },
     {
-      "description": "a deletion plan or record exceeded a hard bound",
-      "guidance": "split the deployment's retained history; do not retry unchanged",
+      "description": "a deletion plan, record or exact-retry proposal cache exceeded a hard bound, including `audit_retry_candidates`, `audit_retry_metadata_records` or `audit_retry_metadata_bytes`",
+      "guidance": "narrow the requested scope or resolve excess staged proposals through reviewed custody repair; do not raise the hard bound or retry unchanged",
       "id": "ERR-DELETION-BOUND-001"
     },
     {
@@ -1922,6 +1922,21 @@
       "id": "ERR-MODEL-UNAVAILABLE-001"
     },
     {
+      "description": "Existing source, cancellation, aggregate-work or root-last publication owner refused the MPEG-TS import",
+      "guidance": "Preserve visible roots and committed originals; retry only under fresh authorized bounds and intact exact custody.",
+      "id": "ERR-MPEGTS-IMPORT-CUSTODY-001"
+    },
+    {
+      "description": "Explicit finite MPEG-TS import scope, capture assumption, selection or resource ceiling is invalid",
+      "guidance": "Correct the complete request; no automatic limit widening.",
+      "id": "ERR-MPEGTS-IMPORT-REQUEST-001"
+    },
+    {
+      "description": "Native transport parsing or extraction-receipt verification refused the source",
+      "guidance": "Inspect the original recording and declared program/PID; do not strip packets or bypass provenance.",
+      "id": "ERR-MPEGTS-IMPORT-SOURCE-001"
+    },
+    {
       "description": "negative evidence binary ledger corrupt magic, checksum, or truncated data",
       "guidance": "repair corrupt ledger binary or restore from canonical backup",
       "id": "ERR-NEG-CHECKSUM-MISMATCH-001"
@@ -2587,6 +2602,31 @@
       "id": "ERR-REPLAY-DIVERGED-001"
     },
     {
+      "description": "The existing I/O owner observed cancellation during cold load, native projection or final checks",
+      "guidance": "Retain existing originals and retry only with a fresh valid owner/deadline scope if desired. No partial successful report is released and no prior publication is retracted.",
+      "id": "ERR-REPLAY-TIME-CANCELLED-001"
+    },
+    {
+      "description": "Exact receipt, current root/slot, source closure, native verification or tombstone checks failed",
+      "guidance": "Preserve current custody and inspect the intended independent pins and underlying typed refusal. Do not recreate missing originals, substitute another codec/request or treat refusal as absence.",
+      "id": "ERR-REPLAY-TIME-CUSTODY-001"
+    },
+    {
+      "description": "The half-open UTC interval is empty, reversed or outside 1970\u20139999",
+      "guidance": "Supply explicit ordered Unix-nanosecond bounds and the intended external NTP era. Do not clip the request or use receive/PLAY time to fill missing source assertions.",
+      "id": "ERR-REPLAY-TIME-INTERVAL-001"
+    },
+    {
+      "description": "Admission, original-payload reservation/read, allocation or aggregate result ceiling refused the complete query",
+      "guidance": "Review exact limits or select a smaller independently pinned receipt. Each original reserves 32 MiB before reading; sample/packet limits do not lower intrinsic native verifier work. No truncated result or source fallback is returned.",
+      "id": "ERR-REPLAY-TIME-LIMIT-001"
+    },
+    {
+      "description": "Independent catalog/source scope or receipt/request identity is invalid",
+      "guidance": "Supply the complete intended scope and nonzero production SHA-256 pins retained from the approved capture. Stored metadata cannot grant replacement pins or select a codec.",
+      "id": "ERR-REPLAY-TIME-SCOPE-001"
+    },
+    {
       "description": "a restored deployment has immutable provenance whose copied Prepared state cannot prove whether the source dispatched later; all supported alert preparation, dispatch and cancellation paths refuse",
       "guidance": "retain unresolved operations and obligations; this profile has no unfence or automatic failover/reconciliation operation",
       "id": "ERR-RESTORE-EFFECT-FENCED-001"
@@ -2660,6 +2700,36 @@
       "description": "documented operation references unregistered capability, schema, or error identity",
       "guidance": "register referenced entity in authoritative registry before generating docs",
       "id": "ERR-ROBOT-DOCS-UNREGISTERED-001"
+    },
+    {
+      "description": "The caller supplied a zero full PLAY CSeq",
+      "guidance": "Supply the actual successful PLAY coordinate from an independently verified receipt.",
+      "id": "ERR-RTP-REPLAY-CSEQ-INVALID-001"
+    },
+    {
+      "description": "The recorder extension differs from the successful PLAY CSeq's low byte",
+      "guidance": "Preserve an uncorrelated assertion; never substitute another receipt. A matching low byte still does not authenticate a full PLAY identity.",
+      "id": "ERR-RTP-REPLAY-CSEQ-MISMATCH-001"
+    },
+    {
+      "description": "Known ONVIF 0xABAC extension does not have the fixed three-word AVC/HEVC layout",
+      "guidance": "Preserve the original datagram and report unusable historical time; combined JPEG extensions require a separately supported profile.",
+      "id": "ERR-RTP-REPLAY-EXTENSION-LENGTH-001"
+    },
+    {
+      "description": "A must-be-zero replay flag bit is set",
+      "guidance": "Preserve the assertion as unusable; do not mask an unknown protocol interpretation into a valid time.",
+      "id": "ERR-RTP-REPLAY-RESERVED-001"
+    },
+    {
+      "description": "The raw NTP timestamp is zero, meaning unknown or unsynchronized",
+      "guidance": "Retain the raw assertion and flags; do not turn it into an epoch using a requested range, receive clock or era guess.",
+      "id": "ERR-RTP-REPLAY-TIME-UNKNOWN-001"
+    },
+    {
+      "description": "The explicit NTP era and outward-rounded fraction fall outside the admitted 1970-9999 UTC profile",
+      "guidance": "Review the external era basis; do not clamp the value or erase numeric uncertainty.",
+      "id": "ERR-RTP-REPLAY-UTC-RANGE-001"
     },
     {
       "description": "CLI approval does not match the complete RTSP import plan",
@@ -4187,6 +4257,20 @@
       "schema": "fss.agent_control_plan.v1"
     },
     {
+      "authority": "exact retained event and durable session intent",
+      "compatibilityRule": "AOP-005 selector `target=evidence-hydration`. Closed H0/H1 selector: existing session, generation, event revision, full current authority/effect anchor and per-request token ceiling. H1 requires the native descriptor digest; continuation is the complete issued native cursor. Stored query/hydration grants and privacy are intersected by the sole session owner; transport fields cannot grant source-media or effect authority.",
+      "file": "schemas/agent_event_hydration_query.v1.json",
+      "id": "SCHEMA-AGENT-EVENT-HYDRATION-QUERY-001",
+      "schema": "fss.agent_event_hydration_query.v1"
+    },
+    {
+      "authority": "verified metadata and durable disclosure receipt",
+      "compatibilityRule": "Projection owner: fss-reference::deployment_session::evidence_hydration::EvidenceHydrationAnswer. Complete cognitive envelope, native descriptor/request/receipt/artifact and committed journal charge. Canonical artifact bytes are base64, never replaced with a summary. Every hydration anchor includes privacyEpoch for exact native identity. H0/H1 quote 5000/16000 cumulative tokens; charge and cursor transition commit together, survive restart and are not refunded after a later payload refusal. Whole output is at most 256 KiB; no media or H2/H3/H4.",
+      "file": "schemas/agent_evidence_hydration.v1.json",
+      "id": "SCHEMA-AGENT-EVIDENCE-HYDRATION-001",
+      "schema": "fss.agent_evidence_hydration.v1"
+    },
+    {
       "authority": "execution evidence",
       "compatibilityRule": "original predictions, receipts, outcome, resource use, residual uncertainty, and attribution remain auditable",
       "file": "schemas/agent_execution_episode.v1.json",
@@ -4236,6 +4320,13 @@
       "schema": "fss.agent_learning_proposal.v1"
     },
     {
+      "authority": "AOP-005 retained localization metadata selector",
+      "compatibilityRule": "AOP-005 selector `target=localizations`. Closed sensor/stream/import/twin discovery under launcher-fixed root and principal. Canonical recipe/receipt source bindings, current privacy/deletion and exact authority publication closure are verified for the complete bounded index before filters/pages. Native continuations bind full history, predicates, principal, page size and all limits. One immutable payload/read allowance through final revalidation; protected query/case response fits 256 KiB or refuses. H0 handles for recipes, receipts, roots and capsules confer no source or archive payload access, replay, calibration adoption, physical pose or coverage claim.",
+      "file": "schemas/agent_localizations_query.v1.json",
+      "id": "SCHEMA-AGENT-LOCALIZATIONS-QUERY-001",
+      "schema": "fss.agent_localizations_query.v1"
+    },
+    {
       "authority": "follow/continuity",
       "compatibilityRule": "terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away; superseded by `SCHEMA-AGENT-DELTA-002` (`fss.agent_meaningful_delta.v2`), which adds the required typed removal `removedClaimIds`; v1 records stay immutable",
       "file": "schemas/agent_meaningful_delta.v1.json",
@@ -4271,11 +4362,32 @@
       "schema": "fss.agent_operations.v1"
     },
     {
+      "authority": "existing AOP-005 read intent; separate owner-granted source verification",
+      "compatibilityRule": "AOP-005 selector `target=qsr`. Closed QSR selector for one exact retained screened package-zone report, optional area/queue/register annotations and an explicitly ordered lane. The launcher fixes deployment/principal and independently grants internal source verification. One immutable owner shares a nonrenewing payload-byte/read-attempt allowance across history, retained inference/tracker/zone/health reconstruction, original encoded source bytes and final current custody/privacy/deletion revalidation. Complete byte-free source/frame/zone/sample/dwell/transition/interruption observations preserve exact handles and epistemic states in the unchanged AgentResponseEnvelope and AgentCognitiveEnvelope query/case contracts. Whole protected output fits 256 KiB or refuses; no source discovery, media disclosure, pixel decode, inference, publication, continuation, historical selector, physical queue/wait-time or absence claim.",
+      "file": "schemas/agent_qsr_query.v1.json",
+      "id": "SCHEMA-AGENT-QSR-QUERY-001",
+      "schema": "fss.agent_qsr_query.v1"
+    },
+    {
       "authority": "query cognition",
       "compatibilityRule": "compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded",
       "file": "schemas/agent_query_plan.v1.json",
       "id": "SCHEMA-AGENT-QUERY-001",
       "schema": "fss.agent_query_plan.v1"
+    },
+    {
+      "authority": "existing AOP-005 read selector; separate owner-granted source verification",
+      "compatibilityRule": "AOP-005 selector `target=recordings`. Closed recordings selector with exact codec/source/receipt/request pins, explicit NTP era and lossless UTC nanoseconds. Launcher binds roots/principal and separately enables internal source verification; client input cannot grant ReadMedia. Complete matches, unknowns and source-only rows share a default 32 / maximum 128 result bound and a 256 KiB protected response ceiling. AgentQueryPlan and existing response/cognitive envelopes remain unchanged; no raw media, clock calibration, coverage or absence authority.",
+      "file": "schemas/agent_recording_replay_query.v1.json",
+      "id": "SCHEMA-AGENT-RECORDING-REPLAY-QUERY-001",
+      "schema": "fss.agent_recording_replay_query.v1"
+    },
+    {
+      "authority": "existing AOP-005 metadata-only read intent",
+      "compatibilityRule": "AOP-005 selector `target=reports`. Bounded discovery of current package_detection_record and package_zone_report declarations, exact native publication manifests and retained metadata/report bytes. Family and closed source-native interval filters apply only after complete-index verification. Default 16 / maximum 32 complete handles per page; default/hard ceilings are 4096 reports, 256 MiB metadata payload and 65536 read attempts. Native continuations bind the complete index, current authority/effect prefix, principal, filters, page size and limits. Existing protected query/case envelopes fit 256 KiB or refuse. Handles grant no source-media read, current source availability, coordinate/privacy eligibility, QSR eligibility, physical coverage or effects.",
+      "file": "schemas/agent_report_catalog_query.v1.json",
+      "id": "SCHEMA-AGENT-REPORT-CATALOG-QUERY-001",
+      "schema": "fss.agent_report_catalog_query.v1"
     },
     {
       "authority": "transport request",
@@ -4290,6 +4402,13 @@
       "file": "schemas/agent_response_envelope.v1.json",
       "id": "SCHEMA-AGENT-RESPONSE-001",
       "schema": "fss.agent_response_envelope.v1"
+    },
+    {
+      "authority": "explicit read intent / derived cognition",
+      "compatibilityRule": "AOP-005 selector `target=recordings`. AOP-005 recordings selector for one exact completed destination import plus independently pinned original AVC/HEVC receipt, request, scope, NTP era and UTC interval. Operator-bound deployment/principal and separate source-verification grant; no archive path needed. One cumulative payload-byte/read-attempt budget includes current history, original packets and final custody/deletion/authority revalidation. Complete ordinary protected envelopes, no media disclosure, mixed selectors, archive syscall quota, clock upgrade or absence claim.",
+      "file": "schemas/agent_retained_recording_replay_query.v1.json",
+      "id": "SCHEMA-AGENT-RETAINED-RECORDING-REPLAY-QUERY-001",
+      "schema": "fss.agent_retained_recording_replay_query.v1"
     },
     {
       "authority": "session/runtime",
@@ -4311,6 +4430,20 @@
       "file": "schemas/agent_situation_frame.v1.json",
       "id": "SCHEMA-AGENT-SITUATION-001",
       "schema": "fss.agent_situation_frame.v1"
+    },
+    {
+      "authority": "AOP-005 retained source inventory selector",
+      "compatibilityRule": "AOP-005 selector `target=sources`. Closed source/stream metadata query under fixed root and principal. Complete verified inventory, exact continuation and current deletion/authority bindings; one nonrenewing allowance through final rereads. Historical continuity and protected diagnostics preserve uncertainty; no media reads, live health, physical coverage, source availability, writer lock, recovery or effect authority.",
+      "file": "schemas/agent_sources_query.v1.json",
+      "id": "SCHEMA-AGENT-SOURCES-QUERY-001",
+      "schema": "fss.agent_sources_query.v1"
+    },
+    {
+      "authority": "existing AOP-005 read intent; separate owner-granted source verification",
+      "compatibilityRule": "AOP-005 selector `target=tracks`. Exact retained detector report, model-vocabulary label and explicit native tracking recipe. Immutable current privacy, source custody and deletion verification share one payload-byte/read-attempt allowance. Default 16 / maximum 32 complete actual matched observations per page preserve exact assigned detections, uncalibrated score bits, per-sample versus ever-confirmed state, source frames and continuity resets. Native continuations bind full authority/effect prefix, complete analysis, principal, recipe, page size and limits. Existing response/cognitive query/case envelopes retain protected context and fit 256 KiB or refuse. No predicted sample synthesis, media disclosure, model execution, event promotion, physical identity, coverage, absence or effect grant.",
+      "file": "schemas/agent_tracks_query.v1.json",
+      "id": "SCHEMA-AGENT-TRACKS-QUERY-001",
+      "schema": "fss.agent_tracks_query.v1"
     },
     {
       "authority": "agent views",
@@ -4516,6 +4649,13 @@
       "schema": "fss.effect_reconciliation.v1"
     },
     {
+      "authority": "historical native source / derived cognition",
+      "compatibilityRule": "Owner: EventFusionReport::explain_ablation. Exact selected candidate and original native report, source/score links, proposal/provenance and complete historical basis enclose the pure ablation. Original report JSON separately SHA-256-bound. Bounded complete output at most 16 MiB, explicit cancellation checkpoints and source_basis_revalidated=false; no current-source claim, approval change, publication or effect grant.",
+      "file": "schemas/event_class_fusion_ablation.v1.json",
+      "id": "SCHEMA-EVENT-CLASS-FUSION-ABLATION-001",
+      "schema": "fss.event_class_fusion_ablation.v1"
+    },
+    {
       "authority": "derived/configuration",
       "compatibilityRule": "Owner: fss-cli::event_fusion::input. Exact-digest-verified JSON, at most 256 KiB. The required long_dwell_analysis_root binds one complete native whole-recording dwell analysis; plan_digest is its analysis digest and cascade_digest is its retained detector-recipe digest. Coverage must be empty and watch/corroboration scope fields must be absent. The profile retains the existing class, prior, decision policy, severity, look count, evidence-clock time and independently checked labelled-count calibration tables. Its identity includes the distinct whole-recording-dwell:sampled-episode-source-context-only:v1 discriminator, analysis root, 32-episode ceiling and shared 256-observation ceiling. Earlier profile versions retain their original identities; an analysis root cannot authorize coverage, continuous occupancy, calibration activation or effects.",
       "file": "CLI output",
@@ -4530,11 +4670,32 @@
       "schema": "fss.event_class_fusion_report.v4"
     },
     {
+      "authority": "derived/cognition",
+      "compatibilityRule": "Owner: fss-cli::event_counterfactual and canonical AOP-011 what_if transport. Complete unchanged native event and exact publication/revision, normalized full caller scenario, both native ablation replay queries/outcomes and typed WhatIf receipt. Exact raw scores remain bound even within equal calibrated bins. Shared calibration and synthetic sensor prevent invented independence; both queries retain coverage gaps. At most 256 KiB including one possible newline, followed by whole protected-context budget admission and final metadata revalidation. No original-media custody certificate, physical absence, recorded-decision replay, publication or effect authority.",
+      "file": "schemas/event_counterfactual.v1.json",
+      "id": "SCHEMA-EVENT-COUNTERFACTUAL-001",
+      "schema": "fss.event_counterfactual.v1"
+    },
+    {
+      "authority": "caller assumptions / bounded metadata intent",
+      "compatibilityRule": "Owner: fss-cli::event_counterfactual. Closed inline input at most 32 KiB before parsing and after canonical normalization: exact nonzero event revision, one to sixteen unique contributing failure-domain losses, verified native score-calibration counts and summaries, complete explicit domain-to-raw-ppm map, and optional ordered threshold triple. No score inference, extra map entries, file path, sensor selector, synthetic common-cause collision, historical replay or effect grant. Native checks enforce UTF-8 byte bounds, lexical integer input, count/digest reproduction and event membership beyond structural JSON Schema constraints.",
+      "file": "schemas/event_counterfactual_request.v1.json",
+      "id": "SCHEMA-EVENT-COUNTERFACTUAL-REQUEST-001",
+      "schema": "fss.event_counterfactual_request.v1"
+    },
+    {
       "authority": "authority",
       "compatibilityRule": "immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/event_hypothesis.v1.json",
       "id": "SCHEMA-EVENT-HYPOTHESIS-001",
       "schema": "fss.event_hypothesis.v1"
+    },
+    {
+      "authority": "derived/cognition",
+      "compatibilityRule": "Owner: fss-reference::agent_event_changes. Complete native before/after event metadata, both exact committed publication roots and sequences, every changed field, policy and comparison digests, and current authority/effect token. The selected to revision is the current head and from is its immediate predecessor. Full evidence-edge attributes remain visible even when object digests match. One immutable metadata allowance and final custody revalidation; no original media, historical permission restoration, physical-causation inference, durable write or effect grant. Existing AOP-011 cognitive projection preserves complete named values, current uncertainty, worlds and obligations; whole-result refusal on overflow. Canonical digest registration (alias `SCHEMA-DOMAIN-EVENT-REVISION-COMPARISON-001`): Exact comparison policy, complete predecessor and current canonical event records, both independently committed publication roots and sequences, every changed native field, and current authority/effect token. No physical-causation or old-authority claim.",
+      "file": "schemas/event_revision_comparison.v1.json",
+      "id": "SCHEMA-EVENT-REVISION-COMPARISON-001",
+      "schema": "fss.event_revision_comparison.v1"
     },
     {
       "authority": "authority",
@@ -4584,6 +4745,20 @@
       "file": "schemas/formal_model.v1.json",
       "id": "SCHEMA-FORMAL-MODEL-001",
       "schema": "fss.formal_model.v1"
+    },
+    {
+      "authority": "derived/cognition",
+      "compatibilityRule": "Owner: fss-fusion::ablation and fss-cli::fusion_json. One to sixteen simultaneous exact source-loss selectors, both complete numerical replay queries and recomputed outcomes, affected inventories, bounded selector work and receipt. Remaining usable evidence is re-clustered; unknowns persist, coverage never improves, time/policy/look count stay fixed. Both replay queries fit the ordinary 1 MiB parser; no effect authority.",
+      "file": "schemas/fusion_ablation.v1.json",
+      "id": "SCHEMA-FUSION-ABLATION-001",
+      "schema": "fss.fusion_ablation.v1"
+    },
+    {
+      "authority": "caller-declared source / derived cognition",
+      "compatibilityRule": "Owner: fss-fuse --query with --without-sensor or --without-domain. Full ablation plus exact raw-score/prior calibration provenance, original/projected input commitments and optional baseline transit JSON/digest. Complete output including newline at most 16 MiB. Refusals write no stdout prefix or checkpoint. No native source verification, persistent look transition or effect grant.",
+      "file": "schemas/fusion_ablation_report.v1.json",
+      "id": "SCHEMA-FUSION-ABLATION-REPORT-001",
+      "schema": "fss.fusion_ablation_report.v1"
     },
     {
       "authority": "derived/cognition",
@@ -4698,6 +4873,13 @@
       "schema": "fss.license_inventory.v1"
     },
     {
+      "authority": "independently pinned copied bundle plus native source replay",
+      "compatibilityRule": "Owner: fss-cli::archive_cmd::verify_export. Complete bounded read-only Linux/procfs report for an independently supplied COMPLETE.json SHA-256 and caller-selected codec/full recording scope. Strict request/completion parsing, descriptor-anchored exact generated file inventory, every canonical root and child digest, native AVC/HEVC packet reconstruction, exact playback-byte concatenation and final file/directory revalidation share finite read-byte/I/O/time allowances. No pictures are decoded. REQUEST.json is reported as a separate observed digest with semantic consistency only; completion v1 does not pin its exact bytes. The original archive and privacy deployment are not opened. Optional COMPLETE.json.pending must contain identical completion bytes; copied files need not preserve hard-link identity. Success verifies observed copied bytes, not source-archive selection completeness, current disclosure authority, physical continuity, capture UTC, absence, replication or continued future custody. No writes, repairs, recovery, network access or automatic trust in metadata-selected scope.",
+      "file": "CLI output",
+      "id": "SCHEMA-LOCAL-ARCHIVE-EXPORT-VERIFICATION-001",
+      "schema": "fss.local_archive_export_verification.v1"
+    },
+    {
       "authority": "test evidence",
       "compatibilityRule": "MJPEG stream fixture suite manifest recording variant, frame count, file sha256, and per-frame source fixture bindings",
       "file": "schemas/mjpeg_fixture_manifest.v1.json",
@@ -4783,59 +4965,10 @@
     },
     {
       "authority": "existing AOP-005 bounded read intent; operator binds deployment scope",
-      "compatibilityRule": "Closed selector for target onvif, analysis tracks/lifecycle/zones and 1..32 ordered exact XML/RTP identity/root pairs. Inline zone policy is required only for zones; complete semantic data rows must fit max_entries 1..32 or the operation refuses. Native admission additionally enforces canonical number/digest spellings, unique source identities, bounded inline bytes, exact current anchor and real custody/work/deletion checks. No root/principal/archive override, path indirection, disclosure expansion, historical selector or continuation through MCP. Responses retain the existing AgentResponseEnvelope and AgentCognitiveEnvelope v1 query/case contracts; the selector has no required schema discriminator field.",
+      "compatibilityRule": "AOP-005 selector `target=onvif`. Closed selector for target onvif, analysis tracks/lifecycle/zones and 1..32 ordered exact XML/RTP identity/root pairs. Inline zone policy is required only for zones; complete semantic data rows must fit max_entries 1..32 or the operation refuses. Native admission additionally enforces canonical number/digest spellings, unique source identities, bounded inline bytes, exact current anchor and real custody/work/deletion checks. No root/principal/archive override, path indirection, disclosure expansion, historical selector or continuation through MCP. Responses retain the existing AgentResponseEnvelope and AgentCognitiveEnvelope v1 query/case contracts; the selector has no required schema discriminator field.",
       "file": "schemas/onvif_analysis_query.v1.json",
       "id": "SCHEMA-ONVIF-ANALYSIS-QUERY-001",
       "schema": "fss.onvif_analysis_query.v1"
-    },
-    {
-      "authority": "source custody plus exact untrusted discovery assertions",
-      "compatibilityRule": "Distinct source-bound AVC metadata domain/version, nine observation pins and unchanged native original-window proof contract. Independently pinned cold loading validates the reconstructed request and original sources without the private input. Raw URI/token/session/authentication strings are absent.",
-      "file": "native canonical replay metadata",
-      "id": "SCHEMA-ONVIF-AVC-REPLAY-RECEIPT-001",
-      "schema": "fss.onvif_avc_recording_replay_receipt.v1"
-    },
-    {
-      "authority": "source custody plus exact untrusted discovery assertions",
-      "compatibilityRule": "HEVC counterpart with caller-selected HEVC verification and source-only boundary semantics. Same existing receipt family; stored metadata cannot choose another codec. No historical frame time, actual continuity, physical absence or complete retrieval is asserted.",
-      "file": "native canonical replay metadata",
-      "id": "SCHEMA-ONVIF-HEVC-REPLAY-RECEIPT-001",
-      "schema": "fss.onvif_hevc_recording_replay_receipt.v1"
-    },
-    {
-      "authority": "private bounded device observation",
-      "compatibilityRule": "Complete exact selected recording/source/status/track projection and digest of the entire original SOAP body. Optional UTC extrema are explicit, the response token must match the caller's exact selection, and one video track is required for replay. Supplied bounds must contain the unchanged request; unknown extrema never prove coverage. Canonical bytes and original response identity are distinct from raw SOAP retention and original video custody.",
-      "file": "native canonical encoder/decoder in crates/fss-reference/src/onvif/wire/recording/canonical.rs",
-      "id": "SCHEMA-ONVIF-RECORDING-INFORMATION-001",
-      "schema": "fss.onvif_recording_information.v1"
-    },
-    {
-      "authority": "complete bounded device configuration observation",
-      "compatibilityRule": "All admitted recording/source/track fields, configured retention duration, selected services and original response identities. At most 256 KiB private output; no silent truncation. Device strings never select a route, codec or local sensor. Source evidence/capture authorization/continuous coverage remain explicitly false.",
-      "file": "private create-only fss-onvif output",
-      "id": "SCHEMA-ONVIF-RECORDING-INVENTORY-001",
-      "schema": "fss.onvif_recording_inventory.v1"
-    },
-    {
-      "authority": "pure explicit read-only intent",
-      "compatibilityRule": "Exact operation, token hash/window/codec, independent route pins, private output, auth policy and resource limits with canonical approval. No credential/file/clock/network I/O until the exact plan is approved; live selectors are refused in recorder commands.",
-      "file": "closed native plan in fss-onvif/plan.rs and recorder.rs",
-      "id": "SCHEMA-ONVIF-RECORDING-OPERATOR-PLAN-001",
-      "schema": "fss.onvif_recording_operator_plan.v1"
-    },
-    {
-      "authority": "completed metadata operation",
-      "compatibilityRule": "Safe counts, output identity/length, HTTP attempts, handoff readiness and redacted selected observation hashes/interval/codec. No raw device token, URI, credentials or descriptive source text. Metadata completion grants no native capture or historical-coverage claim.",
-      "file": "bounded fss-onvif stdout",
-      "id": "SCHEMA-ONVIF-RECORDING-OPERATOR-RESULT-001",
-      "schema": "fss.onvif_recording_operator_result.v1"
-    },
-    {
-      "authority": "protected exact recording selection; no capture grant",
-      "compatibilityRule": "Closed 17-field private document; complete canonical information in at most four 16 KiB hex chunks, exact route/codec/window, onboarding/services/information/URI identities and unknown URI lifetime. At most 139264 bytes. Embedded information is cold-decoded, digest-checked and range-revalidated; capture_authorized and source_evidence must be false. Live handoffs/inventories, unknown fields and reserved overrides refuse.",
-      "file": "strict decoder in crates/fss-cli/src/onvif_replay_plan.rs",
-      "id": "SCHEMA-ONVIF-RECORDING-REPLAY-HANDOFF-001",
-      "schema": "fss.onvif_recording_replay_handoff.v1"
     },
     {
       "authority": "source-verified derived cognition over vendor claims",
@@ -4853,7 +4986,7 @@
     },
     {
       "authority": "explicit operator raw-coordinate declaration; no calibration",
-      "compatibilityRule": "Closed 64 KiB policy for 1..16 uniquely named rectangles in raw_vendor_object_millionths, with exact nonzero source/module/frame/object transform pins, strict numeric min/max pairs within \u00b110^15 subunits and nonnegative margin up to 10^15. Native parsing additionally enforces integer token spelling, unique IDs and min<max. No absent transform, image basis or world calibration is invented.",
+      "compatibilityRule": "Closed 64 KiB policy for 1..16 uniquely named rectangles in raw_vendor_object_millionths, with exact nonzero source/module/frame/object transform pins, strict numeric min/max pairs within \u00b110^15 subunits and nonnegative margin up to 10^15. Native parsing additionally enforces integer token spelling, unique IDs and min<max. No absent transform, image basis or world calibration is invented. Canonical digest registration (alias `SCHEMA-DOMAIN-ONVIF-VENDOR-ZONE-POLICY-001`): Binds zone generation, raw_vendor_object_millionths convention and complete ordered zone IDs, exact scope/module/frame-transform/object-transform pins, numeric min/max corners and margin. Canonical semantic identity ignores JSON whitespace/key order; the native parser enforces closed bounded integer input, strict rectangle ordering and unique IDs. Transforms are pinned but never applied.",
       "file": "schemas/onvif_vendor_zone_policy.v1.json",
       "id": "SCHEMA-ONVIF-VENDOR-ZONE-POLICY-001",
       "schema": "fss.onvif_vendor_zone_policy.v1"
@@ -4920,6 +5053,13 @@
       "file": "schemas/provider_observation_receipt.v1.json",
       "id": "SCHEMA-PROVIDER-OBSERVATION-RECEIPT-001",
       "schema": "fss.provider_observation_receipt.v1"
+    },
+    {
+      "authority": "independent source-verified companion; no physical trip or effect grant",
+      "compatibilityRule": "Preserves the original QSR v1 bytes and policy. Every completed, incomplete or interrupted observed stage sequence retains all first-stage-frame references, first/last supported endpoints, termination reason, missing initial/remaining stages and direct elapsed bounds. Partial suffixes and source-end censoring remain explicit; no uncertainty summation, missing-stage inference or physical identity/continuous coverage/service/wait claim. At most 16 stages, 64 source frames, 4096 sequences and 8 MiB complete JSON; the canonical query projects both reports under its existing 256 KiB protected response ceiling and original read/cancellation/final-revalidation owner. Canonical digest registration (alias `SCHEMA-DOMAIN-QSR-LANE-TRAVERSAL-REPORT-001`): Checked FSSQRL01/u32 version 1 encoding, schema, exact traversal-policy SHA-256, original QSR digest, declared stage order and every complete row/status/endpoint/reason/elapsed interval. Source report, provenance and configuration remain bound through the original QSR identity.",
+      "file": "schemas/qsr_lane_traversal_report.v1.json",
+      "id": "SCHEMA-QSR-LANE-TRAVERSAL-REPORT-001",
+      "schema": "fss.qsr_lane_traversal_report.v1"
     },
     {
       "authority": "source-verified derived read; no EventKind, retention or effect grant",
@@ -5020,18 +5160,18 @@
       "schema": "fss.robot_docs.v1"
     },
     {
-      "authority": "current private-input inspection and separate outer approval",
-      "compatibilityRule": "Redacted source-bound native_capture plan, full input digest/fingerprint, unknown URI lifetime, policy and top-level approval. The private file owns peer/authority/URI/codec/window; source IDs, clocks, SDP subtree, original retention, storage, credentials and bounds remain explicit native owner inputs. Only the exact outer approval admits one bounded attempt and is stored in the receipt.",
-      "file": "protected native capture wrapper",
-      "id": "SCHEMA-RTSP-FROM-ONVIF-REPLAY-PLAN-001",
-      "schema": "fss.rtsp_from_onvif_replay_plan.v1"
-    },
-    {
       "authority": "operator plan / retained custody projection",
       "compatibilityRule": "Exact offline RTP/JPEG import plan and successful receipt, distinguished by kind. Complete source/prefix/replay, independent physical mapping, fixed and selected bounds, unknown capture time, exact retained import/proof identities and gap/tail accounting. No entropy, pixel, source EOF, physical camera authentication or absence claim. Native source, canonical proof, cross-field and current authority checks remain mandatory; the JSON projection alone grants no authority.",
       "file": "schemas/rtsp_jpeg_import_operator.v1.json",
       "id": "SCHEMA-RTSP-JPEG-IMPORT-OPERATOR-001",
       "schema": "fss.rtsp_jpeg_import_operator.v1"
+    },
+    {
+      "authority": "operator plan / retained custody projection",
+      "compatibilityRule": "Complete AVC/HEVC replay receipt and every referenced original window under independent receipt/request/scope pins. Exact source/destination approval, original capture approval, requested/acknowledged protocol ranges, protected ONVIF binding, partial termination, preserved decode gaps and unknown or explicitly assumed capture time remain visible. Strict JSON projections grant no authority; native source/canonical/closure/current-authority checks remain mandatory.",
+      "file": "schemas/rtsp_replay_import_operator.v1.json",
+      "id": "SCHEMA-RTSP-REPLAY-IMPORT-OPERATOR-001",
+      "schema": "fss.rtsp_replay_import_operator.v1"
     },
     {
       "authority": "exact retained-calibration selection",
@@ -5466,6 +5606,13 @@
       "file": "CLI output",
       "id": "SCHEMA-UPLOAD-JOURNAL-INSPECTION-001",
       "schema": "fss.upload_journal_inspection.v1"
+    },
+    {
+      "authority": "explicitly approved event metadata disclosure",
+      "compatibilityRule": "Owner: fss-reference::alert::webhook::profile. Complete HTTP request at most 4096 bytes, derived from the exact digest-verified canonical event revision. Carries event ID/revision/kind/lifecycle, decimal-string declared interval, zones, declared probability/calibration, uncertainty, support/counterevidence/neutral/failure-domain counts, revision-local integrity reports and algorithm-tagged decision/policy references. Current health and physical truth remain unestablished. The selected profile and separate nonzero metadata approval are bound into route/channel and existing operation/plan/dispatch approvals; old reference-only bytes and approvals cannot silently upgrade. Full escaping and whole-result refusal, no truncation, media/track disclosure, calibration verification or delivery authority.",
+      "file": "schemas/webhook_event_metadata.v1.json",
+      "id": "SCHEMA-WEBHOOK-EVENT-METADATA-001",
+      "schema": "fss.webhook_event_metadata.v1"
     }
   ],
   "semanticProtocol": "fss/1",
