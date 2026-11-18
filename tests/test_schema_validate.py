@@ -924,7 +924,7 @@ class TestSchemaConstitution(unittest.TestCase):
         # Add movie-output v2 with the full u64 track identifier; preserve historical v1.
         # Six MPEG-TS extraction/import domains were registered. The ONVIF zone policy
         # and event revision comparison retain their canonical tags in their schema rows.
-        self.assertEqual(result["digestDomainCount"], 881)
+        self.assertEqual(result["digestDomainCount"], 933)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1533,7 +1533,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # Add movie-output v2 with the full u64 track identifier; preserve historical v1.
         # Six MPEG-TS extraction/import domains were registered. The ONVIF zone policy
         # and event revision comparison retain their canonical tags in their schema rows.
-        self.assertEqual(result["digestDomainCount"], 881)
+        self.assertEqual(result["digestDomainCount"], 933)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
