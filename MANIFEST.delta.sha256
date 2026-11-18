@@ -124,7 +124,7 @@ cd80b4887423c4db372aa41dabcd027d50e073f1d3b9d5da38082cfbcf4a4dde  crates/fss-cli
 884ae76959f1f4d3ab598aa739ea63d3a9f5dee32d487de362bf81d4a72f70ff  crates/fss-cli/src/bin/fss_mcp/recording_replay_tests.rs
 90c2bbe795f2c68af10396e7df89cdd9004148c437c85ab74c0c3435f10491b5  crates/fss-cli/src/bin/fss_mcp/recording_tests.rs
 0466d65a2bd760f62af656ec2ae92b23b40e5d51d9b5cb4b3d4e3bbe92c570d2  crates/fss-cli/src/bin/fss_mcp/recordings.rs
-2249901c87c021e68e9dd49e4723d83132273803909ad4fff48f9075131a4816  crates/fss-cli/src/bin/fss_mcp/server.rs
+edf595f7f63aa5cc4bcf1a1934c6e7a21756d0732d82a6b00db440cdd46ceb6e  crates/fss-cli/src/bin/fss_mcp/server.rs
 0a94b342d48356ede53cae87a4fc99fd448da74a8bbaef764d861fbc12d0abf9  crates/fss-cli/src/bin/fss_mcp/sources.rs
 56b37f1edc59314163a103b26e0616c277af89fe5456382bee13fd099c0dbe3b  crates/fss-cli/src/claim_cmd.rs
 82d8a8c1f239969002d25b842b71c5defb1ef2785189f7ab337994d96880879a  crates/fss-cli/src/effect_cmd.rs

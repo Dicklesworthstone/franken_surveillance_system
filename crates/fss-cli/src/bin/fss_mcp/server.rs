@@ -1134,13 +1134,7 @@ mod tests {
                     .get("properties")
                     .and_then(Input::object)
                     .ok_or("case properties")?;
-                match properties.get("target").and_then(Input::object)
-                .and_then(|t| t.get("const")).and_then(Input::text) {
-                Some("sources") => assert_eq!(properties.len(), 9),
-                Some("localizations") => assert_eq!(properties.len(), 11),
-                _ => {}
-            }
-            for forbidden in ["root", "principal", "case_file", "expansion_file", "grant"] {
+                for forbidden in ["root", "principal", "case_file", "expansion_file", "grant"] {
                     assert!(!properties.contains_key(forbidden), "{forbidden}");
                 }
             }
@@ -1891,10 +1885,17 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use fss_core::json_input::{Value as Input, parse};
         let catalog = parse(&tools_list())?;
-        let query = catalog.object().and_then(|o| o.get("tools")).and_then(Input::array)
-            .ok_or("tools")?.iter().filter_map(Input::object)
+        let query = catalog
+            .object()
+            .and_then(|o| o.get("tools"))
+            .and_then(Input::array)
+            .ok_or("tools")?
+            .iter()
+            .filter_map(Input::object)
             .find(|tool| tool.get("name").and_then(Input::text) == Some("query"))
-            .and_then(|tool| tool.get("inputSchema")).and_then(Input::object).ok_or("query")?;
+            .and_then(|tool| tool.get("inputSchema"))
+            .and_then(Input::object)
+            .ok_or("query")?;
         let branches = query
             .get("oneOf")
             .and_then(Input::array)
@@ -1915,6 +1916,10 @@ mod tests {
             .and_then(|branch| branch.get("oneOf"))
             .and_then(Input::array)
             .ok_or("recording modes")?;
+        let definitions = query
+            .get("$defs")
+            .and_then(Input::object)
+            .ok_or("local schema bundle")?;
         for document in [
             include_str!("../../../../../schemas/agent_sources_query.v1.json"),
             include_str!("../../../../../schemas/agent_localizations_query.v1.json"),
@@ -1928,6 +1933,14 @@ mod tests {
         ] {
             let expected = parse(document)?;
             let fields = expected.object().ok_or("selector")?;
+            let id = fields
+                .get("$id")
+                .and_then(Input::text)
+                .ok_or("document identity")?;
+            assert_eq!(
+                definitions.values().filter(|doc| *doc == &expected).count(),
+                1
+            );
             assert_eq!(
                 fields.get("additionalProperties").and_then(Input::boolean),
                 Some(false)
@@ -1936,6 +1949,16 @@ mod tests {
                 .get("properties")
                 .and_then(Input::object)
                 .ok_or("selector fields")?;
+            let target = properties
+                .get("target")
+                .and_then(Input::object)
+                .and_then(|field| field.get("const"))
+                .and_then(Input::text)
+                .ok_or("target")?;
+            if matches!(target, "sources" | "localizations") {
+                assert_eq!(properties.len(), if target == "sources" { 9 } else { 11 });
+                assert!(!properties.contains_key("sources"));
+            }
             for forbidden in [
                 "root",
                 "principal",
@@ -1950,14 +1973,29 @@ mod tests {
                 branches
                     .iter()
                     .chain(recordings)
-                    .filter_map(|b| query_branch(query, b))
-                    .filter(|b| *b == &expected)
+                    .filter_map(Input::object)
+                    .filter_map(|b| b.get("$ref").and_then(Input::text))
+                    .filter(|reference| *reference == id)
                     .count(),
                 1,
                 "missing or duplicate {:?}",
                 fields.get("$id")
             );
         }
+        let result_types = query
+            .get("properties")
+            .and_then(Input::object)
+            .and_then(|p| p.get("max_query_results"))
+            .and_then(Input::object)
+            .and_then(|rule| rule.get("anyOf"))
+            .and_then(Input::array)
+            .ok_or("shared result types")?;
+        assert_eq!(result_types.len(), 2);
+        assert!(
+            result_types
+                .iter()
+                .all(|t| t.object().is_some_and(|rule| !rule.contains_key("default")))
+        );
         let policy = parse(include_str!(
             "../../../../../schemas/onvif_vendor_zone_policy.v1.json"
         ))?;
