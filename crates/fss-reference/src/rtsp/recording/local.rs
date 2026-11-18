@@ -280,6 +280,57 @@ pub(super) fn avc_references(bytes: &[u8]) -> Result<(RecordingScope, [ContentDi
     ))
 }
 
+/// Check the expected slot and its current physical publication record. The owner
+/// reads at most one 512-byte record and a trailing-byte probe outside the object spool.
+pub(in crate::rtsp) fn require_durable_root(
+    publisher: &LocalRootPublisher,
+    slot: &SlotName,
+    expected_root: ContentDigest,
+) -> IoResult<()> {
+    let root = publisher.root(slot).ok_or(RecordingIoError::NotDurable)?;
+    if root.root != expected_root {
+        return Err(RecordingIoError::RootConflict);
+    }
+    if root.state != LocalPublicationState::Durable {
+        return Err(RecordingIoError::NotDurable);
+    }
+    if publisher.tombstones().any(|value| *value == expected_root) {
+        return Err(RecordingIoError::Tombstoned);
+    }
+    publisher.require_durable_record(slot)?;
+    Ok(())
+}
+
+/// Apply the caller's remaining payload allowance before allocating. An object that
+/// also exceeds the spool owner's ceiling retains its storage-corruption diagnosis.
+pub(in crate::rtsp) fn read_recording_object(
+    publisher: &LocalRootPublisher,
+    digest: ContentDigest,
+    maximum_payload: usize,
+    cancel: &dyn PublishCancellation,
+) -> IoResult<Vec<u8>> {
+    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+        return Err(RecordingIoError::Cancelled);
+    }
+    if publisher.tombstones().any(|value| *value == digest) {
+        return Err(RecordingIoError::Tombstoned);
+    }
+    publisher
+        .spool()
+        .read_bounded(digest, maximum_payload)
+        .map_err(|error| match error {
+            SpoolError::Corrupt {
+                kind: fss_object::CorruptionKind::DeclaredLengthExceedsLimit { declared, maximum },
+                ..
+            } if maximum == maximum_payload as u64
+                && declared <= publisher.limits().spool.max_object_bytes as u64 =>
+            {
+                RecordingIoError::Budget
+            }
+            error => RecordingIoError::Spool(error),
+        })
+}
+
 // Shared storage admission/rehydration: every format still supplies its real
 // complete semantic verifier before any bytes can leave as a prepared recording.
 pub(super) fn load_window(
@@ -293,13 +344,10 @@ pub(super) fn load_window(
     if publisher.is_poisoned() {
         return Err(RecordingIoError::ReopenRequired);
     }
-    let root = publisher.root(slot).ok_or(RecordingIoError::NotDurable)?;
-    if root.root != expected_root {
-        return Err(RecordingIoError::RootConflict);
+    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+        return Err(RecordingIoError::Cancelled);
     }
-    if root.state != LocalPublicationState::Durable {
-        return Err(RecordingIoError::NotDurable);
-    }
+    require_durable_root(publisher, slot, expected_root)?;
     // The spool caps allocation before reading. Refuse a more permissive owner
     // rather than claim this API imposed a smaller bound after a large allocation.
     if publisher.limits().spool.max_object_bytes > MAX_RECORDING_BYTES {
@@ -307,32 +355,13 @@ pub(super) fn load_window(
     }
     let mut total = 0_usize;
     let mut read = |digest| -> IoResult<Vec<u8>> {
-        if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
-            return Err(RecordingIoError::Cancelled);
-        }
-        if publisher.tombstones().any(|d| *d == digest) {
-            return Err(RecordingIoError::Tombstoned);
-        }
         // Enforce the remaining whole-window payload allowance before allocation
         // and reading, including a forged later child. Checking only after read()
         // could overshoot the window's fixed source-verification reservation.
         let remaining = MAX_RECORDING_BYTES
             .checked_sub(total)
             .ok_or(RecordingIoError::Budget)?;
-        let bytes = publisher
-            .spool()
-            .read_bounded(digest, remaining)
-            .map_err(|error| match error {
-                SpoolError::Corrupt {
-                    kind: fss_object::CorruptionKind::DeclaredLengthExceedsLimit {
-                        declared, maximum,
-                    },
-                    ..
-                } if maximum == remaining as u64
-                    && declared <= publisher.limits().spool.max_object_bytes as u64 =>
-                    RecordingIoError::Budget,
-                error => RecordingIoError::Spool(error),
-            })?;
+        let bytes = read_recording_object(publisher, digest, remaining, cancel)?;
         total = total
             .checked_add(bytes.len())
             .ok_or(RecordingIoError::Budget)?;
@@ -383,6 +412,7 @@ pub(super) fn load_window(
     if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
         return Err(RecordingIoError::Cancelled);
     }
+    require_durable_root(publisher, slot, expected_root)?;
     Ok(PreparedRecording {
         manifest,
         source,

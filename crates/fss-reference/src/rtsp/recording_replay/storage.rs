@@ -3,10 +3,9 @@
 
 use super::*;
 use crate::rtsp::recording::hevc::local::load_hevc_recording;
-use crate::rtsp::recording::local::load_recording;
+use crate::rtsp::recording::local::{load_recording, require_durable_root};
 use fss_publication::{
-    LocalPublicationReceipt, LocalPublicationState, LocalRootPublisher, PublishCancellation,
-    PublishCutPoint,
+    LocalPublicationReceipt, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
 
 const MAX_REPLAY_ROOT_BYTES: usize = 16 * 1024;
@@ -152,7 +151,7 @@ pub(crate) fn load_codec_receipt_visit(
         return Err(ReplayReceiptError::Digest);
     }
     let slot = codec_replay_slot(expected_codec, expected_scope, expected_request)?;
-    durable_root(publisher, &slot, expected_root)?;
+    require_durable_root(publisher, &slot, expected_root)?;
     let root_bytes = read_object(publisher, expected_root, MAX_REPLAY_ROOT_BYTES, cancel)?;
     if root_bytes.len() > MAX_REPLAY_ROOT_BYTES {
         return Err(ReplayReceiptError::Limit);
@@ -188,7 +187,7 @@ pub(crate) fn load_codec_receipt_visit(
     verify_originals(publisher, &receipt, cancel, visitor)?;
     // Revalidate visible and tombstone bindings after native source work, before
     // releasing a complete receipt. No returned descriptor is trusted by hash alone.
-    durable_root(publisher, &slot, expected_root)?;
+    require_durable_root(publisher, &slot, expected_root)?;
     live_originals(publisher, &receipt, cancel)?;
     if read_object(publisher, expected_root, MAX_REPLAY_ROOT_BYTES, cancel)? != root_bytes
         || read_object(publisher, metadata_digest, metadata_maximum, cancel)? != metadata
@@ -207,7 +206,6 @@ fn verify_originals(
 ) -> Result<()> {
     for (ordinal, window) in receipt.windows().iter().enumerate() {
         cancelled(cancel)?;
-        durable_root(publisher, window.slot(), window.root())?;
         // Bound original media residence to one window at a time. Native verification
         // and descriptor equality always precede the read-only projection callback.
         match receipt.request.codec() {
@@ -253,7 +251,7 @@ pub(crate) fn revalidate_receipt(
 ) -> Result<()> {
     cancelled(cancel)?;
     owner_ready(publisher)?;
-    durable_root(publisher, &receipt.slot()?, receipt.root())?;
+    require_durable_root(publisher, &receipt.slot()?, receipt.root())?;
     live_originals(publisher, receipt, cancel)
 }
 
@@ -265,7 +263,8 @@ fn live_originals(
     cancelled(cancel)?;
     owner_ready(publisher)?;
     for window in receipt.windows() {
-        durable_root(publisher, window.slot(), window.root())?;
+        cancelled(cancel)?;
+        require_durable_root(publisher, window.slot(), window.root())?;
     }
     for tombstone in publisher.tombstones() {
         if *tombstone == receipt.root()
@@ -273,24 +272,6 @@ fn live_originals(
         {
             return Err(RecordingIoError::Tombstoned.into());
         }
-    }
-    Ok(())
-}
-
-fn durable_root(
-    publisher: &LocalRootPublisher,
-    slot: &SlotName,
-    root: ContentDigest,
-) -> Result<()> {
-    let known = publisher.root(slot).ok_or(RecordingIoError::NotDurable)?;
-    if known.root != root {
-        return Err(RecordingIoError::RootConflict.into());
-    }
-    if known.state != LocalPublicationState::Durable {
-        return Err(RecordingIoError::NotDurable.into());
-    }
-    if publisher.tombstones().any(|value| *value == root) {
-        return Err(RecordingIoError::Tombstoned.into());
     }
     Ok(())
 }

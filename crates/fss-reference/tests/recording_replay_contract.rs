@@ -148,6 +148,22 @@ fn setup(name: &str, count: usize) -> Result<(PathBuf, LocalRootPublisher, Repla
 }
 
 struct StopAt(PublishCutPoint);
+
+#[test]
+fn open_owner_refuses_lost_replay_receipt_root_record() -> TestResult {
+    let (root, mut publisher, receipt) = setup("lost-receipt", 1)?;
+    publish_replay_receipt(&receipt, &mut publisher, &NeverCancel)?;
+    let slot = receipt.slot()?;
+    let path = root
+        .join(fss_publication::LOCAL_ROOTS_DIR)
+        .join(format!("{slot}{}", fss_publication::ROOT_RECORD_SUFFIX));
+    std::fs::remove_file(path)?;
+    assert!(matches!(
+        load_replay_receipt(&publisher, receipt.root(), receipt.scope(), receipt.request().digest(), &NeverCancel),
+        Err(E::Storage(RecordingIoError::Publication(error))) if matches!(*error, fss_publication::LocalPublicationError::Io { operation: fss_publication::LocalIoOperation::ReadRecord, kind: std::io::ErrorKind::NotFound, .. })
+    ));
+    Ok(())
+}
 impl PublishCancellation for StopAt {
     fn cancel_requested(&self, point: PublishCutPoint) -> bool {
         point == self.0

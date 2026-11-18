@@ -3,10 +3,9 @@
 
 use super::*;
 use crate::rtsp::recording::hevc::local::load_hevc_recording;
-use crate::rtsp::recording::local::load_recording;
+use crate::rtsp::recording::local::{load_recording, read_recording_object, require_durable_root};
 use fss_publication::{
-    LocalPublicationReceipt, LocalPublicationState, LocalRootPublisher, PublishCancellation,
-    PublishCutPoint,
+    LocalPublicationReceipt, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
 
 const MAX_CLOCK_ROOT_BYTES: usize = 16 * 1024;
@@ -72,11 +71,8 @@ pub fn load_clock_index(
         return Err(RecordingClockError::Digest);
     }
     let slot = clock_slot(expected_codec, expected_scope)?;
-    durable_root(publisher, &slot, expected_root)?;
-    let root_bytes = read_object(publisher, expected_root, cancel)?;
-    if root_bytes.len() > MAX_CLOCK_ROOT_BYTES {
-        return Err(RecordingClockError::Limit);
-    }
+    require_durable_root(publisher, &slot, expected_root)?;
+    let root_bytes = read_object(publisher, expected_root, MAX_CLOCK_ROOT_BYTES, cancel)?;
     let manifest = ObjectManifest::from_canonical_bytes(&root_bytes)
         .map_err(|_| RecordingClockError::Malformed)?;
     if manifest.root() != expected_root
@@ -88,14 +84,10 @@ pub fn load_clock_index(
     let metadata_digest = manifest
         .metadata_digest()
         .ok_or(RecordingClockError::Malformed)?;
-    let metadata = read_object(publisher, metadata_digest, cancel)?;
-    if metadata
-        .len()
-        .checked_add(root_bytes.len())
-        .is_none_or(|bytes| bytes > MAX_CLOCK_INDEX_BYTES)
-    {
-        return Err(RecordingClockError::Limit);
-    }
+    let remaining = MAX_CLOCK_INDEX_BYTES
+        .checked_sub(root_bytes.len())
+        .ok_or(RecordingClockError::Limit)?;
+    let metadata = read_object(publisher, metadata_digest, remaining, cancel)?;
     let index = wire::decode(&metadata, expected_scope, expected_codec)?;
     if index.manifest != manifest {
         return Err(RecordingClockError::Digest);
@@ -104,10 +96,10 @@ pub fn load_clock_index(
     verify_originals(publisher, &index, cancel)?;
     // Recheck the selected companion and all current root/tombstone bindings
     // after the source work, before releasing a complete result.
-    durable_root(publisher, &slot, expected_root)?;
+    require_durable_root(publisher, &slot, expected_root)?;
     live_originals(publisher, &index, cancel)?;
-    if read_object(publisher, expected_root, cancel)? != root_bytes
-        || read_object(publisher, metadata_digest, cancel)? != metadata
+    if read_object(publisher, expected_root, root_bytes.len(), cancel)? != root_bytes
+        || read_object(publisher, metadata_digest, metadata.len(), cancel)? != metadata
     {
         return Err(RecordingClockError::Digest);
     }
@@ -122,7 +114,6 @@ fn verify_originals(
 ) -> Result<()> {
     for entry in &index.windows {
         cancelled(cancel)?;
-        durable_root(publisher, entry.slot(), entry.root())?;
         // Load and drop one bounded original at a time, never all media in a page.
         let actual = match index.codec {
             RecordingClockCodec::Avc => {
@@ -161,7 +152,8 @@ fn live_originals(
     cancelled(cancel)?;
     owner_ready(publisher)?;
     for entry in &index.windows {
-        durable_root(publisher, entry.slot(), entry.root())?;
+        cancelled(cancel)?;
+        require_durable_root(publisher, entry.slot(), entry.root())?;
     }
     for tombstone in publisher.tombstones() {
         if *tombstone == index.root() || index.manifest.children().binary_search(tombstone).is_ok()
@@ -172,38 +164,16 @@ fn live_originals(
     Ok(())
 }
 
-fn durable_root(
-    publisher: &LocalRootPublisher,
-    slot: &SlotName,
-    root: ContentDigest,
-) -> Result<()> {
-    let known = publisher.root(slot).ok_or(RecordingIoError::NotDurable)?;
-    if known.root != root {
-        return Err(RecordingIoError::RootConflict.into());
-    }
-    if known.state != LocalPublicationState::Durable {
-        return Err(RecordingIoError::NotDurable.into());
-    }
-    if publisher.tombstones().any(|value| *value == root) {
-        return Err(RecordingIoError::Tombstoned.into());
-    }
-    Ok(())
-}
-
 fn read_object(
     publisher: &LocalRootPublisher,
     value: ContentDigest,
+    maximum: usize,
     cancel: &dyn PublishCancellation,
 ) -> Result<Vec<u8>> {
-    cancelled(cancel)?;
-    if publisher.tombstones().any(|tombstone| *tombstone == value) {
-        return Err(RecordingIoError::Tombstoned.into());
-    }
-    publisher
-        .spool()
-        .read(value)
-        .map_err(RecordingIoError::Spool)
-        .map_err(RecordingClockError::from)
+    read_recording_object(publisher, value, maximum, cancel).map_err(|error| match error {
+        RecordingIoError::Budget => RecordingClockError::Limit,
+        error => error.into(),
+    })
 }
 
 fn owner_ready(publisher: &LocalRootPublisher) -> Result<()> {
