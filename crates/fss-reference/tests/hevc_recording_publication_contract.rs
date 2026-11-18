@@ -383,9 +383,8 @@ fn cancellation_at_each_read_or_after_full_replay_prevents_disclosure_not_durabi
     let plan = fixture()?;
     let mut owner = LocalRootPublisher::open(fresh("cancel_read")?, limits())?;
     publish(plan.publication_plan(), &mut owner, slot()?)?;
-    // Five exact objects (manifest/index/source/init/media), then the final
-    // post-verification cancellation check. No successful bytes escape any cut.
-    for at in 0..6 {
+    // Root record admission, five exact objects, final root record and release.
+    for at in 0..8 {
         let cancel = CancelReadAt {
             calls: AtomicUsize::new(0),
             at,

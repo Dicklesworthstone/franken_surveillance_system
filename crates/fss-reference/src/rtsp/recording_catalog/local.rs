@@ -579,7 +579,6 @@ fn live_catalog(
 ) -> IoResult<()> {
     cancelled(cancel)?;
     owner_ready(p)?;
-    require_durable_root(p, slot, catalog.manifest.root())?;
     for entry in &catalog.entries {
         cancelled(cancel)?;
         require_durable_root(p, &entry.slot, entry.root)?;
@@ -589,7 +588,9 @@ fn live_catalog(
             return Err(RecordingIoError::Tombstoned.into());
         }
     }
-    Ok(())
+    cancelled(cancel)?;
+    require_durable_root(p, slot, catalog.manifest.root())?;
+    cancelled(cancel)
 }
 fn read_object(
     p: &LocalRootPublisher,

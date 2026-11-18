@@ -413,6 +413,9 @@ pub(super) fn load_window(
         return Err(RecordingIoError::Cancelled);
     }
     require_durable_root(publisher, slot, expected_root)?;
+    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+        return Err(RecordingIoError::Cancelled);
+    }
     Ok(PreparedRecording {
         manifest,
         source,

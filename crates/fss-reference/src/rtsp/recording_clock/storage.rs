@@ -96,13 +96,14 @@ pub fn load_clock_index(
     verify_originals(publisher, &index, cancel)?;
     // Recheck the selected companion and all current root/tombstone bindings
     // after the source work, before releasing a complete result.
-    require_durable_root(publisher, &slot, expected_root)?;
-    live_originals(publisher, &index, cancel)?;
     if read_object(publisher, expected_root, root_bytes.len(), cancel)? != root_bytes
         || read_object(publisher, metadata_digest, metadata.len(), cancel)? != metadata
     {
         return Err(RecordingClockError::Digest);
     }
+    live_originals(publisher, &index, cancel)?;
+    cancelled(cancel)?;
+    require_durable_root(publisher, &slot, expected_root)?;
     cancelled(cancel)?;
     Ok(index)
 }

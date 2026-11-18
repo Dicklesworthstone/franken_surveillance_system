@@ -187,14 +187,12 @@ pub(crate) fn load_codec_receipt_visit(
     verify_originals(publisher, &receipt, cancel, visitor)?;
     // Revalidate visible and tombstone bindings after native source work, before
     // releasing a complete receipt. No returned descriptor is trusted by hash alone.
-    require_durable_root(publisher, &slot, expected_root)?;
-    live_originals(publisher, &receipt, cancel)?;
     if read_object(publisher, expected_root, MAX_REPLAY_ROOT_BYTES, cancel)? != root_bytes
         || read_object(publisher, metadata_digest, metadata_maximum, cancel)? != metadata
     {
         return Err(ReplayReceiptError::Digest);
     }
-    cancelled(cancel)?;
+    revalidate_receipt(publisher, &receipt, cancel)?;
     Ok(receipt)
 }
 
@@ -249,10 +247,10 @@ pub(crate) fn revalidate_receipt(
     receipt: &ReplayReceipt,
     cancel: &dyn PublishCancellation,
 ) -> Result<()> {
+    live_originals(publisher, receipt, cancel)?;
     cancelled(cancel)?;
-    owner_ready(publisher)?;
     require_durable_root(publisher, &receipt.slot()?, receipt.root())?;
-    live_originals(publisher, receipt, cancel)
+    cancelled(cancel)
 }
 
 fn live_originals(

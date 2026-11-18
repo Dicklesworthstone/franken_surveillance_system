@@ -57,6 +57,8 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
     -p fss-container --test pinned_recording_contract
   run_tests 'native AVC/HEVC recorder replay and durable receipts' \
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
+    --test recording_clock_contract --test recording_catalog_local_contract \
+    --test hevc_catalog_local_contract --test hevc_recording_publication_contract \
     --test live_hevc_archive_contract --test rtsp_replay_time_pinned_contract
   run_tests 'source-authorized recorder assertions with current deployment context' \
     -p fss-reference --test agent_recording_replay_context_contract
