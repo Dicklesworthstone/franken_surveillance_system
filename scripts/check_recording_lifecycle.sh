@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Focused supplemental contracts for recorder discovery, replay and review expiry.
-# Local DSR qualification remains authoritative; this does not replace any lane.
+# Supplemental contracts for recorder discovery, replay, review expiry and retained events.
 set -euo pipefail
+export CARGO_NET_OFFLINE=true
+export RUSTUP_AUTO_INSTALL=0
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -96,6 +97,21 @@ if [[ "$selection" == all || "$selection" == review-expiry ]]; then
     -p fss-cli --test review_expiry_cli_contract --test deletion_scope_cli_contract
   run_tests 'strict review expiry command admission' \
     -p fss-cli --bin fss-event delete::review_expiry::tests
+fi
+
+if [[ "$selection" == all ]]; then
+  run_tests 'durable event evidence hydration' \
+    -p fss-reference --test agent_event_hydration_contract
+  run_tests 'CLI event evidence hydration' \
+    -p fss-cli --test event_hydration_query_cli_contract
+  run_tests 'native exact event revision comparisons' \
+    -p fss-reference --test agent_event_changes_contract
+  run_tests 'CLI event revision and explanation compatibility' \
+    -p fss-cli --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli
+  run_tests 'exact explanation receipts preserve context provenance' \
+    -p fss-cli --lib support_preserves_why_and_what_changed_receipts_without_reclassifying_context
+  run_tests 'MCP query and schema contracts' \
+    -p fss-cli --bin fss-mcp
 fi
 
 exit "$result"

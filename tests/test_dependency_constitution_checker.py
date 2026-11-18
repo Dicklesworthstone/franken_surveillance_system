@@ -1129,6 +1129,29 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
             result = validate_dependency_constitution(self.tmp_root)
         self.assertEqual(codes(result), {C, ERR_DEP_UNSTABLE_FEATURE})
 
+    def test_invalid_unstable_feature_registry_confers_no_authority(self) -> None:
+        source = "crates/fss-x/src/lib.rs"
+        self.path(source).parent.mkdir(parents=True)
+        self.write(source, "#![feature(portable_simd)]\n")
+        registry = "architecture/unstable_features.toml"
+        record = (
+            '[[rows]]\nfeature = "portable_simd"\n'
+            f'files = ["{source}"]\n'
+            'justification = "test fixture"\nreviewed = "2026-08-31"\n'
+        )
+        self.write(registry, record)
+        result = dependency_constitution_checker.ValidationResult()
+        scan_unstable_features(self.tmp_root, result)
+        self.assertEqual(result.errors, [])
+
+        self.write(registry, record + 'files = ["untrusted.rs"]\n')
+        result = dependency_constitution_checker.ValidationResult()
+        scan_unstable_features(self.tmp_root, result)
+        self.assertEqual(
+            [(e.code, e.file_path) for e in result.errors],
+            [(C, registry), (ERR_DEP_UNSTABLE_FEATURE, source)],
+        )
+
     def test_pinned_baselines_are_views_of_the_authority(self) -> None:
         """The checker's baselines are the authority's pins, and the constitution matches them."""
         live = json.loads((ROOT / CJ).read_text(encoding="utf-8"))

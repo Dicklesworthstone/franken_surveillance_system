@@ -1134,11 +1134,20 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
     # refused.
     def allowed_unstable_features() -> dict[str, set[str]]:
         allow: dict[str, set[str]] = {}
-        data, _raw, problems = authority.load_toml_document(
-            root / "architecture/unstable_features.toml",
-            "architecture/unstable_features.toml",
-            root,
-        )
+        relative = "architecture/unstable_features.toml"
+        path = root / relative
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            # A repository can use zero unstable features without a registry.
+            return allow
+        except OSError:
+            # The strict reader below reports the path failure.
+            pass
+        data, _raw, problems = authority.load_toml_document(path, relative, root)
+        if data is None:
+            result.extend(problems)
+            return allow
         rows = data.get("rows")
         if rows is None:
             return allow

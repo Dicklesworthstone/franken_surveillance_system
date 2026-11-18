@@ -1922,18 +1922,15 @@ def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: lis
         text = path.read_text(encoding="utf-8")
         masked, _ = mask_rust_source(text, mask_literals=False)
         scan = masked.replace("#![forbid(unsafe_code)]", "")
-        # Foreign media/model bindings are code constructs (`use opencv::`,
-        # `extern crate`, typed handles). Pinned model-name strings such as
-        # "opencv-people-shadow-1" are admitted DATA inputs, not bindings, so
-        # this rule scans with literals masked; the other rules keep literals
-        # visible (dynamic-loading names and foreign commands are string data
-        # by nature).
+        # Unsafe syntax and foreign media/model bindings are code constructs.
+        # Preserve literals for rules about ABI names, loader symbols and
+        # executable names, which may be supplied as string data.
         code_only, _ = mask_rust_source(text, mask_literals=True)
         scan_code = code_only.replace("#![forbid(unsafe_code)]", "")
         for label, pattern in patterns.items():
             if label == "foreign production command" and ("tests" in path.parts or "examples" in path.parts):
                 continue
-            haystack = scan_code if label == "foreign media/model binding" else scan
+            haystack = scan_code if label in {"unsafe token", "foreign media/model binding"} else scan
             if pattern.search(haystack):
                 add(findings, "error", "DEP-AUD-022", path, f"forbidden production construct: {label}", root=root, params={"label": label, "path": path})
 

@@ -526,12 +526,24 @@ members = ["crates/crate-a"]
         (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
         make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
         mod_file = self.root / "crates" / "crate-a" / "src" / "danger.rs"
-        mod_file.write_text("pub unsafe fn danger() {}\n", encoding="utf-8")
+        diagnostic = 'pub const DIAGNOSTIC: &str = "unsafe input";\n'
+        mod_file.write_text(diagnostic, encoding="utf-8")
+        report, rc = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(rc, 0, report["findings"])
+
+        mod_file.write_text(diagnostic + "pub unsafe fn danger() {}\n", encoding="utf-8")
 
         report, rc = dependency_audit.audit_workspace(self.root, self.policy_path)
         self.assertEqual(rc, 1)
-        codes = [f["code"] for f in report["findings"] if f["severity"] == "error"]
-        self.assertIn("DEP-AUD-022", codes)
+        self.assertTrue(
+            any(
+                f["severity"] == "error"
+                and f["code"] == "DEP-AUD-022"
+                and f["params"].get("label") == "unsafe token"
+                for f in report["findings"]
+            ),
+            report["findings"],
+        )
 
     def test_foreign_production_command_src_rejected_tests_admitted(self) -> None:
         """Planted-negative test: Command::new("ffmpeg") in src/ rejected with DEP-AUD-022;
