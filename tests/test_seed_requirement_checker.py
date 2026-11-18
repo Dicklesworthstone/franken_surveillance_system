@@ -172,6 +172,15 @@ class SeedCorpusTests(unittest.TestCase):
                 finally:
                     path.write_text(original, encoding="utf-8")
 
+    def test_embedded_issue_slug_does_not_hide_an_adjacent_malformed_seed(self):
+        path = self.root / "docs/seed-planted.md"
+        slug = "`bb-fss-6699-header-mismatch-3tm`"
+        path.write_text(f"{slug} references FSS-001.\n", encoding="utf-8")
+        self.assertEqual(checker.check(self.root)["findings"], [])
+        path.write_text(f"{slug} references `fss-001` and FSS_002.\n", encoding="utf-8")
+        findings = self.assert_failure("ERR-SEED-IDENTITIES-001")["findings"]
+        self.assertEqual(sum(row["file"] == "docs/seed-planted.md" for row in findings), 2)
+
     def test_unknown_reference_and_conflicting_definition_have_no_owner(self):
         path = self.root / "docs/seed-planted.md"
         for prose in ("This requirement depends on FSS-999.\n",
@@ -202,7 +211,7 @@ class SeedCorpusTests(unittest.TestCase):
         out = self.root.parent / "private-proof"
         summary = checker.publish_proof(self.root, out)
         self.assertEqual(summary["status"], "failed")
-        self.assertFalse(checker.verify_proof(out))
+        self.assertFalse(checker.verify_proof(out, self.root))
         for artifact in out.rglob("*"):
             if artifact.is_file():
                 self.assertNotIn(SECRET.encode(), artifact.read_bytes(), str(artifact.relative_to(out)))
@@ -211,7 +220,7 @@ class SeedCorpusTests(unittest.TestCase):
         out = self.root.parent / "proof"
         summary = checker.publish_proof(self.root, out)
         self.assertEqual(summary["status"], "passed")
-        self.assertTrue(checker.verify_proof(out))
+        self.assertTrue(checker.verify_proof(out, self.root))
         records = [json.loads(line) for line in (out / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
         scenarios = {record["scenario"]: record for record in records}
         expected = {"corpus": "passed", "recovery": "passed", "before": "failed",
@@ -230,7 +239,13 @@ class SeedCorpusTests(unittest.TestCase):
     def test_proof_rejects_tamper_and_missing_root_then_recovers(self):
         out = self.root.parent / "proof"
         checker.publish_proof(self.root, out)
-        self.assertTrue(checker.verify_proof(out))
+        self.assertTrue(checker.verify_proof(out, self.root))
+        # A still-valid corpus with different source bytes cannot verify the old proof.
+        drift = self.root / "docs" / "later-note.md"
+        drift.write_text("Additional operator note.\n", encoding="utf-8")
+        self.assertFalse(checker.verify_proof(out, self.root))
+        drift.unlink()
+        self.assertTrue(checker.verify_proof(out, self.root))
         files = [out / "summary.json", out / "transcript.jsonl", out / "proof.root"]
         files.extend(sorted((out / "artifacts").glob("*.json")))
         for path in files:
@@ -238,12 +253,12 @@ class SeedCorpusTests(unittest.TestCase):
                 original = path.read_bytes()
                 try:
                     path.write_bytes(original + b"tamper")
-                    self.assertFalse(checker.verify_proof(out))
+                    self.assertFalse(checker.verify_proof(out, self.root))
                     path.unlink()
-                    self.assertFalse(checker.verify_proof(out))
+                    self.assertFalse(checker.verify_proof(out, self.root))
                 finally:
                     path.write_bytes(original)
-                self.assertTrue(checker.verify_proof(out))
+                self.assertTrue(checker.verify_proof(out, self.root))
 
     def test_architecture_checker_preserves_seed_failure_identity(self):
         document = copy.deepcopy(self.document)

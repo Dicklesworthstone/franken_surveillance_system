@@ -32,6 +32,13 @@ MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_CORPUS_BYTES = 64 * 1024 * 1024
 MAX_SOURCES = 4096
 ID_RE = re.compile(r"\bFSS-\d{3}\b")
+# Treat backticked lowercase compound identifiers as single lexical tokens. A
+# seed-like substring inside another name is not a separate requirement reference.
+SEED_SPELLING = re.compile(
+    r"`(?!fss[-_])[a-z][a-z0-9]*(?:-[a-z0-9]+)+`"
+    r"|\b(?P<seed>[fF][sS][sS][_-]\d+|FSS\d{3,})\b"
+)
+
 ROW_RE = re.compile(r"^(\d+)\. `(FSS-\d{3})` (.+)$")
 CLAIM_RE = re.compile(r"\bfirst[ -](\d+)\s+(?:implementation\s+)?(?:issues|beads|requirements)\b", re.I)
 REPAIR = "Restore the admitted registry and regenerate mirrors; rebase and rerun the corpus proof. Count/intent changes need reviewed versioned migration and claim-impact admission."
@@ -165,10 +172,10 @@ def check(root: Path = ROOT) -> dict[str, Any]:
                 if ref["id"] not in owners:
                     findings.append(finding("OWNER", rel, str(ref["line"])))
             for number, line in enumerate(text.splitlines(), 1):
-                if re.search(r"\b(?:[fF][sS][sS][_-]\d+|FSS\d{3,})\b", line):
-                    for token in re.findall(r"\b(?:[fF][sS][sS][_-]\d+|FSS\d{3,})\b", line):
-                        if not ID_RE.fullmatch(token):
-                            findings.append(finding("IDENTITIES", rel, str(number)))
+                for candidate in SEED_SPELLING.finditer(line):
+                    token = candidate["seed"]
+                    if token is not None and not ID_RE.fullmatch(token):
+                        findings.append(finding("IDENTITIES", rel, str(number)))
             if rel.endswith(".md") and rel != PLAN:
                 # Reuse the existing definition grammar, preserving other drift rules.
                 reference_table = False
