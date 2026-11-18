@@ -326,7 +326,7 @@ fn tools_list_exposes_qsr_under_existing_query_with_closed_target_fields() -> Te
         .ok_or("branches")?;
     let mut qsr_branches = 0;
     for branch in branches {
-        let branch = branch.object().ok_or("branch object")?;
+        let branch = query_branch(schema, branch).and_then(NativeValue::object).ok_or("branch object")?;
         let target = branch
             .get("properties")
             .and_then(NativeValue::object)
@@ -348,51 +348,12 @@ fn tools_list_exposes_qsr_under_existing_query_with_closed_target_fields() -> Te
                     .collect::<Vec<_>>(),
                 ["target", "report_digest"]
             );
-            let allowed = branch
-                .get("propertyNames")
-                .and_then(NativeValue::object)
-                .and_then(|fields| fields.get("enum"))
-                .and_then(NativeValue::array)
-                .ok_or("closed QSR fields")?;
-            assert_eq!(
-                allowed
-                    .iter()
-                    .filter_map(NativeValue::text)
-                    .collect::<Vec<_>>(),
-                [
-                    "target",
-                    "report_digest",
-                    "zone_roles",
-                    "lane_stages",
-                    "anchor",
-                    "max_query_read_bytes",
-                    "max_query_read_objects"
-                ]
-            );
+            assert_eq!(branch.get("additionalProperties").and_then(NativeValue::boolean), Some(false));
+            let allowed = branch.get("properties").and_then(NativeValue::object).ok_or("QSR keys")?;
+            assert_eq!(allowed.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["anchor", "lane_stages", "max_query_read_bytes", "max_query_read_objects", "report_digest", "target", "zone_roles"]);
         } else {
-            let excludes = |field: &str| {
-                branch
-                    .get("propertyNames")
-                    .and_then(NativeValue::object)
-                    .and_then(|fields| fields.get("enum"))
-                    .and_then(NativeValue::array)
-                    .is_some_and(|allowed| !allowed.iter().any(|value| value.text() == Some(field)))
-                    || branch
-                        .get("not")
-                        .and_then(NativeValue::object)
-                        .and_then(|fields| fields.get("anyOf"))
-                        .and_then(NativeValue::array)
-                        .is_some_and(|excluded| {
-                            excluded.iter().any(|row| {
-                                row.object()
-                                    .and_then(|fields| fields.get("required"))
-                                    .and_then(NativeValue::array)
-                                    .is_some_and(|required| {
-                                        required.len() == 1 && required[0].text() == Some(field)
-                                    })
-                            })
-                        })
-            };
+            let excludes = |field| query_schema_excludes(branch, field);
             for field in ["zone_roles", "lane_stages"] {
                 assert!(excludes(field), "{target} admits QSR-only {field}");
             }

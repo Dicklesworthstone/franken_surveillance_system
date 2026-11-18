@@ -288,21 +288,21 @@ fn replay_arguments(
         (
             "max_query_read_objects",
             "max-query-read-objects",
-            20,
+            7,
             false,
         ),
         ("replay_root", "replay-root", 71, true),
         ("replay_request", "replay-request", 71, true),
-        ("utc_start_ns", "utc-start-ns", 39, true),
-        ("utc_end_ns", "utc-end-ns", 39, true),
+        ("utc_start_ns", "utc-start-ns", 21, true),
+        ("utc_end_ns", "utc-end-ns", 21, true),
         (
             "max_query_source_bytes",
             "max-query-source-bytes",
-            20,
+            10,
             false,
         ),
-        ("max_query_read_bytes", "max-query-read-bytes", 20, false),
-        ("max_query_io_calls", "max-query-io-calls", 20, false),
+        ("max_query_read_bytes", "max-query-read-bytes", 10, false),
+        ("max_query_io_calls", "max-query-io-calls", 7, false),
         ("anchor", "anchor", 256, false),
     ] {
         let Some(value) = fields.get(field) else {
