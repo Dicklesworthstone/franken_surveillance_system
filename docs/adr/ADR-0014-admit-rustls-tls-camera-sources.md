@@ -12,8 +12,8 @@ owner decided on 2026-11-04 to admit TLS via `rustls` for camera-facing sources,
 pinning per site manifest; plain RTSP stays allowed on the site LAN or VPN only. That decision
 settled the policy question. It did not settle the provider question, and `DEPENDENCY_CONSTITUTION.md`
 §2.4 (Class F3) does not admit a crate "by category" — `rustls` and `webpki-roots` remain listed in
-`architecture/dependency_allowlist.toml`'s `exception_candidates`, unresolved, until this ADR and a
-`DEP-*` record exist.
+`architecture/dependency_allowlist.toml`'s `exception_candidates` until the admission record and
+qualification evidence are complete.
 
 The unresolved tension this ADR exists to close: `rustls` itself has no cryptography — it delegates
 to a `CryptoProvider`. The two mature providers, `aws-lc-rs` and `ring`, both carry C or assembly
@@ -41,8 +41,7 @@ waived:
 - it is scoped to camera-facing TLS only (RTSPS, HTTPS ONVIF, cloud VMS HTTPS), never to Asupersync,
   Ed25519 lease signing (ADR pending under D6/D2(a)), or any other FSS TLS surface, so a defect in
   it cannot silently widen into an unrelated boundary;
-- `architecture/dependency_allowlist.toml` records a requalification trigger (below) rather than a
-  one-time pass;
+- DEP-TLS-001 records the conditions that trigger requalification;
 - if `rustls-rustcrypto` is later judged unfit, the fallback is not silently switching providers —
   it is TLS admission itself reverting to "not admitted" for the affected route, per
   `DEPENDENCY_CONSTITUTION.md` §8's "it never silently upgrades."
@@ -63,10 +62,10 @@ here:
 - the fault campaign and platform matrix results;
 - the signed DSR qualification receipt.
 
-`architecture/dependency_allowlist.toml`'s `exception_candidates` entry for `rustls`/`webpki-roots`
-is **not** moved to an admitted table by this ADR. It gains a pointer to this ADR and the DEP record,
-and stays in `exception_candidates` until that record's evidence fields are filled from a real
-build, not from this document's own research.
+`rustls` and `webpki-roots` stay in `exception_candidates` in
+`architecture/dependency_allowlist.toml`. The [DEP-TLS-001 admission record](../../architecture/dep_records/DEP-TLS-001-rustls.md)
+tracks the evidence needed to move them to an admitted table, including the locked build and
+release qualification.
 
 ## Consequences
 
