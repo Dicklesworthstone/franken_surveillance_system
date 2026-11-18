@@ -126,12 +126,12 @@ python3 scripts/check_recording_catalog_fixture.py
 
 ## Verification boundary
 
-The 23 added Rust test functions cover selection, canonical corruption, exact
-scope, output budgets, metadata-only construction, original source readback,
-publication cancellation, partial reads, deadline/reversal, four root-publication
-crash boundaries, and self-consistent but false descriptors. The Rust compiler,
-tests and examples were NOT executed in the authoring environment: no Rust
-toolchain is available. They must not be described as passing qualification.
+The Rust contracts above exercise selection, canonical corruption, exact scope,
+source readback, partial reads, cancellation and four publication crash cuts.
+The local catalog contract also damages a member or catalog slot record while
+the publisher stays open. A separate case measures the byte reservation for a
+catalog whose manifest and index together exceed 64 KiB. The supplemental
+recording lifecycle lane includes these storage checks for local replay.
 
 The independent Python wire/interval oracle DID run. It checked 10,001 interval
 cases and refused 1,370 truncations/single-byte changes. Its 685-byte index and
