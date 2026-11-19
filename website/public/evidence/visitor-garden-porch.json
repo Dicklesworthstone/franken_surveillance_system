@@ -1,0 +1,543 @@
+{
+  "format": "fss.recorded_corroboration_report.v1",
+  "plan_digest": "sha256:332e3b66c4120446e22d7b769f813da624a6b1e3d4a948b17fc29750eb0d5b11",
+  "policy_digest": "sha256:32d6945790ed6e5e2ce1c879bb9af0614d0218ad68d521c1531eb1e3f18993d9",
+  "cameras": [
+    {
+      "camera": "garden",
+      "import_identity": "sha256:4b53fdf5f9e95a826605bac77015414998270cd9697404fe8f6a79ebd794ccf7",
+      "import_root": "sha256:86eda5d83967c55cd236e75a4925e28f30cf2b23bf09e3300688ba9afba91651",
+      "sensor_id": "sensor:garden",
+      "failure_domain": "recorded-cluster:51491bb0cb6fbb921e5e9274b1b1b3284b78ad58b38e2ddb4056d25dda33e3d8",
+      "frames_decoded": 48,
+      "confirmed_tracks": 0,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:977a9876518100cdc101edc498c48d2ec4eab7a374186d0e4bdf04213aaec6cf",
+      "watch_analysis_digest": "sha256:6abae1d8a39b83a21044974c3db34d69bac6a8a2affbf4175e884c6b0ca10850",
+      "ground_homography_digest": "sha256:9ad70ea7eef530a42d507eba3d7ac1946c6674375cf27dcf7e285501d948627a",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    },
+    {
+      "camera": "porch",
+      "import_identity": "sha256:c28eb58725caa6e4afcef65b5df6d8e4ef7a7e8b29050b246cdd136551009a38",
+      "import_root": "sha256:ba9ea91774e62b089315289d3db3127f42ea79bf6dde79f3e1ddfe419522c034",
+      "sensor_id": "sensor:porch",
+      "failure_domain": "recorded-cluster:51491bb0cb6fbb921e5e9274b1b1b3284b78ad58b38e2ddb4056d25dda33e3d8",
+      "frames_decoded": 48,
+      "confirmed_tracks": 3,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:e116b6dcce47c3016267a67e1bf8ab9edde95981965af91a4a91174b00138442",
+      "watch_analysis_digest": "sha256:20508567b4d5d4555470b8c9881f12de10d304eb968c4bad0349e87475f16bb5",
+      "ground_homography_digest": "sha256:4b9a034ac24525dbd1d5648722f9e5e2b148800f985a3541bab7445ec4d44c9b",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    }
+  ],
+  "zones": [
+    {
+      "zone_id": "visitor",
+      "x": 1.8,
+      "y": 3.0,
+      "width": 2.9000000000000004,
+      "height": 3.0999999999999996
+    }
+  ],
+  "time_gate_ns": 250000000,
+  "distance_gate": 1.0,
+  "time_semantics": "operator_capture_hints_worst_case_interval_gate",
+  "entries": [
+    {
+      "camera": "porch",
+      "zone_id": "visitor",
+      "track_id": 1,
+      "segment": 21,
+      "capture_ns": [
+        1700000005249000000,
+        1700000005251000000
+      ],
+      "capsule_digest": "sha256:519ac69fa7a4778b6ecf7225ed56a5a48b50ee9f6694a8b23b80908794d50e4b",
+      "track_box_cxcywh": [
+        45,
+        37,
+        7,
+        10
+      ],
+      "ground": [
+        4.540121677963235,
+        6.0868935325033195
+      ],
+      "observation_digest": "sha256:783421bae6c91bacc67ea9ad0a9b0aca5278111f0fa3596081ec3222a6e9b0c0",
+      "disposition": "no_counterpart_entry"
+    },
+    {
+      "camera": "porch",
+      "zone_id": "visitor",
+      "track_id": 2,
+      "segment": 36,
+      "capture_ns": [
+        1700000008999000000,
+        1700000009001000000
+      ],
+      "capsule_digest": "sha256:36c510550036c4351ccb8fdf9eedbd9bd66d511884e5270fb3539c8ca8b2129d",
+      "track_box_cxcywh": [
+        25,
+        44,
+        14,
+        22
+      ],
+      "ground": [
+        2.6337399168854865,
+        3.766214295426339
+      ],
+      "observation_digest": "sha256:db89041761524209a68b8c5bdb08c15c29862dbd2ae797f856c552fafebe964a",
+      "disposition": "no_counterpart_entry"
+    },
+    {
+      "camera": "porch",
+      "zone_id": "visitor",
+      "track_id": 4,
+      "segment": 39,
+      "capture_ns": [
+        1700000009749000000,
+        1700000009751000000
+      ],
+      "capsule_digest": "sha256:098e4e3e53352ac4601a202c537094ee8aba4c791be6c28145231a8e37f4624a",
+      "track_box_cxcywh": [
+        39,
+        43,
+        12,
+        18
+      ],
+      "ground": [
+        2.3324451210626873,
+        4.620094197662404
+      ],
+      "observation_digest": "sha256:5c3788c14f537d23b79217fa9dd80a5db11a3073034c4861cfac40d4412637af",
+      "disposition": "no_counterpart_entry"
+    }
+  ],
+  "candidate_count": 0,
+  "candidates": [],
+  "prepared_count": 0,
+  "published_count": 0,
+  "already_published_count": 0,
+  "authority_sequence": 9,
+  "alert_prepared": false,
+  "effects_authorized": false,
+  "calibrated": false,
+  "absence_certifiable": false,
+  "detection_quality_claim": false,
+  "dependencies": {
+    "generation": "sha256:a54aff8fe99a2315e77e15e57851ed1c6cd3f5d3cdd0779af72fd8aed6180434",
+    "assessment_digest": "sha256:3fcf3565d959d1c771946bebefbdf3611f71bf5ae17121ab00f1be8c38bf93c9",
+    "basis": "owner_assertion_not_verified_topology",
+    "model": "transitive_shared_cause_components_v1",
+    "declarations": [
+      {
+        "domain": "clock:juniper-timeline",
+        "cameras": [
+          "garden",
+          "porch"
+        ]
+      },
+      {
+        "domain": "replay:juniper-scene",
+        "cameras": [
+          "garden",
+          "porch"
+        ]
+      }
+    ],
+    "cameras": [
+      {
+        "camera": "garden",
+        "sensor_digest": "sha256:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+        "import_identity": "sha256:4b53fdf5f9e95a826605bac77015414998270cd9697404fe8f6a79ebd794ccf7",
+        "import_root": "sha256:86eda5d83967c55cd236e75a4925e28f30cf2b23bf09e3300688ba9afba91651",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:51491bb0cb6fbb921e5e9274b1b1b3284b78ad58b38e2ddb4056d25dda33e3d8"
+      },
+      {
+        "camera": "porch",
+        "sensor_digest": "sha256:d90f8f52db845cbed1d823de2b165a265ca51165bec42673730509ce4f38e8bb",
+        "import_identity": "sha256:c28eb58725caa6e4afcef65b5df6d8e4ef7a7e8b29050b246cdd136551009a38",
+        "import_root": "sha256:ba9ea91774e62b089315289d3db3127f42ea79bf6dde79f3e1ddfe419522c034",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:d90f8f52db845cbed1d823de2b165a265ca51165bec42673730509ce4f38e8bb",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:51491bb0cb6fbb921e5e9274b1b1b3284b78ad58b38e2ddb4056d25dda33e3d8"
+      }
+    ],
+    "clusters": [
+      {
+        "support_domain": "recorded-cluster:51491bb0cb6fbb921e5e9274b1b1b3284b78ad58b38e2ddb4056d25dda33e3d8",
+        "cameras": [
+          "garden",
+          "porch"
+        ],
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+          "recorded-sensor:d90f8f52db845cbed1d823de2b165a265ca51165bec42673730509ce4f38e8bb",
+          "replay:juniper-scene"
+        ]
+      }
+    ],
+    "dependency_cluster_count": 1,
+    "independence": "unknown",
+    "undeclared_dependencies": "unknown_not_absent",
+    "independence_certified": false
+  },
+  "coverage": {
+    "format": "fss.recorded_watch_coverage.v1",
+    "coverage_status": "proposed",
+    "approval_digest": "sha256:96bfa01f5ee1aac31b7062fe59f0d3faf9d6b1eb37e2cdebb1bda569699f69d0",
+    "retain_command": "fss-event corroborate --root deployment --site site:juniper-demo --interpretation ycbcr --zone visitor:1.8,3,2.9000000000000004,3.0999999999999996 --time-gate-ns 250000000 --distance-gate 1 --failure-domain replay:juniper-scene=garden,porch --failure-domain clock:juniper-timeline=garden,porch --camera garden:sha256:4b53fdf5f9e95a826605bac77015414998270cd9697404fe8f6a79ebd794ccf7 --ground garden:-0.016311838568389744,-0.03711001229264282,1.9220348786397252,-0.0049683765180783416,-0.020728641530764855,1.9252723764105037,-1.098925556535422e-19,0.006865057057290432,-0.17112755536243462 --camera porch:sha256:c28eb58725caa6e4afcef65b5df6d8e4ef7a7e8b29050b246cdd136551009a38 --ground porch:-0.012369104156828868,-0.02274786482883295,2.1130480045642175,0.009912522495019649,0.01406115639630018,-0.2308401499409389,1.8069421072804715e-19,0.005959044849553863,-0.11789841082048104 --retain-coverage sha256:96bfa01f5ee1aac31b7062fe59f0d3faf9d6b1eb37e2cdebb1bda569699f69d0",
+    "witness_count": 4,
+    "absence_certified_for_witness_domains": false,
+    "records": [
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:27813c14370c9bbafacf2e8610e4c50c370ba2efa8a1b6037530f181c3b20b4c",
+        "identity": "sha256:efb1e4930e090c350eb8ad1ede11f01931fe2fa9e3cc4c764bd7be9af855913a",
+        "import_identity": "sha256:4b53fdf5f9e95a826605bac77015414998270cd9697404fe8f6a79ebd794ccf7",
+        "sensor_id": "sensor:garden",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:visitor",
+            "zone_id": "visitor",
+            "geometry": "1.8,3,2.9000000000000004,3.0999999999999996",
+            "pipeline_generation": "sha256:991e6b8086a0827a26da0f88fbdc1f1c4b194f1920b73fe82dac768b9db3c871",
+            "witness_count": 0,
+            "witnesses": [],
+            "uncovered": [
+              {
+                "reason": "outside_frustum",
+                "first_segment": 0,
+                "last_segment": 47,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 0,
+              "outside_frustum": 64,
+              "occluded": 0,
+              "visible_fraction_ppm": 0,
+              "threshold_ppm": 1000000,
+              "state": "not_observable",
+              "cause": "outside_frustum",
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      },
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:7e48bfbbe16159f30baf8961532dc406694dbb6423c74f3c2dee3fc334a24d53",
+        "identity": "sha256:56d72fe55516fa4f6c4abc9235ab1769006144b62c794637b926ab5da6e67cb1",
+        "import_identity": "sha256:c28eb58725caa6e4afcef65b5df6d8e4ef7a7e8b29050b246cdd136551009a38",
+        "sensor_id": "sensor:porch",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:visitor",
+            "zone_id": "visitor",
+            "geometry": "1.8,3,2.9000000000000004,3.0999999999999996",
+            "pipeline_generation": "sha256:2a3a085f2e38e0d75016a984f45040ffbd173f85b4d186b6f49eca11ad3b1934",
+            "witness_count": 4,
+            "witnesses": [
+              {
+                "first_segment": 4,
+                "last_segment": 20,
+                "frames": 17,
+                "covered_ns": [
+                  1700000001001000000,
+                  1700000004999000000
+                ],
+                "outer_ns": [
+                  1700000000999000000,
+                  1700000005001000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 9,
+                    "authorityRoot": "sha256:e8b87ba3edefa10f1c443ec621ac70c3511d7b860d6e515bd8e6f22a1be2efe5",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000001001000000..1700000004999000000"
+                  ],
+                  "observedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000001001000000..1700000004999000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into ground-zone:visitor of sensor sensor:porch emitted by the corroborate pipeline generation sha256:2a3a085f2e38e0d75016a984f45040ffbd173f85b4d186b6f49eca11ad3b1934 over capture [1700000001001000000, 1700000004999000000] ns (coverage producer v1); geometric visibility 64 of 64 ground samples (1000000 ppm, threshold 1000000 ppm) under grid-cell-centers:8x8 via owner_homography; occlusion_unknown (no_scene_mesh): the claim is frustum-only and an occluder in view could hide an entry",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:ccfa05755692240e09d6bfc0eac56f7ee3cc84dddfc88cf957aadf3d0a0e8aa6"
+                }
+              },
+              {
+                "first_segment": 22,
+                "last_segment": 35,
+                "frames": 14,
+                "covered_ns": [
+                  1700000005501000000,
+                  1700000008749000000
+                ],
+                "outer_ns": [
+                  1700000005499000000,
+                  1700000008751000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 9,
+                    "authorityRoot": "sha256:e8b87ba3edefa10f1c443ec621ac70c3511d7b860d6e515bd8e6f22a1be2efe5",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000005501000000..1700000008749000000"
+                  ],
+                  "observedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000005501000000..1700000008749000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into ground-zone:visitor of sensor sensor:porch emitted by the corroborate pipeline generation sha256:2a3a085f2e38e0d75016a984f45040ffbd173f85b4d186b6f49eca11ad3b1934 over capture [1700000005501000000, 1700000008749000000] ns (coverage producer v1); geometric visibility 64 of 64 ground samples (1000000 ppm, threshold 1000000 ppm) under grid-cell-centers:8x8 via owner_homography; occlusion_unknown (no_scene_mesh): the claim is frustum-only and an occluder in view could hide an entry",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:2d30f0532c69cfc76660dc947f6fe084d044517cc9ffdb126c6631d5330cccc0"
+                }
+              },
+              {
+                "first_segment": 37,
+                "last_segment": 38,
+                "frames": 2,
+                "covered_ns": [
+                  1700000009251000000,
+                  1700000009499000000
+                ],
+                "outer_ns": [
+                  1700000009249000000,
+                  1700000009501000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 9,
+                    "authorityRoot": "sha256:e8b87ba3edefa10f1c443ec621ac70c3511d7b860d6e515bd8e6f22a1be2efe5",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000009251000000..1700000009499000000"
+                  ],
+                  "observedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000009251000000..1700000009499000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into ground-zone:visitor of sensor sensor:porch emitted by the corroborate pipeline generation sha256:2a3a085f2e38e0d75016a984f45040ffbd173f85b4d186b6f49eca11ad3b1934 over capture [1700000009251000000, 1700000009499000000] ns (coverage producer v1); geometric visibility 64 of 64 ground samples (1000000 ppm, threshold 1000000 ppm) under grid-cell-centers:8x8 via owner_homography; occlusion_unknown (no_scene_mesh): the claim is frustum-only and an occluder in view could hide an entry",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:47f648e9c16fdcd596f0b4dfe2598742d747ee8e03b482e14a950951164f7d4e"
+                }
+              },
+              {
+                "first_segment": 40,
+                "last_segment": 45,
+                "frames": 6,
+                "covered_ns": [
+                  1700000010001000000,
+                  1700000011249000000
+                ],
+                "outer_ns": [
+                  1700000009999000000,
+                  1700000011251000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 9,
+                    "authorityRoot": "sha256:e8b87ba3edefa10f1c443ec621ac70c3511d7b860d6e515bd8e6f22a1be2efe5",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000010001000000..1700000011249000000"
+                  ],
+                  "observedDomain": [
+                    "corroborate:d90f8f52db845cbed1d823de2b165a26:ground-zone:visitor:1700000010001000000..1700000011249000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into ground-zone:visitor of sensor sensor:porch emitted by the corroborate pipeline generation sha256:2a3a085f2e38e0d75016a984f45040ffbd173f85b4d186b6f49eca11ad3b1934 over capture [1700000010001000000, 1700000011249000000] ns (coverage producer v1); geometric visibility 64 of 64 ground samples (1000000 ppm, threshold 1000000 ppm) under grid-cell-centers:8x8 via owner_homography; occlusion_unknown (no_scene_mesh): the claim is frustum-only and an occluder in view could hide an entry",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:19823b8f1d016138d88e1ffd1538eea91bac6e12ec9e5642ad34cb55b184eafe"
+                }
+              }
+            ],
+            "uncovered": [
+              {
+                "reason": "background_warmup",
+                "first_segment": 0,
+                "last_segment": 3,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000000751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              },
+              {
+                "reason": "zone_entry",
+                "first_segment": 21,
+                "last_segment": 21,
+                "capture_ns": [
+                  1700000005249000000,
+                  1700000005251000000
+                ],
+                "candidate_id": "sha256:783421bae6c91bacc67ea9ad0a9b0aca5278111f0fa3596081ec3222a6e9b0c0",
+                "event_id": null
+              },
+              {
+                "reason": "zone_entry",
+                "first_segment": 36,
+                "last_segment": 36,
+                "capture_ns": [
+                  1700000008999000000,
+                  1700000009001000000
+                ],
+                "candidate_id": "sha256:db89041761524209a68b8c5bdb08c15c29862dbd2ae797f856c552fafebe964a",
+                "event_id": null
+              },
+              {
+                "reason": "zone_entry",
+                "first_segment": 39,
+                "last_segment": 39,
+                "capture_ns": [
+                  1700000009749000000,
+                  1700000009751000000
+                ],
+                "candidate_id": "sha256:5c3788c14f537d23b79217fa9dd80a5db11a3073034c4861cfac40d4412637af",
+                "event_id": null
+              },
+              {
+                "reason": "confirmation_latency",
+                "first_segment": 46,
+                "last_segment": 47,
+                "capture_ns": [
+                  1700000011499000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 64,
+              "outside_frustum": 0,
+              "occluded": 0,
+              "visible_fraction_ppm": 1000000,
+              "threshold_ppm": 1000000,
+              "state": "observable",
+              "cause": null,
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

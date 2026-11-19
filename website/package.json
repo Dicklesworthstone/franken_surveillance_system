@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/check-recordings.mjs && next build",
     "films": "node scripts/render-films.mjs",
     "deploy": "bun run build && wrangler deploy"
   },

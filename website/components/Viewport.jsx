@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import CameraFilm from "./CameraFilm";
 import { createProperty } from "../lib/property";
+
+import { cameraAsset } from "../lib/scenarios";
 
 export default function Viewport({ scenario, time, view, cones, reset }) {
   const surface = useRef(null),
@@ -71,19 +74,16 @@ export default function Viewport({ scenario, time, view, cones, reset }) {
     stage.current?.reset();
     frame.current?.();
   }, [reset]);
-  const video = useRef(null);
-  useEffect(() => {
-    if (video.current && Math.abs(video.current.currentTime - time) > 0.23)
-      video.current.currentTime = time;
-  }, [time, failed, scenario]);
+  const camera = view === "overview" ? scenario.camera : view;
+  const asset = cameraAsset(scenario, camera);
   return (
     <div
-      className="viewport-surface"
+      className={
+        "viewport-surface" + (view === "overview" ? "" : " fixed-view")
+      }
       style={{
         backgroundImage:
-          "url(/films/" +
-          (view === "overview" ? "property" : scenario.id) +
-          ".jpg)",
+          "url(/films/" + (view === "overview" ? "property" : asset) + ".jpg)",
       }}
     >
       <canvas
@@ -97,20 +97,17 @@ export default function Viewport({ scenario, time, view, cones, reset }) {
       />
       {failed && (
         <>
-          <video
-            ref={video}
-            src={"/films/" + scenario.id + ".mp4"}
-            poster={"/films/" + scenario.id + ".jpg"}
-            muted
-            playsInline
-            preload="auto"
-          />
+          <CameraFilm key={asset} asset={asset} target={time} />
           <span className="fallback">
-            WebGL unavailable · recorded {scenario.camera} view
+            WebGL unavailable · recorded {camera} view
           </span>
         </>
       )}
-      <div className="trackbox" hidden>
+      <div
+        className="trackbox"
+        style={failed ? { display: "none" } : undefined}
+        hidden
+      >
         <span>{scenario.kind} · simulated</span>
       </div>
     </div>

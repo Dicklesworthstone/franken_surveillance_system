@@ -932,3 +932,72 @@ dialog p {
 .views {
   row-gap: 3px;
 }
+.stage {
+  container-type: size;
+}
+.fixed-view {
+  width: min(100cqw, 177.777cqh);
+  height: auto;
+  aspect-ratio: 16/9;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+}
+.single-feed,
+.compare-feeds {
+  position: absolute;
+  inset: 0;
+  display: grid;
+}
+.compare-feeds {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  background: var(--line);
+}
+.single-feed > div,
+.compare-feeds > div {
+  position: relative;
+}
+.archive-camera {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+.archive-camera select,
+.facts select {
+  background: var(--surface);
+  color: var(--green);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px;
+  font: inherit;
+}
+.inspector .comparison-note {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 15px;
+}
+@media (max-width: 650px) {
+  .compare-feeds {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  .stage:has(.compare-feeds) {
+    min-height: min(110vw, 65dvh);
+  }
+}
+
+.model-box {
+  border-color: #7ae4eb;
+}
+.model-box span {
+  top: 100%;
+  bottom: auto;
+  background: #7ae4eb;
+}
+.native-trace [data-observation="model"] .trace-dot {
+  border-color: #7ae4eb;
+}
+.native-trace [data-observation="model"].reached .trace-dot {
+  background: #7ae4eb;
+}

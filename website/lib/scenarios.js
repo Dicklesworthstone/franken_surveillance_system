@@ -1,5 +1,16 @@
 // All coordinates are metres in one fictional, owner-controlled property.
 export const DURATION = 12;
+export const recording = {
+  width: 768,
+  height: 432,
+  fps: 12,
+  nativeWidth: 160,
+  nativeHeight: 90,
+  nativeFps: 4,
+};
+export function cameraAsset(scenario, camera) {
+  return camera === scenario.camera ? scenario.id : scenario.id + "-" + camera;
+}
 export const cameras = [
   {
     id: "porch",
@@ -77,7 +88,7 @@ export const cases = [
     time: "23:08",
     color: "#ffbc86",
     detail:
-      "A simulated intruder crosses the driveway boundary. The camera can establish a person crossing, while intent stays unknown.",
+      "A simulated intruder crosses the driveway boundary. The scene records the crossing. The visitor’s intent stays unknown.",
     action: "Person crosses the driveway zone",
     zone: "Driveway approach",
     zoneBounds: [1.8, 4.7, 3.0, 6.1],
@@ -106,6 +117,11 @@ export function subjectAt(scenario, time) {
     inZone: x >= left && x <= right && z >= near && z <= far,
   };
 }
-export function stamp(seconds) {
-  return "00:" + Math.floor(seconds).toString().padStart(2, "0");
+export function stamp(seconds, precise = false) {
+  return (
+    "00:" +
+    (precise
+      ? seconds.toFixed(2).padStart(5, "0")
+      : Math.floor(seconds).toString().padStart(2, "0"))
+  );
 }

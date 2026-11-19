@@ -28,7 +28,8 @@
 > [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
 Explore the [Juniper House Observatory](website/README.md) for an interactive 3D property,
-three virtual camera films, and frame-by-frame evidence from the Rust tracker and detector.
+nine synchronized camera films, and frame-by-frame evidence from the Rust tracker and detector.
+Compare two camera angles to inspect how the native analyzer evaluates entries into the same ground zone.
 
 ## The thesis
 

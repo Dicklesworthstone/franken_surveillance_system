@@ -1,3 +1,4 @@
+import { fixedCamera } from "./cameras.js";
 import * as T from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -431,10 +432,7 @@ export function createProperty(canvas, interactive = true) {
     markers = new T.Group();
   scene.add(markers);
   for (const c of cameras) {
-    const cam = new T.PerspectiveCamera(c.fov, 1, 0.1, 100);
-    cam.position.set(...c.position);
-    cam.lookAt(...c.target);
-    cam.updateMatrixWorld();
+    const cam = fixedCamera(c, 1);
     fixed[c.id] = cam;
     const base = V(...c.position),
       forward = V(...c.target)

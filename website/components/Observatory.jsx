@@ -22,8 +22,18 @@ import {
   Shield,
   X,
 } from "lucide-react";
+import CameraFilm from "./CameraFilm";
 import EvidenceReplay from "./EvidenceReplay";
-import { cameras, cases, DURATION, stamp, subjectAt } from "../lib/scenarios";
+import PairInspector from "./PairInspector";
+import {
+  cameras,
+  cameraAsset,
+  cases,
+  DURATION,
+  recording,
+  stamp,
+  subjectAt,
+} from "../lib/scenarios";
 const Viewport = dynamic(() => import("./Viewport"), {
   ssr: false,
   loading: () => (
@@ -74,6 +84,8 @@ function FilmCard({ s, open }) {
 }
 function FilmDialog({ film, close }) {
   const ref = useRef(null);
+  const [camera, setCamera] = useState(film.camera);
+  const asset = cameraAsset(film, camera);
   useEffect(() => {
     const d = ref.current;
     d.showModal();
@@ -97,32 +109,65 @@ function FilmDialog({ film, close }) {
           <X />
         </button>
       </div>
-      <video
-        src={"/films/" + film.id + ".mp4"}
-        poster={"/films/" + film.id + ".jpg"}
+      <div className="archive-camera">
+        <label htmlFor="archive-camera">Camera</label>
+        <select
+          id="archive-camera"
+          value={camera}
+          onChange={(e) => setCamera(e.target.value)}
+        >
+          {cameras.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <CameraFilm
+        key={asset}
+        asset={asset}
         controls
         autoPlay
-        muted
-        playsInline
+        aria-label={camera + " camera film"}
       />
       <p>
         {film.detail} This film uses the same camera and motion as the
         interactive scene.
       </p>
       <div className="dialog-links">
-        <a href={"/films/" + film.id + ".mp4"} download>
+        <a href={"/films/" + asset + ".mp4"} download>
           Download MP4 <ArrowDown size={14} />
         </a>
-        <a href={"/evidence/" + film.id + ".json"}>
+        <a href={"/evidence/" + asset + ".json"}>
           Native FSS report <ArrowUpRight size={14} />
         </a>
       </div>
     </dialog>
   );
 }
+function useEvidence(file) {
+  const [result, setResult] = useState(null);
+  useEffect(() => {
+    if (!file) return;
+    const request = new AbortController();
+    fetch("/evidence/" + file, { signal: request.signal })
+      .then((response) => {
+        if (!response.ok) throw Error("Evidence request failed");
+        return response.json();
+      })
+      .then((data) => {
+        if (!request.signal.aborted) setResult({ file, data, status: "ready" });
+      })
+      .catch(() => {
+        if (!request.signal.aborted) setResult({ file, status: "error" });
+      });
+    return () => request.abort();
+  }, [file]);
+  return result && result.file === file ? result : { status: "loading" };
+}
 export default function Observatory() {
   const [mode, setMode] = useState("scene"),
-    [report, setReport] = useState(null);
+    [peerId, setPeer] = useState(null);
   const [selected, select] = useState(0),
     [time, seek] = useState(3.2),
     [playing, play] = useState(false),
@@ -130,7 +175,6 @@ export default function Observatory() {
     [cones, setCones] = useState(true),
     [reset, setReset] = useState(0),
     [film, openFilm] = useState(null),
-    [proof, setProof] = useState(null),
     [expanded, expand] = useState(false);
   const s = cases[selected],
     actor = subjectAt(s, time),
@@ -142,35 +186,10 @@ export default function Observatory() {
   const change = (i) => {
     select(i);
     setView("overview");
+    setPeer(null);
     goto(0);
     play(false);
   };
-  useEffect(() => {
-    let active = true;
-    fetch("/evidence/" + s.id + ".json")
-      .then((r) => {
-        if (!r.ok) throw Error();
-        return r.json();
-      })
-      .then((data) => {
-        if (active) setReport({ id: s.id, data });
-      })
-      .catch(() => {
-        if (active) setReport(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [s.id]);
-  useEffect(() => {
-    fetch("/evidence/index.json")
-      .then((r) => {
-        if (!r.ok) throw Error();
-        return r.json();
-      })
-      .then(setProof)
-      .catch(() => {});
-  }, []);
   useEffect(() => {
     if (!playing) return;
     let last = null,
@@ -203,12 +222,22 @@ export default function Observatory() {
     if (clock.current >= DURATION) goto(0);
     play(!playing);
   };
-  const native = proof?.[s.id],
-    camera = cameras.find(
-      (c) => c.id === (view === "overview" ? s.camera : view),
-    );
-  const measured = report?.id === s.id ? report.data : null;
-  const evidenceMode = mode === "native",
+  const camera = cameras.find(
+    (c) => c.id === (view === "overview" ? s.camera : view),
+  );
+  const peer =
+    cameras.find((c) => c.id === peerId && c.id !== camera.id) ??
+    cameras.find((c) => c.id === (camera.id === "porch" ? "drive" : "porch"));
+  const asset = cameraAsset(s, camera.id),
+    peerAsset = cameraAsset(s, peer.id);
+  const evidenceMode = mode !== "scene",
+    comparing = mode === "compare";
+  const proof = useEvidence("index.json");
+  const native = proof.data?.[s.id]?.views[camera.id];
+  const primaryReport = useEvidence(mode === "native" ? asset + ".json" : null);
+  const pairFile = s.id + "-" + [camera.id, peer.id].sort().join("-") + ".json";
+  const pairReport = useEvidence(comparing ? pairFile : null);
+  const measured = primaryReport.data,
     cascade = measured?.detector_cascade;
   const matched =
     measured?.candidates.flatMap((c) =>
@@ -216,8 +245,23 @@ export default function Observatory() {
         .filter((e) => e.outcome === "associated")
         .map((e) => ({ ...e, track: c.track_id })),
     ) || [];
+  const timeline = [
+    ...(measured?.candidates ?? []).map((c) => ({
+      key: c.candidate_id,
+      segment: c.entry_segment,
+      label: "Track " + c.track_id + " enters image zone",
+      kind: "track",
+    })),
+    ...matched.map((e) => ({
+      key: e.evidence_digest,
+      segment: e.segment,
+      label: "YOLOX · " + e.label + " on T" + e.track,
+      kind: "model",
+    })),
+  ].sort((a, b) => a.segment - b.segment);
   const openView = (v) => {
-    setMode("scene");
+    if (v === "overview") setMode("scene");
+    if (v === peer.id) setPeer(camera.id);
     setView(v);
   };
   const phaseTimes = native?.visibility || [];
@@ -300,7 +344,9 @@ export default function Observatory() {
                 <span>
                   <span className="signal" />{" "}
                   {evidenceMode
-                    ? "NATIVE FSS REPLAY"
+                    ? comparing
+                      ? "SYNCHRONIZED CAMERA REPLAY"
+                      : camera.label.toUpperCase() + " · FSS REPLAY"
                     : view === "overview"
                       ? "PROPERTY VIEW"
                       : camera.label.toUpperCase() + " CAMERA"}
@@ -342,7 +388,39 @@ export default function Observatory() {
               </div>
               <div className="stage">
                 {evidenceMode ? (
-                  <EvidenceReplay scenario={s} time={time} report={measured} />
+                  <div className={comparing ? "compare-feeds" : "single-feed"}>
+                    <div>
+                      <EvidenceReplay
+                        key={asset}
+                        asset={asset}
+                        label={camera.label}
+                        time={time}
+                        report={measured}
+                        entries={
+                          comparing
+                            ? (pairReport.data?.entries.filter(
+                                (e) => e.camera === camera.id,
+                              ) ?? [])
+                            : undefined
+                        }
+                      />
+                    </div>
+                    {comparing && (
+                      <div>
+                        <EvidenceReplay
+                          key={peerAsset}
+                          asset={peerAsset}
+                          label={peer.label}
+                          time={time}
+                          entries={
+                            pairReport.data?.entries.filter(
+                              (e) => e.camera === peer.id,
+                            ) ?? []
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <Viewport
                     scenario={s}
@@ -352,14 +430,12 @@ export default function Observatory() {
                     reset={reset}
                   />
                 )}
-                <span className="scene-label">
-                  <span />{" "}
-                  {evidenceMode
-                    ? "FSS TRACK EVIDENCE"
-                    : view === "overview"
-                      ? "SPATIAL MODEL"
-                      : "OPTICAL FEED"}
-                </span>
+                {!evidenceMode && (
+                  <span className="scene-label">
+                    <span />{" "}
+                    {view === "overview" ? "SPATIAL MODEL" : "OPTICAL FEED"}
+                  </span>
+                )}
                 {!evidenceMode && view === "overview" && (
                   <span className="orbit-hint">
                     <Orbit size={13} /> Drag to orbit
@@ -371,7 +447,9 @@ export default function Observatory() {
                   (c) => (
                     <button
                       key={c.id}
-                      aria-pressed={!evidenceMode && view === c.id}
+                      aria-pressed={
+                        evidenceMode ? camera.id === c.id : view === c.id
+                      }
                       onClick={() => openView(c.id)}
                     >
                       {c.id === "overview" ? (
@@ -384,10 +462,22 @@ export default function Observatory() {
                   ),
                 )}
                 <button
-                  aria-pressed={evidenceMode}
-                  onClick={() => setMode("native")}
+                  aria-pressed={mode === "native"}
+                  onClick={() => {
+                    setView(camera.id);
+                    setMode(mode === "native" ? "scene" : "native");
+                  }}
                 >
                   <ScanLine size={14} /> FSS replay
+                </button>
+                <button
+                  aria-pressed={comparing}
+                  onClick={() => {
+                    setView(camera.id);
+                    setMode(comparing ? "native" : "compare");
+                  }}
+                >
+                  <Layers3 size={14} /> Compare cameras
                 </button>
               </div>
               <div className="transport">
@@ -401,7 +491,7 @@ export default function Observatory() {
                     <Play size={15} fill="currentColor" />
                   )}
                 </button>
-                <span>{stamp(time)}</span>
+                <span>{stamp(time, true)}</span>
                 <input
                   type="range"
                   aria-label="Simulation time"
@@ -427,7 +517,19 @@ export default function Observatory() {
                 <span>.</span>
               </h2>
               <p>{s.detail}</p>
-              {evidenceMode ? (
+              {comparing ? (
+                <>
+                  <PairInspector
+                    camera={camera}
+                    peer={peer}
+                    setPeer={setPeer}
+                    report={pairReport.data}
+                    status={pairReport.status}
+                    at={at}
+                    time={time}
+                  />
+                </>
+              ) : evidenceMode ? (
                 <>
                   <div className="facts">
                     <div>
@@ -439,10 +541,12 @@ export default function Observatory() {
                       <strong>{cascade?.inference_count ?? "…"}</strong>
                     </div>
                     <div>
-                      <span>Model class by {stamp(time)}</span>
+                      <span>Model class by {stamp(time, true)}</span>
                       <strong>
                         {matched
-                          .filter((m) => m.segment / 4 <= time)
+                          .filter(
+                            (m) => m.segment / recording.nativeFps <= time,
+                          )
                           .map((m) => m.label)
                           .filter((v, i, a) => a.indexOf(v) === i)
                           .join(", ") || (measured ? "None" : "…")}
@@ -451,27 +555,34 @@ export default function Observatory() {
                   </div>
                   <div className="trace native-trace">
                     <div className="micro">MEASURED EVENTS</div>
-                    {native?.entries.length === 0 ? (
+                    {!measured ? (
+                      <p role="status">
+                        {primaryReport.status === "error"
+                          ? "Camera report unavailable."
+                          : "Loading camera report…"}
+                      </p>
+                    ) : measured.candidates.length === 0 ? (
                       <p>
-                        No confirmed track entered the image zone. The detector
-                        was never invoked.
+                        No confirmed track entered this image zone. The subject
+                        may still be present.
                       </p>
                     ) : (
-                      native?.entries.map((entry) => (
-                        <button
-                          key={entry.track}
-                          className={entry.time <= time ? "reached" : ""}
-                          onClick={() => at(entry.time)}
-                        >
-                          <span className="trace-dot" />
-                          <span>
-                            Track {entry.track} ·{" "}
-                            {matched.find((m) => m.track === entry.track)
-                              ?.label || entry.kind}
-                          </span>
-                          <time>{stamp(entry.time)}</time>
-                        </button>
-                      ))
+                      timeline.map((entry) => {
+                        const t = entry.segment / recording.nativeFps;
+                        return (
+                          <button
+                            key={entry.key}
+                            data-observation={entry.kind}
+                            data-segment={entry.segment}
+                            className={t <= time ? "reached" : ""}
+                            onClick={() => at(t)}
+                          >
+                            <span className="trace-dot" />
+                            <span>{entry.label}</span>
+                            <time>{stamp(t, true)}</time>
+                          </button>
+                        );
+                      })
                     )}
                   </div>
                 </>
@@ -483,20 +594,21 @@ export default function Observatory() {
                       <strong>{s.subject}</strong>
                     </div>
                     <div>
-                      <span>Primary camera</span>
-                      <button onClick={() => openView(s.camera)}>
-                        {cameras.find((c) => c.id === s.camera).label}{" "}
-                        <ArrowUpRight size={13} />
+                      <span>Selected camera</span>
+                      <button onClick={() => openView(camera.id)}>
+                        {camera.label} <ArrowUpRight size={13} />
                       </button>
                     </div>
                     <div>
-                      <span>Subject center in primary view</span>
+                      <span>Subject center in this view</span>
                       <strong>
                         {sight
                           ? sight.visible
                             ? "Visible"
                             : "Out of sight"
-                          : "…"}
+                          : proof.status === "error"
+                            ? "Unavailable"
+                            : "…"}
                       </strong>
                     </div>
                     <div>
@@ -528,13 +640,18 @@ export default function Observatory() {
                   </div>
                 </>
               )}
-              <a className="proof-link" href={"/evidence/" + s.id + ".json"}>
+              <a
+                className="proof-link"
+                href={"/evidence/" + (comparing ? pairFile : asset + ".json")}
+              >
                 <ScanLine size={16} />
-                {native
-                  ? native.candidates +
-                    " native event candidate" +
-                    (native.candidates === 1 ? "" : "s")
-                  : "Native FSS report"}
+                {comparing
+                  ? "Open native pair report"
+                  : native
+                    ? native.candidates +
+                      " native event candidate" +
+                      (native.candidates === 1 ? "" : "s")
+                    : "Native FSS report"}
                 <ArrowUpRight size={14} />
               </a>
             </aside>
@@ -551,7 +668,7 @@ export default function Observatory() {
               </h2>
             </div>
             <span className="archive-count">
-              03 FILMS <span>/</span> MP4
+              09 FILMS <span>/</span> MP4
             </span>
           </div>
           <div className="films-grid">
@@ -580,8 +697,10 @@ export default function Observatory() {
               reports come from importing the rendered camera frames into FSS
               and running its foreground tracker and digest-pinned YOLOX-Nano
               detector on selected frames. FSS replay draws the measured track
-              boxes at their source frame times. A motion candidate alone cannot
-              identify a courier, a raccoon, or someone’s intent.
+              and model boxes at their source frame times. Compare cameras runs
+              the same recordings through the native ground-zone association and
+              shows the disposition of each entry. A motion candidate alone
+              cannot identify a courier, a raccoon, or someone’s intent.
             </p>
             <a
               href={SOURCE + "/tree/main/website"}
