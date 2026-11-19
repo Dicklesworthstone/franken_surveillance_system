@@ -1,4 +1,4 @@
-import {moments} from "./stereo.js";
+import { moments } from "./stereo.js";
 import Observatory from "../components/Observatory";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,12 +29,21 @@ function courtData() {
   };
 }
 
-async function posterEntries(){
-  const {imageMeta}=await import("./share-card");
-  const prints=[];
-  for(const [slug,ex] of Object.entries(exhibits)){
-    const base=exhibitPath(slug),og=(await imageMeta(slug,630))[0],x=(await imageMeta(slug,600))[0];
-    prints.push({slug,path:base,title:ex.title,alt:og.alt,og:base+"opengraph-image/"+og.id,x:base+"twitter-image/"+x.id});
+async function posterEntries() {
+  const { imageMeta } = await import("./share-card");
+  const prints = [];
+  for (const [slug, ex] of Object.entries(exhibits)) {
+    const base = exhibitPath(slug),
+      og = (await imageMeta(slug, 630))[0],
+      x = (await imageMeta(slug, 600))[0];
+    prints.push({
+      slug,
+      path: base,
+      title: ex.title,
+      alt: og.alt,
+      og: base + "opengraph-image/" + og.id,
+      x: base + "twitter-image/" + x.id,
+    });
   }
   return prints;
 }
@@ -43,12 +52,30 @@ export function exhibitPage(slug) {
   return async () => (
     <Observatory
       field={fieldData()}
-      prints={slug==="poster-room"?await posterEntries():undefined}
+      prints={slug === "poster-room" ? await posterEntries() : undefined}
       exhibit={slug}
-      stereo={slug==="stereo-bench" ? Object.fromEntries(moments.map(({frame})=>{
-        const data=JSON.parse(readFileSync(join(process.cwd(),"public/stereo","report-"+frame+".json"),"utf8"));
-        return [frame,{height:data.report.hypotheses[0].estimate.position[2]}];
-      })):undefined}
+      stereo={
+        slug === "stereo-bench"
+          ? Object.fromEntries(
+              moments.map(({ frame }) => {
+                const data = JSON.parse(
+                  readFileSync(
+                    join(
+                      process.cwd(),
+                      "public/stereo",
+                      "report-" + frame + ".json",
+                    ),
+                    "utf8",
+                  ),
+                );
+                return [
+                  frame,
+                  { height: data.report.hypotheses[0].estimate.position[2] },
+                ];
+              }),
+            )
+          : undefined
+      }
       court={slug === "courtyard" ? courtData() : undefined}
       motion={
         slug === "motion-study"

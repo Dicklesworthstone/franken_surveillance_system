@@ -146,13 +146,18 @@ export default function CourtViewport({
       {state === "loading" && (
         <img
           className="court-poster"
-          src={view === "stereo" ? "/stereo/sightlines.jpg" : "/court/cover.jpg"}
+          src={
+            view === "stereo" ? "/stereo/sightlines.jpg" : "/court/cover.jpg"
+          }
           alt="The two players on Juniper Court"
         />
       )}
       {state === "diagram" && (
         <div className="court-diagram">
-          <span>{view === "stereo" ? "Top view" : "Side elevation"} · WebGL unavailable</span>
+          <span>
+            {view === "stereo" ? "Top view" : "Side elevation"} · WebGL
+            unavailable
+          </span>
           {fallbackContent || <FlightDiagram p={p} time={time} large />}
         </div>
       )}
@@ -163,11 +168,13 @@ export default function CourtViewport({
       )}
       {state === "webgl" && (
         <span className="court-view-label">
-          {view === "stereo" ? "Sightlines · drag to orbit" : view === "wide"
-            ? "Courtyard · drag to orbit"
-            : (view === "garden" ? "Garden camera" : "Patio camera") +
-              " · " +
-              evidence}
+          {view === "stereo"
+            ? "Sightlines · drag to orbit"
+            : view === "wide"
+              ? "Courtyard · drag to orbit"
+              : (view === "garden" ? "Garden camera" : "Patio camera") +
+                " · " +
+                evidence}
         </span>
       )}
     </div>

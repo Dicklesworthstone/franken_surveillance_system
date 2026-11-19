@@ -4,6 +4,10 @@ The observatory is a standalone Next.js showcase for Franken Surveillance. One f
 
 **3D overview and camera views** use Three.js. Scene labels come from the fixture. Visibility tests trace a ray from the virtual camera to the subject center through the property geometry. The fixed camera films are sampled at 12 frames per second.
 
+## The stereo bench
+
+Mark a basketball in the two courtyard films and orbit their lines of sight. Removing either mark leaves depth unresolved. The browser shows the maximum reprojection error through its four-pixel agreement test. The three reference instants each have a native `fss-scene-fuse` report, an exact camera rig, source PNGs extracted from the existing camera films, two authored center marks and a floor-only twin. Each native estimate is conditional on those correspondences. [Open the stereo bench](https://franken-surveillance.com/exhibits/stereo-bench/) · [Source material](public/stereo)
+
 ## The courtyard pass
 
 Open **The bounce pass** from the homepage. Change the passer’s height, the player spacing, the release speed, and the floor restitution. Seek to release, first bounce, or the receiver. Both rigged bodies use inverse kinematics to follow the ball. The model applies gravity, horizontal drag, and repeated floor contact. At the receiver’s plane a ball between 0.57 and 1.56 metres is catchable. With the reference settings it arrives at 0.89 m. The soft-bounce preset changes only the restitution and sends it past at 0.14 m.
@@ -43,7 +47,7 @@ bun run dev
 
 ## Rebuild the films and native evidence
 
-The committed media and reports are ready to serve. To regenerate them, build `fss-file`, `fss-event` and `fss-infer` with the repository's pinned Rust toolchain. Set `FSS_BIN_DIR` if those executables live outside the default `target/debug` directory. The media renderer uses Chromium, Playwright, and FFmpeg on the development host. Set `CHROME_BIN` if Chromium is installed somewhere other than `/usr/bin/google-chrome`.
+The committed media and reports are ready to serve. To regenerate them, build `fss-file`, `fss-event`, `fss-infer`, and `fss-scene-fuse` with the repository's pinned Rust toolchain. Set `FSS_BIN_DIR` if those executables live outside the default `target/debug` directory. The media renderer uses Chromium, Playwright, and FFmpeg on the development host. Set `CHROME_BIN` if Chromium is installed somewhere other than `/usr/bin/google-chrome`.
 
 ```sh
 bun run films
@@ -53,6 +57,8 @@ node scripts/render-films.mjs --motion
 python3 -B scripts/motion-evidence.py
 node scripts/render-films.mjs --court
 python3 -B scripts/motion-evidence.py --scene court
+node scripts/render-films.mjs --stereo
+python3 -B scripts/stereo-evidence.py
 bun run build
 ```
 
@@ -82,6 +88,8 @@ From this directory, regenerate the wall reels and roof plan with the existing c
 node scripts/render-films.mjs --wall
 ```
 
-Use an exhibit link to open its standalone page. The home page and twelve exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The browser verification fetches both images for every page with JavaScript disabled.
+Use an exhibit link to open its standalone page. The home page and fourteen exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The browser verification fetches both images for every page with JavaScript disabled.
 
-The [ranked demo ideas](DEMO_IDEAS.md) include the three additions implemented here and twelve further exhibits.
+The poster room provides all thirty full-size PNGs as direct downloads. [Open the poster room](https://franken-surveillance.com/exhibits/poster-room/)
+
+The [ranked demo ideas](DEMO_IDEAS.md) include the three additions implemented here and the ranked courtyard series.

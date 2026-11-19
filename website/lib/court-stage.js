@@ -98,11 +98,14 @@ export async function createCourtStage(canvas, interactive = true) {
     scene.add(path);
     const overview = new T.PerspectiveCamera(33, 1, 0.05, 100);
     const dolly = new T.PerspectiveCamera(34, 1, 0.05, 100);
-    const cams=Object.fromEntries(Object.entries(cameraRig).map(([id,c])=>{
-      const camera=new T.PerspectiveCamera(c.fov,16/9,.08,100);
-      camera.position.set(...c.position);camera.lookAt(...c.target);
-      return [id,camera];
-    }));
+    const cams = Object.fromEntries(
+      Object.entries(cameraRig).map(([id, c]) => {
+        const camera = new T.PerspectiveCamera(c.fov, 16 / 9, 0.08, 100);
+        camera.position.set(...c.position);
+        camera.lookAt(...c.target);
+        return [id, camera];
+      }),
+    );
     let sightlines;
     let w = 1,
       h = 1,
@@ -114,7 +117,8 @@ export async function createCourtStage(canvas, interactive = true) {
     const aim = new T.Vector3(0, 1.04, 0);
     const reset = () => {
       const scale = Math.max(1, 1.53 / (w / h));
-      if (lastView === "stereo") overview.position.set(.3*scale,5.0*scale,9.4*scale);
+      if (lastView === "stereo")
+        overview.position.set(0.3 * scale, 5.0 * scale, 9.4 * scale);
       else overview.position.set(1.35 * scale, 1.72 * scale, 6.28 * scale);
       overview.lookAt(aim);
       if (orbit) {
@@ -157,7 +161,10 @@ export async function createCourtStage(canvas, interactive = true) {
         return frame;
       },
       draw(p, t, view = "wide", showPath = true, solution = null) {
-        if (solution && !sightlines) {sightlines=stereoRays();scene.add(sightlines.group);}
+        if (solution && !sightlines) {
+          sightlines = stereoRays();
+          scene.add(sightlines.group);
+        }
         sightlines?.update(solution);
         const q = passAt(p, t);
         people.forEach((person) => person.pose(p, q, t));
@@ -188,20 +195,25 @@ export async function createCourtStage(canvas, interactive = true) {
           traceEnd = q.flight.travel;
         }
         if (lastView !== view) {
-          const previous=lastView;lastView=view;
-          if(orbit) {
-            orbit.enabled=view==="wide" || view==="stereo";
-            canvas.style.touchAction=orbit.enabled?"none":"pan-y";
+          const previous = lastView;
+          lastView = view;
+          if (orbit) {
+            orbit.enabled = view === "wide" || view === "stereo";
+            canvas.style.touchAction = orbit.enabled ? "none" : "pan-y";
           }
-          if(view==="stereo" || previous==="stereo")reset();
+          if (view === "stereo" || previous === "stereo") reset();
         }
         renderer.setScissorTest(false);
         renderer.setViewport(0, 0, w, h);
         if (view === "wide" || view === "stereo") {
-          if(view==="stereo" && !interactive){
-            const angle=-.19+t*.105;
-            overview.position.set(11.5*Math.sin(angle),5.6,11.5*Math.cos(angle));
-            overview.lookAt(0,1,.9);
+          if (view === "stereo" && !interactive) {
+            const angle = -0.19 + t * 0.105;
+            overview.position.set(
+              11.5 * Math.sin(angle),
+              5.6,
+              11.5 * Math.cos(angle),
+            );
+            overview.lookAt(0, 1, 0.9);
           }
           renderer.render(scene, overview);
           return;

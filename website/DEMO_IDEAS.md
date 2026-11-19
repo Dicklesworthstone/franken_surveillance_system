@@ -35,3 +35,28 @@ The first five are ranked by how much a visitor can learn from one interaction, 
 14. **Print the property contact sheet.** Render a printable sheet with a site plan and the three cameras at a selected time. It gives someone away from the 3D app a reproducible view. `fss-juniper-sheet-n6jcv`.
 
 15. **Why the raccoon went unclassified.** Pair the garden animal's scripted path with its actual foreground and model results. Let a visitor advance to the best available record of the animal without guessing its class. `fss-juniper-wildlife-y9xtp`.
+
+## A second series for the courtyard and optical bench
+
+I compared thirty candidates against the available camera films, deterministic geometry, native reports, cost of generating a repeatable fixture and what a visitor can learn in one interaction. The following five offer the strongest combination.
+
+1. **Two marks locate one ball.** Place the two marks, then remove one. The second camera turns a ray into a position estimate, and an inaccurate mark gives an observable reprojection error. This uses the actual courtyard camera matrices and the native reconstruction binary. The full experiment fits on a phone. Shipped in the stereo bench. `fss-juniper-stereo-y6je0`
+2. **See through a longer shutter.** Integrate several samples of the moving hands and ball across a short or long exposure. Holding the trajectory constant isolates motion blur, and projected ball travel gives the renderer an independent check. `fss-juniper-shutter-aa6ei`
+3. **Replay a missing view.** Compare a quiet camera with a precisely bounded gap in a second recording. It answers a practical monitoring question in one glance, and the original import plus coverage record can settle what was observable. Reuse `fss-juniper-gap-replay-lceyi`.
+4. **See the uncertainty around a point.** Draw the native estimate’s pixel-noise covariance in the same space as the ball. Actual size and clearly labelled magnification make the uncertainty visible without presenting it as total physical error. The new stereo bench supplies the cameras and native matrices. `fss-juniper-ellipse-bnh91`
+5. **Compare two performances of the same pass.** Match the earlier and current garden frames at 1.75 seconds. Visitors can inspect the earlier bicycle proposal beside the changed arm poses, then look up each take’s detector decisions. Both films already exist. `fss-juniper-takes-o6wcn`
+
+### Ten more experiments
+
+| Rank | Interaction | What it reveals | Work item |
+|---|---|---|---|
+| 6 | Superimpose six poses from a single pass | A chronophotograph shows release, floor contact and catch even with playback paused. | `fss-juniper-strobes-jz7aw` |
+| 7 | Advance one camera clock | Identical pixels can support a different association when the capture intervals shift. | `fss-juniper-clock-4l5oi` |
+| 8 | Change the image resolution | A native report beside the enlarged source pixels shows which proposals survived each supported input mode. | `fss-juniper-resolution-ymlh3` |
+| 9 | Compare three court surfaces | Holding the body and release fixed isolates the physical effect of restitution. | `fss-juniper-surfaces-bu5lh` |
+| 10 | Re-survey a known point | A deliberately perturbed camera pose makes calibration error measurable in the site view. | `fss-juniper-calibration-rr6mg` |
+| 11 | Mask a synthetic frame before export | Opening the actual derivative lets a visitor inspect the pixels an agent receives. | `fss-juniper-mask-ephhs` |
+| 12 | Spend a second model inference | Side-by-side native runs show the frame and result purchased by a larger budget. | `fss-juniper-budget-fio70` |
+| 13 | Open the poster room | Each exhibit gets a downloadable cover in both social formats, with direct access to its source exhibit. Shipped. | `fss-juniper-posters-uxu8s` |
+| 14 | Inspect the raccoon’s best frame | Pair the authored animal identity with the raw garden observations so the model's silence is visible. | `fss-juniper-wildlife-y9xtp` |
+| 15 | Print the property contact sheet | A pinned time and site plan let a reader compare the true camera frames away from the live 3D app. | `fss-juniper-sheet-n6jcv` |

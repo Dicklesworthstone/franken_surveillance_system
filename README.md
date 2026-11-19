@@ -27,7 +27,7 @@
 > real footage, cloud archiving, and release qualification. See
 > [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
-Explore the [Juniper House Observatory](website/README.md) for an interactive 3D property,
+Explore the [live Juniper House Observatory](https://franken-surveillance.com/) for an interactive 3D property,
 nine synchronized camera films, and frame-by-frame evidence from the Rust tracker and detector.
 Compare two camera angles, locate their measurements in the digital twin, verify a published event,
 and inspect the agent’s alert decision and handoff. The camera wall adds three synchronized
@@ -36,7 +36,7 @@ In the motion lab, change a courier’s stature, walking speed, release height a
 Compare the studio motion with the two fixed cameras, then inspect the detector’s boxes on the
 actual imported reference frames. In the courtyard, two players pass a ball across the same scene
 seen by two fixed cameras. Change the pass, then compare a motion-triggered watch with an explicit
-detector inspection of the very same recorded frame.
+detector inspection of the very same recorded frame. In the [stereo bench](https://franken-surveillance.com/exhibits/stereo-bench/), mark the ball in two camera views and compare its estimated height with the native Rust reconstruction.
 
 ## The thesis
 
