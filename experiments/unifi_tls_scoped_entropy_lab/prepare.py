@@ -17,13 +17,17 @@ import tarfile
 EXPECTED = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 ROOT = Path(__file__).resolve().parent
 COPY_FILES = (
-    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_profile_resolution_fixture.py", "trial_profile_archive_resolution_fixture.py", "trial_stream_name_fixture.py", "trial_discovery_cli_fixture.py", "trial_auto_setup_fixture.py", "trial_live_media_probe.py", "trial_pin_discovery_fixture.py", "trial_neighbor_pin_fixture.py", "trial_neighbor_multiwindow_fixture.py", "trial_serializer_observation_fixture.py", "trial_http_record_fixture.py", "trial_media_fixture.py", "src/lib.rs",
+    "trial_management_setup_fixture.py",
+    "trial_restore_receipt_fixture.py",
+    "trial_sweep_pin_fixture.py",
+    "trial_sweep_setup_fixture.py",
+    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "snapshot_fixture.py", "trial_profile_fixture.py", "trial_profile_resolution_fixture.py", "trial_profile_archive_resolution_fixture.py", "trial_stream_name_fixture.py", "trial_discovery_cli_fixture.py", "trial_auto_setup_fixture.py", "trial_live_media_probe.py", "trial_pin_discovery_fixture.py", "trial_neighbor_pin_fixture.py", "trial_neighbor_multiwindow_fixture.py", "trial_serializer_observation_fixture.py", "trial_http_record_fixture.py", "trial_http_av_record_fixture.py", "trial_http_av_camera_fixture.py", "trial_http_high_camera_fixture.py", "trial_http_restore_fixture.py", "trial_media_fixture.py", "src/lib.rs",
     "src/server.rs", "src/owned.rs", "src/owned/client.rs", "src/owned/offload.rs", "src/client_handshake.rs",
     "src/camera_tls.rs", "src/camera_tls_owned.rs", "src/camera_tls_client.rs", "src/camera_setup.rs", "src/snapshot_auth.rs", "src/bin/live_tls_probe.rs", "src/bin/live_snapshot_probe.rs",
-    "src/bin/unifi_scoped_direct_trial.rs", "src/bin/live_media_probe.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_http_checkpoint/mod.rs", "src/bin/trial_http_record/mod.rs", "src/bin/trial_run_id/mod.rs", "src/bin/trial_setup_fence/mod.rs",
+    "src/bin/unifi_scoped_direct_trial.rs", "src/bin/live_media_probe.rs", "src/bin/trial_checkpoint/mod.rs", "src/bin/trial_http_checkpoint/mod.rs", "src/bin/trial_local_history/mod.rs", "src/bin/trial_http_record/mod.rs", "src/bin/trial_http_av_record/mod.rs", "src/bin/trial_http_av_record/supervised.rs", "src/bin/trial_http_restore/mod.rs", "src/bin/trial_run_id/mod.rs", "src/bin/trial_setup_fence/mod.rs",
     "src/bin/trial_owned_archive/mod.rs", "src/bin/trial_owned_archive/video.rs", "src/bin/trial_owned_archive/still_export.rs", "src/bin/trial_owned_archive/event_store.rs",
     "src/fleet_transport.rs", "src/fleet_leased.rs", "src/prepared_setup.rs", "src/prepared_camera.rs", "src/camera_factory.rs", "src/setup_upgrade.rs",
-    "tests/scoped_entropy.rs", "tests/owned_entropy.rs", "tests/client_scoped_entropy.rs",
+    "tests/scoped_entropy.rs", "tests/owned_entropy.rs", "tests/client_scoped_entropy.rs", "tests/support/synthetic_g4_av_gop3.264",
     "tests/owned_client.rs", "tests/fleet_route.rs", "tests/pinned_client.rs", "tests/support/stream.rs", "tests/support/baseline.264", "tests/support/synthetic_g4_resolution.264",
 )
 
@@ -131,7 +135,7 @@ def main():
         content = (ROOT / rel).read_bytes()
         if rel == "Cargo.toml":
             manifest = content.decode("utf-8")
-            for name in ("fss-core", "fss-geometry", "fss-codec-mjpeg", "fss-codec-h264", "fss-codec-jpeg-encode", "fss-container", "fss-packet", "fss-runtime", "fss-reference", "fss-object"):
+            for name in ("fss-core", "fss-geometry", "fss-ledger", "fss-publication", "fss-codec-mjpeg", "fss-codec-h264", "fss-codec-jpeg-encode", "fss-container", "fss-packet", "fss-runtime", "fss-reference", "fss-object"):
                 original = f'"../../crates/{name}"'
                 if manifest.count(original) != 1:
                     raise ValueError("unexpected FSS dependency path")

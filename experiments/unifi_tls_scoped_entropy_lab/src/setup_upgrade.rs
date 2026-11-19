@@ -52,6 +52,8 @@ pub enum Error {
     Meter(io::ErrorKind),
     /// The HTTP/WebSocket upgrade or peer policy refused the connection.
     Upgrade(owner::Error),
+    /// The accepted management request could not be bound to its hello check.
+    HelloBinding,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -83,7 +85,7 @@ pub async fn setup_and_upgrade<'scope, 'task, 'policy, IO, A>(
     leases: &mut [Option<Lease<'scope, 'task>>],
     protocol_policy: ProtocolPolicy,
     admission: &A,
-    controller: Controller,
+    mut controller: Controller,
 ) -> Result<Session<'scope, 'task, 'policy>, Error>
 where
     'policy: 'scope,
@@ -130,6 +132,11 @@ where
         )
         .await
         .map_err(Error::Setup)?;
+    if trace.management_hello_required() {
+        trace
+            .bind_management_hello(&mut controller)
+            .map_err(|_| Error::HelloBinding)?;
+    }
     let deadline = cx.now() + protocol_wait;
     let (mut wire, mut gate) = (accepted.io, accepted.gate);
     let mut attempt = 0;

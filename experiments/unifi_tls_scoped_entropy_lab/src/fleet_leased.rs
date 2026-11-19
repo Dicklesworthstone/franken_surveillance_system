@@ -16,7 +16,7 @@ use fss_reference::unifi_direct::{
     discovery::{
         fleet::{Enrollment, Fleet, State},
         pump::{self, CameraWork, CameraWorkSet, Driver, Progress, Pump, RetryDisposition, WorkRefusal},
-        retry,
+        retry, sweep_pump,
     },
     metered::MeteredClock,
     owner::PeerAdmission,
@@ -888,6 +888,30 @@ pub enum AutomaticEvent<'scope, 'task, 'work, E, W> {
     Progress(Supervised<'scope, 'task, E, W>),
 }
 
+/// Automatic setup and protected routing driven by a paged sweep.
+#[must_use = "handle setup admissions, fleet progress, and completed camera work"]
+pub enum SweepAutomaticEvent<'scope, 'task, 'work, E, W> {
+    /// The exact enrollment's factory-provided future was retained.
+    Started { index: usize },
+    /// The factory refused work; this selection remains latched.
+    FactoryFailed { index: usize, kind: io::ErrorKind },
+    /// A bounded work-set refusal returned the original unpolled future.
+    Rejected { index: usize, reason: WorkRefusal, work: CameraWork<'work, W> },
+    /// Discovery, protected routing, or lease-supply progress.
+    Fleet(sweep_pump::Progress<E, Option<SupplyEvent<'scope, 'task>>>),
+    /// A caller-owned setup operation completed.
+    Camera { index: usize, output: W },
+}
+
+/// Paged setup/discovery progress or an active stream completion.
+#[must_use = "handle every event and retain completed stream effects"]
+pub enum SweepFleetStreamEvent<'scope, 'task, 'work, E, W, S> {
+    /// Paged discovery, setup, protected route or entropy progress.
+    Automatic(SweepAutomaticEvent<'scope, 'task, 'work, E, W>),
+    /// A caller-owned stream operation completed.
+    Stream { index: usize, output: S },
+}
+
 /// One automatic setup/fleet event or one caller-owned active stream result.
 #[must_use = "handle the event and reconcile any returned camera effects"]
 pub enum FleetStreamEvent<'scope, 'task, 'work, E, W, S> {
@@ -1003,6 +1027,34 @@ pub enum AutoRoutedFleetEvent<'scope, 'task, 'policy, 'setup, 'stream, W, S> {
         refusal: RoutedStreamAdmission<'scope, 'task, 'policy, 'stream,
             RoutedTransport<'scope, 'task, 'policy>, S>,
     },
+}
+
+/// Paged-sweep setup and automatic protected-stream admission.
+#[must_use = "retain refused sessions, stream completions and their effects"]
+pub enum SweepAutoRoutedEvent<'scope, 'task, 'policy, 'setup, 'stream, W, S> {
+    /// Discovery, setup, supply or non-automatic stream progress.
+    Progress(SweepFleetStreamEvent<'scope, 'task, 'setup,
+        controller_acceptor::Event<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>,
+        W, S>),
+    /// An accepted session became a retained, unpolled stream future.
+    StreamStarted { index: usize },
+    /// A stream completed; its owner-bound completion requires disposition.
+    StreamFinished { index: usize, output: S, completion: StreamCompletion },
+    /// Refusal retains the original session or unpolled work.
+    StreamRefused { index: usize, refusal: RoutedStreamAdmission<'scope, 'task, 'policy, 'stream,
+        RoutedTransport<'scope, 'task, 'policy>, S> },
+}
+
+/// Paged automatic setup and streaming, with exact retry disposition.
+#[must_use = "handle progress and retain outcomes and retry observations"]
+pub enum SweepRetryingEvent<'scope, 'task, 'policy, 'setup, 'stream, W, S> {
+    /// Fleet progress, and a retry-admission result for completed setup work.
+    Fleet {
+        event: SweepAutoRoutedEvent<'scope, 'task, 'policy, 'setup, 'stream, RetryCompletion<W>, S>,
+        retry: Option<RetryDisposition>,
+    },
+    /// A retry timer completed and may have released this owner's selection.
+    Retry { event: retry::Event, selection: RetrySelection },
 }
 
 /// Refusal while driving the coordinated retry loop.
@@ -1158,6 +1210,410 @@ impl<'scope, 'task> LeaseSupply<'scope, 'task> {
                 Selected::Progress(progress) => return Ok(progress),
             }
         }
+    }
+
+    /// Drive a paged discovery pump and the exact protected transport's lease
+    /// supply. New owner enrollments are synchronized without losing an
+    /// in-flight window or handshake.
+    pub async fn next_with_sweep_pump<'pump, 'fleet, 'report, 'policy, A>(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+    ) -> io::Result<sweep_pump::Progress<
+        <Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>> as sweep_pump::Driver<'scope, 'task>>::Event,
+        Option<SupplyEvent<'scope, 'task>>,
+    >>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+    {
+        if !Rc::ptr_eq(&self.transport.slots, &pump.driver().transport().slots) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let fleet = pump.driver().fleet();
+        let runtime_cx = self.transport.cx;
+        loop {
+            if self.stopping {
+                let mut wait = pin!(self.next());
+                return Ok(pump.next_with(wait.as_mut()).await);
+            }
+            self.transport.synchronize_fleet(fleet)?;
+            let observed = fleet.len();
+            enum Selected<T> { Changed(io::Result<()>), Progress(T) }
+            let selected = {
+                let mut changed = pin!(fleet.wait_for_enrollment_after(runtime_cx, observed));
+                let mut wait = pin!(self.next());
+                poll_fn(|context| {
+                    if let Poll::Ready(result) = changed.as_mut().poll(context) {
+                        return Poll::Ready(Selected::Changed(result));
+                    }
+                    pump.poll_with(context, wait.as_mut()).map(Selected::Progress)
+                }).await
+            };
+            match selected {
+                Selected::Changed(Ok(())) => (),
+                Selected::Changed(Err(error)) => return Err(error),
+                Selected::Progress(progress) => return Ok(progress),
+            }
+        }
+    }
+
+    /// Select ready owner-enrolled cameras and drive their caller-supplied
+    /// setup work alongside paged discovery, protected routes and lease supply.
+    /// The factory constructs futures only; it supplies credentials, transport
+    /// authentication and effect authority. Refusals are not silently retried.
+    pub async fn next_with_sweep_automatic_setup<'pump, 'fleet, 'report, 'policy, 'work, A, W, F>(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work, W>,
+        factory: &mut F,
+    ) -> io::Result<SweepAutomaticEvent<'scope, 'task, 'work,
+        <Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>> as sweep_pump::Driver<'scope, 'task>>::Event, W>>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+        F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, W>>,
+    {
+        self.next_with_sweep_setup_excluding(pump, automatic, factory, &[false; MAX_RESOURCES]).await
+    }
+
+    async fn next_with_sweep_setup_excluding<'pump, 'fleet, 'report, 'policy, 'work, A, W, F>(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work, W>,
+        factory: &mut F,
+        excluded: &[bool; MAX_RESOURCES],
+    ) -> io::Result<SweepAutomaticEvent<'scope, 'task, 'work,
+        <Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>> as sweep_pump::Driver<'scope, 'task>>::Event, W>>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+        F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, W>>,
+    {
+        if !Rc::ptr_eq(&self.transport.slots, &pump.driver().transport().slots)
+            || !std::ptr::eq(automatic.fleet, pump.driver().fleet())
+            || automatic.transport.as_ref().is_some_and(|bound| !Rc::ptr_eq(bound, &self.transport.identity))
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.transport.cx.checkpoint().map_err(|_| io::ErrorKind::Interrupted)?;
+        let fleet = automatic.fleet;
+        if !self.stopping && !automatic.stopped {
+            self.transport.synchronize_fleet(fleet)?;
+        }
+        if automatic.transport.is_none() {
+            automatic.transport = Some(self.transport.identity.clone());
+        }
+        let len = fleet.len();
+        if !self.stopping && !automatic.stopped && automatic.work.len() < automatic.capacity {
+            for offset in 0..len {
+                let index = (automatic.cursor + offset) % len;
+                if excluded[index] || automatic.attempted[index] || !matches!(fleet.state(index), Some(State::Ready { .. })) {
+                    continue;
+                }
+                let enrollment = fleet.enrollment(index).ok_or(io::ErrorKind::InvalidData)?;
+                automatic.attempted[index] = true;
+                automatic.missing_factory[index] = None;
+                automatic.cursor = (index + 1) % len;
+                return Ok(match factory(index, enrollment) {
+                    Err(error) => {
+                        if let Some(missing) = error.get_ref()
+                            .and_then(|value| value.downcast_ref::<MissingPlan>())
+                            .filter(|missing| missing.index == index && error.kind() == io::ErrorKind::NotFound)
+                        {
+                            automatic.missing_factory[index] = Some(missing.identity.clone());
+                        }
+                        SweepAutomaticEvent::FactoryFailed { index, kind: error.kind() }
+                    }
+                    Ok(work) => match automatic.work.insert(index, work) {
+                        Ok(()) => { automatic.in_flight[index] = true; SweepAutomaticEvent::Started { index } }
+                        Err((reason, work)) => SweepAutomaticEvent::Rejected { index, reason, work },
+                    },
+                });
+            }
+        }
+        let prefer_camera = self.prefer_camera;
+        let selected = {
+            let mut progress = pin!(self.next_with_sweep_pump(pump));
+            poll_fn(|context| {
+                if prefer_camera {
+                    if let Poll::Ready((index, output)) = automatic.work.poll_next(context) {
+                        return Poll::Ready(Ok(SweepAutomaticEvent::Camera { index, output }));
+                    }
+                }
+                if let Poll::Ready(result) = progress.as_mut().poll(context) {
+                    return Poll::Ready(result.map(SweepAutomaticEvent::Fleet));
+                }
+                if !prefer_camera {
+                    if let Poll::Ready((index, output)) = automatic.work.poll_next(context) {
+                        return Poll::Ready(Ok(SweepAutomaticEvent::Camera { index, output }));
+                    }
+                }
+                Poll::Pending
+            }).await?
+        };
+        self.prefer_camera = matches!(&selected, SweepAutomaticEvent::Fleet(_));
+        if let SweepAutomaticEvent::Camera { index, .. } = &selected {
+            automatic.in_flight[*index] = false;
+        }
+        Ok(selected)
+    }
+
+    /// Drive paged setup and streams together, excluding an enrollment while
+    /// its stream or unresolved stream completion is retained.
+    pub async fn next_with_sweep_setup_and_streams<'pump, 'fleet, 'report, 'policy, 'work, 'stream, A, W, S, F>(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work, W>,
+        streams: &mut ActiveStreams<'fleet, 'report, 'stream, S>,
+        factory: &mut F,
+    ) -> io::Result<SweepFleetStreamEvent<'scope, 'task, 'work,
+        <Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>> as sweep_pump::Driver<'scope, 'task>>::Event, W, S>>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+        F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, W>>,
+    {
+        if !Rc::ptr_eq(&self.transport.slots, &pump.driver().transport().slots)
+            || !std::ptr::eq(automatic.fleet, pump.driver().fleet())
+            || !std::ptr::eq(streams.fleet, pump.driver().fleet())
+            || automatic.transport.as_ref().is_some_and(|bound| !Rc::ptr_eq(bound, &self.transport.identity))
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let excluded = streams.setup_exclusions();
+        if automatic.in_flight.iter().zip(excluded.iter()).any(|(a, b)| *a && *b) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        self.transport.cx.checkpoint().map_err(|_| io::ErrorKind::Interrupted)?;
+        let prefer_stream = self.prefer_stream;
+        let selected = {
+            let mut other = pin!(self.next_with_sweep_setup_excluding(pump, automatic, factory, &excluded));
+            poll_fn(|context| {
+                if prefer_stream {
+                    if let Poll::Ready((index, output)) = streams.poll_next(context) {
+                        return Poll::Ready(Ok(SweepFleetStreamEvent::Stream { index, output }));
+                    }
+                }
+                if let Poll::Ready(result) = other.as_mut().poll(context) {
+                    return Poll::Ready(result.map(SweepFleetStreamEvent::Automatic));
+                }
+                if !prefer_stream {
+                    if let Poll::Ready((index, output)) = streams.poll_next(context) {
+                        return Poll::Ready(Ok(SweepFleetStreamEvent::Stream { index, output }));
+                    }
+                }
+                Poll::Pending
+            }).await?
+        };
+        self.prefer_stream = matches!(&selected, SweepFleetStreamEvent::Automatic(_));
+        Ok(selected)
+    }
+
+    /// Admit protected sessions from a paged sweep into caller-supplied stream
+    /// work. The selected video profile is a camera claim; effects and failed
+    /// sessions remain caller-owned. This method does not schedule retries.
+    pub async fn next_with_sweep_automatic_streams<'pump, 'fleet, 'report, 'policy, 'work, 'stream, A, W, S, F, G>(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work, W>,
+        streams: &mut ActiveStreams<'fleet, 'report, 'stream, S>,
+        setup_factory: &mut F,
+        stream_factory: &mut G,
+    ) -> io::Result<SweepAutoRoutedEvent<'scope, 'task, 'policy, 'work, 'stream, W, S>>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+        F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, W>>,
+        G: FnMut(usize, Enrollment, Option<(VideoChannel, VideoProfile)>,
+            controller_acceptor::Session<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>)
+            -> TrackedStreamWork<'stream, S>,
+    {
+        match self.next_with_sweep_setup_and_streams(pump, automatic, streams, setup_factory).await? {
+            SweepFleetStreamEvent::Stream { index, output } => match streams.emitted_completion.take() {
+                Some(completion) => Ok(SweepAutoRoutedEvent::StreamFinished { index, output, completion }),
+                None => Ok(SweepAutoRoutedEvent::Progress(SweepFleetStreamEvent::Stream { index, output })),
+            },
+            SweepFleetStreamEvent::Automatic(SweepAutomaticEvent::Fleet(
+                sweep_pump::Progress::Event(sweep_pump::Event::Route(
+                    controller_acceptor::Event::Session { index, session }
+                ))
+            )) => {
+                if self.stopping {
+                    return Ok(SweepAutoRoutedEvent::StreamRefused {
+                        index, refusal: RoutedStreamAdmission::Session { reason: RoutedStreamRefusal::Stopped, session },
+                    });
+                }
+                let reported_video = streams.fleet.reported_video(index);
+                match streams.admit_routed_session(automatic, index, session,
+                    |enrollment, session| stream_factory(index, enrollment, reported_video, session)) {
+                    Ok(()) => Ok(SweepAutoRoutedEvent::StreamStarted { index }),
+                    Err(refusal) => Ok(SweepAutoRoutedEvent::StreamRefused { index, refusal }),
+                }
+            }
+            other => Ok(SweepAutoRoutedEvent::Progress(other)),
+        }
+    }
+
+    /// Drive paged discovery, setup, retries and streams under one caller.
+    /// Only a fleet-classified safe transient failure can be scheduled
+    /// automatically; the original completion is always returned to the caller.
+    pub async fn next_with_sweep_retries_and_streams<'pump, 'fleet, 'report, 'policy, 'work, 'stream, A, W, S, F, G>(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work, RetryCompletion<W>>,
+        streams: &mut ActiveStreams<'fleet, 'report, 'stream, S>,
+        retries: &mut RetryCoordinator<'fleet, 'report, 'scope, 'task>,
+        setup_factory: &mut F,
+        stream_factory: &mut G,
+    ) -> Result<SweepRetryingEvent<'scope, 'task, 'policy, 'work, 'stream, W, S>, RetryLoopError>
+    where
+        'fleet: 'pump,
+        'report: 'fleet,
+        'scope: 'fleet,
+        'task: 'scope,
+        'policy: 'scope,
+        A: PeerAdmission + 'fleet,
+        F: FnMut(usize, Enrollment) -> io::Result<CameraWork<'work, RetryCompletion<W>>>,
+        G: FnMut(usize, Enrollment, Option<(VideoChannel, VideoProfile)>,
+            controller_acceptor::Session<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>)
+            -> TrackedStreamWork<'stream, S>,
+    {
+        if !pump.accepts_retries(&retries.queue) {
+            return Err(RetryLoopError::Binding);
+        }
+        if !Rc::ptr_eq(&self.transport.slots, &pump.driver().transport().slots)
+            || !std::ptr::eq(automatic.fleet, pump.driver().fleet())
+            || !std::ptr::eq(streams.fleet, pump.driver().fleet())
+            || automatic.transport.as_ref().is_some_and(|bound| !Rc::ptr_eq(bound, &self.transport.identity))
+        {
+            return Err(RetryLoopError::Fleet(io::ErrorKind::InvalidInput.into()));
+        }
+        let excluded = streams.setup_exclusions();
+        if automatic.in_flight.iter().zip(excluded.iter()).any(|(a, b)| *a && *b) {
+            return Err(RetryLoopError::Fleet(io::ErrorKind::AlreadyExists.into()));
+        }
+        self.transport.cx.checkpoint().map_err(|_| RetryLoopError::Fleet(io::ErrorKind::Interrupted.into()))?;
+        enum Selected<T> { Fleet(io::Result<T>), Retry(Result<retry::Event, retry::Error>) }
+        let prefer_retry = self.prefer_retry;
+        let poll_retries = !retries.queue.is_empty() && !self.stopping && !automatic.stopped;
+        let selected = {
+            let mut fleet = pin!(self.next_with_sweep_automatic_streams(
+                pump, automatic, streams, setup_factory, stream_factory));
+            if !poll_retries {
+                Selected::Fleet(fleet.await)
+            } else {
+                let mut retry = pin!(retries.queue.next());
+                poll_fn(|cx| {
+                    if prefer_retry {
+                        if let Poll::Ready(result) = retry.as_mut().poll(cx) { return Poll::Ready(Selected::Retry(result)); }
+                    }
+                    if let Poll::Ready(result) = fleet.as_mut().poll(cx) { return Poll::Ready(Selected::Fleet(result)); }
+                    if !prefer_retry {
+                        if let Poll::Ready(result) = retry.as_mut().poll(cx) { return Poll::Ready(Selected::Retry(result)); }
+                    }
+                    Poll::Pending
+                }).await
+            }
+        };
+        match selected {
+            Selected::Fleet(result) => {
+                let event = result.map_err(RetryLoopError::Fleet)?;
+                self.prefer_retry = true;
+                let retry = if let SweepAutoRoutedEvent::Progress(SweepFleetStreamEvent::Automatic(
+                    SweepAutomaticEvent::Camera { index, output })) = &event
+                {
+                    Some(match retries.queue.schedule_automatic_for(*index, &output.operation) {
+                        Ok(()) => { retries.scheduled[*index] = true; RetryDisposition::Scheduled },
+                        Err(retry::Error::NotEligible) => RetryDisposition::NotEligible,
+                        Err(retry::Error::Duplicate) => RetryDisposition::AlreadyScheduled,
+                        Err(error) => RetryDisposition::Refused(error),
+                    })
+                } else { None };
+                Ok(SweepRetryingEvent::Fleet { event, retry })
+            }
+            Selected::Retry(result) => {
+                let event = result.map_err(RetryLoopError::Retry)?;
+                self.prefer_retry = false;
+                let index = match event {
+                    retry::Event::Rearmed { index, .. } | retry::Event::Stale { index }
+                    | retry::Event::Refused { index, .. } => index,
+                };
+                let owned = index < MAX_RESOURCES && std::mem::replace(&mut retries.scheduled[index], false);
+                let selection = if self.stopping || automatic.stopped {
+                    RetrySelection::Stopped
+                } else if owned
+                    && matches!(event, retry::Event::Rearmed { state, .. } if automatic.fleet.state(index) == Some(state))
+                    && automatic.attempted[index] && !automatic.in_flight[index]
+                {
+                    automatic.attempted[index] = false;
+                    automatic.missing_factory[index] = None;
+                    RetrySelection::Released
+                } else { RetrySelection::NotReleased };
+                Ok(SweepRetryingEvent::Retry { event, selection })
+            }
+        }
+    }
+
+    /// Drive a bound camera factory, paged discovery, retry queue and routed
+    /// stream factory under one caller-owned supervisor. Returned outcomes and
+    /// effects still require disposition; no enrollment or authority is inferred.
+    pub async fn next_with_sweep_camera_factory_and_streams<
+        'pump, 'fleet, 'report, 'policy, 'work, 'owner, 'stream, A, S, G,
+    >(
+        &mut self,
+        pump: &mut sweep_pump::Pump<'pump, 'report, 'scope, 'task,
+            Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, FleetLeased<'scope, 'task>>>,
+        automatic: &mut AutomaticWork<'fleet, 'report, 'work,
+            RetryCompletion<Result<fss_reference::unifi_direct::setup::Outcome, crate::camera_setup::Error>>>,
+        streams: &mut ActiveStreams<'fleet, 'report, 'stream, S>,
+        retries: &mut RetryCoordinator<'fleet, 'report, 'scope, 'task>,
+        factory: &mut crate::camera_factory::Factory<'fleet, 'work, 'owner, 'report, 'scope, 'task, 'policy>,
+        stream_factory: &mut G,
+    ) -> Result<SweepRetryingEvent<'scope, 'task, 'policy, 'work, 'stream,
+        Result<fss_reference::unifi_direct::setup::Outcome, crate::camera_setup::Error>, S>, RetryLoopError>
+    where
+        'fleet: 'pump,
+        'report: 'fleet + 'work,
+        'scope: 'fleet + 'work,
+        'task: 'scope,
+        'policy: 'scope,
+        'owner: 'work,
+        A: PeerAdmission + 'fleet,
+        G: FnMut(usize, Enrollment, Option<(VideoChannel, VideoProfile)>,
+            controller_acceptor::Session<'scope, 'task, 'policy, RoutedTransport<'scope, 'task, 'policy>>)
+            -> TrackedStreamWork<'stream, S>,
+    {
+        if !factory.matches_fleet(pump.driver().fleet()) {
+            return Err(RetryLoopError::Binding);
+        }
+        let mut setup = |index, enrollment| factory.take(index, enrollment);
+        self.next_with_sweep_retries_and_streams(pump, automatic, streams, retries, &mut setup, stream_factory).await
     }
 
     /// Drive retained camera work fairly alongside discovery, routing and the

@@ -10,6 +10,8 @@ publish = false
 asupersync = { version = "=0.5.0", default-features = false }
 fss-core = { path = "../../crates/fss-core" }
 fss-geometry = { path = "../../crates/fss-geometry" }
+fss-ledger = { path = "../../crates/fss-ledger" }
+fss-publication = { path = "../../crates/fss-publication" }
 fss-codec-mjpeg = { path = "../../crates/fss-codec-mjpeg" }
 fss-codec-h264 = { path = "../../crates/fss-codec-h264" }
 fss-codec-jpeg-encode = { path = "../../crates/fss-codec-jpeg-encode" }

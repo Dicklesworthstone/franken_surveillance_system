@@ -1,0 +1,47 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-16",
+  "timezone": "America/New_York",
+  "mission": "Replace Scrypted/Docker with native Rust camera recording after physical handoff, recovery and retention qualification.",
+  "requirement_scope": [
+    "FSS-024 laboratory oracle ownership",
+    "FSS-030 failure qualification",
+    "WP-150 proprietary interoperability laboratory"
+  ],
+  "state": "lab_logging_stall_fixed_firmware_startup_crash_observed_physical_takeover_unqualified",
+  "authority": {
+    "scope": "Repository laboratory helper repair and isolated copied-firmware tests; existing recorder read-only inspection",
+    "physical_effect_fence": "unchanged; two earlier effects unresolved"
+  },
+  "evidence_root": "trj:/data/tmp/fss-log-pump-20261116-02",
+  "findings": [
+    "Linux synthetic helper tests 2/2 passed",
+    "Final guarded copied-streamer run exited 1 before client; synthetic log reports signal-11 crash",
+    "Earlier IPC timeouts were confounded by supervisor syslog backpressure"
+  ],
+  "unknowns": [
+    "Exact encoder initialization crash cause",
+    "Earlier physical camera effect outcomes",
+    "Native full-resolution physical capture",
+    "Crash recovery and 30-day retention qualification"
+  ],
+  "obligations": [
+    {
+      "name": "physical effect reconciliation",
+      "state": "indeterminate"
+    },
+    {
+      "name": "native recorder takeover",
+      "state": "not_qualified"
+    }
+  ],
+  "next_affordances": [
+    {
+      "kind": "information-gathering",
+      "action": "Static inspection of retained synthetic crash dump and copied encoder initialization",
+      "stop_rule": "No firmware retry without a concrete discriminating hypothesis; no physical write or fence release"
+    }
+  ],
+  "details": "docs/UNIFI_LOCAL_SERIALIZER_EXPERIMENT.md",
+  "qualification_limits": "No release or full-current-tree test claim; work remains uncommitted alongside pre-existing peer changes."
+}

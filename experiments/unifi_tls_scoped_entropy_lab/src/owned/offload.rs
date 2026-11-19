@@ -118,6 +118,24 @@ impl<'scope, 'task> Lease<'scope, 'task> {
         pool.close();
         Ok(*nonce)
     }
+    /// Consume a dedicated lease for one experimental management token.
+    /// The result is secret and must not be logged or reused as TLS entropy.
+    pub fn trial_management_token(self) -> io::Result<Zeroizing<[u8; 32]>> {
+        if self.resource != "trial:management-token-entropy" {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let (task, cx, clock, resource, pool) = self.into_parts()?;
+        let result = (|| {
+            admitted(task, cx, clock, resource, &BudgetVector::ZERO)?;
+            let mut token = Zeroizing::new([0u8; 32]);
+            pool.fill(token.as_mut())
+                .map_err(|_| io::ErrorKind::Other)?;
+            admitted(task, cx, clock, resource, &BudgetVector::ZERO)?;
+            Ok(token)
+        })();
+        pool.close();
+        result
+    }
     pub(super) fn into_parts(
         mut self,
     ) -> io::Result<(
@@ -458,6 +476,31 @@ mod tests {
                     let lease = timeout(cx.now(), Duration::from_secs(5), short.join()).await??;
                     let pool = lease.pool.as_ref().ok_or("missing pool")?.clone();
                     assert!(lease.trial_public_nonce().is_err());
+                    assert!(!pool.live.load(Ordering::SeqCst));
+                    assert!(pool.data.iter().all(|byte| byte.load(Ordering::SeqCst) == 0));
+
+                    let work: Work = Box::new(|_| Ok(Zeroizing::new(vec![0x8a; 32])));
+                    let mut token_work = Acquisition::begin_with(task, cx, clock, "trial:management-token-entropy", 32, work)?;
+                    let lease = timeout(cx.now(), Duration::from_secs(5), token_work.join()).await??;
+                    let pool = lease.pool.as_ref().ok_or("missing pool")?.clone();
+                    let token = lease.trial_management_token()?;
+                    assert_eq!(&token[..], &[0x8a; 32]);
+                    assert!(!pool.live.load(Ordering::SeqCst));
+                    assert!(pool.data.iter().all(|byte| byte.load(Ordering::SeqCst) == 0));
+
+                    let work: Work = Box::new(|_| Ok(Zeroizing::new(vec![0x9a; 8])));
+                    let mut short_token = Acquisition::begin_with(task, cx, clock, "trial:management-token-entropy", 8, work)?;
+                    let lease = timeout(cx.now(), Duration::from_secs(5), short_token.join()).await??;
+                    let pool = lease.pool.as_ref().ok_or("missing pool")?.clone();
+                    assert!(lease.trial_management_token().is_err());
+                    assert!(!pool.live.load(Ordering::SeqCst));
+                    assert!(pool.data.iter().all(|byte| byte.load(Ordering::SeqCst) == 0));
+
+                    let work: Work = Box::new(|_| Ok(Zeroizing::new(vec![0xab; 32])));
+                    let mut wrong_token = Acquisition::begin_with(task, cx, clock, "fixture:other", 32, work)?;
+                    let lease = timeout(cx.now(), Duration::from_secs(5), wrong_token.join()).await??;
+                    let pool = lease.pool.as_ref().ok_or("missing pool")?.clone();
+                    assert!(matches!(lease.trial_management_token(), Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
                     assert!(!pool.live.load(Ordering::SeqCst));
                     assert!(pool.data.iter().all(|byte| byte.load(Ordering::SeqCst) == 0));
                     Ok(())

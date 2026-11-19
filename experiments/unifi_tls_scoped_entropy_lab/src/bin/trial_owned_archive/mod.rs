@@ -521,7 +521,7 @@ pub async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     mut startup_answered: Vec<ContentDigest>,
     anchor_root: Option<&Path>,
     decode_owned: bool,
-    video_still: Option<fss_reference::unifi_direct::video_still::Color>,
+    video_still: Option<fss_reference::unifi_direct::video_still::ColorPolicy>,
     still_export_path: Option<&Path>,
     managed: bool,
     av_history_records: Option<usize>,
