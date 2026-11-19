@@ -1,9 +1,9 @@
 // All coordinates are metres in one fictional, owner-controlled property.
 export const DURATION = 12;
 export const cameras = [
-  { id: "porch", label: "Porch", position: [-3.7, 3.1, 2.3], target: [-0.9, 1, 6.0], fov: 71 },
-  { id: "garden", label: "Garden", position: [-4.9, 2.7, -2.2], target: [-7.3, 0.4, 3.2], fov: 75 },
-  { id: "drive", label: "Driveway", position: [6.6, 3.0, 1.8], target: [3.3, 0.9, 7.0], fov: 70 },
+  { id: "porch", label: "Porch", position: [-3.20, 2.47, 3.13], target: [-0.9, 1, 6.0], fov: 71 },
+  { id: "garden", label: "Garden", position: [-5.64, 2.35, -2.25], target: [-7.3, 0.4, 3.2], fov: 75 },
+  { id: "drive", label: "Driveway", position: [6.58, 2.59, 2.04], target: [3.3, 0.9, 7.0], fov: 70 },
 ];
 export const cases = [
   { id: "delivery", title: "The doorstep delivery", short: "Delivery", camera: "porch", subject: "Parcel courier", kind: "Person", time: "17:42", color: "#d8f47b",

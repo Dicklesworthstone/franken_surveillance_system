@@ -17,12 +17,13 @@ window.frame=(id,t,view,w,h)=>{
   const result=stage.draw(s,t,view==="camera"?s.camera:view,true);
   return { jpeg:canvas.toDataURL("image/jpeg",.93).split(",")[1], visible:result.visible, inZone:result.inZone };
 };`,resolveDir:process.cwd()},bundle:true,write:false,minify:true});
-const server=createServer((req,res)=>{if(req.url==="/bundle.js"){res.setHeader("Content-Type","text/javascript");res.end(bundle.outputFiles[0].contents);}else res.end('<canvas></canvas><script src="/bundle.js"></script>');});
+const server=createServer((req,res)=>{if(req.url==="/bundle.js"){res.setHeader("Content-Type","text/javascript");res.end(bundle.outputFiles[0].contents);}else { res.setHeader("Content-Type","text/html"); res.end('<!doctype html><canvas></canvas><script src="/bundle.js"></script>'); }});
 server.listen(0,"127.0.0.1");await once(server,"listening");
 const browser=await chromium.launch({executablePath:process.env.CHROME_BIN||"/usr/bin/google-chrome",args:["--no-sandbox","--enable-unsafe-swiftshader","--use-angle=swiftshader","--disable-dev-shm-usage"]});
 try{
   const page=await browser.newPage();
   page.on("pageerror",e=>console.error(e.message));
+  page.on("console",msg=>{if(msg.type()==="error")console.error(msg.text());});
   await page.goto("http://127.0.0.1:"+server.address().port);await page.waitForFunction(()=>typeof window.frame==="function");
   const render=(id,t,view,w,h)=>page.evaluate(args=>window.frame(...args),[id,t,view,w,h]);
   await mkdir("public/films",{recursive:true});

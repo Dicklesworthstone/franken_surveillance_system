@@ -133,6 +133,7 @@ export function createProperty(canvas, interactive=true) {
   let aspect=1;
   return {
     resize(w,h){if(w<=0||h<=0)return;aspect=w/h;renderer.setSize(w,h,false);for(const cam of [overview,...Object.values(fixed)]){cam.aspect=aspect;cam.updateProjectionMatrix();}},
+    onOrbit(fn){orbit?.addEventListener("change",fn);},
     reset(){home();if(orbit){orbit.target.set(0,.75,.1);orbit.update();}},
     draw(s,t,view="overview",showCoverage=true) {
       const a=subjectAt(s,t), chosen=people[s.id];for(const v of Object.values(people))v.group.visible=v===chosen;
@@ -153,6 +154,6 @@ export function createProperty(canvas, interactive=true) {
       const foot=coord(V(a.x,.03,a.z)),head=coord(V(a.x,height+.12,a.z));
       return {visible,inZone:a.inZone,foot,head};
     },
-    dispose(){orbit?.dispose();scene.traverse(obj=>{obj.geometry?.dispose();if(obj.material&&!Object.values([...materials.values()]).includes(obj.material))obj.material.dispose?.();});for(const m of materials.values())m.dispose();materials.clear();renderer.dispose();renderer.forceContextLoss();}
+    dispose(){orbit?.dispose();scene.traverse(obj=>{obj.geometry?.dispose();if(obj.material)obj.material.dispose?.();});for(const m of materials.values())m.dispose();materials.clear();renderer.dispose();renderer.forceContextLoss();}
   };
 }
