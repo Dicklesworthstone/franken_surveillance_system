@@ -1,0 +1,10 @@
+{
+  "camera": "garden",
+  "frame": 38,
+  "source": "sha256:6789b1de5a57a7a4662849a4faccc36a1e176baae55453c5f8c72c9e8ab78660",
+  "pixel": [
+    545.5969512369531,
+    306.9159656907241
+  ],
+  "method": "authored projection of ball centre"
+}

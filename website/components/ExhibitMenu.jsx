@@ -7,6 +7,7 @@ const groups = [
     "Explore the site",
     [
       "courtyard",
+      "stereo-bench",
       "motion-study",
       "digital-twin",
       "camera-wall",

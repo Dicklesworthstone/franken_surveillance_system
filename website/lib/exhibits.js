@@ -9,6 +9,11 @@ export const exhibits = {
     caption: "JUNIPER HOUSE  /  INTERACTIVE FIELD GUIDE",
     color: "#cefa85",
   },
+  "stereo-bench": {
+    title:"The stereo bench", label:"Stereo bench", lines:["Two rays.","One ball."],
+    description:"Mark a basketball in two camera frames and locate it on the 3D court. Compare your estimate with a native FSS reconstruction.",
+    caption:"TWO CAMERA RAYS  /  NATIVE POINT ESTIMATE", color:"#a1e4d8",
+  },
   courtyard: {
     title: "The courtyard study",
     lines: ["The bounce", "pass."],

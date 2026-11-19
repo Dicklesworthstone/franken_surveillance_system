@@ -1,3 +1,4 @@
+import {exhibits} from "../lib/exhibits.js";
 import assert from "node:assert/strict";
 import { cases } from "../lib/scenarios.js";
 
@@ -15,7 +16,7 @@ export async function checkCourtUI(browser, origin) {
     const button = (name) => page.getByRole("button", { name, exact: true });
     await page.goto(origin);
     await page.locator(".exhibit-menu summary").click();
-    assert.equal(await page.locator(".exhibit-catalog a:visible").count(), 12);
+    assert.equal(await page.locator(".exhibit-catalog a:visible").count(), Object.keys(exhibits).length-1);
     await page.keyboard.press("Escape");
     assert.equal(
       await page.locator(".exhibit-menu").getAttribute("open"),
@@ -146,7 +147,7 @@ export async function checkCourtUI(browser, origin) {
   await page.goto(new URL("/exhibits/courtyard/", origin).href);
   await page.locator('[data-court-state="diagram"]').waitFor();
   await page.locator(".exhibit-menu summary").click();
-  assert.equal(await page.locator(".exhibit-catalog a:visible").count(), 12);
+  assert.equal(await page.locator(".exhibit-catalog a:visible").count(), Object.keys(exhibits).length-1);
   assert.ok(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,

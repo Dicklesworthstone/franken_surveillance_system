@@ -1,0 +1,10 @@
+{
+  "camera": "patio",
+  "frame": 38,
+  "source": "sha256:710b0893e47ee91790ac660c98de1ff799fc9c2fa6a505328cc0ce060a0ce9f4",
+  "pixel": [
+    529.5029781171235,
+    240.34253931280836
+  ],
+  "method": "authored projection of ball centre"
+}

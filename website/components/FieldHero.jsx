@@ -15,6 +15,11 @@ const films = [
     seconds: 4,
   },
   {
+    name:"Two rays. One ball.", section:"Stereo bench", image:"/stereo/sightlines.jpg", thumbnail:"/stereo/sightlines.jpg",
+    film:"/stereo/sightlines.mp4",url:"/exhibits/stereo-bench/",cta:"Open the stereo bench",
+    description:"Mark the basketball in both frames and see where the lines of sight meet.",seconds:4,
+  },
+  {
     name: "The parcel drop",
     section: "Motion lab",
     image: "/motion/pose.jpg",

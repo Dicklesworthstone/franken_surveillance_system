@@ -6,6 +6,7 @@ import "./style.css";
 import "./field.css";
 import "./motion.css";
 import "./courtyard.css";
+import "./stereo.css";
 export const metadata = {
   metadataBase: new URL("https://franken-surveillance.com"),
   title: "Franken Surveillance · The Home Control Room",

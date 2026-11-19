@@ -5,6 +5,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createSceneRenderer } from "./property.js";
 import { player } from "./pass-actor.js";
 import { basketball, courtyard } from "./court-yard.js";
+import { cameraRig } from "./stereo.js";
+import { stereoRays } from "./stereo-rays.js";
 import { freeBall, passAt } from "./pass.js";
 
 export async function createCourtStage(canvas, interactive = true) {
@@ -96,14 +98,12 @@ export async function createCourtStage(canvas, interactive = true) {
     scene.add(path);
     const overview = new T.PerspectiveCamera(33, 1, 0.05, 100);
     const dolly = new T.PerspectiveCamera(34, 1, 0.05, 100);
-    const cams = {
-      garden: new T.PerspectiveCamera(47, 16 / 9, 0.08, 100),
-      patio: new T.PerspectiveCamera(48, 16 / 9, 0.08, 100),
-    };
-    cams.garden.position.set(4.8, 2.8, 2.6);
-    cams.garden.lookAt(0.15, 0.85, 0);
-    cams.patio.position.set(-4.65, 2.05, 3.0);
-    cams.patio.lookAt(-0.15, 1.03, 0);
+    const cams=Object.fromEntries(Object.entries(cameraRig).map(([id,c])=>{
+      const camera=new T.PerspectiveCamera(c.fov,16/9,.08,100);
+      camera.position.set(...c.position);camera.lookAt(...c.target);
+      return [id,camera];
+    }));
+    let sightlines;
     let w = 1,
       h = 1,
       refresh = () => {},
@@ -114,7 +114,8 @@ export async function createCourtStage(canvas, interactive = true) {
     const aim = new T.Vector3(0, 1.04, 0);
     const reset = () => {
       const scale = Math.max(1, 1.53 / (w / h));
-      overview.position.set(1.35 * scale, 1.72 * scale, 6.28 * scale);
+      if (lastView === "stereo") overview.position.set(.3*scale,5.0*scale,9.4*scale);
+      else overview.position.set(1.35 * scale, 1.72 * scale, 6.28 * scale);
       overview.lookAt(aim);
       if (orbit) {
         orbit.target.copy(aim);
@@ -155,7 +156,9 @@ export async function createCourtStage(canvas, interactive = true) {
         };
         return frame;
       },
-      draw(p, t, view = "wide", showPath = true) {
+      draw(p, t, view = "wide", showPath = true, solution = null) {
+        if (solution && !sightlines) {sightlines=stereoRays();scene.add(sightlines.group);}
+        sightlines?.update(solution);
         const q = passAt(p, t);
         people.forEach((person) => person.pose(p, q, t));
         ball.position.set(q.ball.x, q.ball.y, 0);
@@ -184,14 +187,22 @@ export async function createCourtStage(canvas, interactive = true) {
           prevParams = p;
           traceEnd = q.flight.travel;
         }
-        if (lastView !== view && orbit) {
-          orbit.enabled = view === "wide";
-          canvas.style.touchAction = orbit.enabled ? "none" : "pan-y";
-          lastView = view;
+        if (lastView !== view) {
+          const previous=lastView;lastView=view;
+          if(orbit) {
+            orbit.enabled=view==="wide" || view==="stereo";
+            canvas.style.touchAction=orbit.enabled?"none":"pan-y";
+          }
+          if(view==="stereo" || previous==="stereo")reset();
         }
         renderer.setScissorTest(false);
         renderer.setViewport(0, 0, w, h);
-        if (view === "wide") {
+        if (view === "wide" || view === "stereo") {
+          if(view==="stereo" && !interactive){
+            const angle=-.19+t*.105;
+            overview.position.set(11.5*Math.sin(angle),5.6,11.5*Math.cos(angle));
+            overview.lookAt(0,1,.9);
+          }
           renderer.render(scene, overview);
           return;
         }

@@ -1,0 +1,107 @@
+{
+  "schema": "fss.scene_camera_rig.v1",
+  "source_scene_digest": "sha256:bf5b367a0f92a72d0cecbc0106d33662662d183bd1ee5bc1b9e9d7afee088589",
+  "twin_digest": "sha256:aa7f1e64b76d3cea953b0f0e677c463efbf3eca0f63411301569638eb5ec0daa",
+  "geometry_basis": {
+    "property": 1,
+    "revision": 1
+  },
+  "coordinate_frame": "RH_Z_UP",
+  "evaluation_scope": "Juniper Court synthetic floor only",
+  "cameras": [
+    {
+      "camera": 1,
+      "calibration": 1,
+      "image_domain": 1,
+      "clock": 1,
+      "privacy_domain": 1,
+      "validity_ns": [
+        0,
+        4000000000
+      ],
+      "source_object_id": "garden",
+      "image_model": "undistorted_pinhole",
+      "world_to_camera": {
+        "rotation": [
+          [
+            0.48803169132352975,
+            0.8728259094824666,
+            0
+          ],
+          [
+            0.300009829577118,
+            -0.16774743159150687,
+            -0.9390712972674445
+          ],
+          [
+            -0.8196457591063371,
+            0.45829655347881215,
+            -0.34372241510910906
+          ]
+        ],
+        "translation": [
+          -0.07320475369852941,
+          0.7532091282407603,
+          6.088293445060835
+        ]
+      },
+      "intrinsics": {
+        "width": 896,
+        "height": 504,
+        "fx": 579.5603219035368,
+        "fy": 579.5603219035368,
+        "cx": 448,
+        "cy": 252
+      },
+      "error": null,
+      "status": "authored_nominal"
+    },
+    {
+      "camera": 2,
+      "calibration": 1,
+      "image_domain": 1,
+      "clock": 1,
+      "privacy_domain": 1,
+      "validity_ns": [
+        0,
+        4000000000
+      ],
+      "source_object_id": "patio",
+      "image_model": "undistorted_pinhole",
+      "world_to_camera": {
+        "rotation": [
+          [
+            0.554700196225229,
+            -0.8320502943378436,
+            0
+          ],
+          [
+            -0.15420457052045822,
+            -0.10280304701363879,
+            -0.9826761846891947
+          ],
+          [
+            0.8176360087094338,
+            0.5450906724729558,
+            -0.18533082864080494
+          ]
+        ],
+        "translation": [
+          0.08320502943378427,
+          0.989025784651802,
+          5.817207656631385
+        ]
+      },
+      "intrinsics": {
+        "width": 896,
+        "height": 504,
+        "fx": 566.0012670238625,
+        "fy": 566.0012670238625,
+        "cx": 448,
+        "cy": 252
+      },
+      "error": null,
+      "status": "authored_nominal"
+    }
+  ]
+}

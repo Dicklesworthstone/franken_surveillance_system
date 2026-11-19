@@ -67,16 +67,18 @@ export default function CourtViewport({
   onUnavailable,
   sample,
   evidence,
+  solution,
+  fallbackContent,
 }) {
   const canvas = useRef(null),
     stage = useRef(null),
-    latest = useRef({ p, time, view, trace });
+    latest = useRef({ p, time, view, trace, solution });
   const [state, setState] = useState("loading");
   const [frame, setFrame] = useState(null);
   useEffect(() => {
-    latest.current = { p, time, view, trace };
-    stage.current?.draw(p, time, view, trace);
-  }, [p, time, view, trace]);
+    latest.current = { p, time, view, trace, solution };
+    stage.current?.draw(p, time, view, trace, solution);
+  }, [p, time, view, trace, solution]);
   useEffect(() => {
     stage.current?.reset();
   }, [reset]);
@@ -98,7 +100,7 @@ export default function CourtViewport({
     }
     function draw() {
       const s = latest.current;
-      stage.current?.draw(s.p, s.time, s.view, s.trace);
+      stage.current?.draw(s.p, s.time, s.view, s.trace, s.solution);
     }
     el.addEventListener("webglcontextlost", lost);
     import("../lib/court-stage")
@@ -144,24 +146,24 @@ export default function CourtViewport({
       {state === "loading" && (
         <img
           className="court-poster"
-          src="/court/cover.jpg"
+          src={view === "stereo" ? "/stereo/sightlines.jpg" : "/court/cover.jpg"}
           alt="The two players on Juniper Court"
         />
       )}
       {state === "diagram" && (
         <div className="court-diagram">
-          <span>Side elevation · WebGL unavailable</span>
-          <FlightDiagram p={p} time={time} large />
+          <span>{view === "stereo" ? "Top view" : "Side elevation"} · WebGL unavailable</span>
+          {fallbackContent || <FlightDiagram p={p} time={time} large />}
         </div>
       )}
-      {state === "webgl" && view !== "wide" && frame && (
+      {state === "webgl" && view !== "wide" && view !== "stereo" && frame && (
         <div className="court-detection detector-plate" style={frame}>
           <DetectionBoxes sample={sample} />
         </div>
       )}
       {state === "webgl" && (
         <span className="court-view-label">
-          {view === "wide"
+          {view === "stereo" ? "Sightlines · drag to orbit" : view === "wide"
             ? "Courtyard · drag to orbit"
             : (view === "garden" ? "Garden camera" : "Patio camera") +
               " · " +

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { imageToGround } from "../lib/cameras.js";
 import { renderMotion } from "./render-motion.mjs";
 import { renderCourt } from "./render-court.mjs";
+import { renderStereo } from "./render-stereo.mjs";
 import { createReadStream } from "node:fs";
 import { renderWall } from "./render-wall.mjs";
 import {
@@ -28,15 +29,20 @@ import { cases, DURATION } from "./lib/scenarios.js";
 const canvas = document.querySelector("canvas");
 import { createCourtStage } from "./lib/court-stage.js";
 import { conditions } from "./lib/pass.js";
+import {referenceAt,reconstruct} from "./lib/stereo.js";
 import { createMotionStage } from "./lib/motion-stage.js";
 import { presets } from "./lib/motion.js";
 const motionMode=${process.argv.includes("--motion")};
-const courtMode=${process.argv.includes("--court")};
+const courtMode=${process.argv.includes("--court") || process.argv.includes("--stereo")};
 async function boot() {
 const stage = courtMode ? await createCourtStage(canvas,false) : motionMode ? createMotionStage(canvas,false) : createProperty(canvas, false);
 window.frame=(id,t,view,w,h)=>{
   if (canvas.width!==w || canvas.height!==h) stage.resize(w,h);const s=cases.find(s=>s.id===id);
-  if(courtMode){stage.draw(conditions[0],t,view,id==="trace");return {jpeg:canvas.toDataURL("image/jpeg",.94).split(",")[1]};}
+  if(courtMode){
+    const rays=view==="stereo"?reconstruct(referenceAt(t).marks):null;
+    stage.draw(conditions[0],t,view,id==="trace",rays);
+    return {jpeg:canvas.toDataURL("image/jpeg",.94).split(",")[1]};
+  }
   if (motionMode) {
     stage.draw(presets[0],t,view,id==="pose");
     return {jpeg:canvas.toDataURL("image/jpeg",.94).split(",")[1]};
@@ -108,6 +114,10 @@ async function renderAll() {
   let page = await newRenderer();
   const render = (id, t, view, w, h) =>
     page.evaluate((args) => window.frame(...args), [id, t, view, w, h]);
+  if (process.argv.includes("--stereo")) {
+    await renderStereo(render,stageDir);
+    return;
+  }
   if (process.argv.includes("--court")) {
     await renderCourt(render, stageDir);
     return;

@@ -473,6 +473,7 @@ export default function CourtStudy({ data }) {
               {id} film ↗
             </a>
           ))}
+          <a href="/exhibits/stereo-bench/">Locate the ball in stereo ↗</a>
           <a href="/court/capture.json">Render settings ↗</a>
           <a href="/court/analysis.json">Native replay index ↗</a>
           <a href="/court/ROCKETBOX-LICENSE.txt">Rocketbox model license ↗</a>

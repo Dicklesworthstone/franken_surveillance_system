@@ -29,6 +29,7 @@ import FieldHero from "./FieldHero";
 import ExhibitMenu from "./ExhibitMenu";
 import CameraWall from "./CameraWall";
 import MotionStudy from "./MotionStudy";
+import StereoBench from "./StereoBench";
 import CourtStudy from "./CourtStudy";
 import SectionLink from "./SectionLink";
 import { exhibits, exhibitPath } from "../lib/exhibits";
@@ -174,7 +175,7 @@ function useEvidence(file) {
   }, [file]);
   return result && result.file === file ? result : { status: "loading" };
 }
-export default function Observatory({ field, exhibit = "home", motion, court }) {
+export default function Observatory({ field, exhibit = "home", motion, court, stereo }) {
   const home = exhibit === "home";
   const show = (...slugs) => home || slugs.includes(exhibit);
   const [vantage, setVantage] = useState("orbit");
@@ -333,6 +334,7 @@ export default function Observatory({ field, exhibit = "home", motion, court }) 
           </div>
         )}
         {exhibit==="motion-study" && <MotionStudy analysis={motion}/>}
+        {exhibit==="stereo-bench" && <StereoBench native={stereo}/>}
         {exhibit==="courtyard" && <CourtStudy data={court}/>}
         {show("digital-twin") && <section
           id="simulator"
