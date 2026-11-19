@@ -1,4 +1,4 @@
-Alder House synthetic case recordings
+Franken Surveillance synthetic case recordings
 
 Adult visitor and courier
 Microsoft Rocketbox, Male_Adult_07 and Delivery_Male_01, with the m_walk_neutral and m_idle_breathe_01 motion captures from the same library. MIT license, reproduced in ROCKETBOX-LICENSE.txt. The showcase converts these assets to glTF, compresses the textures, removes forward translation from the motion cycle, and positions the actors and their hands in the scene.

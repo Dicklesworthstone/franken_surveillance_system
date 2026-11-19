@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Download,
   Menu,
+  Play,
   X,
 } from "lucide-react";
 import {
@@ -30,7 +31,7 @@ const href = (id, c) =>
 const plate = (id, v) => "/night-media/" + id + "-" + v + ".jpg";
 const navigation = [
   ["Case files", "/#case-files"],
-  ["Estate twin", pathFor("digital-twin")],
+  ["Property twin", pathFor("digital-twin")],
   ["Evidence", pathFor("event-ledger")],
   ["Agent desk", pathFor("agent-console")],
 ];
@@ -51,7 +52,7 @@ function Brand() {
     <a className="estate-brand" href="/" aria-label="Franken Surveillance home">
       <Aperture size={26} strokeWidth={1.4} />
       <span>
-        Franken<span>Surveillance</span>
+        Franken <span>Surveillance</span>
       </span>
     </a>
   );
@@ -105,46 +106,67 @@ function Masthead() {
   );
 }
 function CaseFiles({ records }) {
+  const [preview, setPreview] = useState(null);
   return (
     <section className="case-files frame" id="case-files">
       <div className="section-head">
         <div>
           <span className="ticker">Incident archive</span>
           <h2>
-            Three nights at <em>Alder House.</em>
+            Review the <em>case files.</em>
           </h2>
         </div>
         <p>
-          One estate and one camera rig across three staged encounters. Choose a
-          case to inspect its recordings.
+          Play a camera recording, then open its case to see what the detector
+          picked up.
         </p>
       </div>
       <div className="case-cards">
         {cases.map((id) => {
           const c = records[id];
           return (
-            <a href={pathFor(id)} key={id} className="case-card">
+            <article key={id} className="case-card">
               <figure>
-                <img
-                  src={plate(id, c.primary)}
-                  alt={
-                    c.title +
-                    " as seen by the " +
-                    displayCamera(c.primary).toLowerCase() +
-                    " camera"
-                  }
-                  width="720"
-                  height="405"
-                  loading="lazy"
-                />
-                <span>{c.label}</span>
+                {preview === id ? (
+                  <video
+                    controls
+                    autoPlay
+                    muted
+                    playsInline
+                    autoFocus
+                    aria-label={c.title + ", " + displayCamera(c.primary) + " camera recording"}
+                    poster={plate(id, c.primary)}
+                    src={c.views[c.primary].film}
+                  />
+                ) : (
+                  <button
+                    className="case-preview"
+                    aria-label={"Play " + c.title + " camera recording"}
+                    onClick={() => setPreview(id)}
+                  >
+                    <img
+                      src={plate(id, c.primary)}
+                      alt=""
+                      width="720"
+                      height="405"
+                      loading="lazy"
+                    />
+                    <span className="preview-source">
+                      {c.localTime} · {displayCamera(c.primary)} camera
+                    </span>
+                    <span className="preview-play">
+                      <Play size={15} fill="currentColor" aria-hidden="true" />
+                    </span>
+                  </button>
+                )}
               </figure>
-              <div>
-                <h3>{c.title}</h3>
-                <ArrowUpRight size={20} />
-              </div>
+              <h3>
+                <a href={pathFor(id)}>
+                  {c.title}<ArrowUpRight size={20} aria-hidden="true" />
+                </a>
+              </h3>
               <p>{c.description}</p>
-            </a>
+            </article>
           );
         })}
       </div>
@@ -157,7 +179,7 @@ function Hero({ hero }) {
       <img
         className="hero-photo"
         src={hero}
-        alt="Nighttime architectural rendering of the fictional Alder House estate"
+        alt="A lit front porch and a curved stone walk seen from across the lawn at night"
         fetchPriority="high"
         width="1920"
         height="1080"
@@ -165,29 +187,29 @@ function Hero({ hero }) {
       <div className="hero-inner frame">
         <div>
           <span className="ticker hero-overline">
-            <i /> Residential security / Night watch
+            <i /> Residential security demo
           </span>
           <h1 id="estate-title">
-            Alder House,
+            Who’s outside
             <br />
-            <em>after dark.</em>
+            <em>at 02:14?</em>
           </h1>
           <p>
-            At 02:14 a resident reports someone outside who may be armed. Follow
-            the approach across the cameras and inspect the evidence Franken
-            Surveillance gives the agent reviewing the alert.
+            A resident reports a possible intruder. The entry and porch cameras
+            recorded the approach. Replay both angles and see what an agent can
+            establish from the evidence.
           </p>
           <div className="hero-actions">
             <a className="gold-button" href={pathFor("after-hours")}>
               Review the incident <ArrowRight size={17} />
             </a>
             <a className="quiet-button" href={pathFor("digital-twin")}>
-              Explore the 3D estate <ArrowUpRight size={15} />
+              Explore the 3D property <ArrowUpRight size={15} />
             </a>
           </div>
         </div>
       </div>
-      <span className="hero-credit">Alder House · Fictional estate</span>
+      <span className="hero-credit">Simulated property</span>
     </section>
   );
 }
@@ -210,7 +232,7 @@ function NightBriefing({ data }) {
     };
   }, [opened]);
   return (
-    <section className="briefing frame" aria-label="Alder House camera network">
+    <section className="briefing frame" aria-label="Property camera network">
       <div className="briefing-stats">
         <a href={pathFor("digital-twin")}>
           <b>{data.estate.cameras.length}</b> mounted cameras
@@ -228,14 +250,14 @@ function NightBriefing({ data }) {
           className="briefing-film"
           ref={ref}
           onClose={() => open(false)}
-          aria-label="Alder House site film"
+          aria-label="Residential security demo film"
           onClick={(e) => {
             if (e.target === ref.current) ref.current.close();
           }}
         >
           <div className="briefing-panel">
             <header>
-              <span className="ticker">Alder House / Three encounters</span>
+              <span className="ticker">Three encounters on camera</span>
               <button
                 autoFocus
                 aria-label="Close film"
@@ -262,7 +284,7 @@ function NightBriefing({ data }) {
               />
             </video>
             <footer>
-              <span>Estate render and original camera recordings</span>
+              <span>Property render and original camera recordings</span>
               <a href={briefing.film} download>
                 Download film ↗
               </a>
@@ -306,10 +328,9 @@ function StudyIndex({ record }) {
           </h2>
         </div>
         <p>
-          The aim is to give a homeowner with a few $35 Wi-Fi cameras one view
-          of their property. At Alder House, follow an observation from a single
-          lens to a shared site plan, a ledger entry and the decision an agent
-          can make with the owner’s permission.
+          Follow a camera observation onto the site plan. Check the original
+          recording against its ledger entry, then open the agent’s handoff to
+          see which questions still need a homeowner’s attention.
         </p>
       </div>
       <div className="index-grid">
@@ -379,7 +400,7 @@ function EstatePhotographs({ photographs }) {
           >
             <img
               src={url}
-              alt={label + " at Alder House"}
+              alt={label}
               loading="lazy"
               width="1280"
               height="720"
@@ -531,18 +552,15 @@ export default function NightObservatory({ page, data, prints = [] }) {
         ) : (
           <div className="frame report-page">
             <nav className="breadcrumbs" aria-label="Breadcrumb">
-              <a href="/">Alder House</a>
+              <a href="/">Home</a>
               <span>/</span>
               {mode === "incident" ? "Incident archive" : "Field guide"}
             </nav>
             <div className="report-heading">
               <div>
-                <span className="ticker">
-                  <i />
-                  {mode === "incident"
-                    ? incident.label
-                    : "Alder House / " + exhibits[page].label}
-                </span>
+                {mode === "incident" && (
+                  <span className="ticker"><i />{incident.label}</span>
+                )}
                 <h1>
                   {exhibits[page].title}
                   <em>.</em>

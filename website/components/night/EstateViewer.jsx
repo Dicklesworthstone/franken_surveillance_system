@@ -111,7 +111,7 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
         <div className="twin-surface" data-estate-state={state}>
           <canvas
             ref={canvas}
-            aria-label="Interactive 3D exterior of Alder House"
+            aria-label="Interactive 3D model of the house and camera positions"
             key={generation}
           />
           {state !== "ready" && (

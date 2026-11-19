@@ -123,7 +123,7 @@ dd {
 .gold-button,
 .quiet-button,
 .section-head,
-.case-card > div,
+.case-card h3 a,
 .console-toolbar,
 .lens-choice,
 .compare-toggle,
@@ -187,7 +187,7 @@ dd {
 .hero-credit,
 .film-camera,
 .breadcrumbs,
-.case-cards figure > span,
+.preview-source,
 .hero-overline,
 .case-switch legend,
 .lens-choice legend,
@@ -361,29 +361,56 @@ dd {
   background: #1c2b28;
   border: 1px solid #404b45;
 }
-.case-card img {
+.case-card img,
+.case-card video,
+.case-preview {
+  display: block;
   width: 100%;
   height: 100%;
+}
+.case-preview {
+  position: relative;
+  padding: 0;
+  background: none;
+}
+.case-card img {
   object-fit: cover;
   transition: transform 0.45s;
 }
-.case-card:hover img {
+.case-preview:hover img {
   transform: scale(1.025);
 }
-.case-card figure > span {
+.preview-source,
+.preview-play {
   position: absolute;
   bottom: 9px;
-  left: 9px;
   background: #111b19e6;
   color: #e2d7bb;
+}
+.preview-source {
+  left: 9px;
   padding: 4px 7px;
   font-size: 9px;
 }
-.case-card > div {
+.preview-play {
+  right: 9px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #e2d7bb99;
+  border-radius: 50%;
+}
+.case-preview:focus-visible {
+  outline-offset: -4px;
+  z-index: 1;
+}
+.case-card h3 a {
   justify-content: space-between;
   gap: 8px;
   margin-top: 13px;
 }
+.case-card h3 a:hover { color: var(--gold); }
 .case-card h3,
 .index-grid h3,
 .desk-paper h3,
@@ -1214,7 +1241,7 @@ select {
   .case-card figure {
     aspect-ratio: 2;
   }
-  .case-card > div {
+  .case-card h3 a {
     margin-top: 8px;
   }
   .case-card h3 {
@@ -1420,7 +1447,7 @@ select {
   .case-card img {
     transition: none;
   }
-  .case-card:hover img {
+  .case-preview:hover img {
     transform: none;
   }
 }

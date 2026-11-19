@@ -40,11 +40,11 @@ const photograph = cache(async (url) => {
   return "data:image/" + format + ";base64," + bytes.toString("base64");
 });
 const titles = {
-  home: ["Alder House,", "after dark."],
+  home: ["Who’s outside", "at 02:14?"],
   "after-hours": ["Intrusion report,", "02:14."],
   delivery: ["The evening", "delivery."],
   wildlife: ["Movement in", "the garden."],
-  "digital-twin": ["The estate", "in 3D."],
+  "digital-twin": ["The property", "in 3D."],
   "camera-wall": ["The camera", "room."],
   "camera-fusion": ["Across two", "cameras."],
   "event-ledger": ["The evidence", "ledger."],
@@ -54,7 +54,7 @@ const titles = {
   "field-method": ["Inside an", "observation."],
   "camera-inputs": ["Camera", "sources."],
   "film-archive": ["The incident", "archive."],
-  "poster-room": ["The estate", "in print."],
+  "poster-room": ["The case files", "in print."],
   "motion-study": ["Reconstruct", "the approach."],
   "stereo-bench": ["Two camera", "views."],
   courtyard: ["Perimeter", "review."],
@@ -92,6 +92,11 @@ const render = cache(async (id, h) => {
     home: hero,
     "digital-twin": data.estate.photographs[0].url,
     "poster-room": data.estate.photographs[1].url,
+  };
+  const coverLabels = {
+    home: "RESIDENTIAL SECURITY DEMO",
+    "digital-twin": "HOUSE AND CAMERA POSITIONS",
+    "poster-room": "ARCHITECTURAL RENDERS",
   };
   const file = cover ? covers[id] : baseplate(c, incident.primary);
   const film = await photograph(file);
@@ -216,7 +221,7 @@ const render = cache(async (id, h) => {
         <div style={col}>
           {tag(
             cover
-              ? "ALDER HOUSE  /  NIGHT WATCH"
+              ? coverLabels[id]
               : incident.label.toUpperCase() +
                   "  /  " +
                   (main

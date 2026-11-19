@@ -1,4 +1,4 @@
-# Reproduce the Alder House recordings
+# Reproduce the residential security recordings
 
 All cameras, pace settings, metric paths and subject heights come from the estate plan. The fixed films share one source model with the orbitable WebGL survey. A Cycles photograph supplies the static light and materials for a registered optical centre. The browser projects the subject through that camera and tests foreground occlusion against the exported mesh. Moving the survey camera switches it to live 3D.
 

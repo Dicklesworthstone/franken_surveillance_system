@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import {
   exhibits,
+  caseFiles,
   pathFor,
   cases,
   displayCamera,
@@ -100,7 +101,7 @@ try {
     }, pathFor(id));
     assert.equal(article.status, 200, id);
     assert.ok(article.title, id);
-    assert.doesNotMatch(article.text, /basketball|bounce pass|Juniper House/i);
+    assert.doesNotMatch(article.text, /basketball|bounce pass|Juniper House|Alder House/i);
     for (const [key, height] of [
       ["og:image", 630],
       ["twitter:image", 600],
@@ -133,10 +134,17 @@ try {
   }
   await open("home");
   await screenshot("desktop");
+  for (const id of cases) {
+    await button(page, "Play " + exhibits[id].title + " camera recording").click();
+    const clip = page.locator(".case-card video");
+    await page.waitForFunction(() => document.querySelector(".case-card video")?.currentTime > 0);
+    const expected = archive.cases[id].views[caseFiles[id].openingCamera].film;
+    assert.equal(new URL(await clip.getAttribute("src"), origin).pathname, expected);
+  }
   const hero = page.locator(".hero-photo");
   assert.ok(await hero.evaluate((el) => el.naturalWidth >= 1000));
   await page.getByRole("button", { name: /Watch the site film/ }).click();
-  const screening = page.getByRole("dialog", { name: "Alder House site film" });
+  const screening = page.getByRole("dialog", { name: "Residential security demo film" });
   await screening.waitFor();
   await screening
     .locator("video")
@@ -319,7 +327,7 @@ try {
       if (id === "home") {
         await button(page, "Open navigation").click();
         await page
-          .getByRole("link", { name: "Estate twin", exact: true })
+          .getByRole("link", { name: "Property twin", exact: true })
           .last()
           .waitFor();
         await button(page, "Close navigation").click();

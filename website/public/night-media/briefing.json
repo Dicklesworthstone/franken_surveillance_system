@@ -4,14 +4,14 @@
   "seconds": 27,
   "fps": 24,
   "captions": "/night-media/estate-briefing.vtt",
-  "captionsSha256": "a40980353aa3c41e2beb42e9efeddd68635057c69ff666c896b79d6ff9ddd501",
+  "captionsSha256": "d56d98652930f50a99c32ad940c0b866450deecd28d98fafbcb15637cc4fbed7",
   "chapters": [
     {
       "start": 0,
       "seconds": 3,
       "source": "/estate/hero.jpg",
       "sha256": "55fcf2c73a649ca816ef353e6b586654a921cdb9c1d05426ee2f9b22c4dc3d7d",
-      "caption": "Alder House. A fictional residential estate after dark."
+      "caption": "A light is on over the front door of the simulated property."
     },
     {
       "start": 3,

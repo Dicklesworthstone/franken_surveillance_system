@@ -1,4 +1,4 @@
-# Alder House
+# Franken Surveillance demo
 
 The Franken Surveillance site follows three residential security incidents through one fictional property. A resident reports someone outside after hours, a courier approaches the entrance, and a raccoon crosses the grounds. The site keeps the scene script, rendered camera views and native FSS observations distinct. [Open the observatory](https://franken-surveillance.com/)
 

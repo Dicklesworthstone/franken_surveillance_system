@@ -29,7 +29,7 @@ def main():
     estate = json.loads((PUBLIC / "estate/estate.json").read_bytes())
     captures = json.loads((MEDIA / "capture.json").read_bytes())["captures"]
     hero = estate.get("hero", "/estate/hero.jpg")
-    shots = [(hero, 3, "Alder House. A fictional residential estate after dark.")]
+    shots = [(hero, 3, "A light is on over the front door of the simulated property.")]
     for case, camera, caption in SHOTS:
         take = next(
             row for row in captures if row["caseId"] == case and row["camera"] == camera

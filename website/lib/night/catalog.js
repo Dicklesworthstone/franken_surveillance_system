@@ -39,25 +39,25 @@ export const pathFor = (id) =>
       : "/exhibits/" + id + "/";
 export const exhibits = {
   home: {
-    title: "Alder House after dark",
+    title: "Who’s outside at 02:14?",
     label: "Overview",
     section: "home",
     description:
-      "A residential security study across multiple cameras. Review a reported nighttime intrusion, a delivery and a wildlife encounter on one detailed fictional estate.",
+      "A resident reports a possible intruder at 02:14. Replay the approach across two cameras and trace the alert through the evidence ledger to the agent’s handoff.",
   },
   "digital-twin": {
-    title: "The estate in 3D",
+    title: "The property in 3D",
     label: "Property twin",
     section: "twin",
     description:
-      "Move around the detailed estate, switch to mounted camera views and replay a person’s approach on the same model used for every recording.",
+      "Orbit the house in 3D or look through a mounted camera. Replay the approach and change the person’s height or walking pace.",
   },
   "camera-wall": {
     title: "The camera room",
     label: "Camera room",
     section: "replay",
     description:
-      "Play the same nighttime encounter from the estate’s fixed cameras on one timeline.",
+      "Play the same encounter from the property’s fixed cameras on one timeline.",
   },
   "camera-fusion": {
     title: "Across two cameras",
@@ -116,11 +116,11 @@ export const exhibits = {
       "Open the after-hours, delivery and wildlife films, all recorded on the same fictional property.",
   },
   "poster-room": {
-    title: "The estate in print",
+    title: "The case files in print",
     label: "Exhibit prints",
     section: "prints",
     description:
-      "Download section covers made from the estate’s actual renders and camera recordings.",
+      "Download covers made from the architectural renders and original camera recordings.",
   },
   // Established inbound links now open security exercises set on the same estate.
   "motion-study": {
@@ -158,5 +158,5 @@ export const exhibits = {
 };
 export const displayCamera = (id) =>
   id === "overview"
-    ? "Estate view"
+    ? "Site overview"
     : id.replaceAll(/[-_]/g, " ").replace(/^./, (c) => c.toUpperCase());

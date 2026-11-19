@@ -27,12 +27,12 @@
 > real footage, cloud archiving, and release qualification. See
 > [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
-At **Alder House**, virtual cameras cover a fictional residential estate. Follow an
+The **Franken Surveillance demo** places virtual cameras around a fictional home. Follow an
 after-hours report, an evening delivery or a wildlife encounter through synchronized recordings
 and the native Rust analysis of their sampled frames. The property viewer uses the same house,
 camera rig and animated subjects as the films. Compare camera measurements, verify source
 bytes, and inspect the local event and agent-session records for each case.
-[Visit Alder House](https://franken-surveillance.com/) · [Review the after-hours incident](https://franken-surveillance.com/incidents/after-hours/)
+[Explore the demo](https://franken-surveillance.com/) · [Review the after-hours incident](https://franken-surveillance.com/incidents/after-hours/)
 
 ## The thesis
 
