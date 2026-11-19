@@ -62,6 +62,15 @@ preconditions again, checks the exact approval digest, retains the provenance gr
 and delegates the final event revision to `ReferenceDeployment::publish_event`. It does not
 append the reserved event family through the generic ledger API.
 
+Preparation uses an immutable retained-source snapshot for both recorded-luma and detector-package
+reports, so it can run while capture holds the deployment's writer lock. `--max-read-bytes` and
+`--max-read-objects` bound retained reads, including final custody and head revalidation. A changed
+head, unavailable or damaged source, incomplete journal, cancellation or exhausted allowance
+withholds both stdout and the optional export; preparation never opens recovery or repairs custody.
+The proposal digest and canonical event bytes are unchanged by this reader choice. Publication
+still needs the exclusive writer and independently rebuilds the approved proposal against current
+authority before committing it.
+
 Every candidate is `unclassified` and `indeterminate`, with an uncalibrated probability
 interval [0,1] and an explicit policy abstention. Track confirmation does not upgrade this
 state. All event evidence edges are derived-from edges, not corroborating physical-presence
@@ -160,6 +169,34 @@ candidate the zone, tracker-local track id, entry segment, frame range, per-fram
 id, proposal digest, provenance root, status (`prepared`, `published`, `already_published`) and,
 for prepared candidates, the exact rerun command with `--approve`.
 
+Unapproved short entry, short dwell and whole-recording watch/dwell previews can run while a
+capture process holds the deployment's publisher lock. They open one immutable retained snapshot
+without acquiring a writer or repairing state. This includes each mode's existing optional
+detector cascade, calibrated class advice, privacy masking, sensor-health screening and tolerant
+decode behavior. Short dwell still refuses sensor-health screening. The original plan, candidate,
+coverage and approval identities are unchanged. Sources must already be completed retained
+imports; short ranges remain at most 128 segments and whole-recording ranges at most 65,536.
+
+`--max-read-bytes N` and `--max-read-objects N` bound the entire retained read, including metadata,
+source verification and final custody/authority checks. Defaults are 1 GiB and 1,000,000 read
+attempts; explicit maxima are 4 GiB and 4,000,000. These cumulative allowances include repeated
+verification and apply in addition to the existing whole-scan decode, pixel, assignment and
+trace budgets. A cooperative 60-second deadline is checked at bounded retained-read admissions.
+
+The complete JSON report is buffered until the original source, all supporting capsules, privacy
+policy and authority snapshot pass final validation. Quiet scans, zero dwell episodes and
+health-degraded diagnostics follow the same final custody path. Health findings remain readable
+as diagnostics while still blocking event publication and calibrated class advice. An exhausted
+allowance, cancellation, changed authority, damaged payload or incomplete journal tail produces
+neither stdout nor a new `--report-out` file, and leaves deployment files untouched. An authority
+change during capture requires a fresh preview of a stable completed snapshot.
+
+Aggregate-read options require an unapproved preview without retention or incremental checkpoint
+flags. Approval hints omit these preview-only limits. Publication, coverage/health retention
+and incremental checkpoint commands keep their existing writer ownership and approval rules.
+The preview reads an explicit completed import once; it does not install a standing watch or
+start capture.
+
 Publication keeps this document's authority model: nothing is written without the exact
 proposal digest. `--approve sha256:P[,sha256:Q]` checks every digest against the fresh analysis
 before any write (`ERR-WATCH-APPROVAL-STALE-001` otherwise), retains the provenance graph
@@ -191,6 +228,27 @@ fss-event corroborate --root DIR --site SITE \
   --zone door:56,0,40,48 --interpretation gray --time-gate-ns 250000000 --distance-gate 16 \
   [watch thresholds and budgets] [--approve sha256:P[,sha256:Q]] [--report-out FILE]
 ```
+
+Unapproved short corroboration previews can run while capture owns the deployment's publisher
+lock. Both recordings share one sealed immutable snapshot. The existing detector cascade,
+calibrated class advice, failure-domain declarations, owner poses, retained calibration
+adoptions, covariance-aware coverage, scene occlusion, privacy masks and sensor-health
+screening keep their existing report and approval identities.
+
+Use `--max-read-bytes N` and `--max-read-objects N` to bound the complete retained operation:
+defaults are 1 GiB and 1,000,000 read attempts, with explicit maxima of 4 GiB and 4,000,000.
+The allowance covers both cameras together, retained calibration and policy metadata, and
+every final custody read. Repeated verification consumes the same allowance. A cooperative
+60-second deadline is checked at retained-read admissions. The completed JSON remains buffered
+until both original sources, all supporting capsules (including quiet frames), current privacy,
+calibration currency, snapshot metadata and registered payloads pass final validation.
+
+A failed final check, exhausted allowance, cancellation or incomplete journal tail produces no
+stdout or new report export, and does not repair or mutate the deployment. Concurrent authority
+changes require a new preview at a stable committed snapshot. These aggregate limits apply only
+to short previews without `--approve`, `--retain-coverage` or `--retain-health`; approval hints
+omit preview-only limits. Approved publication, retention and `--stream-corroborate` keep their
+existing writer ownership and authority checks.
 
 Each recording (1..128 frames) runs the watch pipeline over the whole decoded frame. The foot
 point (bottom centre of each confirmed track's filtered box) is projected through the camera's

@@ -1,0 +1,82 @@
+{
+  "date_utc": "2026-11-16",
+  "mission": "Implement high-value remaining functionality from the comprehensive plan and Beads; commit meaningful changes directly to main.",
+  "basis": {
+    "started_at": "e84bb7ca39604997e39db64b1edd5011ccd10a04",
+    "integrated_parent": "3b4fd2d4ecc62d1124fc029cc7e4f67591e87e22",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl"
+  },
+  "authority": {
+    "user": "Direct commits to main; no pull requests.",
+    "effects": "No new device, network, alert, retention, identity or model authority."
+  },
+  "findings": [
+    "Backlog labels lag implemented fusion and source-provenance features; implementation and acceptance evidence must both be inspected.",
+    "Short two-camera previews acquired the exclusive deployment writer, blocking read-only analyses during capture.",
+    "Generic clock correlation could retain an obsolete witness after a discontinuity masked by malformed sample fields; native synchronized clock already failed closed."
+  ],
+  "delivered": [
+    {
+      "feature": "VIT-019 generic clock invalidation",
+      "commit": "60642d52ae53e5c0412198a6fe52e56cebcedafd",
+      "evidence": "19 actual clock contract tests passed in a scoped pinned-nightly module harness; not a full Cargo integration result."
+    },
+    {
+      "feature": "Immutable short two-camera corroboration",
+      "scope": "Sealed shared snapshot, cumulative final-read budget, final custody/currency checks, active-writer routing, unchanged publication owner.",
+      "validation": "Independent source review complete. Six CLI and two calibrated-coverage regression contracts authored but unexecuted.",
+      "commit": "8b5bd332fca8a2832ab31705a3cc8273cadc439d"
+    },
+    {
+      "feature": "Immutable whole-recording watch/dwell and short dwell",
+      "commit": "this_commit",
+      "scope": "Shared native analysis/rendering, nonrenewing final-read budgets, custody-only diagnostic revalidation, strict publication/class-advice health gates, current-event lineage checks, unchanged checkpoint writer.",
+      "validation": "Four new CLI temporal tests, one native published-dwell test, two expanded long-dwell fusion tests and updated routing regression authored. Independent native/API and CLI reviews completed; full compilation and execution remain unverified."
+    },
+    {
+      "feature": "Shared report error conversion",
+      "commit": "this_commit",
+      "scope": "Explicitly convert detector rendering errors into CLI RunResult in the extracted short corroboration and temporal helpers."
+    }
+  ],
+  "validation": {
+    "baseline": "66 fss-fusion tests passed using the exact pinned toolchain.",
+    "blocked": "An isolated exact short-commit checkout was attempted after recovery, but shared /tmp filled and memory pressure returned before Cargo could start. Host then became unavailable again. No full changed-crate compile, new preview test execution or release qualification result.",
+    "gates": "No dependency, toolchain pin, qualification gate or broad bead completion state changed.",
+    "formatting": "Clock and short corroboration changes passed pinned formatting. Native temporal owners and fusion helpers passed pinned formatting before a final scan-error compatibility adjustment. That adjustment and the final temporal CLI files could not be formatted after the execution host became unavailable again.",
+    "hosted": "Push workflows observed pending/queued or cancelled without executed steps; none is qualification evidence."
+  },
+  "continuations": [
+    {
+      "state": "blocked",
+      "work": "Run pinned formatting and cargo check for fss-cli --bin fss-event, then the new watch/corroboration immutable CLI, calibrated coverage, native dwell and long-dwell fusion regressions on a stable host."
+    },
+    {
+      "state": "open",
+      "work": "Whole-recording two-camera corroboration still uses its original writer owner; extending its read-only preview remains a separate functional integration."
+    },
+    {
+      "state": "open",
+      "work": "Broad VIT-019 and calibrated-fusion Beads remain subject to their full acceptance contracts; this session records focused progress only."
+    }
+  ],
+  "invalidations": [
+    "Any source, capsule, privacy, calibration-currency, or retained-head change invalidates an in-flight immutable preview."
+  ],
+  "budgets": {
+    "immutable_defaults": "1 GiB and 1,000,000 retained reads shared across both cameras and final checks",
+    "immutable_maximum": "4 GiB and 4,000,000 retained reads",
+    "deadline": "Cooperative 60 seconds at retained read admissions"
+  },
+  "next_affordances": [
+    "Format the final CLI extension with nightly-2026-08-31, compile the actual changed graph and run the focused regressions without weakening pinned dependencies or gates.",
+    "Qualify exact immutable final-custody behavior under concurrent authority updates and source damage.",
+    "Extend whole-recording two-camera previews using the existing sealed reader and final validation contract."
+  ],
+  "format": "engineering-session-handoff",
+  "related_open_beads": [
+    "fss-808pm",
+    "fss-vit019-clock-witness-r6d9t"
+  ]
+}

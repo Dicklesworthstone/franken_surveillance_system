@@ -26,11 +26,12 @@ enum ImportProfile {
 }
 
 fn import_profile(metadata: &FileImportManifest) -> Result<ImportProfile, FootageQueryError> {
-    use crate::ingest::{http_import, rtsp_import, rtsp_jpeg_import};
+    use crate::ingest::{http_import, mpeg_ts_import, rtsp_import, rtsp_jpeg_import};
 
     let prefix = match metadata.adapter_id.as_str() {
         ADP_FILE_ROW_ID => return Ok(ImportProfile::File),
         http_import::ADAPTER => http_import::GENERATION,
+        mpeg_ts_import::ADAPTER => mpeg_ts_import::GENERATION,
         rtsp_jpeg_import::ADAPTER => rtsp_jpeg_import::GENERATION,
         rtsp_import::ADAPTER => rtsp_import::GENERATION,
         rtsp_import::catalog::ADAPTER => rtsp_import::catalog::GENERATION,

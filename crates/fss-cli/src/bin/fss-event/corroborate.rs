@@ -67,8 +67,14 @@
 mod calibration_coverage;
 #[path = "corroborate/fusion.rs"]
 mod fusion;
+#[path = "corroborate/immutable.rs"]
+mod immutable;
+#[path = "corroborate/short.rs"]
+mod short;
 #[path = "corroborate/streaming.rs"]
 mod streaming;
+
+pub(super) use immutable::run as run_immutable_preview;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -100,7 +106,8 @@ use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 use fss_reference::ingest::site_calibration::{
     MAX_CALIBRATION_BYTES, SiteCalibration, SiteCalibrationError,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource, ScalarExecCx};
 
 use super::{RunResult, export};
 
@@ -123,6 +130,8 @@ const OPTIONS: &[&str] = &[
     "--max-dimension",
     "--max-pixels",
     "--max-segment-bytes",
+    "--max-read-bytes",
+    "--max-read-objects",
     "--approve",
     "--retain-health",
     "--retain-coverage",
@@ -176,6 +185,7 @@ pub(super) struct CorroborateAction {
     pub(super) principal: String,
     plan: CorroborationPlan,
     limits: WatchLimits,
+    read_limits: ImmutableRetainedReadLimits,
     streaming: Option<streaming::LongCorroborationLimits>,
     recovery: CorroborationOptions,
     health_screen: Option<RecordedHealthPolicy>,
@@ -486,6 +496,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             "--retain-health",
             "--retain-coverage",
             "--report-out",
+            "--max-read-bytes",
+            "--max-read-objects",
             "--fusion-profile",
             "--fusion-digest",
         ]
@@ -708,7 +720,12 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             }
         }
     }
-    Ok(CorroborateAction {
+    let read_values = values
+        .iter()
+        .map(|(key, value)| (key.clone(), OsString::from(value)))
+        .collect();
+    let read_limits = super::retained_read::parse_limits(&read_values)?;
+    let action = CorroborateAction {
         root: PathBuf::from(required(&values, "--root")?),
         site,
         principal,
@@ -724,6 +741,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             tracker,
         },
         limits,
+        read_limits,
         streaming,
         recovery,
         health_screen,
@@ -743,7 +761,29 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         calibration,
         generations,
         rerun,
-    })
+    };
+    if values
+        .iter()
+        .any(|(key, _)| matches!(key.as_str(), "--max-read-bytes" | "--max-read-objects"))
+        && !action.is_immutable_preview()
+    {
+        return Err(
+            "aggregate read allowances require an unapproved short corroboration preview"
+                .to_owned(),
+        );
+    }
+    Ok(action)
+}
+
+impl CorroborateAction {
+    /// Only bounded, unapproved analysis uses the immutable owner. Retention and whole-recording
+    /// publication retain their existing owner; an external report grants no ledger authority.
+    pub(super) fn is_immutable_preview(&self) -> bool {
+        self.approvals.is_empty()
+            && self.retain_coverage.is_none()
+            && self.retain_health.is_none()
+            && self.streaming.is_none()
+    }
 }
 
 /// Reads a bounded regular scene-mesh file (never a symlink).
@@ -906,7 +946,7 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
 /// first source capsule is read, and only for an adopted camera; nothing is appended.
 fn apply_adoptions(
     action: &CorroborateAction,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     calibration: ContentDigest,
     sources: &mut [PoseSource; 2],
     cx: &ReplayCx,
@@ -1050,50 +1090,10 @@ fn run_with(
     if let Some(limits) = &action.streaming {
         return streaming::run(action, deployment, root, limits, cx, scalar, out);
     }
-    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    // The calibration is verified against its pinned digest before any source is read.
-    let (poses, mut sources, calibration, covariances, calibration_record) = resolve_poses(action)?;
-    // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is
-    // decoded and before anything is appended.
-    if let Some(calibration) = calibration {
-        apply_adoptions(action, deployment, calibration, &mut sources, cx)?;
-    }
-    let provenance = retained_provenance(&sources, calibration);
-    let package = match &action.cascade {
-        Some(options) => Some(super::detector::load(options, cx, scalar)?),
-        None => None,
-    };
-    // The scene mesh is verified against both owner digests before any source is read.
-    let twin = match &action.mesh {
-        Some(option) => {
-            let bytes = read_scene_mesh(&option.path)?;
-            Some(
-                import_scene_mesh(&bytes, option.package, option.source_scene)
-                    .map_err(CorroborationError::Visibility)?,
-            )
-        }
-        None => None,
-    };
-    let visibility = GroundVisibilityPlan {
-        policy: action.policy,
-        poses,
-        mesh: match (&twin, &action.mesh) {
-            (Some(twin), Some(option)) => Some(SceneMesh {
-                mesh: twin.mesh(),
-                package_digest: option.package,
-            }),
-            _ => None,
-        },
-    };
-    let mut cascade = match (&action.cascade, &package) {
-        (Some(options), Some(package)) => Some(DetectorCascade::new(
-            package,
-            options.config,
-            PackageDetectLimits::default(),
-            scalar,
-        )?),
-        _ => None,
-    };
+    let inputs = short::ShortInputs::load(action, deployment, cx, scalar)?;
+    let provenance = retained_provenance(&inputs.sources, inputs.calibration);
+    let visibility = inputs.visibility(action);
+    let mut cascade = inputs.cascade(action, scalar)?;
     let mut report = CorroborationReport::analyze_with_dependencies(
         deployment,
         &action.plan,
@@ -1101,7 +1101,7 @@ fn run_with(
         cascade.as_mut(),
         &visibility,
         &provenance,
-        &covariances,
+        &inputs.covariances,
         action.recovery,
         action.health_screen,
         &action.dependencies,
@@ -1114,14 +1114,14 @@ fn run_with(
     );
     let mut coverage_guard = calibration_coverage::assess(
         action,
-        calibration_record.as_ref(),
-        calibration,
+        inputs.calibration_record.as_ref(),
+        inputs.calibration,
         deployment,
         &report,
         cx,
         &mut guard_budget,
     )?;
-    let fusion = match (&fusion_profile, cascade.as_ref()) {
+    let fusion = match (&inputs.fusion_profile, cascade.as_ref()) {
         (Some(profile), Some(cascade)) => Some(match &coverage_guard {
             Some(guard) => guard.fuse(&report, cascade, profile, deployment, cx)?,
             None => EventFusionReport::corroborate(&report, cascade, profile, deployment, cx)?,
@@ -1160,7 +1160,7 @@ fn run_with(
             cascade.as_mut(),
             &visibility,
             &provenance,
-            &covariances,
+            &inputs.covariances,
             action.recovery,
             action.health_screen,
             &action.dependencies,
@@ -1172,8 +1172,8 @@ fn run_with(
     let reproposed_guard = match &reproposed {
         Some(proposal) => calibration_coverage::assess(
             action,
-            calibration_record.as_ref(),
-            calibration,
+            inputs.calibration_record.as_ref(),
+            inputs.calibration,
             deployment,
             proposal,
             cx,
@@ -1187,53 +1187,14 @@ fn run_with(
         coverage_guard.as_ref()
     };
     let proposal = reproposed.as_ref().unwrap_or(&report);
-    let records: Vec<_> = proposal.coverage().iter().collect();
-    let coverage = match selected_guard {
-        Some(guard) => guard.coverage_json(&action.rerun),
-        None => super::coverage::render(
-            &records,
-            proposal.coverage_status(),
-            proposal.coverage_approval(),
-            &action.rerun,
-        ),
-    };
-    let alert_hint = format!(
-        "fss-event alert --root {} --site {}",
-        quote(&action.root.to_string_lossy()),
-        quote(&action.site)
-    );
-    let json = report.to_json_with_coverage(
+    let json = inputs.render(
+        action,
+        &report,
+        proposal,
+        selected_guard,
         deployment.current_anchor().commit_sequence,
-        Some(&action.rerun),
-        Some(&alert_hint),
-        Some(&coverage),
-    );
-    // Pose provenance joins the report only when some camera has a pose, so reports without
-    // poses keep their exact bytes.
-    let json = if poses.iter().any(Option::is_some) {
-        let body = json
-            .strip_suffix('}')
-            .ok_or_else(|| io::Error::other("report is not one JSON object"))?;
-        format!(
-            "{body},\"pose_provenance\":{}}}",
-            render_pose_provenance(action, &sources, calibration)
-        )
-    } else {
-        json
-    };
-    let json = match selected_guard {
-        Some(guard) => {
-            let body = json
-                .strip_suffix('}')
-                .ok_or_else(|| io::Error::other("report is not one JSON object"))?;
-            format!(
-                "{body},\"calibration_uncertainty_guard\":{}}}",
-                guard.to_json()
-            )
-        }
-        None => json,
-    };
-    let json = super::detector::with_fusion(json, fusion.as_ref())?;
+        fusion.as_ref(),
+    )?;
     if fusion.is_some() {
         report.revalidate_derived_sources(deployment, cx)?;
         // Advice and rendered coverage must still share the same current screened context.
@@ -1497,7 +1458,10 @@ mod recovery_tests {
     fn fusion_cannot_be_combined_with_authority_writes() {
         for flag in ["--approve", "--retain-coverage", "--retain-health"] {
             let mut args = fusion_arguments();
-            args.extend([flag.into(), ContentDigest::sha256(b"approval").to_text().into()]);
+            args.extend([
+                flag.into(),
+                ContentDigest::sha256(b"approval").to_text().into(),
+            ]);
             assert!(matches!(parse(&args), Err(message) if message.contains("read-only")));
         }
     }
@@ -1517,7 +1481,10 @@ mod recovery_tests {
         assert!(!advised.rerun.contains("--fusion-"));
         for flag in ["--approve", "--retain-coverage", "--retain-health"] {
             let mut forbidden = args.clone();
-            forbidden.extend([flag.into(), ContentDigest::sha256(b"approval").to_text().into()]);
+            forbidden.extend([
+                flag.into(),
+                ContentDigest::sha256(b"approval").to_text().into(),
+            ]);
             assert!(matches!(parse(&forbidden), Err(message) if message.contains("read-only")));
         }
         Ok(())
@@ -1534,7 +1501,8 @@ mod recovery_tests {
     }
 
     #[test]
-    fn fusion_accepts_pinned_calibration_and_preserves_the_native_approval_rerun() -> Result<(), String> {
+    fn fusion_accepts_pinned_calibration_and_preserves_the_native_approval_rerun()
+    -> Result<(), String> {
         let args = fusion_arguments();
         let mut plain = args.clone();
         plain.truncate(plain.len() - 4);
@@ -1558,7 +1526,10 @@ mod recovery_tests {
         assert!(matches!(parse(&incomplete), Err(message) if message.contains("go together")));
         for flag in ["--approve", "--retain-coverage", "--retain-health"] {
             let mut args = with_calibration(fusion_arguments());
-            args.extend([flag.into(), ContentDigest::sha256(b"approval").to_text().into()]);
+            args.extend([
+                flag.into(),
+                ContentDigest::sha256(b"approval").to_text().into(),
+            ]);
             assert!(matches!(parse(&args), Err(message) if message.contains("read-only")));
         }
     }

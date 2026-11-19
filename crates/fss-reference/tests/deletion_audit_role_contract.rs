@@ -115,7 +115,7 @@ impl Harness {
         let edge = self.deployment.stage_payload(&self.import.bytes())?;
         let manifest = ObjectManifest::new("audit-role-content", [child], Some(edge))?;
         self.deployment.publish_and_commit(
-            &SlotName::parse(format!("audit-role-{label}"))?,
+            &SlotName::parse(&format!("audit-role-{label}"))?,
             &manifest,
             CaptureInterval::new(TimestampNs(2000), TimestampNs(2000))?,
             &self.context,

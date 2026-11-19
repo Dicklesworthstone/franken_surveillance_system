@@ -5,9 +5,11 @@
 //! A published root without final import authority is not a completed import. Custody of a
 //! recorded file never certifies live coverage, capture-time precision, or absence.
 
+mod matroska;
 mod movie;
 mod root_binding;
 
+pub use matroska::RetainedMatroskaSelection;
 pub use movie::{MAX_MOVIE_ORIGIN_READ_BYTES, RetainedMovieSelection};
 
 use super::{
@@ -211,6 +213,11 @@ impl FileImportManifest {
                 "RTSP recording needs explicit original-packet resolution",
             ));
         }
+        if self.adapter_id == super::mpeg_ts_import::ADAPTER {
+            return Err(invalid(
+                "MPEG-TS recording needs explicit original-transport resolution",
+            ));
+        }
         if self.adapter_id == super::http_import::ADAPTER {
             return Err(invalid(
                 "HTTP recording needs explicit original-wire resolution",
@@ -256,6 +263,17 @@ impl FileImportManifest {
                 && self
                     .adapter_generation
                     .strip_prefix(super::http_import::GENERATION)
+                    .is_some_and(|hex| {
+                        hex.len() == 64
+                            && hex
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+        } else if self.adapter_id == super::mpeg_ts_import::ADAPTER {
+            matches!(self.format.as_str(), "annexb" | "hevc")
+                && self
+                    .adapter_generation
+                    .strip_prefix(super::mpeg_ts_import::GENERATION)
                     .is_some_and(|hex| {
                         hex.len() == 64
                             && hex
@@ -738,6 +756,7 @@ impl RetainedFileImport {
             let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
             deployment.read_object_bounded(d, maximum)
         })?;
+        super::mpeg_ts_import::verify_originals(deployment, &self.manifest, cx)?;
         super::http_import::verify_originals(deployment, &self.manifest, cx)?;
         super::rtsp_import::verify_originals(deployment, &self.manifest, cx)?;
         super::rtsp_import::verify_catalog_originals(deployment, &self.manifest, cx)?;
@@ -888,7 +907,8 @@ impl SourceReadBudget {
 /// digest and length at the requested position, so a cache can never substitute other bytes.
 /// Memory is bounded by twice the import's chunk size. RTSP imports additionally keep one
 /// source-verified native recording window (at most 32 MiB), one complete catalog/replay MP4, or one
-/// reconstructed JPEG stream (at most 64 MiB; original packets are dropped after native replay).
+/// reconstructed JPEG stream, or a MPEG-TS elementary stream (at most 64 MiB; originals are
+/// dropped after native replay).
 /// Switching adapters drops the previous origin window. First reads charge the same
 /// optional whole-scan source allowance, and final publication re-reads original custody.
 #[derive(Debug, Default)]
@@ -900,6 +920,7 @@ pub struct VerifiedChunkCache {
     rtsp_catalog_origin: Option<super::rtsp_import::CatalogOriginCache>,
     rtsp_replay_origin: Option<super::rtsp_import::replay::OriginCache>,
     rtsp_jpeg_origin: Option<super::rtsp_jpeg_import::OriginCache>,
+    mpeg_ts_origin: Option<super::mpeg_ts_import::OriginCache>,
 }
 
 impl VerifiedChunkCache {
@@ -927,6 +948,9 @@ impl VerifiedChunkCache {
         cx: &ReplayCx,
     ) -> Result<(), FileIngestError> {
         let budget = self.source_budget.clone();
+        if manifest.adapter_id != super::mpeg_ts_import::ADAPTER {
+            self.mpeg_ts_origin = None;
+        }
         if manifest.adapter_id != super::rtsp_import::ADAPTER {
             self.rtsp_origin = None;
         }
@@ -942,6 +966,15 @@ impl VerifiedChunkCache {
         if manifest.adapter_id != super::rtsp_import::replay::ADAPTER {
             self.rtsp_replay_origin = None;
         }
+        super::mpeg_ts_import::verify_range_budgeted(
+            deployment,
+            manifest,
+            offset,
+            bytes,
+            cx,
+            &mut self.mpeg_ts_origin,
+            &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
+        )?;
         super::rtsp_import::verify_range_budgeted(
             deployment,
             manifest,

@@ -118,6 +118,16 @@ fn shape(source: &SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<Con
     }
     let name = &source.inputs[0];
     let input = lowering.known.get(name).ok_or(OnnxError::Graph)?;
+    // Larger/ranked INT64 constants are Gather indices, not an expansion of
+    // the shape-program input profile.
+    if input.dtype() == DType::I64 {
+        if input.rank() > 1 {
+            return Err(OnnxError::Unsupported);
+        }
+        if input.shape().num_elements().map_err(|_| OnnxError::Limit)? > 8 {
+            return Err(OnnxError::Limit);
+        }
+    }
     let dims = input.shape().dims();
     let rank = dims.len() as i64;
     let bound = |name: &str, default: i64| -> Result<usize> {

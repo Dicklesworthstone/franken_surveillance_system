@@ -1,0 +1,121 @@
+{
+  "capture": "sha256:a7ab9438278e49db811e49e92057556b899d653303fadde34644fa1d8718fb73",
+  "model": "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74",
+  "sampleFps": 4,
+  "views": {
+    "porch": {
+      "asset": "porch",
+      "importId": "sha256:ba062576c3ec504a6914deecd15f0e52d0b83c722167fb498b481a480d9bb403",
+      "filmDigest": "sha256:144a4a501a254d1ad2568e6b776de67eb3f681f6c5a5e2b85fa072d9e1df045c",
+      "inputDigest": "sha256:c76979b7018ffbd14f4fdca85fc1d09c61a6bb6c6be7a3c42b3f96336e17b2bd",
+      "reportDigest": "sha256:9ea82e45ab31349990c73f7d5ff31893601a7d925a657fb91d016dc69e0b5023",
+      "frames": 36,
+      "sampleDigest": "sha256:4191077bbd05910135685a9a15d29912d0986b4702dabd2ee331988cdc179fa1",
+      "plateSegment": 4,
+      "candidates": 4,
+      "samples": [
+        {
+          "segment": 3,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.8419173,
+              "bounds_subpixel": [
+                23054,
+                7817,
+                25833,
+                13671
+              ]
+            }
+          ]
+        },
+        {
+          "segment": 4,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.82963264,
+              "bounds_subpixel": [
+                22275,
+                7731,
+                25199,
+                13723
+              ]
+            }
+          ]
+        },
+        {
+          "segment": 8,
+          "status": "budget_exhausted",
+          "classes": [],
+          "detections": []
+        },
+        {
+          "segment": 22,
+          "status": "budget_exhausted",
+          "classes": [],
+          "detections": []
+        }
+      ]
+    },
+    "drive": {
+      "asset": "drive",
+      "importId": "sha256:3f8850e2630a1b8c0ecbc46a2470ad0f8e172f1afedab81003ebb3ebaa7b6beb",
+      "filmDigest": "sha256:4fc6017386d512d80a46b067018faf877bdb132d7204478f04de6160c431fc8e",
+      "inputDigest": "sha256:105e1494a87130594df632095edffb5dacde15febc8a25ac789b8d82eadda84c",
+      "reportDigest": "sha256:862713d91017d82a22046dab56bb6721e0a480a3b2e3b7bb97282e733bcbeb90",
+      "frames": 36,
+      "sampleDigest": "sha256:6b2da604fe88768127eb41514786ac6f7f7d00ef68ce727ad0fb219453e0adcc",
+      "plateSegment": 4,
+      "candidates": 2,
+      "samples": [
+        {
+          "segment": 4,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.77077085,
+              "bounds_subpixel": [
+                27103,
+                8330,
+                28708,
+                11864
+              ]
+            }
+          ]
+        },
+        {
+          "segment": 6,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.7579457,
+              "bounds_subpixel": [
+                28227,
+                8328,
+                29895,
+                12035
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

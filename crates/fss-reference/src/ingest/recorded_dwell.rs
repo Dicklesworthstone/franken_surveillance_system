@@ -26,7 +26,9 @@ use super::recorded_watch::{
 };
 use super::zone_dwell::{DwellError, DwellPolicy, DwellSample, DwellSpan, dwell_spans};
 use super::{RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx};
+use crate::{
+    ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx, RetainedSource,
+};
 
 /// Complete JSON output ceiling, enforced before any approved event is published.
 pub const MAX_DWELL_REPORT_BYTES: usize = 2 * 1024 * 1024;
@@ -182,7 +184,7 @@ impl DwellReport {
     /// exclude affected timing rather than substituting receive time or nominal frame counts.
     /// Detector classes remain optional same-sensor annotations, never inputs to the dwell rule.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         rule: DwellPolicy,
         limits: &WatchLimits,
@@ -395,6 +397,7 @@ impl DwellReport {
                 &capsule.sensor_id,
                 watch.privacy_mask(),
                 rule,
+                cx,
             )?);
         }
         let report = Self {
@@ -428,7 +431,7 @@ impl DwellReport {
     /// This read-only check neither retains coverage nor publishes a dwell or entry event.
     pub fn revalidate_derived_source(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<()> {
         self.watch.revalidate_derived_source(deployment, cx)
@@ -631,14 +634,16 @@ fn insert(objects: &mut BTreeMap<ContentDigest, Vec<u8>>, bytes: Vec<u8>) -> Con
     objects.insert(digest, bytes);
     digest
 }
+#[allow(clippy::too_many_arguments)]
 fn prepare(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     pending: Pending,
     analysis: &[u8],
     import_root: ContentDigest,
     sensor: &SensorId,
     privacy: &MaskBinding,
     rule: DwellPolicy,
+    cx: &ReplayCx,
 ) -> Result<DwellCandidate> {
     let first = pending.observations.first().ok_or(WatchError::Conflict)?;
     let last = pending.observations.last().ok_or(WatchError::Conflict)?;
@@ -739,7 +744,7 @@ fn prepare(
     e.digest(event.revision_digest());
     e.digest(manifest.root());
     let approval = ContentDigest::sha256(&e.finish());
-    let status = status(deployment, &event)?;
+    let status = preview_status(deployment, &event, cx)?;
     Ok(DwellCandidate {
         zone: pending.zone,
         track: pending.track,
@@ -758,6 +763,40 @@ fn prepare(
         status,
     })
 }
+fn preview_status(
+    deployment: &dyn RetainedSource,
+    event: &EventHypothesis,
+    cx: &ReplayCx,
+) -> Result<WatchStatus> {
+    use super::recorded_event::RecordedEventError;
+
+    // Preserve full current-event and prior-lineage custody checks for immutable previews.
+    // A matching ledger witness alone cannot make damaged retained event bytes readable.
+    let current =
+        super::recorded_event::load_event(deployment, &event.event_id, cx).map_err(|error| {
+            match error {
+                RecordedEventError::Cancelled => RecordedDecodeError::Cancelled.into(),
+                RecordedEventError::Limit => WatchError::Limit,
+                RecordedEventError::Contract(error) => error.into(),
+                RecordedEventError::Event(error) => error.into(),
+                RecordedEventError::Reference(error) => error.into(),
+                RecordedEventError::Object(error) => error.into(),
+                RecordedEventError::Publication(error) => error.into(),
+                RecordedEventError::Spool(error) => error.into(),
+                RecordedEventError::Source(error) => WatchError::from(*error),
+                _ => WatchError::Conflict,
+            }
+        })?;
+    let Some((current, _, _)) = current else {
+        return Ok(WatchStatus::Prepared);
+    };
+    if current.revision_digest() == event.revision_digest() {
+        Ok(WatchStatus::AlreadyPublished)
+    } else {
+        Err(WatchError::Conflict)
+    }
+}
+
 fn status(deployment: &ReferenceDeployment, event: &EventHypothesis) -> Result<WatchStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
     if !deployment.ledger().current().objects.contains_key(&object) {

@@ -53,13 +53,16 @@ including hand-computed dense and convolution/pooling results.
   selection uses the separate static Gather profile described below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
-- MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
+- MatMul admits vector/vector, vector/matrix and matrix/vector products in addition
+  to batched matrix products; scalar operands remain unsupported. Conv is 2-D; declared `kernel_shape`
   must agree with the actual weight tensor. Explicit strides, dilation, pads and
   groups use native validation. Static `auto_pad` modes `VALID`, `SAME_UPPER`, and
   `SAME_LOWER` lower to exact explicit native padding as described below.
 - MaxPool is 2-D, single-output, with explicit nonnegative padding smaller than
-  each corresponding kernel dimension, no dilation other than one, no ceil mode,
-  and default storage order. Concat requires an explicit axis.
+  each corresponding kernel dimension, no dilation other than one, floor or ceil
+  sizing, and default storage order. Ceil sizing accepts explicit/absent pads and
+  `auto_pad=NOTSET`; other automatic modes retain floor sizing only.
+  Concat requires an explicit axis.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 - AveragePool is 2-D with explicit padding, positive strides, floor output sizing,
   and either include-padding or exclude-padding means. GlobalAveragePool reduces
@@ -467,6 +470,45 @@ controls, and exact import/execution quota and cancellation boundaries.
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_broadcast_execution
 ```
 
+## Vector MatMul
+
+[MatMul-13](https://onnx.ai/onnx/operators/onnx__MatMul.html#matmul-13) accepts
+rank-one F32 operands with static positive dimensions in both admitted source
+opsets. A left vector is reshaped to a one-row matrix; a right vector becomes
+a one-column matrix. The existing native MatMul performs each ordered F32 dot
+product, and a final Reshape removes only the implicitly introduced dimensions.
+A vector/vector product produces a scalar. A vector broadcasts across the
+matrix operand's batch dimensions; existing singleton batch or output
+dimensions remain present.
+
+This lowering uses three nodes for one vector operand and four for two. It
+creates no weights, retains the exact binding of constant operands, and checks
+the complete node/tensor expansion before generating helpers. Contracting
+dimensions must agree, scalar operands and attributes refuse, and generated
+names cannot satisfy missing source inputs. Existing matrix/matrix graphs keep
+their original nodes and canonical graph bytes. The importer identity separately
+binds the new lowering source.
+
+The authored `matmul_vectors` tests in `onnx_attention_execution` compare direct
+source-coordinate dot products with both production executors before and after
+canonical graph and actual Safetensors reload. They cover opsets 13 and 17,
+scalar dot outputs, matrix ranks two through eight, singleton preservation,
+constant-only graphs, ordered arithmetic, malformed inputs, name reservation,
+and exact import limits and every cancellation checkpoint.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution matmul_vectors
+```
+
+Hosted [Actions run 43786125301](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43786125301)
+at commit `dab0ce3b11e4e960e1d13dbba7f116ce598d3b4c` passed the complete
+88-test `onnx_attention_execution` target, including all six vector MatMul
+tests, plus 19 package-import tests, 14 ONNX CLI tests and 12 reference ONNX
+import-execution tests. This evidence is scoped to that source commit and
+predates the subsequent optimized MatMul and expanded Gather changes. The
+broader Rust qualification step failed; this focused success does not establish
+full-workspace or release qualification.
+
 ## Static attention selection and pooled features
 
 The importer adds [Gather-13](https://onnx.ai/onnx/operators/onnx__Gather.html#gather-13)
@@ -476,22 +518,52 @@ and elementwise operations, these express packed Q/K/V selection, attention,
 token or channel pooling, and fixed feature selection before a dense head.
 They add no native operator, dynamic integer executor or foreign runtime.
 
-Gather accepts positive F32 data shapes of rank one through eight and an
-embedded INT64 scalar or vector containing one through eight indices. Constant
-nodes and the existing static shape programs may produce those indices. Axis
-defaults to zero and accepts negative axes; each index must be within the
-selected axis, with negative values counting from its end. A scalar index
-removes the selected dimension, while a length-one vector keeps that dimension.
-Repeated indices and arbitrary index order remain intact. Empty indices,
-runtime indices, other control dtypes or ranks and out-of-range values refuse.
-The existing INT64-only shape-program Gather keeps its separate semantics.
+Gather accepts positive F32 data shapes of rank one through eight and embedded
+INT64 index tensors from scalars through rank eight. The resulting rank must
+also fit the eight-dimensional native profile. Indices may come from an
+initializer or Constant node; raw little-endian and packed/unpacked INT64
+payloads and matching value-info declarations are accepted. Constant
+`value_ints` supplies a vector. Existing static shape programs may still
+produce scalar/vector indices within their unchanged eight-value profile.
+Axis defaults to zero and accepts negative axes; each index must be within the
+selected axis, with negative values counting from its end.
 
-Selection lowers to one Slice per consecutive ascending index run, followed
-by Concat when necessary. Scalar selection adds a Reshape. At most nine native
-nodes are needed for the admitted vector; helper count does not grow with the
-size of a selected token or feature block. No generated F32 weight is required.
-These operators copy data without numerical changes, preserving signed zeros,
-subnormals and finite extrema.
+The output replaces the selected data dimension with the complete index shape:
+`data[..axis] + indices.shape + data[axis+1..]`. A scalar removes the selected
+dimension, a length-one vector keeps it, and multidimensional indices insert
+all their dimensions, including singletons. Repeated indices and arbitrary
+index order remain intact. Empty or runtime indices, other control dtypes,
+out-of-range values, and oversized result shapes refuse.
+
+Index count is bounded by the aggregate embedded-parameter allowance and
+per-tensor byte ceiling. Selection lowers to one Slice per consecutive
+ascending index run, followed by Concat when necessary. Scalar and
+multidimensional selection add a Reshape; vector selections retain their
+existing graph bytes. A contiguous 4096-index selection uses one Slice.
+The run schedule is bounded by the node allowance before allocating another
+entry, and the complete lowered node/tensor expansion must fit the remaining
+admission limits. With the default 512-node ceiling and no other runtime nodes,
+a vector selection admits at most 511 separate runs; a multidimensional selection
+admits 510 because its final Reshape also consumes a node. Contiguous selections
+remain bounded by bytes rather than that run count. Long index scans have
+cancellation checkpoints. No generated
+F32 weight is required. These operators copy data without numerical changes,
+preserving signed zeros, subnormals and finite extrema. The INT64-only shape
+program and other shape/axis controls keep their separate scalar/vector
+eight-value limits.
+
+The eight authored `gather_indices` tests in `onnx_attention_execution` cover
+every admitted result rank, every data axis, all embedded integer encodings,
+matching type declarations, constant-only data, long contiguous selections,
+multidimensional permutations, native Concat input lists beyond the source-node
+arity ceiling, and Gather-to-batched-vector-MatMul composition.
+Both production executors and actual canonical/Safetensors reload are used;
+separate cases freeze earlier scalar/vector graph bytes, preserve the shape
+program limits, and exercise exact aggregate bounds and cancellation checkpoints.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution gather_indices
+```
 
 ReduceMean accepts static positive F32 shapes from scalars through rank eight.
 Its `axes` attribute may contain distinct positive or negative axes. Omitted
@@ -751,10 +823,10 @@ modes, malformed attributes, nonpositive strides/dilations, arithmetic overflow,
 unsupported ranks, and a declared output shape inconsistent with the computed
 shape refuse conversion. Existing size, work and cancellation ceilings apply.
 
-This does not widen the pooling numeric profile: MaxPool still skips padded
-positions, including for entirely negative input, and admits only unit dilation
-and floor output sizing. AveragePool keeps its explicit include/exclude-padding
-denominator and floor sizing. Both preserve the rule that every admitted pooling
+Automatic MaxPool padding skips padded positions, including for entirely negative
+input, and admits only unit dilation and floor output sizing. Its explicit-padding
+profile also admits ceil sizing as described below. AveragePool keeps its explicit
+include/exclude-padding denominator and floor sizing. Both preserve the rule that every admitted pooling
 window contains a real sample. Existing grouped/dilated Conv, bias, parameter
 bits and scalar accumulation order remain intact.
 
@@ -1000,13 +1072,33 @@ single-output restriction, including MaxPool's optional index output.
 
 The [MaxPool-12](https://onnx.ai/onnx/operators/onnx__MaxPool.html#maxpool-12) schema
 used by opset 13 now admits explicit padding through the existing native pooling
-operator. It excludes positions outside the input from the maximum. Because every
-pad is smaller than its kernel dimension and output sizing uses floor mode, every
-admitted window contains a real input sample; the executor's empty-window fallback
-is unreachable. This matters for negative feature maps: padding must not introduce
-zeros that can become the maximum. Asymmetric pads and spatial strides follow
-native shape validation. Automatic padding uses the static resolver described above. Ceil mode,
-dilated pooling and indices remain outside this profile.
+operator. It excludes positions outside the input from the maximum. Every pad is
+smaller than its kernel dimension and spatial inputs must be positive. Floor mode
+keeps complete padded windows; ceil mode also keeps a partial final window when
+its start is inside the real input. A candidate starting at or beyond the input's
+end is discarded. Every admitted window therefore contains a real input sample;
+the executor's empty-window fallback is unreachable. This matters for negative
+feature maps: padding must not introduce zeros that can become the maximum.
+
+`ceil_mode=1` lowers to the existing native Bool attribute without changing either
+frozen operator table or graph version. Absent and explicit-zero flags keep their
+previous canonical graph bytes. Shape inference handles a negative size numerator:
+an input of two samples with kernel three and stride two still produces one
+partial window. Nonpositive output dimensions and arithmetic overflow refuse.
+Asymmetric pads and unequal spatial strides follow native shape validation.
+Ceil sizing accepts absent `auto_pad` and `NOTSET`; `VALID`, `SAME_UPPER`, and
+`SAME_LOWER` combined with ceil mode remain unsupported. Their existing floor
+behavior uses the static resolver described above. Dilated pooling and indices
+remain outside this profile.
+
+`onnx_attention_execution::maxpool_ceil` exercises hand-computed partial windows,
+negative feature maps, asymmetric padding, wide strides and short inputs against
+an independent coordinate oracle. The tests invoke both production scalar and
+optimized executors before and after canonical graph and Safetensors reload.
+They also cover execution budgets, cancellation, malformed attributes, empty-input
+refusal, checked geometry and legacy default graph bytes. These numerical tests
+do not qualify trained detector quality or the complete asynchronous reference
+deployment.
 
 The retained untrained numerical fixture
 `crates/fss-model-ir/tests/fixtures/onnx/detector_split_pool.onnx` is 1,190 bytes with

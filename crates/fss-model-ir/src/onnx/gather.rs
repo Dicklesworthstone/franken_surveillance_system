@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Gather-13 over F32 data with bounded static INT64 scalar/vector indices.
+//! Gather-13 over F32 data with bounded static INT64 index tensors.
 //!
 //! https://onnx.ai/onnx/operators/onnx__Gather.html#gather-13
 //! Existing Slice, Concat and Reshape move the selected samples without numerical
@@ -8,7 +8,7 @@
 
 use fss_tensor::DType;
 
-use super::{Lowering, OnnxError, Result, SourceNode, port};
+use super::{Lowering, OnnxError, Result, SourceNode, port, push};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
 
 pub(super) fn handles(source: &SourceNode<'_>, lowering: &Lowering<'_, '_>) -> bool {
@@ -84,7 +84,7 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         .constants
         .get(&source.inputs[1])
         .ok_or(OnnxError::Unsupported)?;
-    if control.dtype() != DType::I64 || control.shape().rank() > 1 {
+    if control.dtype() != DType::I64 {
         return Err(OnnxError::Graph);
     }
     let count = control
@@ -94,39 +94,53 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     if count == 0 {
         return Err(OnnxError::Unsupported);
     }
-    if count > 8 {
-        return Err(OnnxError::Limit);
+    let index_dims = control.shape().dims().to_vec();
+    let reshape = index_dims.len() != 1;
+    let output_rank = dims
+        .len()
+        .checked_add(index_dims.len())
+        .and_then(|rank| rank.checked_sub(1))
+        .ok_or(OnnxError::Limit)?;
+    if output_rank > 8 {
+        return Err(OnnxError::Unsupported);
     }
-    lowering.admission.charge(count * 8 + dims.len())?;
-    let scalar = control.shape().rank() == 0;
-    let indices = control.to_vec::<i64>().map_err(|_| OnnxError::Graph)?;
-    lowering.control_uses.insert(source.inputs[1].clone());
-    let extent = i64::try_from(dims[axis]).map_err(|_| OnnxError::Limit)?;
-    let mut runs: Vec<(i64, i64)> = Vec::new();
-    for index in indices {
-        if index < -extent || index >= extent {
-            return Err(OnnxError::Graph);
-        }
-        let index = if index < 0 { index + extent } else { index };
-        match runs.last_mut() {
-            Some((_, end)) if *end == index => *end += 1,
-            _ => runs.push((index, index + 1)),
-        }
-    }
-    let mut output_dims = dims;
-    if scalar {
-        output_dims.remove(axis);
-    } else {
-        output_dims[axis] = count;
-    }
+    let mut output_dims = Vec::with_capacity(output_rank);
+    output_dims.extend_from_slice(&dims[..axis]);
+    output_dims.extend_from_slice(&index_dims);
+    output_dims.extend_from_slice(&dims[axis + 1..]);
     port(
         source.outputs[0].clone(),
         output_dims.clone(),
         lowering.generation,
         lowering.admission,
     )?;
-    let nodes = runs.len() + usize::from(runs.len() > 1) + usize::from(scalar);
+    lowering.admission.charge(
+        count
+            .checked_mul(8)
+            .and_then(|bytes| bytes.checked_add(dims.len()))
+            .ok_or(OnnxError::Limit)?,
+    )?;
+    let indices = control.to_vec::<i64>().map_err(|_| OnnxError::Graph)?;
+    lowering.control_uses.insert(source.inputs[1].clone());
+    let extent = i64::try_from(dims[axis]).map_err(|_| OnnxError::Limit)?;
     let limits = lowering.admission.limits;
+    let mut runs: Vec<(i64, i64)> = Vec::new();
+    for (ordinal, index) in indices.into_iter().enumerate() {
+        if ordinal % 256 == 0 {
+            lowering.admission.charge(0)?;
+        }
+        if index < -extent || index >= extent {
+            return Err(OnnxError::Graph);
+        }
+        let index = if index < 0 { index + extent } else { index };
+        match runs.last_mut() {
+            Some((_, end)) if *end == index => *end += 1,
+            // Bound schedule metadata before allocation, independently of the
+            // constant-byte ceiling. Every run needs at least one native node.
+            _ => push(&mut runs, (index, index + 1), limits.nodes)?,
+        }
+    }
+    let nodes = runs.len() + usize::from(runs.len() > 1) + usize::from(reshape);
     if lowering
         .nodes
         .len()
@@ -165,16 +179,19 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
             ]),
         )?);
     }
-    if selected.len() > 1 {
-        append(
+    let selected = if selected.len() > 1 {
+        vec![append(
             &source,
             lowering,
             &mut remaining,
             OpCode::Concat,
             selected,
             AttributeMap::from([("axis".into(), AttrValue::Int(axis as i64))]),
-        )?;
-    } else if scalar {
+        )?]
+    } else {
+        selected
+    };
+    if reshape {
         let shape = output_dims
             .iter()
             .map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit))

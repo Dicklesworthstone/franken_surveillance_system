@@ -1119,21 +1119,24 @@ def strip_rust_comments(source: str) -> str:
     return "".join(result)
 
 
-def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
-    """Scan crates/fss-core/src (or crates directory) to discover Rust types encoding schemas."""
+def scan_rust_schema_owners(
+    crates_dir: Path, *, projection_file: Path | None = None, projection_type: str | None = None,
+) -> dict[str, RustOwner]:
+    """Inventory core literals, or verify an explicitly registered projection's associated SCHEMA."""
     owners: dict[str, RustOwner] = {}
     fss_core_src = crates_dir / "fss-core" / "src"
-    if not fss_core_src.is_dir():
+    if projection_file is None and not fss_core_src.is_dir():
         if (crates_dir / "src").is_dir():
             fss_core_src = crates_dir / "src"
         else:
             return owners
 
-    for rs_path in sorted(fss_core_src.rglob("*.rs")):
+    paths = [projection_file] if projection_file else sorted(fss_core_src.rglob("*.rs"))
+    for rs_path in paths:
         rs_name = rs_path.name
         if rs_name == "tests.rs" or rs_name.endswith("_test.rs") or rs_name.endswith("_tests.rs"):
             continue
-        if any(p in ("tests", "benches", "examples") for p in rs_path.parts):
+        if any(p in ("tests", "benches", "examples") for p in rs_path.relative_to(crates_dir).parts):
             continue
 
         try:
@@ -1196,6 +1199,11 @@ def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
 
             for match in re.finditer(r'"(fss\.[a-z0-9_.]+\.v\d+)"', line):
                 schema_name = match.group(1)
+                if projection_file is not None and not (
+                    brace_depth == 1 and current_type == projection_type
+                    and re.fullmatch(r"pub const SCHEMA:\s*&(?:'static\s+)?str\s*=\s*\"[^\"]+\";", stripped)
+                ):
+                    continue
                 resolved_type = current_type
                 if not resolved_type:
                     for b_idx in range(line_no - 1, max(0, line_no - 80), -1):
@@ -1210,7 +1218,7 @@ def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
 
                 if schema_name not in owners:
                     owners[schema_name] = RustOwner(
-                        crate="fss-core",
+                        crate=rs_path.relative_to(crates_dir).parts[0] if projection_file else "fss-core",
                         file=rel_path,
                         type_name=resolved_type or "Unknown",
                         line=line_no,
@@ -1338,6 +1346,50 @@ def extract_architecture_schema_references(architecture_dir: Path) -> list[tuple
     return references
 
 
+def registered_identity_error(doc: dict[str, Any], name: str, rule: str) -> tuple[str, str] | None:
+    """Check the identity named by the owning registry row."""
+    props = doc.get("properties", {})
+    if not isinstance(props, dict):
+        return "#/properties", "schema properties must be an object"
+    if rule.startswith("AOP-005 selector"):
+        marker = re.match(r"^AOP-005 selector `target=([a-z][a-z0-9-]*)`\. ", rule)
+        if not marker:
+            return "#", "malformed AOP-005 selector declaration"
+        target = marker[1]
+        expected_id = f"https://franken-surveillance-system.invalid/schemas/{name.removeprefix('fss.')}.json"
+        if doc.get("$id") != expected_id:
+            return "#/$id", f"selector document identity must be '{expected_id}'"
+        if doc.get("type") != "object" or doc.get("additionalProperties") is not False:
+            return "#/additionalProperties", "query selector must be a closed object"
+        if "schema" in props or "format" in props:
+            return "#/properties", "query arguments cannot supply a record identity"
+        required = doc.get("required")
+        if not isinstance(required, list) or "target" not in required or props.get("target") != {"const": target}:
+            return "#/properties/target", f"query selector must require the registered target '{target}'"
+        return None
+
+    def identity(node: dict[str, Any]) -> Any:
+        fields = node.get("properties", {})
+        if not isinstance(fields, dict):
+            return None
+        discriminator = fields.get("schema", fields.get("format"))
+        return discriminator.get("const") if isinstance(discriminator, dict) else None
+
+    actual = identity(doc)
+    if actual == name:
+        return None
+    # Tagged result/refusal unions name the registered record in a local object branch.
+    defs = doc.get("$defs", {})
+    if doc.get("type") is None and isinstance(doc.get("oneOf"), list) and isinstance(defs, dict):
+        for branch in doc["oneOf"]:
+            ref = branch.get("$ref") if isinstance(branch, dict) else None
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                member = defs.get(ref.removeprefix("#/$defs/"))
+                if isinstance(member, dict) and member.get("type") == "object" and identity(member) == name:
+                    return None
+    return "#/properties/schema/const", f"schema const mismatch: expected '{name}', found '{actual}'"
+
+
 def validate_schema_constitution(
     repo_root: Path = ROOT,
     schemas_dir: Path = DEFAULT_SCHEMAS_DIR,
@@ -1352,11 +1404,10 @@ def validate_schema_constitution(
     
     Enforces that:
     1. Every schema declared in registries/SCHEMAS.md has a valid, unique stable ID and schema name.
-    2. Every registered schema file exists on disk, declares matching schema const and valid $id.
+    2. Every registered schema file exists on disk and has its declared record or selector identity and $id.
     3. Every schema file in schemas/*.json is registered in SCHEMAS.md (no unregistered schema files).
     4. Every schema referenced in architecture/*.json is declared in SCHEMAS.md (no dangling references).
-    5. 'declared' vs 'implemented' is machine-checked from fss-core Rust types; no schema may be
-       reported as implemented without a verified named Rust owner.
+    5. Implementation requires a named fss-core type or the registered projection type and its associated SCHEMA.
     """
     if validator is None:
         validator = Validator()
@@ -1467,31 +1518,10 @@ def validate_schema_constitution(
                 try:
                     doc = json.loads(disk_path.read_text(encoding="utf-8"))
                     if isinstance(doc, dict):
-                        # The instance names its schema under `schema` (records) or `format`
-                        # (CLI reports that already emit `format`); either must equal the name.
-                        props = doc.get("properties", {})
-                        const_val = props.get("schema", {}).get("const")
-                        if const_val is None and "schema" not in props:
-                            const_val = props.get("format", {}).get("const")
-                        if const_val is None and isinstance(doc.get("oneOf"), list):
-                            # A oneOf union of local $defs (e.g. result | refusal) is named by
-                            # the branch whose identity const equals the registered name.
-                            defs = doc.get("$defs", {})
-                            for branch in doc["oneOf"]:
-                                ref = branch.get("$ref", "") if isinstance(branch, dict) else ""
-                                target = defs.get(ref.removeprefix("#/$defs/"), {})
-                                bprops = target.get("properties", {}) if isinstance(target, dict) else {}
-                                bconst = bprops.get("schema", bprops.get("format", {})).get("const")
-                                if bconst == sname:
-                                    const_val = bconst
-                                    break
-                        if const_val != sname:
-                            validator.emit(
-                                CODE_SCHEMA_CONST_MISMATCH,
-                                fpath,
-                                "#/properties/schema/const",
-                                f"schema const mismatch: expected '{sname}', found '{const_val}'",
-                            )
+                        error = registered_identity_error(doc, sname, row["rule"])
+                        if error:
+                            pointer, message = error
+                            validator.emit(CODE_SCHEMA_CONST_MISMATCH, fpath, pointer, message)
                         doc_id = str(doc.get("$id", ""))
                         if not doc_id.endswith("/" + disk_path.name):
                             validator.emit(
@@ -1603,6 +1633,28 @@ def validate_schema_constitution(
         auth = row["authority"]
         rule = row["rule"]
 
+        if rule.startswith("Projection owner:"):
+            # The core profile can reference a response whose actual wire projection is in
+            # another crate. Only the registered type's production SCHEMA const supplies proof.
+            qualified = re.match(
+                r"^Projection owner: (fss-[a-z0-9-]+)((?:::[a-z][a-z0-9_]*)+)::([A-Z][A-Za-z0-9_]*)\. ",
+                rule,
+            )
+            projection = None
+            if qualified:
+                crate, module, type_name = qualified.groups()
+                path = (crates_dir / crate / "src").joinpath(*module[2:].split("::")).with_suffix(".rs")
+                if path.resolve().is_relative_to((crates_dir / crate / "src").resolve()):
+                    projection = scan_rust_schema_owners(
+                        crates_dir, projection_file=path, projection_type=type_name,
+                    ).get(sname)
+            if projection is None:
+                validator.emit(CODE_INVALID_IMPLEMENTATION_OWNER, schemas_md_path.as_posix(),
+                               f"#{sname}", "registered projection lacks its production associated SCHEMA")
+                rust_owners.pop(sname, None)
+            else:
+                rust_owners[sname] = projection
+
         owner = rust_owners.get(sname)
         if owner is not None:
             owner_file = repo_root / owner.file
@@ -1662,12 +1714,12 @@ def validate_schema_constitution(
 
             actual_owner = rust_owners.get(claim_sname)
             if claim_status == "implemented":
-                if actual_owner is None:
+                if actual_owner is None or actual_owner.type_name == "Unknown":
                     validator.emit(
                         CODE_UNOWNED_IMPLEMENTED_SCHEMA,
                         schemas_md_path.as_posix(),
                         f"#{claim_sname}",
-                        f"schema '{claim_sname}' claimed as implemented but has no named Rust owner in fss-core",
+                        f"schema '{claim_sname}' claimed as implemented but has no named Rust owner",
                     )
                 elif claim_owner is not None:
                     if isinstance(claim_owner, dict):

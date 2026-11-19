@@ -1180,9 +1180,11 @@ pub struct PackageEventReceipt {
 
 impl PackageEventProposal {
     /// Verifies the report from retained custody and prepares the event of one confirmed
-    /// track. Writes nothing.
+    /// track. Writes nothing. An immutable caller retains the same source owner through
+    /// final snapshot/custody revalidation before releasing the proposal. Publication
+    /// always prepares again under its exclusive writer and exact approval digest.
     pub fn prepare(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_bytes: &[u8],
         report_digest: ContentDigest,
         track: ContentDigest,

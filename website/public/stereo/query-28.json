@@ -1,0 +1,64 @@
+{
+  "schema": "fss.scene_fusion_query.v1",
+  "camera_rig_digest": "sha256:64adb93bec430f74a99a20f3f499a0d736c252b81c498afec984c168fbc4475f",
+  "privacy_domain": 1,
+  "clock": 1,
+  "clock_evidence": "sha256:bf5b367a0f92a72d0cecbc0106d33662662d183bd1ee5bc1b9e9d7afee088589",
+  "reference_time_ns": 1166666667,
+  "hypotheses": [
+    {
+      "id": "feature:ball-centre",
+      "association_evidence": "sha256:bf5b367a0f92a72d0cecbc0106d33662662d183bd1ee5bc1b9e9d7afee088589",
+      "max_capture_span_ns": 0,
+      "motion": {
+        "kind": "static"
+      },
+      "observations": [
+        {
+          "source_digest": "sha256:5f03477a79c03cd72c16ba36d0942289a6bb6f2b7a7037cfde7a8f55b7cd1d0f",
+          "evidence_digest": "sha256:837e57c9c314616a08d39c01c3b4d96a2b0c702ab693682277092e954af72593",
+          "camera": 1,
+          "track": 1,
+          "exposure": 28,
+          "image_domain": 1,
+          "capture_ns": [
+            1166666667,
+            1166666667
+          ],
+          "pixel_min": [
+            445.9270035068325,
+            305.7505104313793
+          ],
+          "pixel_max": [
+            445.9270035068325,
+            305.7505104313793
+          ],
+          "visible_contact": true,
+          "sigma_pixels": 0.5
+        },
+        {
+          "source_digest": "sha256:4482517cc803c31c22ecacd0b2de7c0e7da35e8750514c67741c6a57f4250f39",
+          "evidence_digest": "sha256:23fc27397084b8f4aa0ec8da0abac9224c2aa3bb9c18e60480b148905e54914e",
+          "camera": 2,
+          "track": 1,
+          "exposure": 28,
+          "image_domain": 1,
+          "capture_ns": [
+            1166666667,
+            1166666667
+          ],
+          "pixel_min": [
+            461.7561375747607,
+            322.0426233257577
+          ],
+          "pixel_max": [
+            461.7561375747607,
+            322.0426233257577
+          ],
+          "visible_contact": true,
+          "sigma_pixels": 0.5
+        }
+      ]
+    }
+  ]
+}

@@ -6,6 +6,9 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-MPEGTS-IMPORT-REQUEST-001` | Explicit finite MPEG-TS import scope, capture assumption, selection or resource ceiling is invalid | Correct the complete request; no automatic limit widening. |
+| `ERR-MPEGTS-IMPORT-SOURCE-001` | Native transport parsing or extraction-receipt verification refused the source | Inspect the original recording and declared program/PID; do not strip packets or bypass provenance. |
+| `ERR-MPEGTS-IMPORT-CUSTODY-001` | Existing source, cancellation, aggregate-work or root-last publication owner refused the MPEG-TS import | Preserve visible roots and committed originals; retry only under fresh authorized bounds and intact exact custody. |
 | `ERR-SITE-PROBE-PLAN-001` | Requested native probe manifest/source/selection or bounds are not admitted | Correct the exact request and preview again; no credential or network work. |
 | `ERR-SITE-PROBE-APPROVAL-001` | The supplied approval is not the complete current native probe plan digest | Review the new complete preview and supply its exact digest; no automatic approval. |
 | `ERR-SITE-PROBE-DEADLINE-001` | The approved probe operation deadline is exhausted | No receipt or renewed budget; inspect remote-session uncertainty before new work. |

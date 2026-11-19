@@ -7,7 +7,7 @@ use fss_reference::agent_orient::OrientLimits;
 use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-fn limits() -> ImmutableRetainedReadLimits {
+pub(super) fn limits() -> ImmutableRetainedReadLimits {
     ImmutableRetainedReadLimits {
         snapshot: OrientLimits::default(),
         max_read_bytes: 64 * 1024 * 1024,
@@ -15,7 +15,7 @@ fn limits() -> ImmutableRetainedReadLimits {
     }
 }
 
-fn read_context(root: &Path) -> TestResult<ReplayCx> {
+pub(super) fn read_context(root: &Path) -> TestResult<ReplayCx> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:immutable-movie-selection".into(),
         operation_id: OperationId::parse("operation:immutable-movie-selection")?,

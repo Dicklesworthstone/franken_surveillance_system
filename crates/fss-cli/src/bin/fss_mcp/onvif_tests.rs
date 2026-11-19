@@ -253,8 +253,8 @@ fn discovery_keeps_one_registered_query_with_a_closed_onvif_branch() -> Test {
                 == Some("onvif")
         })
         .ok_or("ONVIF branch")?;
-    let required = branch
-        .object()
+    let required = query_branch(schema, branch)
+        .and_then(NativeValue::object)
         .and_then(|fields| fields.get("required"))
         .and_then(NativeValue::array)
         .ok_or("ONVIF required")?;

@@ -1,0 +1,345 @@
+{
+  "format": "fss.recorded_corroboration_report.v1",
+  "plan_digest": "sha256:a518b1b0003fd8b140b9e43a7556db97c2f4a542fa81af20830314a1c5b8d51a",
+  "policy_digest": "sha256:32d6945790ed6e5e2ce1c879bb9af0614d0218ad68d521c1531eb1e3f18993d9",
+  "cameras": [
+    {
+      "camera": "drive",
+      "import_identity": "sha256:fd0af80fd073b82b88bc2cd153b944288a5fe2af9b5d85e1687f4ddb318b84dd",
+      "import_root": "sha256:ea68ae326d44fa6eb46cbfbd29832ebda45299a9da3b503d5c1aaee2609b91ed",
+      "sensor_id": "sensor:drive",
+      "failure_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f",
+      "frames_decoded": 48,
+      "confirmed_tracks": 6,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:687506f597272e6f831109ce07afa3ff749b1bb30810f381c6f4a9f1973c225e",
+      "watch_analysis_digest": "sha256:2b6af080177af9b1a28137821f71ba9ca66065f6afffce4c916a0f964d4d68b6",
+      "ground_homography_digest": "sha256:3018ce32bf4525ff2af398ce3d1f73df74aabe2f93fb2c157609cb7e6e149d5e",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    },
+    {
+      "camera": "garden",
+      "import_identity": "sha256:3826c4ef6fe44ff18c73b77744a5471d9e44282b11df7761c7682647cb66ee13",
+      "import_root": "sha256:587610cb22bb112f251bc2e41e001fe5b0dd398338edb9a36a151e76767a07ea",
+      "sensor_id": "sensor:garden",
+      "failure_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f",
+      "frames_decoded": 48,
+      "confirmed_tracks": 0,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:0e0b08d6ec6c261011a1c503c69d00cafbddc0fa77068239a7cc7b754c72ff02",
+      "watch_analysis_digest": "sha256:52d0064e26de0df2ee056582a21f952fbb02117ef45a2738b1cb3b0ec9afcfb8",
+      "ground_homography_digest": "sha256:9ad70ea7eef530a42d507eba3d7ac1946c6674375cf27dcf7e285501d948627a",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    }
+  ],
+  "zones": [
+    {
+      "zone_id": "delivery",
+      "x": -2.9,
+      "y": 1.8,
+      "width": 3.7,
+      "height": 2.5
+    }
+  ],
+  "time_gate_ns": 250000000,
+  "distance_gate": 1.0,
+  "time_semantics": "operator_capture_hints_worst_case_interval_gate",
+  "entries": [
+    {
+      "camera": "drive",
+      "zone_id": "delivery",
+      "track_id": 1,
+      "segment": 23,
+      "capture_ns": [
+        1700000005749000000,
+        1700000005751000000
+      ],
+      "capsule_digest": "sha256:dd5ed181115c1ba0214de561e6a64581321186588d4d863bac0adda74831d4cc",
+      "track_box_cxcywh": [
+        133,
+        46,
+        7,
+        14
+      ],
+      "ground": [
+        -1.3240161975733726,
+        4.1421044867153975
+      ],
+      "observation_digest": "sha256:b1a8e86b4f054552535d8381f2db179a7bcaab3d5f9c6440fc4a3155277276a9",
+      "disposition": "no_counterpart_entry"
+    },
+    {
+      "camera": "drive",
+      "zone_id": "delivery",
+      "track_id": 3,
+      "segment": 18,
+      "capture_ns": [
+        1700000004499000000,
+        1700000004501000000
+      ],
+      "capsule_digest": "sha256:a08d5f7478fa04eec8075be4445b009ee6ac179b0aa42f9fc7134e50215a1af9",
+      "track_box_cxcywh": [
+        124,
+        55,
+        8,
+        5
+      ],
+      "ground": [
+        0.54852147899162,
+        4.179302665547223
+      ],
+      "observation_digest": "sha256:c9ecdbda47a42214dd2fdab3b55d251835317eba805420bcad31c6ada3286b2b",
+      "disposition": "no_counterpart_entry"
+    },
+    {
+      "camera": "drive",
+      "zone_id": "delivery",
+      "track_id": 5,
+      "segment": 28,
+      "capture_ns": [
+        1700000006999000000,
+        1700000007001000000
+      ],
+      "capsule_digest": "sha256:5b19e4e6ef6bca506e8f3d3d920d930d0b0f2165fef66626ead37ebe6afacfb1",
+      "track_box_cxcywh": [
+        156,
+        50,
+        8,
+        17
+      ],
+      "ground": [
+        -1.5113530879606398,
+        2.5964326913297664
+      ],
+      "observation_digest": "sha256:ae133c07f0820abdd9360e84dc32bc35a5985324b7832d4840e6e7509b7c4b0c",
+      "disposition": "no_counterpart_entry"
+    },
+    {
+      "camera": "drive",
+      "zone_id": "delivery",
+      "track_id": 6,
+      "segment": 39,
+      "capture_ns": [
+        1700000009749000000,
+        1700000009751000000
+      ],
+      "capsule_digest": "sha256:5495fea6f647078e9fdb354ebef923a0b79f037a8084c84f9db117fedfcd923b",
+      "track_box_cxcywh": [
+        137,
+        50,
+        11,
+        13
+      ],
+      "ground": [
+        -0.6486732091266675,
+        3.6231334841695926
+      ],
+      "observation_digest": "sha256:4a70aac6766905b271772fabfcf66329d22373e4bb75b05926c3db79adbbfc78",
+      "disposition": "no_counterpart_entry"
+    }
+  ],
+  "candidate_count": 0,
+  "candidates": [],
+  "prepared_count": 0,
+  "published_count": 0,
+  "already_published_count": 0,
+  "authority_sequence": 9,
+  "alert_prepared": false,
+  "effects_authorized": false,
+  "calibrated": false,
+  "absence_certifiable": false,
+  "detection_quality_claim": false,
+  "dependencies": {
+    "generation": "sha256:bb224be31d76060b081123a71fcb2dd3a1db253fa724906c50531b4b4db8bdb0",
+    "assessment_digest": "sha256:875e13729b84c09a59b59de33a64ca6ab8cb29939e1167719d487c64c6ada920",
+    "basis": "owner_assertion_not_verified_topology",
+    "model": "transitive_shared_cause_components_v1",
+    "declarations": [
+      {
+        "domain": "clock:juniper-timeline",
+        "cameras": [
+          "drive",
+          "garden"
+        ]
+      },
+      {
+        "domain": "replay:juniper-scene",
+        "cameras": [
+          "drive",
+          "garden"
+        ]
+      }
+    ],
+    "cameras": [
+      {
+        "camera": "drive",
+        "sensor_digest": "sha256:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+        "import_identity": "sha256:fd0af80fd073b82b88bc2cd153b944288a5fe2af9b5d85e1687f4ddb318b84dd",
+        "import_root": "sha256:ea68ae326d44fa6eb46cbfbd29832ebda45299a9da3b503d5c1aaee2609b91ed",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f"
+      },
+      {
+        "camera": "garden",
+        "sensor_digest": "sha256:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+        "import_identity": "sha256:3826c4ef6fe44ff18c73b77744a5471d9e44282b11df7761c7682647cb66ee13",
+        "import_root": "sha256:587610cb22bb112f251bc2e41e001fe5b0dd398338edb9a36a151e76767a07ea",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f"
+      }
+    ],
+    "clusters": [
+      {
+        "support_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f",
+        "cameras": [
+          "drive",
+          "garden"
+        ],
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+          "recorded-sensor:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+          "replay:juniper-scene"
+        ]
+      }
+    ],
+    "dependency_cluster_count": 1,
+    "independence": "unknown",
+    "undeclared_dependencies": "unknown_not_absent",
+    "independence_certified": false
+  },
+  "coverage": {
+    "format": "fss.recorded_watch_coverage.v1",
+    "coverage_status": "proposed",
+    "approval_digest": "sha256:99b19cd6c6f38b0f8ad830992c0ba9db6ecb2f34bbc2df5d3721b29e644a2646",
+    "retain_command": "fss-event corroborate --root deployment --site site:juniper-demo --interpretation ycbcr --zone delivery:-2.9,1.8,3.7,2.5 --time-gate-ns 250000000 --distance-gate 1 --failure-domain replay:juniper-scene=drive,garden --failure-domain clock:juniper-timeline=drive,garden --camera drive:sha256:fd0af80fd073b82b88bc2cd153b944288a5fe2af9b5d85e1687f4ddb318b84dd --ground drive:-0.012978957683776854,0.04037172544470005,-0.6144629403765569,-0.008582859113465334,0.008240856464595494,1.3334550176428126,-1.6605768711628078e-19,0.005778930212814929,-0.15450051786755636 --camera garden:sha256:3826c4ef6fe44ff18c73b77744a5471d9e44282b11df7761c7682647cb66ee13 --ground garden:-0.016311838568389744,-0.03711001229264282,1.9220348786397252,-0.0049683765180783416,-0.020728641530764855,1.9252723764105037,-1.098925556535422e-19,0.006865057057290432,-0.17112755536243462 --retain-coverage sha256:99b19cd6c6f38b0f8ad830992c0ba9db6ecb2f34bbc2df5d3721b29e644a2646",
+    "witness_count": 0,
+    "absence_certified_for_witness_domains": false,
+    "records": [
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:6390ba0ca398b3d6b9c99d051f17c9f798d5982d01675ede529f9aaca8344f69",
+        "identity": "sha256:b2e96c6625ba719dbc3e5008b88c233e685a8065450f0083eb3c9044de54f03c",
+        "import_identity": "sha256:fd0af80fd073b82b88bc2cd153b944288a5fe2af9b5d85e1687f4ddb318b84dd",
+        "sensor_id": "sensor:drive",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:delivery",
+            "zone_id": "delivery",
+            "geometry": "-2.9,1.8,3.7,2.5",
+            "pipeline_generation": "sha256:d3532b3311d684de871da4d818649343932be6e9bc96aeb87a2dc6fdfca85100",
+            "witness_count": 0,
+            "witnesses": [],
+            "uncovered": [
+              {
+                "reason": "outside_frustum",
+                "first_segment": 0,
+                "last_segment": 47,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 51,
+              "outside_frustum": 13,
+              "occluded": 0,
+              "visible_fraction_ppm": 796875,
+              "threshold_ppm": 1000000,
+              "state": "not_observable",
+              "cause": "outside_frustum",
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      },
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:d34228cba662343e34079f48af81283a114ea7282a7a636fa75c50752d6f20fd",
+        "identity": "sha256:d71209a1632e144c20cc79528310f3d5c1e2bb030f231c3401f84ff8ead19be8",
+        "import_identity": "sha256:3826c4ef6fe44ff18c73b77744a5471d9e44282b11df7761c7682647cb66ee13",
+        "sensor_id": "sensor:garden",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:delivery",
+            "zone_id": "delivery",
+            "geometry": "-2.9,1.8,3.7,2.5",
+            "pipeline_generation": "sha256:fc4ce97086886185be5a51099d21d969368f82e524778c8635215b6a2b9aa8cf",
+            "witness_count": 0,
+            "witnesses": [],
+            "uncovered": [
+              {
+                "reason": "outside_frustum",
+                "first_segment": 0,
+                "last_segment": 47,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 32,
+              "outside_frustum": 32,
+              "occluded": 0,
+              "visible_fraction_ppm": 500000,
+              "threshold_ppm": 1000000,
+              "state": "not_observable",
+              "cause": "outside_frustum",
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

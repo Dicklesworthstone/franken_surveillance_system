@@ -23,6 +23,8 @@ pub mod sdp;
 pub mod selection;
 #[path = "../../../fss-reference/src/rtsp/tcp.rs"]
 pub mod tcp;
+#[path = "../../../fss-reference/src/rtsp/uri.rs"]
+pub mod uri;
 
 pub use message::*;
 pub use sdp::*;

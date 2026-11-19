@@ -1,0 +1,163 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-15",
+  "timezone": "UTC",
+  "state": "high_impact_source_implemented_new_execution_blocked",
+  "mission": {
+    "goal": "Implement the most consequential remaining functional gaps after reading the comprehensive plan and beads; publish meaningful increments directly to main through GitHub without PRs.",
+    "initial_source_head": "32e4b1fb749ec7ec5de66307fe0b2263a1d14d51",
+    "concurrent_source_preserved": "3e300d075077cccac7336cae21e665ee39558455",
+    "requirement_scope": [
+      "FSS-053/FSS-054/FSS-115 finite native media provenance and retained decode integration",
+      "FSS-203/FSS-204/FSS-220 held session authority at consequential effect boundaries"
+    ],
+    "bead_scope": [
+      "fss-x4a.24.3",
+      "fss-x4a.24.4",
+      "fss-x4a.24.20",
+      "Native media/container and retained-recording acceptance remains broader than this finite import"
+    ],
+    "broad_beads_closed": false
+  },
+  "situation_roots": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "beads": ".beads/issues.jsonl",
+    "extraction": "crates/fss-container/src/mpeg_ts/receipt.rs",
+    "retained_import": "crates/fss-reference/src/ingest/mpeg_ts_import.rs",
+    "operator_command": "crates/fss-cli/src/bin/fss-file/mpeg_ts.rs",
+    "session_guard": "crates/fss-reference/src/deployment_session/plan.rs",
+    "native_alert_owner": "crates/fss-cli/src/alert_effect/runtime.rs",
+    "status": "IMPLEMENTATION_STATUS.md"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "e6fb9a0b2ef5e3c766903a3f79213679d7037e52",
+      "change": "Compact canonical MPEG-TS extraction receipts with complete original and mapping commitments."
+    },
+    {
+      "commit": "d89bece6bacecbbf97f45e919a940c34a15d6e04",
+      "change": "Fresh held-session lease admission at preparation and final native alert commit/send checkpoints."
+    },
+    {
+      "commit": "1e020a1a8790af7be8f18e3425aa34cf55ac7682",
+      "change": "Finite original-preserving MPEG-TS import through existing retained AVC/HEVC source and decode owners."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Explicit bounded fss-file import-ts operator command, focused command contracts and usage."
+    }
+  ],
+  "authority": {
+    "user": "Implement and commit directly to main using GitHub; no PRs.",
+    "scope": "Repository source and deterministic fixtures only. No live devices, credential use or outbound alert operation.",
+    "release": "Native repository qualification and retained DSR evidence remain required.",
+    "publication": "Expected-parent, non-force GitHub main updates; preserve concurrent source/status/manifest changes."
+  },
+  "cases": [
+    {
+      "id": "transport-to-retained-pipeline-gap",
+      "finding": "A bounded native MPEG-TS parser existed, but its extracted elementary stream and original-byte mappings did not enter the retained file workflow.",
+      "resolution": "Bind parser-owned selection and all limits in a compact extraction receipt, retain complete original TS plus a canonical origin proof and native AU/capsule map, then reuse existing retained AVC/HEVC readers and decoders."
+    },
+    {
+      "id": "held-session-final-effect-gap",
+      "finding": "Holding the planning journal stabilizes grants and witnesses, but does not stop time advancing during source checks or network preparation.",
+      "resolution": "Retain clock mode/root and monotonic watermark, persist consequential admission and exact expiry, and carry a deny-only live callback plus the fixed session ceiling into native Commit/Send admission."
+    },
+    {
+      "id": "pre-read-work-reservation",
+      "finding": "Initial source-loop draft charged actual returned bytes after I/O.",
+      "resolution": "Reserve each bounded requested read before I/O, retain short/failure/EOF debits, and carry one cumulative owner through parse, preparation and publication."
+    }
+  ],
+  "findings": [
+    "Finite TS import preserves unselected audio, exact duplicate packets, headers and all original bytes; it never repairs damaged visible custody from the loose source.",
+    "PES boundaries and raw wrapping PTS/DTS are not decoded-picture or capture-time evidence. Native AU splitting and the existing decoder's supported profile remain separate.",
+    "Capture time remains unknown or an explicit existing operator assumption; finite file imports do not establish live continuity or absence.",
+    "Source verification reconstructs under intersected current/historical container limits. Retained read caches preserve exact proof identity and current erasure checks but do not continuously certify on-disk bytes already cached.",
+    "Session expiry narrows new network activity without renewing authority. Existing finite receipt/custody cleanup and no-resend reporting remain under their original owners.",
+    "Four new import digest domains, three stable errors and the adapter registry v4 are registered; historical adapter digest pins remain unchanged.",
+    "No dependency, toolchain, codec runtime, credential scope, public operation registry or release gate was weakened."
+  ],
+  "budgets": {
+    "transport": "Separate 64 MiB original and elementary ceilings; independent packet, PSI, PES, PES-byte and mapping bounds.",
+    "retained": "At most 65,536 native AUs and original chunks; proof at most 4 MiB; first range replays original custody and caches one verified elementary stream.",
+    "operator": "One cancellable coarse work reservation, default 1 GiB/max 4 GiB; original and reconstructed limits may be narrowed independently.",
+    "session": "Original fixed expiry, grants and native cleanup deadline remain nonrenewing."
+  },
+  "validation": {
+    "completed_baseline": [
+      "Exact pinned nightly compiler observed: rustc 1.100.0-nightly (908501772 2026-08-30), nightly-2026-08-31.",
+      "Locked offline workspace cargo metadata passed for 22 packages before the executor outage.",
+      "Actual fss-packet harness: 50 passed.",
+      "Actual fss-container harness linked against production core/packet modules: 117 passed."
+    ],
+    "baseline_scope": "All test passes predate the newly authored changes and do not validate them.",
+    "source_checks": [
+      "Independent source/API review of the extraction codec, held-session effect seam, native import/publication/cache wiring and command integration.",
+      "Uploaded source blobs fetched back byte-for-byte by their authors.",
+      "Manifest SHA-256 implementation checked against empty, abc and million-a known vectors and existing canonical/digest source hashes; changed entries updated without unrelated row removal.",
+      "Adapter canonical digest reproduced for the previous generation before calculating v4; all 15 machine/Markdown adapter rows compared exactly."
+    ],
+    "new_changed_code_compiled": false,
+    "new_tests_executed": false,
+    "new_test_counts": {
+      "container_receipt": 7,
+      "reference_session": 4,
+      "native_alert_owner": 3,
+      "retained_ts_import": 5,
+      "ts_cli": 6
+    },
+    "execution_blocker": "The execution environment disappeared before implementation; exec-server recovery timed out. Work continued through the GitHub connector. No compiler, rustfmt, shell test or full qualification was available for the changes.",
+    "prior_dependency_limit": "The previous session's exact locked Asupersync compilation was killed under the available memory allowance; no usable compiled dependency was found before the outage.",
+    "baseline_qualification": "Existing policy qualification reported 183 diagnostics before changes, including dependency/import mirror and unregistered-domain failures; this session does not claim full baseline qualification.",
+    "supplementary_actions": [
+      {
+        "head": "d89bece6bacecbbf97f45e919a940c34a15d6e04",
+        "result": "9 observed runs: 4 queued and 5 pending, all conclusions null. Reference Rust run 43676631060 pending. No successful/failed execution result."
+      },
+      {
+        "head": "e6fb9a0b2ef5e3c766903a3f79213679d7037e52",
+        "result": "2 queued and 4 cancelled observed runs; no successful/failed execution result."
+      }
+    ],
+    "release_qualified": false,
+    "required_followup_commands": [
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-container --lib mpeg_ts::",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test mpeg_ts_import_contract",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::tests::runtime_time",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib alert_effect::runtime::tests",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test agent_effect_cli_contract",
+      "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file mpeg_ts::tests",
+      "python3 -B scripts/device_adapter_checker.py",
+      "python3 -B -m unittest discover -s tests -p test_device_adapter_checker.py",
+      "Run the repository-owned formatting, manifest and native scripts/qualify.sh gates before promotion."
+    ],
+    "new_test_total": 25
+  },
+  "invalidations": [
+    "Source review and GitHub blob integrity are not Rust type-checking, runtime verification or release qualification.",
+    "A compact extraction receipt alone proves no source custody; only retained closure and source reconstruction establish the required linkage.",
+    "Metadata availability or a cached original reconstruction does not establish uninterrupted media health or live camera continuity."
+  ],
+  "obligations": [
+    {
+      "status": "blocked",
+      "task": "Compile all changed crates and execute new contracts on the exact pinned, locked dependency closure when execution is restored; fix any resulting failures before qualification."
+    },
+    {
+      "status": "preserved",
+      "task": "Keep broad media/session beads and release gates open until complete acceptance evidence exists."
+    }
+  ],
+  "unknowns": [
+    "New Rust source/type behavior and all new test expectations remain unproven by execution.",
+    "The new finite TS import does not establish arbitrary transport/codec profiles, live streaming, HLS, hardware acceleration or physical-device qualification."
+  ],
+  "continuations": [
+    {
+      "class": "verification",
+      "action": "Run focused container/reference/CLI tests and established formatting/registry/manifest checks first, then native release qualification."
+    }
+  ]
+}

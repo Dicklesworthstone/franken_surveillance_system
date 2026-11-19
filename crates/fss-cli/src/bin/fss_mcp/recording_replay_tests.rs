@@ -14,24 +14,8 @@ impl ObjectMember for fss_cli::json_input::Value {
 }
 
 fn excludes_field(node: &fss_cli::json_input::Value, field: &str) -> bool {
-    use fss_cli::json_input::Value;
-    node.get("propertyNames")
-        .and_then(|value| value.get("enum"))
-        .and_then(Value::array)
-        .is_some_and(|allowed| !allowed.iter().any(|value| value.text() == Some(field)))
-        || node
-            .get("not")
-            .and_then(|value| value.get("anyOf"))
-            .and_then(Value::array)
-            .is_some_and(|rows| {
-                rows.iter().any(|row| {
-                    row.get("required")
-                        .and_then(Value::array)
-                        .is_some_and(|required| {
-                            required.iter().any(|value| value.text() == Some(field))
-                        })
-                })
-            })
+    node.object()
+        .is_some_and(|object| query_schema_excludes(object, field))
 }
 
 fn replay_fields(codec: &str) -> Fields {
@@ -286,6 +270,7 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
         .and_then(input::Value::array)
         .ok_or("query modes")?;
     for branch in branches {
+        let branch = query_branch(schema.object().ok_or("query object")?, branch).ok_or("query branch")?;
         let target = branch
             .get("properties")
             .and_then(|value| value.get("target"))
@@ -311,6 +296,7 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                 .ok_or("recording modes")?;
             let mut replay_modes = 0;
             for mode in modes {
+                let mode = query_branch(schema.object().ok_or("query object")?, mode).ok_or("recording branch")?;
                 let required = mode
                     .get("required")
                     .and_then(input::Value::array)
@@ -318,11 +304,6 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                 let is_replay = required
                     .iter()
                     .any(|value| value.text() == Some("replay_root"));
-                let forbidden = mode
-                    .get("not")
-                    .and_then(|value| value.get("anyOf"))
-                    .and_then(input::Value::array)
-                    .ok_or("mode exclusions")?;
                 if is_replay {
                     replay_modes += 1;
                     for field in [
@@ -346,26 +327,12 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                         "max_hydration_bytes",
                     ] {
                         assert!(
-                            forbidden.iter().any(|value| value
-                                .get("required")
-                                .and_then(input::Value::array)
-                                .is_some_and(|values| values
-                                    .iter()
-                                    .any(|value| value.text() == Some(field)))),
+                            excludes_field(mode, field),
                             "allowed mixed {field}"
                         );
                     }
                 } else {
-                    assert!(forbidden.iter().any(|value| {
-                        value
-                            .get("required")
-                            .and_then(input::Value::array)
-                            .is_some_and(|values| {
-                                values
-                                    .iter()
-                                    .any(|value| value.text() == Some("replay_root"))
-                            })
-                    }));
+                    assert!(excludes_field(mode, "replay_root"));
                 }
             }
             assert_eq!(replay_modes, 2);
@@ -442,6 +409,7 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
         .and_then(input::Value::array)
         .ok_or("branches")?;
     for branch in branches {
+        let branch = query_branch(schema.object().ok_or("query object")?, branch).ok_or("query branch")?;
         let target = branch
             .get("properties")
             .and_then(|v| v.get("target"))
@@ -456,6 +424,7 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
                 .ok_or("modes")?;
             let mut retained_modes = 0;
             for mode in modes {
+                let mode = query_branch(schema.object().ok_or("query object")?, mode).ok_or("recording branch")?;
                 let retained = mode
                     .get("required")
                     .and_then(input::Value::array)
@@ -470,7 +439,10 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
                 }
             }
             assert_eq!(retained_modes, 1);
-        } else if matches!(target, "qsr" | "tracks" | "reports" | "sources") {
+        } else if matches!(
+            target,
+            "qsr" | "tracks" | "reports" | "sources" | "localizations"
+        ) {
             // These targets share immutable payload-read accounting, not archive syscall quotas.
             assert!(excludes(branch, "retained_import"));
             assert!(excludes(branch, "max_query_io_calls"));

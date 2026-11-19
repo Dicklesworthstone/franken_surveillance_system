@@ -19,8 +19,8 @@ use fss_core::{
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationError, SlotName};
 
-use super::analysis::{AnalysisBudget, AnalysisError, AnalysisLimits, AnalysisReport};
 use super::FileIngestError;
+use super::analysis::{AnalysisBudget, AnalysisError, AnalysisLimits, AnalysisReport};
 use crate::retained_source::RetainedSource;
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
@@ -294,7 +294,7 @@ fn event_manifest(event: &EventHypothesis) -> Result<ObjectManifest> {
 
 // Read the current event through its authoritative object revision, never an unanchored file.
 // Historical revisions are checked with the event owner's full chain verifier.
-fn load_event(
+pub(super) fn load_event(
     deployment: &dyn RetainedSource,
     id: &EventId,
     cx: &ReplayCx,
@@ -463,8 +463,11 @@ impl RecordedEventProposal {
     /// Recompute a report and prepare a new event or an exact full-history extension.
     /// Existing evidence cannot be dropped/reordered, and externally adjudicated events are
     /// never overwritten. No objects, ledger batches, alerts, or other effects are written.
+    /// An immutable caller must keep this source owner and finish its snapshot/custody
+    /// revalidation before releasing the proposal. Publication independently prepares again
+    /// under the exclusive writer, so a preview never supplies mutation authority.
     pub fn prepare(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_bytes: &[u8],
         report_digest: ContentDigest,
         track: ContentDigest,

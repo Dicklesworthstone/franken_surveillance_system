@@ -33,6 +33,10 @@ run_tests() {
 run_tests 'ONNX lowering through production scalar and optimized kernels' \
   -p fss-model-ir --test onnx_attention_execution
 
+# Shared INT64 constant parsing also serves ordinary shape/control operators.
+run_tests 'Model IR and ONNX parser/control contracts' \
+  -p fss-model-ir --lib
+
 if [[ "$selection" == all ]]; then
   run_tests 'source-preserving ONNX packages and native retained-frame detection' \
     -p fss-reference --test onnx_package_import

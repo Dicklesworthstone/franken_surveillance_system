@@ -921,7 +921,10 @@ class TestSchemaConstitution(unittest.TestCase):
         # and the reserved-ID tombstone are not digest declarations.
         # Add the versioned canonical-manifest provider oracle (FSS-061/FSS-062).
         # Rich webhook disclosure adds route-v1 and canonical plan-v2 domains.
-        self.assertEqual(result["digestDomainCount"], 876)
+        # Add movie-output v2 with the full u64 track identifier; preserve historical v1.
+        # Six MPEG-TS extraction/import domains were registered. The ONVIF zone policy
+        # and event revision comparison retain their canonical tags in their schema rows.
+        self.assertEqual(result["digestDomainCount"], 933)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -931,7 +934,11 @@ class TestSchemaConstitution(unittest.TestCase):
         for item in result["schemas"]:
             if item["status"] == "implemented":
                 self.assertIsNotNone(item["owner"])
-                self.assertEqual(item["owner"]["crate"], "fss-core")
+                if item["name"] == "fss.agent_evidence_hydration.v1":
+                    self.assertEqual(item["owner"]["crate"], "fss-reference")
+                    self.assertEqual(item["owner"]["type"], "EvidenceHydrationAnswer")
+                else:
+                    self.assertEqual(item["owner"]["crate"], "fss-core")
                 self.assertNotEqual(item["owner"]["type"], "Unknown")
                 self.assertTrue((ROOT / item["owner"]["file"]).is_file())
             else:
@@ -1080,6 +1087,38 @@ class TestSchemaConstitution(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             codes = [f.code for f in validator.findings]
             self.assertIn(schema_validate.CODE_UNREGISTERED_SCHEMA_FILE, codes)
+
+    def test_embedded_selector_identity_is_closed_and_registry_bound(self) -> None:
+        name = "fss.agent_sources_query.v1"
+        rule = "AOP-005 selector `target=sources`. Retained metadata."
+        doc = json.loads((ROOT / "schemas/agent_sources_query.v1.json").read_text())
+        self.assertIsNone(schema_validate.registered_identity_error(doc, name, rule))
+        for patch in ({"$id": "https://elsewhere.invalid/schemas/agent_sources_query.v1.json"},
+                      {"properties": {"target": {"const": "events"}}},
+                      {"required": []}, {"additionalProperties": True},
+                      {"properties": {**doc["properties"], "schema": {"const": name}}}):
+            with self.subTest(patch=patch):
+                self.assertIsNotNone(schema_validate.registered_identity_error(doc | patch, name, rule))
+        self.assertIsNotNone(schema_validate.registered_identity_error(doc, name, "ordinary record"))
+        self.assertIsNotNone(schema_validate.registered_identity_error(doc, name, "AOP-005 selector typo"))
+
+    def test_registered_projection_requires_exact_production_const(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            crates = Path(temp_dir) / "crates"
+            module = crates / "fss-reference/src/answer.rs"
+            module.parent.mkdir(parents=True)
+            name = "fss.example.v1"
+            declaration = f"""    pub const SCHEMA: &'static str = "{name}";"""
+            def owners(body: str) -> dict:
+                module.write_text("pub struct Answer;\n" + body + "\n", encoding="utf-8")
+                return schema_validate.scan_rust_schema_owners(
+                    crates, projection_file=module, projection_type="Answer")
+            block = "impl Answer {\n" + declaration + "\n}"
+            self.assertEqual(owners(block)[name].type_name, "Answer")
+            for invalid in ("#[cfg(test)]\n" + block, block.replace("impl Answer", "impl Other"),
+                            block.replace("pub const SCHEMA:", "pub const EXAMPLE:"),
+                            block.replace("pub const", "// pub const"), declaration):
+                self.assertNotIn(name, owners(invalid))
 
     def test_schema_const_mismatch_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1491,7 +1530,10 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # and the reserved-ID tombstone are not digest declarations.
         # Add the versioned canonical-manifest provider oracle (FSS-061/FSS-062).
         # Rich webhook disclosure adds route-v1 and canonical plan-v2 domains.
-        self.assertEqual(result["digestDomainCount"], 876)
+        # Add movie-output v2 with the full u64 track identifier; preserve historical v1.
+        # Six MPEG-TS extraction/import domains were registered. The ONVIF zone policy
+        # and event revision comparison retain their canonical tags in their schema rows.
+        self.assertEqual(result["digestDomainCount"], 933)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1519,7 +1561,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # landed 2026-10-10 (fss-x4a.30.51/30.18 realization, camera-ingest lane).
         # 53 = 52 + fss.experiment_receipt.v1 (owner ExperimentReceipt, FSS-196/fss-x4a.26.16).
         # Current named Rust owners after reconciling the complete schema inventory.
-        self.assertEqual(result["implementedCount"], 55)
+        self.assertEqual(result["implementedCount"], 56)  # Includes the typed hydration projection.
 
         unreg_findings = [
             f for f in validator.findings

@@ -26,6 +26,7 @@ use fss_reference::ingest::{
     RetainedReadLimits,
 };
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 const SITE: &str = "site:dwell-fusion-contract";
@@ -286,6 +287,21 @@ fn cached_native_episode_advice_keeps_proposals_and_work_but_refuses_scope_or_au
         advice.digest()
     );
     let json = advice.to_json()?;
+    // Cached advice must be identical through immutable custody while its publisher is live.
+    let immutable = ImmutableRetainedSource::open(
+        f.deployment.root(),
+        ImmutableRetainedReadLimits {
+            snapshot: fss_reference::agent_orient::OrientLimits::default(),
+            max_read_bytes: 256 * 1024 * 1024,
+            max_read_objects: 131_072,
+        },
+        &f.cx,
+    )?;
+    let immutable_advice =
+        EventFusionReport::long_dwell(&native, &package, &profile, &immutable, &f.cx)?;
+    assert_eq!(immutable_advice.digest(), advice.digest());
+    assert_eq!(immutable_advice.to_json()?, json);
+    immutable.revalidate()?;
     assert!(json.contains("fss.event_class_fusion_report.v4"));
     assert!(json.contains("\"continuous_occupancy_certified\":false"));
     assert!(json.contains("\"coverage_witness_supplied\":false"));
@@ -335,6 +351,8 @@ fn cached_native_episode_advice_keeps_proposals_and_work_but_refuses_scope_or_au
     let approval = preview_mask(&f.deployment, &policy)?.approval;
     declare_mask(&mut f.deployment, &policy, approval, &f.cx)?;
     let changed = f.snapshot();
+    // A complete cached preview remains withheld if authority advances before final delivery.
+    assert!(immutable.revalidate().is_err());
     assert!(matches!(
         EventFusionReport::long_dwell(&native, &package, &profile, &f.deployment, &f.cx),
         Err(EventFusionError::StaleBasis)
@@ -383,6 +401,21 @@ fn empty_episode_advice_still_requires_source_custody_and_requested_health_clear
         EventFusionReport::long_dwell(&screened, &package, &screened_profile, &f.deployment, &f.cx),
         Err(EventFusionError::Evidence)
     ));
+    let immutable = ImmutableRetainedSource::open(
+        f.deployment.root(),
+        ImmutableRetainedReadLimits {
+            snapshot: fss_reference::agent_orient::OrientLimits::default(),
+            max_read_bytes: 256 * 1024 * 1024,
+            max_read_objects: 131_072,
+        },
+        &f.cx,
+    )?;
+    screened.revalidate_preview_source(&immutable, &f.cx)?;
+    assert!(matches!(
+        EventFusionReport::long_dwell(&screened, &package, &screened_profile, &immutable, &f.cx),
+        Err(EventFusionError::Evidence)
+    ));
+    immutable.revalidate()?;
     assert_eq!(f.snapshot(), before);
 
     let retained = RetainedFileImport::open(

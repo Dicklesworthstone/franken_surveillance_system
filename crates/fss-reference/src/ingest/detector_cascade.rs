@@ -20,7 +20,7 @@ use super::package_detect::PackageDetectLimits;
 use super::recorded_watch::{MAX_WATCH_FRAMES, WatchLimits};
 use super::rgb_detections::RgbDetectionContract;
 use super::rgb_package::RgbDetectorPackage;
-use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ReplayCx, RetainedSource, ScalarExecCx};
 
 /// A verified detector package with authority- and input-scoped memoization.
 /// The public API and evidence encoding are the native engine's existing API.
@@ -116,7 +116,7 @@ impl<'a> DetectorCascade<'a> {
     /// Run selected frames without permitting recovery across a refused interval.
     pub fn run(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         source: CascadeSource<'_>,
         tracks: &[CascadeTrack],
         budget: &mut CascadeBudget,
@@ -140,7 +140,7 @@ impl<'a> DetectorCascade<'a> {
     /// Run explicit recovery epochs, never reusing another invocation's context.
     pub fn run_recovered(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         source: RecoveredCascadeSource<'_>,
         tracks: &[CascadeTrack],
         budget: &mut CascadeBudget,

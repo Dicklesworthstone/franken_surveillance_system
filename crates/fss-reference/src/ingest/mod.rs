@@ -54,6 +54,8 @@ pub mod long_sentinel;
 /// Whole-recording zone-entry observation over the native streaming perception pipeline.
 pub mod long_watch;
 pub mod mjpeg;
+/// Finite native MPEG-TS import with original transport custody and exact reconstructed AVC/HEVC.
+pub mod mpeg_ts_import;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
 /// Source-preserving offline ONNX import into verified RGB detector packages.
@@ -147,7 +149,8 @@ pub use mjpeg::{
     OmissionReason, OmissionSpan, split_jpeg_stream,
 };
 pub use retained::{
-    RetainedFileImport, RetainedMovieSelection, RetainedReadLimits, VerifiedChunkCache,
+    RetainedFileImport, RetainedMatroskaSelection, RetainedMovieSelection, RetainedReadLimits,
+    VerifiedChunkCache,
 };
 
 /// Native JPEG RGB through privacy projection, resize and frozen neural graph execution.

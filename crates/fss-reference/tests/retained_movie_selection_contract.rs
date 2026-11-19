@@ -7,6 +7,8 @@ mod support;
 
 #[path = "retained_movie_selection_contract/immutable.rs"]
 mod immutable;
+#[path = "retained_movie_selection_contract/matroska.rs"]
+mod matroska;
 
 use std::{
     fs,

@@ -23,7 +23,7 @@ const DEFAULT_READS: u64 = 1_000_000;
 const MAX_READS: u64 = 4_000_000;
 
 pub(super) fn is_command(command: &str) -> bool {
-    matches!(command, "inspect" | "verify" | "extract" | "select-movie")
+    matches!(command, "inspect" | "verify" | "extract" | "select-movie" | "select-matroska")
 }
 
 pub(super) fn parse_limits(values: &Values) -> ParseResult<ImmutableRetainedReadLimits> {
@@ -65,6 +65,7 @@ pub(super) fn run(options: &Options, out: &mut impl Write) -> RunResult<()> {
         Action::Verify(id) => (*id, "verify"),
         Action::Extract { identity, .. } => (*identity, "extract"),
         Action::Movie(action) => (action.identity(), "select-movie"),
+        Action::Matroska(action) => (action.identity(), "select-matroska"),
         _ => return Err("immutable source inspection requires a read command".into()),
     };
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
@@ -129,6 +130,10 @@ pub(super) fn run(options: &Options, out: &mut impl Write) -> RunResult<()> {
                 Some((output, bytes))
             }
             Action::Inspect(_) => None,
+            Action::Matroska(action) => {
+                super::matroska::run(action, &retained, &owner, options.limits, &cx, &mut report)?;
+                None
+            }
             Action::Movie(action) => {
                 super::movie::run(action, &retained, &owner, options.limits, &cx, &mut report)?;
                 None

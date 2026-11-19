@@ -1,0 +1,35 @@
+{
+  "delivery": {
+    "fps": 12,
+    "frames": 144,
+    "film": "fbce473cde5392e85b370db69bc8674f7187b559766b1418b77f08e5600230a1",
+    "poster": "9ac1b8fa7da596c35244794165d1a1cd4a7f2109f3c75e516b3a900a9d68fdbc",
+    "sources": {
+      "delivery": "b8eadef7a0aad312ce145a7f970de2fc9eec61048d2c84ff7e5d7b1938b8f931",
+      "delivery-garden": "4c3befde4ba74fa2cad9d89a555cab80e2f7b08d526198b698f8d04456ac656b",
+      "delivery-drive": "223843812cf73202f26c18ea8dae984bd222d57481a23e9dac1996a342c40a8f"
+    }
+  },
+  "wildlife": {
+    "fps": 12,
+    "frames": 144,
+    "film": "be80c44569db0ad46a4114ea6121bf3705473eecc3966bb8c38374b1f816252c",
+    "poster": "5667194c18ac7d510f67596a51b575121c18bf4fad4f1fa5f4266fb3e9941462",
+    "sources": {
+      "wildlife-porch": "bddb3a7f07a61c154ba4b2c8aac1663f048436dd054e37ec8a479149f6b7d879",
+      "wildlife": "e3799858502d219e1a344c17f90879d15e72658b315c9c932d4f26d850c63b39",
+      "wildlife-drive": "7c4deddeebfa75a058533176c93a15c378b1a158ec0d49e6b582a9709c83dcba"
+    }
+  },
+  "visitor": {
+    "fps": 12,
+    "frames": 144,
+    "film": "db6403dc09ecd8eebda93c6f07ef2183a2ad01c669ec36b323a265d68dab7455",
+    "poster": "f82b16cc0b3758be4fef90b33d20118945a7210514464475e6a3ae0c2c2517f5",
+    "sources": {
+      "visitor-porch": "ae78389f809a4235b63936ba97365bbbb17fa9844a89aeffb1104079d2b5e2e7",
+      "visitor-garden": "595e7f769469d75269ef6570670f8c12a6f0a979d32c8183fe7f777f75a1dcaa",
+      "visitor": "3ef7d5dee9a485779f2e73dc6d94331d712c2e6b76e4449063105c798054d965"
+    }
+  }
+}

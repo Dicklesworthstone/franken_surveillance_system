@@ -895,7 +895,7 @@ fn padded_pooling_retains_all_other_profile_and_shape_refusals() {
         (ints_attr("pads", &[1, 1]), OnnxError::Graph),
         (ints_attr("strides", &[0, 1]), OnnxError::Graph),
         (ints_attr("dilations", &[2, 1]), OnnxError::Unsupported),
-        (int_attr("ceil_mode", 1), OnnxError::Unsupported),
+        (int_attr("ceil_mode", 2), OnnxError::Unsupported),
         (int_attr("storage_order", 1), OnnxError::Unsupported),
         // SAME produces 4x4 here; the declared 2x2 output remains a shape error.
         (text_attr("auto_pad", "SAME_UPPER"), OnnxError::Graph),

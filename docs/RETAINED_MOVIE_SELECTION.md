@@ -1,4 +1,4 @@
-# Select retained MP4/MOV footage by movie time
+# Select retained MP4/MOV and MKV/WebM footage by movie time
 
 `fss-file select-movie` resolves a half-open movie-time interval to original retained
 video segments. It applies the container's unit-rate edit list and signed composition
@@ -6,7 +6,8 @@ offsets, preserves exact rational boundaries, and reports both the requested pre
 occurrences and the coding-order ranges required to start the existing Annex-B extraction
 path. The result contains metadata and source handles, not media bytes or pixels.
 
-This is a local operator command over completed file or supported native RTSP MP4/MOV imports. It advances
+This is a local operator command over completed AVC/HEVC MP4/MOV or MKV/WebM file imports,
+and supported native RTSP MP4/MOV imports. It advances
 the recorded-file retrieval part of FSS-068 and VIT-008. It does not add a UTC archive query
 or change the metadata-only canonical `fss query --target footage` command.
 
@@ -28,12 +29,61 @@ in **movie ticks**. The report's `movie_timescale` is ticks per second; a scale 
 this example 0.4 through 0.8 seconds. The `media_timescale` can differ. Neither scale is a
 wall-clock timestamp, and the command never interprets a capture-time assumption as UTC.
 
+### Matroska and WebM recordings
+
+The existing [`select-matroska` metadata command](RETAINED_MATROSKA_SELECTION.md) preserves
+its duration provenance and unresolved presentation intervals. `select-movie` supplies the
+stricter exact-duration plan consumed by `export-movie`; both commands remain available.
+
+For retained `mkvavc` and `mkvhevc` sources, movie ticks are **nanoseconds**. Both reported
+timescales are 1,000,000,000. `selection_source_format` names the retained format and
+`selection_movie_tick_unit=nanosecond` makes the unit explicit. The parser preserves the
+original Segment TimestampScale exactly, including scales that do not divide a second.
+
+For example, select 0.5 through 1.5 seconds of retained MKV presentation time:
+
+```sh
+cargo run -p fss-cli --bin fss-file -- select-movie \
+  --root ./camera-evidence --site site:home \
+  --import-id sha256:YOUR_IMPORT_DIGEST \
+  --start-movie-tick 500000000 --end-movie-tick 1500000000
+```
+
+The admitted Matroska profile requires explicit durations: a SimpleBlock uses the selected
+track's `DefaultDuration`, and a BlockGroup uses its `BlockDuration`. Missing durations,
+overlapping presentation intervals, unsupported track-time scaling, codec delay, seek
+preroll or block timing transforms refuse selection. Ordinal import and extraction remain
+available for otherwise valid sources outside that timing profile. These semantics follow
+[RFC 9559, sections 5.1.3.5.3 and 11](https://www.rfc-editor.org/rfc/rfc9559.html#section-5.1.3.5.3);
+the selector deliberately requires declared durations rather than inferring them from the
+next frame. Negative-timestamp frames may be decode prerequisites but are not presented.
+
+Explicit duration gaps remain `unrepresented` intervals. No gap is filled by extending a
+nearby frame, and no gap establishes physical absence. Reordered frames retain their
+original segment indices and exact coding-order prerequisites. Matroska decode spans require
+both the container keyframe assertion and an AVC or HEVC IDR. HEVC spans keep the preceding
+IDR across CRA pictures so requested leading RASL pictures retain their references. A BLA
+breaks that chain and requires a later IDR. The existing AVC/HEVC decoder still decides which
+profiles it can decode, and every selected picture must exist before an export can complete.
+
+The same interval can be passed to `export-movie` with `--interpretation ycbcr`, `--output`,
+and the existing output options. `--output-format gray-mkv --output-timing movie` preserves
+the selected presentation intervals and gaps in the screened grayscale review file;
+`--output-rate NUM/DEN` explicitly requests uniform retiming. Export checks current privacy
+masks and complete native decoding before creating the output. The admitted input codecs
+remain AVC/HEVC, including when the EBML DocType is `webm`; this does not add VP8, VP9 or AV1.
+
+Matroska track numbers retain their full 64-bit value. New review materializations use the
+`fss.file_movie_output.v2` lineage domain with that full-width encoding. Existing import
+identities, canonical manifests and historical export receipts are unchanged.
+
 The report contains:
 
 | Field or row | Meaning |
 | --- | --- |
 | `import_identity`, `import_root`, `manifest_digest`, `authority_sequence` | Existing retained source and completion bindings |
 | `selection_verified_source_sha256` | Verified digest of the entire original container |
+| `selection_source_format`, `selection_movie_tick_unit` | Exact retained container/codec family and explicit query tick unit |
 | `selection_source_bytes_read` | Original source bytes read to reconstruct and validate this container |
 | `movie_sample` | One presentation occurrence, with original coding `segment`, edit index, exact clipped interval and original byte range |
 | `movie_edit` | The intersecting edit, its interval, and media origin; `implicit` denotes an unedited track |
@@ -53,7 +103,7 @@ rows follow movie time. `decode_span` uses original coding order and accounts se
 the selected segments and all intervening prerequisites. B pictures can therefore make the
 order and number of presentation rows differ from the decode range.
 
-The admitted timing profile checks each continuous decode-time run in presentation order.
+For MP4/MOV, the admitted timing profile checks each continuous decode-time run in presentation order.
 Adjacent presentation starts must exactly match the previous sample's start plus its declared
 duration. This admits reordered and variable-duration material when that relationship is exact;
 duplicate, overlapping or otherwise inconsistent presentation grids are refused. A run's last
@@ -85,7 +135,8 @@ frames; selection does not turn that entire span into the requested presentation
 Existing codec, current privacy-mask, output and decode-work checks still apply. The selector
 quotes the extractor's bootstrap admission and byte cost; it does not certify that a codec
 will decode all pictures. In particular, the existing HEVC CRA/BLA leading-picture handling
-still governs skipped RASL pictures.
+still governs skipped RASL pictures when an MP4 range starts at such a picture. Matroska
+movie plans retain an earlier IDR across CRA and refuse broken reference chains.
 
 ## Custody and bounded work
 
@@ -95,7 +146,8 @@ every demuxed sample with the retained segment ranges and digests. It rechecks t
 completion binding before releasing a result. Cancellation or any corrupted, missing,
 tombstoned, stale or inconsistent source refuses the whole selection.
 
-The admitted scope includes original ADP-FILE-001 `mp4avc` and `mp4hevc` imports. Partitioned
+The admitted scope includes original ADP-FILE-001 `mp4avc`, `mp4hevc`, `mkvavc` and
+`mkvhevc` imports. Partitioned
 manifests use the existing retained part-resolution and custody path. Recoverable fragmented
 tails use the file adapter's existing prefix policy; unrepresented requested time remains a gap.
 Completed native RTSP window, catalog, page and recorder-replay imports retain their original
@@ -139,8 +191,9 @@ The report always labels `selection_absence_certifiable=false`.
 
 ## Native API
 
-`fss_container::demux::AvcMp4::select_movie_interval` provides the pure borrowed-source
-planner, with a checkpointed variant and `MovieSelectionLimits::validate` for pre-I/O admission.
+`fss_container::demux::AvcMp4::select_movie_interval` and
+`fss_container::demux::MatroskaVideo::select_movie_interval` provide pure borrowed-source
+planners, each with a checkpointed variant and `MovieSelectionLimits::validate` for pre-I/O admission.
 `fss_reference::ingest::RetainedFileImport::select_movie_interval` adds retained source
 verification through `RetainedSource` and returns `RetainedMovieSelection` with the exact custody
 bindings. Immutable API callers must complete their owner's final revalidation before releasing

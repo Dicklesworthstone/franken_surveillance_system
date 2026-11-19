@@ -228,6 +228,16 @@ fails closed. Present now: `media` (probe contract, six fixtures), `archive` (si
 suites), `agent` (effect and rehearsal contracts), `privacy` (masking contract) and `lab` (replay, crash matrix, decode, file activity, ingest, recovery) — the first two are proven (38 tests green). `lab` is proven too: 43 tests green across its seven suites, `geometry` is proven (16 tests) and `threat` is proven (35 tests) and `model` is proven (28 tests); fixing `inference_cli_contract` exposed a stale read-allowance assumption — the reported payload bytes are now the exact allowance, because the empty final journal probe no longer consumes one. Wiring it exposed three stale `lab_ingest_cli` assertions (they demanded `first_frame_observed`, which a file import deliberately never reaches, and zero Annex-B omissions, when delimiters are reported) — fixed. Media and archive also
 run inside `full` and `release`. `adapter` is written but **not green**: 72 of its 77 capture tests pass; the remaining 5 are all `campaign::history::sentinel` / `::watch` cases, which now reach the run and fail with `ERR-CAPTURE-RTSP-HISTORY-AUTHORITY-001` (a capability refusal in the sentinel path). It stays out of the gates until those pass and are the next wiring targets, in that order of expected value.
 
+### Supplemental recording and retained event checks
+
+Run `bash scripts/qualify.sh --recording-lifecycle` with the pinned toolchain and
+locked dependencies already installed. The command runs the same focused
+recorder discovery, replay, review expiry, event hydration, revision comparison,
+and MCP contracts as the supplementary GitHub workflow. It continues through
+the test groups and returns failure if any group fails. Results cover native
+reference fixtures and loopback services. The release lanes issue their own
+qualification receipts.
+
 ### When admission is refused repeatedly
 
 `RCH_SYNC_LIVE_CHECKOUT_REFUSED` and `RCH_TOPOLOGY_PATHS_PRESENT` can keep every worker refusing for

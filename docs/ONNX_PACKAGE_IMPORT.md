@@ -615,14 +615,27 @@ Reshape/Concat operators and use logarithmic helper counts, subject to the
 ordinary graph, tensor, work and inference allocation limits. Zero-sized results
 and runtime controls refuse. See [static expansion and tiling](onnx_import.md#static-expansion-and-tiling).
 
+MatMul admits vector/vector, vector/matrix and matrix/vector products as well as
+batched matrix products. Vector operands use exact native Reshape/MatMul/Reshape
+lowering: vector dots produce scalar outputs, batch dimensions broadcast, and
+existing singleton dimensions remain intact. See [vector MatMul](onnx_import.md#vector-matmul).
+
 Static F32 Gather and ReduceMean add packed attention selection and pooled
-feature heads. Gather accepts bounded constant scalar/vector indices and copies
-selected samples exactly. ReduceMean uses deterministic row-major F32
+feature heads. Gather accepts bounded constant INT64 index tensors from scalars
+through rank eight, with result rank at most eight. The complete index shape
+replaces the selected data axis, preserving repeated/reordered samples exactly.
+Larger selections share the ordinary constant-byte, node, tensor and work
+allowances; contiguous index runs coalesce into single Slice nodes. Runtime
+indices remain unsupported, and other shape controls retain their eight-value
+scalar/vector limits. See [static attention selection](onnx_import.md#static-attention-selection-and-pooled-features).
+ReduceMean uses deterministic row-major F32
 accumulation followed by division; finite inputs can overflow the intermediate
 sum, and this is not a higher-precision ONNX mean guarantee. Both use existing
-native operators, bounded helpers and ordinary resource limits. All twenty-one
-attention and reduction contracts pass on the pinned toolchain, including real
-scalar and optimized execution, graph/weight reload and empty-axis protobuf encodings.
+native operators, bounded helpers and ordinary resource limits. The earlier
+scalar/vector Gather and reduction profile has twenty-one passing contracts on
+the pinned toolchain, including real scalar and optimized execution, graph/weight
+reload and empty-axis protobuf encodings. Validation of the expanded index-tensor
+profile is tracked separately in the implementation guide linked below.
 This does not establish a trained model's quality or deployment qualification. See
 [static attention selection and pooled features](onnx_import.md#static-attention-selection-and-pooled-features)
 for the numerical and shape profile, controls, artifact identity and validation scope.

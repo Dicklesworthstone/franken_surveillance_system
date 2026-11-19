@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Native event inspection through immutable custody, without a publisher or recovery.
+//! Native event inspection and preparation through immutable custody, without a publisher or recovery.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -48,6 +48,23 @@ pub(super) fn run(mut options: Options, destination: &mut impl Write) -> RunResu
         let mut buffer = Vec::new();
         let out = &mut buffer;
         match &options.action {
+            Action::Prepare {
+                report,
+                digest,
+                track,
+            } => {
+                prepare_event(
+                    &options,
+                    &deployment,
+                    report,
+                    *digest,
+                    *track,
+                    &mut budget,
+                    &cx,
+                    out,
+                    &mut exports,
+                )?;
+            }
             Action::Report {
                 import,
                 interpretation,
@@ -168,7 +185,12 @@ pub(super) fn run(mut options: Options, destination: &mut impl Write) -> RunResu
                 )?;
                 writeln!(out, "absence_certifiable=false\neffects_authorized=false")?;
             }
-            _ => return Err(io::Error::other("event inspection requires read or report").into()),
+            _ => {
+                return Err(
+                    io::Error::other("immutable event inspection requires read, report or prepare")
+                        .into(),
+                );
+            }
         }
         if buffer.len() > options.limits.maximum_report_bytes {
             return Err(io::Error::other("event inspection output bound exceeded").into());
@@ -185,6 +207,68 @@ pub(super) fn run(mut options: Options, destination: &mut impl Write) -> RunResu
     })();
     cx.drain_and_finalize();
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_event(
+    options: &Options,
+    deployment: &dyn RetainedSource,
+    path: &Path,
+    digest: ContentDigest,
+    track: ContentDigest,
+    budget: &mut AnalysisBudget,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+    exports: &mut Vec<(PathBuf, Vec<u8>)>,
+) -> RunResult<()> {
+    let bytes = load(path, options.limits.maximum_report_bytes, digest, cx)?;
+    let event = if PackageAnalysisReport::is_package_report(&bytes) {
+        let proposal = PackageEventProposal::prepare(deployment, &bytes, digest, track, cx)?;
+        writeln!(out, "proposal_digest={}", proposal.digest())?;
+        let operation = if proposal.status() == PackageEventStatus::AlreadyPublished {
+            "already_published"
+        } else {
+            "prepared"
+        };
+        print_package_event(proposal.event(), operation, out)?;
+        proposal.event().clone()
+    } else {
+        let proposal = RecordedEventProposal::prepare(
+            deployment,
+            &bytes,
+            digest,
+            track,
+            &options.limits,
+            budget,
+            cx,
+        )?;
+        let event = proposal.event();
+        writeln!(out, "proposal_digest={}", proposal.digest())?;
+        writeln!(
+            out,
+            "operation=prepared\nevent_id={}\nrevision={}\nevent_revision_digest={}\nprovenance_root={}",
+            event.event_id,
+            event.revision,
+            event.revision_digest(),
+            event.decision_path.fingerprint
+        )?;
+        writeln!(
+            out,
+            "event_state={}\nevent_kind={}\nmodel_receipts={}\nevidence_items={}\ndetection_work_units={}\nassociation_work_units={}",
+            event.state.as_str(),
+            event.kind.as_str(),
+            event.model_receipts.len(),
+            event.evidence.len(),
+            budget.detection.used(),
+            budget.association.used()
+        )?;
+        writeln!(out, "absence_certifiable=false\neffects_authorized=false")?;
+        event.clone()
+    };
+    if let Some(path) = &options.event_out {
+        exports.push((path.clone(), event.to_canonical_json().into_bytes()));
+    }
+    Ok(())
 }
 
 fn read_package_event(

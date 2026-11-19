@@ -1,8 +1,375 @@
 # Implementation status
 
-**As of:** 2026-11-15 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-17 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Native event preparation and local agent rehearsal — 2026-11-17
+
+Package-event preparation now verifies a previous publication through either sealed
+retained-source reader, including while a capture writer is open. The renewed
+prepare uses the same canonical event, provenance and approval identity. Publishing
+still requires the exclusive writer and revalidates the approval.
+
+The local stdio MCP rehearsal preserves the typed refusal when a rich situation
+exceeds the `pulse` budget and completes the mission using `brief`. During resume,
+the reply parser admits the embedded native response under the existing MCP
+output ceiling. The same mission exercises all fourteen operations, including
+an approved loopback alert, reconciliation and follow. See
+[MCP transport limits](docs/MCP_READ_ONLY_REFERENCE.md#wire-behavior-and-limits).
+
+Pinned-nightly Linux checks compiled every workspace target. Focused fixture runs
+passed native capture, MPEG-TS import, recorded media export, recording discovery,
+UTC queries, immutable-event, and CLI/MCP session contracts. Physical coverage,
+production provider delivery, and aggregate local release qualification remain open.
+
+
+## Immutable temporal watch and dwell previews — 2026-11-16
+
+Unapproved `fss-event watch --stream-watch`, `--stream-dwell` and short dwell
+analyses now use the sealed retained source while capture owns the publisher.
+Whole-recording scans retain persistent foreground, tracking and temporal state,
+their native MJPEG/AVC/HEVC paths, existing detector/class-advice scope and
+whole-scan resource limits. Shared preparation and rendering keep preview and
+publishing report identities aligned.
+
+All modes buffer their complete report until final source, capsule, privacy,
+authority, snapshot metadata and registered-payload validation succeeds.
+Aggregate immutable-read budgets include these checks in addition to existing
+scan budgets. Quiet scans and health-degraded historical diagnostics receive
+the same custody validation. The new diagnostic source check allows those
+findings to be displayed; the original health gates for class advice and event
+publication remain strict. Approval, retention and incremental checkpoints keep
+the exclusive publisher. Short dwell still refuses health screening.
+
+Short-dwell previews verify any already-published current event through its
+canonical payload and full revision lineage. Late current-event damage cannot
+be accepted from a matching ledger witness alone. The original concrete
+publication-time status check remains unchanged.
+
+Four new CLI temporal contracts cover active-writer short/whole dwell and
+whole-watch report parity, MJPEG candidates beyond frame 128, AVC/HEVC paths,
+degraded diagnostics, exact final-read budgets, cancellation and late quiet
+capsule/source damage. Parser coverage retains mutation/checkpoint exclusion.
+A native dwell regression covers already-published parity and current-event
+damage; existing long-dwell fusion contracts now cover immutable advice parity,
+stale authority and health-strict advice alongside readable diagnostics.
+Explicit error conversions in extracted report helpers were corrected during
+cross-module review.
+
+Independent source reviews completed. Pinned formatting passed for the native
+owners and fusion helpers before a final scan-error compatibility adjustment.
+Formatting of that adjustment and the final CLI extension, full changed-crate compilation and these new tests remain unverified: the recovered host
+again exhausted shared disk/memory capacity before an isolated Cargo check
+could start, then became unavailable. Hosted checks had no completed execution
+result when inspected. No release qualification, broad bead closure, dependency
+change or weakened acceptance gate is claimed.
+
+
+## Immutable two-camera corroboration previews — 2026-11-16
+
+Unapproved short `fss-event corroborate` previews now read through the sealed
+immutable retained source while an active capture publisher owns the writer lock.
+Both cameras share the same snapshot and cumulative byte/read allowance,
+including retained calibration adoptions, covariance-aware coverage and final
+custody checks. Existing detector, class-advice, visibility, dependency,
+health-screening and privacy behavior use the same analysis and rendering
+helpers as the publishing owner.
+
+Complete reports remain buffered until both source guards, all supporting
+capsules, calibration currency, snapshot metadata and registered payloads pass
+final verification. Quiet and health-degraded reports take the same final
+custody path. Failed checks, cancellation and exhausted allowances produce no
+stdout or new report export. Explicit event/coverage/health retention and
+whole-recording corroboration keep their mutation owners; preview limits are
+omitted from approval rerun hints.
+
+Six CLI regression contracts cover active-writer MJPEG/AVC/HEVC and screened,
+shared-domain and posed report parity; exact aggregate budgets including final
+reads; final cancellation; late second-camera source and quiet-capsule damage;
+torn-tail refusal without repair; and immutable/mutation routing. Two retained
+calibration coverage contracts cover active-writer parity, exact allowance,
+snapshot currency and late adoption-payload damage. These new contracts and the
+full changed crate graph remain unexecuted because the execution host became
+unavailable. Independent source review and pinned-nightly formatting completed;
+no release qualification or
+broader bead closure is claimed. See
+[recorded event workflow](docs/RECORDED_EVENT_WORKFLOW.md).
+
+
+## Site clock discontinuity invalidation — 2026-11-16
+
+The generic VIT-019 clock correlation now permanently rejects a later wall-clock
+reset or monotonic regression even when another field independently violates the
+sample format. An oversized chronological bracket remains a retryable refusal;
+its unreliable wall reading is not promoted to proof of a discontinuity. A
+below-floor wall value inside both conservative drift windows is likewise refused
+without falsely declaring a step. No accepted sample refreshes synchronization
+age or narrows the original uncertainty.
+
+Four new regression contracts cover these distinctions and subsequent projection,
+witness and retry behavior. All 19 site-clock contracts passed in a focused
+pinned-nightly harness compiling the actual production module, contract test file
+and existing fss-core artifacts. Pinned formatting and whitespace checks passed.
+The complete Cargo integration and qualification lanes did not finish before the
+execution host became unavailable. The native SynchronizedClock wrapper already
+failed closed on every sampling error; this repairs the generic correlation
+owner, not a demonstrated native capture bypass. VIT-019 remains open for its
+broader acceptance contract.
+
+
+## Immutable recorded watch previews — 2026-11-16
+
+Unapproved short `fss-event watch` entry previews now use the sealed immutable
+retained source owner, allowing analysis while the capture publisher remains
+open. Native detection, tracking, detector cascade, class advice, current privacy
+masks and optional sensor-health screening retain their existing analysis and
+report contracts. Approval, retention, dwell and incremental work retain their
+existing mutation owners.
+
+One nonrenewing byte/read allowance includes source metadata, original payloads
+and final verification. Complete reports remain buffered until source/capsule,
+privacy, snapshot and authority checks succeed. A concurrent authority commit,
+damaged quiet supporting capsule, cancellation or exhausted allowance releases no
+report or export; an authority change requires retry at a stable committed head.
+No recovery, standing watch or new effect authority is introduced. See
+[recorded event workflow](docs/RECORDED_EVENT_WORKFLOW.md).
+
+Six regression contracts cover native MJPEG/AVC/HEVC and screened-report parity
+with an open writer, exact final-read budgets, final cancellation, late source or
+quiet-capsule damage, torn journal tails and mutation routing. Independent source
+review and pinned-nightly formatting passed. Full library/CLI compilation and
+these tests remain unexecuted because unchanged pinned `asupersync 0.5.0` was
+SIGKILLed during both test builds and metadata-only checks before reaching the
+changed owners. This is implementation progress, not release qualification or
+closure of the broader event/runtime beads.
+
+
+## Retained Matroska selection and review output — 2026-11-16
+
+Retained AVC/HEVC MKV/WebM files now enter the existing `fss-file select-movie`
+and `export-movie` paths. Queries use exact nanoseconds, with explicit durations,
+signed timestamps, reordered presentation, declared gaps and bounded decode
+prerequisites. Missing or unsupported timing refuses selection while preserving
+the previous ordinal import/extraction admission. Complete original-source
+hashing, every retained sample range/digest and truncated-tail omissions are
+checked before selection; immutable reads retain their original cumulative
+allowance through final validation. Native RTSP origins remain MP4-only.
+
+Full-width Matroska track identifiers enter the versioned
+`fss.file_movie_output.v2` lineage. Historical imports and v1 receipts retain
+their identities. Screened grayscale review output reuses the existing native
+decoders and output owners; movie-timed Matroska preserves clipped intervals and
+holes without creating replacement pictures. Matroska HEVC decode spans retain the
+preceding IDR across CRA to recover selected leading pictures; a BLA breaks that
+reference chain. The separate `select-matroska` metadata command retains its
+duration-provenance and unresolved-interval profile. See
+[retained movie selection](docs/RETAINED_MOVIE_SELECTION.md).
+
+**Verification:** the exact pinned nightly's locked offline container and packet
+suites passed on the integrated source: 812 tests passed, none failed and five
+existing external-oracle cases remained ignored. This includes 152 container unit
+tests (18 strict movie-selection and all 10 metadata-selection contracts), all 14
+movie-output tests and all seven native RTSP movie-timeline regressions. Four new
+production-component Matroska contracts check retained independent I420 hashes,
+exact selected pixels and timed output bytes, including the HEVC leading picture
+decoded from its earlier IDR. These component tests do not authenticate
+retained custody or qualify CLI execution. The retained/CLI integration tests are
+authored but unexecuted: both test compilation and metadata-only checking were
+SIGKILLed inside pinned `asupersync 0.5.0` before reaching those owners. Allocator
+and single-frontend diagnostic retries did not remove that resource blocker.
+No dependency, feature, compiler pin or qualification gate changed. Broad
+FSS-068, VIT-008 and VIT-023 acceptance remains open.
+
+Pinned formatting and changed-file manifest hashes pass. The repository-wide
+layered manifest audit still fails existing drift; comparison with published
+main found no introduced findings (3,395 remain, versus 3,401 at the baseline).
+
+## Larger and multidimensional ONNX Gather — 2026-11-16
+
+Static F32 Gather now accepts bounded embedded INT64 index tensors from scalars
+through rank eight, with a resulting native rank of at most eight. The output
+replaces the selected data axis with the complete index shape, preserving negative
+indices, repetitions, permutations and exact F32 sample bits. Consecutive ascending
+indices coalesce into Slice runs; a contiguous 4,096-index selection needs one
+Slice. The ordinary aggregate byte/node/tensor/work limits bound larger inputs
+and helper expansion. Scalar/vector graph bytes remain unchanged.
+
+Widening embedded index parsing does not widen ordinary shape programs:
+their scalar/vector and eight-value bounds remain explicit, including Shape and
+ConstantOfShape guards. Eight authored cases exercise both production executors,
+real graph/Safetensors reload, all admitted index layouts, a Gather-to-vector-MatMul
+projection, exact legacy graphs, 257/511-input native Concats, node/byte limits and
+cancellation. The focused ONNX check script also runs existing Model IR library
+tests to detect regressions in the shared constant/control parser.
+
+Independent source review completed. Expanded Gather and the later tiled kernel
+remain unexecuted at this checkpoint; the 88-test hosted success recorded below
+belongs to the earlier vector-only commit. No release or model-quality claim is
+made. See [ONNX import](docs/onnx_import.md#static-attention-selection-and-pooled-features)
+and the [session handoff](docs/SESSION_HANDOFF_2026-11-16_MODEL_MEDIA.json).
+FSS-139 (`fss-x4a.14.10`) remains open pending broader acceptance.
+
+## Retained Matroska presentation selection — 2026-11-16
+
+The native Matroska parser, retained source reader and `fss-file select-matroska`
+now provide bounded selection by half-open Segment presentation nanoseconds for
+AVC/HEVC originals. Results preserve exact source frame indices/ranges, display
+order, duration provenance, gaps, unknown final ends and required coding-order
+preroll. BlockDuration and DefaultDuration retain their distinct units; absent
+final duration stays unresolved. Capture time and continuity claims are unchanged.
+
+The retained path admits and authenticates the entire original, reparses its
+selected track, verifies every retained frame index/range/digest, then revalidates
+completion/root custody before release. The command uses the immutable reader
+alongside an active writer, shares cumulative read limits and buffers the complete
+report so refusals publish no success-looking rows or optional manifest export.
+
+Independent source review caught a concrete HEVC CRA/leading-RASL dependency
+problem in the checked-in fixture. The implemented correction keeps the earlier
+IDR across CRA, admits HEVC IDR types 19/20 as starts, and refuses a BLA chain until
+a later IDR. An exact fixture regression requires samples 0–5 to recover the
+leading picture at 728 ms; a CRC-resealed BLA mutation exercises refusal.
+
+Twenty-one authored tests cover native timing/dependencies, retained index/custody
+checks and CLI behavior, including path deletion, an active writer, exact limits,
+source/history loss and cancellation. Source/API review completed. The later
+integrated native run passed all 10 metadata-selection tests; the retained and
+CLI tests remain uncompiled and unexecuted because the pinned Asupersync dependency
+was killed during compilation. The hosted ONNX evidence below applies only to its
+identified earlier commit. See
+[retained Matroska selection](docs/RETAINED_MATROSKA_SELECTION.md) for usage and
+test commands. Broad media/container qualification remains open.
+
+## Tiled broadcast MatMul — 2026-11-16
+
+The optimized CPU executor now prepares nonempty F32 MatMul as bounded 4-by-8
+output tiles, covering runtime attention operands and broadcast batch dimensions.
+Each output retains the scalar reduction order and initial positive zero; odd
+tails perform no synthetic padding arithmetic. Shape products are checked,
+cancellation reaches long reductions, and the extra 128-byte accumulator payload
+is included in scratch accounting. Empty geometries retain the scalar path.
+The kernel's source and tile geometry participate in implementation identity.
+
+Eight authored regression tests and one ignored same-binary timing experiment
+are included in the existing production-source attention execution target.
+Independent source review found no blocking defect. Changed-code compilation,
+execution, rustfmt and performance measurement remain blocked by the unavailable
+runner; the earlier baseline check does not cover this implementation. No
+speedup or qualification is claimed. See
+[bounded tiled MatMul](docs/OPTIMIZED_MATMUL.md) for exact contracts and commands.
+FSS-142 (`fss-x4a.14.13`) and FSS-139 (`fss-x4a.14.10`) remain open.
+
+## ONNX vector MatMul — 2026-11-16
+
+The static F32 ONNX importer now accepts vector/vector dot products,
+vector/matrix products and matrix/vector products, including a vector broadcast
+across matrix batches through rank eight. Exact Reshape promotion/removal uses
+the existing native MatMul; a dot product produces a scalar and pre-existing
+singleton dimensions remain intact. Already admitted matrix/matrix graphs keep
+their canonical nodes and bytes. No operator IDs, native graph encoding,
+parameter values, dependencies or activation policy changed.
+
+The new lowering shares aggregate node/name/tensor/work admission, reserved-name
+collision handling and cancellation. Its source participates in the importer
+implementation identity. Six authored regression tests exercise both production
+executors, independent ordered arithmetic, actual canonical/Safetensors reload,
+constant operands, legacy graph bytes, malformed inputs, exact limits and every
+import cancellation checkpoint. See [ONNX import](docs/onnx_import.md#vector-matmul).
+
+**Observed verification:** supplementary GitHub Actions
+[run 43786125301](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/43786125301)
+tested vector checkpoint `dab0ce3b11e4e960e1d13dbba7f116ce598d3b4c` on the
+pinned nightly. The complete attention/import target passed 88 tests, including
+all six new vector cases; ONNX package import passed 19, ONNX CLI passed 14,
+and native ONNX import execution passed 12. The broader Rust qualification step
+failed its policy prerequisites (existing dependency, registry/schema, domain and
+documentation drift), and the complete Model IR package step was skipped.
+These results do not cover later tiled-kernel, Gather or Matroska changes and do
+not establish local DSR/release qualification.
+
+The local baseline library check had passed before edits. Local test compilation
+was then killed for memory use and the execution environment became unavailable;
+hosted feedback supplies the scoped execution evidence above.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution matmul_vectors
+```
+
+This is implementation progress under FSS-139 (`fss-x4a.14.10`) and the frozen
+operator contract FSS-137 (`fss-x4a.14.8`), not closure or release qualification.
+The pre-existing local qualification failures and broader model/exporter corpus
+remain open.
+
+## Operator MPEG-TS import command — 2026-11-15
+
+`fss-file import-ts` now exposes the finite native transport import through the
+existing local operator owner. Explicit program/PID selection, independent parser
+ceilings and one cancellable cumulative work allowance are available. The command
+reopens retained custody, compares it to the receipt and verifies original plus
+reconstructed bytes before publishing any successful report or manifest export.
+The returned import identity enters existing verification, decode and event paths;
+PES media time remains untrusted and the report counts access units, not frames.
+
+Six focused command contracts were authored for AVC/HEVC dispatch, exact retry,
+cold verification, bounds, native OS paths and output/export refusal on damaged
+originals or final cancellation. All 25 new contracts across this session remain
+uncompiled/unexecuted because the executor is unavailable. Source reviews and
+blob-content checks passed; supplementary Actions supplied no passing execution
+result. Broad beads and qualification gates remain open. See
+[operator workflow](docs/FILE_IMPORT_WORKFLOW.md) and the
+[engineering handoff](docs/SESSION_HANDOFF_2026-11-15_TS_EFFECT_INTEGRATION.json).
+
+## Native retained MPEG-TS import — 2026-11-15
+
+The new `ingest::mpeg_ts_import` backend connects finite MPEG-TS extraction to the
+existing retained AVC/HEVC split and decode owners. It preserves complete original
+transport chunks, extraction policy/mappings and native capsule authority in one
+root-last publication. Retained readers replay the original before returning
+reconstructed ranges; exact retry preserves visible custody and refuses loose-file
+repair of damaged published evidence. Footage queries recognize the explicit
+`ADP-MPEGTS-FILE-001` origin. Capture stays unknown or an operator assumption.
+
+Original and reconstructed streams are independently capped at 64 MiB. One native
+work owner reserves requested file I/O before reading and carries conservative
+pass/preparation/publication debits throughout. Five real AVC/HEVC retained-import
+contracts were authored, covering restart/decode, damaged originals/proof,
+partitioned resume/deletion closure, limits/cancellation and capture identity.
+They remain uncompiled/unexecuted during the executor outage. Independent source
+reviews found no blocker; no broad media bead or release gate is closed.
+
+## Live session admission at the alert boundary — 2026-11-15
+
+A held planning context now resamples its original runtime clock before effect
+preparation and at native commit/send admission, including the checkpoint after
+source validation. Regression, uncertain time, clock-mode/root drift, cancellation
+and exact-boundary expiry refuse new work; expiry is durably pinned. Live session
+expiry narrows the network deadline without extending the original authority or
+preventing its separately bounded receipt/custody cleanup. Existing committed or
+indeterminate operations retain their no-resend behavior.
+
+Four real-journal contracts and three native-owner contracts were added. They
+remain uncompiled and unexecuted because the execution environment is unavailable;
+independent source review is not runtime qualification. This advances the held
+session/effect seam of `fss-x4a.24.3`, `fss-x4a.24.4` and `fss-x4a.24.20`; those
+broad beads remain open. No live device or external webhook was exercised.
+
+## Compact MPEG-TS extraction provenance — 2026-11-15
+
+The finite native AVC/HEVC transport parser now retains its exact selection and
+resource policy and can produce a canonical `TsExtractionReceipt`. The bounded
+receipt commits to complete original and elementary bytes plus every PES timestamp
+and original-byte mapping. Source verification reconstructs the extraction under
+intersected current/historical limits and withholds results on corruption or
+cancellation. No media timing or continuity claim is strengthened.
+
+Seven focused contracts were authored, but the execution environment became
+unavailable before these changes could be compiled or tested. The 117 container
+and 50 packet passing tests recorded earlier in this session apply to the unchanged
+baseline only. Current supplementary GitHub workflows are queued/pending, with no
+new execution evidence. This is a source implementation checkpoint; broad beads,
+media gates and release qualification remain open. See [receipt contract and
+verification commands](docs/MPEG_TS_RECEIPTS.md).
 
 ## Immutable operator inspection during active ingest — 2026-11-15
 

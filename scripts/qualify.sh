@@ -2,6 +2,15 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Supplemental reference tests run the same loopback fixtures locally and in CI.
+# This entrypoint does not participate in the release lane or receipt matrix.
+if [[ "${1:-}" == "--recording-lifecycle" ]]; then
+  if (( $# != 1 )); then
+    printf 'usage: %s --recording-lifecycle\n' "$0" >&2
+    exit 4
+  fi
+  exec bash "$ROOT/scripts/check_recording_lifecycle.sh" all
+fi
 # Sealed-offline qualification (fss-x4a.26.3, DEP-AUD-027): every cargo process started below,
 # including the `cargo metadata` cargo-fmt runs internally, inherits Cargo's offline mode, and
 # every cargo invocation also passes --offline. This seals Cargo resolution only; it is not
@@ -92,10 +101,12 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/qualify.sh [--lane LANE] [--receipt-dir DIR] [--no-receipt]
        scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|release-preflight|release]
+       scripts/qualify.sh --recording-lifecycle
 
 The repository-local qualifier is the semantic qualification entrypoint. Doodlestein
 Self-Releaser executes it from clean, exact source/sibling snapshots on controlled native hosts.
 Workflow YAML is a portable supplementary job graph and contains no unique release authority.
+--recording-lifecycle runs supplemental locked, offline recorder, review, and event contracts.
 
 Implemented now: policy, docs, rust, full, release-preflight, release.
 Claim-specific lanes fail closed until their dedicated Rust harness exists under scripts/lanes/.

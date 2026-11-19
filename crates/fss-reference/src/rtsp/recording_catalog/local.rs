@@ -2,11 +2,12 @@
 //! Root-last catalog publication and bounded, incremental original-media retrieval.
 
 use super::super::recording::hevc::{PreparedHevcRecording, local::load_hevc_recording};
-use super::super::recording::local::{RecordingIoError, load_recording};
+use super::super::recording::local::{
+    RecordingIoError, load_recording, read_recording_object, require_durable_root,
+};
 use super::*;
 use fss_publication::{
-    LocalPublicationReceipt, LocalPublicationState, LocalRootPublisher, PublishCancellation,
-    PublishCutPoint,
+    LocalPublicationReceipt, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
 
 /// Content refusals remain distinct from the publisher's cancellation, indeterminacy,
@@ -161,7 +162,8 @@ impl<'a> CatalogPublication<'a> {
             });
         }
         for entry in &self.catalog.entries {
-            durable_root(self.publisher, &entry.slot, entry.root)?;
+            cancelled(cancel)?;
+            require_durable_root(self.publisher, &entry.slot, entry.root)?;
         }
         if !self.index_staged {
             let observed = self
@@ -189,8 +191,7 @@ impl<'a> CatalogPublication<'a> {
 /// Load an exact durable page and check its metadata, reference closure, scope,
 /// tombstones, and slot/root bindings. Window payloads are not yet returned or
 /// provenance-certified: `RecordingRangeRead` verifies those independently.
-/// Read allocation is bounded by the supplied spool (at most 32 MiB per object),
-/// not merely by the smaller 64 KiB accepted catalog-payload limit.
+/// Root and index share a 64 KiB payload allowance enforced on each spool read.
 pub fn load_catalog(
     publisher: &LocalRootPublisher,
     slot: &SlotName,
@@ -216,12 +217,10 @@ pub(super) fn load_catalog_for(
     cancel: &dyn PublishCancellation,
     family: CatalogFamily,
 ) -> IoResult<RecordingCatalog> {
+    cancelled(cancel)?;
     owner_ready(publisher)?;
-    durable_root(publisher, slot, expected_root)?;
-    let root_bytes = read_object(publisher, expected_root, cancel)?;
-    if root_bytes.len() > MAX_CATALOG_BYTES {
-        return Err(CatalogError::Limit.into());
-    }
+    require_durable_root(publisher, slot, expected_root)?;
+    let root_bytes = read_object(publisher, expected_root, MAX_CATALOG_BYTES, cancel)?;
     let manifest =
         ObjectManifest::from_canonical_bytes(&root_bytes).map_err(|_| CatalogError::Malformed)?;
     if manifest.root() != expected_root
@@ -231,7 +230,10 @@ pub(super) fn load_catalog_for(
         return Err(CatalogError::Digest.into());
     }
     let index_digest = manifest.metadata_digest().ok_or(CatalogError::Malformed)?;
-    let index = read_object(publisher, index_digest, cancel)?;
+    let remaining = MAX_CATALOG_BYTES
+        .checked_sub(root_bytes.len())
+        .ok_or(CatalogError::Limit)?;
+    let index = read_object(publisher, index_digest, remaining, cancel)?;
     let catalog = verify_catalog_for(&manifest, &index, scope, family)?;
     live_catalog(publisher, slot, &catalog, cancel)?;
     Ok(catalog)
@@ -320,7 +322,7 @@ impl<'a> RecordingRangeRead<'a> {
             return Err(CatalogError::Digest.into());
         }
         owner_ready(publisher)?;
-        durable_root(publisher, slot, catalog.manifest.root())?;
+        require_durable_root(publisher, slot, catalog.manifest.root())?;
         let selection = catalog.select(query, limits)?;
         Ok(Self {
             publisher,
@@ -568,19 +570,7 @@ fn owner_ready(p: &LocalRootPublisher) -> IoResult<()> {
     }
     Ok(())
 }
-fn durable_root(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest) -> IoResult<()> {
-    let known = p.root(slot).ok_or(RecordingIoError::NotDurable)?;
-    if known.root != root {
-        return Err(RecordingIoError::RootConflict.into());
-    }
-    if known.state != LocalPublicationState::Durable {
-        return Err(RecordingIoError::NotDurable.into());
-    }
-    if p.tombstones().any(|d| *d == root) {
-        return Err(RecordingIoError::Tombstoned.into());
-    }
-    Ok(())
-}
+
 fn live_catalog(
     p: &LocalRootPublisher,
     slot: &SlotName,
@@ -589,29 +579,29 @@ fn live_catalog(
 ) -> IoResult<()> {
     cancelled(cancel)?;
     owner_ready(p)?;
-    durable_root(p, slot, catalog.manifest.root())?;
     for entry in &catalog.entries {
-        durable_root(p, &entry.slot, entry.root)?;
+        cancelled(cancel)?;
+        require_durable_root(p, &entry.slot, entry.root)?;
     }
     for tombstone in p.tombstones() {
         if catalog.manifest.children().binary_search(tombstone).is_ok() {
             return Err(RecordingIoError::Tombstoned.into());
         }
     }
-    Ok(())
+    cancelled(cancel)?;
+    require_durable_root(p, slot, catalog.manifest.root())?;
+    cancelled(cancel)
 }
 fn read_object(
     p: &LocalRootPublisher,
     digest: ContentDigest,
+    maximum: usize,
     cancel: &dyn PublishCancellation,
 ) -> IoResult<Vec<u8>> {
-    cancelled(cancel)?;
-    if p.tombstones().any(|d| *d == digest) {
-        return Err(RecordingIoError::Tombstoned.into());
-    }
-    p.spool()
-        .read(digest)
-        .map_err(|e| RecordingIoError::Spool(e).into())
+    read_recording_object(p, digest, maximum, cancel).map_err(|error| match error {
+        RecordingIoError::Budget => CatalogError::Limit.into(),
+        error => error.into(),
+    })
 }
 
 impl std::fmt::Debug for CatalogPublication<'_> {

@@ -98,7 +98,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     Source paths, thresholds, zones, detector packages and event approvals are not inputs.\n\
     Use fss-event verify --help for metadata, per-camera execution and report bounds.\n\
   Budgets: --detection-work-units N --association-work-units N --max-report-bytes N\n\
-  Native recorded-luma/package read and report: --max-read-bytes N --max-read-objects N\n\
+  Native recorded-luma/package read, report and prepare: --max-read-bytes N --max-read-objects N\n\
     Open immutable retained custody without taking the publisher lock or repairing state.\n\
     Metadata, source payloads and final revalidation share one allowance (default 1 GiB and\n\
     1,000,000 read attempts; maximum 4 GiB and 4,000,000), with a cooperative 60 s deadline.\n\
@@ -134,7 +134,16 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     coverage pipeline generation binds the detector generation. Without it, output is unchanged.\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
-    Event/retention approval or explicit incremental checkpointing may write deployment state.\n\
+    Unapproved watch/dwell previews (short or whole recording, without checkpoints) use\n\
+    immutable retained custody while capture owns the writer. --max-read-bytes N and\n\
+    --max-read-objects N bound metadata, source reads and final verification together\n\
+    (default 1 GiB and 1,000,000 reads; maximum 4 GiB/4,000,000), with a cooperative 60 s deadline.\n\
+    Source, privacy and authority must still match before a complete report/export is delivered.\n\
+    Quiet scans and degraded-health diagnostics take the same final custody checks.\n\
+    Health findings remain readable but still block event publication and calibrated class advice.\n\
+    Concurrent authority commits refuse the complete preview; retry at a stable committed head.\n\
+    These limits supplement whole-scan budgets and require no approval, retention or checkpoint.\n\
+    Approval hints omit them. Event/retention approval and incremental checkpoints keep writer ownership.\n\
     Each prepared candidate lists the exact rerun\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
@@ -211,6 +220,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
           [watch thresholds and budgets] [watch detector-cascade options] [--approve sha256:PROPOSAL[,...]]\n\
           [--retain-coverage sha256:APPROVAL] [--sensor-health conservative-v1] [--report-out FILE]\n\
           [--failure-domain KIND:ID=CAMERA[,CAMERA...]]...\n\
+    Unapproved short previews read immutable retained custody while capture holds the writer.\n\
+    --max-read-bytes N and --max-read-objects N share one allowance across both cameras,\n\
+    retained calibration metadata and final checks (default 1 GiB/1000000, max 4 GiB/4000000).\n\
+    A cooperative 60 s deadline applies. Complete JSON/export waits for source, capsule,\n\
+    privacy, calibration currency and snapshot validation, including quiet camera evidence.\n\
+    These limits require a short preview with no approval or retention; approval hints omit them.\n\
     --stream-corroborate (bare flag): scan both complete retained recordings, up to 65536\n\
     segments per camera, with native MJPEG/H.264/H.265 and persistent per-camera tracking.\n\
     Ground entries use actual confirmed matches; gaps reset tracking. The --stream-read-bytes,\n\
@@ -640,11 +655,9 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
                 && matches!(key, "--report" | "--report-digest" | "--track"))
             || (action == "publish" && key == "--proposal-digest")
             || (action == "read" && key == "--event-id")
-            || (matches!(action, "read" | "report")
-                && matches!(
-                    key,
-                    "--report-out" | "--max-read-bytes" | "--max-read-objects"
-                ))
+            || (matches!(action, "read" | "report") && key == "--report-out")
+            || (matches!(action, "read" | "report" | "prepare")
+                && matches!(key, "--max-read-bytes" | "--max-read-objects"))
             || (action == "report" && report_options.contains(&key));
         if !allowed {
             return Err("unknown or inapplicable option".into());
@@ -890,9 +903,22 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     }
     if matches!(
         &options.action,
-        Action::Read(_) | Action::Report { .. } | Action::PackageReport { .. }
+        Action::Read(_)
+            | Action::Report { .. }
+            | Action::PackageReport { .. }
+            | Action::Prepare { .. }
     ) {
         return retained::run(options, out);
+    }
+    if let Action::Watch(action) = &options.action
+        && action.is_immutable_preview()
+    {
+        return watch::run_immutable_preview(action, out);
+    }
+    if let Action::Corroborate(action) = &options.action
+        && action.is_immutable_preview()
+    {
+        return corroborate::run_immutable_preview(action, out);
     }
     if let Action::Delete(request) = &options.action
         && matches!(request.operation, delete::Operation::PolicyShow(_))
@@ -1270,6 +1296,33 @@ mod tests {
         assert!(parse(&approved).is_ok());
     }
     #[test]
+    fn immutable_prepare_has_read_allowances_but_publication_does_not() {
+        for key in ["--max-read-bytes", "--max-read-objects"] {
+            let mut preview = args("prepare");
+            preview.extend([key, "1"].into_iter().map(OsString::from));
+            assert!(parse(&preview).is_ok());
+            let mut publish = args("publish");
+            publish.extend(
+                [
+                    "--proposal-digest",
+                    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                    key,
+                    "1",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            );
+            assert!(parse(&publish).is_err());
+        }
+        let mut preview = args("prepare");
+        preview.extend(
+            ["--report-out", "unexpected.bin"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        assert!(parse(&preview).is_err());
+    }
+    #[test]
     fn duplicate_unknown_inapplicable_and_unbounded_options_are_refused() {
         for extra in [
             ["--site", "other"],
@@ -1277,8 +1330,8 @@ mod tests {
             ["--proposal-digest", "bad"],
             ["--max-report-bytes", "0"],
             ["--max-report-bytes", "16777217"],
-            ["--max-read-bytes", "1"],
-            ["--max-read-objects", "1"],
+            ["--max-read-bytes", "0"],
+            ["--max-read-objects", "0"],
         ] {
             let mut argv = args("prepare");
             argv.extend(extra.into_iter().map(OsString::from));

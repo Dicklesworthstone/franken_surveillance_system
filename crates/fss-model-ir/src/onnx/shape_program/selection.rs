@@ -105,6 +105,7 @@ fn fill_value(source: &SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Resul
     lowering.admission.limits.parameter_bytes = maximum;
     let (port, tensor) = parsed?;
     if port.dtype() != DType::I64
+        || port.rank() > 1
         || tensor
             .shape()
             .num_elements()

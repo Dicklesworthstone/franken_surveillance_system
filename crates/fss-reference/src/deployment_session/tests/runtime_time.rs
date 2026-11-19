@@ -12,6 +12,7 @@ use crate::agent_session::work_claims::WorkClaimLimits;
 use crate::deployment_session::{
     SessionContext, SessionJournal, SessionTimeAuthority, SessionTimeError,
     orient::{OrientSessionRequest, orient_session},
+    plan::hold_planning_context,
 };
 
 const START: i128 = 1_800_000_000_000_000_000;
@@ -19,6 +20,7 @@ const START: i128 = 1_800_000_000_000_000_000;
 struct Clock {
     root: PathBuf,
     now: Cell<Result<TimestampNs, SessionTimeError>>,
+    advance_after_observation: Cell<Option<TimestampNs>>,
 }
 
 impl Clock {
@@ -26,6 +28,7 @@ impl Clock {
         Self {
             root: root.to_owned(),
             now: Cell::new(Ok(TimestampNs(now))),
+            advance_after_observation: Cell::new(None),
         }
     }
 
@@ -43,7 +46,11 @@ impl SessionTimeAuthority for Clock {
         if root != self.root || actor.as_str() != "principal:session-unit" {
             return Err(SessionTimeError::Denied);
         }
-        self.now.get()
+        let now = self.now.get();
+        if let Some(next) = self.advance_after_observation.take() {
+            self.now.set(Ok(next));
+        }
+        now
     }
 }
 
@@ -543,5 +550,147 @@ fn live_cancellation_approval_survives_elapsed_time_but_cannot_extend_expiry() -
             assert_eq!(retry.receipt, cancelled.receipt);
         }
     }
+    Ok(())
+}
+
+
+#[test]
+fn held_planning_lease_advances_without_poll_writes_and_persists_exact_expiry() -> TestResult {
+    let fixture = Fixture::new("runtime-held-plan-expiry", SITE)?;
+    let authority = fixture.authority_digests()?;
+    let clock = Clock::new(&fixture.root, START);
+    let opened = open_session(clock.context(), &open_request()?)?;
+    let held = hold_planning_context(
+        clock.context(),
+        &principal()?,
+        &opened.session.session_id,
+        None,
+    )?;
+    assert_eq!(
+        held.runtime_deadline(),
+        Some(TimestampNs(opened.session.expires_at_ns))
+    );
+    let before_poll = journal_bytes(&fixture.root)?;
+    clock.set(START + 1_000);
+    assert_eq!(held.check_time(clock.context())?, TimestampNs(START + 1_000));
+    clock.set(START + 2_000);
+    assert_eq!(held.check_time(clock.context())?, TimestampNs(START + 2_000));
+    assert_eq!(journal_bytes(&fixture.root)?, before_poll);
+    held.revalidate(clock.context())?;
+    assert_eq!(
+        retained(&fixture.root)?.last_observed_at,
+        TimestampNs(START + 2_000)
+    );
+    assert_eq!(held.context().session, opened.session);
+    assert_eq!(
+        held.runtime_deadline(),
+        Some(TimestampNs(opened.session.expires_at_ns))
+    );
+
+    clock.set(opened.session.expires_at_ns - 1);
+    held.check_time(clock.context())?;
+    clock.set(opened.session.expires_at_ns);
+    assert!(matches!(
+        held.check_time(clock.context()),
+        Err(DeploymentSessionError::SessionUnknown)
+    ));
+    let expired = retained(&fixture.root)?;
+    assert!(expired.closed);
+    assert_eq!(expired.last_observed_at.0, opened.session.expires_at_ns);
+    drop(held);
+    let cold_clock = Clock::new(&fixture.root, START + 1);
+    assert!(matches!(
+        open_session(cold_clock.context(), &open_request()?),
+        Err(DeploymentSessionError::SessionUnknown)
+    ));
+    assert_eq!(retained(&fixture.root)?, expired);
+    assert_eq!(fixture.authority_digests()?, authority);
+    Ok(())
+}
+
+#[test]
+fn held_planning_admission_rechecks_after_its_own_durable_watermark_write() -> TestResult {
+    let fixture = Fixture::new("runtime-held-plan-during-pin", SITE)?;
+    let clock = Clock::new(&fixture.root, START);
+    let opened = open_session(clock.context(), &open_request()?)?;
+    let held = hold_planning_context(
+        clock.context(),
+        &principal()?,
+        &opened.session.session_id,
+        None,
+    )?;
+    clock.set(opened.session.expires_at_ns - 1);
+    clock
+        .advance_after_observation
+        .set(Some(TimestampNs(opened.session.expires_at_ns)));
+    assert!(matches!(
+        held.revalidate(clock.context()),
+        Err(DeploymentSessionError::SessionUnknown)
+    ));
+    let expired = retained(&fixture.root)?;
+    assert!(expired.closed);
+    assert_eq!(expired.last_observed_at.0, opened.session.expires_at_ns);
+    Ok(())
+}
+
+#[test]
+fn held_planning_admission_refuses_clock_downgrade_scope_regression_and_cancellation()
+-> TestResult {
+    let fixture = Fixture::new("runtime-held-plan-clock", SITE)?;
+    let clock = Clock::new(&fixture.root, START);
+    let opened = open_session(clock.context(), &open_request()?)?;
+    let held = hold_planning_context(
+        clock.context(),
+        &principal()?,
+        &opened.session.session_id,
+        None,
+    )?;
+    assert!(matches!(
+        held.check_time(&fixture.root),
+        Err(DeploymentSessionError::Time(SessionTimeError::Denied))
+    ));
+    let other = fixture.root.join("another-deployment");
+    assert!(matches!(
+        held.check_time(SessionContext::runtime(&other, &clock)),
+        Err(DeploymentSessionError::Time(SessionTimeError::Denied))
+    ));
+    clock.set(START + 100);
+    held.check_time(clock.context())?;
+    clock.set(START + 99);
+    assert!(matches!(
+        held.check_time(clock.context()),
+        Err(DeploymentSessionError::Time(SessionTimeError::Uncertain))
+    ));
+    for error in [SessionTimeError::Cancelled, SessionTimeError::Uncertain] {
+        clock.now.set(Err(error));
+        assert!(matches!(
+            held.check_time(clock.context()),
+            Err(DeploymentSessionError::Time(actual)) if actual == error
+        ));
+    }
+    clock.set(-1);
+    assert!(matches!(
+        held.check_time(clock.context()),
+        Err(DeploymentSessionError::Time(SessionTimeError::Uncertain))
+    ));
+    assert!(!retained(&fixture.root)?.closed);
+    Ok(())
+}
+
+#[test]
+fn evidence_clock_planning_never_exports_a_host_deadline_or_renews_the_lease() -> TestResult {
+    let fixture = Fixture::new("evidence-held-plan-clock", SITE)?;
+    let opened = open_session(&fixture.root, &open_request()?)?;
+    let held = hold_planning_context(
+        &fixture.root,
+        &principal()?,
+        &opened.session.session_id,
+        None,
+    )?;
+    let before = journal_bytes(&fixture.root)?;
+    assert_eq!(held.runtime_deadline(), None);
+    assert_eq!(held.revalidate(&fixture.root)?, held.context().now);
+    assert_eq!(held.context().session, opened.session);
+    assert_eq!(journal_bytes(&fixture.root)?, before);
     Ok(())
 }

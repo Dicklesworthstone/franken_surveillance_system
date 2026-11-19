@@ -38,9 +38,10 @@ staged index is not a published catalog. Cancellation leaves staged custody and
 previous recording roots intact. Indeterminate publication remains typed and
 requires reopening/reconciliation, not a new remux or overwrite.
 
-`load_catalog` checks an exact durable slot/root, canonical index/checksum,
-expected scope, flat closure, tombstones, and child slot bindings. It returns
-structural discovery metadata, NOT a fresh whole-media verification receipt.
+`load_catalog` verifies the on-disk publication record of the catalog and every
+member slot, the canonical index and checksum, expected scope, flat closure and
+tombstones. A missing or changed record refuses the read even when the owner
+previously observed a durable publication. The result describes the catalog.
 `RecordingRangeRead` subsequently loads and verifies one selected window per
 step and retains only metadata between steps. Each output is a COMPLETE IDR-led
 window, with the requested overlap reported separately. Encoded bytes are not
@@ -72,12 +73,12 @@ allocation; unknown versions, trailing bytes, duplicate roots/slots, overlap,
 missing/extra references, wrong scope, and checksum failures are refused.
 
 Queries cap windows and complete returned payload bytes (default 256 MiB).
-That byte budget is NOT physical I/O, RSS, or hashing work. Each window read
-retains the existing separate 32 MiB recording bound, and local owners with an
-object-read ceiling above 32 MiB are refused. Catalog reads can temporarily
-allocate up to that supplied spool limit before enforcing the smaller accepted
-catalog size. Publication's final closure verification can reread multiple
-windows; it is bounded by the page and publisher, not one small syscall.
+Each original window has its own 32 MiB payload bound. Catalog loading first
+reads the manifest, then gives the index the remainder of the 64 KiB catalog
+allowance. Both limits apply before allocation. Each indexed read also allows
+for its spool envelope and one trailing-byte probe. Slot checks separately read
+at most 512 bytes plus one probe per publication record. Final closure
+verification can reread multiple windows within the page and publisher limits.
 
 The library owns no network connection, background task, filesystem discovery,
 crypto, retention policy, or authority grant. It uses an already supplied owner.
@@ -125,12 +126,12 @@ python3 scripts/check_recording_catalog_fixture.py
 
 ## Verification boundary
 
-The 23 added Rust test functions cover selection, canonical corruption, exact
-scope, output budgets, metadata-only construction, original source readback,
-publication cancellation, partial reads, deadline/reversal, four root-publication
-crash boundaries, and self-consistent but false descriptors. The Rust compiler,
-tests and examples were NOT executed in the authoring environment: no Rust
-toolchain is available. They must not be described as passing qualification.
+The Rust contracts above exercise selection, canonical corruption, exact scope,
+source readback, partial reads, cancellation and four publication crash cuts.
+The local catalog contract also damages a member or catalog slot record while
+the publisher stays open. A separate case measures the byte reservation for a
+catalog whose manifest and index together exceed 64 KiB. The supplemental
+recording lifecycle lane includes these storage checks for local replay.
 
 The independent Python wire/interval oracle DID run. It checked 10,001 interval
 cases and refused 1,370 truncations/single-byte changes. Its 685-byte index and

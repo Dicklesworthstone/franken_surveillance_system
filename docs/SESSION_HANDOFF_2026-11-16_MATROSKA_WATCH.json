@@ -1,0 +1,113 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-16",
+  "timezone": "UTC",
+  "state": "implemented_native_media_verified_retained_cli_execution_blocked",
+  "mission": {
+    "goal": "Implement consequential functional gaps after reading the comprehensive plan and Beads; publish meaningful increments directly to main through GitHub without PRs.",
+    "initial_source_head": "1485cd10d08d7e6fd16c890c035b96e85a1cdeb1",
+    "scope": [
+      "FSS-068 retained media and review output",
+      "VIT-008 and VIT-023 container/movie coverage",
+      "FSS-076 through FSS-078 recorded event preview ownership"
+    ],
+    "broad_beads_closed": false
+  },
+  "authority": {
+    "scope": "Repository source and deterministic fixture tests. No live-device, credential or notification operation.",
+    "publication": "Non-force fast-forward GitHub updates to main; concurrent changes preserved.",
+    "release": "Repository-owned qualification and retained local DSR evidence remain required."
+  },
+  "checkpoints": [
+    {
+      "commit": "98a901722dc89c3cd281a6d96ff4f52036f0e32a",
+      "change": "Exact native Matroska movie interval selection."
+    },
+    {
+      "commit": "a9235388c1f2e61973019568a6edb593cb44e17b",
+      "change": "Retained Matroska dispatch, native review export and full-width lineage."
+    },
+    {
+      "commit": "37854f9b880e67f98a8895db7ad77b48f959459a",
+      "change": "Immutable short recorded watch previews, published before final integration."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Integrate both Matroska selectors, preserve earlier-IDR HEVC decoding and verify native output."
+    }
+  ],
+  "preserved_concurrent_heads": [
+    "05aa5dd5d65bdfec6d07c13bf5af16a270cc9577",
+    "553d93c38363a45ef237d3f6479d6f2a265667ff",
+    "ccccb8fa435ec9c63316ced517a58be26c716f99"
+  ],
+  "behavior": [
+    "AVC/HEVC MKV/WebM originals enter select-movie and export-movie with exact nanoseconds, explicit durations, presentation reordering, clipped intervals, gaps and bounded native decode prerequisites.",
+    "The metadata select-matroska API keeps its separate inferred/unknown duration profile. Historical MatroskaSample and import identities remain unchanged; timing uses existing sidecars.",
+    "HEVC movie selection retains the preceding IDR through CRA and clears the chain at BLA; the checked-in leading picture requires source samples 0 through 5.",
+    "Movie-output v2 lineage encodes all 64 track-id bits. Historical v1 receipts retain their meanings.",
+    "Short unapproved entry previews use sealed immutable custody while the writer stays open. Reports are buffered through final source, supporting-capsule, privacy and authority validation under one nonrefilling read allowance.",
+    "Approval, retention, dwell and incremental watches retain existing mutation owners. Concurrent head advancement can refuse an immutable preview and requires retry at a stable committed head."
+  ],
+  "validation": {
+    "compiler": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "native_command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-container -p fss-packet",
+    "native_result": {
+      "passed": 812,
+      "failed": 0,
+      "ignored_existing_external_oracles": 5,
+      "container_unit": 152,
+      "strict_matroska": 18,
+      "metadata_matroska": 10,
+      "movie_output": 14,
+      "native_rtsp_timeline": 7
+    },
+    "native_scope": "Production decoder/output components tested against retained independent I420 hashes, exact pixels and timed bytes; these do not authenticate retained custody or qualify CLI execution.",
+    "blocked": "Full reference/CLI test compilation and metadata-only checks were SIGKILLed inside unchanged pinned asupersync 0.5.0 before compiling changed owners. Allocator and serial-frontend diagnostic retries did not resolve the resource limit.",
+    "unexecuted_contracts": [
+      "Retained Matroska original/index custody and final validation",
+      "CLI Matroska selection and review export",
+      "Immutable watch parity, damage, budget, cancellation and mutation-routing regressions"
+    ],
+    "source_review": "Independent core, retained/CLI and immutable-watch reviews; no dependency, feature, compiler pin or qualification gate changed.",
+    "release_qualified": false,
+    "formatting": "Pinned rustfmt --check passed for all 19 integration Rust files; git diff --check passed.",
+    "layered_manifest": {
+      "status": "failed_existing_drift",
+      "baseline_findings": 3401,
+      "current_findings": 3395,
+      "introduced_findings": 0,
+      "scope": "Compared the actual layered audit on this source against a clean worktree at published main 37854f9. All changed-file hashes are correct."
+    }
+  },
+  "remaining_priorities": [
+    {
+      "beads": [
+        "fss-vit-je36t.6",
+        "fss-vit-je36t.5"
+      ],
+      "work": "Connect native archive windows/catalogs to bounded scheduled retention with trusted time and explicit standing deletion authority."
+    },
+    {
+      "beads": [
+        "fss-x4a.16.5",
+        "fss-x4a.16.6"
+      ],
+      "work": "Implement one authenticated notification provider with delivery-status reconciliation beyond existing relay acceptance."
+    },
+    {
+      "beads": [
+        "fss-vit-je36t.16",
+        "fss-vit026-dep-tls-001-resolution-4gm7h"
+      ],
+      "work": "Admit the production TLS dependency/security closure for RTSPS and HTTPS recorder operations."
+    },
+    {
+      "beads": [
+        "fss-vit022-recorder-retrieval-5js5o"
+      ],
+      "work": "Complete bounded historical recording search sessions/pagination with absence distinct from incomplete retrieval."
+    }
+  ],
+  "continuation": "Run retained_movie_selection_contract, decoded_media_cli_contract and the fss-event watch unit tests on a host able to compile pinned Asupersync; repair concrete failures before broader qualification. Existing schema/registry drift remains open."
+}

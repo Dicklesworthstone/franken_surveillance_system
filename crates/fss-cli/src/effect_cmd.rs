@@ -38,12 +38,15 @@ use fss_reference::alert_reconcile::{
     AlertAttestation, AlertReconcileError, AlertReconciliationOutcome, CAP_ALERT_RECONCILE,
     MAX_RECONCILE_STATEMENT_BYTES, preview_alert_reconciliation, reconcile_alert_operation,
 };
+use fss_reference::deployment_session::{DeploymentSessionError, SessionTimeError};
 use fss_reference::deployment_session::episode::read_episode;
 use fss_reference::deployment_session::plan::{
     AlertRoute, PlanRecord, PlanningContext, hold_planning_context, publish_plan, read_plan,
     verify_plan_publication,
 };
-use fss_reference::webhook::{WebhookDisclosureProfile, WebhookEndpoint, WebhookRequestPreview};
+use fss_reference::webhook::{
+    WebhookDenial, WebhookDisclosureProfile, WebhookEndpoint, WebhookRequestPreview,
+};
 use fss_reference::{
     PrepareAlertParams, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
     ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
@@ -52,9 +55,10 @@ use fss_reference::{
 
 use crate::agent_json;
 use crate::alert_effect::{
-    AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS, WIRE_RETENTION_POLICY,
+    AlertDispatchAdmission, AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS,
+    WIRE_RETENTION_POLICY,
     alert_identities, check_alert_request, check_alert_source_health, dispatch_approval_digest,
-    dispatch_prepared_alert, not_eligible, obligation_state, outcome_text,
+    dispatch_prepared_alert_with_admission, not_eligible, obligation_state, outcome_text,
     parse_disclosure_profile, plan_approval_digest, wall_ns,
 };
 use crate::error::{CliError, ExitIdentity};
@@ -1350,6 +1354,7 @@ fn plan_answer(
         // Resolve any preview conflict before touching the effect journal. The held session
         // and deployment owners keep this exact witness stable until the final publication.
         verify_plan_publication(&args.root, &record)?;
+        planning.revalidate(crate::session_time::context(&args.root, clock))?;
         let mut prepared_now = prepared_now;
         let operation = match (&existing, args.approve) {
             (None, Some(_)) => {
@@ -1368,6 +1373,9 @@ fn plan_answer(
                 // Recheck immediately before the durable effect boundary after exact approval.
                 check_alert_source_health(&deployment, &event, &cx)
                     .map_err(|error| alert_refusal(&error))?;
+                // Source validation can outlast the held lease even though no writer can
+                // rebase this session. Re-admit immediately before durable preparation.
+                planning.revalidate(crate::session_time::context(&args.root, clock))?;
                 let (journal, ledger) = deployment.effects_and_ledger();
                 let prepared = journal
                     .prepare_alert(PrepareAlertParams {
@@ -1773,7 +1781,30 @@ fn commit_answer(
                 args.approve,
             )));
         }
-        let dispatched = dispatch_prepared_alert(
+        let session_context = crate::session_time::context(&args.root, clock);
+        planning.revalidate(session_context)?;
+        let check_session = || {
+            planning.check_time(session_context).map(|_| ()).map_err(|error| {
+                match error {
+                    DeploymentSessionError::Time(SessionTimeError::Cancelled) => {
+                        WebhookDenial::Cancelled
+                    }
+                    DeploymentSessionError::SessionUnknown
+                    | DeploymentSessionError::Time(SessionTimeError::Uncertain) => {
+                        WebhookDenial::Deadline
+                    }
+                    DeploymentSessionError::Time(SessionTimeError::Denied) => {
+                        WebhookDenial::Unauthorized
+                    }
+                    _ => WebhookDenial::Revoked,
+                }
+            })
+        };
+        let admission = AlertDispatchAdmission {
+            deadline: planning.runtime_deadline(),
+            check: &check_session,
+        };
+        let dispatched = dispatch_prepared_alert_with_admission(
             &mut deployment,
             &plan,
             &endpoint,
@@ -1783,6 +1814,7 @@ fn commit_answer(
             record.route.deadline_ms,
             &authority,
             &cx,
+            &admission,
         )
         .map_err(|error| alert_refusal(&error))?;
         let obligation = deployment

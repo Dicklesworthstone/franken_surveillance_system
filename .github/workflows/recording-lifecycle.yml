@@ -45,6 +45,7 @@ on:
       - 'rust-toolchain.toml'
       - 'scripts/bootstrap_toolchain.sh'
       - 'scripts/check_recording_lifecycle.sh'
+      - 'scripts/qualify.sh'
       - '.github/workflows/recording-lifecycle.yml'
   workflow_dispatch:
 
@@ -70,21 +71,5 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Verify recording discovery, replay and review expiry
-        run: bash scripts/check_recording_lifecycle.sh all
-      - name: Verify durable event metadata hydration contracts
-        if: ${{ success() || failure() }}
-        run: |
-          hydration_exit=0
-          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_hydration_contract || hydration_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --test event_hydration_query_cli_contract || hydration_exit=1
-          exit "$hydration_exit"
-      - name: Verify exact event revision comparisons and explanation compatibility
-        if: ${{ success() || failure() }}
-        run: |
-          comparison_exit=0
-          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test agent_event_changes_contract || comparison_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli || comparison_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib support_preserves_why_and_what_changed_receipts_without_reclassifying_context || comparison_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || comparison_exit=1
-          exit "$comparison_exit"
+      - name: Verify recording and retained event contracts
+        run: bash scripts/qualify.sh --recording-lifecycle

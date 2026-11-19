@@ -1,0 +1,252 @@
+{
+  "format": "fss.recorded_corroboration_report.v1",
+  "plan_digest": "sha256:0ad09da0f32dd82c33c48344d0792d6f7ad2b4267e1bf628ffd36fb393f5155c",
+  "policy_digest": "sha256:32d6945790ed6e5e2ce1c879bb9af0614d0218ad68d521c1531eb1e3f18993d9",
+  "cameras": [
+    {
+      "camera": "drive",
+      "import_identity": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+      "import_root": "sha256:08d9f6419b6f9b868977d4b04242abd53d7b18569cc516292c59057f5b846c1f",
+      "sensor_id": "sensor:drive",
+      "failure_domain": "recorded-cluster:fc0060c0e877b6654e9224a8c8b2e529e99c5725c483c620a9833169e72454a8",
+      "frames_decoded": 48,
+      "confirmed_tracks": 0,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:4ca1d7ba319902a487d789a8b0c8247b78184adc4a936767dfad63f939392300",
+      "watch_analysis_digest": "sha256:8096e7b8a76406bbc8131fb5c592ac50f55621b69f0d808fb3654401149dbbff",
+      "ground_homography_digest": "sha256:3018ce32bf4525ff2af398ce3d1f73df74aabe2f93fb2c157609cb7e6e149d5e",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    },
+    {
+      "camera": "porch",
+      "import_identity": "sha256:e70d5503b94f08342480b9ec3c4de6677d408300f8fbf3a041c4b464041895e2",
+      "import_root": "sha256:840b667f432ce1a6276232a24cd8287dba3a694a4dc00f8d1557654bec5b7f21",
+      "sensor_id": "sensor:porch",
+      "failure_domain": "recorded-cluster:fc0060c0e877b6654e9224a8c8b2e529e99c5725c483c620a9833169e72454a8",
+      "frames_decoded": 48,
+      "confirmed_tracks": 0,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:619fa2042875cba60aa862ef92505a93d8453091fe3ac01a48477bb619ed73e8",
+      "watch_analysis_digest": "sha256:3d04e605e6b67c7dfec6fed8e3af2f1e174ca2c1a980e73625f3fcaed4f96aea",
+      "ground_homography_digest": "sha256:4b9a034ac24525dbd1d5648722f9e5e2b148800f985a3541bab7445ec4d44c9b",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    }
+  ],
+  "zones": [
+    {
+      "zone_id": "wildlife",
+      "x": -8.5,
+      "y": 0.4,
+      "width": 3.0999999999999996,
+      "height": 3.2
+    }
+  ],
+  "time_gate_ns": 250000000,
+  "distance_gate": 1.0,
+  "time_semantics": "operator_capture_hints_worst_case_interval_gate",
+  "entries": [],
+  "candidate_count": 0,
+  "candidates": [],
+  "prepared_count": 0,
+  "published_count": 0,
+  "already_published_count": 0,
+  "authority_sequence": 9,
+  "alert_prepared": false,
+  "effects_authorized": false,
+  "calibrated": false,
+  "absence_certifiable": false,
+  "detection_quality_claim": false,
+  "dependencies": {
+    "generation": "sha256:5be57fa7a0224bffa67a5bf2214b713a23936e6076570435c5b532439dbac892",
+    "assessment_digest": "sha256:0237f2262ef794881f7fd23277678da0a6f4eb24b12cedf293b90f98f5e7d9dc",
+    "basis": "owner_assertion_not_verified_topology",
+    "model": "transitive_shared_cause_components_v1",
+    "declarations": [
+      {
+        "domain": "clock:juniper-timeline",
+        "cameras": [
+          "drive",
+          "porch"
+        ]
+      },
+      {
+        "domain": "replay:juniper-scene",
+        "cameras": [
+          "drive",
+          "porch"
+        ]
+      }
+    ],
+    "cameras": [
+      {
+        "camera": "drive",
+        "sensor_digest": "sha256:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+        "import_identity": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+        "import_root": "sha256:08d9f6419b6f9b868977d4b04242abd53d7b18569cc516292c59057f5b846c1f",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:fc0060c0e877b6654e9224a8c8b2e529e99c5725c483c620a9833169e72454a8"
+      },
+      {
+        "camera": "porch",
+        "sensor_digest": "sha256:d90f8f52db845cbed1d823de2b165a265ca51165bec42673730509ce4f38e8bb",
+        "import_identity": "sha256:e70d5503b94f08342480b9ec3c4de6677d408300f8fbf3a041c4b464041895e2",
+        "import_root": "sha256:840b667f432ce1a6276232a24cd8287dba3a694a4dc00f8d1557654bec5b7f21",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:d90f8f52db845cbed1d823de2b165a265ca51165bec42673730509ce4f38e8bb",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:fc0060c0e877b6654e9224a8c8b2e529e99c5725c483c620a9833169e72454a8"
+      }
+    ],
+    "clusters": [
+      {
+        "support_domain": "recorded-cluster:fc0060c0e877b6654e9224a8c8b2e529e99c5725c483c620a9833169e72454a8",
+        "cameras": [
+          "drive",
+          "porch"
+        ],
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+          "recorded-sensor:d90f8f52db845cbed1d823de2b165a265ca51165bec42673730509ce4f38e8bb",
+          "replay:juniper-scene"
+        ]
+      }
+    ],
+    "dependency_cluster_count": 1,
+    "independence": "unknown",
+    "undeclared_dependencies": "unknown_not_absent",
+    "independence_certified": false
+  },
+  "coverage": {
+    "format": "fss.recorded_watch_coverage.v1",
+    "coverage_status": "proposed",
+    "approval_digest": "sha256:e29702177e8600a9a8ae161af67a47ac150cdd204834f977dcae84cdb3d9d906",
+    "retain_command": "fss-event corroborate --root deployment --site site:juniper-demo --interpretation ycbcr --zone wildlife:-8.5,0.4,3.0999999999999996,3.2 --time-gate-ns 250000000 --distance-gate 1 --failure-domain replay:juniper-scene=drive,porch --failure-domain clock:juniper-timeline=drive,porch --camera drive:sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a --ground drive:-0.012978957683776854,0.04037172544470005,-0.6144629403765569,-0.008582859113465334,0.008240856464595494,1.3334550176428126,-1.6605768711628078e-19,0.005778930212814929,-0.15450051786755636 --camera porch:sha256:e70d5503b94f08342480b9ec3c4de6677d408300f8fbf3a041c4b464041895e2 --ground porch:-0.012369104156828868,-0.02274786482883295,2.1130480045642175,0.009912522495019649,0.01406115639630018,-0.2308401499409389,1.8069421072804715e-19,0.005959044849553863,-0.11789841082048104 --retain-coverage sha256:e29702177e8600a9a8ae161af67a47ac150cdd204834f977dcae84cdb3d9d906",
+    "witness_count": 0,
+    "absence_certified_for_witness_domains": false,
+    "records": [
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:bfd0b4fe9dda661659234907aaf4ba2b3f020f73cb30b222113b3421e9fe6aa7",
+        "identity": "sha256:83e58826524a0f93bd57058e5c50936499593bc436240fb2a11065e92dc9a09a",
+        "import_identity": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+        "sensor_id": "sensor:drive",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:wildlife",
+            "zone_id": "wildlife",
+            "geometry": "-8.5,0.4,3.0999999999999996,3.2",
+            "pipeline_generation": "sha256:da893d68f8192260a0fd96356d5cd156e05ec1a7094fa2bdcfe9ed58829a60ae",
+            "witness_count": 0,
+            "witnesses": [],
+            "uncovered": [
+              {
+                "reason": "outside_frustum",
+                "first_segment": 0,
+                "last_segment": 47,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 12,
+              "outside_frustum": 52,
+              "occluded": 0,
+              "visible_fraction_ppm": 187500,
+              "threshold_ppm": 1000000,
+              "state": "not_observable",
+              "cause": "outside_frustum",
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      },
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:58e09096b4165b7e3885e2895d622024054cf25782b23c7d786012587d2521c7",
+        "identity": "sha256:cb34e5b54487324bcc3fd836010afa5bb5c59e430458d4fa525f3cf33d1f68cc",
+        "import_identity": "sha256:e70d5503b94f08342480b9ec3c4de6677d408300f8fbf3a041c4b464041895e2",
+        "sensor_id": "sensor:porch",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:wildlife",
+            "zone_id": "wildlife",
+            "geometry": "-8.5,0.4,3.0999999999999996,3.2",
+            "pipeline_generation": "sha256:6a2eb14a088d8dc8c4b5701a8ef81dfe5ae0aeef9345617b60e38d84b5dce24e",
+            "witness_count": 0,
+            "witnesses": [],
+            "uncovered": [
+              {
+                "reason": "outside_frustum",
+                "first_segment": 0,
+                "last_segment": 47,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 0,
+              "outside_frustum": 64,
+              "occluded": 0,
+              "visible_fraction_ppm": 0,
+              "threshold_ppm": 1000000,
+              "state": "not_observable",
+              "cause": "outside_frustum",
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1544,15 +1544,29 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            if total_h < kernel_size[0] || total_w < kernel_size[1] {
+            if h == 0 || w == 0 {
                 return Err(ModelIrError::ShapeMismatch {
                     node_id: node_id.to_string(),
                     op_id: op.stable_id(),
-                    reason: "padded spatial size smaller than pooling kernel size".to_string(),
+                    reason: "pooling requires non-empty spatial dimensions".to_string(),
                 });
             }
 
-            let mut out_h = if ceil_mode {
+            // ceil((padded - kernel) / stride) + 1 can be positive even when
+            // padded < kernel: a short input still contributes to one partial
+            // window if the deficit is smaller than the stride. Keep the
+            // subtraction unsigned and checked instead of rejecting that
+            // negative numerator or converting unbounded dimensions to isize.
+            let mut out_h = if total_h < kernel_size[0] {
+                if !ceil_mode || kernel_size[0] - total_h >= strides[0] {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: "pooling output height must be positive".to_string(),
+                    });
+                }
+                1
+            } else if ceil_mode {
                 (total_h - kernel_size[0])
                     .div_ceil(strides[0])
                     .checked_add(1)
@@ -1566,7 +1580,16 @@ pub fn infer_operator_outputs(
                         operation: "maxpool output height calculation",
                     })?
             };
-            let mut out_w = if ceil_mode {
+            let mut out_w = if total_w < kernel_size[1] {
+                if !ceil_mode || kernel_size[1] - total_w >= strides[1] {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: "pooling output width must be positive".to_string(),
+                    });
+                }
+                1
+            } else if ceil_mode {
                 (total_w - kernel_size[1])
                     .div_ceil(strides[1])
                     .checked_add(1)

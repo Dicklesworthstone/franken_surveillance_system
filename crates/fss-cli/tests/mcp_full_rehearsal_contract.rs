@@ -21,6 +21,7 @@ use std::time::Duration;
 use fss_cli::agent_json::{object, string};
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
+use fss_core::json_input::parse_mcp_reply;
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -367,7 +368,7 @@ impl McpHarness {
         assert!(output.stderr.is_empty());
         let replies: Vec<Value> = String::from_utf8(output.stdout)?
             .lines()
-            .map(|line| parse(line).map_err(Into::into))
+            .map(|line| parse_mcp_reply(line).map_err(Into::into))
             .collect::<TestResult<Vec<Value>>>()?;
         assert_eq!(replies.len(), 2);
         let result = field(&replies[1], &["result"])?;
@@ -436,22 +437,33 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
         ContentDigest::sha256(b"owner approves the plaintext loopback relay").to_text();
 
     // 1. AOP-001: session_open
-    let opened = mcp.call(
-        "session_open",
-        &object(&[
-            (
-                "mission",
-                string("Execute full 14-operation fss/1 MCP mission rehearsal."),
-            ),
-            (
-                "objective",
-                string("Verify every AOP-001..AOP-014 transition over fss-mcp stdio."),
-            ),
-            ("view", string("pulse")),
-            ("budget_tokens", "20000".to_owned()),
-        ]),
-        Some("AOP-001"),
-    )?;
+    let open = |view| {
+        mcp.call(
+            "session_open",
+            &object(&[
+                (
+                    "mission",
+                    string("Execute full 14-operation fss/1 MCP mission rehearsal."),
+                ),
+                (
+                    "objective",
+                    string("Verify every AOP-001..AOP-014 transition over fss-mcp stdio."),
+                ),
+                ("view", string(view)),
+                ("budget_tokens", "20000".to_owned()),
+            ]),
+            Some("AOP-001"),
+        )
+    };
+    let refused = open("pulse")?;
+    assert!(refused.failed, "{}", refused.body);
+    assert_eq!(text(&refused.value, &["outcome"])?, "refused");
+    assert_eq!(
+        text(&refused.value, &["errorId"])?,
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001"
+    );
+    assert_eq!(field(&refused.value, &["payload"])?, &Value::Null);
+    let opened = open("brief")?;
     assert!(!opened.failed, "{}", opened.body);
     let session_id = text(&opened.value, &["sessionId"])?.to_owned();
     let opening_anchor = orientation_anchor(&opened.body)?;

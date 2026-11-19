@@ -1,0 +1,308 @@
+{
+  "format": "fss.recorded_corroboration_report.v1",
+  "plan_digest": "sha256:36c4c6eaac5f85104bf7ad74edd3408fc5f257b8c77efd9c49bdd6122adf0ca7",
+  "policy_digest": "sha256:32d6945790ed6e5e2ce1c879bb9af0614d0218ad68d521c1531eb1e3f18993d9",
+  "cameras": [
+    {
+      "camera": "drive",
+      "import_identity": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+      "import_root": "sha256:08d9f6419b6f9b868977d4b04242abd53d7b18569cc516292c59057f5b846c1f",
+      "sensor_id": "sensor:drive",
+      "failure_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f",
+      "frames_decoded": 48,
+      "confirmed_tracks": 0,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:4ca1d7ba319902a487d789a8b0c8247b78184adc4a936767dfad63f939392300",
+      "watch_analysis_digest": "sha256:8096e7b8a76406bbc8131fb5c592ac50f55621b69f0d808fb3654401149dbbff",
+      "ground_homography_digest": "sha256:3018ce32bf4525ff2af398ce3d1f73df74aabe2f93fb2c157609cb7e6e149d5e",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    },
+    {
+      "camera": "garden",
+      "import_identity": "sha256:9c8b9a7c762512b7f87239ceb92d39d3026d7f74932a19cb681693cf8600c80f",
+      "import_root": "sha256:04f6b93c16b13661a9b82c35b2ae2e9584df95e92aaff863c9f2facbb27ad3c6",
+      "sensor_id": "sensor:garden",
+      "failure_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f",
+      "frames_decoded": 48,
+      "confirmed_tracks": 0,
+      "capture_span_ns": [
+        1699999999999000000,
+        1700000011751000000
+      ],
+      "capture_time_label": "operator_assumption",
+      "watch_plan_digest": "sha256:4d8ec680c1a82db88d26ebe67546df16b3394648d1009b338f2c80c68a262877",
+      "watch_analysis_digest": "sha256:acd1f3ad971a08a84744b91ce3b55850efbe5df31cde921f73a4baf44d18c93c",
+      "ground_homography_digest": "sha256:9ad70ea7eef530a42d507eba3d7ac1946c6674375cf27dcf7e285501d948627a",
+      "ground_homography": "owner_supplied_not_a_calibration_certificate"
+    }
+  ],
+  "zones": [
+    {
+      "zone_id": "wildlife",
+      "x": -8.5,
+      "y": 0.4,
+      "width": 3.0999999999999996,
+      "height": 3.2
+    }
+  ],
+  "time_gate_ns": 250000000,
+  "distance_gate": 1.0,
+  "time_semantics": "operator_capture_hints_worst_case_interval_gate",
+  "entries": [],
+  "candidate_count": 0,
+  "candidates": [],
+  "prepared_count": 0,
+  "published_count": 0,
+  "already_published_count": 0,
+  "authority_sequence": 9,
+  "alert_prepared": false,
+  "effects_authorized": false,
+  "calibrated": false,
+  "absence_certifiable": false,
+  "detection_quality_claim": false,
+  "dependencies": {
+    "generation": "sha256:bb224be31d76060b081123a71fcb2dd3a1db253fa724906c50531b4b4db8bdb0",
+    "assessment_digest": "sha256:010aa41f114322589ccc2f2d5895c5777f4c8ea748163030349065cb9b19d0c9",
+    "basis": "owner_assertion_not_verified_topology",
+    "model": "transitive_shared_cause_components_v1",
+    "declarations": [
+      {
+        "domain": "clock:juniper-timeline",
+        "cameras": [
+          "drive",
+          "garden"
+        ]
+      },
+      {
+        "domain": "replay:juniper-scene",
+        "cameras": [
+          "drive",
+          "garden"
+        ]
+      }
+    ],
+    "cameras": [
+      {
+        "camera": "drive",
+        "sensor_digest": "sha256:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+        "import_identity": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+        "import_root": "sha256:08d9f6419b6f9b868977d4b04242abd53d7b18569cc516292c59057f5b846c1f",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f"
+      },
+      {
+        "camera": "garden",
+        "sensor_digest": "sha256:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+        "import_identity": "sha256:9c8b9a7c762512b7f87239ceb92d39d3026d7f74932a19cb681693cf8600c80f",
+        "import_root": "sha256:04f6b93c16b13661a9b82c35b2ae2e9584df95e92aaff863c9f2facbb27ad3c6",
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+          "replay:juniper-scene"
+        ],
+        "support_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f"
+      }
+    ],
+    "clusters": [
+      {
+        "support_domain": "recorded-cluster:af1188001c4f0842307b487e5ecfa8e73fb90571b69a78fb7a9c7c3755d1ef5f",
+        "cameras": [
+          "drive",
+          "garden"
+        ],
+        "failure_domains": [
+          "clock:juniper-timeline",
+          "recorded-sensor:191ee566a59494308669b97d902a8db6000855e95459ae34feb420306018412d",
+          "recorded-sensor:3bed01b1b11b87081260299a6da6e1bd31b9c1f7a062eabc74f237aff25c3ea6",
+          "replay:juniper-scene"
+        ]
+      }
+    ],
+    "dependency_cluster_count": 1,
+    "independence": "unknown",
+    "undeclared_dependencies": "unknown_not_absent",
+    "independence_certified": false
+  },
+  "coverage": {
+    "format": "fss.recorded_watch_coverage.v1",
+    "coverage_status": "proposed",
+    "approval_digest": "sha256:b9c1bd58a962c31c8c47caf48768984656e12b83ffc66305eaa508646117a4e7",
+    "retain_command": "fss-event corroborate --root deployment --site site:juniper-demo --interpretation ycbcr --zone wildlife:-8.5,0.4,3.0999999999999996,3.2 --time-gate-ns 250000000 --distance-gate 1 --failure-domain replay:juniper-scene=drive,garden --failure-domain clock:juniper-timeline=drive,garden --camera drive:sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a --ground drive:-0.012978957683776854,0.04037172544470005,-0.6144629403765569,-0.008582859113465334,0.008240856464595494,1.3334550176428126,-1.6605768711628078e-19,0.005778930212814929,-0.15450051786755636 --camera garden:sha256:9c8b9a7c762512b7f87239ceb92d39d3026d7f74932a19cb681693cf8600c80f --ground garden:-0.016311838568389744,-0.03711001229264282,1.9220348786397252,-0.0049683765180783416,-0.020728641530764855,1.9252723764105037,-1.098925556535422e-19,0.006865057057290432,-0.17112755536243462 --retain-coverage sha256:b9c1bd58a962c31c8c47caf48768984656e12b83ffc66305eaa508646117a4e7",
+    "witness_count": 1,
+    "absence_certified_for_witness_domains": false,
+    "records": [
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:3a14518d4a04f5ef1d031c2068ba68aec26700d7523b4c7a2c90063cb2156abc",
+        "identity": "sha256:48f59242475c01c56f02f58f35469ab6776459b2f7c11843802f2ae4884c6ce9",
+        "import_identity": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+        "sensor_id": "sensor:drive",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:wildlife",
+            "zone_id": "wildlife",
+            "geometry": "-8.5,0.4,3.0999999999999996,3.2",
+            "pipeline_generation": "sha256:da893d68f8192260a0fd96356d5cd156e05ec1a7094fa2bdcfe9ed58829a60ae",
+            "witness_count": 0,
+            "witnesses": [],
+            "uncovered": [
+              {
+                "reason": "outside_frustum",
+                "first_segment": 0,
+                "last_segment": 47,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 12,
+              "outside_frustum": 52,
+              "occluded": 0,
+              "visible_fraction_ppm": 187500,
+              "threshold_ppm": 1000000,
+              "state": "not_observable",
+              "cause": "outside_frustum",
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      },
+      {
+        "source": "corroborate",
+        "record_digest": "sha256:ab9944bd0c63c9471c2a54f4e9bda757b2023253e8be49a39a56ca6d29c839de",
+        "identity": "sha256:35fff840989862a59a77f5518e4d9bd60aa12306ef88378240ac797403074802",
+        "import_identity": "sha256:9c8b9a7c762512b7f87239ceb92d39d3026d7f74932a19cb681693cf8600c80f",
+        "sensor_id": "sensor:garden",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 9,
+        "first_segment": 0,
+        "last_segment": 47,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000011751000000
+        ],
+        "zones": [
+          {
+            "scope": "ground-zone:wildlife",
+            "zone_id": "wildlife",
+            "geometry": "-8.5,0.4,3.0999999999999996,3.2",
+            "pipeline_generation": "sha256:482db31337ef73cd578daf7dacd909e85aa54f9c4fcddb7a08c0b939230bf671",
+            "witness_count": 1,
+            "witnesses": [
+              {
+                "first_segment": 4,
+                "last_segment": 45,
+                "frames": 42,
+                "covered_ns": [
+                  1700000001001000000,
+                  1700000011249000000
+                ],
+                "outer_ns": [
+                  1700000000999000000,
+                  1700000011251000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 9,
+                    "authorityRoot": "sha256:dc536c2bf307f4592489c51127c37bafc46dd3c85bef3216793b911bae5469cb",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "corroborate:191ee566a59494308669b97d902a8db6:ground-zone:wildlife:1700000001001000000..1700000011249000000"
+                  ],
+                  "observedDomain": [
+                    "corroborate:191ee566a59494308669b97d902a8db6:ground-zone:wildlife:1700000001001000000..1700000011249000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into ground-zone:wildlife of sensor sensor:garden emitted by the corroborate pipeline generation sha256:482db31337ef73cd578daf7dacd909e85aa54f9c4fcddb7a08c0b939230bf671 over capture [1700000001001000000, 1700000011249000000] ns (coverage producer v1); geometric visibility 64 of 64 ground samples (1000000 ppm, threshold 1000000 ppm) under grid-cell-centers:8x8 via owner_homography; occlusion_unknown (no_scene_mesh): the claim is frustum-only and an occluder in view could hide an entry",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:1388a0e7699aaf4816faf0d1da8c2d0c25280fcc655883fd6e84d8d345c7c57c"
+                }
+              }
+            ],
+            "uncovered": [
+              {
+                "reason": "background_warmup",
+                "first_segment": 0,
+                "last_segment": 3,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000000751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              },
+              {
+                "reason": "confirmation_latency",
+                "first_segment": 46,
+                "last_segment": 47,
+                "capture_ns": [
+                  1700000011499000000,
+                  1700000011751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ],
+            "visibility": {
+              "camera_model": "owner_homography",
+              "sampling": "grid-cell-centers:8x8",
+              "samples": 64,
+              "visible": 64,
+              "outside_frustum": 0,
+              "occluded": 0,
+              "visible_fraction_ppm": 1000000,
+              "threshold_ppm": 1000000,
+              "state": "observable",
+              "cause": null,
+              "occlusion": "occlusion_unknown",
+              "occlusion_unknown_reason": "no_scene_mesh",
+              "scene_mesh_digest": null,
+              "claim": "frustum_only"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

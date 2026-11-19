@@ -24,6 +24,7 @@ import frozen_registry_checker
 import knowledge_state_checker
 import provenance_registry_checker
 import robot_docs_checker
+import schema_validate
 import slo_validate
 
 
@@ -1394,6 +1395,10 @@ def main() -> int:
         schema_registry_text,
         flags=re.MULTILINE,
     )
+    schema_rules = {
+        row["id"]: row["rule"]
+        for row in schema_validate.parse_schemas_md(ROOT / "registries/SCHEMAS.md")
+    }
     registered_schema_files: set[str] = set()
     for stable_id, schema_name, relative in schema_rows:
         if not relative.startswith("schemas/"):
@@ -1418,16 +1423,10 @@ def main() -> int:
         ):
             fail(f"{stable_id} top-level schema type must be object")
 
-        def identity(node: dict) -> object:
-            # Records name their schema under `schema`; CLI reports that emit `format` use it.
-            props = node.get("properties", {})
-            if "schema" in props:
-                return props["schema"].get("const")
-            return props.get("format", {}).get("const")
-
-        names = [identity(schema)] + [identity(b) for b in branches]
-        if schema_name not in names:
-            fail(f"{stable_id} registry name disagrees with schema const")
+        error = schema_validate.registered_identity_error(schema, schema_name, schema_rules.get(stable_id, ""))
+        if error:
+            pointer, message = error
+            fail(f"{stable_id} {pointer}: {message}")
         if not str(schema.get("$id", "")).endswith("/" + Path(relative).name):
             fail(f"{stable_id} has a nonmatching $id")
     actual_schema_files = {path.relative_to(ROOT).as_posix() for path in source_files(".json") if path.parent == ROOT / "schemas"}

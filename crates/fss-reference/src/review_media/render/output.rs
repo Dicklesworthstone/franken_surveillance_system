@@ -21,7 +21,9 @@ pub const DEFAULT_LUMA_BYTES: u64 = 64 * 1024 * 1024;
 /// Hard storage ceiling for unique selected screened luma.
 pub const MAX_LUMA_BYTES: u64 = 256 * 1024 * 1024;
 /// Versioned identity domain of the exact movie selection and native frame lineage.
-pub const LINEAGE_DOMAIN: &str = "fss.file_movie_output.v1";
+/// Version 2 retains the full 64-bit Matroska track number; historical v1 receipts
+/// remain immutable and are never reinterpreted using this wider encoding.
+pub const LINEAGE_DOMAIN: &str = "fss.file_movie_output.v2";
 const MAX_DIMENSION: u32 = 4096;
 const MAX_PIXELS: usize = 4_194_304;
 const CHUNK: usize = 4096;
@@ -72,8 +74,8 @@ pub struct SourceBinding {
     pub manifest_digest: ContentDigest,
     /// Digest of the complete original source bytes.
     pub input_sha256: ContentDigest,
-    /// Source movie track identifier.
-    pub track_id: u32,
+    /// Source movie track identifier, including the full Matroska track-number domain.
+    pub track_id: u64,
     /// Native codec of the retained source track.
     pub codec: VideoCodec,
 }

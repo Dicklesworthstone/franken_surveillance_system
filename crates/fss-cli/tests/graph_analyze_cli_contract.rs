@@ -1,13 +1,8 @@
 #![forbid(unsafe_code)]
 //! Integration contract tests for `fss-event graph analyze` (`fss-57i58` / `fss-j6crt`).
 //!
-//! Verifies that `fss-event graph analyze` compiles canonical, anchor-pinned projections
-//! (`SensorCoverageGraph`, `EvidenceClaimGraph`, `DeviceFailureGraph`, `ArchiveObjectGraph`,
-//! `PlanObligationGraph`) directly from a committed `--root` `ReferenceDeployment`, executes the
-//! 27/27 Certified Graph Atlas algorithms (`ALG-CENTRAL-001`, `ALG-COMM-001`, `ALG-SPECTRAL-001`,
-//! `ALG-SCC-001`, `ALG-TOPO-001`, `ALG-PPR-001`, `ALG-HITS-001`, `ALG-MST-001`, `ALG-STEINER-001`,
-//! `ALG-ZSET-001`), checks the `GraphAlgorithmWitness`, and fails closed on site/orientation/usage
-//! mismatches.
+//! Exercises the registered deployment projections on a cold recording fixture and checks
+//! the coverage and active-support topology against the retained records.
 
 use std::error::Error;
 use std::fs;
@@ -66,7 +61,7 @@ impl Drop for OwnedDirectory {
     }
 }
 
-fn scene() -> TestResult<Vec<u8>> {
+fn scene(moving: bool) -> TestResult<Vec<u8>> {
     let config = JpegConfig {
         quality: 90,
         subsampling: Subsampling::Grayscale,
@@ -76,7 +71,7 @@ fn scene() -> TestResult<Vec<u8>> {
     let mut stream = Vec::new();
     for index in 0..FRAMES {
         let mut pixels = vec![40_u8; (WIDTH * HEIGHT) as usize];
-        if index >= 3 {
+        if moving && index >= 3 {
             let left = (index - 3) * 8;
             for y in 8..24 {
                 for x in left..(left + 16).min(WIDTH as usize) {
@@ -98,29 +93,36 @@ fn success(output: &Output) {
     );
 }
 
-fn import_and_watch(directory: &OwnedDirectory, sensor: &str, domain: &str) -> TestResult<String> {
+fn import(
+    directory: &OwnedDirectory,
+    sensor: &str,
+    timed: bool,
+    moving: bool,
+) -> TestResult<String> {
     let input = directory
         .0
         .join(format!("{sensor}.mjpeg").replace(':', "-"));
-    fs::write(&input, scene()?)?;
-    let import_out = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+    fs::write(&input, scene(moving)?)?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fss-file"));
+    command
         .arg("import")
         .arg("--root")
         .arg(directory.root())
         .args(["--site", SITE, "--input"])
         .arg(&input)
         .args(["--sensor", sensor, "--stream", &format!("stream:{sensor}")])
-        .args(["--receive-time-ns", RECEIVE_NS, "--media-format", "mjpeg"])
-        .args(["--capture-start-ns", "1000000000"])
+        .args(["--receive-time-ns", RECEIVE_NS, "--media-format", "mjpeg"]);
+    if timed {
+        command.args(["--capture-start-ns", "1000000000"])
         .args(["--capture-uncertainty-ns", "1000000"])
-        .args(["--assumed-fps", "10"])
-        .output()?;
+        .args(["--assumed-fps", "10"]);
+    }
+    let import_out = command.output()?;
     success(&import_out);
     let import_id = String::from_utf8(import_out.stdout)?
         .lines()
         .find_map(|l| l.strip_prefix("import_identity=").map(str::to_owned))
         .ok_or("missing import_identity line")?;
-    let _ = domain;
     Ok(import_id)
 }
 
@@ -168,10 +170,11 @@ fn run_analyze(
 }
 
 #[test]
-fn retained_deployment_projections_certify_all_atlas_algorithms_and_fail_closed() -> TestResult {
+fn registered_deployment_pairs_preserve_current_evidence_and_refuse_invalid_requests() -> TestResult
+{
     let directory = OwnedDirectory::new("all-projections")?;
-    let east_id = import_and_watch(&directory, "sensor:east", "power:circuit-a")?;
-    let west_id = import_and_watch(&directory, "sensor:west", "power:circuit-b")?;
+    let east_id = import(&directory, "sensor:east", true, true)?;
+    let west_id = import(&directory, "sensor:west", true, true)?;
 
     // Prepare and approve corroboration across both sensors so we have corroborated events in EvidenceClaimGraph / DeviceFailureGraph.
     let corr_args = [
@@ -216,69 +219,85 @@ fn retained_deployment_projections_certify_all_atlas_algorithms_and_fail_closed(
         .output()?;
     success(&corr_out);
 
-    // 1. Undirected SensorCoverageGraph: ALG-CENTRAL-001, ALG-COMM-001, ALG-SPECTRAL-001, ALG-MST-001, ALG-STEINER-001
-    for alg in [
-        "ALG-CENTRAL-001",
-        "ALG-COMM-001",
-        "ALG-SPECTRAL-001",
-        "ALG-MST-001",
-        "ALG-STEINER-001",
-    ] {
-        let doc = run_analyze(&directory, "SensorCoverageGraph", alg, &[])?;
-        assert_eq!(get(&doc, "orientation")?.text(), Some("undirected"));
-        assert!(get(&doc, "node_count")?.integer().unwrap_or(0) >= 4);
-        emit_log("undirected_coverage", "SensorCoverageGraph", alg, "passed");
-    }
+    let snapshot =
+        fss_reference::agent_orient::read_deployment(&directory.root(), &Default::default())?;
+    assert!(!snapshot.events.is_empty());
+    let heads: Vec<_> = snapshot
+        .events
+        .iter()
+        .map(|record| record.event.clone())
+        .collect();
+    let evidence =
+        fss_graph_algorithms::evidence::EvidenceClaimProjection::build(&heads, Default::default())?;
+    let expected_evidence = evidence.graph().digest().to_text();
+    let scc = run_analyze(&directory, "EvidenceClaimGraph", "ALG-SCC-001", &[])?;
+    assert_eq!(
+        get(&scc, "projection_digest")?.text(),
+        Some(expected_evidence.as_str())
+    );
+    assert!(evidence.graph().arc_count() > 0);
 
-    // 2. Directed projections: EvidenceClaimGraph, DeviceFailureGraph, ArchiveObjectGraph, PlanObligationGraph
-    //    with ALG-CENTRAL-001, ALG-SCC-001, ALG-TOPO-001, ALG-PPR-001, ALG-HITS-001, ALG-ZSET-001
-    for proj in [
-        "EvidenceClaimGraph",
-        "DeviceFailureGraph",
-        "ArchiveObjectGraph",
-        "PlanObligationGraph",
+    let support_node = evidence.graph().ids().iter().find(|id| id.starts_with("support:"))
+        .ok_or("missing current support incidence")?;
+    run_analyze(&directory, "EvidenceClaimGraph", "ALG-PPR-001", &["--seed", support_node])?;
+
+    for (projection, algorithms) in [
+        (
+            "SensorCoverageGraph",
+            &[
+                "ALG-CENTRAL-001",
+                "ALG-MST-001",
+                "ALG-STEINER-001",
+                "ALG-ZSET-001",
+            ][..],
+        ),
+        (
+            "EvidenceClaimGraph",
+            &["ALG-PPR-001", "ALG-HITS-001", "ALG-ZSET-001"],
+        ),
+        (
+            "DeviceFailureGraph",
+            &["ALG-CENTRAL-001", "ALG-SPECTRAL-001", "ALG-ZSET-001"],
+        ),
+        ("ArchiveObjectGraph", &["ALG-ZSET-001"]),
+        (
+            "PlanObligationGraph",
+            &["ALG-SCC-001", "ALG-TOPO-001", "ALG-ZSET-001"],
+        ),
     ] {
-        for alg in [
-            "ALG-CENTRAL-001",
-            "ALG-SCC-001",
-            "ALG-TOPO-001",
-            "ALG-PPR-001",
-            "ALG-HITS-001",
-            "ALG-ZSET-001",
-        ] {
-            let doc = run_analyze(&directory, proj, alg, &[])?;
-            assert_eq!(get(&doc, "orientation")?.text(), Some("directed"));
-            assert!(get(&doc, "node_count")?.integer().unwrap_or(0) >= 1);
-            emit_log("directed_projection", proj, alg, "passed");
+        for alg in algorithms {
+            let doc = run_analyze(&directory, projection, alg, &[])?;
+            if projection == "SensorCoverageGraph" {
+                // Imports and corroborated events alone cannot establish coverage.
+                assert_eq!(get(&doc, "node_count")?.integer(), Some(1));
+                assert_eq!(get(&doc, "edge_count")?.integer(), Some(0));
+            }
         }
     }
 
-    // 3. Fail-closed checks:
-    // 3a. Orientation mismatch (running directed ALG-SCC-001 on undirected SensorCoverageGraph)
-    let bad_orient = Command::new(env!("CARGO_BIN_EXE_fss-event"))
-        .args(["graph", "analyze", "--root"])
-        .arg(directory.root())
-        .args([
-            "--site",
-            SITE,
-            "--projection",
-            "SensorCoverageGraph",
-            "--algorithm",
-            "ALG-SCC-001",
-        ])
-        .output()?;
-    assert!(!bad_orient.status.success());
-    let stderr = String::from_utf8_lossy(&bad_orient.stderr);
-    assert!(
-        stderr.contains("ERR-GRAPH-PRECONDITION-001"),
-        "unexpected stderr: {stderr}"
-    );
-    emit_log(
-        "fail_closed_orientation",
-        "SensorCoverageGraph",
-        "ALG-SCC-001",
-        "refused",
-    );
+    for (projection, algorithm) in [
+        ("SensorCoverageGraph", "ALG-SCC-001"),
+        ("SensorCoverageGraph", "ALG-COMM-001"),
+        ("ArchiveObjectGraph", "ALG-PPR-001"),
+        ("EvidenceClaimGraph", "ALG-TOPO-001"),
+        ("ArchiveObjectGraph", "ALG-MST-001"), // registered, but the archive view is directed
+    ] {
+        let refused = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .args(["graph", "analyze", "--root"])
+            .arg(directory.root())
+            .args([
+                "--site",
+                SITE,
+                "--projection",
+                projection,
+                "--algorithm",
+                algorithm,
+            ])
+            .output()?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-GRAPH-PRECONDITION-001"));
+    }
 
     // 3b. Site mismatch
     let bad_site = Command::new(env!("CARGO_BIN_EXE_fss-event"))
@@ -306,5 +325,76 @@ fn retained_deployment_projections_certify_all_atlas_algorithms_and_fail_closed(
         "refused",
     );
 
+    Ok(())
+}
+
+#[test]
+fn cold_graph_uses_only_positive_retained_zone_witnesses() -> TestResult {
+    use fss_graph_algorithms::weighted::WeightedGraphBuilder;
+
+    let directory = OwnedDirectory::new("witnesses")?;
+    let plane = format!("plane/{SITE}");
+    let mut expected = WeightedGraphBuilder::undirected("retained-witnesses:v1");
+    expected.add_node(&plane);
+    for (sensor, timed) in [("sensor:unknown", false), ("sensor:known", true)] {
+        let id = import(&directory, sensor, timed, false)?;
+        let watch = |extra: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_fss-event"))
+                .args(["watch", "--root"])
+                .arg(directory.root())
+                .args([
+                    "--site",
+                    SITE,
+                    "--import-id",
+                    &id,
+                    "--interpretation",
+                    "gray",
+                    "--zone",
+                    DOOR,
+                ])
+                .args(extra)
+                .output()
+        };
+        let preview = watch(&[])?;
+        success(&preview);
+        let preview = parse(std::str::from_utf8(&preview.stdout)?)?;
+        let coverage = get(&preview, "coverage")?;
+        let count = get(coverage, "witness_count")?
+            .integer()
+            .ok_or("missing witness count")?;
+        assert_eq!(count > 0, timed);
+        let before = run_analyze(&directory, "SensorCoverageGraph", "ALG-MST-001", &[])?;
+        assert_eq!(
+            get(&before, "projection_digest")?.text(),
+            Some(expected.clone().build()?.digest().to_text().as_str())
+        );
+
+        let approval = get(coverage, "approval_digest")?
+            .text()
+            .ok_or("missing approval")?;
+        success(&watch(&["--retain-coverage", approval])?);
+        let node = format!("sensor/{sensor}");
+        expected.add_node(&node).add_arc(&plane, &node, 1);
+        if timed {
+            expected.add_arc(&node, "zone/zone:door", u64::try_from(count)?);
+        } else {
+            expected.add_node("zone/zone:door");
+        }
+        let after = run_analyze(&directory, "SensorCoverageGraph", "ALG-MST-001", &[])?;
+        assert_eq!(
+            get(&after, "projection_digest")?.text(),
+            Some(expected.clone().build()?.digest().to_text().as_str())
+        );
+        assert_ne!(
+            get(&before, "authority_anchor")?,
+            get(&after, "authority_anchor")?
+        );
+        assert_eq!(
+            get(&after, "edge_count")?.integer(),
+            Some(if timed { 3 } else { 1 })
+        );
+        let device = run_analyze(&directory, "DeviceFailureGraph", "ALG-ZSET-001", &[])?;
+        assert_eq!(get(&device, "edge_count")?, get(&after, "edge_count")?);
+    }
     Ok(())
 }

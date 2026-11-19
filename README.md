@@ -21,11 +21,22 @@
 > JPEG/MJPEG, H.264 (Baseline, Main and High; progressive 4:2:0) and H.265 (Main, 8-bit 4:2:0), run small models on a scalar executor, detect, track
 > and publish event candidates (including a model-free `fss-event watch` pipeline), and keep a
 > crash-safe local ledger. It ships one trained detector package (YOLOX-Nano, COCO-80,
-> conformance-checked against its upstream ONNX graph; `fss-infer package-detect`), but does **not**
-> yet decode 10-bit or interlaced video, measure detection quality on real footage, expose more of
-> the agent protocol than `fss session orient`/`fss explain`/`fss session follow` and durable
-> `fss session open`/`fss handoff`/`fss session resume`, archive to the cloud, or have any release-qualified capability. The boundary is
-> explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
+> conformance-checked against its upstream ONNX graph; `fss-infer package-detect`). The CLI and
+> local stdio MCP server expose all 14 registered `fss/1` agent operations in the reference
+> deployment. Open gaps include 10-bit and interlaced decoding, detection quality measurement on
+> real footage, cloud archiving, and release qualification. See
+> [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
+
+Explore the [Juniper House Observatory](website/README.md) for an interactive 3D property,
+nine synchronized camera films, and frame-by-frame evidence from the Rust tracker and detector.
+Compare two camera angles, locate their measurements in the digital twin, verify a published event,
+and inspect the agent’s alert decision and handoff. The camera wall adds three synchronized
+flyover reels with frame-by-frame detector readouts. Every exhibit has its own shareable page.
+In the motion lab, change a courier’s stature, walking speed, release height and parcel restitution.
+Compare the studio motion with the two fixed cameras, then inspect the detector’s boxes on the
+actual imported reference frames. In the courtyard, two players pass a ball across the same scene
+seen by two fixed cameras. Change the pass, then compare a motion-triggered watch with an explicit
+detector inspection of the very same recorded frame.
 
 ## The thesis
 
@@ -783,11 +794,8 @@ Implemented (reference, unqualified):
   COCO-80 package (`fss-infer`, `--detector-package` cascade in `fss-event watch`/`corroborate`);
 - background-model foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking,
   cross-camera assignment over caller-supplied ground-plane points, and zone-gated event candidates;
-- 19 of 27 registered certified graph algorithms in `fss-graph-algorithms` (`ALG-BRIDGE-001`,
-  `ALG-SCC-001`, `ALG-TOPO-001`, `ALG-DOM-001`, `ALG-SP-001`, `ALG-MSD-001`, `ALG-FLOW-001`,
-  `ALG-MST-001`, `ALG-GH-001`, `ALG-MCF-001`, `ALG-MATCH-001`, `ALG-MULTIMATCH-001`,
-  `ALG-KSP-001`, `ALG-TREACH-001`, `ALG-DYNCONN-001`, `ALG-RELIABILITY-001`, `ALG-INTERDICT-001`,
-  `ALG-SETCOVER-001`, `ALG-SUBMOD-001`) with complexity/output witnesses and oracle certification;
+- implementations of all 27 registered graph algorithms in `fss-graph-algorithms`. The graph
+  registry records each algorithm's input, complexity and output bounds, and qualification evidence;
 - durable journal/ledger with torn-tail recovery, root-last local publication, a durable effect
   journal with prepare/commit/observe/reconcile, deployment backup and fenced restore (`fss-backup`),
   owner-defined rectangular privacy masking across live/replay decode and raw-export refusal,
@@ -811,11 +819,10 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- certified graph intelligence: 19 of 27 registered algorithms are implemented and certified against
-  in-tree reference oracles; the remaining 8 algorithms (`ALG-STEINER-001`, `ALG-PPR-001`,
-  `ALG-HITS-001`, `ALG-CENTRAL-001`, `ALG-COMM-001`, `ALG-SPECTRAL-001`, `ALG-FACTOR-001`,
-  `ALG-ZSET-001`), retained-record projection builders beyond `SensorCoverageGraph` /
-  `EvidenceClaimGraph`, and `INT-FNX-001` FrankenNetworkX differentials remain open;
+- retained graph analysis. `fss-event graph analyze` can run registered algorithms on historical
+  sensor coverage and the active support of current event heads. A named zone with zero qualifying
+  witnesses stays visible as an isolated node. Direct file imports and event claims do not establish
+  coverage. The controlled FrankenNetworkX differential gate (`INT-FNX-001`) is still open;
 - alert delivery: plaintext webhook relays only (no TLS, retries or provider adapters).
 
 Not implemented:

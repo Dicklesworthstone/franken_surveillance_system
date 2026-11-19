@@ -265,6 +265,16 @@ fn cold_read_and_exact_retries_preserve_the_original_revision_and_anchor() -> Te
         &PackageEvent::open(&immutable, &f.receipt.event.event_id, &f.cx)?,
         &f,
     );
+    let prepared = PackageEventProposal::prepare(
+        &immutable,
+        f.report.encoded(),
+        f.report.digest(),
+        f.receipt.track,
+        &f.cx,
+    )?;
+    assert_eq!(prepared.status(), PackageEventStatus::AlreadyPublished);
+    assert_eq!(prepared.digest(), f.proposal.digest());
+    assert_eq!(prepared.event(), &f.receipt.event);
     immutable.revalidate_snapshot_metadata()?;
     immutable.revalidate()?;
     assert_eq!(f.deployment.current_anchor(), &head);

@@ -312,7 +312,7 @@ impl Imported {
         ))
     }
 
-    fn retained_objects(&self) -> TestResult<(Vec<PathBuf>, Vec<(PathBuf, Vec<u8>)>)> {
+    fn retained_objects(&self) -> TestResult<(Vec<(PathBuf, Vec<u8>)>, Vec<(PathBuf, Vec<u8>)>)> {
         let cx = context(&self.root)?;
         let deployment = ReferenceDeployment::open(&self.root, SITE, &cx)?;
         let retained = RetainedFileImport::open(
@@ -325,27 +325,24 @@ impl Imported {
             retained.manifest().input_sha256,
             ContentDigest::sha256(&self.mp4)
         );
+        let spool = deployment.publisher().spool();
         let originals = self
             .originals
             .iter()
-            .map(|(digest, _)| deployment.publisher().spool().object_path(*digest))
-            .collect();
-        let chunks = retained
-            .manifest()
-            .ordered_chunks
-            .iter()
-            .map(|digest| {
-                let path = deployment.publisher().spool().object_path(*digest);
+            .map(|(digest, expected)| {
+                assert_eq!(&spool.read(*digest)?, expected);
+                let path = spool.object_path(*digest);
                 Ok((path.clone(), fs::read(path)?))
             })
             .collect::<TestResult<Vec<_>>>()?;
-        assert_eq!(
-            chunks
-                .iter()
-                .flat_map(|(_, bytes)| bytes.iter().copied())
-                .collect::<Vec<_>>(),
-            self.mp4
-        );
+        let mut payloads = Vec::new();
+        let mut chunks = Vec::new();
+        for digest in &retained.manifest().ordered_chunks {
+            payloads.extend(spool.read(*digest)?);
+            let path = spool.object_path(*digest);
+            chunks.push((path.clone(), fs::read(path)?));
+        }
+        assert_eq!(payloads, self.mp4);
         assert_eq!(
             ContentDigest::sha256(&deployment.publisher().spool().read(self.proof)?),
             self.proof
@@ -536,7 +533,7 @@ fn every_missing_or_corrupt_native_rtsp_original_refuses_movie_export_with_mp4_i
         let movie = Imported::new("rtsp-movie-originals", codec)?;
         let (originals, chunks) = movie.retained_objects()?;
         let before = movie.journals()?;
-        for (index, (path, (_, original))) in originals.iter().zip(&movie.originals).enumerate() {
+        for (index, (path, original)) in originals.iter().enumerate() {
             assert_eq!(&fs::read(path)?, original);
             let withheld = movie.path(&format!("withheld-{index}"));
             fs::rename(path, &withheld)?;

@@ -4,11 +4,11 @@ Each row names a mechanism, semantic owner, and admission gate. Family membershi
 
 | ID | Project | Mechanism | Owner | Gate | Status |
 |---|---|---|---|---|---|
-| `IMP-AS-ATP-001` | `asupersync` | Verified immutable object-graph transfer with path lifecycle, quarantine, journal, resume, repair symbols, and diagnostics | `fss-transfer` | `INT-AS-001` | `censused` |
-| `IMP-AS-CANCEL-001` | `asupersync` | Request → drain → finalize cancellation with four-valued outcomes | `fss-runtime` | `INT-AS-001` | `censused` |
-| `IMP-AS-LAB-001` | `asupersync` | Virtual time, replay, trace normalization, and DPOR-style exploration | `fss-lab` | `INT-AS-001` | `censused` |
-| `IMP-AS-REGION-001` | `asupersync` | Region ownership and explicit Cx authority | `fss-runtime` | `INT-AS-001` | `censused` |
-| `IMP-AS-SUBJECT-001` | `asupersync` | Semantic subject fabric with packet, authority, and reasoning service classes | `fss-subject` | `INT-AS-001` | `censused` |
+| `IMP-AS-ATP-001` | `asupersync` | Verified immutable object-graph transfer with path lifecycle, quarantine, journal, resume, repair symbols, and diagnostics | `fss-transfer` | `INT-AS-001` | `production-admitted` |
+| `IMP-AS-CANCEL-001` | `asupersync` | Request → drain → finalize cancellation with four-valued outcomes | `fss-runtime` | `INT-AS-001` | `production-admitted` |
+| `IMP-AS-LAB-001` | `asupersync` | Virtual time, replay, trace normalization, and DPOR-style exploration | `fss-lab` | `INT-AS-001` | `production-admitted` |
+| `IMP-AS-REGION-001` | `asupersync` | Region ownership and explicit Cx authority | `fss-runtime` | `INT-AS-001` | `production-admitted` |
+| `IMP-AS-SUBJECT-001` | `asupersync` | Semantic subject fabric with packet, authority, and reasoning service classes | `fss-subject` | `INT-AS-001` | `production-admitted` |
 | `IMP-FSQL-BOCPD-001` | `frankensqlite` | Bayesian online change-point detection for workload and sensor regimes | `fss-decision` | `INT-FSQL-001` | `censused` |
 | `IMP-FSQL-COMBINE-001` | `frankensqlite` | Deterministic flat combining at narrow sequence/publication points | `fss-publication` | `INT-FSQL-001` | `censused` |
 | `IMP-FSQL-MVCC-001` | `frankensqlite` | Multi-version canonical ledger with semantic read/write witnesses and SSI dangerous-structure detection | `fss-ledger` | `INT-FSQL-001` | `censused` |

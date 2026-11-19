@@ -66,6 +66,13 @@ MCP text content. Doctor retains its `fss.doctor.v1` diagnostic report. A nonzer
 native CLI exit sets MCP `isError: true` while preserving the native error,
 partial results, proof handles, recovery guidance and uncertainty.
 
+The `query` tool publishes a Draft 2020-12 input schema. Its `$defs` contains the
+nine registered query selector documents and the ONVIF zone policy. Resolve
+references against this bundle locally. Each selected mode supplies its own
+required fields, limits and defaults. For example, retained source and localization
+inventories default to 1,024 entries in the complete index, and the reports index
+defaults to 4,096.
+
 Unknown fields are refused before execution. Discovery annotations describe the
 tools; enforcement comes from explicit argument allowlists, the canonical CLI
 parser, pure native intent decoders and an exact typed command allowlist. The
@@ -318,6 +325,10 @@ committed before this output check or before a broken pipe. An alert operation
 may already have been committed or sent even if no MCP response arrived. Inspect
 its retained operation with `wait`, then use native reconciliation and retry
 guidance. Process shutdown does not implicitly acknowledge a follow page.
+
+Rust clients can use `fss_core::json_input::parse_mcp_reply` for the outer JSON-RPC
+reply. It accounts for the full tool output and JSON escaping. Decode the text
+inside the tool result using the applicable native response contract.
 
 ## Scope and qualification
 

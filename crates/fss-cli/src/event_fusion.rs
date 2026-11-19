@@ -18,7 +18,7 @@ use fss_fusion::{
 use fss_reference::ingest::detector_cascade::{ClassEvidence, DetectorCascade, EvidenceOutcome};
 use fss_reference::ingest::recorded_corroboration::CorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchReport;
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 mod ablation;
 mod corroboration;
@@ -322,7 +322,7 @@ impl EventFusionReport {
         native: &WatchReport,
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
@@ -369,7 +369,7 @@ impl EventFusionReport {
         native: &CorroborationReport,
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         Self::corroborate_with_coverage(native, cascade, profile, None, deployment, cx)
@@ -381,7 +381,7 @@ impl EventFusionReport {
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
         inputs: Vec<Input<'_>>,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;

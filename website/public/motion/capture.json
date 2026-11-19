@@ -1,0 +1,22 @@
+{
+  "parameters": {
+    "name": "Doorstep delivery",
+    "height": 1.74,
+    "pace": 1.2,
+    "drop": 0.48,
+    "bounce": 0.25
+  },
+  "seconds": 9,
+  "fps": 24,
+  "files": {
+    "studio.mp4": "318167183d69174aa21e342ff2d6b23a28661b82cb80b2103f04ebb3b988cb4b",
+    "studio.jpg": "a6ad871834f08061793b9b9019f76efd8e089e4d9160d13cff490924087bbc35",
+    "porch.mp4": "144a4a501a254d1ad2568e6b776de67eb3f681f6c5a5e2b85fa072d9e1df045c",
+    "porch.jpg": "f96988f41c1be86d6a45ddfa7f7fca5dc57051d95e1b591ce78a396b926fa7ad",
+    "drive.mp4": "4fc6017386d512d80a46b067018faf877bdb132d7204478f04de6160c431fc8e",
+    "drive.jpg": "0cd260b8c2bf4089b120b18c5bb7565acbfeb3b0bdbe7d7ef6e75d51b03b61f3",
+    "pose.jpg": "2ac74dbff6f7b2384bad4136bf783f6f1a6235f155ec50fa835ca573e6bacbcf",
+    "release.jpg": "1826455ef4b0592718b146413e9ede50cd1b2d50cf85e989174d82196483d08e",
+    "site.jpg": "70697f2cffb4f9467c8c252da464441381246b83bf068ee7b2a61dc669b6549d"
+  }
+}

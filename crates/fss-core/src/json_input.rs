@@ -21,6 +21,11 @@ const MAX_ARCHIVE_EXPORT_REPORT_NODES: usize = 524_288;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 const MAX_RECONSTRUCTION_ATLAS_REPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RECONSTRUCTION_ATLAS_REPORT_NODES: usize = 2_097_152;
+/// Largest native result embedded as text in one MCP tool response.
+pub const MAX_MCP_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+// JSON escaping can expand a byte to six bytes, including within a 128-byte
+// string ID. Reserve 1 KiB for that ID and the result wrapper.
+const MAX_MCP_REPLY_BYTES: usize = 6 * MAX_MCP_TOOL_OUTPUT_BYTES + 1024;
 
 /// One decoded JSON value.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +124,20 @@ pub fn parse(text: &str) -> Result<Value, JsonError> {
         MAX_NODES,
         MAX_STRING_BYTES,
         "document exceeds the input bound",
+    )
+}
+
+/// Decodes one MCP reply with a bounded native tool result embedded as a JSON string.
+///
+/// Only the reply profile admits strings up to the tool-output ceiling. Use `parse`
+/// for ordinary intents and decode the inner text under its own document contract.
+pub fn parse_mcp_reply(text: &str) -> Result<Value, JsonError> {
+    parse_bounded(
+        text,
+        MAX_MCP_REPLY_BYTES,
+        MAX_NODES,
+        MAX_MCP_TOOL_OUTPUT_BYTES,
+        "document exceeds the MCP reply bound",
     )
 }
 
@@ -479,6 +498,29 @@ mod tests {
         assert_eq!(Value::Text("007".to_owned()).integer(), None);
         assert_eq!(Value::Number("1.5".to_owned()).integer(), None);
         assert_eq!(Value::Text("".to_owned()).integer(), None);
+    }
+
+    #[test]
+    fn mcp_reply_accepts_embedded_output_under_a_separate_bound() -> Result<(), JsonError> {
+        let native = "x".repeat(MAX_STRING_BYTES + 1);
+        let reply = format!(r#"{{"content":[{{"type":"text","text":"{native}"}}]}}"#);
+        assert!(parse(&reply).is_err());
+        let expected = Value::Text(native);
+        let parsed = parse_mcp_reply(&reply)?;
+        assert_eq!(
+            parsed
+                .object()
+                .and_then(|reply| reply.get("content"))
+                .and_then(Value::array)
+                .and_then(|content| content.first())
+                .and_then(Value::object)
+                .and_then(|item| item.get("text")),
+            Some(&expected),
+        );
+        let oversized = format!(r#""{}""#, "x".repeat(MAX_MCP_TOOL_OUTPUT_BYTES + 1));
+        assert!(parse_mcp_reply(&oversized).is_err());
+        assert!(parse_mcp_reply(r#"{"id":1,"id":2}"#).is_err());
+        Ok(())
     }
 
     #[test]

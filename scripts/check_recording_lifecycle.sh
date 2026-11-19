@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Focused supplemental contracts for recorder discovery, replay and review expiry.
-# Local DSR qualification remains authoritative; this does not replace any lane.
+# Supplemental contracts for recorder discovery, replay, review expiry and retained events.
 set -euo pipefail
+export CARGO_NET_OFFLINE=true
+export RUSTUP_AUTO_INSTALL=0
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -56,11 +57,13 @@ if [[ "$selection" == all || "$selection" == replay ]]; then
     -p fss-container --test pinned_recording_contract
   run_tests 'native AVC/HEVC recorder replay and durable receipts' \
     -p fss-reference --test recording_replay_contract --test rtsp_replay_contract \
+    --test recording_clock_contract --test recording_catalog_local_contract \
+    --test hevc_catalog_local_contract --test hevc_recording_publication_contract \
     --test live_hevc_archive_contract --test rtsp_replay_time_pinned_contract
   run_tests 'source-authorized recorder assertions with current deployment context' \
     -p fss-reference --test agent_recording_replay_context_contract
-  run_tests 'canonical recorder UTC CLI admission and MCP source authority' \
-    -p fss-cli --lib --bin fss-mcp recorder_utc
+  run_tests 'canonical recorder UTC CLI admission' \
+    -p fss-cli --lib recorder_utc
   run_tests 'MCP recorder UTC exact pins, schema and owner permission' \
     -p fss-cli --bin fss-mcp replay_
   run_tests 'actual CLI and MCP recorder UTC parity and whole-query refusals' \
@@ -96,6 +99,21 @@ if [[ "$selection" == all || "$selection" == review-expiry ]]; then
     -p fss-cli --test review_expiry_cli_contract --test deletion_scope_cli_contract
   run_tests 'strict review expiry command admission' \
     -p fss-cli --bin fss-event delete::review_expiry::tests
+fi
+
+if [[ "$selection" == all ]]; then
+  run_tests 'durable event evidence hydration' \
+    -p fss-reference --test agent_event_hydration_contract
+  run_tests 'CLI event evidence hydration' \
+    -p fss-cli --test event_hydration_query_cli_contract
+  run_tests 'native exact event revision comparisons' \
+    -p fss-reference --test agent_event_changes_contract
+  run_tests 'CLI event revision and explanation compatibility' \
+    -p fss-cli --test event_changes_cli_contract --test explain_support_cli_contract --test explain_custody_cli
+  run_tests 'exact explanation receipts preserve context provenance' \
+    -p fss-cli --lib support_preserves_why_and_what_changed_receipts_without_reclassifying_context
+  run_tests 'MCP query and schema contracts' \
+    -p fss-cli --bin fss-mcp
 fi
 
 exit "$result"

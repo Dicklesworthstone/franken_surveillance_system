@@ -1,11 +1,16 @@
 #![forbid(unsafe_code)]
 use super::*;
 use crate::calibrated_coverage::{CoverageProjectionInput, tests::fixture as nominal_fixture};
-use crate::ingest::calibration_adoption::AdoptionReceipt;
+use crate::ingest::calibration_adoption::{
+    AdoptionReceipt, CalibrationSubject, adopt, preview_adoption, recording_sensor,
+};
 use crate::ingest::calibration_coverage::MAX_CALIBRATION_COVERAGE_WORK;
 use crate::ingest::privacy_mask::{MaskBinding, PrivacyMaskPolicy, declare_mask, preview_mask};
 use crate::ingest::recorded_coverage::{GenerationCurrency, approval_digest};
 use crate::ingest::{CaptureHint, FileIngestAdapter, FileIngestRequest};
+use crate::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage,
+};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, StreamId, TimestampNs};
 use fss_geometry::WorkBudget;
@@ -344,5 +349,136 @@ fn an_adopted_sensor_cannot_be_reintroduced_as_an_unadopted_camera() -> TestResu
         check_adoption(&record, &sensor, &BTreeMap::from([(99, vec![adoption])])),
         Err(GuardedCoverageRetentionError::Adoption(_))
     ));
+    Ok(())
+}
+
+fn immutable_limits() -> ImmutableRetainedReadLimits {
+    ImmutableRetainedReadLimits {
+        snapshot: crate::agent_orient::OrientLimits::default(),
+        max_read_bytes: 64 * 1024 * 1024,
+        max_read_objects: 4096,
+    }
+}
+
+#[test]
+fn immutable_guarded_reads_share_final_validation_allowance_with_a_live_writer() -> TestResult {
+    let f = fixture("immutable-guarded")?;
+    let before = inventory(&f.root)?;
+    let read = |limits| -> TestResult<RetainedReadUsage> {
+        // Keep the operational owner open: immutable inspection must not acquire its lock.
+        let source = ImmutableRetainedSource::open(&f.root, limits, &f.cx)?;
+        assert_eq!(source.current_anchor(), f.deployment.current_anchor());
+        assert_eq!(f.set.status(&source)?, f.set.status(&f.deployment)?);
+        f.set
+            .revalidate(&source, RetainedReadLimits::default(), &f.cx)?;
+        for record in f.set.records() {
+            assert_eq!(
+                recording_sensor(
+                    &source,
+                    record.import_identity,
+                    RetainedReadLimits::default(),
+                    &f.cx,
+                )?,
+                SensorId::parse(&record.sensor_id)?,
+            );
+        }
+        source.revalidate()?;
+        Ok(source.usage())
+    };
+
+    let usage = read(immutable_limits())?;
+    assert!(usage.read_bytes > 0 && usage.read_objects > 0);
+    let exact = ImmutableRetainedReadLimits {
+        max_read_bytes: usize::try_from(usage.read_bytes)?,
+        max_read_objects: usize::try_from(usage.read_objects)?,
+        ..immutable_limits()
+    };
+    assert_eq!(read(exact)?, usage);
+    assert!(
+        read(ImmutableRetainedReadLimits {
+            max_read_bytes: exact.max_read_bytes - 1,
+            ..exact
+        })
+        .is_err()
+    );
+    assert!(
+        read(ImmutableRetainedReadLimits {
+            max_read_objects: exact.max_read_objects - 1,
+            ..exact
+        })
+        .is_err()
+    );
+    assert_eq!(inventory(&f.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn immutable_adoption_reads_preserve_currency_and_final_payload_checks() -> TestResult {
+    let mut f = fixture("immutable-adoption")?;
+    let record = &f.set.records()[0];
+    let Some(PoseProvenance::SiteCalibration {
+        calibration_digest,
+        camera_handle,
+        intrinsics_generation,
+        extrinsics_generation,
+        ..
+    }) = record.pose_provenance
+    else {
+        return Err(std::io::Error::other("missing fixture provenance").into());
+    };
+    let subject = CalibrationSubject {
+        calibration_digest,
+        twin_package: ContentDigest::sha256(b"immutable-adoption-twin"),
+        cameras: vec![(
+            "front".to_owned(),
+            CameraGeneration {
+                camera: camera_handle,
+                intrinsics: intrinsics_generation,
+                extrinsics: extrinsics_generation,
+            },
+        )],
+    };
+    let bindings = vec![("front".to_owned(), SensorId::parse(&record.sensor_id)?)];
+    let old_source = ImmutableRetainedSource::open(&f.root, immutable_limits(), &f.cx)?;
+    assert!(retained_adoptions(&old_source)?.is_empty());
+
+    let preview = preview_adoption(&f.deployment, &subject, &bindings)?;
+    let adopted = adopt(
+        &mut f.deployment,
+        &subject,
+        &bindings,
+        preview.approval,
+        &f.cx,
+    )?;
+    let receipt = adopted.cameras[0].receipt.digest();
+    // A snapshot cannot silently advance to a new adoption, even while the writer stays open.
+    assert!(retained_adoptions(&old_source)?.is_empty());
+    assert!(old_source.revalidate().is_err());
+
+    let source = ImmutableRetainedSource::open(&f.root, immutable_limits(), &f.cx)?;
+    let history = retained_adoptions(&source)?;
+    let operational = retained_adoptions(&f.deployment)?;
+    assert_eq!(history.len(), operational.len());
+    assert_eq!(history[&camera_handle][0].digest, receipt);
+    assert_eq!(
+        history[&camera_handle][0].digest,
+        operational[&camera_handle][0].digest,
+    );
+    // Pre-adoption owner assertions cannot masquerade as freshly adopted coverage.
+    assert!(matches!(
+        f.set
+            .revalidate(&source, RetainedReadLimits::default(), &f.cx),
+        Err(GuardedCoverageRetentionError::Adoption(_))
+    ));
+    source.revalidate()?;
+
+    // Adoption payloads participate in the same final tamper check as retained source bytes.
+    let path = f.deployment.publisher().spool().object_path(receipt);
+    let mut permissions = fs::metadata(&path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions)?;
+    fs::write(path, b"damaged adoption receipt")?;
+    assert!(source.revalidate().is_err());
     Ok(())
 }

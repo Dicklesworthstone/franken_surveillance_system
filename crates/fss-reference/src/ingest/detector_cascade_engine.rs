@@ -48,7 +48,7 @@ use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, sourc
 use super::recorded_watch::WatchLimits;
 use super::rgb_detections::{RgbDetectionBudget, RgbDetectionContract};
 use super::rgb_package::RgbDetectorPackage;
-use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ReplayCx, RetainedSource, ScalarExecCx};
 
 /// Largest explicit inference budget of one analysis.
 pub const MAX_CASCADE_INFERENCES: usize = 64;
@@ -786,7 +786,7 @@ impl<'a> DetectorCascade<'a> {
     /// not reuse or retain cached frames: their decoder range and privacy basis are re-read.
     pub fn run_recovered(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         source: RecoveredCascadeSource<'_>,
         tracks: &[CascadeTrack],
         budget: &mut CascadeBudget,
@@ -810,7 +810,7 @@ impl<'a> DetectorCascade<'a> {
 
     fn run_planned(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CascadeReadPlan<'_>,
         tracks: &[CascadeTrack],
         budget: &mut CascadeBudget,
@@ -948,7 +948,7 @@ impl<'a> DetectorCascade<'a> {
 
     fn infer(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CascadeReadPlan<'_>,
         wanted: &BTreeSet<usize>,
         limits: &WatchLimits,

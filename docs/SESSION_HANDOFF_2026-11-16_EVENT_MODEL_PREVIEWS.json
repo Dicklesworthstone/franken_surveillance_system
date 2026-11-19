@@ -1,0 +1,84 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-16",
+  "timezone": "UTC",
+  "state": "source_reviewed_runtime_verification_blocked",
+  "mission": {
+    "goal": "Close important functional gaps from the comprehensive plan and Beads; publish meaningful increments directly to main through GitHub.",
+    "initial_source_head": "e84bb7ca39604997e39db64b1edd5011ccd10a04",
+    "scope": [
+      "FSS-076 through FSS-078: retained event proposal ownership",
+      "FSS-139 and FSS-142: native ONNX pooling compatibility"
+    ],
+    "broad_beads_closed": false
+  },
+  "authority": {
+    "scope": "Repository source and deterministic fixtures; no live cameras or notification effects.",
+    "publication": "Non-force main updates with an expected-parent lease, through the GitHub connector.",
+    "release": "Local repository qualification and retained DSR evidence remain required."
+  },
+  "checkpoints": [
+    {
+      "commit": "00f0a8d362332bb1fff520a4903b7a3a3bd2df3f",
+      "change": "Prepare recorded-luma and detector-package candidates through the immutable retained reader while capture owns the writer."
+    },
+    {
+      "commit": "bdbeddbde5ddf77586e885e1613c399aecbc1688",
+      "change": "Import ceil-mode MaxPool through the existing native operator and admit valid partial windows with negative shape numerators."
+    },
+    {
+      "commit": "8b5bd332fca8a2832ab31705a3cc8273cadc439d",
+      "change": "Preserved and reviewed the concurrently published immutable two-camera corroboration feature and calibrated-coverage regressions."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Add a valid companion-camera privacy-authority successor at final report admission; assert no stale pair, export or custody repair, and document immutable reader ownership."
+    }
+  ],
+  "behavior": [
+    "Preparation shares one immutable source snapshot, cumulative retained-read allowance and final metadata/custody validation. No proposal text or JSON export is released on failed final checks.",
+    "Proposal digests, event bytes, policy semantics and publication authority are unchanged. Publication takes the exclusive writer and independently prepares the candidate again before checking approval.",
+    "Read byte/object flags now apply to prepare, remain bounded, and are rejected for publication. The external report keeps its separate existing max-report-bytes bound.",
+    "ONNX MaxPool ceil_mode=1 with explicit/absent pads or NOTSET lowers to the existing native Boolean attribute. Omitted and explicit-zero flags keep their former lowering.",
+    "Native pooling admits a partial window when padded input is smaller than its kernel by less than one stride, rejects empty spatial inputs, and preserves checked arithmetic and trailing-window suppression.",
+    "No operator tables, graph versions, runtime kernels, frozen identities or cost contracts are extended. Dilation, optional index outputs and ceil mode with automatic VALID/SAME padding remain unsupported.",
+    "Short unapproved corroboration on the integrated main branch uses one immutable reader across both cameras and all retained dependencies, preserving detector, health, calibration, coverage and fusion paths. Publication and retention keep the exclusive writer.",
+    "The added privacy-drift regression first proves the new committed mask is readable, restores the previous committed prefix, measures the delivery boundary in that exact state, and introduces the valid successor only at final read admission.",
+    "Immutable report callers retain their source owner through derived-source and final metadata/custody revalidation before releasing a proposal."
+  ],
+  "validation": {
+    "source_review": "Independent review of both widened proposal APIs, exact summary compatibility, parser routing, shared read allowances and final validation before exports. Native importer, unsigned output geometry, actual executor test APIs and unchanged frozen schema were also reviewed. The concurrently published two-camera implementation was compared with this session's independently reviewed version and preserved; the additional late-privacy test was adapted to its helper and checkpoint names.",
+    "regression_tests_added": [
+      "Prepare with an active capture writer, exact digest/event parity and later approved publication",
+      "No output/export or custody repair for corrupt source, incomplete journals or exhausted read limits",
+      "Immutable package preparation preserves an existing publication's exact digest and status",
+      "Read-limit parser admission for prepare and rejection for publish",
+      "Six MaxPool contracts: hand results, 102 coordinate-oracle cases, graph/artifact identity, actual scalar/optimized budget and cancellation checks, malformed inputs and full-width arithmetic",
+      "Valid companion privacy-policy advance at final corroboration read admission with no stdout, export or repaired/rewritten custody"
+    ],
+    "execution": "Not run: exact pinned toolchain installation was killed with exit 137; the execution environment subsequently became unavailable before compilation or rustfmt could complete.",
+    "compiler_pin": "nightly-2026-08-31, unchanged",
+    "dependency_or_gate_changes": false,
+    "formatting_verified": false,
+    "release_qualified": false,
+    "manifest": "Changed-file SHA-256 entries refreshed; whole-repository qualification and manifest-audit commands could not run after the environment became unavailable.",
+    "model_geometry_check": {
+      "runtime": "Independent V8 arithmetic check, not execution of Rust production code",
+      "cases": 187200,
+      "result": "All admitted output extents matched enumerated padded windows; every admitted window contained a real input sample."
+    },
+    "concurrent_corroboration_tests_preserved": "Six CLI and two calibrated-coverage tests from 8b5bd332 remain intact; the new privacy race is the seventh CLI test."
+  },
+  "remaining_work": [
+    "Run cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution maxpool_ceil and the onnx_detector_blocks_execution target.",
+    "Run cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test recorded_event_cli_contract.",
+    "Run cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test package_event_reader_contract.",
+    "Run cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-event corroborate::immutable::tests -- --test-threads=1 plus existing corroboration/detector/coverage suites.",
+    "Run pinned rustfmt and the existing local qualifier and full manifest gates on a restored host; no release or broad bead completion is asserted.",
+    "Broader plan gaps remain: authenticated delivery-status reconciliation, admitted TLS dependency closure, and complete recorder-history/retention workflows."
+  ],
+  "preserved_concurrent_heads": [
+    "60642d52ae53e5c0412198a6fe52e56cebcedafd",
+    "8b5bd332fca8a2832ab31705a3cc8273cadc439d"
+  ]
+}

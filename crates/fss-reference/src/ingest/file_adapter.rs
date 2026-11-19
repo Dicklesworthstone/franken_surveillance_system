@@ -2731,7 +2731,7 @@ impl FileIngestAdapter {
     }
 
     /// Helper scanning media bytes using either Annex-B or MJPEG splitter.
-    fn scan_media(
+    pub(crate) fn scan_media(
         file_bytes: &[u8],
         format: DetectedFileFormat,
         request: &FileIngestRequest,
@@ -3170,6 +3170,12 @@ impl FileIngestAdapter {
         if manifest.adapter_id == super::http_import::ADAPTER {
             return Err(FileIngestError::CorruptSegment {
                 detail: "HTTP originals require context-bound RetainedFileImport::read_segment"
+                    .to_owned(),
+            });
+        }
+        if manifest.adapter_id == super::mpeg_ts_import::ADAPTER {
+            return Err(FileIngestError::CorruptSegment {
+                detail: "MPEG-TS originals require context-bound RetainedFileImport::read_segment"
                     .to_owned(),
             });
         }

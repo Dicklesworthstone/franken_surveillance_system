@@ -526,6 +526,62 @@ fn native_read_and_report_coexist_with_a_live_writer_and_preserve_all_bytes() ->
 }
 
 #[test]
+fn prepare_coexists_with_capture_and_keeps_the_exact_later_publication_approval() -> TestResult {
+    let _serial = serial();
+    let f = fixture("immutable-prepare")?;
+    let cx = context(&f.root)?;
+    let writer = ReferenceDeployment::open(&f.root, "site:event-cli", &cx)?;
+    let expected = fss_reference::ingest::recorded_event::RecordedEventProposal::prepare(
+        &writer,
+        &f.bytes,
+        ContentDigest::parse(&f.digest)?,
+        ContentDigest::parse(&f.track)?,
+        &AnalysisLimits::default(),
+        &mut AnalysisBudget::new(100_000_000, 100_000_000),
+        &cx,
+    )?;
+    let before = deployment_bytes(&f.root)?;
+    let event_path = f.directory.0.join("prepared-while-capturing.json");
+    let prepared = command(&f, "prepare")
+        .arg("--event-out")
+        .arg(&event_path)
+        .output()?;
+    success(&prepared);
+    assert_eq!(
+        field(&prepared, "proposal_digest")?,
+        expected.digest().to_text()
+    );
+    assert_eq!(field(&prepared, "operation")?, "prepared");
+    assert_eq!(field(&prepared, "effects_authorized")?, "false");
+    assert_eq!(
+        EventHypothesis::from_json(&fs::read_to_string(event_path)?)?,
+        *expected.event()
+    );
+    assert_eq!(deployment_bytes(&f.root)?, before);
+
+    // Previewing carries no write authority and never removes the capture owner's lock.
+    let approval = field(&prepared, "proposal_digest")?;
+    let blocked = command(&f, "publish")
+        .args(["--proposal-digest", &approval])
+        .output()?;
+    assert_eq!(blocked.status.code(), Some(1));
+    assert!(blocked.stdout.is_empty());
+    assert_eq!(deployment_bytes(&f.root)?, before);
+    drop(writer);
+    cx.drain_and_finalize();
+
+    let published = command(&f, "publish")
+        .args(["--proposal-digest", &approval])
+        .output()?;
+    success(&published);
+    assert_eq!(
+        field(&published, "event_revision_digest")?,
+        field(&prepared, "event_revision_digest")?
+    );
+    Ok(())
+}
+
+#[test]
 fn immutable_reads_refuse_incomplete_journals_without_repair_or_exports() -> TestResult {
     let _serial = serial();
     let f = fixture("immutable-journal-tail")?;
@@ -557,6 +613,13 @@ fn immutable_reads_refuse_incomplete_journals_without_repair_or_exports() -> Tes
         assert_eq!(report.status.code(), Some(1));
         assert!(report.stdout.is_empty());
         assert!(!analysis_path.exists());
+        let prepared = command(&f, "prepare")
+            .arg("--event-out")
+            .arg(&event_path)
+            .output()?;
+        assert_eq!(prepared.status.code(), Some(1));
+        assert!(prepared.stdout.is_empty());
+        assert!(!event_path.exists());
         assert_eq!(deployment_bytes(&f.root)?, before);
         fs::write(journal, original)?;
     }
@@ -584,6 +647,14 @@ fn aggregate_read_allowances_withhold_outputs_and_exports() -> TestResult {
         assert_eq!(report.status.code(), Some(1));
         assert!(report.stdout.is_empty());
         assert!(!analysis_path.exists());
+        let prepared = command(&f, "prepare")
+            .args([key, "1"])
+            .arg("--event-out")
+            .arg(&event_path)
+            .output()?;
+        assert_eq!(prepared.status.code(), Some(1));
+        assert!(prepared.stdout.is_empty());
+        assert!(!event_path.exists());
     }
     assert_eq!(deployment_bytes(&f.root)?, before);
     Ok(())
@@ -629,6 +700,14 @@ fn corrupt_source_custody_is_refused_without_repair() -> TestResult {
     assert_eq!(report.status.code(), Some(1));
     assert!(report.stdout.is_empty());
     assert!(!report_path.exists());
+    let prepared_path = f.directory.0.join("corrupt-preparation.json");
+    let prepared = command(&f, "prepare")
+        .arg("--event-out")
+        .arg(&prepared_path)
+        .output()?;
+    assert_eq!(prepared.status.code(), Some(1));
+    assert!(prepared.stdout.is_empty());
+    assert!(!prepared_path.exists());
     assert_eq!(deployment_bytes(&f.root)?, before);
     Ok(())
 }

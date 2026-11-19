@@ -1,0 +1,580 @@
+{
+  "delivery": {
+    "candidates": 6,
+    "frames": 48,
+    "entries": [
+      {
+        "time": 1.0,
+        "track": 1,
+        "kind": "unclassified"
+      },
+      {
+        "time": 1.25,
+        "track": 2,
+        "kind": "unclassified"
+      },
+      {
+        "time": 3.0,
+        "track": 3,
+        "kind": "unclassified"
+      },
+      {
+        "time": 4.0,
+        "track": 4,
+        "kind": "unclassified"
+      },
+      {
+        "time": 7.75,
+        "track": 10,
+        "kind": "unclassified"
+      },
+      {
+        "time": 10.25,
+        "track": 12,
+        "kind": "unclassified"
+      }
+    ],
+    "visibility": [
+      {
+        "time": 0,
+        "visible": true,
+        "inZone": false
+      },
+      {
+        "time": 5.666666666666667,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 7,
+        "visible": false,
+        "inZone": true
+      },
+      {
+        "time": 9.083333333333334,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 10.083333333333334,
+        "visible": true,
+        "inZone": false
+      }
+    ],
+    "views": {
+      "porch": {
+        "asset": "delivery",
+        "importId": "sha256:a9d2cdfca78f283c02d8e9057e19d0da9c312d4c322f2318047e7acc848bfa64",
+        "filmDigest": "sha256:b8eadef7a0aad312ce145a7f970de2fc9eec61048d2c84ff7e5d7b1938b8f931",
+        "inputDigest": "sha256:89b14fd78eca8d92bb4b2332f31f2587e2d8e99a8279e85656f78de86ff1dd07",
+        "reportDigest": "sha256:b7896d118bd1d01f49e7f128eb55dc201a548dd1d1e192fbe7809af4e702112f",
+        "candidates": 6,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 5.666666666666667,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 7,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 9.083333333333334,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 10.083333333333334,
+            "visible": true,
+            "inZone": false
+          }
+        ],
+        "entries": [
+          {
+            "time": 1.0,
+            "track": 1,
+            "kind": "unclassified"
+          },
+          {
+            "time": 1.25,
+            "track": 2,
+            "kind": "unclassified"
+          },
+          {
+            "time": 3.0,
+            "track": 3,
+            "kind": "unclassified"
+          },
+          {
+            "time": 4.0,
+            "track": 4,
+            "kind": "unclassified"
+          },
+          {
+            "time": 7.75,
+            "track": 10,
+            "kind": "unclassified"
+          },
+          {
+            "time": 10.25,
+            "track": 12,
+            "kind": "unclassified"
+          }
+        ]
+      },
+      "garden": {
+        "asset": "delivery-garden",
+        "importId": "sha256:3826c4ef6fe44ff18c73b77744a5471d9e44282b11df7761c7682647cb66ee13",
+        "filmDigest": "sha256:4c3befde4ba74fa2cad9d89a555cab80e2f7b08d526198b698f8d04456ac656b",
+        "inputDigest": "sha256:64f46e68175b75f0f731cbe0d7214708a34c74662cf724d17d118f1c9cd65050",
+        "reportDigest": "sha256:f5cd5007bc537eacb4ea4e5c817714004111e6497e78a14d781fcb22ca47b023",
+        "candidates": 0,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 5.666666666666667,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 10.083333333333334,
+            "visible": false,
+            "inZone": false
+          }
+        ],
+        "entries": []
+      },
+      "drive": {
+        "asset": "delivery-drive",
+        "importId": "sha256:fd0af80fd073b82b88bc2cd153b944288a5fe2af9b5d85e1687f4ddb318b84dd",
+        "filmDigest": "sha256:223843812cf73202f26c18ea8dae984bd222d57481a23e9dac1996a342c40a8f",
+        "inputDigest": "sha256:f5de3c603f930b972e63f60d694900f4df466adbfdadabfecd7ab666121c90f7",
+        "reportDigest": "sha256:54ba587863f330ee88cbb53a695844fa02b36d208099ce6aa3eb1ba17131619e",
+        "candidates": 6,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 5.666666666666667,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 6.833333333333333,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 9.166666666666666,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 10.083333333333334,
+            "visible": true,
+            "inZone": false
+          }
+        ],
+        "entries": [
+          {
+            "time": 0.75,
+            "track": 1,
+            "kind": "unclassified"
+          },
+          {
+            "time": 1.5,
+            "track": 2,
+            "kind": "unclassified"
+          },
+          {
+            "time": 2.75,
+            "track": 3,
+            "kind": "unclassified"
+          },
+          {
+            "time": 7.0,
+            "track": 5,
+            "kind": "unclassified"
+          },
+          {
+            "time": 9.75,
+            "track": 6,
+            "kind": "unclassified"
+          },
+          {
+            "time": 11.0,
+            "track": 7,
+            "kind": "unclassified"
+          }
+        ]
+      }
+    },
+    "pairs": {
+      "drive-garden": {
+        "report": "delivery-drive-garden.json",
+        "reportDigest": "sha256:07bde5d2033285db0f91ed08f8275182d637a7cc8356a05c6cf1ca57972091dd"
+      },
+      "drive-porch": {
+        "report": "delivery-drive-porch.json",
+        "reportDigest": "sha256:09f9e8044ca3f0f6ef8849653ef0e2684a4d3089350aa2309075e074fcada6fa"
+      },
+      "garden-porch": {
+        "report": "delivery-garden-porch.json",
+        "reportDigest": "sha256:4b293ff1c2ed57a920be90d0573bf55f17fc335b04d7c37719f68ba7dcec25b1"
+      }
+    }
+  },
+  "wildlife": {
+    "candidates": 0,
+    "frames": 48,
+    "entries": [],
+    "visibility": [
+      {
+        "time": 0,
+        "visible": false,
+        "inZone": false
+      },
+      {
+        "time": 1.75,
+        "visible": true,
+        "inZone": false
+      },
+      {
+        "time": 4.333333333333333,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 6,
+        "visible": false,
+        "inZone": true
+      },
+      {
+        "time": 9.166666666666666,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 10.333333333333334,
+        "visible": true,
+        "inZone": false
+      }
+    ],
+    "views": {
+      "porch": {
+        "asset": "wildlife-porch",
+        "importId": "sha256:e70d5503b94f08342480b9ec3c4de6677d408300f8fbf3a041c4b464041895e2",
+        "filmDigest": "sha256:bddb3a7f07a61c154ba4b2c8aac1663f048436dd054e37ec8a479149f6b7d879",
+        "inputDigest": "sha256:124f5b3b579cc7411ca5a7410f411e80b725126b5d0f3be8c5391584f1ad5f3c",
+        "reportDigest": "sha256:d9f39c3089136ce781e738aab311cc465b7566385ee0ece0c2ad9b17d2f9d9c1",
+        "candidates": 0,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 4.333333333333333,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 10.333333333333334,
+            "visible": false,
+            "inZone": false
+          }
+        ],
+        "entries": []
+      },
+      "garden": {
+        "asset": "wildlife",
+        "importId": "sha256:9c8b9a7c762512b7f87239ceb92d39d3026d7f74932a19cb681693cf8600c80f",
+        "filmDigest": "sha256:e3799858502d219e1a344c17f90879d15e72658b315c9c932d4f26d850c63b39",
+        "inputDigest": "sha256:ee215f6258d1c65fd83608e1305657d0e539a54631b3b703adb3da848f8f3b5e",
+        "reportDigest": "sha256:82fd9723474dcdcd047979d15aa6798853528cc8af1cb7e90f72b3e3d43f8b26",
+        "candidates": 0,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 1.75,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 4.333333333333333,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 6,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 9.166666666666666,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 10.333333333333334,
+            "visible": true,
+            "inZone": false
+          }
+        ],
+        "entries": []
+      },
+      "drive": {
+        "asset": "wildlife-drive",
+        "importId": "sha256:94455d26da9c6eef1bb02a81961afd9d4ffac9e23f712e11dfd36a2752177a7a",
+        "filmDigest": "sha256:7c4deddeebfa75a058533176c93a15c378b1a158ec0d49e6b582a9709c83dcba",
+        "inputDigest": "sha256:04cbdf04aa0701f0c28d78f2a7e71841b3f4b7ded5f2f6d646c89181a39e0829",
+        "reportDigest": "sha256:f1fa596fd02acc5cb16ea6cc4680405bc3bee0ca890c1c37c376ef8fa9f5ca4e",
+        "candidates": 0,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 1.1666666666666667,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 1.75,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 3.75,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 4.333333333333333,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 4.916666666666667,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 9.916666666666666,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 10.333333333333334,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 10.75,
+            "visible": true,
+            "inZone": false
+          }
+        ],
+        "entries": []
+      }
+    },
+    "pairs": {
+      "drive-garden": {
+        "report": "wildlife-drive-garden.json",
+        "reportDigest": "sha256:aead14b4ac41f00c2cdf7146eb11375d55ff7887baad53f9539b02cba1100a6a"
+      },
+      "drive-porch": {
+        "report": "wildlife-drive-porch.json",
+        "reportDigest": "sha256:f9851460080ba7f320c7f86e383401d986e4c3c969272b16ade7b56d1bc2f434"
+      },
+      "garden-porch": {
+        "report": "wildlife-garden-porch.json",
+        "reportDigest": "sha256:58febe55f17ec26d8556e71dce0813bd9cf409c37dbd4da0d31d27ba6b75cb6d"
+      }
+    }
+  },
+  "visitor": {
+    "candidates": 1,
+    "frames": 48,
+    "entries": [
+      {
+        "time": 3.0,
+        "track": 1,
+        "kind": "unclassified"
+      }
+    ],
+    "visibility": [
+      {
+        "time": 0,
+        "visible": false,
+        "inZone": false
+      },
+      {
+        "time": 3.1666666666666665,
+        "visible": true,
+        "inZone": false
+      },
+      {
+        "time": 5.416666666666667,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 10.75,
+        "visible": true,
+        "inZone": false
+      }
+    ],
+    "views": {
+      "porch": {
+        "asset": "visitor-porch",
+        "importId": "sha256:c28eb58725caa6e4afcef65b5df6d8e4ef7a7e8b29050b246cdd136551009a38",
+        "filmDigest": "sha256:ae78389f809a4235b63936ba97365bbbb17fa9844a89aeffb1104079d2b5e2e7",
+        "inputDigest": "sha256:4edd091087df2e88ec0de26f2d40353c76947aa128977e6dd13013249c4bebf2",
+        "reportDigest": "sha256:a8809cc7733f64dd6c6e0eb3c3044ab17760a5d18b458d116f2720e79718266a",
+        "candidates": 3,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 5.416666666666667,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 10.75,
+            "visible": true,
+            "inZone": false
+          }
+        ],
+        "entries": [
+          {
+            "time": 4.0,
+            "track": 1,
+            "kind": "unclassified"
+          },
+          {
+            "time": 9.0,
+            "track": 2,
+            "kind": "unclassified"
+          },
+          {
+            "time": 9.75,
+            "track": 4,
+            "kind": "unclassified"
+          }
+        ]
+      },
+      "garden": {
+        "asset": "visitor-garden",
+        "importId": "sha256:4b53fdf5f9e95a826605bac77015414998270cd9697404fe8f6a79ebd794ccf7",
+        "filmDigest": "sha256:595e7f769469d75269ef6570670f8c12a6f0a979d32c8183fe7f777f75a1dcaa",
+        "inputDigest": "sha256:37b5750637f728608f53a43bc0808bb2b578e3e25782428af0618078c6a5c733",
+        "reportDigest": "sha256:a3802296d60cfd39f36e3fb2dfa3a2f460e1950847a0622f58c13cfad5ddaefd",
+        "candidates": 0,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 5.416666666666667,
+            "visible": false,
+            "inZone": true
+          },
+          {
+            "time": 10.75,
+            "visible": false,
+            "inZone": false
+          }
+        ],
+        "entries": []
+      },
+      "drive": {
+        "asset": "visitor",
+        "importId": "sha256:cdb0a1d11fa85bc7fc4dc2e59c30f66fec3ae386c79a4a4b119ddc21fcc5cbcf",
+        "filmDigest": "sha256:3ef7d5dee9a485779f2e73dc6d94331d712c2e6b76e4449063105c798054d965",
+        "inputDigest": "sha256:b44167d05a7520a343c426b9962a7f426cba00cdb8fe7daa8776350bf1bf2155",
+        "reportDigest": "sha256:07455ff474bc43468bd8b7e69b2bd6859ec4a9055ae86a54e59b58ff833793d0",
+        "candidates": 1,
+        "frames": 48,
+        "visibility": [
+          {
+            "time": 0,
+            "visible": false,
+            "inZone": false
+          },
+          {
+            "time": 3.1666666666666665,
+            "visible": true,
+            "inZone": false
+          },
+          {
+            "time": 5.416666666666667,
+            "visible": true,
+            "inZone": true
+          },
+          {
+            "time": 10.75,
+            "visible": true,
+            "inZone": false
+          }
+        ],
+        "entries": [
+          {
+            "time": 3.0,
+            "track": 1,
+            "kind": "unclassified"
+          }
+        ]
+      }
+    },
+    "pairs": {
+      "drive-garden": {
+        "report": "visitor-drive-garden.json",
+        "reportDigest": "sha256:bd0b86efd5f728da931ef21011f57ff2134371d8aacf50436168798687cabad5"
+      },
+      "drive-porch": {
+        "report": "visitor-drive-porch.json",
+        "reportDigest": "sha256:4e0080000a12ac9600c08e6fa02f20d003fb02d7c6567d74f5b308708c5499b6"
+      },
+      "garden-porch": {
+        "report": "visitor-garden-porch.json",
+        "reportDigest": "sha256:919c89acd54dc0962ffd0d1ac6c6a250ea92e3a0653f7c76c1018b3e09d3aa36"
+      }
+    }
+  }
+}

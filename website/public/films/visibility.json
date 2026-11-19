@@ -1,0 +1,83 @@
+{
+  "delivery": [
+    {
+      "time": 0,
+      "visible": true,
+      "inZone": false
+    },
+    {
+      "time": 5.666666666666667,
+      "visible": true,
+      "inZone": true
+    },
+    {
+      "time": 7,
+      "visible": false,
+      "inZone": true
+    },
+    {
+      "time": 9.083333333333334,
+      "visible": true,
+      "inZone": true
+    },
+    {
+      "time": 10.083333333333334,
+      "visible": true,
+      "inZone": false
+    }
+  ],
+  "wildlife": [
+    {
+      "time": 0,
+      "visible": false,
+      "inZone": false
+    },
+    {
+      "time": 1.75,
+      "visible": true,
+      "inZone": false
+    },
+    {
+      "time": 4.333333333333333,
+      "visible": true,
+      "inZone": true
+    },
+    {
+      "time": 6,
+      "visible": false,
+      "inZone": true
+    },
+    {
+      "time": 9.166666666666666,
+      "visible": true,
+      "inZone": true
+    },
+    {
+      "time": 10.333333333333334,
+      "visible": true,
+      "inZone": false
+    }
+  ],
+  "visitor": [
+    {
+      "time": 0,
+      "visible": false,
+      "inZone": false
+    },
+    {
+      "time": 3.1666666666666665,
+      "visible": true,
+      "inZone": false
+    },
+    {
+      "time": 5.416666666666667,
+      "visible": true,
+      "inZone": true
+    },
+    {
+      "time": 10.75,
+      "visible": true,
+      "inZone": false
+    }
+  ]
+}

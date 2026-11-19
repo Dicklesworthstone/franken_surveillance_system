@@ -22,7 +22,7 @@ use fss_reference::ingest::recorded_corroboration::{CorroborationError, Corrobor
 use fss_reference::ingest::recorded_coverage::{CoverageStatus, PoseProvenance};
 use fss_reference::ingest::recorded_decode::RecordedDecodeError;
 use fss_reference::ingest::site_calibration::SiteCalibration;
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 use super::{CorroborateAction, RunResult};
 
@@ -73,7 +73,7 @@ impl CoverageGuard {
         report: &CorroborationReport,
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> RunResult<EventFusionReport> {
         Ok(EventFusionReport::corroborate_guarded(
@@ -90,7 +90,7 @@ impl CoverageGuard {
     /// Recheck the final context at delivery without publishing or retaining coverage.
     pub(super) fn revalidate(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> RunResult<()> {
         self.guarded.revalidate(deployment, self.read_limits, cx)?;
@@ -138,7 +138,7 @@ pub(super) fn assess(
     action: &CorroborateAction,
     calibration: Option<&SiteCalibration>,
     calibration_digest: Option<ContentDigest>,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     report: &CorroborationReport,
     cx: &ReplayCx,
     budget: &mut WorkBudget<'_>,

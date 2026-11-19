@@ -4,6 +4,8 @@
 //! Runs retained decode → foreground → Kalman tracker → zone gate through
 //! `fss_reference::ingest::recorded_watch`. Ordinary previews write nothing to the deployment
 //! without an event or retention approval. Explicit incremental steps retain a work checkpoint.
+//! Unapproved entry and dwell previews use an immutable retained owner during active ingest and
+//! share one aggregate read allowance through final source, privacy and authority validation.
 //! The complete JSON report contains each candidate's exact proposal digest and the
 //! rerun command that would publish it. With `--approve DIGEST[,DIGEST...]` it publishes only
 //! those exact proposals as unclassified, indeterminate, single-sensor candidates through the
@@ -53,7 +55,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fss_cli::event_fusion::{EventFusionError, EventFusionReport};
+use fss_cli::event_fusion::{EventFusionError, EventFusionProfile, EventFusionReport};
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
@@ -69,14 +71,21 @@ use fss_reference::ingest::recorded_watch::{
     MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions,
     WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
 };
+use fss_reference::ingest::rgb_package::RgbDetectorPackage;
 use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 use fss_reference::ingest::zone_dwell::DwellPolicy;
-use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource, ScalarExecCx};
 
 use super::{RunResult, export};
 
+#[path = "watch/immutable.rs"]
+mod immutable;
 #[path = "watch/incremental.rs"]
 mod incremental;
+#[path = "watch/whole.rs"]
+mod whole;
+pub(super) use immutable::run as run_immutable_preview;
 
 const OPTIONS: &[&str] = &[
     "--root",
@@ -98,6 +107,8 @@ const OPTIONS: &[&str] = &[
     "--max-dimension",
     "--max-pixels",
     "--max-segment-bytes",
+    "--max-read-bytes",
+    "--max-read-objects",
     "--approve",
     "--retain-coverage",
     "--retain-health",
@@ -148,6 +159,7 @@ pub(super) struct WatchAction {
     detector: WatchDetectorConfig,
     tracker: WatchTrackerConfig,
     limits: WatchLimits,
+    read_limits: ImmutableRetainedReadLimits,
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     retain_health: Option<ContentDigest>,
@@ -317,6 +329,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             "--retain-coverage",
             "--retain-health",
             "--report-out",
+            "--max-read-bytes",
+            "--max-read-objects",
             "--fusion-profile",
             "--fusion-digest",
             "--dwell-checkpoint",
@@ -485,7 +499,12 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     if stream_watch.is_some() && rerun.len() > 8192 {
         return Err("streaming watch rerun command exceeds byte bound".to_owned());
     }
-    Ok(WatchAction {
+    let read_values = values
+        .iter()
+        .map(|(key, value)| (key.clone(), OsString::from(value)))
+        .collect();
+    let read_limits = super::retained_read::parse_limits(&read_values)?;
+    let action = WatchAction {
         root: PathBuf::from(text(&values, "--root")?),
         site,
         principal,
@@ -497,6 +516,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         detector,
         tracker,
         limits,
+        read_limits,
         approvals,
         retain_coverage: match text(&values, "--retain-coverage") {
             Ok(value) => Some(digest(value, "--retain-coverage")?),
@@ -515,7 +535,28 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         health_screen,
         incremental,
         rerun,
-    })
+    };
+    if values
+        .iter()
+        .any(|(key, _)| matches!(key.as_str(), "--max-read-bytes" | "--max-read-objects"))
+        && !action.is_immutable_preview()
+    {
+        return Err(
+            "aggregate read allowances require an unapproved, nonincremental watch or dwell preview".to_owned(),
+        );
+    }
+    Ok(action)
+}
+
+impl WatchAction {
+    /// Unapproved entry and dwell analyses share an immutable owner. Incremental steps retain
+    /// checkpoints and therefore keep their publisher. Saving an external report grants no authority.
+    pub(super) fn is_immutable_preview(&self) -> bool {
+        self.approvals.is_empty()
+            && self.retain_coverage.is_none()
+            && self.retain_health.is_none()
+            && self.incremental.is_none()
+    }
 }
 
 /// Analyze, optionally publish exactly the approved proposals, and print the JSON report.
@@ -630,107 +671,8 @@ fn run_streaming_watch(
         true,
         !action.approvals.is_empty() || action.retain_health.is_some(),
     )?;
-    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    if fusion_profile
-        .as_ref()
-        .is_some_and(|p| p.long_watch_analysis_root().is_none())
-    {
-        return Err(EventFusionError::Scope.into());
-    }
-    // Verify the requested package before reading any source. The same archive is retained
-    // with an approved event so a cold replay needs neither this path nor a model download.
-    let package = action
-        .cascade
-        .as_ref()
-        .map(|options| super::detector::load_with_archive(options, cx, scalar))
-        .transpose()?;
-    let detector = match (&action.cascade, &package) {
-        (Some(options), Some((package, archive))) => Some(LongWatchDetector::new(
-            package,
-            archive,
-            options.config,
-            PackageDetectLimits::default(),
-            scalar,
-        )?),
-        _ => None,
-    };
-    let segment_count = match action.segment_count {
-        Some(count) => count,
-        None => {
-            let retained =
-                RetainedFileImport::open(deployment, action.import, limits.decode.read_limits, cx)
-                    .map_err(WatchError::from)?;
-            retained
-                .manifest()
-                .segment_spans
-                .len()
-                .checked_sub(action.first_segment)
-                .filter(|count| (1..=MAX_LONG_WATCH_FRAMES).contains(count))
-                .ok_or(WatchError::InvalidPlan(
-                    "select a nonempty streaming watch range of at most 65536 segments",
-                ))?
-        }
-    };
-    let plan = WatchPlan {
-        import_identity: action.import,
-        interpretation: action.interpretation,
-        first_segment: action.first_segment,
-        segment_count,
-        zones: action.zones.clone(),
-        detector: action.detector,
-        tracker: action.tracker,
-    };
-    let mut report = match &detector {
-        Some(detector) => LongWatchReport::analyze_with_detector(
-            deployment,
-            &plan,
-            action.options,
-            limits,
-            detector,
-            action.health_screen,
-            cx,
-        )?,
-        None if action.health_screen => {
-            LongWatchReport::analyze_screened(deployment, &plan, action.options, limits, cx)?
-        }
-        None => LongWatchReport::analyze(deployment, &plan, action.options, limits, cx)?,
-    };
-    let fusion = match (&fusion_profile, &package) {
-        (Some(profile), Some((package, _))) => Some(EventFusionReport::long_watch(
-            &report, package, profile, deployment, cx,
-        )?),
-        (None, _) => None,
-        _ => return Err(EventFusionError::Scope.into()),
-    };
-    // Admit the complete native-plus-advice shape before output or a publication path.
-    // Fusion admission forbids publication/retention; no advice changes a native approval.
-    if fusion.is_some() {
-        super::detector::with_fusion(
-            super::health::with_watch_diagnostic(
-                report.to_json(
-                    deployment.current_anchor().commit_sequence,
-                    Some(&action.rerun),
-                )?,
-                report.health_diagnostic(),
-                None,
-                &action.rerun,
-            )?,
-            fusion.as_ref(),
-        )?;
-    }
-    // Admit the complete post-retention shape as well as every exact approval hint before
-    // any commitment. A health receipt can be retained without publishing an event.
-    let sequence = if report.health_diagnostic().is_some() {
-        u64::MAX
-    } else {
-        deployment.current_anchor().commit_sequence
-    };
-    super::health::preflight_watch_diagnostic(
-        report.to_json(sequence, Some(&action.rerun))?,
-        report.health_diagnostic(),
-        deployment.current_anchor(),
-        &action.rerun,
-    )?;
+    let inputs = whole::Inputs::load(action, whole::Scope::Watch, cx, scalar)?;
+    let (mut report, fusion) = inputs.watch(action, deployment, limits, cx, scalar)?;
     if !action.approvals.is_empty() {
         report.publish(deployment, &action.approvals, cx)?;
     }
@@ -746,18 +688,15 @@ fn run_streaming_watch(
                 .map_err(Into::into)
         })
         .transpose()?;
-    let native = super::health::with_watch_diagnostic(
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun),
-        )?,
-        report.health_diagnostic(),
-        retention.as_ref(),
-        &action.rerun,
-    )?;
     let json = format!(
         "{}\n",
-        super::detector::with_fusion(native, fusion.as_ref())?
+        whole::render_watch(
+            action,
+            &report,
+            deployment.current_anchor().commit_sequence,
+            retention.as_ref(),
+            fusion.as_ref(),
+        )?
     );
     if fusion.is_some() {
         report.revalidate_derived_source(deployment, cx)?;
@@ -774,14 +713,11 @@ fn run_streaming_watch(
     Ok(())
 }
 
-fn run_with(
+fn load_short_inputs(
     action: &WatchAction,
-    deployment: &mut ReferenceDeployment,
-    root: &Path,
     cx: &ReplayCx,
     scalar: &ScalarExecCx,
-    out: &mut impl Write,
-) -> RunResult<()> {
+) -> RunResult<(Option<EventFusionProfile>, Option<RgbDetectorPackage>)> {
     // Calibration bytes and package bytes are pinned before any retained source is read.
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     if fusion_profile.as_ref().is_some_and(|p| {
@@ -796,15 +732,31 @@ fn run_with(
         Some(options) => Some(super::detector::load(options, cx, scalar)?),
         None => None,
     };
-    let mut cascade = match (&action.cascade, &package) {
-        (Some(options), Some(package)) => Some(DetectorCascade::new(
+    Ok((fusion_profile, package))
+}
+
+fn short_cascade<'a>(
+    action: &WatchAction,
+    package: Option<&'a RgbDetectorPackage>,
+    scalar: &'a ScalarExecCx,
+) -> RunResult<Option<DetectorCascade<'a>>> {
+    match (&action.cascade, package) {
+        (Some(options), Some(package)) => Ok(Some(DetectorCascade::new(
             package,
             options.config,
             PackageDetectLimits::default(),
             scalar,
-        )?),
-        _ => None,
-    };
+        )?)),
+        (None, None) => Ok(None),
+        _ => Err(EventFusionError::Scope.into()),
+    }
+}
+
+fn short_plan(
+    action: &WatchAction,
+    deployment: &dyn RetainedSource,
+    cx: &ReplayCx,
+) -> RunResult<WatchPlan> {
     let segment_count = match action.segment_count {
         Some(count) => count,
         None => {
@@ -829,7 +781,7 @@ fn run_with(
             available
         }
     };
-    let plan = WatchPlan {
+    Ok(WatchPlan {
         import_identity: action.import,
         interpretation: action.interpretation,
         first_segment: action.first_segment,
@@ -837,7 +789,20 @@ fn run_with(
         zones: action.zones.clone(),
         detector: action.detector,
         tracker: action.tracker,
-    };
+    })
+}
+
+fn run_with(
+    action: &WatchAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let (fusion_profile, package) = load_short_inputs(action, cx, scalar)?;
+    let mut cascade = short_cascade(action, package.as_ref(), scalar)?;
+    let plan = short_plan(action, deployment, cx)?;
     if let Some(rule) = action.dwell {
         let mut report = DwellReport::analyze(
             deployment,
@@ -857,21 +822,19 @@ fn run_with(
         };
         // Admit the entire native report plus advice before any publication or export.
         // Fusion admission forbids authority writes; ordinary dwell publication is unchanged.
-        super::detector::with_fusion(
-            report.to_json(
-                deployment.current_anchor().commit_sequence,
-                Some(&action.rerun),
-            )?,
+        render_short_dwell(
+            action,
+            &report,
+            deployment.current_anchor().commit_sequence,
             fusion.as_ref(),
         )?;
         if !action.approvals.is_empty() {
             report.publish(deployment, &action.approvals, cx)?;
         }
-        let json = super::detector::with_fusion(
-            report.to_json(
-                deployment.current_anchor().commit_sequence,
-                Some(&action.rerun),
-            )?,
+        let json = render_short_dwell(
+            action,
+            &report,
+            deployment.current_anchor().commit_sequence,
             fusion.as_ref(),
         )?;
         if fusion.is_some() {
@@ -934,18 +897,13 @@ fn run_with(
         None
     };
     let proposal = reproposed.as_ref().unwrap_or(&report);
-    let coverage = super::coverage::render(
-        &[proposal.coverage()],
-        proposal.coverage_status(),
-        proposal.coverage_approval(),
-        &action.rerun,
-    );
-    let json = report.to_json_with_coverage(
+    let json = render_short_watch(
+        action,
+        &report,
+        proposal,
         deployment.current_anchor().commit_sequence,
-        Some(&action.rerun),
-        Some(&coverage),
-    );
-    let json = super::detector::with_fusion(json, fusion.as_ref())?;
+        fusion.as_ref(),
+    )?;
     if fusion.is_some() {
         report.revalidate_derived_source(deployment, cx)?;
         cx.checkpoint("event_fusion:watch_delivery")?;
@@ -956,6 +914,35 @@ fn run_with(
     }
     out.write_all(json.as_bytes())?;
     Ok(())
+}
+
+fn render_short_watch(
+    action: &WatchAction,
+    report: &WatchReport,
+    proposal: &WatchReport,
+    sequence: u64,
+    fusion: Option<&EventFusionReport>,
+) -> RunResult<String> {
+    let coverage = super::coverage::render(
+        &[proposal.coverage()],
+        proposal.coverage_status(),
+        proposal.coverage_approval(),
+        &action.rerun,
+    );
+    let native = report.to_json_with_coverage(sequence, Some(&action.rerun), Some(&coverage));
+    Ok(super::detector::with_fusion(native, fusion)?)
+}
+
+fn render_short_dwell(
+    action: &WatchAction,
+    report: &DwellReport,
+    sequence: u64,
+    fusion: Option<&EventFusionReport>,
+) -> RunResult<String> {
+    Ok(super::detector::with_fusion(
+        report.to_json(sequence, Some(&action.rerun))?,
+        fusion,
+    )?)
 }
 
 fn streaming_limits(
@@ -1020,92 +1007,8 @@ fn run_streaming(
     if action.incremental.is_some() {
         return incremental::run(action, deployment, root, limits, cx, scalar, out);
     }
-    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    if fusion_profile
-        .as_ref()
-        .is_some_and(|profile| profile.long_dwell_analysis_root().is_none())
-    {
-        return Err(EventFusionError::Scope.into());
-    }
-    let package = action
-        .cascade
-        .as_ref()
-        .map(|options| super::detector::load_with_archive(options, cx, scalar))
-        .transpose()?;
-    let detector = match (&action.cascade, &package) {
-        (Some(options), Some((package, archive))) => Some(LongWatchDetector::new(
-            package,
-            archive,
-            options.config,
-            PackageDetectLimits::default(),
-            scalar,
-        )?),
-        (None, None) => None,
-        _ => return Err(WatchError::Conflict.into()),
-    };
-    let rule = action
-        .dwell
-        .ok_or(WatchError::InvalidPlan("streaming dwell requires a rule"))?;
-    let segment_count = match action.segment_count {
-        Some(count) => count,
-        None => {
-            let retained =
-                RetainedFileImport::open(deployment, action.import, limits.decode.read_limits, cx)
-                    .map_err(WatchError::from)?;
-            retained
-                .manifest()
-                .segment_spans
-                .len()
-                .checked_sub(action.first_segment)
-                .filter(|count| (1..=MAX_LONG_DWELL_FRAMES).contains(count))
-                .ok_or(WatchError::InvalidPlan(
-                    "select a nonempty long-dwell range of at most 65536 segments",
-                ))?
-        }
-    };
-    let plan = WatchPlan {
-        import_identity: action.import,
-        interpretation: action.interpretation,
-        first_segment: action.first_segment,
-        segment_count,
-        zones: action.zones.clone(),
-        detector: action.detector,
-        tracker: action.tracker,
-    };
-    let mut report = match &detector {
-        Some(detector) => LongDwellReport::analyze_with_detector(
-            deployment,
-            &plan,
-            rule,
-            action.options,
-            limits,
-            detector,
-            action.health_screen,
-            cx,
-        )?,
-        None if action.health_screen => {
-            LongDwellReport::analyze_screened(deployment, &plan, rule, action.options, limits, cx)?
-        }
-        None => LongDwellReport::analyze(deployment, &plan, rule, action.options, limits, cx)?,
-    };
-    let fusion = match (&fusion_profile, &package) {
-        (Some(profile), Some((package, _))) => Some(EventFusionReport::long_dwell(
-            &report, package, profile, deployment, cx,
-        )?),
-        (None, _) => None,
-        _ => return Err(EventFusionError::Scope.into()),
-    };
-    let sequence = if report.health_diagnostic().is_some() {
-        u64::MAX
-    } else {
-        deployment.current_anchor().commit_sequence
-    };
-    super::health::preflight_watch_diagnostic(
-        report.to_json(sequence, Some(&action.rerun))?,
-        report.health_diagnostic(),
-        deployment.current_anchor(),
-        &action.rerun,
-    )?;
+    let inputs = whole::Inputs::load(action, whole::Scope::Dwell, cx, scalar)?;
+    let (mut report, fusion) = inputs.dwell(action, deployment, limits, cx, scalar)?;
     if !action.approvals.is_empty() {
         report.publish(deployment, &action.approvals, cx)?;
     }
@@ -1121,18 +1024,15 @@ fn run_streaming(
                 .map_err(Into::into)
         })
         .transpose()?;
-    let native = super::health::with_watch_diagnostic(
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun),
-        )?,
-        report.health_diagnostic(),
-        retention.as_ref(),
-        &action.rerun,
-    )?;
     let json = format!(
         "{}\n",
-        super::detector::with_fusion(native, fusion.as_ref())?
+        whole::render_dwell(
+            action,
+            &report,
+            deployment.current_anchor().commit_sequence,
+            retention.as_ref(),
+            fusion.as_ref(),
+        )?
     );
     if fusion.is_some() {
         report.revalidate_derived_source(deployment, cx)?;

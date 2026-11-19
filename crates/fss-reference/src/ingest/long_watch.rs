@@ -37,7 +37,9 @@ use super::sensor_health::{
     policy_bytes as health_policy_bytes, policy_digest as health_policy_digest,
 };
 use super::tolerant_decode::DecodeRefusal;
-use crate::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx};
+use crate::{
+    ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx, RetainedSource,
+};
 
 /// Optional native trained detector and its source-closed whole-recording recipe.
 pub mod detector;
@@ -190,7 +192,7 @@ fn hex(digest: ContentDigest) -> String {
 impl LongWatchReport {
     /// Run one whole-recording analysis with persistent foreground/tracker state and budgets.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         options: WatchOptions,
         limits: &LongWatchLimits,
@@ -201,7 +203,7 @@ impl LongWatchReport {
 
     /// Screen the same privacy-masked pixels and block publication on any incomplete/degraded run.
     pub fn analyze_screened(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         options: WatchOptions,
         limits: &LongWatchLimits,
@@ -215,7 +217,7 @@ impl LongWatchReport {
     /// does not need loose source/model files. Scores remain uncalibrated, with no alert authority.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_detector(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         options: WatchOptions,
         limits: &LongWatchLimits,
@@ -236,7 +238,7 @@ impl LongWatchReport {
 
     #[allow(clippy::too_many_arguments)]
     fn analyze_inner(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &WatchPlan,
         options: WatchOptions,
         limits: &LongWatchLimits,
@@ -706,7 +708,7 @@ impl LongWatchReport {
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_candidate(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     entry: LongWatchEntry,
     plan: &WatchPlan,
     analysis_root: ContentDigest,

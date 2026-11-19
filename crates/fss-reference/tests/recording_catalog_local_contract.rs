@@ -116,10 +116,56 @@ fn publish(p: &mut LocalRootPublisher, c: &RecordingCatalog) -> TestResult {
     Ok(())
 }
 struct Stop;
+
+#[test]
+fn open_owner_refuses_damaged_catalog_and_member_root_records() -> TestResult {
+    let (root, mut publisher, catalog) = setup("damaged-record")?;
+    publish(&mut publisher, &catalog)?;
+    let slot = SlotName::parse("catalog")?;
+    for name in [&slot, &SlotName::parse("second")?] {
+        let path = root
+            .join(fss_publication::LOCAL_ROOTS_DIR)
+            .join(format!("{name}{}", fss_publication::ROOT_RECORD_SUFFIX));
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, b"damaged fixture record")?;
+        assert!(matches!(
+            load_catalog(&publisher, &slot, catalog.manifest().root(), catalog.scope(), &NeverCancel),
+            Err(CatalogIoError::Storage(RecordingIoError::Publication(error))) if matches!(*error, fss_publication::LocalPublicationError::BrokenSlot { .. })
+        ));
+        std::fs::write(&path, bytes)?;
+    }
+    Ok(())
+}
 impl PublishCancellation for Stop {
     fn cancel_requested(&self, _: PublishCutPoint) -> bool {
         true
     }
+}
+
+#[test]
+fn catalog_metadata_read_spends_only_the_remaining_page_allowance() -> TestResult {
+    let mut publisher = LocalRootPublisher::open(path("metadata-budget")?, limits())?;
+    let index = publisher.stage_object(&vec![0; MAX_CATALOG_BYTES])?;
+    let manifest = ObjectManifest::new(CATALOG_KIND, [], Some(index))?;
+    let slot = SlotName::parse("catalog")?;
+    publisher.publish(&slot, &manifest)?;
+    let wire_budget = (MAX_CATALOG_BYTES + 2 * (fss_object::SPOOL_OBJECT_HEADER_LEN + 1)) as u64;
+    publisher.tighten_read_budget(wire_budget, 2)?;
+    assert!(matches!(
+        load_catalog(
+            &publisher,
+            &slot,
+            manifest.root(),
+            &catalog_scope()?,
+            &NeverCancel
+        ),
+        Err(CatalogIoError::Catalog(CatalogError::Limit))
+    ));
+    assert_eq!(
+        publisher.spool().read_budget_usage().used_bytes,
+        wire_budget
+    );
+    Ok(())
 }
 
 #[test]

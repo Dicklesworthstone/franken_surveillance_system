@@ -14,6 +14,8 @@
 //!   flattened to one long row, depthwise convolution as whole-row accumulation, all reducing
 //!   over the reference's `(cin_g, kh, kw)` order and skipping padded taps exactly;
 //! * fused bias + SiLU when a convolution's only consumer is a SiLU node;
+//! * broadcast batched MatMul over contiguous 4x8 independent output tiles, retaining
+//!   the scalar reduction order for both constant and runtime operands;
 //! * SiLU's binary64 series evaluated for several independent elements at once;
 //! * liveness-planned activation release and one reused scratch buffer;
 //! * optional structured multi-threading ([`ExecThreads`], fss-zczw0): a convolution's output
@@ -42,11 +44,16 @@ use crate::{ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor};
 mod conv;
 #[path = "optimized_executor/layout.rs"]
 mod layout;
+#[path = "optimized_executor/matmul.rs"]
+mod matmul;
 #[path = "optimized_executor/pointwise.rs"]
 mod pointwise;
 #[cfg(test)]
 #[path = "optimized_executor/tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "optimized_executor/matmul_tests.rs"]
+mod matmul_tests;
 
 /// Largest admitted [`ExecThreads`] request. Execution never spawns more scoped threads than
 /// this per kernel, whatever the host reports.
@@ -229,11 +236,14 @@ pub fn optimized_kernel_generation() -> ContentDigest {
     e.u64(conv::MR as u64);
     e.u64(conv::NR as u64);
     e.u64(pointwise::SILU_LANES as u64);
+    e.u64(matmul::MR as u64);
+    e.u64(matmul::NR as u64);
     for source in [
         include_bytes!("optimized_executor.rs").as_slice(),
         include_bytes!("optimized_executor/conv.rs").as_slice(),
         include_bytes!("optimized_executor/pointwise.rs").as_slice(),
         include_bytes!("optimized_executor/layout.rs").as_slice(),
+        include_bytes!("optimized_executor/matmul.rs").as_slice(),
     ] {
         e.digest(ContentDigest::sha256(source));
     }
@@ -256,6 +266,7 @@ struct ReferenceNode {
 #[derive(Clone, Debug)]
 enum Kernel {
     Conv(Box<conv::PreparedConv>),
+    MatMul(matmul::PreparedMatMul),
     Silu,
     Sigmoid,
     Relu,
@@ -271,6 +282,7 @@ impl Kernel {
     fn label(&self) -> &'static str {
         match self {
             Self::Conv(c) => c.label(),
+            Self::MatMul(_) => "matmul.tiles4x8.v1",
             Self::Silu => "silu.lanes8.v1",
             Self::Sigmoid => "sigmoid.map.v1",
             Self::Relu => "relu.map.v1",
@@ -302,6 +314,7 @@ pub struct OptimizedRunReport {
     /// Highest live activation payload plus kernel scratch observed at any step.
     pub peak_live_bytes: usize,
     /// Largest kernel scratch used by one step, summed over that step's threads.
+    /// Includes the MatMul tile's bounded stack accumulator payload.
     pub scratch_bytes: usize,
     /// Constants and packed weights resident in the prepared plan (not per-run).
     pub resident_bytes: usize,
@@ -558,6 +571,12 @@ impl OptimizedGraph {
                     Some(pool) => Kernel::Pool(pool),
                     None => reference(node, graph, &ports)?,
                 },
+                OpCode::MatMul => {
+                    match matmul::PreparedMatMul::prepare(&in_dims(0)?, &in_dims(1)?, out_dims)? {
+                        Some(plan) => Kernel::MatMul(plan),
+                        None => reference(node, graph, &ports)?,
+                    }
+                }
                 OpCode::Transpose | OpCode::Slice => {
                     match layout::Gather::new(node, &in_dims(0)?, out_dims)? {
                         Some(g) => Kernel::Gather(g),
@@ -579,7 +598,6 @@ impl OptimizedGraph {
                 | OpCode::Tanh
                 | OpCode::Sqrt
                 | OpCode::Erf
-                | OpCode::MatMul
                 | OpCode::LayerNorm
                 | OpCode::RMSNorm
                 | OpCode::Softmax
@@ -658,7 +676,8 @@ impl OptimizedGraph {
                 .iter()
                 .map(|s| match &s.kernel {
                     Kernel::Conv(c) => c.resident_bytes(),
-                    Kernel::Silu
+                    Kernel::MatMul(_)
+                    | Kernel::Silu
                     | Kernel::Sigmoid
                     | Kernel::Relu
                     | Kernel::Binary(..)
@@ -846,7 +865,7 @@ impl OptimizedGraph {
             // Everything resident at this instant: live activations, the new output, scratch.
             let live: usize =
                 env.iter().flatten().map(|v| v.len() * 4).sum::<usize>() + out.len() * 4;
-            // Worker threads' panels are freed when they join; they count at this step only.
+            // Worker panels and stack tile accumulators count at this step only.
             let step_scratch = (scratch.capacity() + worker_scratch) * 4;
             scratch_peak = scratch_peak.max(step_scratch);
             peak = peak.max(live + step_scratch);
@@ -884,7 +903,7 @@ impl OptimizedGraph {
         .ok_or_else(|| mismatch("optimized", "optimized_value", "value not live"))
     }
 
-    /// Execute one step; returns (threads used, worker-thread scratch floats).
+    /// Execute one step; returns (threads used, additional ephemeral scratch floats).
     fn execute(
         &self,
         step: &Step,
@@ -907,6 +926,16 @@ impl OptimizedGraph {
                     parallelism,
                     cx,
                 );
+            }
+            Kernel::MatMul(plan) => {
+                out.resize(plan.output_len(), 0.0);
+                plan.run(
+                    self.value(env, step.sources[0])?,
+                    self.value(env, step.sources[1])?,
+                    out,
+                    cx,
+                )?;
+                return Ok((1, matmul::ACCUMULATOR_FLOATS));
             }
             Kernel::Silu => {
                 *out = first(env)?;

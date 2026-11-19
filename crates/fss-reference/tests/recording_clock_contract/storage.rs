@@ -92,10 +92,79 @@ fn setup(name: &str) -> Result<(PathBuf, LocalRootPublisher, RecordingClockIndex
 }
 
 struct StopAt(PublishCutPoint);
+
+#[test]
+fn open_owner_refuses_lost_original_and_companion_root_records() -> TestResult {
+    let (root, mut publisher, index) = setup("lost-record")?;
+    publish_clock_index(&index, &mut publisher, &NeverCancel)?;
+    let original = &index.windows()[0];
+    let companion = clock_slot(Codec::Avc, index.scope())?;
+    for slot in [original.slot(), &companion] {
+        let path = root
+            .join(fss_publication::LOCAL_ROOTS_DIR)
+            .join(format!("{slot}{}", fss_publication::ROOT_RECORD_SUFFIX));
+        let bytes = std::fs::read(&path)?;
+        std::fs::remove_file(&path)?;
+        if slot == original.slot() {
+            assert!(matches!(
+                load_recording(&publisher, slot, original.root(), &index.scope().recording, &NeverCancel),
+                Err(RecordingIoError::Publication(error)) if matches!(*error, fss_publication::LocalPublicationError::Io { operation: fss_publication::LocalIoOperation::ReadRecord, kind: std::io::ErrorKind::NotFound, .. })
+            ));
+        }
+        assert!(matches!(
+            load_clock_index(&publisher, index.root(), index.scope(), Codec::Avc, &NeverCancel),
+            Err(E::Storage(RecordingIoError::Publication(error))) if matches!(*error, fss_publication::LocalPublicationError::Io { operation: fss_publication::LocalIoOperation::ReadRecord, kind: std::io::ErrorKind::NotFound, .. })
+        ));
+        std::fs::write(&path, bytes)?;
+    }
+    assert_eq!(
+        load_clock_index(
+            &publisher,
+            index.root(),
+            index.scope(),
+            Codec::Avc,
+            &NeverCancel
+        )?
+        .root(),
+        index.root()
+    );
+    Ok(())
+}
 impl PublishCancellation for StopAt {
     fn cancel_requested(&self, point: PublishCutPoint) -> bool {
         point == self.0
     }
+}
+
+#[test]
+fn clock_metadata_read_spends_only_the_remaining_index_allowance() -> TestResult {
+    use fss_reference::rtsp::recording_clock::MAX_CLOCK_INDEX_BYTES;
+    let mut owner_limits = limits();
+    owner_limits.spool.max_object_bytes = MAX_CLOCK_INDEX_BYTES;
+    let mut publisher = LocalRootPublisher::open(path("metadata-budget"), owner_limits)?;
+    let index = publisher.stage_object(&vec![0; MAX_CLOCK_INDEX_BYTES])?;
+    let manifest = ObjectManifest::new(CLOCK_INDEX_KIND, [], Some(index))?;
+    let scope = catalog_scope()?;
+    let slot = clock_slot(Codec::Avc, &scope)?;
+    publisher.publish(&slot, &manifest)?;
+    let wire_budget =
+        (MAX_CLOCK_INDEX_BYTES + 2 * (fss_object::SPOOL_OBJECT_HEADER_LEN + 1)) as u64;
+    publisher.tighten_read_budget(wire_budget, 2)?;
+    assert!(matches!(
+        load_clock_index(
+            &publisher,
+            manifest.root(),
+            &scope,
+            Codec::Avc,
+            &NeverCancel
+        ),
+        Err(E::Limit)
+    ));
+    assert_eq!(
+        publisher.spool().read_budget_usage().used_bytes,
+        wire_budget
+    );
+    Ok(())
 }
 
 #[test]

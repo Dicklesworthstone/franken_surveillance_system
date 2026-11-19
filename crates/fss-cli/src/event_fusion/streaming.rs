@@ -48,7 +48,7 @@ impl EventFusionReport {
         native: &LongWatchReport,
         package: &RgbDetectorPackage,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
@@ -63,20 +63,31 @@ impl EventFusionReport {
         {
             return Err(EventFusionError::Scope);
         }
-        recipe.verify_package(package).map_err(|_| EventFusionError::Scope)?;
+        recipe
+            .verify_package(package)
+            .map_err(|_| EventFusionError::Scope)?;
         revalidate(native, deployment, cx)?;
         let basis = deployment.current_anchor().clone();
         let sensor = native.sensor_id().as_str();
         if profile.spec.calibrations.iter().any(|c| c.sensor != sensor) {
             return Err(EventFusionError::Scope);
         }
-        let label = package.spec().labels.get(profile.spec.class_index)
-            .ok_or(EventFusionError::Scope)?.clone();
+        let label = package
+            .spec()
+            .labels
+            .get(profile.spec.class_index)
+            .ok_or(EventFusionError::Scope)?
+            .clone();
         if label.len() > 192 || label.chars().any(char::is_control) {
             return Err(EventFusionError::Scope);
         }
-        admit_inventory(native.candidates().len(), native.candidates().iter()
-            .map(|candidate| candidate.class_evidence().len()))?;
+        admit_inventory(
+            native.candidates().len(),
+            native
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.class_evidence().len()),
+        )?;
 
         let mut e = CanonicalEncoder::new();
         e.text(RECIPE);
@@ -88,8 +99,10 @@ impl EventFusionReport {
         e.digest(recipe_digest);
         let context = digest(e)?;
         let shared = [
-            format!("model:{}", ContentDigest::sha256(
-                package.manifest().model_id().as_str().as_bytes())),
+            format!(
+                "model:{}",
+                ContentDigest::sha256(package.manifest().model_id().as_str().as_bytes())
+            ),
             format!("package:{}", package.archive_digest()),
             format!("cascade:{recipe_digest}"),
         ];
@@ -107,11 +120,17 @@ impl EventFusionReport {
                         evidence: candidate.class_evidence(),
                     }],
                 },
-                &label, profile, context, &shared,
+                &label,
+                profile,
+                context,
+                &shared,
             )?);
         }
         results.sort_by_key(|result| result.candidate);
-        if results.windows(2).any(|pair| pair[0].candidate == pair[1].candidate) {
+        if results
+            .windows(2)
+            .any(|pair| pair[0].candidate == pair[1].candidate)
+        {
             return Err(EventFusionError::Evidence);
         }
         let mut e = CanonicalEncoder::new();
@@ -126,8 +145,13 @@ impl EventFusionReport {
             return Err(EventFusionError::StaleBasis);
         }
         let report = Self {
-            profile: profile.clone(), basis, context,
-            package: package.archive_digest(), label, results, digest: digest(e)?,
+            profile: profile.clone(),
+            basis,
+            context,
+            package: package.archive_digest(),
+            label,
+            results,
+            digest: digest(e)?,
         };
         // Complete encoding must fit before a caller can disclose any report prefix.
         report.to_json()?;
@@ -136,9 +160,11 @@ impl EventFusionReport {
     }
 }
 
-fn revalidate(native: &LongWatchReport, deployment: &ReferenceDeployment, cx: &ReplayCx)
-    -> Result<()>
-{
+fn revalidate(
+    native: &LongWatchReport,
+    deployment: &dyn RetainedSource,
+    cx: &ReplayCx,
+) -> Result<()> {
     let checked = native.revalidate_derived_source(deployment, cx);
     // Preserve cancellation instead of converting a wrapped source refusal to stale evidence.
     checkpoint(cx)?;
@@ -156,7 +182,9 @@ fn admit_inventory(candidates: usize, counts: impl Iterator<Item = usize>) -> Re
     let mut total = 0_usize;
     for count in counts.take(MAX_LONG_CANDIDATES + 1) {
         seen = seen.checked_add(1).ok_or(EventFusionError::Limit)?;
-        total = total.checked_add(count.max(1)).ok_or(EventFusionError::Limit)?;
+        total = total
+            .checked_add(count.max(1))
+            .ok_or(EventFusionError::Limit)?;
         if seen > candidates || total > MAX_TOTAL_EVIDENCE {
             return Err(EventFusionError::Limit);
         }

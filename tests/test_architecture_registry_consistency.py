@@ -102,19 +102,8 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["agent_views_count"], 8)
         self.assertEqual(summary["qualification_lanes_count"], 15)
         self.assertEqual(summary["costs_count"], 41)
-        # 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
-        # 74 = 73 + SCHEMA-SENSOR-TAMPER-STATUS-001 (schemas/sensor_tamper_status.v1.json, fss-2uftm).
-        # 75 = 74 + SCHEMA-AGENT-DELTA-002 (schemas/agent_meaningful_delta.v2.json, fss-2uftm).
-        # 76 = 75 + SCHEMA-JPEG-FIXTURE-MANIFEST-001 (schemas/jpeg_fixture_manifest.v1.json, fss-2h5zq.5).
-        # 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
-        # 78 = 77 + SCHEMA-AGENT-OPERATIONS-001 (schemas/agent_operations.v1.json, fss-x4a.30.83.17).
-        # 79 = 78 + SCHEMA-AGENT-VIEWS-001 (schemas/agent_views.v1.json, fss-x4a.30.83.31-38).
-        # 83 = 79 + SCHEMA-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 / agent finding identity
-        # family and coverage schema rows landed 2026-09-24..28 (bd7186e8..3b451405); the pin
-        # was found stale by the policy lane on 2026-10-10 (qualification is the ratchet).
-        # 84 = 83 + SCHEMA-EXPERIMENT-RECEIPT-001 (fss.experiment_receipt.v1, fss-x4a.26.16).
-        # 87 = 84 + SCHEMA-FORMAL-MODEL-001, SCHEMA-PROOF-CHECK-RECEIPT-001, SCHEMA-BOUND-DERIVATION-001.
-        self.assertEqual(summary["schemas_count"], 87)
+        # 205 interchange/CLI declarations and 15 native format registrations.
+        self.assertEqual(summary["schemas_count"], 220)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

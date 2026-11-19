@@ -39,7 +39,7 @@ impl LongDwellReport {
     /// nothing. Existing publication retains the exact model archive and cold replay recipe.
     pub fn classify_with_detector(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         detector: &LongDwellDetector<'_>,
         cx: &ReplayCx,
     ) -> Result<()> {
@@ -113,7 +113,7 @@ impl LongDwellReport {
 /// One implementation of temporal selection, whole-invocation admission and trained evidence
 /// for direct analysis and terminal classification of a completed/resumed native report.
 pub(super) fn run_native_detector(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &WatchPlan,
     options: WatchOptions,
     scan: &ScanData,

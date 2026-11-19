@@ -1,0 +1,346 @@
+{
+  "duration": 12,
+  "recording": {
+    "width": 768,
+    "height": 432,
+    "fps": 12,
+    "nativeWidth": 160,
+    "nativeHeight": 90,
+    "nativeFps": 4
+  },
+  "cameras": {
+    "porch": {
+      "imageToGround": [
+        -0.012369104156828868,
+        -0.02274786482883295,
+        2.1130480045642175,
+        0.009912522495019649,
+        0.01406115639630018,
+        -0.2308401499409389,
+        1.8069421072804715e-19,
+        0.005959044849553863,
+        -0.11789841082048104
+      ]
+    },
+    "garden": {
+      "imageToGround": [
+        -0.016311838568389744,
+        -0.03711001229264282,
+        1.9220348786397252,
+        -0.0049683765180783416,
+        -0.020728641530764855,
+        1.9252723764105037,
+        -1.098925556535422e-19,
+        0.006865057057290432,
+        -0.17112755536243462
+      ]
+    },
+    "drive": {
+      "imageToGround": [
+        -0.012978957683776854,
+        0.04037172544470005,
+        -0.6144629403765569,
+        -0.008582859113465334,
+        0.008240856464595494,
+        1.3334550176428126,
+        -1.6605768711628078e-19,
+        0.005778930212814929,
+        -0.15450051786755636
+      ]
+    }
+  },
+  "cases": {
+    "delivery": {
+      "primary": "porch",
+      "zone": {
+        "id": "delivery",
+        "rect": [
+          -2.9,
+          1.8,
+          3.7,
+          2.5
+        ]
+      },
+      "views": {
+        "porch": {
+          "asset": "delivery",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 5.666666666666667,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 7,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 9.083333333333334,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 10.083333333333334,
+              "visible": true,
+              "inZone": false
+            }
+          ]
+        },
+        "garden": {
+          "asset": "delivery-garden",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 5.666666666666667,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 10.083333333333334,
+              "visible": false,
+              "inZone": false
+            }
+          ]
+        },
+        "drive": {
+          "asset": "delivery-drive",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 5.666666666666667,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 6.833333333333333,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 9.166666666666666,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 10.083333333333334,
+              "visible": true,
+              "inZone": false
+            }
+          ]
+        }
+      }
+    },
+    "wildlife": {
+      "primary": "garden",
+      "zone": {
+        "id": "wildlife",
+        "rect": [
+          -8.5,
+          0.4,
+          3.0999999999999996,
+          3.2
+        ]
+      },
+      "views": {
+        "porch": {
+          "asset": "wildlife-porch",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 4.333333333333333,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 10.333333333333334,
+              "visible": false,
+              "inZone": false
+            }
+          ]
+        },
+        "garden": {
+          "asset": "wildlife",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 1.75,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 4.333333333333333,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 6,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 9.166666666666666,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 10.333333333333334,
+              "visible": true,
+              "inZone": false
+            }
+          ]
+        },
+        "drive": {
+          "asset": "wildlife-drive",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 1.1666666666666667,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 1.75,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 3.75,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 4.333333333333333,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 4.916666666666667,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 9.916666666666666,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 10.333333333333334,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 10.75,
+              "visible": true,
+              "inZone": false
+            }
+          ]
+        }
+      }
+    },
+    "visitor": {
+      "primary": "drive",
+      "zone": {
+        "id": "visitor",
+        "rect": [
+          1.8,
+          3,
+          2.9000000000000004,
+          3.0999999999999996
+        ]
+      },
+      "views": {
+        "porch": {
+          "asset": "visitor-porch",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 5.416666666666667,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 10.75,
+              "visible": true,
+              "inZone": false
+            }
+          ]
+        },
+        "garden": {
+          "asset": "visitor-garden",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 5.416666666666667,
+              "visible": false,
+              "inZone": true
+            },
+            {
+              "time": 10.75,
+              "visible": false,
+              "inZone": false
+            }
+          ]
+        },
+        "drive": {
+          "asset": "visitor",
+          "visibility": [
+            {
+              "time": 0,
+              "visible": false,
+              "inZone": false
+            },
+            {
+              "time": 3.1666666666666665,
+              "visible": true,
+              "inZone": false
+            },
+            {
+              "time": 5.416666666666667,
+              "visible": true,
+              "inZone": true
+            },
+            {
+              "time": 10.75,
+              "visible": true,
+              "inZone": false
+            }
+          ]
+        }
+      }
+    }
+  }
+}

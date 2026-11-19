@@ -30,6 +30,8 @@ EXCLUDED_TOP_LEVEL = {
 EXCLUDED_PREFIXES = {
     Path("device-fixtures/private"),
     Path("qualification-artifacts"),
+    # The standalone web showcase retains its source and films, not local JS dependencies or builds.
+    *(Path("website") / name for name in ("node_modules", ".next", "out", ".wrangler")),
 }
 LINE = re.compile(r"([0-9a-f]{64})  ([^\r\n]+)")
 

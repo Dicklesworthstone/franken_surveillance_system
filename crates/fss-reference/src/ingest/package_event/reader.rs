@@ -264,7 +264,7 @@ fn verify_provenance(
 /// Reuse the already reconstructed report during prepare/publish, but never substitute a
 /// matching ledger witness for verification of the retained event and provenance bytes.
 pub(super) fn existing_receipt(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     proof: &Provenance,
     report_digest: ContentDigest,
     track: ContentDigest,

@@ -43,7 +43,7 @@ use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertPlan, ReferenceDeployment, ReferenceModelObservation, ReferencePolicyAction,
-    ReplayCx, VirtualCameraSpec, evaluate_unknown_presence, execute_mock_model,
+    ReplayCx, VirtualCameraSpec, evaluate_unknown_presence, execute_mock_model, policy_decision_path,
     run_reference_capture,
 };
 
@@ -317,6 +317,13 @@ impl Fixture {
             capsule_digest: None,
             identity_digest: None,
         });
+        // The policy path binds the final evidence list, including this custody edge.
+        decision.event.decision_path = policy_decision_path(
+            &decision.event.event_id,
+            &decision.event.evidence,
+            decision.event.state,
+            decision.action,
+        );
         decision.event.validate()?;
         for digest in &decision.event.model_receipts {
             assert_eq!(

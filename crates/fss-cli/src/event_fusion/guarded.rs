@@ -23,7 +23,7 @@ impl EventFusionReport {
         native: &fss_reference::ingest::recorded_dwell::DwellReport,
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
@@ -75,7 +75,7 @@ impl EventFusionReport {
         profile: &EventFusionProfile,
         guarded: &GuardedCoverageSet,
         read_limits: RetainedReadLimits,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         Self::corroborate_with_coverage(
@@ -93,7 +93,7 @@ impl EventFusionReport {
         cascade: &DetectorCascade<'_>,
         profile: &EventFusionProfile,
         guard: Option<(&GuardedCoverageSet, RetainedReadLimits)>,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
@@ -191,7 +191,7 @@ fn check_lineage(
 
 fn revalidate(
     guard: Option<(&GuardedCoverageSet, RetainedReadLimits)>,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     cx: &ReplayCx,
 ) -> Result<()> {
     if let Some((set, limits)) = guard {
