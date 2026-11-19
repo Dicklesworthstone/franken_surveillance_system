@@ -330,12 +330,15 @@ try {
   assert.deepEqual(browserIssues, []);
   const fallback = await context.newPage();
   await fallback.addInitScript(() => {
-    const get = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
-      return String(kind).includes("webgl")
-        ? null
-        : get.call(this, kind, ...args);
-    };
+    for (const canvas of [window.HTMLCanvasElement, window.OffscreenCanvas]) {
+      if (!canvas) continue;
+      const get = canvas.prototype.getContext;
+      canvas.prototype.getContext = function (kind, ...args) {
+        return String(kind).includes("webgl")
+          ? null
+          : get.call(this, kind, ...args);
+      };
+    }
   });
   await fallback.goto(absolute(pathFor("digital-twin")));
   await fallback.getByText(/3D view unavailable/).waitFor();
