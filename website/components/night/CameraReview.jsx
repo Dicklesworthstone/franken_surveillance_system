@@ -444,7 +444,7 @@ export default function CameraReview({
           Track ID <i /> · Detector label <b />
         </span>
       </div>
-      <TrackEvents key={camera} view={view} watch={primaryWatch} seek={seek} />
+      <TrackEvents key={"tracks-" + camera} view={view} watch={primaryWatch} seek={seek} />
       {split && otherId && (
         <GroundReview
           estate={estate}
@@ -457,7 +457,7 @@ export default function CameraReview({
         />
       )}
       <SampleInspection
-        key={camera}
+        key={"inspection-" + camera}
         view={view}
         camera={camera}
         inspect={seek}

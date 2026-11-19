@@ -1,0 +1,49 @@
+{
+  "schema": "fss.fusion_query.v2",
+  "hypothesis": "event:visible-person",
+  "kind": "person_presence",
+  "prior": [
+    -602,
+    -602
+  ],
+  "coverage": {
+    "state": "degraded",
+    "reason": "Synthetic frames without field calibration."
+  },
+  "looks": 1,
+  "now_ns": "1",
+  "severity": {
+    "expected_harm": 10000,
+    "false_alert_cost": 200,
+    "delay_cost_per_second": 5,
+    "reversible": false
+  },
+  "policy": {
+    "generation": "policy:example-v1",
+    "alert_threshold": 1000,
+    "retain_threshold": -500,
+    "reject_threshold": -2000,
+    "min_independent_support": 2,
+    "urgent_single_domain_threshold": null,
+    "max_wait_ns": "30000000000",
+    "look_penalty_per_doubling": 301,
+    "operator_confirmation_available": true
+  },
+  "evidence": [
+    {
+      "id": "sha256:8336d9da5e636b3b0b7aacc7d35fe21663d493e6b94b85939356b091c3b71070",
+      "sensor": "camera:entry",
+      "failure_domains": [
+        "device:entry"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "generation": "example:alder-illustrative-llr",
+        "llr": [
+          600,
+          800
+        ]
+      }
+    }
+  ]
+}

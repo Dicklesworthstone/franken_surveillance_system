@@ -1,10 +1,14 @@
 {
   "schema": "fss.fictional-estate-capture.v1",
   "seconds": 8,
-  "fps": 12,
+  "fps": 24,
   "width": 960,
   "height": 540,
-  "site": "Alder House",
+  "site": "Residential security simulation",
+  "exposure": {
+    "shutterSeconds": 0.020833333333333332,
+    "samples": 3
+  },
   "rendering": "Calibrated Cycles architecture, WebGL occlusion and articulated subjects, FFmpeg H.264",
   "source": "Authored synthetic scene and calibrated WebGL projections. No physical sensors or detector inference.",
   "inputs": {
@@ -681,12 +685,12 @@
       "bytes": 1389258
     },
     "/night-media/actors/visitor.glb": {
-      "sha256": "8019fa2eb83e6c06cef83d2075e592e0db479e638f41a3267583250538f7cbd2",
-      "bytes": 1687192
+      "sha256": "760ebc87642376cf1530088262c05bcfa8b8df5004f4dbc9e872c1f376aeca7a",
+      "bytes": 3733212
     },
     "/night-media/actors/courier.glb": {
-      "sha256": "7ead1f7c88ee7b538e76fa1a8c9bbcf175330b60c606eab0331358702396dc25",
-      "bytes": 1025652
+      "sha256": "aeb182111b14cd1111bea124899ad883d0ec890be19dc36821e98fd44d27ebac",
+      "bytes": 3993496
     },
     "/night-media/actors/raccoon.glb": {
       "sha256": "2edfcc97e104694f9d7eafc78449259e599d8c9df8b8fb31160ab27ce2077979",
@@ -722,8 +726,8 @@
       "caseId": "after-hours",
       "camera": "overview",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 5.666666666666667,
@@ -741,6 +745,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -3.83246,
+            0.045,
+            9.64945
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.3725,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -3.4648,
@@ -750,6 +766,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -3.09593,
+            0.045,
+            9.53844
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.1175,
           "stopAtSeconds": 6.06191
         },
         {
@@ -765,6 +793,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -2.35122,
+            0.045,
+            9.52281
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.8625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -1.98112,
@@ -774,6 +814,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -1.62914,
+            0.045,
+            9.36581
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.6075,
           "stopAtSeconds": 6.06191
         },
         {
@@ -789,6 +841,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -1.05476,
+            0.045,
+            8.89653
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.3525,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -0.81378,
@@ -798,6 +862,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -0.59582,
+            0.045,
+            8.31062
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.0975,
           "stopAtSeconds": 6.06191
         },
         {
@@ -813,6 +889,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -0.22921,
+            0.045,
+            7.66278
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.8425,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -0.10055,
@@ -822,6 +910,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.03579,
+            0.045,
+            6.94745
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.5875,
           "stopAtSeconds": 6.06191
         },
         {
@@ -837,6 +937,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.00821,
+            0.045,
+            6.20319
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.3325,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             0.00797,
@@ -846,6 +958,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01526,
+            0.045,
+            5.45865
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.0775,
           "stopAtSeconds": 6.06191
         },
         {
@@ -861,6 +985,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            0.00723,
+            0.045,
+            4.7137
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.8225,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             0.00208,
@@ -870,6 +1006,18 @@
           "movementPhase": "slowing",
           "speedMps": 1.04656,
           "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            0.00022,
+            0.045,
+            4.1906
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.58094,
+          "distanceM": 8.34565,
           "stopAtSeconds": 6.06191
         },
         {
@@ -885,7 +1033,31 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.75,
           "subjectFoot": [
             0,
             0.045,
@@ -909,6 +1081,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0,
@@ -921,7 +1105,19 @@
           "stopAtSeconds": 6.06191
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.958333333333333,
           "subjectFoot": [
             0,
             0.045,
@@ -962,15 +1158,15 @@
       },
       "film": "/night-media/after-hours-overview.mp4",
       "poster": "/night-media/after-hours-overview.jpg",
-      "videoSha256": "8282c0d85e0ed50677be9f3475ef6fd4657726ae22701a3040badd060043e8be",
-      "posterSha256": "a4d9dd2a3e5cf6b5a80aacd5f87193cbce7170ee025b56ff27e9d6fea882bfd1"
+      "videoSha256": "9a1a10743659a0a1a0e74d3d5ec59a351d28c7005b0da695a759654ca0d947cf",
+      "posterSha256": "1c0f4ce0bbe16b77027dce4fd42839863e0d5855a1cd26cd0f4c23c189b141de"
     },
     {
       "caseId": "after-hours",
       "camera": "porch",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 7,
@@ -988,6 +1184,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -3.83246,
+            0.045,
+            9.64945
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.3725,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -3.4648,
@@ -997,6 +1205,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -3.09593,
+            0.045,
+            9.53844
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.1175,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1012,6 +1232,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -2.35122,
+            0.045,
+            9.52281
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.8625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -1.98112,
@@ -1021,6 +1253,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -1.62914,
+            0.045,
+            9.36581
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.6075,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1036,6 +1280,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -1.05476,
+            0.045,
+            8.89653
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.3525,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -0.81378,
@@ -1045,6 +1301,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -0.59582,
+            0.045,
+            8.31062
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.0975,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1060,6 +1328,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -0.22921,
+            0.045,
+            7.66278
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.8425,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -0.10055,
@@ -1069,6 +1349,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.03579,
+            0.045,
+            6.94745
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.5875,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1084,6 +1376,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.00821,
+            0.045,
+            6.20319
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.3325,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             0.00797,
@@ -1093,6 +1397,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01526,
+            0.045,
+            5.45865
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.0775,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1108,6 +1424,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            0.00723,
+            0.045,
+            4.7137
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.8225,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             0.00208,
@@ -1117,6 +1445,18 @@
           "movementPhase": "slowing",
           "speedMps": 1.04656,
           "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            0.00022,
+            0.045,
+            4.1906
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.58094,
+          "distanceM": 8.34565,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1132,7 +1472,31 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.75,
           "subjectFoot": [
             0,
             0.045,
@@ -1156,6 +1520,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0,
@@ -1168,7 +1544,19 @@
           "stopAtSeconds": 6.06191
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.958333333333333,
           "subjectFoot": [
             0,
             0.045,
@@ -1209,15 +1597,15 @@
       },
       "film": "/night-media/after-hours-porch.mp4",
       "poster": "/night-media/after-hours-porch.jpg",
-      "videoSha256": "663a9990ec0c2d6b277d63d38cde120103d1264f6ce4ebd6fb4dff2e8b0c30fc",
-      "posterSha256": "2f45864bb0693dc6e453a07cf43d3fc8808c6774be238b2686fe81b0a675529a"
+      "videoSha256": "3bb59dd4335b59a5e774a8de1b89b2918ed961dc313f640138cb95867a45d907",
+      "posterSha256": "8189d7fb32d88d86fd94d41b9143d01c272a4263f17cf340459083f5c5e87280"
     },
     {
       "caseId": "after-hours",
       "camera": "entry",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 1.3333333333333333,
@@ -1235,6 +1623,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -3.83246,
+            0.045,
+            9.64945
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.3725,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -3.4648,
@@ -1244,6 +1644,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -3.09593,
+            0.045,
+            9.53844
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.1175,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1259,6 +1671,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -2.35122,
+            0.045,
+            9.52281
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.8625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -1.98112,
@@ -1268,6 +1692,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -1.62914,
+            0.045,
+            9.36581
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.6075,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1283,6 +1719,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -1.05476,
+            0.045,
+            8.89653
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.3525,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -0.81378,
@@ -1292,6 +1740,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -0.59582,
+            0.045,
+            8.31062
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.0975,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1307,6 +1767,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -0.22921,
+            0.045,
+            7.66278
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.8425,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -0.10055,
@@ -1316,6 +1788,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.03579,
+            0.045,
+            6.94745
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.5875,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1331,6 +1815,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.00821,
+            0.045,
+            6.20319
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.3325,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             0.00797,
@@ -1340,6 +1836,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01526,
+            0.045,
+            5.45865
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.0775,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1355,6 +1863,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            0.00723,
+            0.045,
+            4.7137
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.8225,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             0.00208,
@@ -1364,6 +1884,18 @@
           "movementPhase": "slowing",
           "speedMps": 1.04656,
           "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            0.00022,
+            0.045,
+            4.1906
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.58094,
+          "distanceM": 8.34565,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1379,7 +1911,31 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.75,
           "subjectFoot": [
             0,
             0.045,
@@ -1403,6 +1959,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0,
@@ -1415,7 +1983,19 @@
           "stopAtSeconds": 6.06191
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.958333333333333,
           "subjectFoot": [
             0,
             0.045,
@@ -1456,15 +2036,15 @@
       },
       "film": "/night-media/after-hours-entry.mp4",
       "poster": "/night-media/after-hours-entry.jpg",
-      "videoSha256": "de91154cc9b76307b40730ae30e0526e7803f698a5e1d54b279cf643c11c70db",
-      "posterSha256": "1520a2dae6bfb22dd5efed44a037e82c015a9b7161d360e07978c7148d4a3935"
+      "videoSha256": "16235c7065776e9f66d31beae9730fe15ee56e41ff991961f9daf6d891dd6fc1",
+      "posterSha256": "66115999cffd8acefccf39bc1b0429f28681eb9cade403d67b3d6545f7eaf180"
     },
     {
       "caseId": "after-hours",
       "camera": "driveway",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 0.6666666666666666,
@@ -1482,6 +2062,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -3.83246,
+            0.045,
+            9.64945
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.3725,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -3.4648,
@@ -1491,6 +2083,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -3.09593,
+            0.045,
+            9.53844
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.1175,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1506,6 +2110,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -2.35122,
+            0.045,
+            9.52281
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.8625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -1.98112,
@@ -1515,6 +2131,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -1.62914,
+            0.045,
+            9.36581
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.6075,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1530,6 +2158,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -1.05476,
+            0.045,
+            8.89653
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.3525,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -0.81378,
@@ -1539,6 +2179,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -0.59582,
+            0.045,
+            8.31062
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.0975,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1554,6 +2206,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -0.22921,
+            0.045,
+            7.66278
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.8425,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -0.10055,
@@ -1563,6 +2227,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.03579,
+            0.045,
+            6.94745
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.5875,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1578,6 +2254,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.00821,
+            0.045,
+            6.20319
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.3325,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             0.00797,
@@ -1587,6 +2275,18 @@
           "movementPhase": "walking",
           "speedMps": 1.49,
           "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01526,
+            0.045,
+            5.45865
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.0775,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1602,6 +2302,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            0.00723,
+            0.045,
+            4.7137
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.8225,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             0.00208,
@@ -1611,6 +2323,18 @@
           "movementPhase": "slowing",
           "speedMps": 1.04656,
           "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            0.00022,
+            0.045,
+            4.1906
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.58094,
+          "distanceM": 8.34565,
           "stopAtSeconds": 6.06191
         },
         {
@@ -1626,7 +2350,31 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.75,
           "subjectFoot": [
             0,
             0.045,
@@ -1650,6 +2398,18 @@
           "stopAtSeconds": 6.06191
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0,
@@ -1662,7 +2422,19 @@
           "stopAtSeconds": 6.06191
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.958333333333333,
           "subjectFoot": [
             0,
             0.045,
@@ -1703,15 +2475,15 @@
       },
       "film": "/night-media/after-hours-driveway.mp4",
       "poster": "/night-media/after-hours-driveway.jpg",
-      "videoSha256": "477c1076f1116acbf34891152bcb198d8b341ad91605951a2ed978f8862ed8fb",
-      "posterSha256": "f067bf307a09992bba6087aadc56fe92d67a42252a880d372f87c8753dff419c"
+      "videoSha256": "78e65ff34223384d266446f70feabbc76116001d86bd188ace81e8c0f4407582",
+      "posterSha256": "ec6c6e8a77bd4ff586c2aa101a1497c674ea62454e313850276c7521315cf104"
     },
     {
       "caseId": "delivery",
       "camera": "overview",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 4.75,
@@ -1729,6 +2501,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -4.80518,
+            0.045,
+            9.70971
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.295,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -4.51025,
@@ -1738,6 +2522,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 0.59,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -4.21532,
+            0.045,
+            9.69709
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.885,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1753,6 +2549,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -3.6263,
+            0.045,
+            9.66497
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.475,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -3.33324,
@@ -1762,6 +2570,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 1.77,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -3.03977,
+            0.045,
+            9.60146
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.065,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1777,6 +2597,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -2.45349,
+            0.045,
+            9.53593
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.655,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -2.164,
@@ -1786,6 +2618,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 2.95,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -1.88249,
+            0.045,
+            9.3922
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.245,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1801,6 +2645,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -1.38137,
+            0.045,
+            9.08657
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.835,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -1.16762,
@@ -1810,6 +2666,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 4.13,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.97301,
+            0.045,
+            8.6618
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.425,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1825,6 +2693,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.63102,
+            0.045,
+            8.1814
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.015,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             -0.48133,
@@ -1834,6 +2714,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 5.31,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            -0.34614,
+            0.045,
+            7.66501
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.605,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1849,6 +2741,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            -0.13928,
+            0.045,
+            7.11371
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.195,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             -0.082,
@@ -1858,6 +2762,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 6.49,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            -0.04858,
+            0.045,
+            6.53141
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.785,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1873,6 +2789,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            -0.0146,
+            0.045,
+            5.94242
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.375,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 6.5,
           "subjectFoot": [
             0.00351,
@@ -1882,6 +2810,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 7.67,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6.75,
+          "subjectFoot": [
+            0.01731,
+            0.045,
+            5.35331
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.965,
           "stopAtSeconds": 8.53268
         },
         {
@@ -1897,6 +2837,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0.02301,
+            0.045,
+            4.76338
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.555,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0.01936,
@@ -1909,15 +2861,27 @@
           "stopAtSeconds": 8.53268
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
           "subjectFoot": [
-            0.00958,
+            0.0137,
             0.045,
-            3.97681
+            4.17344
           ],
           "movementPhase": "walking",
           "speedMps": 1.18,
-          "distanceM": 9.34167,
+          "distanceM": 9.145,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.958333333333333,
+          "subjectFoot": [
+            0.00857,
+            0.045,
+            3.92766
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 9.39083,
           "stopAtSeconds": 8.53268
         }
       ],
@@ -1950,15 +2914,15 @@
       },
       "film": "/night-media/delivery-overview.mp4",
       "poster": "/night-media/delivery-overview.jpg",
-      "videoSha256": "e1ff1a561021b0c362a2d52a2bd3752b8e218157d47be3cde4f518eb0cf27375",
-      "posterSha256": "36c9f8d1a3bb0a791cbeaf920f2b75edf52c66d5e538419afdf5c4e026095f87"
+      "videoSha256": "11455e91bef9b394d25288c208a74018f13e82c95267d95d5bd0b33ecf516669",
+      "posterSha256": "aa868aced6fd9dc28d866fb1cb99d39ce57bc06c743ad3deebd1b92e4f46f6b6"
     },
     {
       "caseId": "delivery",
       "camera": "porch",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 6.333333333333333,
@@ -1976,6 +2940,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -4.80518,
+            0.045,
+            9.70971
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.295,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -4.51025,
@@ -1985,6 +2961,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 0.59,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -4.21532,
+            0.045,
+            9.69709
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.885,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2000,6 +2988,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -3.6263,
+            0.045,
+            9.66497
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.475,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -3.33324,
@@ -2009,6 +3009,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 1.77,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -3.03977,
+            0.045,
+            9.60146
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.065,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2024,6 +3036,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -2.45349,
+            0.045,
+            9.53593
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.655,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -2.164,
@@ -2033,6 +3057,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 2.95,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -1.88249,
+            0.045,
+            9.3922
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.245,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2048,6 +3084,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -1.38137,
+            0.045,
+            9.08657
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.835,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -1.16762,
@@ -2057,6 +3105,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 4.13,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.97301,
+            0.045,
+            8.6618
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.425,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2072,6 +3132,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.63102,
+            0.045,
+            8.1814
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.015,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             -0.48133,
@@ -2081,6 +3153,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 5.31,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            -0.34614,
+            0.045,
+            7.66501
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.605,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2096,6 +3180,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            -0.13928,
+            0.045,
+            7.11371
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.195,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             -0.082,
@@ -2105,6 +3201,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 6.49,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            -0.04858,
+            0.045,
+            6.53141
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.785,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2120,6 +3228,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            -0.0146,
+            0.045,
+            5.94242
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.375,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 6.5,
           "subjectFoot": [
             0.00351,
@@ -2129,6 +3249,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 7.67,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6.75,
+          "subjectFoot": [
+            0.01731,
+            0.045,
+            5.35331
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.965,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2144,6 +3276,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0.02301,
+            0.045,
+            4.76338
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.555,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0.01936,
@@ -2156,15 +3300,27 @@
           "stopAtSeconds": 8.53268
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
           "subjectFoot": [
-            0.00958,
+            0.0137,
             0.045,
-            3.97681
+            4.17344
           ],
           "movementPhase": "walking",
           "speedMps": 1.18,
-          "distanceM": 9.34167,
+          "distanceM": 9.145,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.958333333333333,
+          "subjectFoot": [
+            0.00857,
+            0.045,
+            3.92766
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 9.39083,
           "stopAtSeconds": 8.53268
         }
       ],
@@ -2197,15 +3353,15 @@
       },
       "film": "/night-media/delivery-porch.mp4",
       "poster": "/night-media/delivery-porch.jpg",
-      "videoSha256": "6fa3cf5e5de6801b869aa377461cfa8bcc5527c5b136990bca496b1b3c04680d",
-      "posterSha256": "b53308a6504dcca23fcc98e2aeae92f208633eee6af4846e839da8e2d73d3a99"
+      "videoSha256": "dbbdc875a33d9e90f81092cf12a161da31aac8b8470001b603e602902b22d278",
+      "posterSha256": "88b980648ccff8b8955992b489a50aeebebf33529714e4aaf299420af826e0f8"
     },
     {
       "caseId": "delivery",
       "camera": "entry",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 2.25,
@@ -2223,6 +3379,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            -4.80518,
+            0.045,
+            9.70971
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.295,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             -4.51025,
@@ -2232,6 +3400,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 0.59,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            -4.21532,
+            0.045,
+            9.69709
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.885,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2247,6 +3427,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            -3.6263,
+            0.045,
+            9.66497
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.475,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             -3.33324,
@@ -2256,6 +3448,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 1.77,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            -3.03977,
+            0.045,
+            9.60146
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.065,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2271,6 +3475,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            -2.45349,
+            0.045,
+            9.53593
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.655,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             -2.164,
@@ -2280,6 +3496,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 2.95,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            -1.88249,
+            0.045,
+            9.3922
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.245,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2295,6 +3523,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            -1.38137,
+            0.045,
+            9.08657
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.835,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             -1.16762,
@@ -2304,6 +3544,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 4.13,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            -0.97301,
+            0.045,
+            8.6618
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.425,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2319,6 +3571,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            -0.63102,
+            0.045,
+            8.1814
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.015,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             -0.48133,
@@ -2328,6 +3592,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 5.31,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            -0.34614,
+            0.045,
+            7.66501
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.605,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2343,6 +3619,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            -0.13928,
+            0.045,
+            7.11371
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.195,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             -0.082,
@@ -2352,6 +3640,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 6.49,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            -0.04858,
+            0.045,
+            6.53141
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.785,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2367,6 +3667,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            -0.0146,
+            0.045,
+            5.94242
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.375,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 6.5,
           "subjectFoot": [
             0.00351,
@@ -2376,6 +3688,18 @@
           "movementPhase": "walking",
           "speedMps": 1.18,
           "distanceM": 7.67,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6.75,
+          "subjectFoot": [
+            0.01731,
+            0.045,
+            5.35331
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.965,
           "stopAtSeconds": 8.53268
         },
         {
@@ -2391,6 +3715,18 @@
           "stopAtSeconds": 8.53268
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            0.02301,
+            0.045,
+            4.76338
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.555,
+          "stopAtSeconds": 8.53268
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             0.01936,
@@ -2403,15 +3739,27 @@
           "stopAtSeconds": 8.53268
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
           "subjectFoot": [
-            0.00958,
+            0.0137,
             0.045,
-            3.97681
+            4.17344
           ],
           "movementPhase": "walking",
           "speedMps": 1.18,
-          "distanceM": 9.34167,
+          "distanceM": 9.145,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.958333333333333,
+          "subjectFoot": [
+            0.00857,
+            0.045,
+            3.92766
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 9.39083,
           "stopAtSeconds": 8.53268
         }
       ],
@@ -2444,15 +3792,15 @@
       },
       "film": "/night-media/delivery-entry.mp4",
       "poster": "/night-media/delivery-entry.jpg",
-      "videoSha256": "a4d2445a100e61d2d21b6f578b94cb7ddb565b48b84bb73c4c2a955108445261",
-      "posterSha256": "2a6271411ec145636b26547a045a90adc0de2fbefc65fd40ced973efacc450f3"
+      "videoSha256": "fbf3d1d1f13f7ce9b64c5cbf7de3adaf0914fdb5e1f06ac42627b3a57c7c1268",
+      "posterSha256": "2d016936ca5e155ff4e0f970e2ab9188ed2e79f4e7f80b5b8d90712a668176c6"
     },
     {
       "caseId": "wildlife",
       "camera": "overview",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 4,
@@ -2470,6 +3818,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            2.42386,
+            0.025,
+            6.2215
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.145,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             2.29897,
@@ -2479,6 +3839,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 0.29,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            2.17465,
+            0.025,
+            6.3698
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.435,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2494,6 +3866,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            1.92489,
+            0.025,
+            6.51717
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.725,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             1.79811,
@@ -2503,6 +3887,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 0.87,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            1.66925,
+            0.025,
+            6.65399
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.015,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2518,6 +3914,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            1.40354,
+            0.025,
+            6.76985
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.305,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             1.26612,
@@ -2527,6 +3935,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 1.45,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            1.1267,
+            0.025,
+            6.85587
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.595,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2542,6 +3962,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            0.84507,
+            0.025,
+            6.925
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.885,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             0.70397,
@@ -2551,6 +3983,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 2.03,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            0.56334,
+            0.025,
+            6.99377
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.175,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2566,6 +4010,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            0.28617,
+            0.025,
+            7.07875
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.465,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             0.15145,
@@ -2575,6 +4031,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 2.61,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01927,
+            0.025,
+            7.19187
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.755,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2590,6 +4058,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            -0.23929,
+            0.025,
+            7.32314
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.045,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             -0.36672,
@@ -2599,6 +4079,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 3.19,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            -0.49372,
+            0.025,
+            7.4623
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.335,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2614,6 +4106,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            -0.74916,
+            0.025,
+            7.59958
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.625,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 6.5,
           "subjectFoot": [
             -0.87906,
@@ -2623,6 +4127,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 3.77,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6.75,
+          "subjectFoot": [
+            -1.01006,
+            0.025,
+            7.72616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.915,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2638,6 +4154,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            -1.27359,
+            0.025,
+            7.8472
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.205,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             -1.40577,
@@ -2650,15 +4178,27 @@
           "stopAtSeconds": 8.05686
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
           "subjectFoot": [
-            -1.62603,
+            -1.53798,
             0.025,
-            8.00622
+            7.96633
           ],
           "movementPhase": "walking",
           "speedMps": 0.58,
-          "distanceM": 4.59167,
+          "distanceM": 4.495,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.958333333333333,
+          "subjectFoot": [
+            -1.64803,
+            0.025,
+            8.01623
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.61583,
           "stopAtSeconds": 8.05686
         }
       ],
@@ -2691,15 +4231,15 @@
       },
       "film": "/night-media/wildlife-overview.mp4",
       "poster": "/night-media/wildlife-overview.jpg",
-      "videoSha256": "3927daccf8f24929155d32c824248d7d766afb5856d5a3e3fdb521d2515ffbc0",
-      "posterSha256": "cd5240c8f50172632c9b4dd7c1119b881be672687b27d949257951151c145f05"
+      "videoSha256": "9d93efac5f9ee9468c4b7daf2d202d0b4f377fb1e3d6040c86061f34a0456504",
+      "posterSha256": "530ae35701a1b08457fb4b94dda8e24ecf8d77ca40cdec7f52695120e58900f2"
     },
     {
       "caseId": "wildlife",
       "camera": "garden",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
       "stillSeconds": 1.25,
@@ -2717,6 +4257,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 0.25,
+          "subjectFoot": [
+            2.42386,
+            0.025,
+            6.2215
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.145,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 0.5,
           "subjectFoot": [
             2.29897,
@@ -2726,6 +4278,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 0.29,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 0.75,
+          "subjectFoot": [
+            2.17465,
+            0.025,
+            6.3698
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.435,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2741,6 +4305,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 1.25,
+          "subjectFoot": [
+            1.92489,
+            0.025,
+            6.51717
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.725,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 1.5,
           "subjectFoot": [
             1.79811,
@@ -2750,6 +4326,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 0.87,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1.75,
+          "subjectFoot": [
+            1.66925,
+            0.025,
+            6.65399
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.015,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2765,6 +4353,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 2.25,
+          "subjectFoot": [
+            1.40354,
+            0.025,
+            6.76985
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.305,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 2.5,
           "subjectFoot": [
             1.26612,
@@ -2774,6 +4374,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 1.45,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2.75,
+          "subjectFoot": [
+            1.1267,
+            0.025,
+            6.85587
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.595,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2789,6 +4401,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 3.25,
+          "subjectFoot": [
+            0.84507,
+            0.025,
+            6.925
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.885,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 3.5,
           "subjectFoot": [
             0.70397,
@@ -2798,6 +4422,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 2.03,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3.75,
+          "subjectFoot": [
+            0.56334,
+            0.025,
+            6.99377
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.175,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2813,6 +4449,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 4.25,
+          "subjectFoot": [
+            0.28617,
+            0.025,
+            7.07875
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.465,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 4.5,
           "subjectFoot": [
             0.15145,
@@ -2822,6 +4470,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 2.61,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01927,
+            0.025,
+            7.19187
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.755,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2837,6 +4497,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 5.25,
+          "subjectFoot": [
+            -0.23929,
+            0.025,
+            7.32314
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.045,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 5.5,
           "subjectFoot": [
             -0.36672,
@@ -2846,6 +4518,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 3.19,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5.75,
+          "subjectFoot": [
+            -0.49372,
+            0.025,
+            7.4623
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.335,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2861,6 +4545,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 6.25,
+          "subjectFoot": [
+            -0.74916,
+            0.025,
+            7.59958
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.625,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 6.5,
           "subjectFoot": [
             -0.87906,
@@ -2870,6 +4566,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 3.77,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6.75,
+          "subjectFoot": [
+            -1.01006,
+            0.025,
+            7.72616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.915,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2885,6 +4593,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 7.25,
+          "subjectFoot": [
+            -1.27359,
+            0.025,
+            7.8472
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.205,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 7.5,
           "subjectFoot": [
             -1.40577,
@@ -2897,15 +4617,27 @@
           "stopAtSeconds": 8.05686
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
           "subjectFoot": [
-            -1.62603,
+            -1.53798,
             0.025,
-            8.00622
+            7.96633
           ],
           "movementPhase": "walking",
           "speedMps": 0.58,
-          "distanceM": 4.59167,
+          "distanceM": 4.495,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.958333333333333,
+          "subjectFoot": [
+            -1.64803,
+            0.025,
+            8.01623
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.61583,
           "stopAtSeconds": 8.05686
         }
       ],
@@ -2938,18 +4670,18 @@
       },
       "film": "/night-media/wildlife-garden.mp4",
       "poster": "/night-media/wildlife-garden.jpg",
-      "videoSha256": "af46e0248e0027a355e01298ba3584d458f3a23f3d3659132caadad27ed0e775",
-      "posterSha256": "dc065ef45e55c8b7429f1e71dec7908d41b78fa39a81e4b3701a149ad1e133be"
+      "videoSha256": "7159c0b0939bfd6ab4786c40da68a4c3f30d5d01db4defbf5c54587dc907a714",
+      "posterSha256": "c701b327cdcccaa8794a2899e5f9b4cd4be984c404d70656515a79f4bf4286c4"
     },
     {
       "caseId": "wildlife",
       "camera": "porch",
       "seconds": 8,
-      "fps": 12,
-      "frames": 96,
+      "fps": 24,
+      "frames": 192,
       "width": 960,
       "height": 540,
-      "stillSeconds": 3.3333333333333335,
+      "stillSeconds": 3.2916666666666665,
       "trajectory": [
         {
           "seconds": 0,
@@ -2961,6 +4693,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 0,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 0.25,
+          "subjectFoot": [
+            2.42386,
+            0.025,
+            6.2215
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.145,
           "stopAtSeconds": 8.05686
         },
         {
@@ -2976,6 +4720,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 0.75,
+          "subjectFoot": [
+            2.17465,
+            0.025,
+            6.3698
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.435,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 1,
           "subjectFoot": [
             2.05019,
@@ -2985,6 +4741,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 0.58,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1.25,
+          "subjectFoot": [
+            1.92489,
+            0.025,
+            6.51717
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.725,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3000,6 +4768,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 1.75,
+          "subjectFoot": [
+            1.66925,
+            0.025,
+            6.65399
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.015,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 2,
           "subjectFoot": [
             1.53787,
@@ -3009,6 +4789,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 1.16,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2.25,
+          "subjectFoot": [
+            1.40354,
+            0.025,
+            6.76985
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.305,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3024,6 +4816,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 2.75,
+          "subjectFoot": [
+            1.1267,
+            0.025,
+            6.85587
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.595,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 3,
           "subjectFoot": [
             0.98614,
@@ -3033,6 +4837,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 1.74,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3.25,
+          "subjectFoot": [
+            0.84507,
+            0.025,
+            6.925
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.885,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3048,6 +4864,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 3.75,
+          "subjectFoot": [
+            0.56334,
+            0.025,
+            6.99377
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.175,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 4,
           "subjectFoot": [
             0.42381,
@@ -3057,6 +4885,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 2.32,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4.25,
+          "subjectFoot": [
+            0.28617,
+            0.025,
+            7.07875
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.465,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3072,6 +4912,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 4.75,
+          "subjectFoot": [
+            0.01927,
+            0.025,
+            7.19187
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.755,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 5,
           "subjectFoot": [
             -0.11081,
@@ -3081,6 +4933,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 2.9,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5.25,
+          "subjectFoot": [
+            -0.23929,
+            0.025,
+            7.32314
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.045,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3096,6 +4960,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 5.75,
+          "subjectFoot": [
+            -0.49372,
+            0.025,
+            7.4623
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.335,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 6,
           "subjectFoot": [
             -0.62096,
@@ -3105,6 +4981,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 3.48,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6.25,
+          "subjectFoot": [
+            -0.74916,
+            0.025,
+            7.59958
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.625,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3120,6 +5008,18 @@
           "stopAtSeconds": 8.05686
         },
         {
+          "seconds": 6.75,
+          "subjectFoot": [
+            -1.01006,
+            0.025,
+            7.72616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.915,
+          "stopAtSeconds": 8.05686
+        },
+        {
           "seconds": 7,
           "subjectFoot": [
             -1.14162,
@@ -3129,6 +5029,18 @@
           "movementPhase": "walking",
           "speedMps": 0.58,
           "distanceM": 4.06,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.25,
+          "subjectFoot": [
+            -1.27359,
+            0.025,
+            7.8472
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.205,
           "stopAtSeconds": 8.05686
         },
         {
@@ -3144,15 +5056,27 @@
           "stopAtSeconds": 8.05686
         },
         {
-          "seconds": 7.916666666666667,
+          "seconds": 7.75,
           "subjectFoot": [
-            -1.62603,
+            -1.53798,
             0.025,
-            8.00622
+            7.96633
           ],
           "movementPhase": "walking",
           "speedMps": 0.58,
-          "distanceM": 4.59167,
+          "distanceM": 4.495,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.958333333333333,
+          "subjectFoot": [
+            -1.64803,
+            0.025,
+            8.01623
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.61583,
           "stopAtSeconds": 8.05686
         }
       ],
@@ -3170,23 +5094,23 @@
         "verticalFovDegrees": 64,
         "aspect": 1.7777777777777777,
         "subjectFoot": [
-          0.79801,
+          0.82154,
           0.025,
-          6.93605
+          6.93052
         ],
         "movementPhase": "walking",
         "speedMps": 0.58,
-        "distanceM": 1.93333,
+        "distanceM": 1.90917,
         "stopAtSeconds": 8.05686,
         "subjectPixel": [
-          457.473,
-          407.814
+          455.681,
+          408.349
         ]
       },
       "film": "/night-media/wildlife-porch.mp4",
       "poster": "/night-media/wildlife-porch.jpg",
-      "videoSha256": "2b94b88d4ded3aedc4ad1f119978a4d429239888c302cdaa0b387c449dba1f75",
-      "posterSha256": "51ee967aefb7a7d356ded90865e508f271cbebb06f75656dab69f5df8cdd3638"
+      "videoSha256": "d9ab92ffe2f91427359bcd964d483452dc72b79013f3ee8a3828ac679018c01f",
+      "posterSha256": "d23f8e6070ef97aa4990fc5b95cac81ef04e01d82b33c75080db8efb0a34dd27"
     }
   ]
 }

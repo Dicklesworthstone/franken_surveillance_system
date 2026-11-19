@@ -25,7 +25,7 @@ const publicDir =
 const filmDir = join(publicDir, "night-media");
 const width = 960,
   height = 540,
-  fps = 12;
+  fps = 24;
 const sha = (data) => createHash("sha256").update(data).digest("hex");
 const sources = new Map();
 const inputs = {};
@@ -88,30 +88,12 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { createNightStage } from "./lib/night-scene/stage.js";
+      import { cameraFrameReader } from "./scripts/capture-night-frame.js";
       const canvas=document.querySelector("canvas");
       createNightStage(canvas,{interactive:false, recording:true}).then(stage=>{
         stage.resize(${width},${height});
         window.cameras=stage.cameras;
-        const gl=canvas.getContext("webgl2");
-        const copy=document.createElement("canvas");
-        copy.width=canvas.width;copy.height=canvas.height;
-        const context=copy.getContext("2d",{alpha:false});
-        const image=context.createImageData(copy.width,copy.height);
-        const pixels=new Uint8Array(image.data.length);
-        const stride=4*copy.width;
-        window.frame=({id,t,camera})=>{
-          const sample=stage.draw(id,t,camera);
-          // Read the completed WebGL frame directly. Canvas compositor snapshots can race
-          // animated submeshes on ANGLE when a headless browser drives the render clock.
-          gl.finish();
-          gl.readPixels(0,0,copy.width,copy.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
-          for(let y=0;y<copy.height;y++){
-            const start=(copy.height-1-y)*stride;
-            image.data.set(pixels.subarray(start,start+stride),y*stride);
-          }
-          context.putImageData(image,0,0);
-          return {sample,jpeg:copy.toDataURL("image/jpeg",.95).split(",")[1]};
-        };
+        window.frame=cameraFrameReader(stage,canvas,${0.5 / fps});
       }).catch(error=>window.bootError=String(error));`,
     resolveDir: root,
   },
@@ -214,7 +196,7 @@ async function raster(page, id, camera, config) {
         camera,
       });
       const bytes = Buffer.from(result.jpeg, "base64");
-      if (i % (fps / 2) === 0 || i === total - 1) {
+      if (i % (fps / 4) === 0 || i === total - 1) {
         const {
           subjectFoot,
           movementPhase,
@@ -313,7 +295,8 @@ try {
       fps,
       width,
       height,
-      site: "Alder House",
+      site: "Residential security simulation",
+      exposure: { shutterSeconds: 0.5 / fps, samples: 3 },
       rendering: sources.has("/night-media/plates/index.json")
         ? "Calibrated Cycles architecture, WebGL occlusion and articulated subjects, FFmpeg H.264"
         : "WebGL architecture and articulated subjects, FFmpeg H.264",

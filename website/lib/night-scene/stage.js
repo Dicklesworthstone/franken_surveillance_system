@@ -48,7 +48,7 @@ async function estateLoadingManager(interactive, recording) {
 /** Canvas coordinates and projection samples use metres, +Y up, and a top-left image origin. */
 export async function createNightStage(
   canvas,
-  { interactive = true, recording = false, photographic = true } = {},
+  { interactive = true, recording = false, photographic = true, caseId } = {},
 ) {
   // Present the completed picture in one operation. A paused lens must retain
   // every skinned submesh even while the browser composites other DOM layers.
@@ -113,11 +113,14 @@ export async function createNightStage(
     if (!metaResponse.ok) throw Error("Estate calibration unavailable");
     const estate = await metaResponse.json();
     const nightCases = registeredTakes(estate);
+    if (caseId !== undefined && !Object.hasOwn(nightCases, caseId))
+      throw Error("Unknown residential case " + caseId);
+    const cases = caseId === undefined ? Object.keys(nightCases) : [caseId];
     const [building, ...bodies] = await Promise.all(
       [
         "/estate/estate.glb",
-        ...Object.values(nightCases).map(
-          ({ actor }) => "/night-media/actors/" + actor + ".glb",
+        ...cases.map(
+          (id) => "/night-media/actors/" + nightCases[id].actor + ".glb",
         ),
       ].map(async (path) => {
         const result = await loader.loadAsync(path);
@@ -241,7 +244,6 @@ export async function createNightStage(
     const depthCache = createDepthCache(renderer, scene, building.scene);
     resources.push(depthCache);
     let activePlate = null;
-    const cases = Object.keys(nightCases);
     const actors = Object.fromEntries(
       bodies.map((asset, i) => {
         const actor = makeActor(asset, nightCases[cases[i]].actor);
@@ -315,6 +317,8 @@ export async function createNightStage(
         const u = distance / length;
         const foot = path.getPointAt(u),
           forward = path.getTangentAt(u);
+        const ahead = path.getTangentAt(Math.min(1, (distance + motion.speed * 0.42) / length));
+        const turn = Math.atan2(forward.z * ahead.x - forward.x * ahead.z, forward.dot(ahead));
         updateActor(
           actor,
           take.actor,
@@ -323,7 +327,8 @@ export async function createNightStage(
           distance,
           time,
           subjectHeight,
-          motion.speed / (take.pace * speed),
+          motion.stopAt,
+          turn,
         );
         if (controls) controls.enabled = view === "overview";
         for (const [cameraId, housing] of housings)
@@ -366,7 +371,7 @@ export async function createNightStage(
         shadow.scale.set(shadowSize, shadowSize, 1);
         const quadruped = take.actor === "raccoon";
         const toes = actor.contacts.filter(([bone]) =>
-          quadruped ? /middle_01/i.test(bone.name) : /Toe0/.test(bone.name),
+          quadruped ? /middle_01/i.test(bone.name) : /^ball_[lr]$/i.test(bone.name),
         );
         pads.forEach((pad, i) => {
           pad.visible = Boolean(toes[i]);

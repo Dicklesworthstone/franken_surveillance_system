@@ -1,103 +1,315 @@
-"""Run in Blender's Python with the two Rocketbox FBXs, walk FBX, and body/head JPEGs in source_dir."""
+"""Bake metric skeletal performances onto the two clothed scans.
+
+Run with Blender 4.3's Python: prepare-humans.py SCAN_ROOT ROCKETBOX_MOTIONS OUTPUT.
+The Nathan and Eric directories contain their original UE4 FBX and scan materials.
+"""
 
 import sys
+from hashlib import sha256
+from tempfile import TemporaryDirectory
+from urllib.request import urlopen
 from pathlib import Path
-
 import bpy
+from mathutils import Matrix
 
-source, output = map(Path, sys.argv[-2:])
-for name, role, prefix in [
-    ("Male_Adult_07", "visitor", "m013"),
-    ("Delivery_Male_01", "courier", "m112"),
-]:
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.fbx(filepath=str(source / f"{name}.fbx"), use_anim=False)
-    character = set(bpy.context.scene.objects)
-    armature = next(obj for obj in character if obj.type == "ARMATURE")
-    mesh = next(obj for obj in character if obj.type == "MESH")
-    for material in mesh.data.materials:
-        surface = material.name.split("_")[-1]
-        filename = (
-            prefix
-            + "_"
-            + surface
-            + "_color."
-            + ("png" if surface == "opacity" else "jpg")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from prepare_performers import prepare_body, source_file
+
+scan_root, motions, output = map(Path, sys.argv[-3:])
+ROCKETBOX = "https://raw.githubusercontent.com/microsoft/Microsoft-Rocketbox/0943055db6ec570bcef9f2c8b41c9e5467c808f9/Assets/Animations/"
+MOTIONS = [
+    (
+        "Walk",
+        "xy",
+        "m_walk_neutral_02",
+        "6a4e6f2c8e78214cc3e3b7d85a1ad12c3580b61fb7b429451387ea40db7421d2",
+    ),
+    (
+        "Arrival",
+        "xy",
+        "m_walk_stop",
+        "808f112c37c0db60fd1855fb2785749557ecdb9107e8028cd3f28b11aa9c62b1",
+    ),
+    (
+        "Looking",
+        "static",
+        "m_idle_look_around_01",
+        "018b19ad26695c5ebbd4131e0506da69dc76f4001a8100a9e38fcdb9a202b7a4",
+    ),
+]
+
+
+def motion_file(region, name, digest):
+    filename = name + ".max.fbx"
+    path = motions / filename
+    if path.exists():
+        data = path.read_bytes()
+    else:
+        with urlopen(
+            ROCKETBOX + "all_animations_max_motextr_" + region + "/" + filename,
+            timeout=90,
+        ) as response:
+            data = response.read()
+    if sha256(data).hexdigest() != digest:
+        raise ValueError("Unexpected motion source bytes: " + filename)
+    if not path.exists():
+        motions.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return path
+
+
+# The target's joint names, donor landmarks and a real anatomical endpoint for
+# each directed segment. Local joint rotations are never copied across bind poses.
+landmarks = {
+    "pelvis": "Pelvis",
+    "spine_01": "Spine",
+    "spine_02": "Spine1",
+    "spine_03": "Spine2",
+    "neck_01": "Neck",
+    "head": "Head",
+    "head_end": "HeadNub",
+}
+segments = {
+    "pelvis": "spine_01",
+    "spine_01": "spine_02",
+    "spine_02": "spine_03",
+    "spine_03": "neck_01",
+    "neck_01": "head",
+    "head": "head_end",
+}
+for side in ("l", "r"):
+    for target, donor, end in (
+        ("clavicle", "Clavicle", "upperarm"),
+        ("upperarm", "UpperArm", "lowerarm"),
+        ("lowerarm", "Forearm", "hand"),
+        ("hand", "Hand", "middle_01"),
+        ("thigh", "Thigh", "calf"),
+        ("calf", "Calf", "foot"),
+        ("foot", "Foot", "ball"),
+        ("ball", "Toe0", "foot_end"),
+        ("foot_end", "Toe0Nub", None),
+    ):
+        key = f"{target}_{side}"
+        landmarks[key] = side.upper() + donor
+        if end:
+            segments[key] = f"{end}_{side}"
+    for j, finger in enumerate(("thumb", "index", "middle", "ring", "pinky")):
+        for i, end in ((1, "02"), (2, "03"), (3, "end")):
+            key = f"{finger}_{i:02d}_{side}"
+            landmarks[key] = f"{side.upper()}Finger{j}" + (str(i - 1) if i > 1 else "")
+            segments[key] = f"{finger}_{end}_{side}"
+        landmarks[f"{finger}_end_{side}"] = f"{side.upper()}Finger{j}Nub"
+
+
+def load_fbx(path, animate=True):
+    existing = set(bpy.context.scene.objects)
+    bpy.ops.import_scene.fbx(filepath=str(path), use_anim=animate)
+    objects = set(bpy.context.scene.objects) - existing
+    return objects, next(obj for obj in objects if obj.type == "ARMATURE")
+
+
+def anatomical_frame(up, across):
+    up = up.normalized()
+    side = (across - up * across.dot(up)).normalized()
+    return Matrix((side, up.cross(side), up)).transposed().to_quaternion()
+
+
+def unwrapped_keys(action, bone, path, samples):
+    for i in range(len(samples[0])):
+        curve = action.fcurves.new(data_path=bone.path_from_id(path), index=i)
+        curve.keyframe_points.add(len(samples))
+        curve.keyframe_points.foreach_set(
+            "co",
+            [
+                value
+                for frame, sample in enumerate(samples, 1)
+                for value in (frame, sample[i])
+            ],
         )
-        nodes = material.node_tree.nodes
-        nodes.clear()
-        shader = nodes.new("ShaderNodeBsdfPrincipled")
-        shader.inputs["Roughness"].default_value = 0.82
-        target = nodes.new("ShaderNodeOutputMaterial")
-        colour = nodes.new("ShaderNodeTexImage")
-        colour.image = bpy.data.images.load(str(source / filename))
-        material.node_tree.links.new(
-            colour.outputs["Color"], shader.inputs["Base Color"]
+        for point in curve.keyframe_points:
+            point.interpolation = "LINEAR"
+        curve.update()
+
+
+def bake(target, path, name):
+    objects, donor = load_fbx(path)
+    animation = donor.animation_data.action
+    first, last = map(round, animation.frame_range)
+    sc = bpy.context.scene
+    sc.frame_set(first)
+    native = "pelvis" in donor.pose.bones
+    donor_keys = {
+        b.name.replace("Bip01", "").replace(" ", ""): b for b in donor.pose.bones
+    }
+    keys = {
+        key: donor_keys[key if native else mapped]
+        for key, mapped in landmarks.items()
+        if (key if native else mapped) in donor_keys and key in target.pose.bones
+    }
+    driven = {
+        name: child
+        for name, child in segments.items()
+        if name in keys and child in keys
+    }
+    # Both source packages define +X as anatomical left and -Y as forward.
+    # Cache the original reference matrices before advancing the animated FBX root.
+    sr = {k: donor.matrix_world @ b.bone.matrix_local for k, b in keys.items()}
+    tr = {k: target.matrix_world @ target.data.bones[k].matrix_local for k in keys}
+    ref = {k: tr[k].to_quaternion() for k in keys}
+    arm_world = target.matrix_world.to_quaternion()
+    chain = [b for b in target.pose.bones if b.name in driven]
+
+    def leg(wh):
+        return sum(
+            (wh[a].translation - wh[b].translation).length
+            for a, b in [("thigh_l", "calf_l"), ("calf_l", "foot_l")]
         )
-        material.node_tree.links.new(shader.outputs["BSDF"], target.inputs["Surface"])
-        if surface == "opacity":
-            material.node_tree.links.new(
-                colour.outputs["Alpha"], shader.inputs["Alpha"]
+
+    scale = leg(tr) / leg(sr)
+    rotations = {b.name: [] for b in chain}
+    positions, pelvis = [], []
+    source_rest_frame = {}
+    for k, child in driven.items():
+        if k in ("pelvis", "spine_01", "spine_02", "spine_03", "neck_01", "head"):
+            left, right = (
+                ("thigh_l", "thigh_r")
+                if k == "pelvis"
+                else ("upperarm_l", "upperarm_r")
             )
-        if surface == "body":
-            normal_tex = nodes.new("ShaderNodeTexImage")
-            normal_tex.image = bpy.data.images.load(
-                str(source / (prefix + "_body_normal.jpg"))
+            source_rest_frame[k] = (
+                left,
+                right,
+                anatomical_frame(
+                    sr[child].translation - sr[k].translation,
+                    sr[left].translation - sr[right].translation,
+                ),
             )
-            normal_tex.image.colorspace_settings.name = "Non-Color"
-            normal = nodes.new("ShaderNodeNormalMap")
-            normal.inputs["Strength"].default_value = 0.55
-            material.node_tree.links.new(
-                normal_tex.outputs["Color"], normal.inputs["Color"]
+    for frame in range(first, last + 1):
+        sc.frame_set(frame)
+        pose = {k: donor.matrix_world @ b.matrix for k, b in keys.items()}
+        pelvis.append(pose["pelvis"].translation.copy())
+        world = {}
+        for bone in chain:
+            k, child = bone.name, driven[bone.name]
+            desired = (
+                pose[k].to_quaternion() @ sr[k].to_quaternion().inverted() @ ref[k]
             )
-            material.node_tree.links.new(
-                normal.outputs["Normal"], shader.inputs["Normal"]
-            )
-    motions = [("m_walk_neutral.max.fbx", "Neutral walk")]
-    if role == "visitor":
-        motions.append(("m_idle_breathe_01.max.fbx", "Standing"))
-    clips = []
-    for filename, label in motions:
-        bpy.ops.import_scene.fbx(filepath=str(source / filename), use_anim=True)
-        extra = set(bpy.context.scene.objects) - character
-        performer = next(obj for obj in extra if obj.type == "ARMATURE")
-        clip = performer.animation_data.action.copy()
-        clip.name = label
-        clip.use_fake_user = True
-        first, last = clip.frame_range
-        for curve in list(clip.fcurves):
-            if curve.data_path.startswith("pose.bones["):
-                if curve.data_path.split('"')[1] not in armature.data.bones:
-                    clip.fcurves.remove(curve)
-            elif curve.data_path == "location":
-                begin, end = curve.evaluate(first), curve.evaluate(last)
-                for point in curve.keyframe_points:
-                    shift = (
-                        begin
-                        - armature.location[curve.array_index]
-                        + (end - begin) * (point.co.x - first) / (last - first)
+            if not native and k in source_rest_frame:
+                left, right, base = source_rest_frame[k]
+                now = anatomical_frame(
+                    pose[child].translation - pose[k].translation,
+                    pose[left].translation - pose[right].translation,
+                )
+                desired = now @ base.inverted() @ ref[k]
+                # Head turns about an almost vertical axis, which joint endpoints
+                # alone cannot capture. Retain the source's axial rotation.
+                if k in ("neck_01", "head"):
+                    desired = (
+                        pose[k].to_quaternion()
+                        @ sr[k].to_quaternion().inverted()
+                        @ ref[k]
                     )
-                    point.co.y -= shift
-                    point.handle_left.y -= shift
-                    point.handle_right.y -= shift
-        for obj in extra:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        clips.append(clip)
-    armature.animation_data_create()
-    armature.animation_data.action = clips[0]
+            local_segment = ref[k].inverted() @ (
+                tr[child].translation - tr[k].translation
+            )
+            expected = desired @ local_segment
+            actual = pose[child].translation - pose[k].translation
+            if expected.length > 1e-6 and actual.length > 1e-6:
+                desired = expected.rotation_difference(actual) @ desired
+            world[k] = desired
+            parent = bone.parent
+            p_ref = (
+                (target.matrix_world @ parent.bone.matrix_local).to_quaternion()
+                if parent
+                else arm_world
+            )
+            pq = world.get(parent.name, p_ref) if parent else arm_world
+            local = (p_ref.inverted() @ ref[k]).inverted() @ pq.inverted() @ desired
+            local.normalize()
+            if rotations[k] and local.dot(rotations[k][-1]) < 0:
+                local.negate()
+            rotations[k].append(local)
+    travel = pelvis[-1] - pelvis[0]
+    # Keep the measured lateral transfer of weight. The calibrated route supplies
+    # forward travel, including braking, independently of the armature root.
+    for i, p in enumerate(pelvis):
+        bounce = p - pelvis[0]
+        if name == "Walk":
+            bounce.y -= travel.y * i / (len(pelvis) - 1)
+        else:
+            bounce.y = 0
+        xyz = tr["pelvis"].to_3x3().inverted() @ (scale * bounce)
+        positions.append(xyz)
+    action = bpy.data.actions.new(name)
+    action.use_fake_user = True
+    for b in chain:
+        unwrapped_keys(action, b, "rotation_quaternion", rotations[b.name])
+    unwrapped_keys(action, target.pose.bones["pelvis"], "location", positions)
+    for obj in objects:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    print(
+        f"{name}: {len(pelvis)} samples, normalized cycle distance {abs(travel.y) * scale:.4f} m"
+    )
+    return action, abs(travel.y) * scale
+
+
+for role in ("visitor", "courier"):
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    with TemporaryDirectory() as texture_dir:
+        target, mesh = prepare_body(role, scan_root, texture_dir)
+    actors = set(bpy.context.scene.objects)
+    target.animation_data_clear()
+    for b in target.pose.bones:
+        b.rotation_mode = "QUATERNION"
+        b.matrix_basis = Matrix.Identity(4)
+    target.name = f"{role}_skeleton"
+    verts = [mesh.matrix_world @ v.co for v in mesh.data.vertices]
+    target["height_m"] = max(v.z for v in verts) - min(v.z for v in verts)
+    print(role, "bind height", target["height_m"])
+    bpy.context.view_layer.update()
+    for obj in actors:
+        if obj.type == "MESH":
+            obj.name = f"{role}_scan"
+    if role == "visitor":
+        clips = [
+            (motion_file(region, name, digest), label)
+            for label, region, name, digest in MOTIONS
+        ]
+    else:
+        clips = [
+            (
+                source_file(
+                    scan_root, "Nathan", "rp_nathan_animated_003_walking_ue4.fbx"
+                ),
+                "Walk",
+            )
+        ]
+    actions = []
+    for path, name in clips:
+        action, metres = bake(target, path, name)
+        actions.append(action)
+        if name == "Walk":
+            target["cycle_metres"] = metres
+    target.animation_data_create()
+    for action in actions:
+        track = target.animation_data.nla_tracks.new()
+        track.name = action.name
+        track.strips.new(action.name, 1, action)
+        track.mute = True
+    target.animation_data.action = actions[0]
     for action in list(bpy.data.actions):
-        if action not in clips:
+        if action not in actions:
             bpy.data.actions.remove(action)
-    for obj in character:
-        if obj.type not in ("MESH", "ARMATURE"):
-            bpy.data.objects.remove(obj, do_unlink=True)
-    bpy.context.scene.frame_start = 1
-    bpy.context.scene.frame_end = int(max(clip.frame_range[1] for clip in clips))
-    bpy.context.scene.frame_set(1)
+    sc = bpy.context.scene
+    sc.render.fps = 30
+    sc.frame_start, sc.frame_end = 1, int(max(a.frame_range[1] for a in actions))
+    sc.frame_set(1)
     bpy.ops.export_scene.gltf(
         filepath=str(output / f"{role}.glb"),
+        export_copyright="Renderpeople, CC BY 4.0. Adapted for Franken Surveillance. Performance sources and license links in CREDITS.txt.",
         export_animation_mode="ACTIONS",
         export_force_sampling=True,
         export_frame_range=True,
-        export_extras=False,
+        export_extras=True,
+        export_optimize_animation_size=True,
     )

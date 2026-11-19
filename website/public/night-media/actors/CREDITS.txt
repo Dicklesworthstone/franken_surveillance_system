@@ -1,7 +1,17 @@
-Franken Surveillance synthetic case recordings
+Franken Surveillance simulated camera recordings
 
-Adult visitor and courier
-Microsoft Rocketbox, Male_Adult_07 and Delivery_Male_01, with the m_walk_neutral and m_idle_breathe_01 motion captures from the same library. MIT license, reproduced in ROCKETBOX-LICENSE.txt. The showcase converts these assets to glTF, compresses the textures, removes forward translation from the motion cycle, and positions the actors and their hands in the scene.
+Human models
+The after-hours visitor uses “Eric Rigged 001 – Rigged 3D Business Man” and the courier uses “Nathan Animated 003 – Walking 3D Man”. Both are by Renderpeople. Renderpeople publishes these two works under Creative Commons Attribution 4.0 International. The recordings depict fictional events.
+https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f
+https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc
+https://sketchfab.com/renderpeople
+https://creativecommons.org/licenses/by/4.0/
+
+The web adaptation resizes the photographed colour and tangent-normal maps, tints the visitor’s shirt with the original garment mask, converts the gloss maps for glTF roughness, and binds the bodies to the staged performances. The courier's source includes a captured walking performance. The FBX and source maps used by the build are mirrored in chapter 9 of the Godot 4 Game Development Cookbook at the following revision.
+https://github.com/PacktPublishing/Godot-4-Game-Development-Cookbook/tree/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209
+
+Additional human motions
+Motion capture from the Microsoft Rocketbox library. MIT license, reproduced in ROCKETBOX-LICENSE.txt. The showcase adapts the motion to the two skinned characters.
 https://github.com/microsoft/Microsoft-Rocketbox/tree/0943055db6ec570bcef9f2c8b41c9e5467c808f9
 
 Raccoon

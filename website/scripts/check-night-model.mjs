@@ -27,8 +27,10 @@ assert.equal(
   0xffd8,
   "Share-card and HTML cover require a JPEG",
 );
-const { site, inputs, captures } = await json("/night-media/capture.json");
-assert.equal(site, "Alder House");
+const { site, inputs, captures, fps, exposure } = await json("/night-media/capture.json");
+assert.equal(site, "Residential security simulation");
+assert.ok(Number.isSafeInteger(fps) && fps > 0);
+assert.deepEqual(exposure, { shutterSeconds: 0.5 / fps, samples: 3 });
 const mesh = await json("/estate/mesh-receipt.json");
 const plates = await json("/night-media/plates/index.json");
 const album = await json("/estate/stills.json");
@@ -102,6 +104,7 @@ for (const id of ["after-hours", "delivery", "wildlife"]) {
           : estate.cameras[t.camera],
         "Unknown lens " + t.camera,
       );
+    assert.equal(t.fps, fps);
     assert.equal(t.fps * t.seconds, t.frames);
     assert.equal(sha(await bytes(t.film)), t.videoSha256, t.film);
     assert.equal(sha(await bytes(t.poster)), t.posterSha256, t.poster);

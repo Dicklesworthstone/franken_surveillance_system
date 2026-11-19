@@ -47,7 +47,7 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
     (async () => {
       const { createNightStage } = await import("../../lib/night-scene/stage");
       if (disposed) return;
-      rig = await createNightStage(element, { interactive: true });
+      rig = await createNightStage(element, { interactive: true, caseId: id });
       if (disposed) {
         rig.dispose();
         return;
@@ -73,7 +73,7 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
       rig?.dispose();
       stage.current = null;
     };
-  }, [generation]);
+  }, [generation, id]);
   const startTime = useRef(0);
   useEffect(() => {
     if (!playing) return;

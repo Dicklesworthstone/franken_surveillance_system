@@ -1,4 +1,4 @@
-"""Regenerate the public Alder House replay evidence from its exact rendered camera films.
+"""Regenerate the public residential replay evidence from its exact rendered camera films.
 
     FSS_BIN_DIR=/path/to/native/binaries python3 scripts/estate-evidence.py
 
@@ -407,7 +407,7 @@ def agent_session(case, ledger, tmp, stage):
             "open",
             *AGENT,
             "--mission-text",
-            f"Review the {case} fictional Alder House replay.",
+            f"Review the {case} recording from the simulated residential cameras.",
             "--objective",
             "Inspect source evidence and preserve uncertainty. Hold physical actions.",
         ],

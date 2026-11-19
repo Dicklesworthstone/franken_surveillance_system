@@ -1,12 +1,20 @@
-// Verify the actual public export. All checks run offline with Node's standard library.
+// Pass --verify-film-frames to reproduce the full native input and each
+// scheduled inspection plate from its original H.264 film on the capture host.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { imageToGround } from "../lib/cameras.js";
 
-const root = process.argv[2] || fileURLToPath(new URL("../public/", import.meta.url));
+const { values, positionals } = parseArgs({
+  allowPositionals: true,
+  options: { "verify-film-frames": { type: "boolean" } },
+});
+assert.ok(positionals.length <= 1, "Expected at most one public directory");
+const root = positionals[0] || fileURLToPath(new URL("../public/", import.meta.url));
 const sha = (buf) => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
 async function bytes(url, digest) {
@@ -38,6 +46,19 @@ for (const [caseId, record] of Object.entries(index.cases)) {
     assert.equal(view.filmFps, capture.fps);
     assert.equal(view.filmFrames, capture.frames);
     const input = await bytes(view.input, view.inputDigest);
+    const film = resolve(root, "." + view.film);
+    const scale = `scale=${index.bounds.width}:${index.bounds.height}`;
+    const encode = ["-c:v", "mjpeg", "-q:v", "4", "-threads", "1", "-pix_fmt", "yuvj420p"];
+    if (values["verify-film-frames"]) {
+      const stride = view.filmFps / view.nativeFps;
+      assert.ok(Number.isInteger(stride) && stride >= 1);
+      const reference = execFileSync("ffmpeg", [
+        "-nostdin", "-v", "error", "-i", film,
+        "-vf", `select=not(mod(n\\,${stride})),${scale}`, "-fps_mode", "passthrough",
+        ...encode, "-f", "mjpeg", "pipe:1",
+      ], {maxBuffer: input.length + 1024 * 1024});
+      assert.ok(reference.equals(input), `${view.film} did not reproduce its complete native input`);
+    }
     const receipt = (await bytes(view.importReceipt)).toString();
     assert.ok(receipt.includes("import_identity=" + view.importId + "\n"));
     assert.ok(receipt.includes("verified_source_sha256=" + view.inputDigest + "\n"));
@@ -79,6 +100,15 @@ for (const [caseId, record] of Object.entries(index.cases)) {
       assert.ok(input.subarray(sample.inputOffset, sample.inputOffset + sample.inputBytes).equals(jpeg));
       assert.equal(sample.time, sample.frame / view.nativeFps);
       assert.equal(sample.filmFrame, sample.frame * view.filmFps / view.nativeFps);
+      if (values["verify-film-frames"]) {
+        const reference = execFileSync("ffmpeg", [
+          "-nostdin", "-v", "error", "-i", film,
+          "-vf", `select=eq(n\\,${sample.filmFrame}),${scale}`, "-frames:v", "1",
+          ...encode, "-f", "image2pipe", "pipe:1",
+        ]);
+        assert.ok(reference.equals(jpeg),
+          `${view.film} frame ${sample.filmFrame} did not reproduce the retained inspection JPEG`);
+      }
       assert.equal(report.source_import, view.importId);
       assert.equal(report.package_digest, index.modelDigest);
       assert.equal(report.generation, view.modelGeneration);

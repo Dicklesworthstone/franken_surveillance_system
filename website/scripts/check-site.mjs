@@ -93,6 +93,11 @@ try {
         status: response.status,
         text: html.querySelector("main")?.textContent,
         title: html.querySelector("h1")?.textContent,
+        labels: [
+          html.title, card("og:title"), card("description"), card("og:description"),
+          ...Array.from(html.querySelectorAll("[aria-label]"), (el) => el.getAttribute("aria-label")),
+          ...Array.from(html.images, (img) => img.alt),
+        ].join(" "),
         cards: {
           "og:image": card("og:image"),
           "twitter:image": card("twitter:image"),
@@ -101,7 +106,7 @@ try {
     }, pathFor(id));
     assert.equal(article.status, 200, id);
     assert.ok(article.title, id);
-    assert.doesNotMatch(article.text, /basketball|bounce pass|Juniper House|Alder House/i);
+    assert.doesNotMatch(article.text + " " + article.labels, /basketball|bounce pass|Juniper House|\bAlder\b/i);
     for (const [key, height] of [
       ["og:image", 630],
       ["twitter:image", 600],
