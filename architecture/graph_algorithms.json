@@ -90,7 +90,7 @@
       "tieBreakPolicyId": "tie:smallest-member-identity-in-topological-condensation-order:v1",
       "policyId": "graph-policy:directed:simple-strict:weights-ignored:tie:smallest-member-identity-in-topological-condensation-order:v1",
       "complexityBoundId": "bound:alg-scc-001:tarjan-linear-plus-heap:v1",
-      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; fss-event graph analyze also accepts the retained active-support EvidenceClaimGraph",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/scc.rs",
@@ -151,7 +151,7 @@
       "tieBreakPolicyId": "tie:ascending-neighbour-then-arc-dfs-reverse-postorder:v1",
       "policyId": "graph-policy:directed:simple-strict:weights-ignored:declared-root-or-exit:tie:ascending-neighbour-then-arc-dfs-reverse-postorder:v1",
       "complexityBoundId": "bound:alg-dom-001:chk-passes-n-plus-3:v1",
-      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; the retained current-head EvidenceClaimGraph is compiled by fss-reference/evidence_claim_graph.rs",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/dominators.rs",
@@ -513,7 +513,7 @@
       "tieBreakPolicyId": "tie:weight-then-canonical-edge-index:v1",
       "policyId": "graph-policy:undirected:simple-strict:edge-weight:numeric:u64-exact:checked:unit-bound:v1:tie:weight-then-canonical-edge-index:v1",
       "complexityBoundId": "bound:alg-mst-001:merge-sort-m-log-m-plus-union-by-size:v1",
-      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; fss-event graph analyze also accepts historical SensorCoverageGraph with structural unit uplinks and positive retained witness counts",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/spanning.rs",
@@ -543,7 +543,7 @@
       "tieBreakPolicyId": "tie:total-weight-then-lexicographic-edge-identity-sequence:v1",
       "policyId": "graph-policy:undirected:simple-strict:nonnegative-edge-weight:numeric:u64-exact:checked:unit-bound:v1:tie:total-weight-then-lexicographic-edge-identity-sequence:v1",
       "complexityBoundId": "bound:alg-steiner-001:terminals-dijkstra-plus-closure-mst:v1",
-      "projectionBinding": "caller-built canonical undirected WeightedGraph plus terminal set bound into the inputDigest",
+      "projectionBinding": "caller-built canonical undirected WeightedGraph plus terminal set bound into the inputDigest; fss-event graph analyze accepts the same weighted historical SensorCoverageGraph as ALG-MST-001",
       "qualification": "not_qualified: certified against exact Steiner tree subset enumeration on small seeded graphs; no INT-FNX-001 differential exists",
       "evidence": [
         "crates/fss-graph-algorithms/src/steiner.rs",
@@ -572,7 +572,7 @@
       "tieBreakPolicyId": "tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
       "policyId": "graph-policy:directed:simple-strict:fixed-point-1e9-power-iteration:tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
       "complexityBoundId": "bound:alg-ppr-001:power-iterations-times-n-plus-m:v1",
-      "projectionBinding": "caller-built canonical directed WeightedGraph plus seed personalization distribution and PprConfig bound into the inputDigest",
+      "projectionBinding": "caller-built canonical directed WeightedGraph plus seed personalization distribution and PprConfig bound into the inputDigest; fss-event graph analyze accepts the current-head active-support incidence graph",
       "qualification": "not_qualified: certified against reference Markov power iteration, stationary mass conservation, and CGSE tie-break invariants on seeded graphs; no INT-FNX-001 differential exists",
       "evidence": [
         "crates/fss-graph-algorithms/src/ppr.rs",
@@ -601,7 +601,7 @@
       "tieBreakPolicyId": "tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
       "policyId": "graph-policy:directed:simple-strict:fixed-point-1e9-hub-authority-l1:tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
       "complexityBoundId": "bound:alg-hits-001:iterations-times-2m-plus-2n:v1",
-      "projectionBinding": "caller-built canonical directed WeightedGraph plus HitsConfig bound into the inputDigest",
+      "projectionBinding": "caller-built canonical directed WeightedGraph plus HitsConfig bound into the inputDigest; fss-event graph analyze accepts the current-head active-support incidence graph",
       "qualification": "not_qualified: certified against reference L1 hub/authority fixed-point updates and CGSE tie-break invariants on seeded graphs; no INT-FNX-001 differential exists",
       "evidence": [
         "crates/fss-graph-algorithms/src/hits.rs",
@@ -631,7 +631,7 @@
       "tieBreakPolicyId": "tie:betweenness-ppb-descending-then-closeness-ppb-descending-then-stable-node-identity:v1",
       "policyId": "graph-policy:directed-or-undirected:simple-strict:unweighted-shortest-paths-fixed-point-1e9:tie:betweenness-ppb-descending-then-closeness-ppb-descending-then-stable-node-identity:v1",
       "complexityBoundId": "bound:alg-central-001:brandes-n-times-n-plus-2m:v1",
-      "projectionBinding": "caller-built canonical directed or undirected WeightedGraph bound into the inputDigest",
+      "projectionBinding": "caller-built canonical directed or undirected WeightedGraph bound into the inputDigest; fss-event graph analyze accepts the same weighted historical SensorCoverageGraph as ALG-MST-001",
       "qualification": "not_qualified: certified against exhaustive all-pairs shortest-path enumeration on seeded graphs; no INT-FNX-001 differential exists",
       "evidence": [
         "crates/fss-graph-algorithms/src/centrality.rs",
@@ -815,7 +815,7 @@
       "tieBreakPolicyId": "tie:commit-sequence-then-lexicographic-tuple-key:v1",
       "policyId": "graph-policy:incremental-zset:signed-i64-multiplicity:zero-weight-consolidation:bilinear-delta-join:tie:commit-sequence-then-lexicographic-tuple-key:v1",
       "complexityBoundId": "bound:alg-zset-001:delta-tuples-plus-circuit-activations:v1",
-      "projectionBinding": "caller-built canonical ZSetGraphState (fss.graph.zset_projection.v1) plus ZSetDeltaBatch bound into the inputDigest",
+      "projectionBinding": "caller-built canonical ZSetGraphState (fss.graph.zset_projection.v1) plus ZSetDeltaBatch bound into the inputDigest; fss-event graph analyze materializes one snapshot from an empty base, including weighted historical coverage or current-head active support",
       "qualification": "not_qualified: certified against full-recomputation Q(I(Delta)) == I(Delta Q) exactness oracle on seeded graph delta streams; no INT-FNX-001 differential exists",
       "evidence": [
         "crates/fss-graph-algorithms/src/zset.rs",

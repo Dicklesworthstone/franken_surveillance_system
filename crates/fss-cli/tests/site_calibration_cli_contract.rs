@@ -2127,6 +2127,45 @@ fn owner_invalidation_withdraws_retained_coverage_and_requires_fresh_newer_recov
         Some(&1)
     );
     assert_eq!(after_withdrawal.coverage.len(), 2);
+    // A cold graph read must keep both sensors and remove only the withdrawn witness edges.
+    let analysis = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["graph", "analyze", "--root"])
+        .arg(&root)
+        .args([
+            "--site",
+            SITE,
+            "--projection",
+            "SensorCoverageGraph",
+            "--algorithm",
+            "ALG-MST-001",
+        ])
+        .output()?;
+    let graph_report = report(&analysis)?;
+    let mut expected =
+        fss_graph_algorithms::weighted::WeightedGraphBuilder::undirected("retained-witnesses:v1");
+    let plane = format!("plane/{SITE}");
+    expected.add_node(&plane);
+    let mut zones = std::collections::BTreeSet::new();
+    let mut surviving_edges = 0;
+    for record in &before.coverage {
+        let sensor = format!("sensor/{}", record.record.sensor_id);
+        expected.add_node(&sensor).add_arc(&plane, &sensor, 1);
+        for scope in &record.record.zones {
+            let zone = format!("zone/{}", scope.scope);
+            if zones.insert(zone.clone()) {
+                expected.add_node(&zone);
+            }
+            if record.record.sensor_id == "sensor:west" && !scope.witnesses.is_empty() {
+                expected.add_arc(&sensor, zone, scope.witnesses.len() as u64);
+                surviving_edges += 1;
+            }
+        }
+    }
+    assert!(surviving_edges > 0);
+    assert_eq!(
+        graph_report.get("projection_digest")?.text()?,
+        expected.build()?.digest().to_text()
+    );
     for record in &after_withdrawal.coverage {
         let Some(PoseProvenance::SiteCalibration { camera_handle, .. }) =
             record.record.pose_provenance

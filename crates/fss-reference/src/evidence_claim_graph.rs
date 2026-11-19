@@ -168,8 +168,8 @@ fn analyze_retained<'a>(
 
 #[cfg(test)]
 mod tests {
-    use fss_core::EventHypothesis;
     use super::*;
+    use fss_core::EventHypothesis;
     use fss_core::{
         CaptureInterval, ContentDigest, DecisionPath, EventEvidence, EventKind, EventState,
         EvidenceClass, EvidenceEdgeRelation, ProbabilityInterval, SensorTamperStatus, TimestampNs,
@@ -266,7 +266,8 @@ mod tests {
     #[test]
     fn historical_support_reference_is_never_redirected_to_current_head() -> TestResult {
         let old = event("event:a", 1, vec![])?;
-        let mut current = event("event:a", 2, vec![])?;
+        let mut current = old.clone();
+        current.revision = 2;
         current.supersedes = Some(old.revision_digest());
         current.verify()?;
         let dependent = event(

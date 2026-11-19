@@ -783,11 +783,8 @@ Implemented (reference, unqualified):
   COCO-80 package (`fss-infer`, `--detector-package` cascade in `fss-event watch`/`corroborate`);
 - background-model foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking,
   cross-camera assignment over caller-supplied ground-plane points, and zone-gated event candidates;
-- 19 of 27 registered certified graph algorithms in `fss-graph-algorithms` (`ALG-BRIDGE-001`,
-  `ALG-SCC-001`, `ALG-TOPO-001`, `ALG-DOM-001`, `ALG-SP-001`, `ALG-MSD-001`, `ALG-FLOW-001`,
-  `ALG-MST-001`, `ALG-GH-001`, `ALG-MCF-001`, `ALG-MATCH-001`, `ALG-MULTIMATCH-001`,
-  `ALG-KSP-001`, `ALG-TREACH-001`, `ALG-DYNCONN-001`, `ALG-RELIABILITY-001`, `ALG-INTERDICT-001`,
-  `ALG-SETCOVER-001`, `ALG-SUBMOD-001`) with complexity/output witnesses and oracle certification;
+- implementations of all 27 registered graph algorithms in `fss-graph-algorithms`. The graph
+  registry records each algorithm's input, complexity and output bounds, and qualification evidence;
 - durable journal/ledger with torn-tail recovery, root-last local publication, a durable effect
   journal with prepare/commit/observe/reconcile, deployment backup and fenced restore (`fss-backup`),
   owner-defined rectangular privacy masking across live/replay decode and raw-export refusal,
@@ -811,11 +808,10 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- certified graph intelligence: 19 of 27 registered algorithms are implemented and certified against
-  in-tree reference oracles; the remaining 8 algorithms (`ALG-STEINER-001`, `ALG-PPR-001`,
-  `ALG-HITS-001`, `ALG-CENTRAL-001`, `ALG-COMM-001`, `ALG-SPECTRAL-001`, `ALG-FACTOR-001`,
-  `ALG-ZSET-001`), retained-record projection builders beyond `SensorCoverageGraph` /
-  `EvidenceClaimGraph`, and `INT-FNX-001` FrankenNetworkX differentials remain open;
+- retained graph analysis. `fss-event graph analyze` can run registered algorithms on historical
+  sensor coverage and the active support of current event heads. A named zone with zero qualifying
+  witnesses stays visible as an isolated node. Direct file imports and event claims do not establish
+  coverage. The controlled FrankenNetworkX differential gate (`INT-FNX-001`) is still open;
 - alert delivery: plaintext webhook relays only (no TLS, retries or provider adapters).
 
 Not implemented:

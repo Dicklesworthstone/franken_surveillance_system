@@ -34,18 +34,20 @@ use fss_graph_algorithms::spectral::{self, SpectralConfig, SpectralOutput};
 use fss_graph_algorithms::steiner::{self, SteinerTreeOutput};
 use fss_graph_algorithms::topo::{self, TopoOutput};
 use fss_graph_algorithms::weighted::{Orientation, WeightedGraph, WeightedGraphBuilder};
-use fss_graph_algorithms::zset::{self, ZSet, ZSetDeltaBatch, ZSetGraphState, ZSetMaintenanceOutput};
-use fss_reference::coverage_graph::weighted_historical_coverage;
-use fss_reference::evidence_claim_graph::retained_evidence_projection;
+use fss_graph_algorithms::zset::{
+    self, ZSet, ZSetDeltaBatch, ZSetGraphState, ZSetMaintenanceOutput,
+};
 use fss_reference::agent_follow::snapshot_anchor_token;
 use fss_reference::agent_orient::{DeploymentSnapshot, OrientLimits, read_deployment};
+use fss_reference::coverage_graph::weighted_historical_coverage;
+use fss_reference::evidence_claim_graph::retained_evidence_projection;
 
 /// Digest domain for `fss-event graph analyze` (`SCHEMA-DOMAIN-DEPLOYMENT-GRAPH-ANALYSIS-001`).
 const FORMAT_DOMAIN: &str = "fss.deployment_graph_analysis.v1";
 
 const HELP: &str = "fss-event graph analyze --root DIR --site SITE\n\
   --projection <SensorCoverageGraph|EvidenceClaimGraph|DeviceFailureGraph|ArchiveObjectGraph|PlanObligationGraph>\n\
-  --algorithm <ALG-CENTRAL-001|ALG-COMM-001|ALG-SPECTRAL-001|ALG-SCC-001|ALG-TOPO-001|ALG-PPR-001|ALG-HITS-001|ALG-MST-001|ALG-STEINER-001|ALG-ZSET-001>\n\
+  --algorithm <ALG-CENTRAL-001|ALG-SPECTRAL-001|ALG-SCC-001|ALG-TOPO-001|ALG-PPR-001|ALG-HITS-001|ALG-MST-001|ALG-STEINER-001|ALG-ZSET-001>\n\
   [--seed NODE[:WEIGHT]]... (PPR) [--terminal NODE]... (Steiner)\n\
   Only registry-listed algorithm/projection pairs with the required orientation can run.\n\
   Coverage nodes use plane/<site>, sensor/<sensor>, and zone/<scope>.\n\
@@ -85,8 +87,6 @@ impl ProjectionKind {
             Self::PlanObligationGraph => "PlanObligationGraph",
         }
     }
-
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,7 +144,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
     let mut site: Option<String> = None;
     let mut projection: Option<ProjectionKind> = None;
     let mut algorithm = None;
-    let mut seeds: Vec<(String, u64)> = Vec::new();
+    let mut seeds = Vec::new();
     let mut terminals: Vec<String> = Vec::new();
     let mut idx = 1;
     while idx < str_args.len() {
@@ -206,10 +206,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 let Some(&val) = str_args.get(idx + 1) else {
                     return usage_error("missing value for `--seed`");
                 };
-                match parse_seed(val) {
-                    Ok(seed) => seeds.push(seed),
-                    Err(msg) => return usage_error(&msg),
-                }
+                seeds.push(val);
                 idx += 2;
             }
             "--terminal" => {
@@ -276,6 +273,19 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         Err(error) => return fail_message(error.stable_id(), &error.to_string()),
     };
 
+    let mut resolved_seeds = Vec::with_capacity(seeds.len());
+    for raw in seeds {
+        // A canonical support-incidence node itself ends in a numeric edge index.
+        if graph.index_of(raw).is_some() {
+            resolved_seeds.push((raw.to_owned(), ppr::SCALE_PPB));
+        } else {
+            match parse_seed(raw) {
+                Ok(seed) => resolved_seeds.push(seed),
+                Err(message) => return usage_error(&message),
+            }
+        }
+    }
+
     match execute_and_render(
         &site,
         projection_kind,
@@ -283,7 +293,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         &snapshot,
         &graph,
         algorithm_kind,
-        &seeds,
+        &resolved_seeds,
         &terminals,
     ) {
         Ok(json) => match writeln!(io::stdout().lock(), "{json}") {
@@ -329,20 +339,35 @@ fn parse_seed(raw: &str) -> Result<(String, u64), String> {
 }
 
 fn admit_projection(algorithm: &str, kind: ProjectionKind) -> Result<(), GraphError> {
-    let registry = parse(include_str!("../../../../../architecture/graph_algorithms.json"))
-        .map_err(|error| GraphError::Inconsistent(error.to_string()))?;
-    let allowed = registry.object()
+    let registry = parse(include_str!(
+        "../../../../../architecture/graph_algorithms.json"
+    ))
+    .map_err(|error| GraphError::Inconsistent(error.to_string()))?;
+    let allowed = registry
+        .object()
         .and_then(|root| root.get("algorithms"))
         .and_then(Value::array)
-        .and_then(|rows| rows.iter().filter_map(Value::object)
-            .find(|row| row.get("id").and_then(Value::text) == Some(algorithm)))
+        .and_then(|rows| {
+            rows.iter()
+                .filter_map(Value::object)
+                .find(|row| row.get("id").and_then(Value::text) == Some(algorithm))
+        })
         .and_then(|row| row.get("projection"))
         .and_then(Value::array)
-        .ok_or_else(|| GraphError::Inconsistent(format!("missing projection registry row for {algorithm}")))?;
-    if allowed.iter().any(|entry| entry.text() == Some(kind.as_str())) {
+        .ok_or_else(|| {
+            GraphError::Inconsistent(format!("missing projection registry row for {algorithm}"))
+        })?;
+    if allowed
+        .iter()
+        .any(|entry| entry.text() == Some(kind.as_str()))
+    {
         Ok(())
     } else {
-        Err(GraphError::PreconditionFailed(format!("{algorithm} is not registered for {}", kind.as_str())))
+        let registered: Vec<_> = allowed.iter().filter_map(Value::text).collect();
+        Err(GraphError::PreconditionFailed(format!(
+            "{algorithm} is not registered for {}. Registered projections: {}",
+            kind.as_str(), registered.join(", ")
+        )))
     }
 }
 
@@ -361,8 +386,12 @@ fn compile_projection(
     let mut edge_weights: BTreeMap<(String, String), u64> = BTreeMap::new();
     let mut add_arc = |from: &str, to: &str, weight: u64| -> Result<(), GraphError> {
         if from != to {
-            let entry = edge_weights.entry((from.to_owned(), to.to_owned())).or_default();
-            *entry = entry.checked_add(weight).ok_or(GraphError::ArithmeticOverflow("edge weight"))?;
+            let entry = edge_weights
+                .entry((from.to_owned(), to.to_owned()))
+                .or_default();
+            *entry = entry
+                .checked_add(weight)
+                .ok_or(GraphError::ArithmeticOverflow("edge weight"))?;
         }
         Ok(())
     };
@@ -373,7 +402,8 @@ fn compile_projection(
             return Ok((format!("{projection_id}:retained-witnesses:v1"), graph));
         }
         ProjectionKind::EvidenceClaimGraph => {
-            let projection = retained_evidence_projection(snapshot.events.iter(), Default::default())?;
+            let projection =
+                retained_evidence_projection(snapshot.events.iter(), Default::default())?;
             return Ok((evidence::PROJECTION_ID.to_owned(), projection.into_graph()));
         }
         ProjectionKind::DeviceFailureGraph => {

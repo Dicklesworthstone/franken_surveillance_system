@@ -161,7 +161,8 @@ pub fn coverage_single_points_with_limits(
     limits: CoverageBuildLimits,
 ) -> Result<CoverageGraphReport, CoverageGraphError> {
     let window = window.map(validate_window).transpose()?;
-    let projection = project_snapshot(snapshot, window, limits).map_err(CoverageGraphError::Graph)?;
+    let projection =
+        project_snapshot(snapshot, window, limits).map_err(CoverageGraphError::Graph)?;
     analyze_projection(snapshot, projection, window)
 }
 
@@ -185,7 +186,11 @@ pub fn weighted_historical_coverage(
     }
     for ((sensor, zone), count) in projection.witnesses {
         if count > 0 {
-            graph.add_arc(format!("{SENSOR_PREFIX}{sensor}"), format!("{ZONE_PREFIX}{zone}"), count);
+            graph.add_arc(
+                format!("{SENSOR_PREFIX}{sensor}"),
+                format!("{ZONE_PREFIX}{zone}"),
+                count,
+            );
         }
     }
     graph.build()
