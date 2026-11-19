@@ -14,6 +14,12 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+for generated in ("node_modules", ".next", "out", ".wrangler"):
+    assert not module.included(ROOT / "website" / generated / "cache.bin")
+for retained in ("bun.lock", "app/page.jsx", "public/films/delivery.mp4", "public/evidence/delivery.json"):
+    assert module.included(ROOT / "website" / retained)
+
+
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

@@ -27,6 +27,9 @@
 > real footage, cloud archiving, and release qualification. See
 > [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
+Explore the [Juniper House Observatory](website/README.md) for an interactive 3D property,
+three virtual camera films, and frame-by-frame evidence from the Rust tracker and detector.
+
 ## The thesis
 
 Consumer security hardware is cheap and increasingly capable, but each product is an island. A

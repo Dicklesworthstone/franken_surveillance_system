@@ -1,0 +1,140 @@
+{
+  "delivery": {
+    "candidates": 7,
+    "frames": 48,
+    "entries": [
+      {
+        "time": 1.0,
+        "track": 1,
+        "kind": "unclassified"
+      },
+      {
+        "time": 1.25,
+        "track": 2,
+        "kind": "unclassified"
+      },
+      {
+        "time": 1.5,
+        "track": 3,
+        "kind": "unclassified"
+      },
+      {
+        "time": 2.5,
+        "track": 5,
+        "kind": "unclassified"
+      },
+      {
+        "time": 4.0,
+        "track": 6,
+        "kind": "unclassified"
+      },
+      {
+        "time": 10.5,
+        "track": 15,
+        "kind": "unclassified"
+      },
+      {
+        "time": 11.25,
+        "track": 16,
+        "kind": "unclassified"
+      }
+    ],
+    "visibility": [
+      {
+        "time": 0,
+        "visible": true,
+        "inZone": false
+      },
+      {
+        "time": 5.666666666666667,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 7,
+        "visible": false,
+        "inZone": true
+      },
+      {
+        "time": 9.083333333333334,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 10.083333333333334,
+        "visible": true,
+        "inZone": false
+      }
+    ]
+  },
+  "wildlife": {
+    "candidates": 0,
+    "frames": 48,
+    "entries": [],
+    "visibility": [
+      {
+        "time": 0,
+        "visible": false,
+        "inZone": false
+      },
+      {
+        "time": 1.75,
+        "visible": true,
+        "inZone": false
+      },
+      {
+        "time": 4.333333333333333,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 6,
+        "visible": false,
+        "inZone": true
+      },
+      {
+        "time": 9.166666666666666,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 10.333333333333334,
+        "visible": true,
+        "inZone": false
+      }
+    ]
+  },
+  "visitor": {
+    "candidates": 1,
+    "frames": 48,
+    "entries": [
+      {
+        "time": 3.0,
+        "track": 1,
+        "kind": "unclassified"
+      }
+    ],
+    "visibility": [
+      {
+        "time": 0,
+        "visible": false,
+        "inZone": false
+      },
+      {
+        "time": 3.1666666666666665,
+        "visible": true,
+        "inZone": false
+      },
+      {
+        "time": 5.416666666666667,
+        "visible": true,
+        "inZone": true
+      },
+      {
+        "time": 10.75,
+        "visible": true,
+        "inZone": false
+      }
+    ]
+  }
+}
