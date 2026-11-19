@@ -20,6 +20,7 @@ import {
 } from "../../lib/night/catalog";
 import CameraReview from "./CameraReview";
 import CaseDesk from "./CaseDesk";
+import CameraFilm from "../CameraFilm";
 const EstateViewer = dynamic(() => import("./EstateViewer"), {
   ssr: false,
   loading: () => (
@@ -128,7 +129,7 @@ function CaseFiles({ records }) {
             <article key={id} className="case-card">
               <figure>
                 {preview === id ? (
-                  <video
+                  <CameraFilm
                     controls
                     autoPlay
                     muted
@@ -136,7 +137,7 @@ function CaseFiles({ records }) {
                     autoFocus
                     aria-label={c.title + ", " + displayCamera(c.primary) + " camera recording"}
                     poster={plate(id, c.primary)}
-                    src={c.views[c.primary].film}
+                    filmUrl={c.views[c.primary].film}
                   />
                 ) : (
                   <button
@@ -215,7 +216,6 @@ function Hero({ hero }) {
 }
 function NightBriefing({ data }) {
   const ref = useRef(null),
-    video = useRef(null),
     [opened, open] = useState(false);
   const briefing = data.briefing;
   const films = Object.values(data.records).reduce(
@@ -226,7 +226,6 @@ function NightBriefing({ data }) {
     const dialog = ref.current;
     if (!opened || !dialog) return;
     dialog.showModal();
-    video.current?.play().catch(() => {});
     return () => {
       if (dialog.open) dialog.close();
     };
@@ -266,13 +265,13 @@ function NightBriefing({ data }) {
                 <X size={21} />
               </button>
             </header>
-            <video
-              ref={video}
+            <CameraFilm
+              autoPlay
               controls
               playsInline
               muted
               preload="metadata"
-              src={briefing.film}
+              filmUrl={briefing.film}
               poster={data.estate.hero}
             >
               <track
@@ -282,7 +281,7 @@ function NightBriefing({ data }) {
                 src={briefing.captions}
                 default
               />
-            </video>
+            </CameraFilm>
             <footer>
               <span>Property render and original camera recordings</span>
               <a href={briefing.film} download>

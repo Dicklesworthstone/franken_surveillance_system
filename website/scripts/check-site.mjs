@@ -144,7 +144,7 @@ try {
     const clip = page.locator(".case-card video");
     await page.waitForFunction(() => document.querySelector(".case-card video")?.currentTime > 0);
     const expected = archive.cases[id].views[caseFiles[id].openingCamera].film;
-    assert.equal(new URL(await clip.getAttribute("src"), origin).pathname, expected);
+    assert.equal(await clip.getAttribute("data-recording"), expected);
   }
   const hero = page.locator(".hero-photo");
   assert.ok(await hero.evaluate((el) => el.naturalWidth >= 1000));
@@ -201,6 +201,7 @@ try {
     const values = await page
       .locator(".recording video")
       .evaluateAll((els) => els.map((el) => el.currentTime));
+    assert.ok(values.every((value) => value > 1), id + " sought past opening frame");
     assert.ok(
       Math.abs(values[0] - values[1]) < 0.3,
       id + " view skew " + values,

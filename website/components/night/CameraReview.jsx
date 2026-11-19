@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useNativeWatch, TrackOverlay, TrackEvents } from "./NativeTracks";
 import GroundReview from "./GroundReview";
+import CameraFilm from "../CameraFilm";
 import { displayCamera } from "../../lib/night/catalog";
 
 const instant = (t) => (Number.isFinite(t) ? t.toFixed(2) + " s" : "—");
@@ -285,12 +286,12 @@ export default function CameraReview({
               Camera film unavailable <a href={v.film}>Open source file ↗</a>
             </div>
           ) : (
-            <video
-              ref={ref}
+            <CameraFilm
+              videoRef={ref}
               muted
               playsInline
               preload="auto"
-              src={v.film}
+              filmUrl={v.film}
               poster={stems(id, c) + ".jpg"}
               aria-label={displayCamera(c) + " recording"}
               onLoadedMetadata={(e) =>

@@ -5,6 +5,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from "react";
 // that ignores byte ranges. Release the clip whenever the view changes.
 export default function CameraFilm({
   asset,
+  filmUrl,
   directory = "films",
   active = true,
   videoRef,
@@ -16,8 +17,10 @@ export default function CameraFilm({
   useImperativeHandle(videoRef, () => ref.current, []);
   const [source, setSource] = useState(null);
   const [failed, setFailed] = useState(false);
-  const path = "/" + directory + "/" + asset + ".mp4";
+  const path = filmUrl ?? "/" + directory + "/" + asset + ".mp4";
   useEffect(() => {
+    setSource(null);
+    setFailed(false);
     if (!active) return;
     const request = new AbortController();
     let url;
@@ -32,7 +35,10 @@ export default function CameraFilm({
         setSource(url);
       })
       .catch(() => {
-        if (!request.signal.aborted) setFailed(true);
+        if (!request.signal.aborted) {
+          setFailed(true);
+          ref.current?.dispatchEvent(new Event("error"));
+        }
       });
     return () => {
       request.abort();
@@ -74,7 +80,7 @@ export default function CameraFilm({
         ref={ref}
         src={source ?? undefined}
         data-recording={path}
-        poster={"/" + directory + "/" + asset + ".jpg"}
+        poster={path.replace(/\.mp4$/, ".jpg")}
         muted
         playsInline
         preload="auto"
