@@ -1,60 +1,162 @@
-import { ArrowDownRight, ArrowUpRight, Play } from "lucide-react";
-const chapters = [
-  ["#simulator", "/motion/site.jpg", "Site survey", "Explore the digital twin"],
-  ["#camera-wall", "/wall/delivery.jpg", "Camera wall", "Follow three cameras"],
-  ["#casebook", "/field/porch.jpg", "Evidence desk", "Inspect the record"],
+"use client";
+import { useState } from "react";
+import { ArrowDownRight, ArrowUpRight, Play, RotateCcw } from "lucide-react";
+const films = [
+  {
+    name: "The bounce pass",
+    section: "Courtyard study",
+    image: "/court/cover.jpg",
+    thumbnail: "/court/wide.jpg",
+    film: "/court/wide.mp4",
+    url: "/exhibits/courtyard/",
+    cta: "Open the courtyard",
+    description:
+      "Two neighbors, one ball, and two cameras. Change the pass and compare the evidence.",
+    seconds: 4,
+  },
+  {
+    name: "The parcel drop",
+    section: "Motion lab",
+    image: "/motion/pose.jpg",
+    thumbnail: "/motion/pose.jpg",
+    film: "/motion/studio.mp4",
+    url: "/exhibits/motion-study/",
+    cta: "Enter the motion lab",
+    description:
+      "Set the courier’s stride, release height and parcel bounce. Trace one delivery into its original frames.",
+    seconds: 9,
+  },
+  {
+    name: "The night garden",
+    section: "Camera wall",
+    image: "/wall/wildlife.jpg",
+    thumbnail: "/films/wildlife.jpg",
+    film: "/wall/wildlife.mp4",
+    url: "/exhibits/camera-wall/?case=wildlife",
+    cta: "Open the camera wall",
+    description:
+      "Follow a raccoon through three fixed views and a flyover. Inspect the tracker’s record of its visit.",
+    seconds: 12,
+  },
 ];
 export default function FieldHero() {
+  const [index, setIndex] = useState(0),
+    [show, setShow] = useState(false),
+    [failed, setFailed] = useState(false);
+  const film = films[index];
+  function choose(i) {
+    setIndex(i);
+    setShow(false);
+    setFailed(false);
+  }
   return (
-    <>
-      <section className="field-hero" aria-labelledby="field-title">
-        <img
-          src="/motion/arrival.webp"
-          alt=""
-          fetchPriority="high"
-          width="1672"
-          height="941"
-          className="hero-art"
-        />
-        <div className="hero-content">
-          <div className="eyebrow">
-            JUNIPER HOUSE <span className="hero-rule" /> FIELD LAB
-          </div>
+    <section className="field-cover" aria-labelledby="field-title">
+      <div className="cover-spread">
+        <div className="cover-intro">
+          <span className="cover-kicker">Juniper House / Field guide</span>
           <h1 id="field-title">
-            The home
+            One home.
             <br />
-            <em>control room.</em>
+            <em>Many views.</em>
           </h1>
           <p>
-            A parcel arrives. Two cameras catch it. Follow the encounter from a
-            3D home to an evidence ledger an AI agent can read. The ambition is
-            a household control room built from $35 Wi-Fi cameras.
+            Follow a person across a property, compare what each camera saw, and
+            open the evidence behind an agent’s decision.
           </p>
-          <div className="hero-actions">
-            <a className="solid-action" href="/exhibits/motion-study/">
-              <Play size={15} fill="currentColor" /> Enter the motion lab
-            </a>
-            <a className="ghost-action" href="#casebook">
-              Trace an event <ArrowDownRight size={16} />
-            </a>
-          </div>
-        </div>
-        <span className="art-caption">
-          Juniper House · concept illustration
-        </span>
-      </section>
-      <nav className="chapter-nav" aria-label="Explore the field lab">
-        {chapters.map(([href, src, label, title]) => (
-          <a key={href} href={href}>
-            <img src={src} alt="" width="88" height="62" />
-            <span>
-              <small>{label}</small>
-              <b>{title}</b>
-            </span>
-            <ArrowUpRight size={15} />
+          <a className="cover-enter" href={film.url}>
+            {film.cta}
+            <ArrowUpRight size={18} />
           </a>
+          <a className="cover-record" href="#casebook">
+            Trace a recorded event <ArrowDownRight size={15} />
+          </a>
+        </div>
+        <figure className="cover-figure">
+          <div className="cover-screen">
+            {show && !failed ? (
+              <video
+                key={film.film}
+                autoPlay
+                playsInline
+                muted
+                controls
+                aria-label={film.name + " reference film"}
+                src={film.film}
+                onError={() => setFailed(true)}
+              />
+            ) : (
+              <>
+                <img
+                  src={film.image}
+                  className="hero-art"
+                  width="1536"
+                  height="960"
+                  alt={film.name + " rendered reference scene"}
+                  fetchPriority="high"
+                />
+                <button
+                  className="cover-play"
+                  onClick={() => {
+                    setFailed(false);
+                    setShow(true);
+                  }}
+                  aria-label={"Play " + film.name}
+                >
+                  <Play size={18} fill="currentColor" />
+                  Play film
+                </button>
+              </>
+            )}
+            <span className="cover-film-id">
+              {film.section} / {film.seconds} s
+            </span>
+          </div>
+          <figcaption>
+            <div>
+              <h2>{film.name}</h2>
+              <p>{film.description}</p>
+            </div>
+            {show && (
+              <button
+                onClick={() => {
+                  setShow(false);
+                  setFailed(false);
+                }}
+                aria-label="Return to film still"
+              >
+                <RotateCcw size={17} />
+              </button>
+            )}
+          </figcaption>
+          {failed && <a href={film.film}>Download the reference film</a>}
+        </figure>
+      </div>
+      <div
+        className="cover-index"
+        role="group"
+        aria-label="Choose a field film"
+      >
+        {films.map((f, i) => (
+          <button
+            key={f.name}
+            onClick={() => choose(i)}
+            aria-pressed={i === index}
+          >
+            <img src={f.thumbnail} width="85" height="57" alt="" />
+            <span>
+              <small>{f.section}</small>
+              <b>{f.name}</b>
+            </span>
+            <Play size={15} />
+          </button>
         ))}
+      </div>
+      <nav className="cover-contents" aria-label="Explore the field guide">
+        <a href="#simulator">Digital twin ↘</a>
+        <a href="#camera-wall">Camera wall ↘</a>
+        <a href="#casebook">Evidence ledger ↘</a>
+        <a href="#agent-console">Agent console ↘</a>
       </nav>
-    </>
+    </section>
   );
 }

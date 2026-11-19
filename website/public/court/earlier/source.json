@@ -1,0 +1,25 @@
+{
+  "asset": "garden",
+  "importId": "sha256:45913d9c68f45f777ea21c3e8067c7b0e3cc78ce3906a4321ffc40c32fef2aa3",
+  "filmDigest": "sha256:260af78cc910c4ef12857fd95f1e4168f6a81ce0e43693a0221643c7bb22297e",
+  "inputDigest": "sha256:e7678034e6d49e6e557fb69b4e52ff71f94e90a07ea19460dfee950577841e14",
+  "reportDigest": "sha256:96e63856f3114a6242cfc9989501f59704995638fdde5278b90bb80c8bef4f3c",
+  "parameters": {
+    "name": "Bounce pass",
+    "style": "bounce",
+    "spacing": 4.2,
+    "speed": 4.8,
+    "rebound": 0.82,
+    "height": 1.8
+  },
+  "model": "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74",
+  "sampleFps": 4,
+  "segment": 7,
+  "frameDigest": "sha256:804146f52c33dd5030f43499716c39dc0e50e0883790e4075f2626e9905d42e9",
+  "sceneObjects": [
+    "two adult players",
+    "basketball",
+    "courtyard furnishings"
+  ],
+  "take": "Earlier arm and torso animation"
+}

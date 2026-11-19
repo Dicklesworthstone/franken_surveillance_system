@@ -4,6 +4,12 @@ The observatory is a standalone Next.js showcase for Franken Surveillance. One f
 
 **3D overview and camera views** use Three.js. Scene labels come from the fixture. Visibility tests trace a ray from the virtual camera to the subject center through the property geometry. The fixed camera films are sampled at 12 frames per second.
 
+## The courtyard pass
+
+Open **The bounce pass** from the homepage. Change the passer’s height, the player spacing, the release speed, and the floor restitution. Seek to release, first bounce, or the receiver. Both rigged bodies use inverse kinematics to follow the ball. The model applies gravity, horizontal drag, and repeated floor contact. At the receiver’s plane a ball between 0.57 and 1.56 metres is catchable. With the reference settings it arrives at 0.89 m. The soft-bounce preset changes only the restitution and sends it past at 0.14 m.
+
+The studio, garden, and patio films each contain 96 frames over four seconds. The two fixed views were imported into Rust at 4 fps. At one second an explicit YOLOX-Nano inspection returned two people in each camera. The motion-triggered watch skipped that frame. Select a different watch sample, open its exact JPEG and content-addressed report, or locate it in the 3D view. The measurement overlays apply to the recorded settings. A separately archived earlier take preserves a bicycle proposal over one player’s legs in a scene with no bicycle. [Reference material](public/court) · [Model and environment credits](art/README.md)
+
 ## The parcel drop
 
 Open **Motion lab** to follow an articulated courier across the front path. Adjust stature, walking speed, release height and restitution. Studio joint trails show three sample times during the approach. Switch to the property orbit or the synchronized porch and driveway projections, then seek directly to release, first contact or rest. The gait uses two-link inverse kinematics and planted feet. The parcel uses vertical free fall and restitution on level ground. A live side-elevation diagram supports browsers without WebGL.
@@ -24,7 +30,7 @@ The evidence desk replays the delivery through the native association engine twi
 
 The ledger exhibit publishes the event in an isolated local deployment, retries the same approval, and audits the committed revision with `fss-custody`. The browser can rehash the two exported objects or change a byte in a temporary copy. In the agent console, visitors can read the original `fss/1` responses for orientation, forensic explanation, refused alert planning, handoff, and resume. Lighting, gate, and siren adapters are design examples. The belief lab separately runs `fss-fuse` with an illustrative prior and likelihood bounds under three source-dependence assumptions. Each exhibit links its full native outputs. Re-running the example creates a new session-journal observation and handoff receipt. The retained event objects and original camera evidence remain content-addressed.
 
-The opening illustration depicts a courier approaching a Craftsman porch at dusk. The interactive property and the films use the repository’s Three.js scene. [Artwork sources](art/README.md)
+The homepage film selector opens the courtyard, parcel drop and night garden. Its covers and films come from the included scenes. [Artwork sources](art/README.md)
 
 ## Run locally
 
@@ -37,14 +43,16 @@ bun run dev
 
 ## Rebuild the films and native evidence
 
-The committed media and reports are ready to serve. To regenerate them, build `fss-file` and `fss-event` with the repository's pinned Rust toolchain. Set `FSS_BIN_DIR` if those executables live outside the default `target/debug` directory. The media renderer uses Chromium, Playwright, and FFmpeg on the development host. Set `CHROME_BIN` if Chromium is installed somewhere other than `/usr/bin/google-chrome`.
+The committed media and reports are ready to serve. To regenerate them, build `fss-file`, `fss-event` and `fss-infer` with the repository's pinned Rust toolchain. Set `FSS_BIN_DIR` if those executables live outside the default `target/debug` directory. The media renderer uses Chromium, Playwright, and FFmpeg on the development host. Set `CHROME_BIN` if Chromium is installed somewhere other than `/usr/bin/google-chrome`.
 
 ```sh
 bun run films
 python3 scripts/native-evidence.py
 python3 scripts/field_case.py
 node scripts/render-films.mjs --motion
-python3 scripts/motion-evidence.py
+python3 -B scripts/motion-evidence.py
+node scripts/render-films.mjs --court
+python3 -B scripts/motion-evidence.py --scene court
 bun run build
 ```
 
@@ -74,6 +82,6 @@ From this directory, regenerate the wall reels and roof plan with the existing c
 node scripts/render-films.mjs --wall
 ```
 
-Use an exhibit link to open its standalone page. The home page and eleven exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The browser verification fetches both images for every page with JavaScript disabled.
+Use an exhibit link to open its standalone page. The home page and twelve exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The browser verification fetches both images for every page with JavaScript disabled.
 
 The [ranked demo ideas](DEMO_IDEAS.md) include the three additions implemented here and twelve further exhibits.

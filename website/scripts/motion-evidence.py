@@ -7,12 +7,12 @@ import shutil
 from tempfile import TemporaryDirectory
 
 native = run_path(str(Path(__file__).with_name("native-evidence.py")))
-out = native["WEB"] / "public/motion"
 digest = native["digest"]
 spec = dict(nativeWidth=160, nativeHeight=90, nativeFps=4, fps=24)
 
 
-def main():
+def main(scene="motion"):
+    out = native["WEB"] / "public" / scene
     capture = json.loads((out / "capture.json").read_text())
     assert digest(native["MODEL"]) == native["PIN"]
     analysis = dict(
@@ -21,10 +21,8 @@ def main():
     with TemporaryDirectory(dir=out.parent) as staging, TemporaryDirectory() as working:
         tmp, stage = Path(working), Path(staging)
         shutil.copyfile(native["MODEL"], tmp / "model.fmpk")
-        for cam in ("porch", "drive"):
-            view = native["import_clip"](
-                "motion", cam, cam, spec, tmp, stage, films=out
-            )
+        for cam in ("garden", "patio") if scene == "court" else ("porch", "drive"):
+            view = native["import_clip"](scene, cam, cam, spec, tmp, stage, films=out)
             assert view["filmDigest"] == "sha256:" + capture["files"][cam + ".mp4"]
             analysis["views"][cam] = view
         for cam, view in analysis["views"].items():
@@ -54,6 +52,33 @@ def main():
             assert report["frames_decoded"] == capture["seconds"] * spec["nativeFps"]
             path = stage / (cam + ".json")
             native["write"](path, report)
+            if scene == "court":
+                # Independently request the exact authored one-second frame, including quiet views.
+                proof = native["run"](
+                    [
+                        native["BINS"] / "fss-infer",
+                        "package-detect",
+                        *native["SCOPE"],
+                        "--import-id",
+                        view["importId"],
+                        "--first-segment",
+                        "4",
+                        "--frames",
+                        "1",
+                        "--interpretation",
+                        "ycbcr",
+                        "--package",
+                        "model.fmpk",
+                        "--package-digest",
+                        native["PIN"],
+                        "--retain",
+                        "yes",
+                    ],
+                    tmp,
+                )
+                probe = stage / (cam + "-inspection.json")
+                probe.write_text(proof)
+                view["inspectionDigest"] = digest(probe)
             # The reference plate is the JPEG actually imported at one second.
             plate = stage / (cam + "-sample.jpg")
             native["run"](
@@ -95,6 +120,21 @@ def main():
                     for f in report["detector_cascade"]["frames"]
                 ],
             )
+        if scene == "court":
+            segments = sorted(
+                {4}
+                | {
+                    f["segment"]
+                    for v in analysis["views"].values()
+                    for f in v["samples"]
+                }
+            )
+            for cam, view in analysis["views"].items():
+                view["frameDigests"] = {}
+                for segment in segments:
+                    frame = stage / (cam + "-" + str(segment) + ".jpg")
+                    shutil.copyfile(tmp / (cam + f"-{segment:02d}.jpg"), frame)
+                    view["frameDigests"][str(segment)] = digest(frame)
         native["write"](stage / "analysis.json", analysis)
         for path in sorted(stage.iterdir()):
             if path.name != "analysis.json":
@@ -103,4 +143,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scene", choices=["motion", "court"], default="motion")
+    main(parser.parse_args().scene)

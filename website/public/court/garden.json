@@ -1,0 +1,1064 @@
+{
+  "format": "fss.recorded_watch_report.v1",
+  "import_identity": "sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2",
+  "import_root": "sha256:4ac42424c0541ea789453e4db60fce1c054b7304e6c9ce8832f5ef81bd8c05e0",
+  "media_format": "mjpeg",
+  "plan_digest": "sha256:212445850aaf2919ea837720c9f74ff9b25685581ce9fb7b6b23e7d55395ae44",
+  "analysis_digest": "sha256:4cdf7383de7863baaffac420792a33e5e861741249375735d29a60c4d978a0dd",
+  "policy_digest": "sha256:7f883750105854fbaeb2189b4328d53e0d81c11bc2a3bd260a3e12d33024bf5a",
+  "first_segment": 0,
+  "segment_count": 16,
+  "frames_decoded": 16,
+  "width": 160,
+  "height": 90,
+  "zones": [
+    {
+      "zone_id": "image",
+      "x": 0,
+      "y": 0,
+      "width": 160,
+      "height": 90
+    }
+  ],
+  "foreground_boxes": 52,
+  "confirmed_tracks": 5,
+  "jpeg_decode_work_units": 24145654,
+  "candidate_count": 5,
+  "candidates": [
+    {
+      "candidate_id": "sha256:de17d044c4f77a6c8af94896c63d33c6acf9f82cc895e5493ad18ef6541c8be7",
+      "zone_id": "image",
+      "track_id": 5,
+      "entry_segment": 6,
+      "frame_range": [
+        4,
+        15
+      ],
+      "event_id": "event:watch:de17d044c4f77a6c8af94896c63d33c6acf9f82cc895e5493ad18ef6541c8be7",
+      "event_kind": "unclassified",
+      "event_state": "indeterminate",
+      "proposal_digest": "sha256:3e7a77b63a60d602362d3a8006ba5e5ee90ba5945bc2be686a79d609a6848f6a",
+      "provenance_root": "sha256:8a0675275227470c3f532f3af8dbeed1b8e67d4c46dae21c86831d761f25ff99",
+      "status": "prepared",
+      "publish_command": "fss-event watch --root deployment --site site:juniper-demo --import-id sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2 --interpretation ycbcr --zone image:0,0,160,90 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 2 --approve sha256:3e7a77b63a60d602362d3a8006ba5e5ee90ba5945bc2be686a79d609a6848f6a",
+      "evidence": [
+        {
+          "segment": 4,
+          "capsule_digest": "sha256:9986295521a2da42de865e648048b3fc1dda1873d02363ce9154124e8f5088cd",
+          "luma_digest": "sha256:2ba87294517d4877b7e62eec3a2b4080effb4e21a37c795ba5f5c5e49f7048d3",
+          "observation_digest": "sha256:df591979f0e3d02008cda865408576eea1524af4b6b074de26942f72ad747a32",
+          "track_box_cxcywh": [
+            106,
+            46,
+            8,
+            13
+          ]
+        },
+        {
+          "segment": 5,
+          "capsule_digest": "sha256:99b9e05d39e99afe4d4b7e3e97eeeb9955abf245725a14676b4b86558e722d0c",
+          "luma_digest": "sha256:e49e51747f41eedfbc4a7bae7676d4847c4c22a0858df99c38a5bdddad7c48d1",
+          "observation_digest": "sha256:89106b924cff3e968ce1cf409287aaef9ad101addd2dd0dc682df065ac75e9b2",
+          "track_box_cxcywh": [
+            104,
+            57,
+            13,
+            37
+          ]
+        },
+        {
+          "segment": 6,
+          "capsule_digest": "sha256:6043b4f8f1cdbe6e3cddb7bb375ca9d7231b58b797b8c6ab6a9170f56594355b",
+          "luma_digest": "sha256:ad5509c17078ed88045c4dc670d5d5db1c7ba45d39d20e2442fec8e485ed8a7a",
+          "observation_digest": "sha256:2801e53b0534a3d24141829b684df4475545a86ce3d956152ecfb1d2acb02243",
+          "track_box_cxcywh": [
+            103,
+            58,
+            13,
+            37
+          ]
+        },
+        {
+          "segment": 7,
+          "capsule_digest": "sha256:c5ecc4ae5ac50228ae190260421b59ccd19a136260f7a37b257a369b1df8f243",
+          "luma_digest": "sha256:cb4a678f04779c39ade91f287988729460166eded19f3c8f0158196476c27da6",
+          "observation_digest": "sha256:ad41b7fba9f2581d74e05564d89e79de671d2ca6a4027baa3b0d6efe93a6a4c0",
+          "track_box_cxcywh": [
+            103,
+            58,
+            14,
+            37
+          ]
+        },
+        {
+          "segment": 8,
+          "capsule_digest": "sha256:9e0970cf759f52f8ba8b599a815788b83d4ab9cb3309845126e2339dbc6e1adb",
+          "luma_digest": "sha256:9c66807f19a44ba1b8c97399839e686ec9ad70f28c8a16f39aaa6edfc4399a7d",
+          "observation_digest": "sha256:9b50127024a2a35245414660fd6f1bceff9bb47d43b4b49a786ad338759069ca",
+          "track_box_cxcywh": [
+            107,
+            61,
+            4,
+            24
+          ]
+        },
+        {
+          "segment": 9,
+          "capsule_digest": "sha256:5fcc323032ad28f922bc0262224148384fff3fd5d34f1fcdbf3772a4db0a917c",
+          "luma_digest": "sha256:16b6e839c0a198271227dcb38951dad27433477239f516b2d6d4cf306c1c2488",
+          "observation_digest": "sha256:28ac9b7bc68e8a04b82a2a1d2a6cb4852927aa1b024c8c929adf183f3727b800",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        },
+        {
+          "segment": 10,
+          "capsule_digest": "sha256:c6ff1d5f52bebbeb411d4c6cbb7d180f83bddae073726617cdb04e5f26738a7e",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:987ccbcb33079d4483096597d7a06c1d712ce47c5020e85bccf887efb7472bbf",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        },
+        {
+          "segment": 11,
+          "capsule_digest": "sha256:5e5b5ba5249d1aea6bcf1d496a304f5ce9001521fc6a2cb1c357564ded90a0c6",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:43edc82f1adbb7cfb2e71e25d69dc9ba433d7201189f2442dcdb3aecc8554d0a",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        },
+        {
+          "segment": 12,
+          "capsule_digest": "sha256:660061654d1c0db4e5e25c81e9aa1b5a00498fc036667542794ec7608a7871ce",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:d6b3abd267dcfb6d21404e7ac29301f06db49178579d78963576788a5c4fa1dd",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        },
+        {
+          "segment": 13,
+          "capsule_digest": "sha256:86633125302cddcea3128c2ebdc258ab5853f0ccf27e8a0274bdc45c1f51a9bd",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:a7de48d2d3781c8792b018ce45325571ab0c73a5bff6120991927c6729557f25",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        },
+        {
+          "segment": 14,
+          "capsule_digest": "sha256:3490345c99e3edab8f52833d94655d176db0c59264b1d1919b9466bb75a0ab49",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:0b7ec739c99e497608f9b9acad8f5c31d33f825329f934ac61df528125d9ef28",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        },
+        {
+          "segment": 15,
+          "capsule_digest": "sha256:e5a0c1dece4509784c77979c2fe08a274a2049035a32b9449bf62341932c9ed1",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:63f36a5fb22f3e6d0a9bf126563a4ad29ec8de3ab375b43a9ead8a8a025d536c",
+          "track_box_cxcywh": [
+            108,
+            63,
+            3,
+            22
+          ]
+        }
+      ],
+      "class_evidence": [
+        {
+          "segment": 6,
+          "selection": "zone_entry",
+          "outcome": "associated",
+          "label": "person",
+          "class_index": 0,
+          "score": 0.8147921,
+          "score_calibrated": false,
+          "iou_ppm": 634230,
+          "bounds_subpixel": [
+            23495,
+            9966,
+            28199,
+            20532
+          ],
+          "supports": true,
+          "evidence_digest": "sha256:f49a555a92df554ca43e872b88aa1d22ac6cc12fc4b617141301a54ef1f3af81"
+        }
+      ]
+    },
+    {
+      "candidate_id": "sha256:34e1af84aaa801b530ebdde27b232613c1e6782ba16c7df48e6ade92cf8d7337",
+      "zone_id": "image",
+      "track_id": 9,
+      "entry_segment": 10,
+      "frame_range": [
+        8,
+        15
+      ],
+      "event_id": "event:watch:34e1af84aaa801b530ebdde27b232613c1e6782ba16c7df48e6ade92cf8d7337",
+      "event_kind": "unclassified",
+      "event_state": "indeterminate",
+      "proposal_digest": "sha256:0c966cafb8e5e65a5f083bf9c34b02d3f76e01b88b0423697c697ec31354938b",
+      "provenance_root": "sha256:bdd70f701df802fc5b2af1ff3801730b394ae98267bc3a7e19af1480ddc65d4f",
+      "status": "prepared",
+      "publish_command": "fss-event watch --root deployment --site site:juniper-demo --import-id sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2 --interpretation ycbcr --zone image:0,0,160,90 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 2 --approve sha256:0c966cafb8e5e65a5f083bf9c34b02d3f76e01b88b0423697c697ec31354938b",
+      "evidence": [
+        {
+          "segment": 8,
+          "capsule_digest": "sha256:9e0970cf759f52f8ba8b599a815788b83d4ab9cb3309845126e2339dbc6e1adb",
+          "luma_digest": "sha256:9c66807f19a44ba1b8c97399839e686ec9ad70f28c8a16f39aaa6edfc4399a7d",
+          "observation_digest": "sha256:9e34e093c94f1f604c3c6ea08482bc668290a51c3fc94ed4515fb9fb3f93bf26",
+          "track_box_cxcywh": [
+            100,
+            65,
+            4,
+            19
+          ]
+        },
+        {
+          "segment": 9,
+          "capsule_digest": "sha256:5fcc323032ad28f922bc0262224148384fff3fd5d34f1fcdbf3772a4db0a917c",
+          "luma_digest": "sha256:16b6e839c0a198271227dcb38951dad27433477239f516b2d6d4cf306c1c2488",
+          "observation_digest": "sha256:08b52fb8b6a7a31da2683001d7b8e6d83ebb6faae97a9d31113c053ef1282506",
+          "track_box_cxcywh": [
+            100,
+            64,
+            4,
+            18
+          ]
+        },
+        {
+          "segment": 10,
+          "capsule_digest": "sha256:c6ff1d5f52bebbeb411d4c6cbb7d180f83bddae073726617cdb04e5f26738a7e",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:d88b70d92a15c4da2cc33ab7755d8a6adbb4d4f41a50104e11fe53ef055cfde8",
+          "track_box_cxcywh": [
+            100,
+            64,
+            3,
+            18
+          ]
+        },
+        {
+          "segment": 11,
+          "capsule_digest": "sha256:5e5b5ba5249d1aea6bcf1d496a304f5ce9001521fc6a2cb1c357564ded90a0c6",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:a22a8262d2d209cdbf2301fed2f8f9468871380e1bed1250648f2c60049f804d",
+          "track_box_cxcywh": [
+            101,
+            64,
+            3,
+            18
+          ]
+        },
+        {
+          "segment": 12,
+          "capsule_digest": "sha256:660061654d1c0db4e5e25c81e9aa1b5a00498fc036667542794ec7608a7871ce",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:a881f4351ac7e79b88536a4fcd43f9804c931b1ff00b9c2aa1b586f8b1663629",
+          "track_box_cxcywh": [
+            101,
+            64,
+            3,
+            18
+          ]
+        },
+        {
+          "segment": 13,
+          "capsule_digest": "sha256:86633125302cddcea3128c2ebdc258ab5853f0ccf27e8a0274bdc45c1f51a9bd",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:42cd2dff390da2644516f4552e218cd631c46bf97579535664b13a7012d09234",
+          "track_box_cxcywh": [
+            101,
+            64,
+            3,
+            18
+          ]
+        },
+        {
+          "segment": 14,
+          "capsule_digest": "sha256:3490345c99e3edab8f52833d94655d176db0c59264b1d1919b9466bb75a0ab49",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:5772af3a4c8bc1a136c33a81c67cf03c454c72ec7143fb7fe42c38b80273fd05",
+          "track_box_cxcywh": [
+            101,
+            64,
+            3,
+            18
+          ]
+        },
+        {
+          "segment": 15,
+          "capsule_digest": "sha256:e5a0c1dece4509784c77979c2fe08a274a2049035a32b9449bf62341932c9ed1",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:93e3546aa24916721e0f2a9b51ea416142fd282bbbaee2edfdfbc9314b866eb3",
+          "track_box_cxcywh": [
+            101,
+            64,
+            3,
+            18
+          ]
+        }
+      ],
+      "class_evidence": [
+        {
+          "segment": 10,
+          "selection": "zone_entry",
+          "outcome": "no_association",
+          "frame_detections": 2,
+          "supports": false,
+          "evidence_digest": "sha256:8a4a3d09e0ad36ca3e30faf505346836a5aec06389a38b9ef9d61b6dbbaa5003"
+        }
+      ]
+    },
+    {
+      "candidate_id": "sha256:8024d526174a1f92e996095dba89c7f61d059b24c87691b0a1251d7aa2b98ae1",
+      "zone_id": "image",
+      "track_id": 10,
+      "entry_segment": 10,
+      "frame_range": [
+        8,
+        15
+      ],
+      "event_id": "event:watch:8024d526174a1f92e996095dba89c7f61d059b24c87691b0a1251d7aa2b98ae1",
+      "event_kind": "unclassified",
+      "event_state": "indeterminate",
+      "proposal_digest": "sha256:7d657d173ecbd1d5a1cb52edbadd11e5f928733697cede61a672f6cb99996e25",
+      "provenance_root": "sha256:e9ef2cae0b5256ca01fb48648dab7e84b45e0e91b052bd7c7b768c39065f9726",
+      "status": "prepared",
+      "publish_command": "fss-event watch --root deployment --site site:juniper-demo --import-id sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2 --interpretation ycbcr --zone image:0,0,160,90 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 2 --approve sha256:7d657d173ecbd1d5a1cb52edbadd11e5f928733697cede61a672f6cb99996e25",
+      "evidence": [
+        {
+          "segment": 8,
+          "capsule_digest": "sha256:9e0970cf759f52f8ba8b599a815788b83d4ab9cb3309845126e2339dbc6e1adb",
+          "luma_digest": "sha256:9c66807f19a44ba1b8c97399839e686ec9ad70f28c8a16f39aaa6edfc4399a7d",
+          "observation_digest": "sha256:322b7cf7c0f3447408cda3eef434ab73bc83c96d514b1469bd48706636d0b53c",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 9,
+          "capsule_digest": "sha256:5fcc323032ad28f922bc0262224148384fff3fd5d34f1fcdbf3772a4db0a917c",
+          "luma_digest": "sha256:16b6e839c0a198271227dcb38951dad27433477239f516b2d6d4cf306c1c2488",
+          "observation_digest": "sha256:574c5cab165973369b905d5a31b52ecfe6208f89a561883ac4e08bdbacc7cd36",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 10,
+          "capsule_digest": "sha256:c6ff1d5f52bebbeb411d4c6cbb7d180f83bddae073726617cdb04e5f26738a7e",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:5fb71a7c46cd961727a5a97489b838052f34390da88d24a67dde1698143024da",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 11,
+          "capsule_digest": "sha256:5e5b5ba5249d1aea6bcf1d496a304f5ce9001521fc6a2cb1c357564ded90a0c6",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:3b9ee5e2598cfa36bd7dd31bd6f12bcc623d86cbc4f5d42d02388d213d00aa2d",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 12,
+          "capsule_digest": "sha256:660061654d1c0db4e5e25c81e9aa1b5a00498fc036667542794ec7608a7871ce",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:37d9670255ddb4e51ffe7966e9d599b186e8f8a6ecfdb2d2e47cb716ff78d17c",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 13,
+          "capsule_digest": "sha256:86633125302cddcea3128c2ebdc258ab5853f0ccf27e8a0274bdc45c1f51a9bd",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:7ddfe5fc4f4a139ded63cc9b9fad5eb9ac8cf8262045eefacfa7f5a39c8196f8",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 14,
+          "capsule_digest": "sha256:3490345c99e3edab8f52833d94655d176db0c59264b1d1919b9466bb75a0ab49",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:dd03e8eb2d4310affe84cfa6f5e99eb86d17d870c5c907413a01278c3eb17de6",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        },
+        {
+          "segment": 15,
+          "capsule_digest": "sha256:e5a0c1dece4509784c77979c2fe08a274a2049035a32b9449bf62341932c9ed1",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:c04d0ebea397961836d64375c17b5cbe103822c58e759b55a7d3b4e004ea122a",
+          "track_box_cxcywh": [
+            103,
+            69,
+            4,
+            12
+          ]
+        }
+      ],
+      "class_evidence": [
+        {
+          "segment": 10,
+          "selection": "zone_entry",
+          "outcome": "no_association",
+          "frame_detections": 2,
+          "supports": false,
+          "evidence_digest": "sha256:b7d5496229ec3bea734119d27e17513e635a342f26f759a157a2878451e7c7d9"
+        }
+      ]
+    },
+    {
+      "candidate_id": "sha256:a730fe30f43297edc817532fd45a0942006dd350eaf53d8b94e152f63caa755c",
+      "zone_id": "image",
+      "track_id": 11,
+      "entry_segment": 10,
+      "frame_range": [
+        8,
+        15
+      ],
+      "event_id": "event:watch:a730fe30f43297edc817532fd45a0942006dd350eaf53d8b94e152f63caa755c",
+      "event_kind": "unclassified",
+      "event_state": "indeterminate",
+      "proposal_digest": "sha256:12230c2ab68f3956b2de5bbbcbd39854db0b13722eb0bd2595f7ab7104beb94a",
+      "provenance_root": "sha256:fd1aa12dbb8270e14235d44ac3e22cf82b70fbb9908b31c4f55c4e2167b53bf6",
+      "status": "prepared",
+      "publish_command": "fss-event watch --root deployment --site site:juniper-demo --import-id sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2 --interpretation ycbcr --zone image:0,0,160,90 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 2 --approve sha256:12230c2ab68f3956b2de5bbbcbd39854db0b13722eb0bd2595f7ab7104beb94a",
+      "evidence": [
+        {
+          "segment": 8,
+          "capsule_digest": "sha256:9e0970cf759f52f8ba8b599a815788b83d4ab9cb3309845126e2339dbc6e1adb",
+          "luma_digest": "sha256:9c66807f19a44ba1b8c97399839e686ec9ad70f28c8a16f39aaa6edfc4399a7d",
+          "observation_digest": "sha256:22f7dff81bbfe4b2159f9efd54e9749ed2316dca3504b4bdac933f8d672cff19",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 9,
+          "capsule_digest": "sha256:5fcc323032ad28f922bc0262224148384fff3fd5d34f1fcdbf3772a4db0a917c",
+          "luma_digest": "sha256:16b6e839c0a198271227dcb38951dad27433477239f516b2d6d4cf306c1c2488",
+          "observation_digest": "sha256:d7c576467d042501e3284cc10217d1f9983abbb0f85dc20bf2993c3a1e894eaf",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 10,
+          "capsule_digest": "sha256:c6ff1d5f52bebbeb411d4c6cbb7d180f83bddae073726617cdb04e5f26738a7e",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:2cabeb09a985db7ec0d860ae66597cc0e486f435bba1cd311e418cb831c9056a",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 11,
+          "capsule_digest": "sha256:5e5b5ba5249d1aea6bcf1d496a304f5ce9001521fc6a2cb1c357564ded90a0c6",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:2a462f4e74e817a8cf3adeba0aebd662c800ee5fc4af76cc3f081b9f183709e1",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 12,
+          "capsule_digest": "sha256:660061654d1c0db4e5e25c81e9aa1b5a00498fc036667542794ec7608a7871ce",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:7b4ae72e3ff3654d6e09045cc3e14e97b458b2cfd2714f98abaf6c5d290bb006",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 13,
+          "capsule_digest": "sha256:86633125302cddcea3128c2ebdc258ab5853f0ccf27e8a0274bdc45c1f51a9bd",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:bfe238df314fd6f930d91f39bbf5950a2211a0c74b8e2197e93cb5ac384cc194",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 14,
+          "capsule_digest": "sha256:3490345c99e3edab8f52833d94655d176db0c59264b1d1919b9466bb75a0ab49",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:8e6868a6f8cef5fd00d32939f33382a822e4e88ca8387781f04b08ef8b687e97",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        },
+        {
+          "segment": 15,
+          "capsule_digest": "sha256:e5a0c1dece4509784c77979c2fe08a274a2049035a32b9449bf62341932c9ed1",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:821da394b2d4314c5b2177e6ab2bf7ddaed3855ba616ee883f07909d3e8672b2",
+          "track_box_cxcywh": [
+            104,
+            44,
+            4,
+            9
+          ]
+        }
+      ],
+      "class_evidence": [
+        {
+          "segment": 10,
+          "selection": "zone_entry",
+          "outcome": "no_association",
+          "frame_detections": 2,
+          "supports": false,
+          "evidence_digest": "sha256:4d3e85ccba9429fa05db4dfac8ba0ae81381259797b7fb1b00e47a6d5bb6dd72"
+        }
+      ]
+    },
+    {
+      "candidate_id": "sha256:b3290401b63e783684372ab94d28692afacf9cc6f8d7eec1e81beddd78950737",
+      "zone_id": "image",
+      "track_id": 12,
+      "entry_segment": 10,
+      "frame_range": [
+        8,
+        15
+      ],
+      "event_id": "event:watch:b3290401b63e783684372ab94d28692afacf9cc6f8d7eec1e81beddd78950737",
+      "event_kind": "unclassified",
+      "event_state": "indeterminate",
+      "proposal_digest": "sha256:9bae9487edd135540999b7f02d396b51402a57401c562d5caad48c9f1af26628",
+      "provenance_root": "sha256:5b62af99d7206338af3cf45df4ce335f364d942078db2fe99178639b8b356f99",
+      "status": "prepared",
+      "publish_command": "fss-event watch --root deployment --site site:juniper-demo --import-id sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2 --interpretation ycbcr --zone image:0,0,160,90 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 2 --approve sha256:9bae9487edd135540999b7f02d396b51402a57401c562d5caad48c9f1af26628",
+      "evidence": [
+        {
+          "segment": 8,
+          "capsule_digest": "sha256:9e0970cf759f52f8ba8b599a815788b83d4ab9cb3309845126e2339dbc6e1adb",
+          "luma_digest": "sha256:9c66807f19a44ba1b8c97399839e686ec9ad70f28c8a16f39aaa6edfc4399a7d",
+          "observation_digest": "sha256:224cf18a31990e9871c5cdb355fb3a6728fdd35f33d11c730d71504d4df2dacb",
+          "track_box_cxcywh": [
+            109,
+            45,
+            3,
+            10
+          ]
+        },
+        {
+          "segment": 9,
+          "capsule_digest": "sha256:5fcc323032ad28f922bc0262224148384fff3fd5d34f1fcdbf3772a4db0a917c",
+          "luma_digest": "sha256:16b6e839c0a198271227dcb38951dad27433477239f516b2d6d4cf306c1c2488",
+          "observation_digest": "sha256:384cedf481336bfda5150c2363d2e1ec96fd45d9c7f8b948322262b1e7239bb9",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        },
+        {
+          "segment": 10,
+          "capsule_digest": "sha256:c6ff1d5f52bebbeb411d4c6cbb7d180f83bddae073726617cdb04e5f26738a7e",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:0ae8738301ae902cf6ab63d422fd6894b2155027f979656c7b2914ce98374950",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        },
+        {
+          "segment": 11,
+          "capsule_digest": "sha256:5e5b5ba5249d1aea6bcf1d496a304f5ce9001521fc6a2cb1c357564ded90a0c6",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:309f4e558925061ca3a8381af2aee8c47e87ba71f332ebacc5e2dd7f429d199a",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        },
+        {
+          "segment": 12,
+          "capsule_digest": "sha256:660061654d1c0db4e5e25c81e9aa1b5a00498fc036667542794ec7608a7871ce",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:547c0d207333d40f7b87e8493f635cd2618c1484348e42bf1890acd8bd47c707",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        },
+        {
+          "segment": 13,
+          "capsule_digest": "sha256:86633125302cddcea3128c2ebdc258ab5853f0ccf27e8a0274bdc45c1f51a9bd",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:2ca87a1c4efcaafeaefd86c474b6134e00da9c799f5996500d477105d8dc21d2",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        },
+        {
+          "segment": 14,
+          "capsule_digest": "sha256:3490345c99e3edab8f52833d94655d176db0c59264b1d1919b9466bb75a0ab49",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:adb037eca478b1b33b119e178e16d7b32a690f5e41869a7d24c95eb258b8e466",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        },
+        {
+          "segment": 15,
+          "capsule_digest": "sha256:e5a0c1dece4509784c77979c2fe08a274a2049035a32b9449bf62341932c9ed1",
+          "luma_digest": "sha256:cf67e856248f2d7a56766d0b1e340b036f5af851d2da0faf668c9f618d0bb9c3",
+          "observation_digest": "sha256:02911285b22a460fb755f63b7f9cfb131b7b8a3474622e20957a15343a0074f7",
+          "track_box_cxcywh": [
+            108,
+            45,
+            2,
+            10
+          ]
+        }
+      ],
+      "class_evidence": [
+        {
+          "segment": 10,
+          "selection": "zone_entry",
+          "outcome": "no_association",
+          "frame_detections": 2,
+          "supports": false,
+          "evidence_digest": "sha256:8af2c652afd0e65ca0ff32a50076d61839af1591d1320d0c661de740f5338133"
+        }
+      ]
+    }
+  ],
+  "prepared_count": 5,
+  "published_count": 0,
+  "already_published_count": 0,
+  "authority_sequence": 6,
+  "event_kind": "unclassified",
+  "event_state": "indeterminate",
+  "calibrated": false,
+  "corroborated": false,
+  "alert_authorized": false,
+  "effects_authorized": false,
+  "absence_certifiable": false,
+  "detection_quality_claim": false,
+  "detector_cascade": {
+    "cascade_digest": "sha256:142ff1a2ac179f69d9f9beb0673c2dc6483728d6b28490dec14ced6196409130",
+    "policy_digest": "sha256:9a956d8deb5aa38a4a7158883c1c9191d4b78c8ecdab16ea05d279be342951a6",
+    "package_digest": "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74",
+    "manifest_digest": "sha256:6f3f0143f0df10fff0764cafc9bb91479972cc7812bcf583a03bfe5ac622f95b",
+    "model_id": "MOD-YOLOXNANO-001",
+    "generation": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+    "model_digest": "sha256:797d43db076dc730d044525d105ec30da07f1565de19dda1fea3b9c1f842a1c1",
+    "contract_digest": "sha256:15b92b9a435bae8807b6e6a3c1b536bcd560f7dcc13ce8b3fd755fc134bbfc72",
+    "minimum_score_ppm": 300000,
+    "frames_per_track": 1,
+    "max_inferences": 2,
+    "minimum_association_iou_ppm": 300000,
+    "frame_selection": "zone_entry_then_confirmation_then_following_matches",
+    "input": "full_frame_letterboxed_per_package_spec",
+    "video_color_transform": "fss.video_rgb_transform.v1:bt601-limited-range:q16-half-up:nearest-chroma:rgb-hwc",
+    "scores": "uncalibrated",
+    "event_kind_policy": "unchanged_unclassified",
+    "corroboration_effect": "none_same_sensor_failure_domain",
+    "alert_effect": "none",
+    "quality_claim": "none",
+    "selected_segments": [
+      6,
+      10
+    ],
+    "inferred_segments": [
+      6,
+      10
+    ],
+    "budget_skipped_segments": [],
+    "refused_segments": [],
+    "cascade_skipped_segments": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      7,
+      8,
+      9,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "inference_count": 2,
+    "budget_exhausted": false,
+    "frames": [
+      {
+        "segment": 6,
+        "status": "inferred",
+        "color": "jpeg_rgb",
+        "rgb_digest": "sha256:79d073fd97d055592129f96b93d53a44158241b9beeda33f29f3e4f1510b6fc9",
+        "inference_identity": "sha256:60919ca76f52c7bebf6f030398a63f04cf7232503b5e21b75c240b9e80dfb83a",
+        "input_digest": "sha256:e71e4566ea07c3be246b85fe95dd736b3c57eaa6ab9ee40b6fe38ac7f885f63a",
+        "output_digest": "sha256:f5d3e67310477b2b20836e4e2222010fe4e2ed24bef83d312fefb7baa8b63e61",
+        "detection_report_digest": "sha256:b9e6386a0137b25a2408daf0b188eb70693e806b138f050a5279d300e5ee5e9c",
+        "executed_macs": 1216897006,
+        "detections": [
+          {
+            "row": 1165,
+            "class_index": 0,
+            "label": "person",
+            "score": 0.82531,
+            "bounds_subpixel": [
+              15493,
+              5958,
+              17778,
+              12235
+            ]
+          },
+          {
+            "row": 3136,
+            "class_index": 0,
+            "label": "person",
+            "score": 0.8147921,
+            "bounds_subpixel": [
+              23495,
+              9966,
+              28199,
+              20532
+            ]
+          }
+        ]
+      },
+      {
+        "segment": 10,
+        "status": "inferred",
+        "color": "jpeg_rgb",
+        "rgb_digest": "sha256:3b36959faa48ffd6e611a70c487a8cdeb699db47ebea93771aae6084f1156809",
+        "inference_identity": "sha256:9fd935a1b83b961230ed36fe7a477e5c7a6d69d01a3f47e03aa91039a740de07",
+        "input_digest": "sha256:e3007b482bc65058b3e4b482de7c3de8ac0f8ddb83f4ce6025b5dac57e57db6e",
+        "output_digest": "sha256:59634d27b64fcbba92a44e436d793b6372e99db8709f370db0baf99a22027b4e",
+        "detection_report_digest": "sha256:f0764d7188f4511d6c68135d2e687d395f928dbf814407de43ed1191b1f23c15",
+        "executed_macs": 1216897006,
+        "detections": [
+          {
+            "row": 1165,
+            "class_index": 0,
+            "label": "person",
+            "score": 0.82111496,
+            "bounds_subpixel": [
+              15500,
+              5942,
+              17758,
+              12243
+            ]
+          },
+          {
+            "row": 3110,
+            "class_index": 0,
+            "label": "person",
+            "score": 0.80776846,
+            "bounds_subpixel": [
+              24836,
+              9960,
+              28281,
+              20409
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "coverage": {
+    "format": "fss.recorded_watch_coverage.v1",
+    "coverage_status": "proposed",
+    "approval_digest": "sha256:3b936f654737e656613985a572f732ff59e4fe6061afc5dbe49a6590e1778348",
+    "retain_command": "fss-event watch --root deployment --site site:juniper-demo --import-id sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2 --interpretation ycbcr --zone image:0,0,160,90 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 2 --retain-coverage sha256:3b936f654737e656613985a572f732ff59e4fe6061afc5dbe49a6590e1778348",
+    "witness_count": 3,
+    "absence_certified_for_witness_domains": false,
+    "records": [
+      {
+        "source": "watch",
+        "record_digest": "sha256:e19e5bc8d10558945c378017f4e34c073ba92e72fde28f90f65178ffaafdaa40",
+        "identity": "sha256:55baaaf4244f7c5f89807de95e1349b721bc880e21826cc3fedca810c708a9b8",
+        "import_identity": "sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2",
+        "sensor_id": "sensor:garden",
+        "capture_time_label": "operator_assumption",
+        "basis_commit": 6,
+        "first_segment": 0,
+        "last_segment": 15,
+        "analysed_ns": [
+          1699999999999000000,
+          1700000003751000000
+        ],
+        "zones": [
+          {
+            "scope": "zone:image",
+            "zone_id": "image",
+            "geometry": "0,0,160,90",
+            "pipeline_generation": "sha256:67b2862651eda1ee61dd138318c8d35932eafe837537a24e89f8a2c1a427a166",
+            "witness_count": 3,
+            "witnesses": [
+              {
+                "first_segment": 4,
+                "last_segment": 5,
+                "frames": 2,
+                "covered_ns": [
+                  1700000001001000000,
+                  1700000001249000000
+                ],
+                "outer_ns": [
+                  1700000000999000000,
+                  1700000001251000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 6,
+                    "authorityRoot": "sha256:40c022fa5b8bc70e364b9dc118d3c24ff5725582ac326371560da8740f4cc551",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "watch:191ee566a59494308669b97d902a8db6:zone:image:1700000001001000000..1700000001249000000"
+                  ],
+                  "observedDomain": [
+                    "watch:191ee566a59494308669b97d902a8db6:zone:image:1700000001001000000..1700000001249000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into zone:image of sensor sensor:garden emitted by the watch pipeline generation sha256:67b2862651eda1ee61dd138318c8d35932eafe837537a24e89f8a2c1a427a166 over capture [1700000001001000000, 1700000001249000000] ns (coverage producer v1)",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:13672283abc36728e27cece81249241906599b0cb281c4fc744c1491c8153b18"
+                }
+              },
+              {
+                "first_segment": 7,
+                "last_segment": 9,
+                "frames": 3,
+                "covered_ns": [
+                  1700000001751000000,
+                  1700000002249000000
+                ],
+                "outer_ns": [
+                  1700000001749000000,
+                  1700000002251000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 6,
+                    "authorityRoot": "sha256:40c022fa5b8bc70e364b9dc118d3c24ff5725582ac326371560da8740f4cc551",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "watch:191ee566a59494308669b97d902a8db6:zone:image:1700000001751000000..1700000002249000000"
+                  ],
+                  "observedDomain": [
+                    "watch:191ee566a59494308669b97d902a8db6:zone:image:1700000001751000000..1700000002249000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into zone:image of sensor sensor:garden emitted by the watch pipeline generation sha256:67b2862651eda1ee61dd138318c8d35932eafe837537a24e89f8a2c1a427a166 over capture [1700000001751000000, 1700000002249000000] ns (coverage producer v1)",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:4ba5240a5acce7e7eb2512c8ba727057dcc8c2bb7f5d892e69816f5f18744da4"
+                }
+              },
+              {
+                "first_segment": 11,
+                "last_segment": 13,
+                "frames": 3,
+                "covered_ns": [
+                  1700000002751000000,
+                  1700000003249000000
+                ],
+                "outer_ns": [
+                  1700000002749000000,
+                  1700000003251000000
+                ],
+                "witness": {
+                  "schema": "fss.coverage_witness.v1",
+                  "anchor": {
+                    "schema": "fss.evidence_anchor.v1",
+                    "deploymentId": "site:juniper-demo",
+                    "observationEpoch": 0,
+                    "capsuleSequence": 6,
+                    "authorityRoot": "sha256:40c022fa5b8bc70e364b9dc118d3c24ff5725582ac326371560da8740f4cc551",
+                    "deviceGeneration": "fss-na:79c21592183cb32d7a42ccebf16c485e148930ca29438af0f51c8b71b6214d3c",
+                    "streamGeneration": "fss-na:e15acca828a8a061a4f6560b8bd243bb0b1e01b742c27d188366973fd297cd7d",
+                    "schemaEpoch": 1,
+                    "policyEpoch": 1,
+                    "adapterEpoch": 0,
+                    "modelGeneration": null,
+                    "calibrationGeneration": null,
+                    "graphGeneration": null,
+                    "searchGeneration": null
+                  },
+                  "authorizedDomain": [
+                    "watch:191ee566a59494308669b97d902a8db6:zone:image:1700000002751000000..1700000003249000000"
+                  ],
+                  "observedDomain": [
+                    "watch:191ee566a59494308669b97d902a8db6:zone:image:1700000002751000000..1700000003249000000"
+                  ],
+                  "excludedDomain": [],
+                  "continuity": "continuous",
+                  "completeness": "complete_for_declared_domain",
+                  "negativePredicate": "no confirmed foreground-track entry into zone:image of sensor sensor:garden emitted by the watch pipeline generation sha256:67b2862651eda1ee61dd138318c8d35932eafe837537a24e89f8a2c1a427a166 over capture [1700000002751000000, 1700000003249000000] ns (coverage producer v1)",
+                  "stopReason": "complete",
+                  "witnessDigest": "sha256:22207bacdbdb9e5c490511af088918208e7599d1d2263cac02ab2223e08ad16d"
+                }
+              }
+            ],
+            "uncovered": [
+              {
+                "reason": "background_warmup",
+                "first_segment": 0,
+                "last_segment": 3,
+                "capture_ns": [
+                  1699999999999000000,
+                  1700000000751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              },
+              {
+                "reason": "zone_entry",
+                "first_segment": 6,
+                "last_segment": 6,
+                "capture_ns": [
+                  1700000001499000000,
+                  1700000001501000000
+                ],
+                "candidate_id": "sha256:de17d044c4f77a6c8af94896c63d33c6acf9f82cc895e5493ad18ef6541c8be7",
+                "event_id": "event:watch:de17d044c4f77a6c8af94896c63d33c6acf9f82cc895e5493ad18ef6541c8be7"
+              },
+              {
+                "reason": "zone_entry",
+                "first_segment": 10,
+                "last_segment": 10,
+                "capture_ns": [
+                  1700000002499000000,
+                  1700000002501000000
+                ],
+                "candidate_id": "sha256:34e1af84aaa801b530ebdde27b232613c1e6782ba16c7df48e6ade92cf8d7337",
+                "event_id": "event:watch:34e1af84aaa801b530ebdde27b232613c1e6782ba16c7df48e6ade92cf8d7337"
+              },
+              {
+                "reason": "confirmation_latency",
+                "first_segment": 14,
+                "last_segment": 15,
+                "capture_ns": [
+                  1700000003499000000,
+                  1700000003751000000
+                ],
+                "candidate_id": null,
+                "event_id": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

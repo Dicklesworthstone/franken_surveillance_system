@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 export async function checkField(page, width) {
   const byName = (name) => page.getByRole("button", { name, exact: true });
-  await page.getByRole("heading", { name: "The home control room." }).waitFor();
+  await page.getByRole("heading", { name: "One home. Many views." }).waitFor();
   await page.waitForFunction(
     () => document.querySelector(".hero-art")?.naturalWidth > 1000,
   );

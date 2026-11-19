@@ -13,6 +13,11 @@ import CameraFilm from "./CameraFilm";
 
 export default function CameraWall({ samples }) {
   const [s, setCase] = useState(cases[0]);
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("case");
+    const match = cases.find((c) => c.id === requested);
+    if (match) setCase(match);
+  }, []);
   return (
     <section className="exhibit camera-wall" id="camera-wall">
       <div className="chapter-heading">

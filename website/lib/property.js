@@ -361,7 +361,7 @@ function actor(animal, delivery) {
   }
   return { group: p, limbs };
 }
-export function createSiteStage(canvas, interactive) {
+export function createSceneRenderer(canvas, interactive) {
   const renderer = new T.WebGLRenderer({
     canvas,
     antialias: true,
@@ -375,6 +375,10 @@ export function createSiteStage(canvas, interactive) {
   renderer.toneMappingExposure = 1.28;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = T.PCFSoftShadowMap;
+  return renderer;
+}
+export function createSiteStage(canvas, interactive) {
+  const renderer = createSceneRenderer(canvas, interactive);
   const scene = new T.Scene();
   scene.background = new T.Color("#26383c");
   scene.fog = new T.FogExp2("#283c40", 0.016);

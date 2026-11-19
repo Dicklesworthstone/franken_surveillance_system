@@ -4,11 +4,36 @@ import { join } from "node:path";
 import { fieldData } from "./field-data";
 import { exhibits, exhibitPath } from "./exhibits";
 
+function courtData() {
+  const read = (name) =>
+    JSON.parse(
+      readFileSync(join(process.cwd(), "public/court", name + ".json"), "utf8"),
+    );
+  const { segment } = read("earlier/source");
+  const views = Object.fromEntries(
+    Object.entries(read("analysis").views).map(([id, view]) => [
+      id,
+      {
+        samples: view.samples,
+        frameDigests: view.frameDigests,
+        inspection: read(id + "-inspection").frames[0],
+      },
+    ]),
+  );
+  return {
+    ...views,
+    earlier: read("earlier/garden").detector_cascade.frames.find(
+      (frame) => frame.segment === segment,
+    ),
+  };
+}
+
 export function exhibitPage(slug) {
   return () => (
     <Observatory
       field={fieldData()}
       exhibit={slug}
+      court={slug === "courtyard" ? courtData() : undefined}
       motion={
         slug === "motion-study"
           ? JSON.parse(

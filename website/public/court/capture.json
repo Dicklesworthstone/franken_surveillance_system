@@ -1,0 +1,29 @@
+{
+  "parameters": {
+    "name": "Bounce pass",
+    "style": "bounce",
+    "spacing": 4.2,
+    "speed": 4.8,
+    "rebound": 0.82,
+    "height": 1.8
+  },
+  "seconds": 4,
+  "fps": 24,
+  "assets": {
+    "passer.glb": "5f39a29c949ecf4ba4d7fa8325d6b5e6ae321737b24ebcfdd77e50babb7449be",
+    "receiver.glb": "2bf2c003b60fe3bd77dd0939ad150f73b53cc90c44935f354bd1b186b630927c",
+    "garden.hdr": "38199a31e945906f6778431e989256a92d9d78b0cfc0f902accad9f5244bf50f",
+    "garden.webp": "9b37cffe30f6de36772daf2517c1bbabbcab98979b3e04093e267e54d7336fdd"
+  },
+  "files": {
+    "wide.jpg": "577e1f880ace82710fb54d0e0beac8270030ac8611db0dff3672a21b831f584c",
+    "wide.mp4": "37357dae889a262736b23a571f1d4412387e5f64eed6f85c3ccc2061e0ee2349",
+    "garden.jpg": "d5274aceb1e057a005eca9aaf6e78beefca82544c4c905e8d52bffa9e4c1d3fa",
+    "garden.mp4": "9d1726a2f040c797e452ab4e8646091a811f4ce5759fa4dbf4356783c16067a6",
+    "patio.jpg": "ffd542240ba0225d8282bd21fcc9a55225684f7be864e8cc7971a41f203bcd48",
+    "patio.mp4": "62527e3718c6709c2ea4df20d40795ff7d9331a7a8a32e4d56d309cc6d8d18e7",
+    "cover.jpg": "e982e0b87d0520a1c268f5dd21b0965c612459a65827e8643867db583dee36d0",
+    "arc.jpg": "d831ceb41b04d36b39607db5ab7a28ab6866105c2fb1694ed12f66aeb9a0e133",
+    "hands.jpg": "5441c3c1128385e708f60dc306260ce21b519097ad6dd4b67b68e5ef3347835a"
+  }
+}

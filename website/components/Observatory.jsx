@@ -26,8 +26,10 @@ import CameraFilm from "./CameraFilm";
 import EvidenceReplay from "./EvidenceReplay";
 import PairInspector from "./PairInspector";
 import FieldHero from "./FieldHero";
+import ExhibitMenu from "./ExhibitMenu";
 import CameraWall from "./CameraWall";
 import MotionStudy from "./MotionStudy";
+import CourtStudy from "./CourtStudy";
 import SectionLink from "./SectionLink";
 import { exhibits, exhibitPath } from "../lib/exhibits";
 import EvidenceDesk from "./EvidenceDesk";
@@ -172,7 +174,7 @@ function useEvidence(file) {
   }, [file]);
   return result && result.file === file ? result : { status: "loading" };
 }
-export default function Observatory({ field, exhibit = "home", motion }) {
+export default function Observatory({ field, exhibit = "home", motion, court }) {
   const home = exhibit === "home";
   const show = (...slugs) => home || slugs.includes(exhibit);
   const [vantage, setVantage] = useState("orbit");
@@ -308,9 +310,7 @@ export default function Observatory({ field, exhibit = "home", motion }) {
         <div className="wrap nav">
           <Logo />
           <nav>
-            <a className="active" href={exhibitPath("motion-study")}>
-              Motion lab
-            </a>
+            <ExhibitMenu current={exhibit}/>
             <a className="evidence-nav" href={home ? "#casebook" : exhibitPath("camera-fusion")}>Evidence desk</a>
             <a className="desktop-link" href={home ? "#agent-console" : exhibitPath("agent-console")}>
               Agent console
@@ -333,6 +333,7 @@ export default function Observatory({ field, exhibit = "home", motion }) {
           </div>
         )}
         {exhibit==="motion-study" && <MotionStudy analysis={motion}/>}
+        {exhibit==="courtyard" && <CourtStudy data={court}/>}
         {show("digital-twin") && <section
           id="simulator"
           className="simulator"

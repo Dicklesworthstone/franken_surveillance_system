@@ -12,6 +12,9 @@ export async function checkMotionUI(browser, origin) {
       if (r.status() >= 400) errors.push(r.url());
     });
     await page.goto(origin);
+    await page
+      .getByRole("button", { name: "Motion lab The parcel drop" })
+      .click();
     await page.getByRole("link", { name: "Enter the motion lab" }).click();
     await page.waitForURL("**/exhibits/motion-study/");
     const stage = page.locator(".motion-viewport"),

@@ -5,6 +5,7 @@ import "@fontsource/instrument-serif/latin-400-italic.css";
 import "./style.css";
 import "./field.css";
 import "./motion.css";
+import "./courtyard.css";
 export const metadata = {
   metadataBase: new URL("https://franken-surveillance.com"),
   title: "Franken Surveillance · The Home Control Room",

@@ -9,6 +9,8 @@ import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { imageToGround } from "../lib/cameras.js";
 import { renderMotion } from "./render-motion.mjs";
+import { renderCourt } from "./render-court.mjs";
+import { createReadStream } from "node:fs";
 import { renderWall } from "./render-wall.mjs";
 import {
   cameraAsset,
@@ -24,12 +26,17 @@ const bundle = await build({
 import { createProperty } from "./lib/property.js";
 import { cases, DURATION } from "./lib/scenarios.js";
 const canvas = document.querySelector("canvas");
+import { createCourtStage } from "./lib/court-stage.js";
+import { conditions } from "./lib/pass.js";
 import { createMotionStage } from "./lib/motion-stage.js";
 import { presets } from "./lib/motion.js";
 const motionMode=${process.argv.includes("--motion")};
-const stage = motionMode ? createMotionStage(canvas,false) : createProperty(canvas, false);
+const courtMode=${process.argv.includes("--court")};
+async function boot() {
+const stage = courtMode ? await createCourtStage(canvas,false) : motionMode ? createMotionStage(canvas,false) : createProperty(canvas, false);
 window.frame=(id,t,view,w,h)=>{
   if (canvas.width!==w || canvas.height!==h) stage.resize(w,h);const s=cases.find(s=>s.id===id);
+  if(courtMode){stage.draw(conditions[0],t,view,id==="trace");return {jpeg:canvas.toDataURL("image/jpeg",.94).split(",")[1]};}
   if (motionMode) {
     stage.draw(presets[0],t,view,id==="pose");
     return {jpeg:canvas.toDataURL("image/jpeg",.94).split(",")[1]};
@@ -38,7 +45,8 @@ window.frame=(id,t,view,w,h)=>{
   if (view==="plan") stage.overhead();
   const result=stage.draw(s,t,["flyover","plan"].includes(view) ? "overview" : view,true);
   return { jpeg:canvas.toDataURL("image/jpeg",.93).split(",")[1], visible:result.visible, inZone:result.inZone };
-};`,
+};
+} boot().catch(e=>{console.error(e);window.bootError=String(e);});`,
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -49,6 +57,20 @@ const server = createServer((req, res) => {
   if (req.url === "/bundle.js") {
     res.setHeader("Content-Type", "text/javascript");
     res.end(bundle.outputFiles[0].contents);
+  } else if (
+    [
+      "/court/passer.glb",
+      "/court/receiver.glb",
+      "/court/garden.hdr",
+      "/court/garden.webp",
+    ].includes(req.url)
+  ) {
+    createReadStream(join(process.cwd(), "public", req.url))
+      .on("error", () => {
+        res.statusCode = 404;
+        res.end();
+      })
+      .pipe(res);
   } else {
     res.setHeader("Content-Type", "text/html");
     res.end(
@@ -76,14 +98,22 @@ async function renderAll() {
       if (msg.type() === "error") console.error(msg.text());
     });
     await page.goto("http://127.0.0.1:" + server.address().port);
-    await page.waitForFunction(() => typeof window.frame === "function");
+    await page.waitForFunction(
+      () => typeof window.frame === "function" || window.bootError,
+    );
+    const error = await page.evaluate(() => window.bootError);
+    if (error) throw Error(error);
     return page;
   }
   let page = await newRenderer();
   const render = (id, t, view, w, h) =>
     page.evaluate((args) => window.frame(...args), [id, t, view, w, h]);
+  if (process.argv.includes("--court")) {
+    await renderCourt(render, stageDir);
+    return;
+  }
   if (process.argv.includes("--motion")) {
-    await renderMotion(render,stageDir);
+    await renderMotion(render, stageDir);
     return;
   }
   if (process.argv.includes("--wall")) {

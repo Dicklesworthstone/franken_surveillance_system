@@ -2,18 +2,28 @@
 export const exhibits = {
   home: {
     title: "The home control room",
-    lines: ["The home", "control room."],
+    lines: ["One home.", "Many views."],
     label: "Juniper House",
     description:
       "Follow an encounter through a home digital twin, three cameras and the evidence an agent can inspect.",
-    caption: "JUNIPER HOUSE  /  RESIDENTIAL SITE CONCEPT",
+    caption: "JUNIPER HOUSE  /  INTERACTIVE FIELD GUIDE",
     color: "#cefa85",
+  },
+  courtyard: {
+    title: "The courtyard study",
+    lines: ["The bounce", "pass."],
+    label: "Courtyard",
+    description:
+      "Change a ball pass between two skinned 3D players, then compare motion-triggered watch results and native frame inspections from two cameras.",
+    caption: "JUNIPER COURT  /  TWO PLAYERS IN MOTION",
+    color: "#ffb48d",
   },
   "motion-study": {
     title: "Human motion study",
     lines: ["The parcel", "drop."],
     label: "Motion study",
-    description: "Change the courier’s gait and the parcel’s bounce, then compare two camera views with native FSS measurements of the reference delivery.",
+    description:
+      "Change the courier’s gait and the parcel’s bounce, then compare two camera views with native FSS measurements of the reference delivery.",
     caption: "JUNIPER HOUSE  /  HUMAN MOTION STUDY",
     color: "#ffb48d",
   },

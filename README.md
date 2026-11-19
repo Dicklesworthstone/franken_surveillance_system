@@ -34,7 +34,9 @@ and inspect the agent’s alert decision and handoff. The camera wall adds three
 flyover reels with frame-by-frame detector readouts. Every exhibit has its own shareable page.
 In the motion lab, change a courier’s stature, walking speed, release height and parcel restitution.
 Compare the studio motion with the two fixed cameras, then inspect the detector’s boxes on the
-actual imported reference frames.
+actual imported reference frames. In the courtyard, two players pass a ball across the same scene
+seen by two fixed cameras. Change the pass, then compare a motion-triggered watch with an explicit
+detector inspection of the very same recorded frame.
 
 ## The thesis
 

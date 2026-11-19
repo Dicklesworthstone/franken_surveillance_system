@@ -1,0 +1,165 @@
+{
+  "capture": "sha256:62f80dd75639defd47e5c402b8eac18adfb35c570396eba781dd519a38a2cebc",
+  "model": "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74",
+  "sampleFps": 4,
+  "views": {
+    "garden": {
+      "asset": "garden",
+      "importId": "sha256:c1f273b73ec7574b882165e47aa7095c102ca1d69403570298a8f57f4d89daa2",
+      "filmDigest": "sha256:9d1726a2f040c797e452ab4e8646091a811f4ce5759fa4dbf4356783c16067a6",
+      "inputDigest": "sha256:3d66acb02fda8794a797323be01ade9d4df07855ed60e7e053c0c4a8b4ecf4f3",
+      "inspectionDigest": "sha256:6ee240ded5edf6aca6b210eb8b72767880a2954f76720a21568d9a817718b01c",
+      "reportDigest": "sha256:d69275350234a092dd11732cc7bdc970edb4631b0568174e484d8106dc28c70e",
+      "frames": 16,
+      "sampleDigest": "sha256:6e02fb2a71a70600fe680bb88e6b478e6cf12bc6cd2343b948f3f94e5cddf9c1",
+      "plateSegment": 4,
+      "candidates": 5,
+      "samples": [
+        {
+          "segment": 6,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.82531,
+              "bounds_subpixel": [
+                15493,
+                5958,
+                17778,
+                12235
+              ]
+            },
+            {
+              "label": "person",
+              "score": 0.8147921,
+              "bounds_subpixel": [
+                23495,
+                9966,
+                28199,
+                20532
+              ]
+            }
+          ]
+        },
+        {
+          "segment": 10,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.82111496,
+              "bounds_subpixel": [
+                15500,
+                5942,
+                17758,
+                12243
+              ]
+            },
+            {
+              "label": "person",
+              "score": 0.80776846,
+              "bounds_subpixel": [
+                24836,
+                9960,
+                28281,
+                20409
+              ]
+            }
+          ]
+        }
+      ],
+      "frameDigests": {
+        "3": "sha256:5d9de576d8cdaabc2ee70f07af886b6cac7a72ee132a0c29a73e78d9600cdc0d",
+        "4": "sha256:6e02fb2a71a70600fe680bb88e6b478e6cf12bc6cd2343b948f3f94e5cddf9c1",
+        "6": "sha256:9b8b0768c52bb2edf3c3491a128b73aef45d9b053108ccdb5bea4cb0c2c6578d",
+        "8": "sha256:5bea3dee59b123f1f75f6d73a2ca0efea7b125fcc250bedd942e95c8e2927e89",
+        "10": "sha256:2b902a6286c0ffd75e9961235708d9f7da274c589bfd496a4a964fa8454ae34d"
+      }
+    },
+    "patio": {
+      "asset": "patio",
+      "importId": "sha256:27be636604d6f9d203e1abb76c5d2918f6d5838f140b4f0504407c4f534de359",
+      "filmDigest": "sha256:62527e3718c6709c2ea4df20d40795ff7d9331a7a8a32e4d56d309cc6d8d18e7",
+      "inputDigest": "sha256:836f5ac71bea96755058228883ef988690d33ac82b9b9f4d8a16566f31a40606",
+      "inspectionDigest": "sha256:493256f8823a261d209b2ddf2b446ff2c8cebab041d47d7e2afef6b96beb2d95",
+      "reportDigest": "sha256:e4983b0544941139fe433c176666bb1a6db686f58e6907d70c8c53c30482123e",
+      "frames": 16,
+      "sampleDigest": "sha256:802b61c31bf78bc0c76dfccba637a3fccfa5d5f81b442ce32e187c17a97a64aa",
+      "plateSegment": 4,
+      "candidates": 3,
+      "samples": [
+        {
+          "segment": 3,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.8517097,
+              "bounds_subpixel": [
+                23998,
+                7824,
+                25823,
+                14119
+              ]
+            },
+            {
+              "label": "person",
+              "score": 0.8409929,
+              "bounds_subpixel": [
+                12360,
+                8250,
+                16538,
+                20161
+              ]
+            }
+          ]
+        },
+        {
+          "segment": 8,
+          "status": "inferred",
+          "classes": [
+            "person"
+          ],
+          "detections": [
+            {
+              "label": "person",
+              "score": 0.86386734,
+              "bounds_subpixel": [
+                12319,
+                8240,
+                15689,
+                20052
+              ]
+            },
+            {
+              "label": "person",
+              "score": 0.82665825,
+              "bounds_subpixel": [
+                23921,
+                7973,
+                25664,
+                14021
+              ]
+            }
+          ]
+        }
+      ],
+      "frameDigests": {
+        "3": "sha256:861aca61c83a01dc8fef7e08ba395afa76b0b3376e4abba68c1b3186d9168e77",
+        "4": "sha256:802b61c31bf78bc0c76dfccba637a3fccfa5d5f81b442ce32e187c17a97a64aa",
+        "6": "sha256:ac8cf219cdf06301dc9d4df1449259f1c9aa2e831c2c2b22d661c8749344221e",
+        "8": "sha256:cdadf6013faceec272ba4d571342c411890489c676ce099474124390a1e4725b",
+        "10": "sha256:78bd00235ad319b5becdc903502b048287ef3517f1017d181012544ded35e5f3"
+      }
+    }
+  }
+}

@@ -6,6 +6,50 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { duration, presets, milestones, fps } from "../lib/motion.js";
 
+export async function encodeFilm(file, rate, frames) {
+  const proc = spawn(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "image2pipe",
+      "-framerate",
+      String(rate),
+      "-vcodec",
+      "mjpeg",
+      "-i",
+      "pipe:0",
+      "-an",
+      "-threads",
+      "2",
+      "-c:v",
+      "libx264",
+      "-crf",
+      "19",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      file,
+    ],
+    { stdio: ["pipe", "ignore", "inherit"] },
+  );
+  const done = once(proc, "close");
+  try {
+    const [[code]] = await Promise.all([done, pipeline(frames, proc.stdin)]);
+    if (code !== 0) throw Error("Failed to encode " + file);
+  } finally {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      proc.stdin.destroy();
+      proc.kill();
+      await done;
+    }
+  }
+}
+
 export async function renderMotion(render, stageDir) {
   const index = { parameters: presets[0], seconds: duration, fps, files: {} };
   const paths = [];
@@ -15,37 +59,6 @@ export async function renderMotion(render, stageDir) {
   };
   for (const view of ["studio", "porch", "drive"]) {
     const file = save(view + ".mp4");
-    const proc = spawn(
-      "ffmpeg",
-      [
-        "-nostdin",
-        "-v",
-        "error",
-        "-y",
-        "-f",
-        "image2pipe",
-        "-framerate",
-        String(fps),
-        "-vcodec",
-        "mjpeg",
-        "-i",
-        "pipe:0",
-        "-an",
-        "-threads",
-        "2",
-        "-c:v",
-        "libx264",
-        "-crf",
-        "19",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        file,
-      ],
-      { stdio: ["pipe", "ignore", "inherit"] },
-    );
-    const done = once(proc, "close");
     async function* frames() {
       for (let n = 0; n < duration * fps; n++) {
         const jpg = await render("reference", n / fps, view, 768, 432);
@@ -54,19 +67,7 @@ export async function renderMotion(render, stageDir) {
         yield bytes;
       }
     }
-    try {
-      const [[code]] = await Promise.all([
-        done,
-        pipeline(frames(), proc.stdin),
-      ]);
-      if (code !== 0) throw Error("Failed to encode " + view);
-    } finally {
-      if (proc.exitCode === null && proc.signalCode === null) {
-        proc.stdin.destroy();
-        proc.kill();
-        await done;
-      }
-    }
+    await encodeFilm(file, fps, frames());
     console.log(view, duration * fps, "frames");
   }
   const at = milestones(presets[0]);

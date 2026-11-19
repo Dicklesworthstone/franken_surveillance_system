@@ -73,18 +73,27 @@ async function Plate({ slug, h, color }) {
   if (slug === "home")
     return (
       <Photo
-        src={await jpeg("art/arrival.jpg")}
+        src={await jpeg("public/court/cover.jpg")}
         width={1200}
         height={h}
         style={{ position: "absolute", top: 0, left: 0 }}
       />
     );
-  if (["camera-inputs", "event-ledger", "digital-twin", "motion-study"].includes(slug)) {
+  if (
+    [
+      "camera-inputs",
+      "event-ledger",
+      "digital-twin",
+      "motion-study",
+      "courtyard",
+    ].includes(slug)
+  ) {
     const file = {
       "camera-inputs": "art/camera-optics.jpg",
       "event-ledger": "art/ledger-glass.jpg",
       "digital-twin": "art/site-plan.jpg",
       "motion-study": "public/motion/pose.jpg",
+      courtyard: "public/court/hands.jpg",
     }[slug];
     return (
       <div style={panel}>
