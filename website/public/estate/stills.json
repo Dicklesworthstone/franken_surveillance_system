@@ -1,0 +1,147 @@
+{
+  "schema": "fss.website.estate_stills.v1",
+  "source_blend": "alder-house-ea6e5256acbc.blend",
+  "source_blend_sha256": "ea6e5256acbc2915ed4c751c898f49d85b3c9d4322eea048cc5be0ae75e235d7",
+  "renderer": "Blender 5.3.0 Cycles",
+  "view_transform": "AgX",
+  "look": "AgX - Medium High Contrast",
+  "exposure": 2.6,
+  "stills": [
+    {
+      "path": "/estate/hero.jpg",
+      "camera": "view_hero",
+      "width": 2560,
+      "height": 1440,
+      "bytes": 505722,
+      "sha256": "55fcf2c73a649ca816ef353e6b586654a921cdb9c1d05426ee2f9b22c4dc3d7d"
+    },
+    {
+      "path": "/estate/stills/aerial.jpg",
+      "camera": "view_aerial",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 356383,
+      "sha256": "7871594a8104c467e1dfc11f13208bf7c61979063394703451670035a0838d83"
+    },
+    {
+      "path": "/estate/stills/court.jpg",
+      "camera": "view_court",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 425844,
+      "sha256": "ec96f13e2e422086780334c70dd210c5c798a95e1acc25aba4943cb29ba656ef"
+    },
+    {
+      "path": "/estate/stills/driveway.jpg",
+      "camera": "cam_driveway",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 319537,
+      "sha256": "c009e6bc755285e4ea77fcbc528f6b153e32d6766f4abb66d6708590f6672a85"
+    },
+    {
+      "path": "/estate/stills/entry.jpg",
+      "camera": "cam_entry",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 367766,
+      "sha256": "7abc712c08caae1f236f3ad858091b5f591fdd4db86496392cd34140231146c7"
+    },
+    {
+      "path": "/estate/stills/front.jpg",
+      "camera": "view_front",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 300652,
+      "sha256": "9f0be5431173da0d2122329623a64825e25ff5c72eb49303a2067a467c58a22b"
+    },
+    {
+      "path": "/estate/stills/garden.jpg",
+      "camera": "cam_garden",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 406187,
+      "sha256": "5f01dd4deb5299737b3c9192e63148bdfd241ea103458c49cf82eab0fd95a459"
+    },
+    {
+      "path": "/estate/stills/gate.jpg",
+      "camera": "cam_gate",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 398149,
+      "sha256": "6f558280ddd17c35831e4c73e992cec0682c66fa59454ec7f662a823485abf8f"
+    },
+    {
+      "path": "/estate/stills/hero_east.jpg",
+      "camera": "view_hero_east",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 420217,
+      "sha256": "c2a2b84906b6b1443b7ca80e996ba4b6e5bb41ec54125d84a487e306417cae83"
+    },
+    {
+      "path": "/estate/stills/overview.jpg",
+      "camera": "cam_overview",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 417710,
+      "sha256": "69ddf0efa6323fb56bf55b2b68ea4b4f8652fa450997b28b6ec3255595e71431"
+    },
+    {
+      "path": "/estate/stills/pool.jpg",
+      "camera": "cam_pool",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 487198,
+      "sha256": "d0bf32e528d5aeec345398229cafc8350ef0bf6acbca14ce7d9d7368856f60bf"
+    },
+    {
+      "path": "/estate/stills/porch.jpg",
+      "camera": "cam_porch",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 361367,
+      "sha256": "3d5b4c345b8b4d352f0d2a4c336a3db507a770eae1b35408ec5793faa68e415c"
+    },
+    {
+      "path": "/estate/stills/rear.jpg",
+      "camera": "view_rear",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 334029,
+      "sha256": "c06329781e23189e80f3bcc60c875fc3e70d3720cb67a2215e93767fedc18471"
+    },
+    {
+      "path": "/estate/stills/service.jpg",
+      "camera": "cam_service",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 265573,
+      "sha256": "6cbde059ef6092f45955e11fe778e45a34d1e0cfb314faf80afe092f370adc8d"
+    },
+    {
+      "path": "/estate/stills/side.jpg",
+      "camera": "cam_side",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 289374,
+      "sha256": "858395b4c319813625e42f2de97f0bf13c4bd44627081b2387f30392bae5fc3a"
+    },
+    {
+      "path": "/estate/stills/terrace.jpg",
+      "camera": "cam_terrace",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 402797,
+      "sha256": "12c116f3a4a3fa33dbeea3f4eb39ffd853cb89f7a2cb265632d99fb120ada461"
+    },
+    {
+      "path": "/estate/stills/terrace_view.jpg",
+      "camera": "view_terrace_view",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 379831,
+      "sha256": "fd0c23abec5ed84eb69668dd2cfff5139908459fcca89eb40b7800b5a86b701e"
+    }
+  ]
+}

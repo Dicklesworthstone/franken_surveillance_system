@@ -1,0 +1,6 @@
+# Downloaded CC0 inputs and generated Blender output. Both are reproducible:
+# fetch_assets.py restores assets/ from assets.lock.json and build_estate.py
+# regenerates build/.
+assets/
+build/
+__pycache__/

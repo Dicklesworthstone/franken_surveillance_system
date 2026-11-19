@@ -1,319 +1,353 @@
-// Run against the built export. Exercise the selected footage, measured boxes,
-// archive and shared timeline in a real browser, including failure paths.
-import { checkExhibits } from "./check-exhibits.mjs";
-import { checkField } from "./check-field.mjs";
-import { checkMotionUI } from "./check-motion-ui.mjs";
-import {checkStereoUI} from "./check-stereo-ui.mjs";
-import { checkCourtUI } from "./check-court-ui.mjs";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { chromium } from "playwright-core";
 import {
+  exhibits,
+  pathFor,
   cases,
-  cameras,
-  cameraAsset,
-  recording,
-  DURATION,
-} from "../lib/scenarios.js";
+  displayCamera,
+} from "../lib/night/catalog.js";
 
 const origin = process.argv[2];
-if (!origin) throw Error("Pass the URL of the static export.");
+if (!origin) throw Error("Pass the URL of a running static export.");
+const shots = process.env.FSS_SITE_SCREENSHOTS;
+if (shots) await mkdir(shots, { recursive: true });
+const domain = new URL(origin).hostname,
+  ip = process.env.FSS_SITE_ORIGIN_IP;
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_BIN || "/usr/bin/google-chrome",
   args: [
     "--no-sandbox",
-    "--enable-unsafe-swiftshader",
-    "--use-angle=swiftshader",
     "--disable-dev-shm-usage",
+    "--enable-unsafe-swiftshader",
+    "--ignore-gpu-blocklist",
+    ...(process.env.FSS_CHROME_ANGLE
+      ? [
+          "--enable-gpu",
+          "--use-gl=angle",
+          "--use-angle=" + process.env.FSS_CHROME_ANGLE,
+        ]
+      : []),
+    ...(ip ? ["--host-resolver-rules=MAP " + domain + " " + ip] : []),
   ],
 });
-const feed = (page, asset) => page.locator('[data-feed="' + asset + '"]');
 const button = (page, name) => page.getByRole("button", { name, exact: true });
-const viewpoint = (page, name) => button(page.locator(".views"), name);
-async function report(page, file) {
-  const res = await page.request.get(new URL("/evidence/" + file, origin).href);
-  assert.equal(res.status(), 200);
-  return res.json();
-}
-async function aligned(page, asset, segment) {
-  const selector =
-    '[data-feed="' + asset + '"][data-segment="' + segment + '"]';
-  await page.waitForFunction((selector) => {
-    const v = document.querySelector(selector + " video");
-    return v && v.readyState >= 2 && !v.seeking;
-  }, selector);
-  const actual = await feed(page, asset)
-    .locator("video")
-    .evaluate((v) => ({
-      src: v.dataset.recording,
-      time: v.currentTime,
-    }));
-  assert.equal(actual.src, "/films/" + asset + ".mp4");
-  assert.ok(
-    Math.abs(
-      actual.time - (segment / recording.nativeFps + 0.5 / recording.fps),
-    ) < 0.002,
-  );
-}
+const absolute = (path) => new URL(path, origin).href;
 try {
-  await checkExhibits(browser, origin);
-  await checkStereoUI(browser, origin);
-  await checkCourtUI(browser, origin);
-  await checkMotionUI(browser, origin);
-  for (const width of [1440, 390]) {
-    const page = await browser.newPage({
-      viewport: { width, height: 900 },
-      reducedMotion: "reduce",
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    reducedMotion: "reduce",
+  });
+  const page = await context.newPage(),
+    errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const screenshot = async (name) => {
+    if (shots)
+      await page.screenshot({
+        path: join(shots, name + ".png"),
+        animations: "disabled",
+      });
+  };
+  const open = async (id, query = "") => {
+    const res = await page.goto(absolute(pathFor(id) + query), {
+      waitUntil: "networkidle",
     });
-    const errors = [];
-    page.on("pageerror", (e) => errors.push(e.message));
-    page.on("response", (r) => {
-      if (r.status() >= 400)
-        errors.push(r.status() + " " + new URL(r.url()).pathname);
-    });
-    await page.goto(origin);
-    await checkField(page, width);
-    const index = await report(page, "index.json");
-    for (const s of cases) {
-      await button(page, s.short).click();
-      await viewpoint(page, "3D overview").click();
-      await page.locator("canvas").waitFor();
-      await button(page, "Toggle camera fields of view").click();
-      await viewpoint(page, "Driveway").click();
-      assert.equal(
-        await page.locator(".viewer-top>span").innerText(),
-        "DRIVEWAY CAMERA",
+    assert.equal(res.status(), 200, id);
+    assert.ok(await page.getByRole("heading", { level: 1 }).isVisible());
+    const selectedCase = new URLSearchParams(query).get("case");
+    if (selectedCase) {
+      await page
+        .getByRole("button", { name: exhibits[selectedCase].title, exact: true, pressed: true })
+        .waitFor();
+    }
+  };
+  const request = async (path) =>
+    page.evaluate(async (href) => {
+      const r = await fetch(href);
+      return {
+        status: r.status,
+        type: r.headers.get("content-type"),
+        body: await r.text(),
+      };
+    }, path);
+  await open("home");
+  const archive = JSON.parse(
+    (await request("/night-evidence/index.json")).body,
+  );
+  const social = new Set();
+  for (const id of Object.keys(exhibits)) {
+    const article = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      const html = new DOMParser().parseFromString(
+        await response.text(),
+        "text/html",
       );
-      await viewpoint(page, "FSS replay").click();
-      await aligned(page, cameraAsset(s, "drive"), 0);
-      for (const camera of cameras) {
-        await viewpoint(page, camera.label).click();
-        const asset = cameraAsset(s, camera.id);
-        const r = await report(page, asset + ".json");
-        const link = page.locator(".proof-link");
-        assert.equal(
-          await link.getAttribute("href"),
-          "/evidence/" + asset + ".json",
-        );
-        await page
-          .getByText("Decoded frames", { exact: true })
-          .locator("..")
-          .getByText(String(DURATION * recording.nativeFps), { exact: true })
-          .waitFor();
-        assert.equal(
-          await page.locator('[data-observation="track"]').count(),
-          r.candidate_count,
-        );
-        if (r.candidates.length) {
-          await page
-            .locator('[data-observation="track"]')
-            .filter({
-              hasText: "Track " + r.candidates[0].track_id + " enters",
-            })
-            .click();
-          const segment = r.candidates[0].entry_segment;
-          await aligned(page, asset, segment);
-          const box = feed(page, asset)
-            .locator(".native-box")
-            .filter({ hasText: "T" + r.candidates[0].track_id })
-            .first();
-          await box.waitFor();
-          const sample = r.candidates[0].evidence.find(
-            (e) => e.segment === segment,
-          );
-          const [cx, cy, w, h] = sample.track_box_cxcywh;
-          const coords = await box.evaluate((el) =>
-            ["left", "top", "width", "height"].map((k) =>
-              parseFloat(el.style[k]),
-            ),
-          );
-          for (const [j, expected] of [
-            (cx - w / 2) / r.width,
-            (cy - h / 2) / r.height,
-            w / r.width,
-            h / r.height,
-          ].entries())
-            assert.ok(Math.abs(coords[j] - 100 * expected) < 0.001);
-        }
-        for (const c of r.candidates) {
-          for (const e of c.class_evidence.filter(
-            (sample) => sample.outcome === "associated",
-          )) {
-            await page
-              .locator(
-                '[data-observation="model"][data-segment="' + e.segment + '"]',
-              )
-              .filter({ hasText: " on T" + c.track_id })
-              .click();
-            await aligned(page, asset, e.segment);
-            await feed(page, asset)
-              .locator(".model-box")
-              .getByText(e.label, { exact: true })
-              .first()
-              .waitFor();
-          }
-        }
-      }
-      await button(page, "Play simulation").click();
-      await button(page, "Pause simulation").waitFor();
-      await button(page, "Pause simulation").click();
-      await viewpoint(page, "Compare cameras").click();
-      for (let i = 0; i < cameras.length; i++) {
-        for (const other of cameras.slice(i + 1)) {
-          const first = cameras[i];
-          await viewpoint(page, first.label).click();
-          await page.getByLabel("Second camera").selectOption(other.id);
-          const file =
-            s.id + "-" + [first.id, other.id].sort().join("-") + ".json";
-          const r = await report(page, file);
-          assert.equal(
-            await page.locator(".proof-link").getAttribute("href"),
-            "/evidence/" + file,
-          );
-          const facts = page
-            .getByText("Ground-zone entries", { exact: true })
-            .first()
-            .locator("..");
-          await facts
-            .getByText(String(r.entries.length), { exact: true })
-            .waitFor();
-          assert.equal(
-            await page.locator(".native-trace button").count(),
-            r.entries.length,
-          );
-          let segment = 0;
-          if (r.entries.length) {
-            const entry = r.entries.toSorted(
-              (a, b) => a.segment - b.segment,
-            )[0];
-            segment = entry.segment;
-            await page.locator(".native-trace button").first().click();
-            await feed(page, cameraAsset(s, entry.camera))
-              .getByText("Zone entry", { exact: true })
-              .first()
-              .waitFor();
-          } else {
-            await page.getByRole("slider").focus();
-            await page.keyboard.press("Home");
-          }
-          await aligned(page, cameraAsset(s, first.id), segment);
-          await aligned(page, cameraAsset(s, other.id), segment);
-        }
-      }
-      await page.locator(".film-card").nth(cases.indexOf(s)).click();
-      for (const camera of cameras) {
-        const asset = cameraAsset(s, camera.id);
-        await page
-          .getByRole("dialog")
-          .getByLabel("Camera", { exact: true })
-          .selectOption(camera.id);
-        await page.waitForFunction((asset) => {
-          const v = document.querySelector("dialog video");
-          return (
-            v?.readyState >= 2 &&
-            v.dataset.recording === "/films/" + asset + ".mp4"
-          );
-        }, asset);
-        const digest = await page
-          .locator("dialog video")
-          .evaluate(async (video) => {
-            const bytes = await (await fetch(video.currentSrc)).arrayBuffer();
-            const hash = new Uint8Array(
-              await crypto.subtle.digest("SHA-256", bytes),
-            );
-            return (
-              "sha256:" +
-              Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("")
-            );
-          });
-        assert.equal(digest, index[s.id].views[camera.id].filmDigest);
-        assert.equal(
-          await page.locator("dialog video").evaluate((v) => v.duration),
-          DURATION,
-        );
-        assert.equal(
-          await page
-            .getByRole("link", { name: "Native FSS report" })
-            .getAttribute("href"),
-          "/evidence/" + asset + ".json",
-        );
-      }
-      await button(page, "Close film").click();
-      console.log("Verified", s.id, "at width", width);
+      const card = (key) =>
+        html.querySelector(
+          'meta[property="' + key + '"],meta[name="' + key + '"]',
+        )?.content;
+      return {
+        status: response.status,
+        text: html.querySelector("main")?.textContent,
+        title: html.querySelector("h1")?.textContent,
+        cards: {
+          "og:image": card("og:image"),
+          "twitter:image": card("twitter:image"),
+        },
+      };
+    }, pathFor(id));
+    assert.equal(article.status, 200, id);
+    assert.ok(article.title, id);
+    assert.doesNotMatch(article.text, /basketball|bounce pass|Juniper House/i);
+    for (const [key, height] of [
+      ["og:image", 630],
+      ["twitter:image", 600],
+    ]) {
+      const path = new URL(article.cards[key]).pathname;
+      assert.ok(path.startsWith(pathFor(id)));
+      const meta = await page.evaluate(async (p) => {
+        const r = await fetch(p),
+          b = await r.arrayBuffer(),
+          dv = new DataView(b);
+        return {
+          status: r.status,
+          type: r.headers.get("content-type"),
+          width: dv.getUint32(16),
+          height: dv.getUint32(20),
+          length: b.byteLength,
+          prefix: dv.getUint32(0),
+        };
+      }, path);
+      assert.deepEqual(
+        [meta.status, meta.prefix, meta.width, meta.height],
+        [200, 0x89504e47, 1200, height],
+        id + " " + key,
+      );
+      assert.match(meta.type, /image\/png/);
+      assert.ok(meta.length > 12000);
+      assert.ok(!social.has(path));
+      social.add(path);
     }
-    await button(page, "Expand viewport").click();
-    await page.keyboard.press("Escape");
-    assert.equal(await page.locator(".expanded").count(), 0);
-    assert.equal(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth > innerWidth,
-      ),
-      false,
+  }
+  await open("home");
+  await screenshot("desktop");
+  const hero = page.locator(".hero-photo");
+  assert.ok(await hero.evaluate((el) => el.naturalWidth >= 1000));
+  await page.getByRole("button", { name: /Watch the site film/ }).click();
+  const screening = page.getByRole("dialog", { name: "Alder House site film" });
+  await screening.waitFor();
+  await screening
+    .locator("video")
+    .evaluate(
+      (v) =>
+        v.readyState >= 1 ||
+        new Promise((done) =>
+          v.addEventListener("loadedmetadata", done, { once: true }),
+        ),
     );
-    assert.deepEqual(errors, []);
-    if (process.env.SCREENSHOT_DIR) {
-      await button(page, "Delivery").click();
-      await page.locator(".simulator").screenshot({
-        path: process.env.SCREENSHOT_DIR + "/comparison-" + width + ".png",
-      });
-      await viewpoint(page, "3D overview").click();
-      await page.locator("canvas").waitFor();
-      await page.locator(".simulator").screenshot({
-        path: process.env.SCREENSHOT_DIR + "/overview-" + width + ".png",
-      });
+  assert.ok(
+    await screening
+      .locator("video")
+      .evaluate((v) => v.duration > 16 && v.textTracks.length === 1),
+  );
+  await page.keyboard.press("Escape");
+  await screening.waitFor({ state: "hidden" });
+  const browserIssues = [];
+  for (const id of cases) {
+    await open(id);
+    const main = page.locator(".recording video").first();
+    await main.evaluate(
+      (v) =>
+        v.readyState >= 1 ||
+        new Promise((resolve) =>
+          v.addEventListener("loadedmetadata", resolve, { once: true }),
+        ),
+    );
+    assert.ok(
+      await main.evaluate(
+        (v) => v.videoWidth > 0 && Number.isFinite(v.duration),
+      ),
+    );
+    await button(page, "Next frame").click();
+    assert.ok(
+      Number.parseFloat(await page.locator(".transport output").innerText()) >
+        0,
+    );
+    await button(page, "Compare cameras").click();
+    assert.equal(await page.locator(".recording video").count(), 2);
+    await button(page, "Seek recording ↗").click();
+    await button(page, "Play recording").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".recording video").currentTime > 1 &&
+        !document.querySelector(".recording video").paused,
+    );
+    await button(page, "Pause recording").click();
+    const values = await page
+      .locator(".recording video")
+      .evaluateAll((els) => els.map((el) => el.currentTime));
+    assert.ok(
+      Math.abs(values[0] - values[1]) < 0.3,
+      id + " view skew " + values,
+    );
+    await button(page, "Verify recording").click();
+    await page
+      .getByText("The downloaded bytes match the retained digest.")
+      .last()
+      .waitFor();
+    const measured = page.getByLabel("Measured track event");
+    if (await measured.count()) {
+      await measured.selectOption({ index: 1 });
+      const selected = await measured.locator("option:checked").innerText();
+      assert.ok(
+        Math.abs(
+          parseFloat(selected) -
+            parseFloat(await page.locator(".transport output").innerText()),
+        ) < 0.03,
+      );
     }
-    await page.close();
-    console.log(
-      "All nine films, native reports and synchronized camera pairs passed at width",
-      width,
+    const ledger = archive.cases[id].ledger;
+    if (ledger.status === "verified") {
+      await button(page, "Verify object").click();
+      await page
+        .locator(".reading")
+        .getByText("The downloaded bytes match the retained digest.")
+        .waitFor();
+    }
+    await open("agent-console", "?case=" + id);
+    await button(page, "Workspace handoff").click();
+    const native = page.locator(".envelope");
+    await native.locator("summary").click();
+    assert.equal(
+      JSON.parse(await native.locator("pre").innerText()).schema,
+      "fss.agent_response_envelope.v1",
+    );
+    await button(page, "Resumed session").click();
+    await page.waitForFunction(() =>
+      document.querySelector(".envelope pre")?.textContent.includes("handoff"),
+    );
+    await open("camera-fusion", "?case=" + id);
+    assert.equal(
+      await page.locator(".reading .proof-links a").count(),
+      Object.keys(archive.cases[id].associations.pairs).length,
     );
   }
-  const fallback = await browser.newPage();
+  await open("digital-twin");
+  const photographs = page
+    .getByRole("region", { name: "Architectural stills" })
+    .getByRole("link");
+  assert.equal(await photographs.count(), 3);
+  for (const link of await photographs.all()) {
+    const shot = await link.getAttribute("href");
+    const resolution = await page.evaluate(async (src) => {
+      const image = new Image();
+      image.src = src;
+      await image.decode();
+      return image.naturalWidth;
+    }, shot);
+    assert.ok(resolution >= 1000, shot);
+  }
+  await page.getByText("All architectural and camera views", {exact: true}).click();
+  await page.getByRole("link", {name: /Download render index/}).waitFor();
+  const album = JSON.parse((await request("/estate/stills.json")).body);
+  assert.ok(album.stills.length >= 4);
+  assert.equal(await page.locator(".estate-photographs li a").count(), album.stills.length + 1);
+  const surface = page.locator("[data-estate-state]");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("[data-estate-state]")?.dataset.estateState ===
+      "ready",
+    {},
+    { timeout: 120000 },
+  );
+  const canvas = surface.locator("canvas"),
+    hash = async () =>
+      createHash("sha256")
+        .update(await canvas.screenshot())
+        .digest("hex");
+  const baseline = await hash();
+  const viewpoint = page.getByLabel("Viewpoint");
+  await viewpoint.selectOption({ index: 1 });
+  const lens = await hash();
+  assert.notEqual(baseline, lens);
+  await page.getByLabel("Person stature").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.getByText(/Custom reconstruction/).waitFor();
+  await button(page, "Reset scene").click();
+  await page.getByText(/Reference take/).waitFor();
+  await screenshot("twin");
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const id of [
+      "home",
+      "after-hours",
+      "event-ledger",
+      "agent-console",
+      "digital-twin",
+      "poster-room",
+    ]) {
+      await open(id);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - innerWidth,
+      );
+      if (overflow > 1)
+        browserIssues.push(id + " at " + width + "px overflows by " + overflow);
+      if (id === "digital-twin" && width === 390) {
+        await page
+          .locator('[data-estate-state="ready"]')
+          .waitFor({ timeout: 120000 });
+        const usedCompactTexture = await page.evaluate(async () => {
+          const receipt = await (
+            await fetch("/estate/mesh-receipt.json")
+          ).json();
+          const loaded = new Set(
+            performance
+              .getEntriesByType("resource")
+              .map((r) => new URL(r.name).pathname),
+          );
+          return Object.entries(receipt.compactTextures).some(
+            ([full, reduced]) => full !== reduced && loaded.has(reduced),
+          );
+        });
+        assert.ok(
+          usedCompactTexture,
+          "Narrow interactive viewer must load its compact material maps",
+        );
+      }
+      if (id === "home") {
+        await button(page, "Open navigation").click();
+        await page
+          .getByRole("link", { name: "Estate twin", exact: true })
+          .last()
+          .waitFor();
+        await button(page, "Close navigation").click();
+        if (width === 390) await screenshot("mobile");
+      }
+    }
+  }
+  assert.deepEqual(browserIssues, []);
+  const fallback = await context.newPage();
   await fallback.addInitScript(() => {
-    const original = HTMLCanvasElement.prototype.getContext;
+    const get = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
-      return kind.startsWith("webgl")
+      return String(kind).includes("webgl")
         ? null
-        : original.call(this, kind, ...args);
+        : get.call(this, kind, ...args);
     };
   });
-  await fallback.goto(origin);
-  await fallback.getByText("WebGL unavailable", { exact: false }).waitFor();
-  for (const camera of cameras) {
-    await viewpoint(fallback, camera.label).click();
-    await fallback.waitForFunction(
-      (asset) => {
-        const v = document.querySelector(".viewport-surface video");
-        return (
-          v?.readyState >= 2 &&
-          !v.seeking &&
-          v.dataset.recording === "/films/" + asset + ".mp4" &&
-          Math.abs(v.currentTime - 3.2) < 0.01
-        );
-      },
-      cameraAsset(cases[0], camera.id),
-    );
-  }
-  await fallback.route("**/evidence/delivery-drive.json", (route) =>
-    route.fulfill({ status: 503, body: "Unavailable" }),
-  );
-  await viewpoint(fallback, "FSS replay").click();
-  await fallback.getByText("Camera report unavailable.").waitFor();
-  await fallback.route("**/evidence/delivery-drive-porch.json", (route) =>
-    route.fulfill({ status: 503, body: "Unavailable" }),
-  );
-  await viewpoint(fallback, "Compare cameras").click();
-  await fallback.getByLabel("Second camera").selectOption("porch");
-  await fallback.getByText("Pair report unavailable.").waitFor();
-  assert.equal(await fallback.locator(".native-box").count(), 0);
-  await button(fallback, "Event ledger").click();
-  await fallback.route("**/field/*.bin", (route) =>
-    route.fulfill({ status: 503, body: "Unavailable" }),
-  );
-  await button(fallback, "Verify bytes").click();
-  await fallback.locator('[data-verdict="unavailable"]').waitFor();
+  await fallback.goto(absolute(pathFor("digital-twin")));
+  await fallback.getByText(/3D view unavailable/).waitFor();
+  assert.ok(await fallback.locator("video").first().isVisible());
   await fallback.close();
+  assert.deepEqual(errors, []);
   console.log(
-    "All fallback cameras and both unavailable-report states passed.",
+    "Browser verified " +
+      Object.keys(exhibits).length +
+      " pages, " +
+      social.size +
+      " social images, three camera reviews, source and ledger verification, workspace handoff, live WebGL, mobile widths and fallback.",
   );
 } finally {
   await browser.close();

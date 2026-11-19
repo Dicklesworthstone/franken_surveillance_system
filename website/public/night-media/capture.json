@@ -1,0 +1,3192 @@
+{
+  "schema": "fss.fictional-estate-capture.v1",
+  "seconds": 8,
+  "fps": 12,
+  "width": 960,
+  "height": 540,
+  "site": "Alder House",
+  "rendering": "Calibrated Cycles architecture, WebGL occlusion and articulated subjects, FFmpeg H.264",
+  "source": "Authored synthetic scene and calibrated WebGL projections. No physical sensors or detector inference.",
+  "inputs": {
+    "/estate/estate.json": {
+      "sha256": "4aefb11a261c50d88528e3280ada398829f23924fc1dce567fdb24cbe6efdfd5",
+      "bytes": 11327
+    },
+    "/estate/estate.glb": {
+      "sha256": "edcc595f576fe9da47b0ad5b86efff23f31f71ba42eadffe829d7f1e2877a5a2",
+      "bytes": 5835904
+    },
+    "/estate/textures/9a02e21d4dcd194879bbed.webp": {
+      "sha256": "9a02e21d4dcd194879bbed03c05018e2cfd2d4ff91f5b34973e8e82dfef59097",
+      "bytes": 114308
+    },
+    "/estate/textures/df845dbd5d5b37f04ccae2.webp": {
+      "sha256": "df845dbd5d5b37f04ccae2d37adb367b1d69d664bd53bec3257a1f970e109b0d",
+      "bytes": 267096
+    },
+    "/estate/textures/761e59601ea1bd86920b96.webp": {
+      "sha256": "761e59601ea1bd86920b96451860a9dc9f579e7bf03fb73f7c71498ab488ddc0",
+      "bytes": 19454
+    },
+    "/estate/textures/3e6ef6abacc0e911927176.webp": {
+      "sha256": "3e6ef6abacc0e91192717615a77e3bb2d75f0b1870d2d96f2f5cb5b74e34d0bb",
+      "bytes": 135734
+    },
+    "/estate/textures/fe7487b749bef63153f098.webp": {
+      "sha256": "fe7487b749bef63153f098960d6be1bf47cc8429f9e3bb25eb156b690d69d0b0",
+      "bytes": 196656
+    },
+    "/estate/textures/adc244896c11e06458b0ce.webp": {
+      "sha256": "adc244896c11e06458b0cedded589ecb2b06b3f0366bced5bb2a0301918447f2",
+      "bytes": 13716
+    },
+    "/estate/textures/558dee03871285de79a2bb.webp": {
+      "sha256": "558dee03871285de79a2bbed41eac1e2170fc8429a48528554a20b3412380c6b",
+      "bytes": 62248
+    },
+    "/estate/textures/8dd7869d3dffd4d0370f66.webp": {
+      "sha256": "8dd7869d3dffd4d0370f662df56325eb95023a03622d5a2a54780ed6a2f57974",
+      "bytes": 131232
+    },
+    "/estate/textures/52cf6e73de736cc6b18385.webp": {
+      "sha256": "52cf6e73de736cc6b1838584b602abf1b5ec03cc6bdfd107f8c167ac53d7c3a5",
+      "bytes": 1926
+    },
+    "/estate/textures/555c8093bf8d09260cac56.webp": {
+      "sha256": "555c8093bf8d09260cac5613c587ace306741d22944e7b4e28bef87b3b880a2a",
+      "bytes": 1938
+    },
+    "/estate/textures/b1e3921c19f1584d854eea.webp": {
+      "sha256": "b1e3921c19f1584d854eea8429c51b96084fa93ce603379558d0d29a55224086",
+      "bytes": 1552
+    },
+    "/estate/textures/254868b17853af78248092.webp": {
+      "sha256": "254868b17853af78248092b18b31f35704d59dcd7287a96d00e44fd30f2ec5fa",
+      "bytes": 33228
+    },
+    "/estate/textures/6e5140d511974be2e2ea52.webp": {
+      "sha256": "6e5140d511974be2e2ea520f72eb5155ef9a7db56a7642d850f035b2abc4f6b9",
+      "bytes": 76792
+    },
+    "/estate/textures/8c2db5e90ee867a47acb3c.webp": {
+      "sha256": "8c2db5e90ee867a47acb3c80ffef1226ceb92f461c852a114e06bc51c4746334",
+      "bytes": 123632
+    },
+    "/estate/textures/f14d8ddbe2e07f09884e49.webp": {
+      "sha256": "f14d8ddbe2e07f09884e49406950030d73918dd098d585cb7fca063c6a260bac",
+      "bytes": 26392
+    },
+    "/estate/textures/4558bb113fe1126bdde627.webp": {
+      "sha256": "4558bb113fe1126bdde6272ebaa99bc6f46594bf5cc4ffe1385cef106c6b2b7f",
+      "bytes": 81390
+    },
+    "/estate/textures/a46486b6615a00a0948869.webp": {
+      "sha256": "a46486b6615a00a0948869198892f2b05761205608548955343f32302c45d1f2",
+      "bytes": 42132
+    },
+    "/estate/textures/7dc489e0fa2db93c38959a.webp": {
+      "sha256": "7dc489e0fa2db93c38959aa05297a23e581a65e6ac7c5b9ca14ab24e7773dbd3",
+      "bytes": 84194
+    },
+    "/estate/textures/96ab2ebca9cf9a84a46512.webp": {
+      "sha256": "96ab2ebca9cf9a84a465121bc08cfcae695b6d56b8bdf55f38a2b7744a354d7f",
+      "bytes": 30296
+    },
+    "/estate/textures/c61a68d7ddb52174f88a52.webp": {
+      "sha256": "c61a68d7ddb52174f88a528ad74c63e02f1acece36a6f80939fe8d339475682d",
+      "bytes": 45294
+    },
+    "/estate/textures/043f82c294cdb77fb0b33e.webp": {
+      "sha256": "043f82c294cdb77fb0b33e9d54f770c9f4ff3fdaf4a8a7c6abeeee1aa20a7eca",
+      "bytes": 51048
+    },
+    "/estate/textures/0aef524903329f761e5671.webp": {
+      "sha256": "0aef524903329f761e567163a3fc900df0f070c184ab521e3fe34253f4a6ec5f",
+      "bytes": 46866
+    },
+    "/estate/textures/383821059837085d982b1c.webp": {
+      "sha256": "383821059837085d982b1c4a3864ee04a3e533079bc3f726bc1c22c764064c56",
+      "bytes": 4892
+    },
+    "/estate/textures/745622c53eb3634a2a7763.webp": {
+      "sha256": "745622c53eb3634a2a7763ec29b93d27c25ca3f715ee77881cbffe526c8dbc5d",
+      "bytes": 2096
+    },
+    "/estate/textures/6f1eefb45ab87e43dbb6a1.webp": {
+      "sha256": "6f1eefb45ab87e43dbb6a1c8bbf6eeb0acea5c9babd6065a7c4bc03251fac1df",
+      "bytes": 6510
+    },
+    "/estate/textures/a80f40abb9c3f868679622.webp": {
+      "sha256": "a80f40abb9c3f868679622d9e27942a8665c4bb65147049d6925231b33921672",
+      "bytes": 40792
+    },
+    "/estate/textures/1d167fbeb294d4aef203e4.webp": {
+      "sha256": "1d167fbeb294d4aef203e48d3bc3f74ee8b4d65b4bea6d72927007bf96237642",
+      "bytes": 84860
+    },
+    "/estate/textures/bedd611dddea137491a983.webp": {
+      "sha256": "bedd611dddea137491a98324e17693bf7b8b8febc9959eda7686901a35b456cf",
+      "bytes": 104998
+    },
+    "/estate/textures/e8912706673bc6594897fb.webp": {
+      "sha256": "e8912706673bc6594897fbce8e75ddb74357fdb64bac5872de974e21f29c19a9",
+      "bytes": 75192
+    },
+    "/estate/textures/37a40a99f9f1daa7494b4a.webp": {
+      "sha256": "37a40a99f9f1daa7494b4a79b90feaea103050e43de8bd4cba136b0ccdf0cc34",
+      "bytes": 266026
+    },
+    "/estate/textures/99567456ae1e93aa0f4f14.webp": {
+      "sha256": "99567456ae1e93aa0f4f14aca59e19d60cbea58f5091d5941a9cea743c8af379",
+      "bytes": 83960
+    },
+    "/estate/textures/1282eef1bc71a0553942d5.webp": {
+      "sha256": "1282eef1bc71a0553942d520ce1fe47e4de68992b19c3a358993ab59d1a8bc5d",
+      "bytes": 39182
+    },
+    "/estate/textures/fb386d2d356af24f56c9f5.webp": {
+      "sha256": "fb386d2d356af24f56c9f59f0fc792ebcb73370258e867b578f1d4a3b814771a",
+      "bytes": 84050
+    },
+    "/estate/textures/dfbef4e8ab84f4464e2355.webp": {
+      "sha256": "dfbef4e8ab84f4464e2355cc42201b07322979aa651ad85724663132ac016876",
+      "bytes": 98042
+    },
+    "/estate/textures/dfc594d6ed0b119422dc79.webp": {
+      "sha256": "dfc594d6ed0b119422dc79be4b26d08a43343fc74c0af171628d2b767782b1a0",
+      "bytes": 59340
+    },
+    "/estate/textures/b252c824da94f7291e2e20.webp": {
+      "sha256": "b252c824da94f7291e2e20c0470830bc72b3ae57a508ccaa33e0ed73bbb2ea1a",
+      "bytes": 218556
+    },
+    "/estate/textures/93dd5ba394901dfcb69bc3.webp": {
+      "sha256": "93dd5ba394901dfcb69bc3b009ac25be70f27f67f97c5dde58b967954553b33e",
+      "bytes": 171652
+    },
+    "/estate/textures/645f4b154fb2148bd353fc.webp": {
+      "sha256": "645f4b154fb2148bd353fc597f8bf953eee614c5773a91c707c2b6e6a1e07931",
+      "bytes": 113944
+    },
+    "/estate/textures/08eb6f99213247298e2dca.webp": {
+      "sha256": "08eb6f99213247298e2dcaf1fa1b92d55cddc2055a0ff4eab0e9537935d8c182",
+      "bytes": 27356
+    },
+    "/estate/textures/6d86409cc7e61bb28cbb5f.webp": {
+      "sha256": "6d86409cc7e61bb28cbb5f752ffe81699906645b89cea1895522aa15c4828da6",
+      "bytes": 176828
+    },
+    "/estate/textures/611ceb7fa7fc7647f0cdde.webp": {
+      "sha256": "611ceb7fa7fc7647f0cddea4271f3ed0c513a836c23707afdb9f2b5688422c66",
+      "bytes": 200066
+    },
+    "/estate/textures/3e87cf3c8b815ae676eda8.webp": {
+      "sha256": "3e87cf3c8b815ae676eda88e889e72dac504ce921d63bf518987fc6923b2c314",
+      "bytes": 146898
+    },
+    "/estate/textures/5a327a2fe917da5c004983.webp": {
+      "sha256": "5a327a2fe917da5c0049837a5887645c6ada49a117703b59de8e1e14a8dda076",
+      "bytes": 354910
+    },
+    "/estate/textures/8b92c2cf244ae8e9eca026.webp": {
+      "sha256": "8b92c2cf244ae8e9eca026ea69cc67a3e14faaa9c6dd8380b0481439d18b1494",
+      "bytes": 27238
+    },
+    "/estate/textures/b304f505c71557bf343979.webp": {
+      "sha256": "b304f505c71557bf343979323a4bf5dd7cea6cf8d17592ba63b0d7dda7ac8b2a",
+      "bytes": 95248
+    },
+    "/estate/textures/098fed9634e45d79a8787e.webp": {
+      "sha256": "098fed9634e45d79a8787e16e9ad5b1cb9915dcf6b528da4b893ea432fa7bc4f",
+      "bytes": 411294
+    },
+    "/estate/textures/a6765603cfd7b771dd62dc.webp": {
+      "sha256": "a6765603cfd7b771dd62dcd31e8ebf6dc1df8e34b838d51da08616782b392652",
+      "bytes": 347888
+    },
+    "/estate/textures/6092e63dd10b9d2129f14b.webp": {
+      "sha256": "6092e63dd10b9d2129f14bc2ceec3ede95275aded27aa65ade35092153067fb6",
+      "bytes": 41788
+    },
+    "/estate/textures/14ec0dfc01ad29779c1460.webp": {
+      "sha256": "14ec0dfc01ad29779c1460a3a225f34997c7eae8ce05e30f46c9d19c3c809aaf",
+      "bytes": 180848
+    },
+    "/estate/textures/e6351745235709c520a997.webp": {
+      "sha256": "e6351745235709c520a997423d008ea003ece46781922d9084dc01a8f0521753",
+      "bytes": 142244
+    },
+    "/estate/textures/9e9fcdd8a418a5832afc19.webp": {
+      "sha256": "9e9fcdd8a418a5832afc19f8c3c956e2467fcd342906c290dd0bd685ff2166f8",
+      "bytes": 166032
+    },
+    "/estate/textures/33fe141ec5c0bf94dde503.webp": {
+      "sha256": "33fe141ec5c0bf94dde503a8b0ec739792c997dd3e0d7f3c9dcace1a881fd472",
+      "bytes": 460258
+    },
+    "/estate/textures/175b52e80b2c083cade4ca.webp": {
+      "sha256": "175b52e80b2c083cade4cab7e4ab4303bb6ffd2f876f12c16e75a38bba7b702b",
+      "bytes": 130428
+    },
+    "/estate/textures/637678ebcc217b77827eb7.webp": {
+      "sha256": "637678ebcc217b77827eb71ba39da4591528feda54847de967d0f82e5bf8f048",
+      "bytes": 75384
+    },
+    "/estate/textures/924920a5fd035e237695c9.webp": {
+      "sha256": "924920a5fd035e237695c97152a95972979948317426f2cddb21d8d31966292b",
+      "bytes": 183492
+    },
+    "/estate/textures/eff4b074ec35b1cbf90e4e.webp": {
+      "sha256": "eff4b074ec35b1cbf90e4ebe86bfa73c4f227bba81d606ef6e6d0e9a313fccd9",
+      "bytes": 23346
+    },
+    "/estate/textures/97a4370248a8d8e0721a22.webp": {
+      "sha256": "97a4370248a8d8e0721a2227b916b3df1df4e46df4fa3785632513582200d17e",
+      "bytes": 154890
+    },
+    "/estate/textures/b8132182c25388d33c5e1e.webp": {
+      "sha256": "b8132182c25388d33c5e1eb434424fe524313fbba18abd9fb3a3648cbf7542ac",
+      "bytes": 352162
+    },
+    "/estate/textures/9d59c9509b53f0046cb249.webp": {
+      "sha256": "9d59c9509b53f0046cb249546c1a57a8705d4fc684c760f16e88a7694a088d97",
+      "bytes": 9728
+    },
+    "/estate/textures/7734fea7959861751908c3.webp": {
+      "sha256": "7734fea7959861751908c38272fad5672a81b2154c8ca60eec95ed6e84207b93",
+      "bytes": 141574
+    },
+    "/estate/textures/62f7c9759f086ba8586af4.webp": {
+      "sha256": "62f7c9759f086ba8586af4c98a9a63fc8541d8a4180d6bc5ed33c4f120c7b452",
+      "bytes": 201164
+    },
+    "/estate/textures/46ee5415f55b47bb043ffe.webp": {
+      "sha256": "46ee5415f55b47bb043ffe63c5965058bc9ae60d8e1fe638aa857c897bd4063e",
+      "bytes": 34464
+    },
+    "/estate/textures/08a6dba0650056fd92bfda.webp": {
+      "sha256": "08a6dba0650056fd92bfda475181cd05745a5b075dc1f58304b2fdd4581d8210",
+      "bytes": 60932
+    },
+    "/estate/textures/653b04f6eac9a63b5e51a8.webp": {
+      "sha256": "653b04f6eac9a63b5e51a8ba6111e3a1696e24a60de66f872a1237694702eabb",
+      "bytes": 102180
+    },
+    "/estate/textures/cafe101d939e702d7218f6.webp": {
+      "sha256": "cafe101d939e702d7218f62b6f677b54b3d1daa99f201473ad19edfed69dca95",
+      "bytes": 108996
+    },
+    "/estate/textures/612496a0c0edf25646c578.webp": {
+      "sha256": "612496a0c0edf25646c578c572b702e3e5400b54a6cae6a75ac52012bf985d16",
+      "bytes": 50474
+    },
+    "/estate/textures/8ba127659e62558a3f9a3b.webp": {
+      "sha256": "8ba127659e62558a3f9a3b5f92ee4209f5356f144fb84940fefec90fa79d40e4",
+      "bytes": 129006
+    },
+    "/estate/textures/82feceb2d4f2577c70699a.webp": {
+      "sha256": "82feceb2d4f2577c70699ae9f31eb6c2d01c3f9c7aacdcad1f73f9cc3663d564",
+      "bytes": 179714
+    },
+    "/estate/textures/482c782fbbe761c5bbce11.webp": {
+      "sha256": "482c782fbbe761c5bbce1183c05768d00d380e6f5269e1af3bb72484ac2a911b",
+      "bytes": 34076
+    },
+    "/estate/textures/48257e837cc09b3514ef18.webp": {
+      "sha256": "48257e837cc09b3514ef181167d6cbfc7aac9ed59b751e553b197b018250a02c",
+      "bytes": 4432
+    },
+    "/estate/textures/9c13e1c5589df8feb3217b.webp": {
+      "sha256": "9c13e1c5589df8feb3217b3833fe2189e17dea382a0b2fd1fb29fa791bf9c20a",
+      "bytes": 1838
+    },
+    "/estate/textures/03f24e3e4cb1e94f538b04.webp": {
+      "sha256": "03f24e3e4cb1e94f538b048d615f83ddd570552a9a069e3ad8316b12e7b1601a",
+      "bytes": 3180
+    },
+    "/estate/textures/71d9088dfa49ec9810beb7.webp": {
+      "sha256": "71d9088dfa49ec9810beb7411dee6fa01da0a5aa1e5af32d59d755f52bbcddf9",
+      "bytes": 2466
+    },
+    "/estate/textures/9cd8d6fd823b0d15addaf5.webp": {
+      "sha256": "9cd8d6fd823b0d15addaf5e1797e0793f54ddfe81e78dba84c558170e511a8b7",
+      "bytes": 3320
+    },
+    "/estate/textures/03dc0af1bbbf9ab5e16739.webp": {
+      "sha256": "03dc0af1bbbf9ab5e167390b899f816d82603c9d091215895d2667368b7fe6ca",
+      "bytes": 1112
+    },
+    "/estate/textures/5ca64788639cfef482c06b.webp": {
+      "sha256": "5ca64788639cfef482c06b7a8e0bd8ab91fc704abf387b45069b79eeac7c82a3",
+      "bytes": 3982
+    },
+    "/estate/textures/102b962757449e5d3e0203.webp": {
+      "sha256": "102b962757449e5d3e0203415e1243cafcc290e06000970f184c74b79dd564d0",
+      "bytes": 5098
+    },
+    "/estate/textures/5aa2737872a99cc43a34b6.webp": {
+      "sha256": "5aa2737872a99cc43a34b6437742d58f1f7cf174b06c7d83aba4cc6c5804af03",
+      "bytes": 2864
+    },
+    "/estate/textures/1a216832210e0ea7be28cb.webp": {
+      "sha256": "1a216832210e0ea7be28cb4e0f9fe3505c2ae982d6efe3a3711e17ef943d156d",
+      "bytes": 6084
+    },
+    "/estate/textures/3cf0a2b7e99aab23ce3ae6.webp": {
+      "sha256": "3cf0a2b7e99aab23ce3ae6aa3ceccef7f11a8eb72781b5c954377348b462dcb2",
+      "bytes": 2282
+    },
+    "/estate/textures/306cae1847f84b658bf144.webp": {
+      "sha256": "306cae1847f84b658bf14473f817e9ff9b065e5ab60689611d6cbcbbe0740a7b",
+      "bytes": 2324
+    },
+    "/estate/textures/a3c276f4524ebc5bab8b44.webp": {
+      "sha256": "a3c276f4524ebc5bab8b44c58f4217ff5c20b7f16ac89757c2e0f5d3cf01aaee",
+      "bytes": 78290
+    },
+    "/estate/textures/1472fc063ac7b61658d757.webp": {
+      "sha256": "1472fc063ac7b61658d757775d267a6b0ee25b73dbd3b6aadb181be1a94e6218",
+      "bytes": 79626
+    },
+    "/estate/textures/3f75e3702d65057ad90257.webp": {
+      "sha256": "3f75e3702d65057ad902579cc5f7b9cc1535549093c0f61d15a1038c920b7999",
+      "bytes": 144248
+    },
+    "/estate/textures/d30a9aa5d382fd027dec96.webp": {
+      "sha256": "d30a9aa5d382fd027dec9671403cfbfdebccf3e26ef913e5d579bbb7198b14d4",
+      "bytes": 1782
+    },
+    "/estate/textures/f5c65c67de450bbf8c1435.webp": {
+      "sha256": "f5c65c67de450bbf8c14354b85a2a10cc50ad2f8904769132575e2a2634d4f7e",
+      "bytes": 5818
+    },
+    "/estate/textures/ae71ff2bb59f42c00a7d9b.webp": {
+      "sha256": "ae71ff2bb59f42c00a7d9b26cb2659d17974b8b872753f1fe323155af679451e",
+      "bytes": 1150
+    },
+    "/estate/textures/5f646da6d3f9b9961e177a.webp": {
+      "sha256": "5f646da6d3f9b9961e177a77609c0a45a301ef475e0f87075355d2bc4682eb6a",
+      "bytes": 938
+    },
+    "/estate/textures/8c0e1ecb0edbec8cf0ca8e.webp": {
+      "sha256": "8c0e1ecb0edbec8cf0ca8ecda75dfd530aad34acd3541ce2e2968950c973d921",
+      "bytes": 5030
+    },
+    "/estate/textures/1e1c086995a257e68a820c.webp": {
+      "sha256": "1e1c086995a257e68a820c89df05fb054a500cb9744720f18ddea4d88f1ef838",
+      "bytes": 4596
+    },
+    "/estate/textures/89d54371a226be61b531ab.webp": {
+      "sha256": "89d54371a226be61b531ab2f281d508e3848a96c13f9f72b5a7b193b75a4498e",
+      "bytes": 4414
+    },
+    "/estate/textures/ec03250c2fa8ce65270dfe.webp": {
+      "sha256": "ec03250c2fa8ce65270dfee1272204bd0f6a61df832ee99a2882b97e8527acb1",
+      "bytes": 3578
+    },
+    "/estate/textures/4b2554e436db072fb0d687.webp": {
+      "sha256": "4b2554e436db072fb0d6875ab8e9e0b99f66121053bdec0e7357fd2c86edf5dd",
+      "bytes": 8314
+    },
+    "/estate/textures/e5b40fc5316fb93687ba44.webp": {
+      "sha256": "e5b40fc5316fb93687ba4425d8c891676a7afec1f577d5c62a2845415be3ce11",
+      "bytes": 74406
+    },
+    "/estate/textures/ca464fc36ca2252169e39d.webp": {
+      "sha256": "ca464fc36ca2252169e39dab10f6c0b7f956201cf43c7529f3febed8198d447d",
+      "bytes": 77512
+    },
+    "/estate/textures/823539b7cdbac80d3cd6e9.webp": {
+      "sha256": "823539b7cdbac80d3cd6e90fbd2e7a526c5ce81d7513d83f33c4fc0156f15b39",
+      "bytes": 7750
+    },
+    "/estate/textures/bb708a7830df7007a7570d.webp": {
+      "sha256": "bb708a7830df7007a7570d48f4c9d4c52f14c6c7822fca80192b167001410453",
+      "bytes": 76578
+    },
+    "/estate/textures/b0c1acf5d4280d9eb8269a.webp": {
+      "sha256": "b0c1acf5d4280d9eb8269a8c63e6d098f115391da3d0a37904a1bfb61bef74d7",
+      "bytes": 100948
+    },
+    "/estate/textures/cb1e21253dcc8b0be91d00.webp": {
+      "sha256": "cb1e21253dcc8b0be91d000f0b807cd746f5b63c597455387627064e149b5684",
+      "bytes": 55438
+    },
+    "/estate/textures/d2ca8ded2420cd78d809ac.webp": {
+      "sha256": "d2ca8ded2420cd78d809ac781d8d470fa807a5dc22a0ed684630161d8317c876",
+      "bytes": 66684
+    },
+    "/estate/textures/930ab745e5a23cb2280a9d.webp": {
+      "sha256": "930ab745e5a23cb2280a9d47c4826e86d9e9fde0ef563b9985996e09e002e15b",
+      "bytes": 61750
+    },
+    "/estate/textures/2480857a674508a89fa5ce.webp": {
+      "sha256": "2480857a674508a89fa5ce1cb97e492e0c5287cb2457798ac9cd9e9c0c1b938f",
+      "bytes": 54586
+    },
+    "/estate/textures/a08247a873f4874a5c85d9.webp": {
+      "sha256": "a08247a873f4874a5c85d91c6416a81478eea97dfdb903b1ce9ccd21395ca0ee",
+      "bytes": 107938
+    },
+    "/estate/textures/a41ff204fa25f2761cb119.webp": {
+      "sha256": "a41ff204fa25f2761cb1193c675d0a664b16d72f2eb53f89f8358b35b769ea96",
+      "bytes": 108818
+    },
+    "/estate/textures/1d7fb6203b480991c6e3ec.webp": {
+      "sha256": "1d7fb6203b480991c6e3ecac042d2fcee40ceabb4d423a06a9ce8be60730d844",
+      "bytes": 5732
+    },
+    "/estate/textures/976876689e13b6ea0d7cce.webp": {
+      "sha256": "976876689e13b6ea0d7ccedae1ed5804d2c1b2b5d4cb3e5672b40e4cd5ef6179",
+      "bytes": 29796
+    },
+    "/estate/textures/1c149c5d74985961959040.webp": {
+      "sha256": "1c149c5d74985961959040f9390cfd73cd1c5519bc21ab70f513a5558c1422c1",
+      "bytes": 92642
+    },
+    "/estate/textures/004104f2976691a14adf16.webp": {
+      "sha256": "004104f2976691a14adf169cf79f0d44fb633d53ed7b98db5efe7956c00356bc",
+      "bytes": 12302
+    },
+    "/estate/textures/aaeb845a7439a8cc431ae4.webp": {
+      "sha256": "aaeb845a7439a8cc431ae4fe671ef71d379d27f51d89d6a4abad6d7d1c519e7f",
+      "bytes": 54200
+    },
+    "/estate/textures/3aefab6b25aba9ab254b5c.webp": {
+      "sha256": "3aefab6b25aba9ab254b5c27a6b2e78d6b237dda7b38331f504df8a73a727f30",
+      "bytes": 95656
+    },
+    "/estate/textures/97eca3a101592059ec10ec.webp": {
+      "sha256": "97eca3a101592059ec10ec249ad13e6d04523cfbb668247147e6663c706bcbf1",
+      "bytes": 37134
+    },
+    "/estate/textures/6918d21b5767d8eddc5aaa.webp": {
+      "sha256": "6918d21b5767d8eddc5aaa25ffba6c80f4b70ebbb0ddcc412933b3a70ece4de9",
+      "bytes": 60634
+    },
+    "/estate/textures/2906f447c0b2733c08bc6e.webp": {
+      "sha256": "2906f447c0b2733c08bc6e356a368884367a5ecc56e2299a04d49096c4db9272",
+      "bytes": 165720
+    },
+    "/estate/textures/067dcc16aac747fc4e189c.webp": {
+      "sha256": "067dcc16aac747fc4e189c04de2b1c7667ffffeb271f379e3368725c366d59a6",
+      "bytes": 101344
+    },
+    "/estate/textures/dfe72ca611edb66984675b.webp": {
+      "sha256": "dfe72ca611edb66984675b9649cf880eb1ea73dd84fb0e0c942ecf4d006ab3f8",
+      "bytes": 24188
+    },
+    "/estate/textures/efd455ca92e1c8b9e55441.webp": {
+      "sha256": "efd455ca92e1c8b9e5544120a8958e9a29eb7ac53c4f760acc0a99683a6852f7",
+      "bytes": 103010
+    },
+    "/estate/textures/1d09833ca17e1dacd03ff1.webp": {
+      "sha256": "1d09833ca17e1dacd03ff1c43094e6ea92c02bc693e3e21c4ad4d2cf73429fb3",
+      "bytes": 56550
+    },
+    "/estate/textures/d1bca2a7e8b13cc6d3e5e5.webp": {
+      "sha256": "d1bca2a7e8b13cc6d3e5e525ec88d4333ea2ded193e12bd41591b9bc1c0d9582",
+      "bytes": 42218
+    },
+    "/estate/textures/561d369dd38b2973c5e60f.webp": {
+      "sha256": "561d369dd38b2973c5e60f3747a8f6d66adb5f5fed9bb587442aa10699fcc81d",
+      "bytes": 158930
+    },
+    "/estate/textures/bbdbd87db25ccd3d74b680.webp": {
+      "sha256": "bbdbd87db25ccd3d74b680241f6f2fe9dbf2b623d6d703f3da59888f7f854726",
+      "bytes": 42904
+    },
+    "/estate/textures/42ea1d5e8723aabe9accb9.webp": {
+      "sha256": "42ea1d5e8723aabe9accb9a3230586d8c2536ec55dd068dede220a733e846317",
+      "bytes": 106642
+    },
+    "/estate/textures/d04f1705f4e252a4c177bc.webp": {
+      "sha256": "d04f1705f4e252a4c177bc0913fdf2f4c9a0fb7340ff5bd0dd79a0a9cc7a6f6d",
+      "bytes": 80136
+    },
+    "/estate/textures/da1b7565475ac3eb66885b.webp": {
+      "sha256": "da1b7565475ac3eb66885bbe440d3686aeb19ef94c13d4da863115b1be0790b9",
+      "bytes": 100522
+    },
+    "/estate/textures/b52c1e71438a999e28b9b8.webp": {
+      "sha256": "b52c1e71438a999e28b9b8a5f09b2d1712a21d81d8e67f6e78d4d6fad42ad405",
+      "bytes": 172942
+    },
+    "/estate/textures/738160b5c96bb02a95c63d.webp": {
+      "sha256": "738160b5c96bb02a95c63db566b6bd8e8cefbd33024c4947d5f773dfa39270e0",
+      "bytes": 98688
+    },
+    "/estate/textures/a107c23724d30bffff57d7.webp": {
+      "sha256": "a107c23724d30bffff57d7d5963a27c3c5c29186ab17940cf7099bb637cc0e12",
+      "bytes": 18904
+    },
+    "/estate/textures/e6ba8ab26fba18f2d5d36a.webp": {
+      "sha256": "e6ba8ab26fba18f2d5d36a961377525c762e4c61c419af774a170534454e4e6f",
+      "bytes": 35506
+    },
+    "/estate/textures/030cdf3c3cd80bc99ffc51.webp": {
+      "sha256": "030cdf3c3cd80bc99ffc512a9dda4860e29df16dcd4ba7567e3fd03058db33bf",
+      "bytes": 113034
+    },
+    "/estate/textures/e9893dd206db6dcba3cb05.webp": {
+      "sha256": "e9893dd206db6dcba3cb05bf84e9365cd2a215719f782c6c0fbd652653dbe0a3",
+      "bytes": 110578
+    },
+    "/estate/textures/ffcbc4f429044321558b3a.webp": {
+      "sha256": "ffcbc4f429044321558b3a3d9133034651357fa53b7d4952d7eb0e9af5d1a3e0",
+      "bytes": 70932
+    },
+    "/estate/textures/84b7218b351909ab3a8dc5.webp": {
+      "sha256": "84b7218b351909ab3a8dc532e4a1457adf3230a1ad5083222757f1dbf574c0d9",
+      "bytes": 79176
+    },
+    "/estate/textures/37e49369fe5fcbb9da6c9d.webp": {
+      "sha256": "37e49369fe5fcbb9da6c9d89ed7f9d9213d2215eb5d95f4370e84ad7360b814c",
+      "bytes": 30918
+    },
+    "/estate/textures/5776790b23b3b062ad219b.webp": {
+      "sha256": "5776790b23b3b062ad219b1589999b445f264a4b72c85ef705c279c6342cb034",
+      "bytes": 191166
+    },
+    "/estate/textures/22c6da719adfb992bd43c9.webp": {
+      "sha256": "22c6da719adfb992bd43c9701c197e23712462a03e7cd0d1d6b9c8c780a34ff4",
+      "bytes": 135004
+    },
+    "/estate/textures/3ccedbb65e9763cd4a92de.webp": {
+      "sha256": "3ccedbb65e9763cd4a92de9f5020340e1994eeba389a781c5199e1dd99076043",
+      "bytes": 218116
+    },
+    "/estate/textures/508c1cee00c721b3d34438.webp": {
+      "sha256": "508c1cee00c721b3d344382aec6c67ba8b0c411db0a60893c5ba289923357320",
+      "bytes": 58422
+    },
+    "/estate/textures/a1b66192018fb9f3b245a3.webp": {
+      "sha256": "a1b66192018fb9f3b245a3289f50b16f73fc468e6f0d24a0d7098c62df2c711c",
+      "bytes": 134758
+    },
+    "/estate/textures/375757b50b3aec19b00762.webp": {
+      "sha256": "375757b50b3aec19b007626280fe16a190c840cf2f98ba11b9de8ae3df06b17f",
+      "bytes": 233438
+    },
+    "/estate/textures/62dda34e12251c78dd606f.webp": {
+      "sha256": "62dda34e12251c78dd606fb7df3188776405757ff74bbc14606201054ff939b9",
+      "bytes": 33754
+    },
+    "/estate/textures/196d19a4efa284407a347b.webp": {
+      "sha256": "196d19a4efa284407a347b403cf0353b6bef970d3eeeeecd0275a303efac989c",
+      "bytes": 49312
+    },
+    "/estate/textures/1dea0d0f65cf04df1a0211.webp": {
+      "sha256": "1dea0d0f65cf04df1a02111d849afa99d78cdf9cfa12e2c7fe423c01c7d2b250",
+      "bytes": 160250
+    },
+    "/estate/textures/89e135ded02b64a27ec20b.webp": {
+      "sha256": "89e135ded02b64a27ec20b21cba52e13860d00a130c07a0da5213e733a01fe2b",
+      "bytes": 62328
+    },
+    "/estate/textures/b6037a61d3b20e1ac35178.webp": {
+      "sha256": "b6037a61d3b20e1ac3517861d2408d10509731e0b3ea23360635841a0fbecd9a",
+      "bytes": 105894
+    },
+    "/estate/textures/16db8557f74abcf44d0621.webp": {
+      "sha256": "16db8557f74abcf44d06210621ddc0cf7ca7bd96d51aa0ecd739b1bc652da22d",
+      "bytes": 283910
+    },
+    "/estate/textures/a426dfe53f16772052ed77.webp": {
+      "sha256": "a426dfe53f16772052ed77c4545e7af643e7f1fd9fa7a5fa4c6f7b54a9d15a37",
+      "bytes": 116074
+    },
+    "/estate/textures/13246ec46aeb721d0a0564.webp": {
+      "sha256": "13246ec46aeb721d0a0564d4fd43cf86069088953e95a2bed32606938d82eece",
+      "bytes": 196156
+    },
+    "/estate/textures/afafb4bd7b595092ff29f1.webp": {
+      "sha256": "afafb4bd7b595092ff29f19476069e865a3a863a7d2d7f69aee761323e9f8615",
+      "bytes": 74926
+    },
+    "/estate/textures/d2edac8da94aa3f376b915.webp": {
+      "sha256": "d2edac8da94aa3f376b91560e4dba8cc54d848bef8c60e36fab6722e992340f5",
+      "bytes": 80326
+    },
+    "/estate/textures/7d370445b0d4dbe8d3ac11.webp": {
+      "sha256": "7d370445b0d4dbe8d3ac11b0dbd99aba41c6a799f7f1d1822221f4784bc41060",
+      "bytes": 224854
+    },
+    "/estate/textures/824e17378ebc8cd47ed21a.webp": {
+      "sha256": "824e17378ebc8cd47ed21aed84ccec2e83b1b8211399a52edff0cd34703b02f5",
+      "bytes": 68642
+    },
+    "/estate/textures/e8c9b9c8b702acef968eeb.webp": {
+      "sha256": "e8c9b9c8b702acef968eeba2b0184f88714fb8c87ebca268af0d1d9164774928",
+      "bytes": 27910
+    },
+    "/estate/textures/acf1ce831ade49a19f2b62.webp": {
+      "sha256": "acf1ce831ade49a19f2b628136f936ce490e726fc0edb903b5731891ee62fc53",
+      "bytes": 71186
+    },
+    "/estate/textures/ebd25b575cad64ba7b1c61.webp": {
+      "sha256": "ebd25b575cad64ba7b1c6144d9f69a7989e4ed47a0a1da0e09f73982eff3a882",
+      "bytes": 102046
+    },
+    "/estate/textures/463f079326097559a58a08.webp": {
+      "sha256": "463f079326097559a58a08a0d4ecc0a5f68e3cc4c187020f5a701af563798f7d",
+      "bytes": 57664
+    },
+    "/estate/textures/1c97fa7a6bc9566d021be9.webp": {
+      "sha256": "1c97fa7a6bc9566d021be97ddeb686b3bbfece0ea97ede5334d48a0a763151a6",
+      "bytes": 125290
+    },
+    "/estate/textures/d1a44625119d04c6b51332.webp": {
+      "sha256": "d1a44625119d04c6b51332fac03eb3b4b7a8390ae227a6a9fbfcd40458c55f5b",
+      "bytes": 235410
+    },
+    "/estate/textures/f70682557233af5f9549cb.webp": {
+      "sha256": "f70682557233af5f9549cb74f702a8b6c6a1788dba8bcea5b4d4384ba39f3d78",
+      "bytes": 61928
+    },
+    "/estate/textures/f9d46b4f19d6a45874b11e.webp": {
+      "sha256": "f9d46b4f19d6a45874b11ee09f23deb4abcd21cb225e26cc7e4ded71b9c7d346",
+      "bytes": 169650
+    },
+    "/estate/textures/965974ca24b2be6e607919.webp": {
+      "sha256": "965974ca24b2be6e6079193cc40ca30fb7569955360ea2d9c3ba9b660fd01e37",
+      "bytes": 162970
+    },
+    "/estate/textures/b5da6ae7920cf6bbf51587.webp": {
+      "sha256": "b5da6ae7920cf6bbf5158709d074e23b1bef2e42cf8d89bef479864d9ee1a256",
+      "bytes": 17798
+    },
+    "/estate/textures/f61a2337f6beaea04dde3d.webp": {
+      "sha256": "f61a2337f6beaea04dde3d9d688b6608db00951a6bfb43fe47973a4cd2f1be65",
+      "bytes": 125644
+    },
+    "/estate/textures/3eaa8dbcaa89fa49afb858.webp": {
+      "sha256": "3eaa8dbcaa89fa49afb858f9db5e1920bc9fa97a83a0d73dd5f6bd93406f73ce",
+      "bytes": 93470
+    },
+    "/estate/textures/ad1285817173695477926f.webp": {
+      "sha256": "ad1285817173695477926f902944abaa5576a75eda5ea12da5682a07e3a90caf",
+      "bytes": 18836
+    },
+    "/estate/textures/5f16dab09fcfad7785fd6b.webp": {
+      "sha256": "5f16dab09fcfad7785fd6b6bb21a69e9855f8ff2b4a8b789a1604fd9de7140db",
+      "bytes": 145692
+    },
+    "/estate/textures/eab0a0019702c57ff85bdc.webp": {
+      "sha256": "eab0a0019702c57ff85bdc506ba8c3cd3472bc42d5280c124019ce63dd832d08",
+      "bytes": 111014
+    },
+    "/night-media/night-sky.hdr": {
+      "sha256": "480d67a67c8d7f8b69fe2334461b2004d7b420a61db1f68fa9043d91ee702b98",
+      "bytes": 1389258
+    },
+    "/night-media/actors/visitor.glb": {
+      "sha256": "8019fa2eb83e6c06cef83d2075e592e0db479e638f41a3267583250538f7cbd2",
+      "bytes": 1687192
+    },
+    "/night-media/actors/courier.glb": {
+      "sha256": "7ead1f7c88ee7b538e76fa1a8c9bbcf175330b60c606eab0331358702396dc25",
+      "bytes": 1025652
+    },
+    "/night-media/actors/raccoon.glb": {
+      "sha256": "2edfcc97e104694f9d7eafc78449259e599d8c9df8b8fb31160ab27ce2077979",
+      "bytes": 2856212
+    },
+    "/night-media/plates/index.json": {
+      "sha256": "c511a7acef2835134af15af07074e1f65bf69f04c7dddce3291ef162150ad6fa",
+      "bytes": 4293
+    },
+    "/night-media/plates/overview.jpg": {
+      "sha256": "63b89fb15ef80f5e4c4977b588555536f949ba26d5d6d0471e9ca1369d278153",
+      "bytes": 227811
+    },
+    "/night-media/plates/porch.jpg": {
+      "sha256": "01c145b2b19a14111206ffe4e7b16736101c5243a6b66c1c1dca857d3b63e75f",
+      "bytes": 190422
+    },
+    "/night-media/plates/entry.jpg": {
+      "sha256": "1d7116e169eb96367a585b3fd5e8d757e89e2dcd59360ed03c6061b4c755a872",
+      "bytes": 199606
+    },
+    "/night-media/plates/garden.jpg": {
+      "sha256": "30ea49d70e2de1695627ce6911d7bc473cec1d5dde932beeffeeadc7dfd22580",
+      "bytes": 221212
+    },
+    "/night-media/plates/driveway.jpg": {
+      "sha256": "fa89a5269c83dfd046fce97c9194e3010d8fabcb664486129ca773d33441eede",
+      "bytes": 168697
+    }
+  },
+  "captures": [
+    {
+      "caseId": "after-hours",
+      "camera": "overview",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 5.666666666666667,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -4.2,
+            0.045,
+            9.71
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -3.4648,
+            0.045,
+            9.58962
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -2.72369,
+            0.045,
+            9.52746
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.49,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -1.98112,
+            0.045,
+            9.48366
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -1.32341,
+            0.045,
+            9.15439
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.98,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -0.81378,
+            0.045,
+            8.61262
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -0.39994,
+            0.045,
+            7.99388
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.47,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -0.10055,
+            0.045,
+            7.31387
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.01508,
+            0.045,
+            6.57563
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.96,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.00797,
+            0.045,
+            5.83107
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            0.01334,
+            0.045,
+            5.08616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.45,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            0.00208,
+            0.045,
+            4.39402
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 1.04656,
+          "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.10357
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.11531,
+          "distanceM": 8.43268,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        }
+      ],
+      "sample": {
+        "eye": [
+          -10,
+          12,
+          23.5
+        ],
+        "target": [
+          -3.2,
+          2.8,
+          -3
+        ],
+        "verticalFovDegrees": 47,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          0.00056,
+          0.045,
+          4.24548
+        ],
+        "movementPhase": "slowing",
+        "speedMps": 0.73614,
+        "distanceM": 8.29077,
+        "stopAtSeconds": 6.06191,
+        "subjectPixel": [
+          607.634,
+          389.657
+        ]
+      },
+      "film": "/night-media/after-hours-overview.mp4",
+      "poster": "/night-media/after-hours-overview.jpg",
+      "videoSha256": "8282c0d85e0ed50677be9f3475ef6fd4657726ae22701a3040badd060043e8be",
+      "posterSha256": "a4d9dd2a3e5cf6b5a80aacd5f87193cbce7170ee025b56ff27e9d6fea882bfd1"
+    },
+    {
+      "caseId": "after-hours",
+      "camera": "porch",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 7,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -4.2,
+            0.045,
+            9.71
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -3.4648,
+            0.045,
+            9.58962
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -2.72369,
+            0.045,
+            9.52746
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.49,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -1.98112,
+            0.045,
+            9.48366
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -1.32341,
+            0.045,
+            9.15439
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.98,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -0.81378,
+            0.045,
+            8.61262
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -0.39994,
+            0.045,
+            7.99388
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.47,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -0.10055,
+            0.045,
+            7.31387
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.01508,
+            0.045,
+            6.57563
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.96,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.00797,
+            0.045,
+            5.83107
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            0.01334,
+            0.045,
+            5.08616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.45,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            0.00208,
+            0.045,
+            4.39402
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 1.04656,
+          "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.10357
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.11531,
+          "distanceM": 8.43268,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        }
+      ],
+      "sample": {
+        "eye": [
+          1.95,
+          2.72,
+          2.35
+        ],
+        "target": [
+          -0.6,
+          0.9,
+          10.5
+        ],
+        "verticalFovDegrees": 64,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          0,
+          0.045,
+          4.1
+        ],
+        "movementPhase": "standing",
+        "speedMps": 0,
+        "distanceM": 8.43625,
+        "stopAtSeconds": 6.06191,
+        "subjectPixel": [
+          689.501,
+          606.014
+        ]
+      },
+      "film": "/night-media/after-hours-porch.mp4",
+      "poster": "/night-media/after-hours-porch.jpg",
+      "videoSha256": "663a9990ec0c2d6b277d63d38cde120103d1264f6ce4ebd6fb4dff2e8b0c30fc",
+      "posterSha256": "2f45864bb0693dc6e453a07cf43d3fc8808c6774be238b2686fe81b0a675529a"
+    },
+    {
+      "caseId": "after-hours",
+      "camera": "entry",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 1.3333333333333333,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -4.2,
+            0.045,
+            9.71
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -3.4648,
+            0.045,
+            9.58962
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -2.72369,
+            0.045,
+            9.52746
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.49,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -1.98112,
+            0.045,
+            9.48366
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -1.32341,
+            0.045,
+            9.15439
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.98,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -0.81378,
+            0.045,
+            8.61262
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -0.39994,
+            0.045,
+            7.99388
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.47,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -0.10055,
+            0.045,
+            7.31387
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.01508,
+            0.045,
+            6.57563
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.96,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.00797,
+            0.045,
+            5.83107
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            0.01334,
+            0.045,
+            5.08616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.45,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            0.00208,
+            0.045,
+            4.39402
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 1.04656,
+          "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.10357
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.11531,
+          "distanceM": 8.43268,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        }
+      ],
+      "sample": {
+        "eye": [
+          -2.8,
+          2.35,
+          13.8
+        ],
+        "target": [
+          -1.4,
+          1.55,
+          5
+        ],
+        "verticalFovDegrees": 52,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          -2.22726,
+          0.045,
+          9.51561
+        ],
+        "movementPhase": "walking",
+        "speedMps": 1.49,
+        "distanceM": 1.98667,
+        "stopAtSeconds": 6.06191,
+        "subjectPixel": [
+          466.803,
+          504.367
+        ]
+      },
+      "film": "/night-media/after-hours-entry.mp4",
+      "poster": "/night-media/after-hours-entry.jpg",
+      "videoSha256": "de91154cc9b76307b40730ae30e0526e7803f698a5e1d54b279cf643c11c70db",
+      "posterSha256": "1520a2dae6bfb22dd5efed44a037e82c015a9b7161d360e07978c7148d4a3935"
+    },
+    {
+      "caseId": "after-hours",
+      "camera": "driveway",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 0.6666666666666666,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -4.2,
+            0.045,
+            9.71
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -3.4648,
+            0.045,
+            9.58962
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 0.745,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -2.72369,
+            0.045,
+            9.52746
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 1.49,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -1.98112,
+            0.045,
+            9.48366
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.235,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -1.32341,
+            0.045,
+            9.15439
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 2.98,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -0.81378,
+            0.045,
+            8.61262
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 3.725,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -0.39994,
+            0.045,
+            7.99388
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 4.47,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -0.10055,
+            0.045,
+            7.31387
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.215,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.01508,
+            0.045,
+            6.57563
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 5.96,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.00797,
+            0.045,
+            5.83107
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 6.705,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            0.01334,
+            0.045,
+            5.08616
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.49,
+          "distanceM": 7.45,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            0.00208,
+            0.045,
+            4.39402
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 1.04656,
+          "distanceM": 8.14221,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.10357
+          ],
+          "movementPhase": "slowing",
+          "speedMps": 0.11531,
+          "distanceM": 8.43268,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0,
+            0.045,
+            4.1
+          ],
+          "movementPhase": "standing",
+          "speedMps": 0,
+          "distanceM": 8.43625,
+          "stopAtSeconds": 6.06191
+        }
+      ],
+      "sample": {
+        "eye": [
+          -13.58,
+          2.6,
+          -1.84
+        ],
+        "target": [
+          -15.4,
+          0.4,
+          20
+        ],
+        "verticalFovDegrees": 62,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          -3.21924,
+          0.045,
+          9.55275
+        ],
+        "movementPhase": "walking",
+        "speedMps": 1.49,
+        "distanceM": 0.99333,
+        "stopAtSeconds": 6.06191,
+        "subjectPixel": [
+          6.472,
+          332.773
+        ]
+      },
+      "film": "/night-media/after-hours-driveway.mp4",
+      "poster": "/night-media/after-hours-driveway.jpg",
+      "videoSha256": "477c1076f1116acbf34891152bcb198d8b341ad91605951a2ed978f8862ed8fb",
+      "posterSha256": "f067bf307a09992bba6087aadc56fe92d67a42252a880d372f87c8753dff419c"
+    },
+    {
+      "caseId": "delivery",
+      "camera": "overview",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 4.75,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -5.1,
+            0.045,
+            9.72
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -4.51025,
+            0.045,
+            9.70359
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.59,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -3.92055,
+            0.045,
+            9.68569
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.18,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -3.33324,
+            0.045,
+            9.63167
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.77,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -2.74614,
+            0.045,
+            9.57301
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.36,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -2.164,
+            0.045,
+            9.4796
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.95,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -1.61843,
+            0.045,
+            9.26162
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.54,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -1.16762,
+            0.045,
+            8.88345
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.13,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.7947,
+            0.045,
+            8.42681
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.72,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            -0.48133,
+            0.045,
+            7.9272
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.31,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            -0.22798,
+            0.045,
+            7.39484
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.9,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            -0.082,
+            0.045,
+            6.82444
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.49,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            -0.02931,
+            0.045,
+            6.23706
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.08,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0.00351,
+            0.045,
+            5.64798
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.67,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0.02299,
+            0.045,
+            5.05837
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.26,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0.01936,
+            0.045,
+            4.4684
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.85,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0.00958,
+            0.045,
+            3.97681
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 9.34167,
+          "stopAtSeconds": 8.53268
+        }
+      ],
+      "sample": {
+        "eye": [
+          -10,
+          12,
+          23.5
+        ],
+        "target": [
+          -3.2,
+          2.8,
+          -3
+        ],
+        "verticalFovDegrees": 47,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          -0.34614,
+          0.045,
+          7.66501
+        ],
+        "movementPhase": "walking",
+        "speedMps": 1.18,
+        "distanceM": 5.605,
+        "stopAtSeconds": 8.53268,
+        "subjectPixel": [
+          643.049,
+          440.961
+        ]
+      },
+      "film": "/night-media/delivery-overview.mp4",
+      "poster": "/night-media/delivery-overview.jpg",
+      "videoSha256": "e1ff1a561021b0c362a2d52a2bd3752b8e218157d47be3cde4f518eb0cf27375",
+      "posterSha256": "36c9f8d1a3bb0a791cbeaf920f2b75edf52c66d5e538419afdf5c4e026095f87"
+    },
+    {
+      "caseId": "delivery",
+      "camera": "porch",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 6.333333333333333,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -5.1,
+            0.045,
+            9.72
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -4.51025,
+            0.045,
+            9.70359
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.59,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -3.92055,
+            0.045,
+            9.68569
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.18,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -3.33324,
+            0.045,
+            9.63167
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.77,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -2.74614,
+            0.045,
+            9.57301
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.36,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -2.164,
+            0.045,
+            9.4796
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.95,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -1.61843,
+            0.045,
+            9.26162
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.54,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -1.16762,
+            0.045,
+            8.88345
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.13,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.7947,
+            0.045,
+            8.42681
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.72,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            -0.48133,
+            0.045,
+            7.9272
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.31,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            -0.22798,
+            0.045,
+            7.39484
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.9,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            -0.082,
+            0.045,
+            6.82444
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.49,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            -0.02931,
+            0.045,
+            6.23706
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.08,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0.00351,
+            0.045,
+            5.64798
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.67,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0.02299,
+            0.045,
+            5.05837
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.26,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0.01936,
+            0.045,
+            4.4684
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.85,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0.00958,
+            0.045,
+            3.97681
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 9.34167,
+          "stopAtSeconds": 8.53268
+        }
+      ],
+      "sample": {
+        "eye": [
+          1.95,
+          2.72,
+          2.35
+        ],
+        "target": [
+          -0.6,
+          0.9,
+          10.5
+        ],
+        "verticalFovDegrees": 64,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          -0.00923,
+          0.045,
+          5.84422
+        ],
+        "movementPhase": "walking",
+        "speedMps": 1.18,
+        "distanceM": 7.47333,
+        "stopAtSeconds": 8.53268,
+        "subjectPixel": [
+          561.318,
+          447.032
+        ]
+      },
+      "film": "/night-media/delivery-porch.mp4",
+      "poster": "/night-media/delivery-porch.jpg",
+      "videoSha256": "6fa3cf5e5de6801b869aa377461cfa8bcc5527c5b136990bca496b1b3c04680d",
+      "posterSha256": "b53308a6504dcca23fcc98e2aeae92f208633eee6af4846e839da8e2d73d3a99"
+    },
+    {
+      "caseId": "delivery",
+      "camera": "entry",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 2.25,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            -5.1,
+            0.045,
+            9.72
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            -4.51025,
+            0.045,
+            9.70359
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 0.59,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            -3.92055,
+            0.045,
+            9.68569
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.18,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            -3.33324,
+            0.045,
+            9.63167
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 1.77,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            -2.74614,
+            0.045,
+            9.57301
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.36,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            -2.164,
+            0.045,
+            9.4796
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 2.95,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            -1.61843,
+            0.045,
+            9.26162
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 3.54,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            -1.16762,
+            0.045,
+            8.88345
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.13,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            -0.7947,
+            0.045,
+            8.42681
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 4.72,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            -0.48133,
+            0.045,
+            7.9272
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.31,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            -0.22798,
+            0.045,
+            7.39484
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 5.9,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            -0.082,
+            0.045,
+            6.82444
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 6.49,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            -0.02931,
+            0.045,
+            6.23706
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.08,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            0.00351,
+            0.045,
+            5.64798
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 7.67,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            0.02299,
+            0.045,
+            5.05837
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.26,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            0.01936,
+            0.045,
+            4.4684
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 8.85,
+          "stopAtSeconds": 8.53268
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            0.00958,
+            0.045,
+            3.97681
+          ],
+          "movementPhase": "walking",
+          "speedMps": 1.18,
+          "distanceM": 9.34167,
+          "stopAtSeconds": 8.53268
+        }
+      ],
+      "sample": {
+        "eye": [
+          -2.8,
+          2.35,
+          13.8
+        ],
+        "target": [
+          -1.4,
+          1.55,
+          5
+        ],
+        "verticalFovDegrees": 52,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          -2.45349,
+          0.045,
+          9.53593
+        ],
+        "movementPhase": "walking",
+        "speedMps": 1.18,
+        "distanceM": 2.655,
+        "stopAtSeconds": 8.53268,
+        "subjectPixel": [
+          439.27,
+          507.9
+        ]
+      },
+      "film": "/night-media/delivery-entry.mp4",
+      "poster": "/night-media/delivery-entry.jpg",
+      "videoSha256": "a4d2445a100e61d2d21b6f578b94cb7ddb565b48b84bb73c4c2a955108445261",
+      "posterSha256": "2a6271411ec145636b26547a045a90adc0de2fbefc65fd40ced973efacc450f3"
+    },
+    {
+      "caseId": "wildlife",
+      "camera": "overview",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 4,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            2.55,
+            0.025,
+            6.15
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            2.29897,
+            0.025,
+            6.29517
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.29,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            2.05019,
+            0.025,
+            6.44419
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.58,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            1.79811,
+            0.025,
+            6.58752
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.87,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            1.53787,
+            0.025,
+            6.71532
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.16,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            1.26612,
+            0.025,
+            6.81605
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.45,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            0.98614,
+            0.025,
+            6.89149
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.74,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            0.70397,
+            0.025,
+            6.95841
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.03,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            0.42381,
+            0.025,
+            7.03314
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.32,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.15145,
+            0.025,
+            7.13227
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.61,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            -0.11081,
+            0.025,
+            7.25592
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.9,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            -0.36672,
+            0.025,
+            7.39232
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.19,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            -0.62096,
+            0.025,
+            7.53183
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.48,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            -0.87906,
+            0.025,
+            7.66401
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.77,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            -1.14162,
+            0.025,
+            7.78712
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.06,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            -1.40577,
+            0.025,
+            7.90679
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.35,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            -1.62603,
+            0.025,
+            8.00622
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.59167,
+          "stopAtSeconds": 8.05686
+        }
+      ],
+      "sample": {
+        "eye": [
+          -10,
+          12,
+          23.5
+        ],
+        "target": [
+          -3.2,
+          2.8,
+          -3
+        ],
+        "verticalFovDegrees": 47,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          0.42381,
+          0.025,
+          7.03314
+        ],
+        "movementPhase": "walking",
+        "speedMps": 0.58,
+        "distanceM": 2.32,
+        "stopAtSeconds": 8.05686,
+        "subjectPixel": [
+          654.287,
+          427.941
+        ]
+      },
+      "film": "/night-media/wildlife-overview.mp4",
+      "poster": "/night-media/wildlife-overview.jpg",
+      "videoSha256": "3927daccf8f24929155d32c824248d7d766afb5856d5a3e3fdb521d2515ffbc0",
+      "posterSha256": "cd5240c8f50172632c9b4dd7c1119b881be672687b27d949257951151c145f05"
+    },
+    {
+      "caseId": "wildlife",
+      "camera": "garden",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 1.25,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            2.55,
+            0.025,
+            6.15
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            2.29897,
+            0.025,
+            6.29517
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.29,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            2.05019,
+            0.025,
+            6.44419
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.58,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            1.79811,
+            0.025,
+            6.58752
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.87,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            1.53787,
+            0.025,
+            6.71532
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.16,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            1.26612,
+            0.025,
+            6.81605
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.45,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            0.98614,
+            0.025,
+            6.89149
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.74,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            0.70397,
+            0.025,
+            6.95841
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.03,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            0.42381,
+            0.025,
+            7.03314
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.32,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.15145,
+            0.025,
+            7.13227
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.61,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            -0.11081,
+            0.025,
+            7.25592
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.9,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            -0.36672,
+            0.025,
+            7.39232
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.19,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            -0.62096,
+            0.025,
+            7.53183
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.48,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            -0.87906,
+            0.025,
+            7.66401
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.77,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            -1.14162,
+            0.025,
+            7.78712
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.06,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            -1.40577,
+            0.025,
+            7.90679
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.35,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            -1.62603,
+            0.025,
+            8.00622
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.59167,
+          "stopAtSeconds": 8.05686
+        }
+      ],
+      "sample": {
+        "eye": [
+          2.6,
+          1.1,
+          10.6
+        ],
+        "target": [
+          -0.3,
+          0.23,
+          6.65
+        ],
+        "verticalFovDegrees": 47,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          1.92489,
+          0.025,
+          6.51717
+        ],
+        "movementPhase": "walking",
+        "speedMps": 0.58,
+        "distanceM": 0.725,
+        "stopAtSeconds": 8.05686,
+        "subjectPixel": [
+          784.174,
+          337.153
+        ]
+      },
+      "film": "/night-media/wildlife-garden.mp4",
+      "poster": "/night-media/wildlife-garden.jpg",
+      "videoSha256": "af46e0248e0027a355e01298ba3584d458f3a23f3d3659132caadad27ed0e775",
+      "posterSha256": "dc065ef45e55c8b7429f1e71dec7908d41b78fa39a81e4b3701a149ad1e133be"
+    },
+    {
+      "caseId": "wildlife",
+      "camera": "porch",
+      "seconds": 8,
+      "fps": 12,
+      "frames": 96,
+      "width": 960,
+      "height": 540,
+      "stillSeconds": 3.3333333333333335,
+      "trajectory": [
+        {
+          "seconds": 0,
+          "subjectFoot": [
+            2.55,
+            0.025,
+            6.15
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 0.5,
+          "subjectFoot": [
+            2.29897,
+            0.025,
+            6.29517
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.29,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1,
+          "subjectFoot": [
+            2.05019,
+            0.025,
+            6.44419
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.58,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 1.5,
+          "subjectFoot": [
+            1.79811,
+            0.025,
+            6.58752
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 0.87,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2,
+          "subjectFoot": [
+            1.53787,
+            0.025,
+            6.71532
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.16,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 2.5,
+          "subjectFoot": [
+            1.26612,
+            0.025,
+            6.81605
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.45,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3,
+          "subjectFoot": [
+            0.98614,
+            0.025,
+            6.89149
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 1.74,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 3.5,
+          "subjectFoot": [
+            0.70397,
+            0.025,
+            6.95841
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.03,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4,
+          "subjectFoot": [
+            0.42381,
+            0.025,
+            7.03314
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.32,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 4.5,
+          "subjectFoot": [
+            0.15145,
+            0.025,
+            7.13227
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.61,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5,
+          "subjectFoot": [
+            -0.11081,
+            0.025,
+            7.25592
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 2.9,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 5.5,
+          "subjectFoot": [
+            -0.36672,
+            0.025,
+            7.39232
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.19,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6,
+          "subjectFoot": [
+            -0.62096,
+            0.025,
+            7.53183
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.48,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 6.5,
+          "subjectFoot": [
+            -0.87906,
+            0.025,
+            7.66401
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 3.77,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7,
+          "subjectFoot": [
+            -1.14162,
+            0.025,
+            7.78712
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.06,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.5,
+          "subjectFoot": [
+            -1.40577,
+            0.025,
+            7.90679
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.35,
+          "stopAtSeconds": 8.05686
+        },
+        {
+          "seconds": 7.916666666666667,
+          "subjectFoot": [
+            -1.62603,
+            0.025,
+            8.00622
+          ],
+          "movementPhase": "walking",
+          "speedMps": 0.58,
+          "distanceM": 4.59167,
+          "stopAtSeconds": 8.05686
+        }
+      ],
+      "sample": {
+        "eye": [
+          1.95,
+          2.72,
+          2.35
+        ],
+        "target": [
+          -0.6,
+          0.9,
+          10.5
+        ],
+        "verticalFovDegrees": 64,
+        "aspect": 1.7777777777777777,
+        "subjectFoot": [
+          0.79801,
+          0.025,
+          6.93605
+        ],
+        "movementPhase": "walking",
+        "speedMps": 0.58,
+        "distanceM": 1.93333,
+        "stopAtSeconds": 8.05686,
+        "subjectPixel": [
+          457.473,
+          407.814
+        ]
+      },
+      "film": "/night-media/wildlife-porch.mp4",
+      "poster": "/night-media/wildlife-porch.jpg",
+      "videoSha256": "2b94b88d4ded3aedc4ad1f119978a4d429239888c302cdaa0b387c449dba1f75",
+      "posterSha256": "51ee967aefb7a7d356ded90865e508f271cbebb06f75656dab69f5df8cdd3638"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "film": "/night-media/estate-briefing.mp4",
+  "filmSha256": "6e395ad7ab842a0d691e558bac984500d93760989d052caf841ae3e78e7352b0",
+  "seconds": 27,
+  "fps": 24,
+  "captions": "/night-media/estate-briefing.vtt",
+  "captionsSha256": "a40980353aa3c41e2beb42e9efeddd68635057c69ff666c896b79d6ff9ddd501",
+  "chapters": [
+    {
+      "start": 0,
+      "seconds": 3,
+      "source": "/estate/hero.jpg",
+      "sha256": "55fcf2c73a649ca816ef353e6b586654a921cdb9c1d05426ee2f9b22c4dc3d7d",
+      "caption": "Alder House. A fictional residential estate after dark."
+    },
+    {
+      "start": 3,
+      "seconds": 8,
+      "source": "/night-media/after-hours-porch.mp4",
+      "sha256": "663a9990ec0c2d6b277d63d38cde120103d1264f6ce4ebd6fb4dff2e8b0c30fc",
+      "caption": "02:14. A resident reports a possible armed intruder."
+    },
+    {
+      "start": 11,
+      "seconds": 8,
+      "source": "/night-media/delivery-entry.mp4",
+      "sha256": "a4d2445a100e61d2d21b6f578b94cb7ddb565b48b84bb73c4c2a955108445261",
+      "caption": "A courier carries a parcel toward the entrance."
+    },
+    {
+      "start": 19,
+      "seconds": 8,
+      "source": "/night-media/wildlife-garden.mp4",
+      "sha256": "af46e0248e0027a355e01298ba3584d458f3a23f3d3659132caadad27ed0e775",
+      "caption": "A raccoon crosses the planting bed."
+    }
+  ]
+}

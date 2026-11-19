@@ -1,0 +1,760 @@
+{
+  "schema": "fss.website.estate_plan.v1",
+  "name": "Alder House",
+  "status": "authored_reconstruction",
+  "fictional": true,
+  "frame": {
+    "units": "metres",
+    "axes": "+x east, +y up, +z south toward the street",
+    "origin": "finished grade below the centre of the front door threshold"
+  },
+  "first_floor_level": 0.62,
+  "buildings": {
+    "main": {
+      "x": [
+        -8.4,
+        8.4
+      ],
+      "z": [
+        -10.8,
+        0.0
+      ],
+      "eave": 6.75,
+      "ridge": 10.45,
+      "ridge_axis": "x",
+      "storeys": 2
+    },
+    "east_wing": {
+      "x": [
+        8.4,
+        16.2
+      ],
+      "z": [
+        -9.4,
+        -1.6
+      ],
+      "eave": 3.95,
+      "ridge": 7.2,
+      "ridge_axis": "x",
+      "storeys": 1
+    },
+    "sunroom": {
+      "x": [
+        9.8,
+        15.0
+      ],
+      "z": [
+        -14.2,
+        -9.4
+      ],
+      "eave": 3.55,
+      "ridge": 4.75,
+      "ridge_axis": "z",
+      "storeys": 1
+    },
+    "connector": {
+      "x": [
+        -13.4,
+        -8.4
+      ],
+      "z": [
+        -8.8,
+        -2.4
+      ],
+      "eave": 3.55,
+      "ridge": 5.55,
+      "ridge_axis": "x",
+      "storeys": 1
+    },
+    "garage": {
+      "x": [
+        -25.2,
+        -13.4
+      ],
+      "z": [
+        -10.6,
+        -2.0
+      ],
+      "eave": 3.45,
+      "ridge": 7.15,
+      "ridge_axis": "x",
+      "storeys": 1
+    },
+    "pool_house": {
+      "x": [
+        12.6,
+        18.6
+      ],
+      "z": [
+        -32.4,
+        -27.6
+      ],
+      "eave": 2.75,
+      "ridge": 4.3,
+      "ridge_axis": "x",
+      "storeys": 1
+    },
+    "shed": {
+      "x": [
+        23.0,
+        26.6
+      ],
+      "z": [
+        -42.6,
+        -39.8
+      ],
+      "eave": 2.2,
+      "ridge": 3.3,
+      "ridge_axis": "x",
+      "storeys": 1
+    }
+  },
+  "lot": {
+    "x": [
+      -36.0,
+      31.0
+    ],
+    "z": [
+      -52.0,
+      38.0
+    ]
+  },
+  "street": {
+    "z": [
+      40.2,
+      47.2
+    ],
+    "sidewalk_z": [
+      38.2,
+      40.2
+    ]
+  },
+  "gate": {
+    "x": -12.0,
+    "z": 38.0,
+    "opening": 4.6,
+    "pillar": 0.8,
+    "pillar_height": 2.25
+  },
+  "driveway": {
+    "width": 4.4,
+    "centre_line": [
+      [
+        -14.4,
+        9.2
+      ],
+      [
+        -14.9,
+        14.0
+      ],
+      [
+        -16.6,
+        19.5
+      ],
+      [
+        -17.6,
+        25.0
+      ],
+      [
+        -16.2,
+        30.5
+      ],
+      [
+        -13.2,
+        34.6
+      ],
+      [
+        -12.0,
+        38.0
+      ]
+    ]
+  },
+  "front_walk": {
+    "width": 1.5,
+    "centre_line": [
+      [
+        0.0,
+        2.7
+      ],
+      [
+        0.0,
+        7.2
+      ],
+      [
+        -1.6,
+        9.4
+      ],
+      [
+        -5.4,
+        9.9
+      ],
+      [
+        -8.9,
+        8.0
+      ]
+    ]
+  },
+  "terrace": {
+    "x": [
+      -7.2,
+      9.8
+    ],
+    "z": [
+      -17.6,
+      -10.8
+    ],
+    "level": 0.45
+  },
+  "pool": {
+    "x": [
+      -2.0,
+      10.0
+    ],
+    "z": [
+      -31.6,
+      -26.6
+    ],
+    "deck": 2.6,
+    "depth": 1.5
+  },
+  "cameras": [
+    {
+      "id": "porch",
+      "label": "Front porch",
+      "mount": "portico soffit, east side",
+      "vfov": 64.0,
+      "position": [
+        1.95,
+        2.72,
+        2.35
+      ],
+      "look_at": [
+        -0.6,
+        0.9,
+        10.5
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "driveway",
+      "label": "Driveway",
+      "mount": "garage eave, south-east corner",
+      "vfov": 62.0,
+      "position": [
+        -13.58,
+        2.6,
+        -1.84
+      ],
+      "look_at": [
+        -15.4,
+        0.4,
+        20.0
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "gate",
+      "label": "Gate",
+      "mount": "post inside the street wall",
+      "vfov": 60.0,
+      "position": [
+        -17.6,
+        3.0,
+        30.6
+      ],
+      "look_at": [
+        -11.6,
+        1.0,
+        38.2
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "side",
+      "label": "East side yard",
+      "mount": "east wing, north-east corner",
+      "vfov": 64.0,
+      "position": [
+        16.45,
+        3.2,
+        -9.2
+      ],
+      "look_at": [
+        20.2,
+        0.7,
+        2.5
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "terrace",
+      "label": "Rear terrace",
+      "mount": "main block rear eave, west end",
+      "vfov": 66.0,
+      "position": [
+        -7.0,
+        3.6,
+        -11.0
+      ],
+      "look_at": [
+        2.0,
+        0.6,
+        -19.0
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "pool",
+      "label": "Pool and rear lawn",
+      "mount": "sunroom, north-east corner",
+      "vfov": 62.0,
+      "position": [
+        15.2,
+        3.0,
+        -14.4
+      ],
+      "look_at": [
+        3.6,
+        0.2,
+        -29.5
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "service",
+      "label": "West service yard",
+      "mount": "garage, north-west corner",
+      "vfov": 64.0,
+      "position": [
+        -25.35,
+        2.75,
+        -10.4
+      ],
+      "look_at": [
+        -29.0,
+        0.4,
+        1.5
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "entry",
+      "label": "Entry walk",
+      "mount": "lamp post beside the front walk",
+      "vfov": 52.0,
+      "position": [
+        -2.8,
+        2.35,
+        13.8
+      ],
+      "look_at": [
+        -1.4,
+        1.55,
+        5.0
+      ],
+      "aspect": "16:9"
+    },
+    {
+      "id": "garden",
+      "label": "Garden border",
+      "mount": "low post at the front garden border",
+      "vfov": 47.0,
+      "position": [
+        2.6,
+        1.1,
+        10.6
+      ],
+      "look_at": [
+        -0.3,
+        0.23,
+        6.65
+      ],
+      "aspect": "16:9"
+    }
+  ],
+  "zones": {
+    "gate_entry": [
+      [
+        -15.6,
+        33.2
+      ],
+      [
+        -8.6,
+        33.2
+      ],
+      [
+        -8.6,
+        38.0
+      ],
+      [
+        -15.6,
+        38.0
+      ]
+    ],
+    "driveway": [
+      [
+        -17.2,
+        9.6
+      ],
+      [
+        -11.8,
+        9.6
+      ],
+      [
+        -12.6,
+        20.0
+      ],
+      [
+        -15.0,
+        26.0
+      ],
+      [
+        -13.4,
+        33.2
+      ],
+      [
+        -19.0,
+        33.2
+      ],
+      [
+        -20.2,
+        25.0
+      ],
+      [
+        -18.8,
+        18.0
+      ]
+    ],
+    "motor_court": [
+      [
+        -26.4,
+        -2.0
+      ],
+      [
+        -8.9,
+        -2.0
+      ],
+      [
+        -8.9,
+        6.4
+      ],
+      [
+        -11.2,
+        9.6
+      ],
+      [
+        -17.4,
+        9.6
+      ],
+      [
+        -26.4,
+        6.2
+      ]
+    ],
+    "front_walk": [
+      [
+        -1.2,
+        2.7
+      ],
+      [
+        1.2,
+        2.7
+      ],
+      [
+        1.2,
+        8.0
+      ],
+      [
+        -0.6,
+        10.6
+      ],
+      [
+        -8.9,
+        9.4
+      ],
+      [
+        -8.9,
+        7.0
+      ],
+      [
+        -2.2,
+        8.2
+      ],
+      [
+        -1.2,
+        7.0
+      ]
+    ],
+    "porch": [
+      [
+        -2.5,
+        0.0
+      ],
+      [
+        2.5,
+        0.0
+      ],
+      [
+        2.5,
+        2.7
+      ],
+      [
+        -2.5,
+        2.7
+      ]
+    ],
+    "east_side": [
+      [
+        16.2,
+        -14.2
+      ],
+      [
+        22.4,
+        -14.2
+      ],
+      [
+        22.4,
+        -1.6
+      ],
+      [
+        16.2,
+        -1.6
+      ]
+    ],
+    "terrace": [
+      [
+        -7.2,
+        -17.6
+      ],
+      [
+        9.8,
+        -17.6
+      ],
+      [
+        9.8,
+        -10.8
+      ],
+      [
+        -7.2,
+        -10.8
+      ]
+    ],
+    "pool_deck": [
+      [
+        -4.6,
+        -34.2
+      ],
+      [
+        12.6,
+        -34.2
+      ],
+      [
+        12.6,
+        -24.0
+      ],
+      [
+        -4.6,
+        -24.0
+      ]
+    ],
+    "rear_lawn": [
+      [
+        -12.0,
+        -24.0
+      ],
+      [
+        12.0,
+        -24.0
+      ],
+      [
+        12.0,
+        -17.6
+      ],
+      [
+        -12.0,
+        -17.6
+      ]
+    ],
+    "service_yard": [
+      [
+        -31.0,
+        -11.0
+      ],
+      [
+        -25.2,
+        -11.0
+      ],
+      [
+        -25.2,
+        -2.0
+      ],
+      [
+        -31.0,
+        -2.0
+      ]
+    ]
+  },
+  "overview": {
+    "id": "overview",
+    "label": "Estate survey",
+    "position": [
+      -10.0,
+      12.0,
+      23.5
+    ],
+    "look_at": [
+      -3.2,
+      2.8,
+      -3.0
+    ],
+    "vfov": 47.0,
+    "aspect": "16:9"
+  },
+  "incidents": [
+    {
+      "id": "after-hours",
+      "title": "The 02:14 intrusion report",
+      "local_time": "02:14",
+      "motion": {
+        "terminal": "stand",
+        "braking_seconds": 0.8
+      },
+      "seconds": 8.0,
+      "cameras": [
+        "porch",
+        "entry",
+        "driveway"
+      ],
+      "actors": [
+        {
+          "id": "visitor",
+          "height_m": 1.78,
+          "speed_m_per_s": 1.49,
+          "path": [
+            {
+              "x": -4.2,
+              "y": 0.045,
+              "z": 9.71
+            },
+            {
+              "x": -3.2,
+              "y": 0.045,
+              "z": 9.55
+            },
+            {
+              "x": -1.6,
+              "y": 0.045,
+              "z": 9.35
+            },
+            {
+              "x": -0.18,
+              "y": 0.045,
+              "z": 7.55
+            },
+            {
+              "x": 0.0,
+              "y": 0.045,
+              "z": 6.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.045,
+              "z": 4.1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "delivery",
+      "title": "The evening delivery",
+      "seconds": 8.0,
+      "cameras": [
+        "porch",
+        "entry"
+      ],
+      "actors": [
+        {
+          "id": "courier",
+          "height_m": 1.74,
+          "speed_m_per_s": 1.18,
+          "path": [
+            {
+              "x": -5.1,
+              "y": 0.045,
+              "z": 9.72
+            },
+            {
+              "x": -3.4,
+              "y": 0.045,
+              "z": 9.64
+            },
+            {
+              "x": -1.6,
+              "y": 0.045,
+              "z": 9.25
+            },
+            {
+              "x": -0.25,
+              "y": 0.045,
+              "z": 7.45
+            },
+            {
+              "x": 0.0,
+              "y": 0.045,
+              "z": 5.7
+            },
+            {
+              "x": 0.0,
+              "y": 0.045,
+              "z": 3.25
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "wildlife",
+      "title": "Movement in the garden",
+      "seconds": 8.0,
+      "cameras": [
+        "garden",
+        "porch"
+      ],
+      "actors": [
+        {
+          "id": "raccoon",
+          "height_m": 0.3,
+          "speed_m_per_s": 0.58,
+          "path": [
+            {
+              "x": 2.55,
+              "y": 0.025,
+              "z": 6.15
+            },
+            {
+              "x": 1.48,
+              "y": 0.025,
+              "z": 6.74
+            },
+            {
+              "x": 0.23,
+              "y": 0.025,
+              "z": 7.1
+            },
+            {
+              "x": -0.85,
+              "y": 0.025,
+              "z": 7.65
+            },
+            {
+              "x": -1.7,
+              "y": 0.025,
+              "z": 8.04
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

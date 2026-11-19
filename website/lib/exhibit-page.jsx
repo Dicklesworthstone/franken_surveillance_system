@@ -1,103 +1,35 @@
-import { moments } from "./stereo.js";
-import Observatory from "../components/Observatory";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fieldData } from "./field-data";
-import { exhibits, exhibitPath } from "./exhibits";
-
-function courtData() {
-  const read = (name) =>
-    JSON.parse(
-      readFileSync(join(process.cwd(), "public/court", name + ".json"), "utf8"),
-    );
-  const { segment } = read("earlier/source");
-  const views = Object.fromEntries(
-    Object.entries(read("analysis").views).map(([id, view]) => [
+import NightObservatory from "../components/night/NightObservatory";
+import { nightData } from "./night/data";
+import { exhibits, pathFor } from "./night/catalog";
+async function prints() {
+  const { imageMeta } = await import("./share-card");
+  return Promise.all(
+    Object.entries(exhibits).map(async ([id, e]) => ({
       id,
-      {
-        samples: view.samples,
-        frameDigests: view.frameDigests,
-        inspection: read(id + "-inspection").frames[0],
-      },
-    ]),
+      title: e.title,
+      og: pathFor(id) + "opengraph-image/" + (await imageMeta(id, 630))[0].id,
+      x: pathFor(id) + "twitter-image/" + (await imageMeta(id, 600))[0].id,
+    })),
   );
-  return {
-    ...views,
-    earlier: read("earlier/garden").detector_cascade.frames.find(
-      (frame) => frame.segment === segment,
-    ),
+}
+export function exhibitPage(id) {
+  return async function NightPage() {
+    return (
+      <NightObservatory
+        page={id}
+        data={nightData()}
+        prints={id === "poster-room" ? await prints() : []}
+      />
+    );
   };
 }
-
-async function posterEntries() {
-  const { imageMeta } = await import("./share-card");
-  const prints = [];
-  for (const [slug, ex] of Object.entries(exhibits)) {
-    const base = exhibitPath(slug),
-      og = (await imageMeta(slug, 630))[0],
-      x = (await imageMeta(slug, 600))[0];
-    prints.push({
-      slug,
-      path: base,
-      title: ex.title,
-      alt: og.alt,
-      og: base + "opengraph-image/" + og.id,
-      x: base + "twitter-image/" + x.id,
-    });
-  }
-  return prints;
-}
-
-export function exhibitPage(slug) {
-  return async () => (
-    <Observatory
-      field={fieldData()}
-      prints={slug === "poster-room" ? await posterEntries() : undefined}
-      exhibit={slug}
-      stereo={
-        slug === "stereo-bench"
-          ? Object.fromEntries(
-              moments.map(({ frame }) => {
-                const data = JSON.parse(
-                  readFileSync(
-                    join(
-                      process.cwd(),
-                      "public/stereo",
-                      "report-" + frame + ".json",
-                    ),
-                    "utf8",
-                  ),
-                );
-                return [
-                  frame,
-                  { height: data.report.hypotheses[0].estimate.position[2] },
-                ];
-              }),
-            )
-          : undefined
-      }
-      court={slug === "courtyard" ? courtData() : undefined}
-      motion={
-        slug === "motion-study"
-          ? JSON.parse(
-              readFileSync(
-                join(process.cwd(), "public/motion/analysis.json"),
-                "utf8",
-              ),
-            )
-          : undefined
-      }
-    />
-  );
-}
-export function exhibitMetadata(slug) {
-  const entry = exhibits[slug],
-    title = entry.title + " · Franken Surveillance",
-    url = exhibitPath(slug);
+export function exhibitMetadata(id) {
+  const { title, description } = exhibits[id],
+    url = pathFor(id);
   return {
-    title,
-    description: entry.description,
+    title: title + " · Franken Surveillance",
+    description,
     alternates: { canonical: url },
-    openGraph: { type: "website", url, title, description: entry.description },
+    openGraph: { url, title, description, type: "website" },
   };
 }

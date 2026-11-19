@@ -1,0 +1,16 @@
+Alder House synthetic case recordings
+
+Adult visitor and courier
+Microsoft Rocketbox, Male_Adult_07 and Delivery_Male_01, with the m_walk_neutral and m_idle_breathe_01 motion captures from the same library. MIT license, reproduced in ROCKETBOX-LICENSE.txt. The showcase converts these assets to glTF, compresses the textures, removes forward translation from the motion cycle, and positions the actors and their hands in the scene.
+https://github.com/microsoft/Microsoft-Rocketbox/tree/0943055db6ec570bcef9f2c8b41c9e5467c808f9
+
+Raccoon
+“Low-poly Racoon Run Animation” by avatrass. Creative Commons Attribution 4.0 International. Obtained through the Objaverse archive. Changes include subdivision of the bind mesh, smooth normals, a new guard coat with a ringed tail and facial mask, scaled anatomy, world-space motion and paw contact. The body and its articulated animation are an artist's reconstruction.
+https://sketchfab.com/3d-models/ee040f4719fa4b449176f860921a7655
+https://creativecommons.org/licenses/by/4.0/
+https://huggingface.co/datasets/allenai/objaverse
+
+Sky
+Qwantani Night (Pure Sky), photography by Greg Zaal and processing by Jarod Guest, Poly Haven. CC0 1.0 Universal. The night sky panorama supplies background radiance and reflections in the WebGL reconstruction.
+https://polyhaven.com/a/qwantani_night_puresky
+https://creativecommons.org/publicdomain/zero/1.0/

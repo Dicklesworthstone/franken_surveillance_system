@@ -5,3 +5,7 @@ out/
 *.tsbuildinfo
 .render-*/
 .evidence-*/
+.night-capture-*/
+public/.packing-*/
+
+.cloudflare/

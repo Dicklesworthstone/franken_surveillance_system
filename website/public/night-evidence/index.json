@@ -1,0 +1,896 @@
+{
+  "schema": "fss.web.alder_evidence.v1",
+  "modelDigest": "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74",
+  "capture": "/night-media/capture.json",
+  "captureDigest": "sha256:594ce43cc88060503bb0a041391876fe8e62f66b33d4dfa941f7e8209a8e27c2",
+  "ledgerScope": "Each case has its own isolated native replay deployment and ledger root. Cameras in that case share the deployment. Ledger sequence numbers are local to each case.",
+  "sampleSelection": "Fixed one-third and two-thirds frame positions in each sampled camera clip.",
+  "bounds": {
+    "width": 160,
+    "height": 90,
+    "subpixels": 256
+  },
+  "source": "Fictional rendered camera views. Capture times use an explicitly shared synthetic epoch.",
+  "cases": {
+    "after-hours": {
+      "views": {
+        "driveway": {
+          "film": "/night-media/after-hours-driveway.mp4",
+          "filmDigest": "sha256:477c1076f1116acbf34891152bcb198d8b341ad91605951a2ed978f8862ed8fb",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/5a46b9bc8613511909aadc7dd75640ccd35a8464b5d262259ad292fd0b6403af.mjpeg",
+          "inputDigest": "sha256:5a46b9bc8613511909aadc7dd75640ccd35a8464b5d262259ad292fd0b6403af",
+          "importId": "sha256:f7b8bc46c6740b7a7dbea6e02dc76e1daefa780c56a203149c413ae05481729c",
+          "importReceipt": "/night-evidence/objects/103ab903e37531290fabae8d75e5a44b29400bdf90b656d70fc10d0ac21aee59.txt",
+          "watch": "/night-evidence/objects/852a3a7ec0eda04aa95ffcbff69a6f92a775e740eb326153c0ec2d565b0c3afb.json",
+          "candidateCount": 0,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/2bd3832febdf938b4bcb1e15730226fb45375707df96015a268aa0a22e47e40c.jpg",
+              "inputOffset": 25856,
+              "inputBytes": 2586,
+              "report": "/night-evidence/objects/26fc221eae5f32f5062a3d91cf30f53ea35b2f4a07df9395f9cdb179c9dfdff1.json",
+              "capsule": "sha256:2cc300767272ab97084ab117610895b626465fbfba9cf80da638ae0718796039",
+              "detections": []
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/2bd3832febdf938b4bcb1e15730226fb45375707df96015a268aa0a22e47e40c.jpg",
+              "inputOffset": 54302,
+              "inputBytes": 2586,
+              "report": "/night-evidence/objects/4271abd4d693a4553b4a6f521d2efc6b401b177e7a232834eea3fa968a51a778.json",
+              "capsule": "sha256:0b05611cb89f6cae7b2fe6e905257a69f728755e2579acd959a3ef1683ee1b53",
+              "detections": []
+            }
+          ],
+          "trackLabels": [],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000,
+          "dwell": {
+            "report": "/night-evidence/objects/616864966d38bc155602e5978423a22b0851be90d8051e422e9f909659942659.json",
+            "count": 0,
+            "longestSeconds": null,
+            "source": "Sampled image-zone tracks. At least five observations spanning one second, with gaps bounded by the sample interval and clock uncertainty. A track can move inside this zone."
+          }
+        },
+        "entry": {
+          "film": "/night-media/after-hours-entry.mp4",
+          "filmDigest": "sha256:de91154cc9b76307b40730ae30e0526e7803f698a5e1d54b279cf643c11c70db",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/9d434c55ff59fd186e5f5d7734d76d47100b04a2987aedd082321c24084cd325.mjpeg",
+          "inputDigest": "sha256:9d434c55ff59fd186e5f5d7734d76d47100b04a2987aedd082321c24084cd325",
+          "importId": "sha256:c050d3ce359dcf6d5aafe6cb7a40defb1dd75a51141960407f085eb64d154e12",
+          "importReceipt": "/night-evidence/objects/89cada426ea1e93a6630042a1e0f0dbc8b413c4178454bd6ff0934e9e8a3fcc9.txt",
+          "watch": "/night-evidence/objects/483f76dae3a4c142f0dd67e5efc9ada3dadc952f39d729af6d5dc25eed6e8db5.json",
+          "candidateCount": 3,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/0ef32aa4da4db6624a22800309afd02eae857434fbe1e355fbeb5e56fddd8f6d.jpg",
+              "inputOffset": 36522,
+              "inputBytes": 3611,
+              "report": "/night-evidence/objects/f33c81781f674e2a85afbdf0bb988ab104393aff2a560dc124c3cb607ff8ab8f.json",
+              "capsule": "sha256:ad2f795c2e9c6067858825491366863ffec7c45bc0645d8f625262d2d1e32a53",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.82140225,
+                  "bounds_subpixel": [
+                    24080,
+                    12020,
+                    26889,
+                    19046
+                  ]
+                }
+              ]
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/93ae4f5910b0be17900dc3a2413c57146e4c53c9a3e52a01fbf4301d298af3bd.jpg",
+              "inputOffset": 76005,
+              "inputBytes": 3587,
+              "report": "/night-evidence/objects/c4681f93ec64183019f4bafb9d06487dfcbeac7dc9007c89d414a0a60c40b032.json",
+              "capsule": "sha256:e1d0dba6b7d6d54931c5a09ada59303fe4d0022cee58b2d661f68e3f017576e4",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.7888786,
+                  "bounds_subpixel": [
+                    23116,
+                    10704,
+                    24478,
+                    15074
+                  ]
+                }
+              ]
+            }
+          ],
+          "trackLabels": [],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000,
+          "dwell": {
+            "report": "/night-evidence/objects/dffba71fdc9d40e12e1e35e1faeb610712ccaae35681fc8fde2d07d59f1bb76c.json",
+            "count": 3,
+            "longestSeconds": 6.998,
+            "source": "Sampled image-zone tracks. At least five observations spanning one second, with gaps bounded by the sample interval and clock uncertainty. A track can move inside this zone."
+          }
+        },
+        "porch": {
+          "film": "/night-media/after-hours-porch.mp4",
+          "filmDigest": "sha256:663a9990ec0c2d6b277d63d38cde120103d1264f6ce4ebd6fb4dff2e8b0c30fc",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/02301f26091f302412d5274dbefa2c4bc217a94ac8c7a6b07769a2a707a16938.mjpeg",
+          "inputDigest": "sha256:02301f26091f302412d5274dbefa2c4bc217a94ac8c7a6b07769a2a707a16938",
+          "importId": "sha256:9fba1ca87a415699e2af0e0eeb1f816c776f11504a447c4751b9ba1761a54ee1",
+          "importReceipt": "/night-evidence/objects/788cf73adc7ae6491c71f1260eba157af93de616b7a67c12077bc0259fb97e90.txt",
+          "watch": "/night-evidence/objects/0666a882fefd3a3b14877e537841e3ef470fa7942dfd548097a90a7c6d47bcc7.json",
+          "candidateCount": 1,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/7739f7a8a1e07378fa12546b99a44e17a31e3109797ae203a72d7da7e6e72cd5.jpg",
+              "inputOffset": 27309,
+              "inputBytes": 2733,
+              "report": "/night-evidence/objects/618912d79bfd68ffed297c7f90585e154dd612f55f0d655b1cec0fc67135d3c9.json",
+              "capsule": "sha256:a6fe7720d5990c5cefcf2d627fbab01efa7307cab66fd2b72ac08a2432a02b69",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.69181174,
+                  "bounds_subpixel": [
+                    21588,
+                    10732,
+                    23379,
+                    14737
+                  ]
+                },
+                {
+                  "label": "car",
+                  "score": 0.32822534,
+                  "bounds_subpixel": [
+                    0,
+                    5806,
+                    3130,
+                    9239
+                  ]
+                }
+              ]
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/ad292660f66e8a960e4070a9e27f9e419c882b708c14c041619f2494c214a02e.jpg",
+              "inputOffset": 57558,
+              "inputBytes": 2815,
+              "report": "/night-evidence/objects/647b712bd0cfbe4c40e359fdd789a4b5a8a7e32de9fc187bf27dc3535469d6a6.json",
+              "capsule": "sha256:4d37b5433ef763efddfbce65e7cfb6aa5f38746a46913c134e6e2df47c436759",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.7804805,
+                  "bounds_subpixel": [
+                    25531,
+                    13093,
+                    28610,
+                    22919
+                  ]
+                },
+                {
+                  "label": "car",
+                  "score": 0.32741585,
+                  "bounds_subpixel": [
+                    0,
+                    5787,
+                    3133,
+                    9241
+                  ]
+                }
+              ]
+            }
+          ],
+          "trackLabels": [
+            {
+              "candidate": "sha256:53253f41aea772026fb56cc5aa7fefe7289a861069597c3c709b458133aa3940",
+              "frame": 6,
+              "time": 1.5,
+              "label": "person",
+              "score": 0.7613709,
+              "supports": true,
+              "overlapPpm": 588748,
+              "evidenceDigest": "sha256:f50c5dc2c71634b7db75e5a0ae0c05ae5be67d6af411be58b69c214bdff153fa",
+              "capsule": "sha256:bb54329afbd31db40531c2d04fc924664aae8cbb9aff96abe5f9d96368f19169"
+            }
+          ],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000,
+          "dwell": {
+            "report": "/night-evidence/objects/48f52b303e990fc8325208605bbb8feeb555f965cef995574df678af9d63d64d.json",
+            "count": 1,
+            "longestSeconds": 6.248,
+            "source": "Sampled image-zone tracks. At least five observations spanning one second, with gaps bounded by the sample interval and clock uncertainty. A track can move inside this zone."
+          }
+        }
+      },
+      "belief": {
+        "status": "illustrative",
+        "hypothesis": "A person is visible in these camera recordings.",
+        "assumptions": "This sensitivity exercise uses an illustrative 20% prior and a 600\u2013800 milliban log-likelihood interval per positive camera. The package scores select observations; they do not set likelihoods. All cameras share a render and clock. Independent failures are a counterfactual. These probabilities have no field calibration or effect authority.",
+        "observations": [
+          {
+            "camera": "entry",
+            "frame": 10,
+            "time": 2.5,
+            "report": "/night-evidence/objects/f33c81781f674e2a85afbdf0bb988ab104393aff2a560dc124c3cb607ff8ab8f.json",
+            "score": 0.82140225,
+            "capsule": "sha256:ad2f795c2e9c6067858825491366863ffec7c45bc0645d8f625262d2d1e32a53"
+          },
+          {
+            "camera": "porch",
+            "frame": 21,
+            "time": 5.25,
+            "report": "/night-evidence/objects/647b712bd0cfbe4c40e359fdd789a4b5a8a7e32de9fc187bf27dc3535469d6a6.json",
+            "score": 0.7804805,
+            "capsule": "sha256:4d37b5433ef763efddfbce65e7cfb6aa5f38746a46913c134e6e2df47c436759"
+          }
+        ],
+        "variants": [
+          {
+            "id": "single",
+            "label": "One observed camera",
+            "input": "/night-evidence/objects/19c7a8a46dc14d661c81895bef5b60ce3a0f36f08c7a7f6f81cd972adb7d0423.json",
+            "report": "/night-evidence/objects/6cfc49c0635b66f0fb65068c56bc26ec7527ced114efbc65bc90581f9b3118d1.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              442688,
+              613137
+            ],
+            "supportingClusters": 1
+          },
+          {
+            "id": "shared",
+            "label": "Observed cameras with shared failure domains",
+            "input": "/night-evidence/objects/e7a4fcf91ec1ef2f9c9f3502e1550b0806fc147895a674c63a09395f940ec7f6.json",
+            "report": "/night-evidence/objects/0399bf13531c2a83baaae288fa6ee6ac01f46a35efc04f4ed53c74549b5b610c.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              442688,
+              613137
+            ],
+            "supportingClusters": 1
+          },
+          {
+            "id": "independent",
+            "label": "Counterfactual independent cameras",
+            "input": "/night-evidence/objects/030af8d3d87e70d56e5057f0f320ee8f1417dd4daa0777988ce42a50c934b49f.json",
+            "report": "/night-evidence/objects/8c04f3737225fddbddb51d8885765291f98831e2458d8208d4f5c35f216177e8.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              759746,
+              909091
+            ],
+            "supportingClusters": 2
+          }
+        ]
+      },
+      "associations": {
+        "pairs": {
+          "driveway+entry": {
+            "report": "/night-evidence/objects/cf6ede6b2e5ea28c6b212e96022aed79aefd9d03ebc588a96e8343457b1410b4.json",
+            "cameras": [
+              "driveway",
+              "entry"
+            ],
+            "count": 0
+          },
+          "driveway+porch": {
+            "report": "/night-evidence/objects/7e679b714c26e103801587e254b3272a002f9518f729b55b1cf25e0cc04b2253.json",
+            "cameras": [
+              "driveway",
+              "porch"
+            ],
+            "count": 0
+          },
+          "entry+porch": {
+            "report": "/night-evidence/objects/9aeac0372ca70f608a65e85925656f7456d586d662a18594fb86a95c7f0c1875.json",
+            "cameras": [
+              "entry",
+              "porch"
+            ],
+            "count": 0
+          }
+        },
+        "zone": [
+          -5.21924,
+          7.55275,
+          4,
+          4
+        ],
+        "referenceCamera": "driveway",
+        "referenceSeconds": 0.6666666666666666,
+        "projections": {
+          "driveway": [
+            -0.013306335581962401,
+            -0.06928140164615508,
+            3.5778449948453073,
+            -0.0011088612984968668,
+            -0.010731249464015649,
+            1.492491207152703,
+            3.045224585301498e-20,
+            0.005109879060788087,
+            -0.19152815584182487
+          ],
+          "entry": [
+            0.010703891093899812,
+            -0.013014499350759209,
+            -0.22071659058841722,
+            0.0017028917649386066,
+            0.0643495461515027,
+            -3.490478117997327,
+            4.439876359259953e-20,
+            0.004593652194469402,
+            -0.16866312883538728
+          ],
+          "porch": [
+            -0.013252447741066459,
+            0.01060066243942577,
+            0.44055197889692504,
+            -0.004146471379106683,
+            0.008971181188601051,
+            1.0415156018941478,
+            0,
+            0.004993004839490644,
+            -0.14805175579954669
+          ]
+        },
+        "method": "Four-metre square around the authored reference pose, on the y=0 plane. FSS matches decoded track entries within one metre and 250 ms. The cameras share a render and clock."
+      },
+      "agent": {
+        "open": "/night-evidence/objects/340864198e9ef7eb545533d144ee87b5fe1e03d4b5f3e4f2ff7dd722a9b06f99.json",
+        "orient": "/night-evidence/objects/67d596786407badda3c0243c8977752eaa15ebd9140ba18e888cbb6fa69ca245.json",
+        "notification": "/night-evidence/objects/31198e4031f0e3aedcc306f07481da1d323d8137f457dedf16e6ddaf048f0149.json",
+        "handoff": "/night-evidence/objects/334d5f3475c83d6e1915ca4ff3d0e35f36bb9e8d3e8e3bcc37c484db8286864e.json",
+        "resume": "/night-evidence/objects/36b0d93caf25247cc1511d331e7736b66c09b15fade917554d0a2ec5445d5ac2.json"
+      },
+      "ledger": {
+        "status": "verified",
+        "eventId": "event:watch:4926ec9a8641b9f5ba1727e96cbb94e7a329f55add06c88dbc60fd81e9af99b5",
+        "publication": "/night-evidence/objects/16914f59eaeded2f65367d45c70a04f40bb64811aede7916cbd65dca3ff6de72.json",
+        "repeat": "/night-evidence/objects/744af3463dd05f616c22ae3a113c6c4b28575698d8b96fc8abacfb86c28a40b7.json",
+        "custody": "/night-evidence/objects/17c968a62d5e2e84eca94d9f1571372c853c2f70871a01292fbf5b111749f145.json",
+        "sequence": 11,
+        "root": "sha256:50483ccc69fbdfa96192a03f13972d477aa780079aad7beaacf7632ec05412b0",
+        "objects": [
+          {
+            "digest": "sha256:35969bc30ec75b89535172de34d8b5383a4973058c80d55443370bc5bc4bd9f5",
+            "file": "/night-evidence/objects/35969bc30ec75b89535172de34d8b5383a4973058c80d55443370bc5bc4bd9f5.bin"
+          },
+          {
+            "digest": "sha256:ac89f194afe71a5efe0f21b4394bf3132a62646e6e3b6025ea067b7223d640f2",
+            "file": "/night-evidence/objects/ac89f194afe71a5efe0f21b4394bf3132a62646e6e3b6025ea067b7223d640f2.bin"
+          }
+        ],
+        "explain": "/night-evidence/objects/a4651b4279077b9330a569a5cec92b7c1b326f89a1a08d8317c7129089b8ef02.json",
+        "source": "entry",
+        "selection": "First native paired candidate when available, otherwise first image-zone candidate. Camera IDs sorted lexically."
+      },
+      "decision": {
+        "summary": "3 camera recordings yielded 4 image-zone motion candidates. The 6 scheduled frame inspections returned car, person. All views share one synthetic scene and clock.",
+        "authority": "Offline replay. No physical effects authorized.",
+        "observedLabels": [
+          "car",
+          "person"
+        ],
+        "effectsAuthorized": false,
+        "absenceCertified": false,
+        "independentConfirmation": false
+      }
+    },
+    "delivery": {
+      "views": {
+        "entry": {
+          "film": "/night-media/delivery-entry.mp4",
+          "filmDigest": "sha256:a4d2445a100e61d2d21b6f578b94cb7ddb565b48b84bb73c4c2a955108445261",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/920ee4b5a42104b70288ce769cce15fefe2f770716a024c48185d6a0a7d7137f.mjpeg",
+          "inputDigest": "sha256:920ee4b5a42104b70288ce769cce15fefe2f770716a024c48185d6a0a7d7137f",
+          "importId": "sha256:4d465aa230e81081bc4ed0cc173934d196abbb54c15fd48451392827001993d9",
+          "importReceipt": "/night-evidence/objects/fb4a58af7997f983d2f0b3edf1128fc41e0cc40506372e08e57940fbc6f8a8d1.txt",
+          "watch": "/night-evidence/objects/1d5f6080939ae659bf84d5b9d7ac7a8585178d8aebaec38a057e78b6ca6794a9.json",
+          "candidateCount": 8,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/02d0b6037dd5a8d5c023b0201abd3c1a397ad6bc99353e958e927928cb16c3fa.jpg",
+              "inputOffset": 36769,
+              "inputBytes": 3627,
+              "report": "/night-evidence/objects/e164543b135affdcc47873ff9bcfc646eaa35e7ce117b95a93d83770a554a051.json",
+              "capsule": "sha256:7d6b344c64a761c241cb332283cfb12ace6cd05b3eca6ff8a53e9124388c467e",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.7680698,
+                  "bounds_subpixel": [
+                    18639,
+                    11992,
+                    21545,
+                    21427
+                  ]
+                }
+              ]
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/c3825d1b3f6297748c0e1a513cbcc92dce37a2c65ab8fec40763e4f34bc88276.jpg",
+              "inputOffset": 76469,
+              "inputBytes": 3582,
+              "report": "/night-evidence/objects/6c1e7e3ebe8eca0f2a24dfd2f160a32692cd6ef3dad0d51f4745ce1bdca716a5.json",
+              "capsule": "sha256:78bce72a93eaf99f561235b42da674a948135a16c25059f6d7d27dc2846365e7",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.8589418,
+                  "bounds_subpixel": [
+                    24720,
+                    11523,
+                    26704,
+                    17027
+                  ]
+                }
+              ]
+            }
+          ],
+          "trackLabels": [
+            {
+              "candidate": "sha256:649d086309b7e367bde84d0f949c8a48cbb28b8ad9b02a6df09ee503fe870cbe",
+              "frame": 3,
+              "time": 0.75,
+              "label": "person",
+              "score": 0.85169655,
+              "supports": true,
+              "overlapPpm": 724991,
+              "evidenceDigest": "sha256:f3269edf36e7e0414eee38b06540867507852befe45d5e6e190c360e7a60f1a4",
+              "capsule": "sha256:886bb68ffad4a7ec7bd45b5285d9db385a4d3ca4cf33896499cb3763f884b3ad"
+            }
+          ],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000
+        },
+        "porch": {
+          "film": "/night-media/delivery-porch.mp4",
+          "filmDigest": "sha256:6fa3cf5e5de6801b869aa377461cfa8bcc5527c5b136990bca496b1b3c04680d",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/0efccb437cfa8b9b5c5e14566793f545f3eb44385ce43f5ac3c83978c945bd6a.mjpeg",
+          "inputDigest": "sha256:0efccb437cfa8b9b5c5e14566793f545f3eb44385ce43f5ac3c83978c945bd6a",
+          "importId": "sha256:5fe538ad607f0560b09cc20db6df3df8e31ec037ea33f2ed341a3a2e6426cadd",
+          "importReceipt": "/night-evidence/objects/6b29e4a17b10cf9007a6812d59e188e59e65c80c0ae2c12d3f8896b8d2a0eeff.txt",
+          "watch": "/night-evidence/objects/922ff69feb62f7b392947fd7a400d56b02ff4e831f32efda814e3bed9b0a13e2.json",
+          "candidateCount": 5,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/8c29c0ca3180af1e91058f7cab47ebe42a273f22eb599828ce20fb1579760e05.jpg",
+              "inputOffset": 27438,
+              "inputBytes": 2745,
+              "report": "/night-evidence/objects/09213160d39286761b8ef3236cf84f3b0fa7dd4d8d23f7ddecd1d07702457db0.json",
+              "capsule": "sha256:f50aacab887a16754cb4e13780f25796c4580db11e1e769b2a7ec893cdb38000",
+              "detections": []
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/1e24c4b891dc00dfe7a91313666f8b54d76945aeeac97779147dc71de0f8727c.jpg",
+              "inputOffset": 57539,
+              "inputBytes": 2739,
+              "report": "/night-evidence/objects/1074f847d3a18e43a243d2706a3e8fabbbb129e9bd26f337441003d180688ff9.json",
+              "capsule": "sha256:5b7ce94e386425ae4aed6fe8096814b63e814b8ea2fef19ffabd19f55cbe5d69",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.7148465,
+                  "bounds_subpixel": [
+                    21433,
+                    11366,
+                    23402,
+                    16880
+                  ]
+                }
+              ]
+            }
+          ],
+          "trackLabels": [],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000
+        }
+      },
+      "belief": {
+        "status": "illustrative",
+        "hypothesis": "A person is visible in these camera recordings.",
+        "assumptions": "This sensitivity exercise uses an illustrative 20% prior and a 600\u2013800 milliban log-likelihood interval per positive camera. The package scores select observations; they do not set likelihoods. All cameras share a render and clock. Independent failures are a counterfactual. These probabilities have no field calibration or effect authority.",
+        "observations": [
+          {
+            "camera": "entry",
+            "frame": 21,
+            "time": 5.25,
+            "report": "/night-evidence/objects/6c1e7e3ebe8eca0f2a24dfd2f160a32692cd6ef3dad0d51f4745ce1bdca716a5.json",
+            "score": 0.8589418,
+            "capsule": "sha256:78bce72a93eaf99f561235b42da674a948135a16c25059f6d7d27dc2846365e7"
+          },
+          {
+            "camera": "porch",
+            "frame": 21,
+            "time": 5.25,
+            "report": "/night-evidence/objects/1074f847d3a18e43a243d2706a3e8fabbbb129e9bd26f337441003d180688ff9.json",
+            "score": 0.7148465,
+            "capsule": "sha256:5b7ce94e386425ae4aed6fe8096814b63e814b8ea2fef19ffabd19f55cbe5d69"
+          }
+        ],
+        "variants": [
+          {
+            "id": "single",
+            "label": "One observed camera",
+            "input": "/night-evidence/objects/74013dab5e305103ba654bd75ad50662375343b26614bf687411d95dae11eb9b.json",
+            "report": "/night-evidence/objects/59fa030cc309cdebe87f1ac342a2396afa3479bc94a2527cc5c64a9547f838f0.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              442688,
+              613137
+            ],
+            "supportingClusters": 1
+          },
+          {
+            "id": "shared",
+            "label": "Observed cameras with shared failure domains",
+            "input": "/night-evidence/objects/f534dc0cfafd9611cb4b20803700d2d906c5c289a9bbed098e571c2689c2c2fd.json",
+            "report": "/night-evidence/objects/ad22aab59e3e513bc009f1382bd8fe5e5842ea1b5fe2052ddfbc763208df067a.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              442688,
+              613137
+            ],
+            "supportingClusters": 1
+          },
+          {
+            "id": "independent",
+            "label": "Counterfactual independent cameras",
+            "input": "/night-evidence/objects/bd2fffa3d59198c18812d6e3114b85f4ae7f694506144f857aa9de0dcd6b6d12.json",
+            "report": "/night-evidence/objects/da8edc3222b9ab6c754858f188108113b2b8809a53d687f4a6e7e868bdd0ae40.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              759746,
+              909091
+            ],
+            "supportingClusters": 2
+          }
+        ]
+      },
+      "associations": {
+        "pairs": {
+          "entry+porch": {
+            "report": "/night-evidence/objects/fadf1e159c5895cd7865dcfff2ad23b7244a27a240042ba0ac2de2516b4c82a5.json",
+            "cameras": [
+              "entry",
+              "porch"
+            ],
+            "count": 0
+          }
+        },
+        "zone": [
+          -4.45349,
+          7.5359300000000005,
+          4,
+          4
+        ],
+        "referenceCamera": "entry",
+        "referenceSeconds": 2.25,
+        "projections": {
+          "entry": [
+            0.010703891093899812,
+            -0.013014499350759209,
+            -0.22071659058841722,
+            0.0017028917649386066,
+            0.0643495461515027,
+            -3.490478117997327,
+            4.439876359259953e-20,
+            0.004593652194469402,
+            -0.16866312883538728
+          ],
+          "porch": [
+            -0.013252447741066459,
+            0.01060066243942577,
+            0.44055197889692504,
+            -0.004146471379106683,
+            0.008971181188601051,
+            1.0415156018941478,
+            0,
+            0.004993004839490644,
+            -0.14805175579954669
+          ]
+        },
+        "method": "Four-metre square around the authored reference pose, on the y=0 plane. FSS matches decoded track entries within one metre and 250 ms. The cameras share a render and clock."
+      },
+      "agent": {
+        "open": "/night-evidence/objects/63fe02e4e24055f13e62083fa0dc3753adb85b7f0e675d19ae7d72849d6fd20f.json",
+        "orient": "/night-evidence/objects/50f890b006c63b1deb0673d314fd99b3a8d3e02a6b8c172e5fc49ec117a12022.json",
+        "notification": "/night-evidence/objects/1ebe5cc9e02c78e2933c52cac800931bd7f7ce60e6d228f61432b6e2037c6b23.json",
+        "handoff": "/night-evidence/objects/0182069ef3d694249a0708a9807e2fb81a11f436e18eadf01a990980c13b98b6.json",
+        "resume": "/night-evidence/objects/54732aac257acaf84ddf7064d84b00e592097f5ea2c66e3a6016af34f8f91ae3.json"
+      },
+      "ledger": {
+        "status": "verified",
+        "eventId": "event:watch:0bf9c8e54fdd58a1c8174aab9e5d897ea5f90fe6d9246d14b36bf0760ef42b9c",
+        "publication": "/night-evidence/objects/fde4eff92500f7a6fde5c91d2604eaa20234080f8e720dc13d01518d195266a5.json",
+        "repeat": "/night-evidence/objects/3597321dadc73bd4dea6f084a324a63ca604e87483721971e79ae89b53609edc.json",
+        "custody": "/night-evidence/objects/c4ae830518c6bb778f38fbe71d1bed3837c9b8aa21fef0d5eb70be63e3e70e95.json",
+        "sequence": 8,
+        "root": "sha256:d6b7cc3382b05234c34c244c9e621e2be13d73a70af37484fa6a522ab0d56620",
+        "objects": [
+          {
+            "digest": "sha256:65e54ba08474659ba163dbb027106a8fdbbea3fdc584065e8f4a22676e24585e",
+            "file": "/night-evidence/objects/65e54ba08474659ba163dbb027106a8fdbbea3fdc584065e8f4a22676e24585e.bin"
+          },
+          {
+            "digest": "sha256:f937bab8e02fdc8b1386fb54e0cf67b6337beb91164758e7dc7dcbda12933535",
+            "file": "/night-evidence/objects/f937bab8e02fdc8b1386fb54e0cf67b6337beb91164758e7dc7dcbda12933535.bin"
+          }
+        ],
+        "explain": "/night-evidence/objects/9ea31086d50cbd2f70a1329a3d9da5eb9cfe020d98bb54a9d3e6bb007bafc8f2.json",
+        "source": "entry",
+        "selection": "First native paired candidate when available, otherwise first image-zone candidate. Camera IDs sorted lexically."
+      },
+      "decision": {
+        "summary": "2 camera recordings yielded 13 image-zone motion candidates. The 4 scheduled frame inspections returned person. All views share one synthetic scene and clock.",
+        "authority": "Offline replay. No physical effects authorized.",
+        "observedLabels": [
+          "person"
+        ],
+        "effectsAuthorized": false,
+        "absenceCertified": false,
+        "independentConfirmation": false
+      }
+    },
+    "wildlife": {
+      "views": {
+        "garden": {
+          "film": "/night-media/wildlife-garden.mp4",
+          "filmDigest": "sha256:af46e0248e0027a355e01298ba3584d458f3a23f3d3659132caadad27ed0e775",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/5db754f4abeae728030779fc3309b3d0974bdfeefad911e5b8fc8b9504ae659d.mjpeg",
+          "inputDigest": "sha256:5db754f4abeae728030779fc3309b3d0974bdfeefad911e5b8fc8b9504ae659d",
+          "importId": "sha256:a2ce9f43965eadba38c74061471aad8d8360d93c841170b14b3beede481aa1fc",
+          "importReceipt": "/night-evidence/objects/fb0365f632d2ffddc5cc5a14e8a9a9889652b77c47d5993afa3bb8c9501805e8.txt",
+          "watch": "/night-evidence/objects/e68b7b19e853c03cf6675c4014536ea3b45706c548bf48f532f5732ba0a73972.json",
+          "candidateCount": 3,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/f5b3dae38f4aa98cbbca127243b5173906eaa1ffa47c3730c0ec99d620c14231.jpg",
+              "inputOffset": 33705,
+              "inputBytes": 3363,
+              "report": "/night-evidence/objects/6b5735fa960cf50fda99c0a46bd65712111de3f50db2ae44141a18494c15c8fd.json",
+              "capsule": "sha256:9ee612ec1f45f36f928d39b36479a668a6a6d44b7d1d65162a90d2cea448840e",
+              "detections": [
+                {
+                  "label": "person",
+                  "score": 0.37316036,
+                  "bounds_subpixel": [
+                    13893,
+                    3930,
+                    15964,
+                    8391
+                  ]
+                }
+              ]
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/a938c71284dc7375deb865bda3e2dbc419b89a9cc3e2f7ee9fe840c19d7b0bec.jpg",
+              "inputOffset": 70550,
+              "inputBytes": 3353,
+              "report": "/night-evidence/objects/738beb25ad29f3716de7f46ae98cb73b74a431a7beca942f891d172d595409f8.json",
+              "capsule": "sha256:05079166799d8952cf4accfdffd096cc4bb7093395b93cd751056b364e3009ec",
+              "detections": []
+            }
+          ],
+          "trackLabels": [],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000
+        },
+        "porch": {
+          "film": "/night-media/wildlife-porch.mp4",
+          "filmDigest": "sha256:2b94b88d4ded3aedc4ad1f119978a4d429239888c302cdaa0b387c449dba1f75",
+          "filmFps": 12,
+          "filmFrames": 96,
+          "nativeFps": 4,
+          "frames": 32,
+          "input": "/night-evidence/objects/58b78a85a884580581030b30b65443c81683e5f2ee7218b2868ccdff3d745ef5.mjpeg",
+          "inputDigest": "sha256:58b78a85a884580581030b30b65443c81683e5f2ee7218b2868ccdff3d745ef5",
+          "importId": "sha256:616804c47d90cd3feeb87a86355dc945e03634c86fc3b58df99e3dd84f0417c5",
+          "importReceipt": "/night-evidence/objects/2b05728ffe99efc258fc265b2314232fdf3f25184bf6238bde0d233ae5decf81.txt",
+          "watch": "/night-evidence/objects/61f993bdc53690af2210fb601f382a3b336a8ce5d20d586ecba1fc784acb669c.json",
+          "candidateCount": 0,
+          "samples": [
+            {
+              "time": 2.5,
+              "frame": 10,
+              "filmFrame": 30,
+              "image": "/night-evidence/objects/1d1b9786fe4ddf39f5704c0a73104a6707bd8167c85f124d51755465599b88bc.jpg",
+              "inputOffset": 27285,
+              "inputBytes": 2725,
+              "report": "/night-evidence/objects/2075022ee011deb0bf56742daf3ede3ad1652227ec4c14264989c6e775de48dc.json",
+              "capsule": "sha256:103e1ba00e0277e7308ff5b2686e1d46594247141329353cf4ed22065decc1d7",
+              "detections": []
+            },
+            {
+              "time": 5.25,
+              "frame": 21,
+              "filmFrame": 63,
+              "image": "/night-evidence/objects/cd614614af576f4f49067118f2977c6a68e155c43d985e6f046d26eb04964061.jpg",
+              "inputOffset": 57317,
+              "inputBytes": 2730,
+              "report": "/night-evidence/objects/6bbda00da83d019d7cfc13ecd9acef57a269fb51c6f3c6bd7e7b610418a836a4.json",
+              "capsule": "sha256:9431424e400ef8950c649771c945590b5f1cf11742d16c025f0d0b8d99ecb386",
+              "detections": []
+            }
+          ],
+          "trackLabels": [],
+          "modelGeneration": "model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1",
+          "minimumScorePpm": 300000
+        }
+      },
+      "belief": {
+        "status": "illustrative",
+        "hypothesis": "A person is visible in these camera recordings.",
+        "assumptions": "This sensitivity exercise uses an illustrative 20% prior and a 600\u2013800 milliban log-likelihood interval per positive camera. The package scores select observations; they do not set likelihoods. All cameras share a render and clock. Independent failures are a counterfactual. These probabilities have no field calibration or effect authority.",
+        "observations": [
+          {
+            "camera": "garden",
+            "frame": 10,
+            "time": 2.5,
+            "report": "/night-evidence/objects/6b5735fa960cf50fda99c0a46bd65712111de3f50db2ae44141a18494c15c8fd.json",
+            "score": 0.37316036,
+            "capsule": "sha256:9ee612ec1f45f36f928d39b36479a668a6a6d44b7d1d65162a90d2cea448840e"
+          }
+        ],
+        "variants": [
+          {
+            "id": "single",
+            "label": "One observed camera",
+            "input": "/night-evidence/objects/523b457b4e312c34494cb6913f807796bf1686f4e03f2af2d17ec0023859b86c.json",
+            "report": "/night-evidence/objects/a9b8209cd2d4139ca4e83651116cd9933ac1c7bc7b45861127f613b2fb208134.json",
+            "decision": "request_operator_confirmation",
+            "probabilityPpm": [
+              442688,
+              613137
+            ],
+            "supportingClusters": 1
+          }
+        ]
+      },
+      "associations": {
+        "pairs": {
+          "garden+porch": {
+            "report": "/night-evidence/objects/b3f1ded0353f9291a652e210ed1a2731fb901906a1fee9196ec23b92648b7da6.json",
+            "cameras": [
+              "garden",
+              "porch"
+            ],
+            "count": 0
+          }
+        },
+        "zone": [
+          -0.07511000000000001,
+          4.51717,
+          4,
+          4
+        ],
+        "referenceCamera": "garden",
+        "referenceSeconds": 1.25,
+        "projections": {
+          "garden": [
+            0.007788750438762225,
+            0.02348658168611969,
+            -1.8495070789838073,
+            -0.005718323106939361,
+            0.09303919400413824,
+            -2.8384525117255794,
+            -3.01540941881275e-19,
+            0.008648835610739038,
+            -0.23028116372627924
+          ],
+          "porch": [
+            -0.013252447741066459,
+            0.01060066243942577,
+            0.44055197889692504,
+            -0.004146471379106683,
+            0.008971181188601051,
+            1.0415156018941478,
+            0,
+            0.004993004839490644,
+            -0.14805175579954669
+          ]
+        },
+        "method": "Four-metre square around the authored reference pose, on the y=0 plane. FSS matches decoded track entries within one metre and 250 ms. The cameras share a render and clock."
+      },
+      "agent": {
+        "open": "/night-evidence/objects/5edaf93e572aeabc09b20ca867fa2831b59ca479ac8faf60d52b1c1e5e1a3df1.json",
+        "orient": "/night-evidence/objects/55b36783e755590e9d02d5e345a157f4aa2507feff9219c7f96f4f570f571238.json",
+        "notification": "/night-evidence/objects/43f2944fd611da02b13138e98b661bef81adf9ec77d46fb90dfc2326ae00bcd4.json",
+        "handoff": "/night-evidence/objects/71885fb6789bd951b4af137c88fd1e7bf9e50d4b7612adc4a3257c39d687b04a.json",
+        "resume": "/night-evidence/objects/9d3921a9bfe6ad0c8bb2fc4c5d55b2fd7be66d50ee6d1bd6e8df1ef531033756.json"
+      },
+      "ledger": {
+        "status": "verified",
+        "eventId": "event:watch:f0675c47e6b442701a72aafa75dadde5d1f4fbafb32eba65cccbecc1bd99db6d",
+        "publication": "/night-evidence/objects/36dba1165c5117002fd97307aea2c41835f5b29b7cdd3a6b45d21304e42921c9.json",
+        "repeat": "/night-evidence/objects/5d31714b87f31b247fea416c0f5f6533c6d398ee22dc62e2020a093e4d7e090b.json",
+        "custody": "/night-evidence/objects/60a36d19cb5069cb37b33b141e78bd87c922f3ad28f5c47b3f8bcd68e68e2b3d.json",
+        "sequence": 8,
+        "root": "sha256:fbec5ea15bec81b2decb0f985976744c72e8c30c821c7e198ab8ecd8b3fc4789",
+        "objects": [
+          {
+            "digest": "sha256:157ca52170e4d6c8bcaec8c51bf95a1e0da558db0ab0d59688c4748886c6c9ea",
+            "file": "/night-evidence/objects/157ca52170e4d6c8bcaec8c51bf95a1e0da558db0ab0d59688c4748886c6c9ea.bin"
+          },
+          {
+            "digest": "sha256:b70bf2172395fa4f318ca125bef1733da433e1642674b695f03de8ed89056793",
+            "file": "/night-evidence/objects/b70bf2172395fa4f318ca125bef1733da433e1642674b695f03de8ed89056793.bin"
+          }
+        ],
+        "explain": "/night-evidence/objects/120d14e7ade9eb4461a02be67c20fa83c515c3eab1d923fd7ab063d8e035fbf6.json",
+        "source": "garden",
+        "selection": "First native paired candidate when available, otherwise first image-zone candidate. Camera IDs sorted lexically."
+      },
+      "decision": {
+        "summary": "2 camera recordings yielded 3 image-zone motion candidates. The 4 scheduled frame inspections returned person. All views share one synthetic scene and clock.",
+        "authority": "Offline replay. No physical effects authorized.",
+        "observedLabels": [
+          "person"
+        ],
+        "effectsAuthorized": false,
+        "absenceCertified": false,
+        "independentConfirmation": false
+      }
+    }
+  }
+}
