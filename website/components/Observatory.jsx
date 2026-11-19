@@ -7,7 +7,7 @@ import {
   ArrowUpRight,
   Box,
   Camera,
-  Crosshair,
+  DraftingCompass,
   Film,
   Layers3,
   Maximize2,
@@ -25,6 +25,9 @@ import {
 import CameraFilm from "./CameraFilm";
 import EvidenceReplay from "./EvidenceReplay";
 import PairInspector from "./PairInspector";
+import FieldHero from "./FieldHero";
+import EvidenceDesk from "./EvidenceDesk";
+import AgentDesk, { Sources } from "./AgentDesk";
 import {
   cameras,
   cameraAsset,
@@ -165,7 +168,7 @@ function useEvidence(file) {
   }, [file]);
   return result && result.file === file ? result : { status: "loading" };
 }
-export default function Observatory() {
+export default function Observatory({ field }) {
   const [mode, setMode] = useState("scene"),
     [peerId, setPeer] = useState(null);
   const [selected, select] = useState(0),
@@ -173,6 +176,7 @@ export default function Observatory() {
     [playing, play] = useState(false),
     [view, setView] = useState("overview"),
     [cones, setCones] = useState(true),
+    [survey, setSurvey] = useState(false),
     [reset, setReset] = useState(0),
     [film, openFilm] = useState(null),
     [expanded, expand] = useState(false);
@@ -281,7 +285,10 @@ export default function Observatory() {
             <a className="active" href="#simulator">
               Simulator
             </a>
-            <a href="#films">Film archive</a>
+            <a href="#casebook">Evidence desk</a>
+            <a className="desktop-link" href="#agent-console">
+              Agent console
+            </a>
             <a
               className="source"
               href={SOURCE}
@@ -294,32 +301,22 @@ export default function Observatory() {
         </div>
       </header>
       <main className="wrap" id="top">
-        <section className="intro">
-          <div>
-            <div className="eyebrow">
-              <span className="live-dot" /> INTERACTIVE FIELD LAB
-            </div>
-            <h1>
-              Property observatory<span>.</span>
-            </h1>
-            <p>
-              Explore a virtual home through three cameras. Follow each
-              encounter from motion to evidence.
-            </p>
-          </div>
-          <div className="site-id">
-            <Crosshair size={18} />
-            <div>
-              <small>OBSERVATION SITE</small>
-              <strong>Juniper House</strong>
-            </div>
-          </div>
-        </section>
+        <FieldHero />
         <section
           id="simulator"
           className="simulator"
           aria-label="Property simulator"
         >
+          <div className="chapter-heading">
+            <div>
+              <span className="section-kicker">INTERACTIVE DIGITAL TWIN</span>
+              <h2>Inside Juniper House.</h2>
+            </div>
+            <p>
+              Orbit the house, choose a camera, or switch to survey mode to see
+              measured ground entries appear as the encounter unfolds.
+            </p>
+          </div>
           <div className="scenario-bar">
             <span className="micro">SCENARIO</span>
             <div className="scenario-tabs">
@@ -352,6 +349,25 @@ export default function Observatory() {
                       : camera.label.toUpperCase() + " CAMERA"}
                 </span>
                 <div>
+                  <button
+                    className={
+                      "survey-button" +
+                      (survey && view === "overview" && !evidenceMode
+                        ? " lit"
+                        : "")
+                    }
+                    aria-pressed={
+                      survey && view === "overview" && !evidenceMode
+                    }
+                    onClick={() => {
+                      const active =
+                        survey && view === "overview" && !evidenceMode;
+                      openView("overview");
+                      setSurvey(!active);
+                    }}
+                  >
+                    <DraftingCompass size={15} /> Survey mode
+                  </button>
                   <button
                     className={"icon" + (cones ? " lit" : "")}
                     disabled={evidenceMode || view !== "overview"}
@@ -428,12 +444,30 @@ export default function Observatory() {
                     view={view}
                     cones={cones}
                     reset={reset}
+                    entries={
+                      survey && view === "overview" ? field.survey[s.id] : null
+                    }
                   />
                 )}
                 {!evidenceMode && (
                   <span className="scene-label">
                     <span />{" "}
-                    {view === "overview" ? "SPATIAL MODEL" : "OPTICAL FEED"}
+                    {view === "overview"
+                      ? survey
+                        ? "GROUND SURVEY"
+                        : "SPATIAL MODEL"
+                      : "OPTICAL FEED"}
+                  </span>
+                )}
+                {!evidenceMode && view === "overview" && survey && (
+                  <span className="survey-key">
+                    <i /> Porch <i /> Driveway ·{" "}
+                    {
+                      field.survey[s.id].filter(
+                        (e) => e.segment / recording.nativeFps <= time,
+                      ).length
+                    }{" "}
+                    measured entries
                   </span>
                 )}
                 {!evidenceMode && view === "overview" && (
@@ -586,6 +620,57 @@ export default function Observatory() {
                     )}
                   </div>
                 </>
+              ) : survey && view === "overview" ? (
+                <>
+                  <div className="facts">
+                    <div>
+                      <span>Surveyed zone</span>
+                      <strong>{s.zone}</strong>
+                    </div>
+                    <div>
+                      <span>Coordinates</span>
+                      <strong>Local ground plane · metres</strong>
+                    </div>
+                  </div>
+                  <div className="trace native-trace">
+                    <div className="micro">MEASURED GROUND ENTRIES</div>
+                    {field.survey[s.id].length === 0 ? (
+                      <p>
+                        Neither camera produced a measured ground entry. The
+                        fixture subject can still be present.
+                      </p>
+                    ) : (
+                      field.survey[s.id]
+                        .toSorted((a, b) => a.segment - b.segment)
+                        .map((e) => (
+                          <button
+                            key={
+                              e.camera +
+                              "-" +
+                              e.segment +
+                              "-" +
+                              e.ground.join(",")
+                            }
+                            onClick={() => at(e.segment / recording.nativeFps)}
+                            className={
+                              e.segment / recording.nativeFps <= time
+                                ? "reached"
+                                : ""
+                            }
+                          >
+                            <span className="trace-dot" />
+                            <span>
+                              {e.camera === "drive" ? "Driveway" : "Porch"} ·{" "}
+                              {e.ground.map((n) => n.toFixed(2)).join(", ")} m
+                            </span>
+                            <time>
+                              {stamp(e.segment / recording.nativeFps, true)}
+                            </time>
+                          </button>
+                        ))
+                    )}
+                  </div>
+                </>
               ) : (
                 <>
                   <div className="facts">
@@ -642,10 +727,17 @@ export default function Observatory() {
               )}
               <a
                 className="proof-link"
-                href={"/evidence/" + (comparing ? pairFile : asset + ".json")}
+                href={
+                  "/evidence/" +
+                  (comparing
+                    ? pairFile
+                    : !evidenceMode && survey && view === "overview"
+                      ? s.id + "-drive-porch.json"
+                      : asset + ".json")
+                }
               >
                 <ScanLine size={16} />
-                {comparing
+                {comparing || (!evidenceMode && survey && view === "overview")
                   ? "Open native pair report"
                   : native
                     ? native.candidates +
@@ -657,6 +749,21 @@ export default function Observatory() {
             </aside>
           </div>
         </section>
+        <EvidenceDesk
+          field={field}
+          onSurvey={() => {
+            change(0);
+            openView("overview");
+            setSurvey(true);
+            at(
+              Math.max(...field.association.marks.map((m) => m.segment)) /
+                recording.nativeFps,
+            );
+            document.querySelector("#simulator").scrollIntoView();
+          }}
+        />
+        <AgentDesk data={field.agent} />
+        <Sources />
         <section id="films" className="films-section">
           <div className="section-head">
             <div>
@@ -715,7 +822,7 @@ export default function Observatory() {
       <footer>
         <div className="wrap">
           <Logo />
-          <span>Owner-authorized sensing · Reference implementation</span>
+          <a href="#top">Back to top ↑</a>
         </div>
       </footer>
       {film && <FilmDialog film={film} close={() => openFilm(null)} />}

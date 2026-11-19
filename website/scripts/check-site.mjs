@@ -1,5 +1,6 @@
 // Run against the built export. Exercise the selected footage, measured boxes,
 // archive and shared timeline in a real browser, including failure paths.
+import { checkField } from "./check-field.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import {
@@ -62,6 +63,7 @@ try {
         errors.push(r.status() + " " + new URL(r.url()).pathname);
     });
     await page.goto(origin);
+    await checkField(page, width);
     const index = await report(page, "index.json");
     for (const s of cases) {
       await button(page, s.short).click();
@@ -295,6 +297,12 @@ try {
   await fallback.getByLabel("Second camera").selectOption("porch");
   await fallback.getByText("Pair report unavailable.").waitFor();
   assert.equal(await fallback.locator(".native-box").count(), 0);
+  await button(fallback, "Event ledger").click();
+  await fallback.route("**/field/*.bin", (route) =>
+    route.fulfill({ status: 503, body: "Unavailable" }),
+  );
+  await button(fallback, "Verify bytes").click();
+  await fallback.locator('[data-verdict="unavailable"]').waitFor();
   await fallback.close();
   console.log(
     "All fallback cameras and both unavailable-report states passed.",

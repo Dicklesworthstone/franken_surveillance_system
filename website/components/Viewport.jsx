@@ -3,9 +3,16 @@ import { useEffect, useRef, useState } from "react";
 import CameraFilm from "./CameraFilm";
 import { createProperty } from "../lib/property";
 
-import { cameraAsset } from "../lib/scenarios";
+import { cameraAsset, recording, stamp } from "../lib/scenarios";
 
-export default function Viewport({ scenario, time, view, cones, reset }) {
+export default function Viewport({
+  scenario,
+  time,
+  view,
+  cones,
+  reset,
+  entries,
+}) {
   const surface = useRef(null),
     stage = useRef(null),
     current = useRef(null),
@@ -13,9 +20,9 @@ export default function Viewport({ scenario, time, view, cones, reset }) {
   const [ready, setReady] = useState(false),
     [failed, setFailed] = useState(false);
   useEffect(() => {
-    current.current = { scenario, time, view, cones };
+    current.current = { scenario, time, view, cones, entries };
     frame.current?.();
-  }, [scenario, time, view, cones]);
+  }, [scenario, time, view, cones, entries]);
   useEffect(() => {
     const canvas = surface.current,
       parent = canvas.parentElement;
@@ -36,7 +43,19 @@ export default function Viewport({ scenario, time, view, cones, reset }) {
     const draw = () => {
       const v = current.current;
       if (!v) return;
-      const o = model.draw(v.scenario, v.time, v.view, v.cones);
+      const o = model.draw(v.scenario, v.time, v.view, v.cones, v.entries);
+      for (const marker of parent.querySelectorAll(".survey-point")) {
+        const e = o.entryLabels[marker.dataset.camera];
+        marker.hidden = !e || e.x < 0 || e.x > 100 || e.y < 0 || e.y > 100;
+        if (e && !marker.hidden) {
+          marker.style.left = e.x + "%";
+          marker.style.top = e.y + "%";
+          marker.querySelector("time").textContent = stamp(
+            e.segment / recording.nativeFps,
+            true,
+          );
+        }
+      }
       const marks = parent.querySelector(".trackbox");
       const height = Math.abs(o.foot[1] - o.head[1]);
       marks.hidden = v.view === "overview" || !o.visible;
@@ -74,6 +93,11 @@ export default function Viewport({ scenario, time, view, cones, reset }) {
     stage.current?.reset();
     frame.current?.();
   }, [reset]);
+  const inSurvey = entries != null;
+  useEffect(() => {
+    if (inSurvey) stage.current?.focusSurvey();
+    frame.current?.();
+  }, [inSurvey]);
   const camera = view === "overview" ? scenario.camera : view;
   const asset = cameraAsset(scenario, camera);
   return (
@@ -103,6 +127,20 @@ export default function Viewport({ scenario, time, view, cones, reset }) {
           </span>
         </>
       )}
+      {entries &&
+        !failed &&
+        ["porch", "drive"].map((id) => (
+          <div
+            hidden
+            className={"survey-point " + id}
+            data-camera={id}
+            key={id}
+          >
+            <span>
+              {id === "porch" ? "Porch" : "Driveway"} <time />
+            </span>
+          </div>
+        ))}
       <div
         className="trackbox"
         style={failed ? { display: "none" } : undefined}

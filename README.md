@@ -29,7 +29,8 @@
 
 Explore the [Juniper House Observatory](website/README.md) for an interactive 3D property,
 nine synchronized camera films, and frame-by-frame evidence from the Rust tracker and detector.
-Compare two camera angles to inspect how the native analyzer evaluates entries into the same ground zone.
+Compare two camera angles, locate their measurements in the digital twin, verify a published event,
+and inspect the agent’s alert decision and handoff.
 
 ## The thesis
 

@@ -1,0 +1,64 @@
+{
+  "schema": "fss.fusion_query.v2",
+  "hypothesis": "event:entry",
+  "kind": "unknown_presence",
+  "prior": [
+    -602,
+    -602
+  ],
+  "coverage": {
+    "state": "degraded",
+    "reason": "Illustrative inputs without field calibration."
+  },
+  "looks": 1,
+  "now_ns": "1",
+  "severity": {
+    "expected_harm": 10000,
+    "false_alert_cost": 200,
+    "delay_cost_per_second": 5,
+    "reversible": false
+  },
+  "policy": {
+    "generation": "policy:example-v1",
+    "alert_threshold": 1000,
+    "retain_threshold": -500,
+    "reject_threshold": -2000,
+    "min_independent_support": 2,
+    "urgent_single_domain_threshold": null,
+    "max_wait_ns": "30000000000",
+    "look_penalty_per_doubling": 301,
+    "operator_confirmation_available": true
+  },
+  "evidence": [
+    {
+      "id": "porch-observation",
+      "sensor": "camera:porch",
+      "failure_domains": [
+        "device:porch"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "generation": "example:assumed-llr",
+        "llr": [
+          600,
+          800
+        ]
+      }
+    },
+    {
+      "id": "drive-observation",
+      "sensor": "camera:drive",
+      "failure_domains": [
+        "device:drive"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "generation": "example:assumed-llr",
+        "llr": [
+          600,
+          800
+        ]
+      }
+    }
+  ]
+}

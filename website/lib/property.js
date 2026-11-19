@@ -1,8 +1,9 @@
+import { createSurvey } from "./survey.js";
 import { fixedCamera } from "./cameras.js";
 import * as T from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { cameras, subjectAt } from "./scenarios.js";
+import { cameras, recording, subjectAt } from "./scenarios.js";
 
 const V = (x, y, z) => new T.Vector3(x, y, z);
 const materials = new Map();
@@ -481,6 +482,7 @@ export function createProperty(canvas, interactive = true) {
   }
   const sight = new T.Raycaster();
   let aspect = 1;
+  let survey;
   return {
     resize(w, h) {
       if (w <= 0 || h <= 0) return;
@@ -494,6 +496,13 @@ export function createProperty(canvas, interactive = true) {
     onOrbit(fn) {
       orbit?.addEventListener("change", fn);
     },
+    focusSurvey() {
+      if (orbit) {
+        orbit.target.set(-0.8, 0.3, 2.8);
+        overview.position.set(-13, 12.5, 18.5);
+        orbit.update();
+      }
+    },
     reset() {
       home();
       if (orbit) {
@@ -501,7 +510,7 @@ export function createProperty(canvas, interactive = true) {
         orbit.update();
       }
     },
-    draw(s, t, view = "overview", showCoverage = true) {
+    draw(s, t, view = "overview", showCoverage = true, entries = null) {
       const a = subjectAt(s, t),
         chosen = people[s.id];
       for (const v of Object.values(people)) v.group.visible = v === chosen;
@@ -527,6 +536,13 @@ export function createProperty(canvas, interactive = true) {
         overview.updateProjectionMatrix();
       }
       cam.updateMatrixWorld();
+      if (entries && !survey) survey = createSurvey(scene, staticObjects);
+      survey?.show(entries, s, t);
+      if (entries) {
+        scene.background.set("#172a31");
+        scene.fog.color.copy(scene.background);
+        chosen.group.visible = false;
+      }
       renderer.render(scene, cam);
       const sensor = fixed[view === "overview" ? s.camera : view],
         height = s.id === "wildlife" ? 0.83 : 1.85;
@@ -551,9 +567,20 @@ export function createProperty(canvas, interactive = true) {
       };
       const foot = coord(V(a.x, 0.03, a.z)),
         head = coord(V(a.x, height + 0.12, a.z));
-      return { visible, inZone: a.inZone, foot, head };
+      const entryLabels = {};
+      for (const e of entries ?? []) {
+        if (
+          e.segment / recording.nativeFps > t ||
+          (entryLabels[e.camera]?.segment ?? -1) >= e.segment
+        )
+          continue;
+        const [x, y] = coord(V(e.ground[0], 0.2, e.ground[1]));
+        entryLabels[e.camera] = { x, y, segment: e.segment };
+      }
+      return { visible, inZone: a.inZone, foot, head, entryLabels };
     },
     dispose() {
+      survey?.dispose();
       orbit?.dispose();
       scene.traverse((obj) => {
         obj.geometry?.dispose();
