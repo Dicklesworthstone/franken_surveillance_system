@@ -1,0 +1,46 @@
+"use client";
+import dynamic from "next/dynamic";
+import {useEffect,useRef,useState} from "react";
+import {Activity,ArrowDown,ArrowDownRight,ArrowUpRight,Box,Camera,Check,ChevronRight,Crosshair,Expand,Eye,Film,Focus,Layers3,Maximize2,Menu,Orbit,Package,Pause,PawPrint,Play,RotateCcw,ScanEye,ScanLine,Shield,Video,X} from "lucide-react";
+import {cameras,cases,DURATION,stamp,subjectAt} from "../lib/scenarios";
+const Viewport=dynamic(()=>import("./Viewport"),{ssr:false,loading:()=> <div className="viewport-surface" style={{backgroundImage:"url(/films/property.jpg)"}}/>});
+const SOURCE="https://github.com/Dicklesworthstone/franken_surveillance_system";
+const icons=[Package,PawPrint,Shield];
+function Logo(){return <a className="logo" href="#top"><span className="logo-mark"><ScanEye size={26}/></span><span>Franken<span className="logo-light">Surveillance</span></span></a>;}
+function FilmCard({s,i,open}){return <button className="film-card" onClick={()=>open(s)}><div className="thumb"><img src={'/films/'+s.id+'.jpg'} alt={s.subject+" in the simulated "+s.camera+" camera"}/><span className="film-play"><Play size={17} fill="currentColor"/></span><span className="duration">00:12</span></div><div className="film-label"><span>CAM 0{cameras.findIndex(c=>c.id===s.camera)+1} / {s.camera.toUpperCase()}</span><ArrowUpRight size={16}/></div><h3>{s.title}</h3></button>;}
+function FilmDialog({film,close}){
+  const ref=useRef(null);
+  useEffect(()=>{const d=ref.current;d.showModal();return ()=>d.close();},[]);
+  return <dialog ref={ref} onCancel={close} onClick={e=>{if(e.target===ref.current)close();}} aria-label={film.title}><div className="dialog-top"><div><span className="eyebrow">VIRTUAL CAMERA FILM</span><h2>{film.title}</h2></div><button className="icon" aria-label="Close film" onClick={close}><X/></button></div><video src={'/films/'+film.id+'.mp4'} poster={'/films/'+film.id+'.jpg'} controls autoPlay muted playsInline/><p>{film.detail} This film uses the same camera and motion as the interactive scene.</p><div className="dialog-links"><a href={'/films/'+film.id+'.mp4'} download>Download MP4 <ArrowDown size={14}/></a><a href={'/evidence/'+film.id+'.json'}>Native FSS report <ArrowUpRight size={14}/></a></div></dialog>;
+}
+export default function Observatory(){
+ const [selected,select]=useState(0),[time,seek]=useState(3.2),[playing,play]=useState(false),[view,setView]=useState("overview"),[cones,setCones]=useState(true),[reset,setReset]=useState(0),[film,openFilm]=useState(null),[proof,setProof]=useState(null),[expanded,expand]=useState(false);
+ const s=cases[selected], actor=subjectAt(s,time), stage=useRef(null),clock=useRef(time);
+ const goto=t=>{clock.current=t;seek(t);}; const change=i=>{select(i);setView("overview");goto(0);play(false);};
+ useEffect(()=>{fetch("/evidence/index.json").then(r=>{if(!r.ok)throw Error();return r.json();}).then(setProof).catch(()=>{});},[]);
+ useEffect(()=>{if(!playing)return;let last=null,id;
+   const tick=now=>{if(last!==null&&!document.hidden)clock.current=Math.min(DURATION,clock.current+Math.min(.15,(now-last)/1000));last=now;seek(clock.current);if(clock.current>=DURATION){play(false);return;}id=requestAnimationFrame(tick);};id=requestAnimationFrame(tick);return ()=>cancelAnimationFrame(id);
+ },[playing]);
+ useEffect(()=>{const key=e=>{if(e.key==="Escape")expand(false);};window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key);},[]);
+ const toggle=()=>{if(clock.current>=DURATION)goto(0);play(!playing);};
+ const native=proof?.[s.id], camera=cameras.find(c=>c.id===(view==="overview"?s.camera:view));
+ const phaseTimes=native?.visibility||[];const observed=phaseTimes.filter(item=>item.time<=time).at(-1);
+ const at=val=>{play(false);goto(val);};
+ const firstSight=phaseTimes.find(p=>p.visible)?.time, entry=phaseTimes.find(p=>p.inZone)?.time;
+ return <><header><div className="wrap nav"><Logo/><nav><a className="active" href="#simulator">Simulator</a><a href="#films">Film archive</a><a className="source" href={SOURCE} target="_blank" rel="noreferrer">Source <ArrowUpRight size={15}/></a></nav></div></header>
+ <main className="wrap" id="top"><section className="intro"><div><div className="eyebrow"><span className="live-dot"/> INTERACTIVE FIELD LAB</div><h1>Property observatory<span>.</span></h1><p>Explore a virtual home through three cameras. Follow each encounter from motion to evidence.</p></div><div className="site-id"><Crosshair size={18}/><div><small>OBSERVATION SITE</small><strong>Juniper House</strong></div></div></section>
+ <section id="simulator" className="simulator" aria-label="Property simulator">
+ <div className="scenario-bar"><span className="micro">SCENARIO</span><div className="scenario-tabs">{cases.map((c,i)=>{const Icon=icons[i];return <button key={c.id} aria-pressed={selected===i} onClick={()=>change(i)}><Icon size={16}/>{c.short}</button>;})}</div></div>
+ <div className="console-grid"><article className={"viewer"+(expanded?" expanded":"")} ref={stage}><div className="viewer-top"><span><span className="signal"/> {view==="overview"?"PROPERTY VIEW":camera.label.toUpperCase()+" CAMERA"}</span><div><button className={'icon'+(cones?' lit':'')} disabled={view!=="overview"} aria-label="Toggle camera fields of view" aria-pressed={cones} title="Camera fields of view" onClick={()=>setCones(!cones)}><Layers3 size={16}/></button><button className="icon" aria-label="Reset orbit" title="Reset orbit" onClick={()=>{setView("overview");setReset(x=>x+1);}}><RotateCcw size={15}/></button><button className="icon" title="Expand viewport" aria-label={expanded?"Close expanded viewport":"Expand viewport"} aria-pressed={expanded} onClick={()=>expand(!expanded)}>{expanded?<X size={16}/>:<Maximize2 size={15}/>}</button></div></div>
+ <div className="stage"><Viewport scenario={s} time={time} view={view} cones={cones} reset={reset} playing={playing}/><span className="scene-label"><span/> {view==="overview"?"SPATIAL MODEL":"OPTICAL FEED"}</span><span className="compass">N <span>↑</span></span>{view==="overview"&&<span className="orbit-hint"><Orbit size={13}/> Drag to orbit</span>}</div>
+ <div className="views" aria-label="Viewpoint">{[{id:"overview",label:"3D overview"},...cameras].map(c=><button key={c.id} aria-pressed={view===c.id} onClick={()=>setView(c.id)}>{c.id==="overview"?<Box size={14}/>:<Camera size={14}/>} {c.label}</button>)}</div>
+ <div className="transport"><button onClick={toggle} aria-label={playing?"Pause simulation":"Play simulation"}>{playing?<Pause size={15} fill="currentColor"/>:<Play size={15} fill="currentColor"/>}</button><span>{stamp(time)}</span><input type="range" aria-label="Simulation time" min="0" max={DURATION} step=".05" value={time} style={{'--progress':time/DURATION*100+'%'}} onChange={e=>at(Number(e.target.value))}/><span className="muted">{stamp(DURATION)}</span></div>
+ </article><aside className="inspector"><div className="inspector-top"><span className="micro"><Activity size={15}/> EVENT INSPECTOR</span><span className="case-id">0{selected+1} / 03</span></div><h2>{s.title}<span>.</span></h2><p>{s.detail}</p>
+ <div className="facts"><div><span>Fixture subject</span><strong>{s.subject}</strong></div><div><span>Primary camera</span><button onClick={()=>setView(s.camera)}>{cameras.find(c=>c.id===s.camera).label} <ArrowUpRight size={13}/></button></div><div><span>Zone membership</span><strong><i className={actor.inZone?"on":""}/>{actor.inZone?"Inside":"Outside"}</strong></div></div>
+ <div className="trace"><div className="micro">SIMULATED TIMELINE</div>{[[0,"Scene begins"],[firstSight,"Subject in camera view"],[entry,s.action]].map(([t,label],i)=><button key={label} disabled={t==null} onClick={()=>at(t)} className={t!=null&&time>=t?"reached":""}><span className="trace-dot"/><span>{label}</span><time>{t==null?"—":stamp(t)}</time></button>)}</div>
+ <a className="proof-link" href={'/evidence/'+s.id+'.json'}><ScanLine size={16}/>{native?native.candidates+' native event candidate'+(native.candidates===1?'':'s'):'Native FSS report'}<ArrowUpRight size={14}/></a>
+ </aside></div></section>
+ <section id="films" className="films-section"><div className="section-head"><div><div className="eyebrow"><Film size={14}/> CAMERA RECORDINGS</div><h2>Film archive<span>.</span></h2></div><span className="archive-count">03 FILMS <span>/</span> MP4</span></div><div className="films-grid">{cases.map((c,i)=><FilmCard key={c.id} s={c} i={i} open={f=>{play(false);openFilm(f);}}/>)}</div></section>
+ <section className="method"><div className="micro"><ScanEye size={16}/> HOW TO READ THE DEMO</div><div><h2>Scene labels and measured evidence</h2><p>The simulator supplies each actor’s identity and path. Its overlay tests camera visibility and zone membership. The linked Rust reports come from importing the rendered camera frames into FSS and running its foreground tracker. A motion candidate alone cannot identify a courier, a raccoon, or someone’s intent.</p><a href={SOURCE+"/tree/main/website"} target="_blank" rel="noreferrer">Explore the implementation <ArrowUpRight size={15}/></a></div></section>
+ </main><footer><div className="wrap"><Logo/><span>Owner-authorized sensing · Reference implementation</span></div></footer>{film&&<FilmDialog film={film} close={()=>openFilm(null)}/>}</>;
+}
