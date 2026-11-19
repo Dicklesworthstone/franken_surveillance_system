@@ -32,6 +32,9 @@ nine synchronized camera films, and frame-by-frame evidence from the Rust tracke
 Compare two camera angles, locate their measurements in the digital twin, verify a published event,
 and inspect the agent’s alert decision and handoff. The camera wall adds three synchronized
 flyover reels with frame-by-frame detector readouts. Every exhibit has its own shareable page.
+In the motion lab, change a courier’s stature, walking speed, release height and parcel restitution.
+Compare the studio motion with the two fixed cameras, then inspect the detector’s boxes on the
+actual imported reference frames.
 
 ## The thesis
 

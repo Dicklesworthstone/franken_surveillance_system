@@ -1,7 +1,10 @@
 import "@fontsource-variable/space-grotesk/index.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
+import "@fontsource/instrument-serif/latin-400.css";
+import "@fontsource/instrument-serif/latin-400-italic.css";
 import "./style.css";
 import "./field.css";
+import "./motion.css";
 export const metadata = {
   metadataBase: new URL("https://franken-surveillance.com"),
   title: "Franken Surveillance · The Home Control Room",

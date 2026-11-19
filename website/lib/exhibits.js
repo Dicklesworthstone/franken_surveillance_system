@@ -9,6 +9,14 @@ export const exhibits = {
     caption: "JUNIPER HOUSE  /  RESIDENTIAL SITE CONCEPT",
     color: "#cefa85",
   },
+  "motion-study": {
+    title: "Human motion study",
+    lines: ["The parcel", "drop."],
+    label: "Motion study",
+    description: "Change the courier’s gait and the parcel’s bounce, then compare two camera views with native FSS measurements of the reference delivery.",
+    caption: "JUNIPER HOUSE  /  HUMAN MOTION STUDY",
+    color: "#ffb48d",
+  },
   "digital-twin": {
     title: "The digital twin",
     lines: ["Inside", "Juniper House."],

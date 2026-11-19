@@ -4,6 +4,12 @@ The observatory is a standalone Next.js showcase for Franken Surveillance. One f
 
 **3D overview and camera views** use Three.js. Scene labels come from the fixture. Visibility tests trace a ray from the virtual camera to the subject center through the property geometry. The fixed camera films are sampled at 12 frames per second.
 
+## The parcel drop
+
+Open **Motion lab** to follow an articulated courier across the front path. Adjust stature, walking speed, release height and restitution. Studio joint trails show three sample times during the approach. Switch to the property orbit or the synchronized porch and driveway projections, then seek directly to release, first contact or rest. The gait uses two-link inverse kinematics and planted feet. The parcel uses vertical free fall and restitution on level ground. A live side-elevation diagram supports browsers without WebGL.
+
+The three reference films each contain 216 frames over nine seconds. The two fixed cameras were imported into FSS at 4 fps. The evidence cards show the original 160 × 90 JPEGs from those imports at one second, with the detector’s measured bounds. Both reference views returned the class `person` at that instant. Custom parameter combinations show the simulated camera views and can be reset to inspect the measured reference. [Reference films and native reports](public/motion)
+
 **FSS replay** opens the selected camera’s film and the matching `fss-event watch` report. FFmpeg takes film frames 0, 3, 6 and so on to make a 160 × 90 MJPEG input at 4 fps. The replay clock seeks to those same frames before drawing the measured boxes. Green boxes show foreground tracks. Blue boxes show associated model detections on their exact inference frames. Select a YOLOX row to inspect that classification. The Rust foreground tracker watches the full image and the pinned YOLOX-Nano package can run on up to two selected frames per film.
 
 **Compare cameras** synchronizes two views of the encounter. `fss-event corroborate` projects each measured track’s foot onto the property ground plane using the virtual camera’s own projection. It evaluates entries into the scenario’s ground zone within 1 metre and 250 milliseconds, including capture-time uncertainty. Selecting an entry seeks both recordings and highlights the measured box in the camera that produced it. Each pair report declares one shared replay source and clock.
@@ -18,7 +24,7 @@ The evidence desk replays the delivery through the native association engine twi
 
 The ledger exhibit publishes the event in an isolated local deployment, retries the same approval, and audits the committed revision with `fss-custody`. The browser can rehash the two exported objects or change a byte in a temporary copy. In the agent console, visitors can read the original `fss/1` responses for orientation, forensic explanation, refused alert planning, handoff, and resume. Lighting, gate, and siren adapters are design examples. The belief lab separately runs `fss-fuse` with an illustrative prior and likelihood bounds under three source-dependence assumptions. Each exhibit links its full native outputs. Re-running the example creates a new session-journal observation and handoff receipt. The retained event objects and original camera evidence remain content-addressed.
 
-The opening scene is artwork generated with the built-in ImageGen tool. The brief was a blue-hour Craftsman house, warm porch and garage lights, dark trees on the left, and subtle teal survey lines at the right edge. The interactive twin and both sets of films use the repository’s Three.js model.
+The opening illustration depicts a courier approaching a Craftsman porch at dusk. The interactive property and the films use the repository’s Three.js scene. [Artwork sources](art/README.md)
 
 ## Run locally
 
@@ -37,6 +43,8 @@ The committed media and reports are ready to serve. To regenerate them, build `f
 bun run films
 python3 scripts/native-evidence.py
 python3 scripts/field_case.py
+node scripts/render-films.mjs --motion
+python3 scripts/motion-evidence.py
 bun run build
 ```
 
@@ -66,6 +74,6 @@ From this directory, regenerate the wall reels and roof plan with the existing c
 node scripts/render-films.mjs --wall
 ```
 
-Use **Section link** on any exhibit to open its standalone page. The home page and ten exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The ordinary browser verification also checks the metadata and fetches both images for every page with JavaScript disabled.
+Use an exhibit link to open its standalone page. The home page and eleven exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The browser verification fetches both images for every page with JavaScript disabled.
 
 The [ranked demo ideas](DEMO_IDEAS.md) include the three additions implemented here and twelve further exhibits.

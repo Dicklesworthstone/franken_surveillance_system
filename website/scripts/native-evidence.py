@@ -32,8 +32,8 @@ def write(path, data):
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def import_clip(case, camera, stem, spec, tmp, stage):
-    film = FILMS / (stem + ".mp4")
+def import_clip(case, camera, stem, spec, tmp, stage, films=FILMS):
+    film = films / (stem + ".mp4")
     frames = stage / (stem + ".mjpeg")
     width, height, rate = spec["nativeWidth"], spec["nativeHeight"], spec["nativeFps"]
     step, remainder = divmod(spec["fps"], rate)

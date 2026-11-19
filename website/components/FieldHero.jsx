@@ -1,17 +1,15 @@
-import {
-  ArrowDownRight,
-  ArrowRight,
-  Scan,
-  Layers3,
-  TerminalSquare,
-  Database,
-} from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Play } from "lucide-react";
+const chapters = [
+  ["#simulator", "/motion/site.jpg", "Site survey", "Explore the digital twin"],
+  ["#camera-wall", "/wall/delivery.jpg", "Camera wall", "Follow three cameras"],
+  ["#casebook", "/field/porch.jpg", "Evidence desk", "Inspect the record"],
+];
 export default function FieldHero() {
   return (
     <>
       <section className="field-hero" aria-labelledby="field-title">
         <img
-          src="/juniper-at-dusk.webp"
+          src="/motion/arrival.webp"
           alt=""
           fetchPriority="high"
           width="1672"
@@ -20,7 +18,7 @@ export default function FieldHero() {
         />
         <div className="hero-content">
           <div className="eyebrow">
-            <span className="live-dot" /> JUNIPER HOUSE FIELD LAB
+            JUNIPER HOUSE <span className="hero-rule" /> FIELD LAB
           </div>
           <h1 id="field-title">
             The home
@@ -28,37 +26,34 @@ export default function FieldHero() {
             <em>control room.</em>
           </h1>
           <p>
-            A staffed security room follows an event across a wall of screens.
-            Our goal is to give households that same context with $35 Wi-Fi
-            cameras and AI agents. Follow one visitor from first sight to a
-            decision.
+            A parcel arrives. Two cameras catch it. Follow the encounter from a
+            3D home to an evidence ledger an AI agent can read. The ambition is
+            a household control room built from $35 Wi-Fi cameras.
           </p>
           <div className="hero-actions">
-            <a className="solid-action" href="#simulator">
-              Explore the twin <ArrowDownRight size={18} />
+            <a className="solid-action" href="/exhibits/motion-study/">
+              <Play size={15} fill="currentColor" /> Enter the motion lab
             </a>
             <a className="ghost-action" href="#casebook">
-              Trace an event <ArrowRight size={16} />
+              Trace an event <ArrowDownRight size={16} />
             </a>
           </div>
         </div>
         <span className="art-caption">
-          <Scan size={14} /> Residential site concept
+          Juniper House · concept illustration
         </span>
       </section>
       <nav className="chapter-nav" aria-label="Explore the field lab">
-        <a href="#simulator">
-          <Layers3 /> Digital twin <ArrowDownRight />
-        </a>
-        <a href="#camera-wall">
-          <Scan /> Camera wall <ArrowDownRight />
-        </a>
-        <a href="#casebook">
-          <Database /> Evidence desk <ArrowDownRight />
-        </a>
-        <a href="#agent-console">
-          <TerminalSquare /> Agent console <ArrowDownRight />
-        </a>
+        {chapters.map(([href, src, label, title]) => (
+          <a key={href} href={href}>
+            <img src={src} alt="" width="88" height="62" />
+            <span>
+              <small>{label}</small>
+              <b>{title}</b>
+            </span>
+            <ArrowUpRight size={15} />
+          </a>
+        ))}
       </nav>
     </>
   );

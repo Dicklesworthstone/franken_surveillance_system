@@ -361,7 +361,7 @@ function actor(animal, delivery) {
   }
   return { group: p, limbs };
 }
-export function createProperty(canvas, interactive = true) {
+export function createSiteStage(canvas, interactive) {
   const renderer = new T.WebGLRenderer({
     canvas,
     antialias: true,
@@ -412,6 +412,22 @@ export function createProperty(canvas, interactive = true) {
   house(staticObjects);
   lot(staticObjects);
   bake(staticObjects);
+  return {renderer, scene, sky, sun, ground, grid, staticObjects};
+}
+
+export function disposeSiteStage(scene, renderer) {
+  scene.traverse((obj) => {
+    obj.geometry?.dispose();
+    obj.material?.dispose?.();
+    obj.shadow?.map?.dispose();
+  });
+  materials.clear();
+  renderer.dispose();
+  renderer.forceContextLoss();
+}
+
+export function createProperty(canvas, interactive = true) {
+  const {renderer, scene, sky, sun, staticObjects} = createSiteStage(canvas, interactive);
   const overview = new T.PerspectiveCamera(36, 1, 0.1, 180);
   const home = () => {
     overview.position.set(-21, 16.5, 24);
@@ -599,13 +615,7 @@ export function createProperty(canvas, interactive = true) {
     dispose() {
       survey?.dispose();
       orbit?.dispose();
-      scene.traverse((obj) => {
-        obj.geometry?.dispose();
-        if (obj.material) obj.material.dispose?.();
-      });
-      materials.clear();
-      renderer.dispose();
-      renderer.forceContextLoss();
+      disposeSiteStage(scene, renderer);
     },
   };
 }
