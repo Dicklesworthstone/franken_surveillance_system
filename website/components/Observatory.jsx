@@ -26,6 +26,9 @@ import CameraFilm from "./CameraFilm";
 import EvidenceReplay from "./EvidenceReplay";
 import PairInspector from "./PairInspector";
 import FieldHero from "./FieldHero";
+import CameraWall from "./CameraWall";
+import SectionLink from "./SectionLink";
+import { exhibits, exhibitPath } from "../lib/exhibits";
 import EvidenceDesk from "./EvidenceDesk";
 import AgentDesk, { Sources } from "./AgentDesk";
 import {
@@ -51,7 +54,7 @@ const SOURCE =
 const icons = [Package, PawPrint, Shield];
 function Logo() {
   return (
-    <a className="logo" href="#top">
+    <a className="logo" href="/">
       <span className="logo-mark">
         <ScanEye size={26} />
       </span>
@@ -168,7 +171,10 @@ function useEvidence(file) {
   }, [file]);
   return result && result.file === file ? result : { status: "loading" };
 }
-export default function Observatory({ field }) {
+export default function Observatory({ field, exhibit = "home" }) {
+  const home = exhibit === "home";
+  const show = (...slugs) => home || slugs.includes(exhibit);
+  const [vantage, setVantage] = useState("orbit");
   const [mode, setMode] = useState("scene"),
     [peerId, setPeer] = useState(null);
   const [selected, select] = useState(0),
@@ -189,6 +195,7 @@ export default function Observatory({ field }) {
   };
   const change = (i) => {
     select(i);
+    setVantage("orbit");
     setView("overview");
     setPeer(null);
     goto(0);
@@ -236,7 +243,7 @@ export default function Observatory({ field }) {
     peerAsset = cameraAsset(s, peer.id);
   const evidenceMode = mode !== "scene",
     comparing = mode === "compare";
-  const proof = useEvidence("index.json");
+  const proof = useEvidence(show("digital-twin") ? "index.json" : null);
   const native = proof.data?.[s.id]?.views[camera.id];
   const primaryReport = useEvidence(mode === "native" ? asset + ".json" : null);
   const pairFile = s.id + "-" + [camera.id, peer.id].sort().join("-") + ".json";
@@ -276,17 +283,35 @@ export default function Observatory({ field }) {
   };
   const firstSight = phaseTimes.find((p) => p.visible)?.time,
     entry = phaseTimes.find((p) => p.inZone)?.time;
+  const pairedTime = Math.max(...field.association.marks.map((m) => m.segment)) / recording.nativeFps;
+  const locateEntry = () => {
+    if (!show("digital-twin")) {
+      window.location.assign(exhibitPath("digital-twin") + "?focus=entry");
+      return;
+    }
+    change(0);
+    openView("overview");
+    setSurvey(true);
+    at(pairedTime);
+    document.querySelector("#simulator")?.scrollIntoView();
+  };
+  useEffect(() => {
+    if (exhibit === "digital-twin" && new URLSearchParams(window.location.search).get("focus") === "entry") {
+      setSurvey(true);
+      goto(pairedTime);
+    }
+  }, [exhibit, pairedTime]);
   return (
     <>
       <header>
         <div className="wrap nav">
           <Logo />
           <nav>
-            <a className="active" href="#simulator">
+            <a className="active" href={home ? "#simulator" : exhibitPath("digital-twin")}>
               Simulator
             </a>
-            <a href="#casebook">Evidence desk</a>
-            <a className="desktop-link" href="#agent-console">
+            <a className="evidence-nav" href={home ? "#casebook" : exhibitPath("camera-fusion")}>Evidence desk</a>
+            <a className="desktop-link" href={home ? "#agent-console" : exhibitPath("agent-console")}>
               Agent console
             </a>
             <a
@@ -301,8 +326,12 @@ export default function Observatory({ field }) {
         </div>
       </header>
       <main className="wrap" id="top">
-        <FieldHero />
-        <section
+        {home ? <FieldHero /> : (
+          <div className="guide-crumb">
+            <a href="/">Control room</a><span>/</span><h1>{exhibits[exhibit].title}</h1>
+          </div>
+        )}
+        {show("digital-twin") && <section
           id="simulator"
           className="simulator"
           aria-label="Property simulator"
@@ -311,6 +340,7 @@ export default function Observatory({ field }) {
             <div>
               <span className="section-kicker">INTERACTIVE DIGITAL TWIN</span>
               <h2>Inside Juniper House.</h2>
+              <SectionLink slug="digital-twin" />
             </div>
             <p>
               Orbit the house, choose a camera, or switch to survey mode to see
@@ -380,10 +410,23 @@ export default function Observatory({ field }) {
                   </button>
                   <button
                     className="icon"
+                    title="Overhead plan view"
+                    aria-label="Overhead plan view"
+                    onClick={() => {
+                      openView("overview");
+                      setVantage("overhead");
+                      setReset((x) => x + 1);
+                    }}
+                  >
+                    <DraftingCompass size={15} />
+                  </button>
+                  <button
+                    className="icon"
                     aria-label="Reset orbit"
                     title="Reset orbit"
                     onClick={() => {
                       openView("overview");
+                      setVantage("orbit");
                       setReset((x) => x + 1);
                     }}
                   >
@@ -444,6 +487,7 @@ export default function Observatory({ field }) {
                     view={view}
                     cones={cones}
                     reset={reset}
+                    vantage={vantage}
                     entries={
                       survey && view === "overview" ? field.survey[s.id] : null
                     }
@@ -748,23 +792,13 @@ export default function Observatory({ field }) {
               </a>
             </aside>
           </div>
-        </section>
-        <EvidenceDesk
-          field={field}
-          onSurvey={() => {
-            change(0);
-            openView("overview");
-            setSurvey(true);
-            at(
-              Math.max(...field.association.marks.map((m) => m.segment)) /
-                recording.nativeFps,
-            );
-            document.querySelector("#simulator").scrollIntoView();
-          }}
-        />
-        <AgentDesk data={field.agent} />
-        <Sources />
-        <section id="films" className="films-section">
+        </section>}
+        {show("camera-wall") && <CameraWall samples={field.wall} />}
+        {show("camera-fusion", "belief-lab", "event-ledger") && <EvidenceDesk field={field} standalone={!home} onSurvey={locateEntry}
+          initialTab={exhibit === "belief-lab" ? "belief" : exhibit === "event-ledger" ? "ledger" : "association"} />}
+        {show("agent-console", "owner-response") && <AgentDesk data={field.agent} initialOp={exhibit === "owner-response" ? "alert" : "orient"} />}
+        {show("camera-inputs") && <Sources />}
+        {show("film-archive") && <section id="films" className="films-section">
           <div className="section-head">
             <div>
               <div className="eyebrow">
@@ -774,6 +808,7 @@ export default function Observatory({ field }) {
                 Film archive<span>.</span>
               </h2>
             </div>
+            <SectionLink slug="film-archive" />
             <span className="archive-count">
               09 FILMS <span>/</span> MP4
             </span>
@@ -791,13 +826,14 @@ export default function Observatory({ field }) {
               />
             ))}
           </div>
-        </section>
-        <section className="method">
+        </section>}
+        {show("field-method") && <section id="method" className="method">
           <div className="micro">
             <ScanEye size={16} /> HOW TO READ THE DEMO
           </div>
           <div>
             <h2>Scene labels and measured evidence</h2>
+            <SectionLink slug="field-method" />
             <p>
               The simulator supplies each actor’s identity and path. Its overlay
               tests camera visibility and zone membership. The linked Rust
@@ -817,7 +853,16 @@ export default function Observatory({ field }) {
               Explore the implementation <ArrowUpRight size={15} />
             </a>
           </div>
-        </section>
+        </section>}
+        {!home && (
+          <nav className="guide-index" aria-label="All exhibits">
+            {Object.entries(exhibits).filter(([key]) => key !== "home").map(([key, entry]) => (
+              <a key={key} href={exhibitPath(key)} aria-current={key === exhibit ? "page" : undefined}>
+                {entry.label}
+              </a>
+            ))}
+          </nav>
+        )}
       </main>
       <footer>
         <div className="wrap">

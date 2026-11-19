@@ -1,4 +1,5 @@
 "use client";
+import SectionLink from "./SectionLink";
 import { useState } from "react";
 import {
   ArrowUpRight,
@@ -43,8 +44,8 @@ const operations = [
     "The native resume operation accepted the saved handoff and reopened the same session. The receiving reviewer inherits its recorded scope and obligations.",
   ],
 ];
-export default function AgentDesk({ data }) {
-  const [op, setOp] = useState("orient"),
+export default function AgentDesk({ data, initialOp = "orient" }) {
+  const [op, setOp] = useState(initialOp),
     r = data[op];
   const [, label, title, body] = operations.find((v) => v[0] === op);
   return (
@@ -53,6 +54,7 @@ export default function AgentDesk({ data }) {
         <div>
           <span className="section-kicker">AGENT CONSOLE</span>
           <h2>Give the next agent the case.</h2>
+          <SectionLink slug="agent-console" />
         </div>
         <p>
           Inspect the actual responses from the local Rust agent interface. Each
@@ -123,6 +125,7 @@ export default function AgentDesk({ data }) {
         <div>
           <span className="section-kicker">OWNER-CONTROLLED RESPONSE</span>
           <h3>From review to action.</h3>
+          <SectionLink slug="owner-response" />
           <p>
             FSS separates what an agent believes from what it can do. Its
             reference notification path requires a witnessed plan, approval,
@@ -153,11 +156,12 @@ export function Sources() {
   const references =
     "https://github.com/Dicklesworthstone/franken_surveillance_system/blob/main/";
   return (
-    <section className="exhibit sources">
+    <section id="sources" className="exhibit sources">
       <div className="chapter-heading">
         <div>
           <span className="section-kicker">CAMERA INPUTS</span>
           <h2>Start with the cameras you own.</h2>
+          <SectionLink slug="camera-inputs" />
         </div>
         <p>
           The ambition is one site view across makes and price points. Available

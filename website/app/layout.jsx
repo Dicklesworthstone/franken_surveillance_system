@@ -7,7 +7,6 @@ export const metadata = {
   title: "Franken Surveillance · The Home Control Room",
   description:
     "Explore a home digital twin, compare camera observations, verify a published event and inspect the native agent response.",
-  openGraph: { images: ["/juniper-at-dusk.webp"] },
 };
 export default function Layout({ children }) {
   return (

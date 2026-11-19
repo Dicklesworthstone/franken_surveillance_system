@@ -11,6 +11,7 @@ export default function Viewport({
   view,
   cones,
   reset,
+  vantage,
   entries,
 }) {
   const surface = useRef(null),
@@ -90,9 +91,10 @@ export default function Viewport({
     };
   }, []);
   useEffect(() => {
-    stage.current?.reset();
+    if (vantage === "overhead") stage.current?.overhead();
+    else stage.current?.reset();
     frame.current?.();
-  }, [reset]);
+  }, [reset, vantage]);
   const inSurvey = entries != null;
   useEffect(() => {
     if (inSurvey) stage.current?.focusSurvey();

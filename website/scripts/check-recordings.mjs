@@ -25,6 +25,7 @@ async function verified(path, digest) {
 }
 const rig = await json("films/rig.json");
 const index = await json("evidence/index.json");
+const wall = await json("wall/index.json");
 assert.deepEqual(rig.recording, recording);
 assert.equal(rig.duration, DURATION);
 for (const camera of cameras) {
@@ -43,12 +44,18 @@ for (const camera of cameras) {
 for (const s of cases) {
   const { views, pairs } = index[s.id];
   const rigCase = rig.cases[s.id];
+  const reel = wall[s.id];
+  assert.equal(reel.fps, recording.fps);
+  assert.equal(reel.frames, DURATION * recording.fps);
+  await verified("wall/" + s.id + ".mp4", "sha256:" + reel.film);
+  await verified("wall/" + s.id + ".jpg", "sha256:" + reel.poster);
   const [x, x1, z, z1] = s.zoneBounds;
   assert.deepEqual(rigCase.zone.rect, [x, z, x1 - x, z1 - z]);
   for (const c of cameras) {
     const view = views[c.id],
       stem = cameraAsset(s, c.id);
     assert.equal(view.asset, stem);
+    assert.equal("sha256:" + reel.sources[stem], view.filmDigest);
     assert.deepEqual(rigCase.views[c.id], {
       asset: stem,
       visibility: view.visibility,

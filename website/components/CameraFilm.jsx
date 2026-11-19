@@ -1,14 +1,24 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 
 // These small, same-origin fixtures must be seekable even on a static host
 // that ignores byte ranges. Release the clip whenever the view changes.
-export default function CameraFilm({ asset, target, onDisplayed, ...props }) {
+export default function CameraFilm({
+  asset,
+  directory = "films",
+  active = true,
+  videoRef,
+  target,
+  onDisplayed,
+  ...props
+}) {
   const ref = useRef(null);
+  useImperativeHandle(videoRef, () => ref.current, []);
   const [source, setSource] = useState(null);
   const [failed, setFailed] = useState(false);
-  const path = "/films/" + asset + ".mp4";
+  const path = "/" + directory + "/" + asset + ".mp4";
   useEffect(() => {
+    if (!active) return;
     const request = new AbortController();
     let url;
     fetch(path, { signal: request.signal })
@@ -28,7 +38,7 @@ export default function CameraFilm({ asset, target, onDisplayed, ...props }) {
       request.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [path]);
+  }, [path, active]);
   useEffect(() => {
     const video = ref.current;
     if (!source || target === undefined || !video) return;
@@ -64,7 +74,7 @@ export default function CameraFilm({ asset, target, onDisplayed, ...props }) {
         ref={ref}
         src={source ?? undefined}
         data-recording={path}
-        poster={"/films/" + asset + ".jpg"}
+        poster={"/" + directory + "/" + asset + ".jpg"}
         muted
         playsInline
         preload="auto"

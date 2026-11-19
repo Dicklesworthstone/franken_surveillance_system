@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { cases } from "./scenarios.js";
+import { cameras, cameraAsset, cases } from "./scenarios.js";
 const read = (file) => readFileSync(join(process.cwd(), "public", file));
 const json = (file) => JSON.parse(read(file));
 // Export small projections for the page and keep the complete native receipts downloadable.
@@ -100,7 +100,34 @@ export function fieldData() {
       decision: r.decision.kind,
     };
   }
+  const wall = Object.fromEntries(
+    cases.map((s) => [
+      s.id,
+      Object.fromEntries(
+        cameras.map((c) => {
+          const cascade = json(
+            "evidence/" + cameraAsset(s, c.id) + ".json",
+          ).detector_cascade;
+          return [
+            c.id,
+            Object.fromEntries(
+              cascade.frames.map((f) => [
+                f.segment,
+                {
+                  status: f.status,
+                  classes: [
+                    ...new Set((f.detections ?? []).map((d) => d.label)),
+                  ],
+                },
+              ]),
+            ),
+          ];
+        }),
+      ),
+    ]),
+  );
   return {
+    wall,
     survey,
     agent,
     belief,

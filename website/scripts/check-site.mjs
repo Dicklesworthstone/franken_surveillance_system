@@ -1,5 +1,6 @@
 // Run against the built export. Exercise the selected footage, measured boxes,
 // archive and shared timeline in a real browser, including failure paths.
+import { checkExhibits } from "./check-exhibits.mjs";
 import { checkField } from "./check-field.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
@@ -51,6 +52,7 @@ async function aligned(page, asset, segment) {
   );
 }
 try {
+  await checkExhibits(browser, origin);
   for (const width of [1440, 390]) {
     const page = await browser.newPage({
       viewport: { width, height: 900 },

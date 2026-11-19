@@ -1,4 +1,7 @@
 "use client";
+import SectionLink from "./SectionLink";
+import { exhibitPath } from "../lib/exhibits";
+
 import { useState } from "react";
 import {
   ArrowUpRight,
@@ -12,6 +15,12 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { recording, stamp } from "../lib/scenarios";
+
+const tabRoutes = {
+  association: "camera-fusion",
+  belief: "belief-lab",
+  ledger: "event-ledger",
+};
 
 function Receipt({ name, children = "Native report" }) {
   return (
@@ -362,14 +371,20 @@ function Ledger({ data }) {
   );
 }
 
-export default function EvidenceDesk({ field, onSurvey }) {
-  const [tab, setTab] = useState("association");
+export default function EvidenceDesk({
+  field,
+  onSurvey,
+  initialTab = "association",
+  standalone = false,
+}) {
+  const [tab, setTab] = useState(initialTab);
   return (
     <section id="casebook" className="exhibit">
       <div className="chapter-heading">
         <div>
           <span className="section-kicker">THE EVIDENCE DESK</span>
           <h2>Follow one doorstep event.</h2>
+          <SectionLink slug={tabRoutes[tab]} />
         </div>
         <p>
           Two camera views, one proposed match, and a published record you can
@@ -386,7 +401,11 @@ export default function EvidenceDesk({ field, onSurvey }) {
             <button
               key={id}
               aria-pressed={id === tab}
-              onClick={() => setTab(id)}
+              onClick={() => {
+                if (standalone && id !== tab)
+                  window.location.assign(exhibitPath(tabRoutes[id]));
+                else setTab(id);
+              }}
             >
               <Icon size={16} />
               {label}

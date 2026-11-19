@@ -50,6 +50,9 @@ export default function FieldHero() {
         <a href="#simulator">
           <Layers3 /> Digital twin <ArrowDownRight />
         </a>
+        <a href="#camera-wall">
+          <Scan /> Camera wall <ArrowDownRight />
+        </a>
         <a href="#casebook">
           <Database /> Evidence desk <ArrowDownRight />
         </a>

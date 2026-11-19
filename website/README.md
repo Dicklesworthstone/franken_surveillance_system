@@ -55,3 +55,17 @@ bun run deploy
 ```
 
 The [Wrangler configuration](wrangler.jsonc) serves only the static export and binds the custom domain `franken-surveillance.com`. Deployment requires a Cloudflare login with Workers Scripts write access in the owning account and zone access for the custom domain. Keep credentials in the deployment environment.
+
+## Camera wall and section sharing
+
+The camera wall combines a moving WebGL flyover with the three existing camera films. Each 12-second reel has 144 frames on a shared clock. Pause, step by a frame, or jump to the first native inference. The readout links to the per-camera report and distinguishes measured classes, skipped inferences and frames between native samples. The overhead button in the simulator shows the same property from above.
+
+From this directory, regenerate the wall reels and roof plan with the existing camera films in place.
+
+```sh
+node scripts/render-films.mjs --wall
+```
+
+Use **Section link** on any exhibit to open its standalone page. The home page and ten exhibit pages export distinct 1200 × 630 Open Graph cards and 1200 × 600 X cards. Next.js renders them locally with ImageResponse, using the site artwork, WebGL stills, camera frames and native fixture outputs. Each PNG URL includes a digest of its bytes. The ordinary browser verification also checks the metadata and fetches both images for every page with JavaScript disabled.
+
+The [ranked demo ideas](DEMO_IDEAS.md) include the three additions implemented here and twelve further exhibits.

@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { imageToGround } from "../lib/cameras.js";
+import { renderWall } from "./render-wall.mjs";
 import {
   cameraAsset,
   cameras,
@@ -20,12 +21,14 @@ const bundle = await build({
   stdin: {
     contents: `
 import { createProperty } from "./lib/property.js";
-import { cases } from "./lib/scenarios.js";
+import { cases, DURATION } from "./lib/scenarios.js";
 const canvas = document.querySelector("canvas");
 const stage = createProperty(canvas, false);
 window.frame=(id,t,view,w,h)=>{
   if (canvas.width!==w || canvas.height!==h) stage.resize(w,h);const s=cases.find(s=>s.id===id);
-  const result=stage.draw(s,t,view,true);
+  if (view==="flyover") stage.flyover(t/DURATION);
+  if (view==="plan") stage.overhead();
+  const result=stage.draw(s,t,["flyover","plan"].includes(view) ? "overview" : view,true);
   return { jpeg:canvas.toDataURL("image/jpeg",.93).split(",")[1], visible:result.visible, inZone:result.inZone };
 };`,
     resolveDir: process.cwd(),
@@ -57,7 +60,7 @@ const browser = await chromium.launch({
   ],
 });
 const stageDir = await mkdtemp(join(process.cwd(), ".render-"));
-try {
+async function renderAll() {
   async function newRenderer() {
     const page = await browser.newPage();
     page.on("pageerror", (e) => console.error(e.message));
@@ -71,6 +74,12 @@ try {
   let page = await newRenderer();
   const render = (id, t, view, w, h) =>
     page.evaluate((args) => window.frame(...args), [id, t, view, w, h]);
+  if (process.argv.includes("--wall")) {
+    const plan = await render("delivery", 5.5, "plan", 900, 900);
+    await writeFile("art/site-plan.jpg", Buffer.from(plan.jpeg, "base64"));
+    await renderWall(render, stageDir);
+    return;
+  }
   // Render complete files before replacing the distributable fixtures.
   const outputs = [];
   const output = (name) => {
@@ -190,6 +199,9 @@ try {
   await writeFile(output("rig.json"), JSON.stringify(rig, null, 2) + "\n");
   for (const name of outputs)
     await rename(join(stageDir, name), join("public/films", name));
+}
+try {
+  await renderAll();
 } finally {
   await rm(stageDir, { recursive: true, force: true });
   await browser.close();

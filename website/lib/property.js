@@ -425,7 +425,7 @@ export function createProperty(canvas, interactive = true) {
     orbit.minDistance = 18;
     orbit.maxDistance = 48;
     orbit.maxPolarAngle = Math.PI * 0.47;
-    orbit.minPolarAngle = 0.25;
+    orbit.minPolarAngle = 0;
     orbit.enableDamping = false;
     orbit.update();
   }
@@ -495,6 +495,23 @@ export function createProperty(canvas, interactive = true) {
     },
     onOrbit(fn) {
       orbit?.addEventListener("change", fn);
+    },
+    overhead() {
+      overview.position.set(0, 32, 0.03);
+      overview.lookAt(0, 0, 0);
+      if (orbit) {
+        orbit.target.set(0, 0, 0);
+        orbit.update();
+      }
+    },
+    flyover(fraction) {
+      const angle = -0.92 + 1.64 * fraction;
+      overview.position.set(
+        24 * Math.sin(angle),
+        17 + 5 * Math.sin(Math.PI * fraction),
+        24 * Math.cos(angle),
+      );
+      overview.lookAt(0, 0.6, 0.8);
     },
     focusSurvey() {
       if (orbit) {
