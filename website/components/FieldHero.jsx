@@ -158,6 +158,7 @@ export default function FieldHero() {
       </div>
       <nav className="cover-contents" aria-label="Explore the field guide">
         <a href="#simulator">Digital twin ↘</a>
+        <a href="/exhibits/poster-room/">Exhibit posters ↗</a>
         <a href="#camera-wall">Camera wall ↘</a>
         <a href="#casebook">Evidence ledger ↘</a>
         <a href="#agent-console">Agent console ↘</a>

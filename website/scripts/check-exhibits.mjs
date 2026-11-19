@@ -53,6 +53,18 @@ export async function checkExhibits(browser, origin) {
         [1200, height],
       );
       assert.equal(url.pathname.split("/").pop(), digest.slice(0, 20) + ".png");
+      // A successful Satori response can still paint only its text and background.
+      // The illustrated half of each poster must retain photographic detail.
+      const colors=await page.evaluate(async path=>{
+        const bitmap=await createImageBitmap(await (await fetch(path)).blob());
+        const ctx=document.createElement("canvas").getContext("2d");
+        ctx.drawImage(bitmap,bitmap.width*.56,bitmap.height*.15,bitmap.width*.4,bitmap.height*.65,0,0,22,20);
+        bitmap.close();
+        const data=ctx.getImageData(0,0,22,20).data,palette=new Set();
+        for(let i=0;i<data.length;i+=4)palette.add(((data[i]>>4)<<8)|((data[i+1]>>4)<<4)|(data[i+2]>>4));
+        return palette.size;
+      },url.pathname);
+      assert.ok(colors>18,slug+" illustration has only "+colors+" sampled colors");
       assert.ok(!unique.has(digest));
       unique.add(digest);
     }

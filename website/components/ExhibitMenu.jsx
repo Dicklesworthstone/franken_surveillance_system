@@ -12,6 +12,7 @@ const groups = [
       "digital-twin",
       "camera-wall",
       "film-archive",
+      "poster-room",
     ],
   ],
   [

@@ -3,6 +3,7 @@
 import { checkExhibits } from "./check-exhibits.mjs";
 import { checkField } from "./check-field.mjs";
 import { checkMotionUI } from "./check-motion-ui.mjs";
+import {checkStereoUI} from "./check-stereo-ui.mjs";
 import { checkCourtUI } from "./check-court-ui.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
@@ -55,6 +56,7 @@ async function aligned(page, asset, segment) {
 }
 try {
   await checkExhibits(browser, origin);
+  await checkStereoUI(browser, origin);
   await checkCourtUI(browser, origin);
   await checkMotionUI(browser, origin);
   for (const width of [1440, 390]) {

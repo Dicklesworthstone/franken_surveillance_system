@@ -20,7 +20,7 @@ function Brand(){return <div style={{...row,alignItems:"center",gap:12}}>
  <svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" strokeWidth="1.8"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" strokeWidth="2"/><circle cx="16" cy="16" r="3" fill="currentColor"/><path d="M16 1V6M26 16H31M16 26V31M1 16H6" stroke="currentColor" strokeWidth="2"/></svg>
  {mono("FRANKEN SURVEILLANCE",{fontSize:19,letterSpacing:.8})}</div>}
 const labelFor = {
- home:"A residential digital twin", "motion-study":"A courier in motion", "film-archive":"The night recordings",
+ "poster-room":"Juniper House cover collection",home:"A residential digital twin", "motion-study":"A courier in motion", "film-archive":"The night recordings",
  "camera-inputs":"Consumer camera optics","event-ledger":"Inside the immutable ledger","belief-lab":"Evidence and uncertainty","agent-console":"The agent workspace","owner-response":"Owner-controlled actions",
  "digital-twin":"Property survey",courtyard:"The courtyard study","stereo-bench":"The stereo bench","camera-wall":"The camera wall","camera-fusion":"The doorstep case","field-method":"Reading a recording"
 };
@@ -35,6 +35,7 @@ const objects={
  "belief-lab":["art/instruments/prism.jpg","#ebe6f0","#513659","SHARED SOURCE"],
  "agent-console":["art/instruments/folio.jpg","#1b363b","#b4e3de","ONE SESSION  /  HANDOFF AND RESUME"],
  "owner-response":["art/instruments/bell.jpg","#ede2cc","#713e2b","NOTIFICATION PLAN"],
+ "poster-room":["art/instruments/film.jpg","#352723","#fbddbe","OPEN GRAPH  /  X CARD EDITIONS"],
  "digital-twin":["art/site-plan.jpg","#dce2d5","#244b37","THREE FIXED CAMERA POSES"]
 };
 const sheets={
@@ -59,7 +60,7 @@ async function Cover({slug,h}){
 }
 async function ObjectPlate({slug,h}){
  const [file,bg,ink,caption]=objects[slug];
- const light=!["event-ledger","agent-console"].includes(slug);
+ const light=!["event-ledger","agent-console","poster-room"].includes(slug);
  let note=caption;
  const field=fieldData();
  if(slug==="belief-lab")note=field.belief.shared.interval.map(n=>(n/10000).toFixed(1)).join("–")+"%  /  SHARED-SOURCE FIXTURE";

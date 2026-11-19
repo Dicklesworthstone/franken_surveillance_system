@@ -29,3 +29,9 @@ body:has(.stereo-bench) .nav nav,body:has(.stereo-bench) .logo-light{color:#465e
 @media(max-width:480px){.stereo-frames{grid-template-columns:1fr}.stereo-frame-head{display:flex}}
 
 .stereo-heading p,.stereo-proof p{color:#425c50}body:has(.stereo-bench) .guide-crumb{color:#3f584d;background:#f3efe5;box-shadow:0 0 0 100vmax #f3efe5;clip-path:inset(0 -100vmax)}body:has(.stereo-bench) .guide-crumb h1{color:#254638}
+.poster-room{padding:38px 0 72px;color:#243d31;background:#f3efe5;box-shadow:0 0 0 100vmax #f3efe5;clip-path:inset(0 -100vmax)}
+.poster-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:30px 18px;margin-top:24px}
+.poster-grid figure{margin:0}.poster-grid img{display:block;width:100%;height:auto;background:#d7d4c9}
+.poster-grid figcaption{display:flex;align-items:center;justify-content:space-between;gap:7px;margin-top:9px;font-size:14px}.poster-grid figcaption a:last-child{font:11px var(--mono);text-decoration:underline}
+@media(max-width:900px){.poster-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:540px){.poster-grid{grid-template-columns:1fr}}

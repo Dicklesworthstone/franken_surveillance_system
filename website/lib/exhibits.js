@@ -9,6 +9,7 @@ export const exhibits = {
     caption: "JUNIPER HOUSE  /  INTERACTIVE FIELD GUIDE",
     color: "#cefa85",
   },
+  "poster-room":{title:"The poster room", label:"Exhibit posters", lines:["The poster","room."], description:"Browse the gallery and download the Open Graph or X cover for each Juniper House exhibit.", caption:"EXHIBIT ARTWORK  /  FULL RESOLUTION",color:"#e6b783"},
   "stereo-bench": {
     title:"The stereo bench", label:"Stereo bench", lines:["Two rays.","One ball."],
     description:"Mark a basketball in two camera frames and locate it on the 3D court. Compare your estimate with a native FSS reconstruction.",
