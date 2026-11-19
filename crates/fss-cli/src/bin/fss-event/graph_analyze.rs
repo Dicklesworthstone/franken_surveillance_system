@@ -9,13 +9,14 @@
 //! `ALG-ZSET-001`), checks the complexity and output witness against the registered bound, and
 //! emits a canonical `fss.deployment_graph_analysis.v1` JSON document.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use fss_cli::agent_json::{array, evidence_anchor, object, string, strings};
+use fss_cli::json_input::{Value, parse};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::GraphAlgorithmWitness;
 use fss_graph_algorithms::centrality::{self, CentralityOutput};
@@ -23,6 +24,7 @@ use fss_graph_algorithms::certified::{
     self, AlgorithmIdentity, BoundRow, Budget, CertifiedOutput, CertifiedRun,
 };
 use fss_graph_algorithms::community::{self, CommunityOutput};
+use fss_graph_algorithms::evidence::{self, EvidenceProjectionError};
 use fss_graph_algorithms::graph::GraphError;
 use fss_graph_algorithms::hits::{self, HitsConfig, HitsOutput};
 use fss_graph_algorithms::ppr::{self, PprConfig, PprOutput};
@@ -33,6 +35,8 @@ use fss_graph_algorithms::steiner::{self, SteinerTreeOutput};
 use fss_graph_algorithms::topo::{self, TopoOutput};
 use fss_graph_algorithms::weighted::{Orientation, WeightedGraph, WeightedGraphBuilder};
 use fss_graph_algorithms::zset::{self, ZSet, ZSetDeltaBatch, ZSetGraphState, ZSetMaintenanceOutput};
+use fss_reference::coverage_graph::weighted_historical_coverage;
+use fss_reference::evidence_claim_graph::retained_evidence_projection;
 use fss_reference::agent_follow::snapshot_anchor_token;
 use fss_reference::agent_orient::{DeploymentSnapshot, OrientLimits, read_deployment};
 
@@ -42,8 +46,10 @@ const FORMAT_DOMAIN: &str = "fss.deployment_graph_analysis.v1";
 const HELP: &str = "fss-event graph analyze --root DIR --site SITE\n\
   --projection <SensorCoverageGraph|EvidenceClaimGraph|DeviceFailureGraph|ArchiveObjectGraph|PlanObligationGraph>\n\
   --algorithm <ALG-CENTRAL-001|ALG-COMM-001|ALG-SPECTRAL-001|ALG-SCC-001|ALG-TOPO-001|ALG-PPR-001|ALG-HITS-001|ALG-MST-001|ALG-STEINER-001|ALG-ZSET-001>\n\
-  [--seed NODE[:WEIGHT]]... [--terminal NODE]...\n\
-  Compiles the requested canonical projection at the deployment's committed authority anchor,\n\
+  [--seed NODE[:WEIGHT]]... (PPR) [--terminal NODE]... (Steiner)\n\
+  Only registry-listed algorithm/projection pairs with the required orientation can run.\n\
+  Coverage nodes use plane/<site>, sensor/<sensor>, and zone/<scope>.\n\
+  Compiles the requested projection at the deployment's committed authority anchor,\n\
   executes the registered Certified Graph Atlas algorithm under its registered complexity bound,\n\
   verifies the GraphAlgorithmWitness, and outputs a canonical JSON report.\n";
 
@@ -80,15 +86,7 @@ impl ProjectionKind {
         }
     }
 
-    const fn orientation(self) -> Orientation {
-        match self {
-            Self::SensorCoverageGraph => Orientation::Undirected,
-            Self::EvidenceClaimGraph
-            | Self::DeviceFailureGraph
-            | Self::ArchiveObjectGraph
-            | Self::PlanObligationGraph => Orientation::Directed,
-        }
-    }
+
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,7 +143,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
     let mut root: Option<PathBuf> = None;
     let mut site: Option<String> = None;
     let mut projection: Option<ProjectionKind> = None;
-    let mut algorithm: Option<AlgorithmKind> = None;
+    let mut algorithm = None;
     let mut seeds: Vec<(String, u64)> = Vec::new();
     let mut terminals: Vec<String> = Vec::new();
     let mut idx = 1;
@@ -199,7 +197,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                     return usage_error("missing value for `--algorithm`");
                 };
                 match AlgorithmKind::parse(val) {
-                    Ok(parsed) => algorithm = Some(parsed),
+                    Ok(parsed) => algorithm = Some((val, parsed)),
                     Err(msg) => return usage_error(&msg),
                 }
                 idx += 2;
@@ -241,10 +239,19 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
     let Some(projection_kind) = projection else {
         return usage_error("missing required `--projection <PROJECTION>`");
     };
-    let Some(algorithm_kind) = algorithm else {
+    let Some((algorithm_id, algorithm_kind)) = algorithm else {
         return usage_error("missing required `--algorithm <ALG-...>`");
     };
 
+    if let Err(error) = admit_projection(algorithm_id, projection_kind) {
+        return fail_graph(&error);
+    }
+    if !seeds.is_empty() && algorithm_kind != AlgorithmKind::Ppr {
+        return usage_error("--seed applies only to ALG-PPR-001");
+    }
+    if !terminals.is_empty() && algorithm_kind != AlgorithmKind::Steiner {
+        return usage_error("--terminal applies only to ALG-STEINER-001");
+    }
     let snapshot = match read_deployment(&root, &OrientLimits::default()) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -266,7 +273,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
 
     let (projection_id, graph) = match compile_projection(projection_kind, &snapshot) {
         Ok(compiled) => compiled,
-        Err(error) => return fail_graph(&error),
+        Err(error) => return fail_message(error.stable_id(), &error.to_string()),
     };
 
     match execute_and_render(
@@ -321,10 +328,28 @@ fn parse_seed(raw: &str) -> Result<(String, u64), String> {
     Ok((raw.to_owned(), ppr::SCALE_PPB))
 }
 
+fn admit_projection(algorithm: &str, kind: ProjectionKind) -> Result<(), GraphError> {
+    let registry = parse(include_str!("../../../../../architecture/graph_algorithms.json"))
+        .map_err(|error| GraphError::Inconsistent(error.to_string()))?;
+    let allowed = registry.object()
+        .and_then(|root| root.get("algorithms"))
+        .and_then(Value::array)
+        .and_then(|rows| rows.iter().filter_map(Value::object)
+            .find(|row| row.get("id").and_then(Value::text) == Some(algorithm)))
+        .and_then(|row| row.get("projection"))
+        .and_then(Value::array)
+        .ok_or_else(|| GraphError::Inconsistent(format!("missing projection registry row for {algorithm}")))?;
+    if allowed.iter().any(|entry| entry.text() == Some(kind.as_str())) {
+        Ok(())
+    } else {
+        Err(GraphError::PreconditionFailed(format!("{algorithm} is not registered for {}", kind.as_str())))
+    }
+}
+
 fn compile_projection(
     kind: ProjectionKind,
     snapshot: &DeploymentSnapshot,
-) -> Result<(String, WeightedGraph), GraphError> {
+) -> Result<(String, WeightedGraph), EvidenceProjectionError> {
     let projection_id = format!(
         "projection:{}:{}:{}",
         kind.as_str(),
@@ -332,158 +357,108 @@ fn compile_projection(
         snapshot.anchor.commit_sequence
     );
 
-    let mut nodes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut nodes = BTreeSet::new();
     let mut edge_weights: BTreeMap<(String, String), u64> = BTreeMap::new();
-
-    fn add_node(nodes: &mut BTreeMap<String, u64>, id: &str, weight: u64) {
-        let entry = nodes.entry(id.to_owned()).or_insert(weight);
-        if weight > *entry {
-            *entry = weight;
+    let mut add_arc = |from: &str, to: &str, weight: u64| -> Result<(), GraphError> {
+        if from != to {
+            let entry = edge_weights.entry((from.to_owned(), to.to_owned())).or_default();
+            *entry = entry.checked_add(weight).ok_or(GraphError::ArithmeticOverflow("edge weight"))?;
         }
-    }
-    let orientation = kind.orientation();
-    let mut add_arc = |from: &str, to: &str, weight: u64| {
-        if from == to {
-            return;
-        }
-        let key = if orientation == Orientation::Undirected && from > to {
-            (to.to_owned(), from.to_owned())
-        } else {
-            (from.to_owned(), to.to_owned())
-        };
-        let entry = edge_weights.entry(key).or_insert(0);
-        *entry = entry.saturating_add(weight.max(1));
+        Ok(())
     };
 
-    match kind {
+    let unit = match kind {
         ProjectionKind::SensorCoverageGraph => {
-            add_node(&mut nodes, "plane:coverage", 1);
-            for cov in &snapshot.coverage {
-                let sensor = cov.record.sensor_id.as_str();
-                add_node(&mut nodes, sensor, 1);
-                add_arc("plane:coverage", sensor, 1);
-                for zone in &cov.record.zones {
-                    let zone_id = zone.scope.as_str();
-                    let w = (zone.witnesses.len() as u64).max(1);
-                    add_node(&mut nodes, zone_id, w);
-                    add_arc(sensor, zone_id, w);
-                }
-            }
-            for import in &snapshot.completed_imports {
-                let imp_node = format!("import:{import}");
-                add_node(&mut nodes, &imp_node, 1);
-                add_arc("plane:coverage", &imp_node, 1);
-            }
-            for event in &snapshot.events {
-                let ev_node = event.event.event_id.as_str();
-                add_node(&mut nodes, ev_node, 1);
-                add_arc("plane:coverage", ev_node, 1);
-                for domain in event.failure_domains() {
-                    let dom_node = format!("domain:{domain}");
-                    add_node(&mut nodes, &dom_node, 1);
-                    add_arc(ev_node, &dom_node, 1);
-                }
-            }
+            let graph = weighted_historical_coverage(snapshot, Default::default())?;
+            return Ok((format!("{projection_id}:retained-witnesses:v1"), graph));
         }
         ProjectionKind::EvidenceClaimGraph => {
-            add_node(&mut nodes, "root:evidence", 1);
-            for event in &snapshot.events {
-                let event_node = event.event.event_id.as_str();
-                add_node(&mut nodes, event_node, 1);
-                add_arc("root:evidence", event_node, 1);
-                for rev in &event.revisions {
-                    let rev_node = format!("revision:{}:{}", event_node, rev.revision);
-                    add_node(&mut nodes, &rev_node, 1);
-                    add_arc(event_node, &rev_node, 1);
-                    for edge in &rev.evidence {
-                        let obs_node = format!("obs:{}", edge.digest);
-                        add_node(&mut nodes, &obs_node, 1);
-                        add_arc(&obs_node, &rev_node, 1);
-                    }
-                }
-            }
+            let projection = retained_evidence_projection(snapshot.events.iter(), Default::default())?;
+            return Ok((evidence::PROJECTION_ID.to_owned(), projection.into_graph()));
         }
         ProjectionKind::DeviceFailureGraph => {
-            add_node(&mut nodes, "plane:site", 1);
+            nodes.insert("plane:site".to_owned());
             for cov in &snapshot.coverage {
                 let sensor = cov.record.sensor_id.as_str();
-                add_node(&mut nodes, sensor, 1);
-                add_arc("plane:site", sensor, 1);
+                nodes.insert(sensor.to_owned());
+                add_arc("plane:site", sensor, 1)?;
                 for zone in &cov.record.zones {
                     let zone_id = zone.scope.as_str();
-                    add_node(&mut nodes, zone_id, 1);
-                    add_arc(sensor, zone_id, (zone.witnesses.len() as u64).max(1));
+                    nodes.insert(zone_id.to_owned());
+                    if cov.calibration_invalidation.is_none() && !zone.witnesses.is_empty() {
+                        add_arc(sensor, zone_id, zone.witnesses.len() as u64)?;
+                    }
                 }
             }
             for event in &snapshot.events {
                 let domains = event.failure_domains();
                 for domain in &domains {
                     let dom_node = format!("domain:{domain}");
-                    add_node(&mut nodes, &dom_node, 1);
-                    add_arc("plane:site", &dom_node, 1);
+                    nodes.insert(dom_node.to_owned());
+                    add_arc("plane:site", &dom_node, 1)?;
                     let event_node = event.event.event_id.as_str();
-                    add_node(&mut nodes, event_node, 1);
-                    add_arc(&dom_node, event_node, 1);
+                    nodes.insert(event_node.to_owned());
+                    add_arc(&dom_node, event_node, 1)?;
                 }
             }
+            "failure-coupling:retained-witnesses:v1"
         }
         ProjectionKind::ArchiveObjectGraph => {
-            add_node(&mut nodes, "root:deployment", 1);
+            nodes.insert("root:deployment".to_owned());
             for import in &snapshot.completed_imports {
                 let imp_node = format!("import:{import}");
-                add_node(&mut nodes, &imp_node, 1);
-                add_arc("root:deployment", &imp_node, 1);
+                nodes.insert(imp_node.to_owned());
+                add_arc("root:deployment", &imp_node, 1)?;
             }
             for cov in &snapshot.coverage {
                 let cov_node = format!("coverage:{}", cov.record.sensor_id);
-                add_node(&mut nodes, &cov_node, 1);
-                add_arc("root:deployment", &cov_node, 1);
+                nodes.insert(cov_node.to_owned());
+                add_arc("root:deployment", &cov_node, 1)?;
             }
             for event in &snapshot.events {
                 let ev_node = format!("event_root:{}", event.event_root);
                 let rev_node = format!("revision_obj:{}", event.revision_digest);
-                add_node(&mut nodes, &ev_node, 1);
-                add_node(&mut nodes, &rev_node, 1);
-                add_arc("root:deployment", &ev_node, 1);
-                add_arc(&ev_node, &rev_node, 1);
+                nodes.insert(ev_node.to_owned());
+                nodes.insert(rev_node.to_owned());
+                add_arc("root:deployment", &ev_node, 1)?;
+                add_arc(&ev_node, &rev_node, 1)?;
             }
+            "objects"
         }
         ProjectionKind::PlanObligationGraph => {
-            add_node(&mut nodes, "root:control", 1);
+            nodes.insert("root:control".to_owned());
             for op in &snapshot.operations {
                 let op_node = format!("op:{}", op.intent.operation_id);
-                add_node(&mut nodes, &op_node, 1);
-                add_arc("root:control", &op_node, 1);
+                nodes.insert(op_node.to_owned());
+                add_arc("root:control", &op_node, 1)?;
             }
             for ob in &snapshot.obligations {
                 let ob_node = ob.obligation_id.as_str();
-                add_node(&mut nodes, ob_node, 1);
+                nodes.insert(ob_node.to_owned());
                 let parent = format!("op:{}", ob.operation_id);
-                if nodes.contains_key(&parent) {
-                    add_arc(&parent, ob_node, 1);
+                if nodes.contains(&parent) {
+                    add_arc(&parent, ob_node, 1)?;
                 } else {
-                    add_arc("root:control", ob_node, 1);
+                    add_arc("root:control", ob_node, 1)?;
                 }
             }
+            "steps"
         }
-    }
-
-    let unit = match kind {
-        ProjectionKind::SensorCoverageGraph => "witnesses",
-        ProjectionKind::EvidenceClaimGraph => "evidence-links",
-        ProjectionKind::DeviceFailureGraph => "failure-coupling",
-        ProjectionKind::ArchiveObjectGraph => "objects",
-        ProjectionKind::PlanObligationGraph => "steps",
     };
 
-    let mut builder = WeightedGraphBuilder::new(orientation, unit);
-    for (id, weight) in nodes {
-        builder.add_weighted_node(id, weight);
+    let mut builder = WeightedGraphBuilder::directed(unit);
+    for id in nodes {
+        builder.add_weighted_node(id, 1);
     }
     for ((from, to), weight) in edge_weights {
         builder.add_arc(from, to, weight);
     }
     let graph = builder.build()?;
+    let projection_id = if kind == ProjectionKind::DeviceFailureGraph {
+        format!("{projection_id}:retained-witnesses:v1")
+    } else {
+        projection_id
+    };
     Ok((projection_id, graph))
 }
 
@@ -673,7 +648,7 @@ fn execute_and_render(
             for arc in graph.arcs() {
                 let tail = graph.id(arc.tail).to_owned();
                 let head = graph.id(arc.head).to_owned();
-                let w = i64::try_from(arc.weight).unwrap_or(1);
+                let w = i64::try_from(arc.weight).map_err(|_| GraphError::ArithmeticOverflow("Z-set multiplicity"))?;
                 arc_deltas.push(((tail, head), w));
             }
             let batch = ZSetDeltaBatch {

@@ -31,11 +31,13 @@ use std::path::Path;
 
 use fss_core::{CaptureInterval, ContractError, GraphAlgorithmWitness, LedgerAnchor};
 use fss_graph_algorithms::coverage::{
-    CoverageBuildLimits, CoverageProjectionBuilder, PROJECTION_KIND,
+    CoverageBuildLimits, CoverageProjectionBuilder, PROJECTION_KIND, SENSOR_PREFIX, ZONE_PREFIX,
 };
 use fss_graph_algorithms::{
     CoverageObservation, CoverageSinglePoints, GraphBudget, GraphError, SensorCoverageProjection,
 };
+
+use fss_graph_algorithms::weighted::{WeightedGraph, WeightedGraphBuilder};
 
 use crate::agent_orient::{DeploymentReadError, DeploymentSnapshot, OrientLimits, read_deployment};
 use crate::ingest::recorded_coverage::CoverageRecord;
@@ -159,7 +161,42 @@ pub fn coverage_single_points_with_limits(
     limits: CoverageBuildLimits,
 ) -> Result<CoverageGraphReport, CoverageGraphError> {
     let window = window.map(validate_window).transpose()?;
-    let projection = project_records(
+    let projection = project_snapshot(snapshot, window, limits).map_err(CoverageGraphError::Graph)?;
+    analyze_projection(snapshot, projection, window)
+}
+
+/// Historical coverage for weighted algorithms. A unit plane–sensor link names a retained
+/// sensor. Sensor–zone links carry the exact positive retained witness count. Isolated zones
+/// remain visible. Node weights are zero because witnesses belong to links.
+///
+/// # Errors
+/// Refuses the entire projection if the coverage or weighted graph builder rejects it.
+pub fn weighted_historical_coverage(
+    snapshot: &DeploymentSnapshot,
+    limits: CoverageBuildLimits,
+) -> Result<WeightedGraph, GraphError> {
+    let projection = project_snapshot(snapshot, None, limits)?;
+    let mut graph = WeightedGraphBuilder::undirected("retained-witnesses:v1");
+    for id in projection.graph.ids() {
+        graph.add_node(id);
+        if id.starts_with(SENSOR_PREFIX) {
+            graph.add_arc(&projection.plane, id, 1);
+        }
+    }
+    for ((sensor, zone), count) in projection.witnesses {
+        if count > 0 {
+            graph.add_arc(format!("{SENSOR_PREFIX}{sensor}"), format!("{ZONE_PREFIX}{zone}"), count);
+        }
+    }
+    graph.build()
+}
+
+fn project_snapshot(
+    snapshot: &DeploymentSnapshot,
+    window: Option<CaptureInterval>,
+    limits: CoverageBuildLimits,
+) -> Result<SensorCoverageProjection, GraphError> {
+    project_records(
         &snapshot.site_lineage,
         snapshot.coverage.iter().map(|retained| {
             (
@@ -170,8 +207,6 @@ pub fn coverage_single_points_with_limits(
         window,
         limits,
     )
-    .map_err(CoverageGraphError::Graph)?;
-    analyze_projection(snapshot, projection, window)
 }
 
 fn project_records<'a>(

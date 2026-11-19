@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
-use fss_core::{EventHypothesis, EventId, LedgerAnchor};
+use fss_core::{EventId, LedgerAnchor};
 use fss_graph_algorithms::certified::Budget;
 use fss_graph_algorithms::dominators;
 use fss_graph_algorithms::evidence::{
@@ -69,6 +69,17 @@ impl std::error::Error for RetainedEvidenceClaimError {}
 
 impl From<EvidenceProjectionError> for RetainedEvidenceClaimError {
     fn from(error: EvidenceProjectionError) -> Self { Self::Projection(error) }
+}
+
+/// Compile active support for the current heads selected from a verified snapshot.
+///
+/// # Errors
+/// Refuses invalid records and exhausted projection limits without returning a partial graph.
+pub fn retained_evidence_projection<'a>(
+    retained: impl ExactSizeIterator<Item = &'a RetainedEvent>,
+    limits: EvidenceProjectionLimits,
+) -> Result<EvidenceClaimProjection, EvidenceProjectionError> {
+    EvidenceClaimProjection::from_heads(retained.map(|item| &item.event), limits)
 }
 
 /// Analyze every current event head in one already-verified deployment snapshot.
@@ -137,11 +148,10 @@ pub fn read_retained_evidence_claims_selected(
 fn analyze_retained<'a>(
     site: &str,
     anchor: &LedgerAnchor,
-    retained: impl Iterator<Item = &'a RetainedEvent>,
+    retained: impl ExactSizeIterator<Item = &'a RetainedEvent>,
     limits: EvidenceProjectionLimits,
 ) -> Result<RetainedEvidenceClaimReport, RetainedEvidenceClaimError> {
-    let events: Vec<EventHypothesis> = retained.map(|item| item.event.clone()).collect();
-    let projection = EvidenceClaimProjection::build(&events, limits)?;
+    let projection = retained_evidence_projection(retained, limits)?;
     let bound = dominators::bound(
         projection.graph().node_count() as u64,
         projection.graph().arc_count() as u64,
@@ -150,7 +160,7 @@ fn analyze_retained<'a>(
     Ok(RetainedEvidenceClaimReport {
         site: site.to_owned(),
         anchor: anchor.clone(),
-        selected_events: events.len(),
+        selected_events: projection.events().len(),
         projection,
         analysis,
     })
@@ -158,6 +168,7 @@ fn analyze_retained<'a>(
 
 #[cfg(test)]
 mod tests {
+    use fss_core::EventHypothesis;
     use super::*;
     use fss_core::{
         CaptureInterval, ContentDigest, DecisionPath, EventEvidence, EventKind, EventState,

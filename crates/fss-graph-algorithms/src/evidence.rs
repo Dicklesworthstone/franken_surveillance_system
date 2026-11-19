@@ -151,6 +151,18 @@ impl EvidenceClaimProjection {
         events: &[EventHypothesis],
         limits: EvidenceProjectionLimits,
     ) -> Result<Self, EvidenceProjectionError> {
+        Self::from_heads(events.iter(), limits)
+    }
+
+    /// Compile borrowed current heads under the same admission limits as [`Self::build`].
+    /// The caller can select records from a retained snapshot without cloning them first.
+    ///
+    /// # Errors
+    /// Returns the same input and budget refusals as [`Self::build`].
+    pub fn from_heads<'a>(
+        events: impl ExactSizeIterator<Item = &'a EventHypothesis>,
+        limits: EvidenceProjectionLimits,
+    ) -> Result<Self, EvidenceProjectionError> {
         if limits.max_events > MAX_EVENTS
             || limits.max_evidence_edges > MAX_EVIDENCE_EDGES
             || limits.max_canonical_bytes > MAX_CANONICAL_BYTES
@@ -159,13 +171,13 @@ impl EvidenceClaimProjection {
         }
         admit(events.len(), limits.max_events, "event_revisions")?;
         // Preflight aggregate cardinality before copying or verifying canonical records.
-        let evidence_edges = events.iter().try_fold(0_usize, |total, event| {
+        let mut ordered: Vec<_> = events.collect();
+        let evidence_edges = ordered.iter().try_fold(0_usize, |total, event| {
             total
                 .checked_add(event.evidence.len())
                 .ok_or(GraphError::TooLarge)
         })?;
         admit(evidence_edges, limits.max_evidence_edges, "evidence_edges")?;
-        let mut ordered: Vec<_> = events.iter().collect();
         ordered.sort_unstable_by(|a, b| a.event_id.as_str().cmp(b.event_id.as_str()));
         for pair in ordered.windows(2) {
             if pair[0].event_id == pair[1].event_id {
@@ -235,6 +247,12 @@ impl EvidenceClaimProjection {
     #[must_use]
     pub fn graph(&self) -> &WeightedGraph {
         &self.graph
+    }
+
+    /// Consume the compiled projection for another registered algorithm.
+    #[must_use]
+    pub fn into_graph(self) -> WeightedGraph {
+        self.graph
     }
 
     /// Complete selected records, including ALL non-supporting relations and uncertainty.
