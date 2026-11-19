@@ -568,6 +568,10 @@ impl OwnedSink {
 }
 
 impl UnknownTimeOwnedSink {
+    pub(crate) fn source_key(&self) -> flv_avc::SourceKey {
+        self.inputs.av_initialization.source_key()
+    }
+
     /// Remaining allowance in the current AAC timing epoch.
     pub fn remaining_audio_frames(&self) -> u64 {
         self.inputs.muxer.remaining_audio_frames()

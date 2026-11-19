@@ -11,6 +11,7 @@ use fss_object::{
     effect_journal::{EffectJournalLimits, FileEffectJournal},
 };
 use fss_reference::unifi_direct::{
+    Controller, Identity, Observation, Phase,
     camera_api::{ControllerPort, Session, SettingsObservation, StatusShape, WriteOutcome},
     handoff::{Error, Plan, Preconditions, Readback},
 };
@@ -93,6 +94,101 @@ fn plans_bind_exact_forward_prior_and_live_conditions() -> Test {
     assert!(Plan::new(Ipv4Addr::new(192, 168, 1, 31), target, c).is_err());
     let other = Plan::new(peer, Ipv4Addr::new(192, 168, 1, 41), c)?;
     assert_ne!(plan.request_digest(), other.request_digest());
+    Ok(())
+}
+
+#[test]
+fn management_v12_plan_binds_host_port_and_private_token() -> Test {
+    let peer = Ipv4Addr::new(192, 168, 1, 30);
+    let target = Ipv4Addr::new(192, 168, 1, 40);
+    let c = conditions(observed(
+        peer,
+        1,
+        br#"{"controller":{"addr":"192.168.1.10"}}"#,
+    )?);
+    let plan = Plan::new_management_v12(peer, target, 7442, [0x11; 32], c)?;
+    let other_port = Plan::new_management_v12(peer, target, 7443, [0x11; 32], c)?;
+    let other_token = Plan::new_management_v12(peer, target, 7442, [0x22; 32], c)?;
+    let legacy = Plan::new(peer, target, c)?;
+    assert_ne!(plan.request_digest(), other_port.request_digest());
+    assert_ne!(plan.request_digest(), other_token.request_digest());
+    assert_ne!(plan.request_digest(), legacy.request_digest());
+    assert!(!format!("{plan:?}").contains(&"11".repeat(32)));
+    plan.check_current(c)?;
+    assert!(Plan::new_management_v12(peer, target, 0, [0x11; 32], c).is_err());
+    assert!(Plan::new_management_v12(peer, target, 7442, [0; 32], c).is_err());
+    assert!(Plan::new_management_v12(peer, Ipv4Addr::LOCALHOST, 7442, [0x11; 32], c).is_err());
+    Ok(())
+}
+
+#[test]
+fn management_hello_requires_exact_request_bound_token_before_reply() -> Test {
+    let peer = Ipv4Addr::new(192, 168, 1, 30);
+    let target = Ipv4Addr::new(192, 168, 1, 40);
+    let c = conditions(observed(
+        peer,
+        1,
+        br#"{"controller":{"addr":"192.168.1.10"}}"#,
+    )?);
+    let plan = Plan::new_management_v12(peer, target, 7442, [0x11; 32], c)?;
+    let controller = || -> Result<Controller, fss_reference::unifi_direct::Error> {
+        Controller::new(
+            Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+            1,
+        )
+    };
+    let hello = |payload: &str| {
+        format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_hello\",\"messageId\":42,\"inResponseTo\":0,\"payload\":{payload}}}").into_bytes()
+    };
+    let binding = plan.hello_binding().ok_or("missing binding")?;
+    assert_eq!(binding.request_digest(), plan.request_digest());
+    assert!(!format!("{binding:?}").contains(&"11".repeat(32)));
+    let mut good = controller()?;
+    good.require_management_hello(binding)?;
+    let payload = format!(
+        "{{\"protocolVersion\":67,\"adoptionCode\":\"{}\"}}",
+        "11".repeat(32)
+    );
+    assert_eq!(good.observe(&hello(&payload))?, Observation::Hello);
+    assert_eq!(good.management_hello_claim(), Some(plan.request_digest()));
+    assert_eq!(
+        good.close().management_hello_claim,
+        Some(plan.request_digest())
+    );
+
+    for payload in [
+        "{}".to_owned(),
+        "{\"adoptionCode\":null}".to_owned(),
+        format!("{{\"adoptionCode\":\"{}\"}}", "22".repeat(32)),
+        format!("{{\"adoptionCode\":\"{}\"}}", "AA".repeat(32)),
+    ] {
+        let mut bad = controller()?;
+        bad.require_management_hello(plan.hello_binding().ok_or("missing binding")?)?;
+        assert_eq!(
+            bad.observe(&hello(&payload)),
+            Err(fss_reference::unifi_direct::Error::HelloBindingMismatch)
+        );
+        assert_eq!(bad.phase(), Phase::Closed);
+        assert!(bad.prepare_hello("2026-11-05T05:00:00.000Z").is_err());
+        assert_eq!(bad.management_hello_claim(), None);
+    }
+    let mut malformed = controller()?;
+    malformed.require_management_hello(plan.hello_binding().ok_or("missing binding")?)?;
+    let invalid_version = format!(
+        "{{\"protocolVersion\":\"bad\",\"adoptionCode\":\"{}\"}}",
+        "11".repeat(32)
+    );
+    assert!(malformed.observe(&hello(&invalid_version)).is_err());
+    assert_eq!(malformed.management_hello_claim(), None);
+
+    let mut late = controller()?;
+    let other = b"{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"other\",\"messageId\":1}";
+    assert_eq!(late.observe(other)?, Observation::Other);
+    assert!(
+        late.require_management_hello(plan.hello_binding().ok_or("missing binding")?)
+            .is_err()
+    );
+    assert!(Plan::new(peer, target, c)?.hello_binding().is_none());
     Ok(())
 }
 

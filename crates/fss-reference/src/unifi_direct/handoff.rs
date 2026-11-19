@@ -91,6 +91,77 @@ pub struct Plan {
     reverse_preview: ContentDigest,
     framing: Framing,
     controller_port: Option<u16>,
+    route: Route,
+}
+
+enum Route {
+    Settings,
+    ManagementV12 { port: u16, token: ManagementToken },
+}
+
+struct ManagementToken([u8; 32]);
+impl Drop for ManagementToken {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+/// An expected hello claim derived from an exact management request.
+/// Matching this value is correlation only: it does not authenticate the
+/// peer, establish dispatch, prevent replay, or settle a committed effect.
+pub struct HelloBinding {
+    request: ContentDigest,
+    token_digest: ContentDigest,
+}
+impl fmt::Debug for HelloBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HelloBinding(<redacted>)")
+    }
+}
+impl HelloBinding {
+    /// The management request whose token is expected, not proof of dispatch.
+    pub fn request_digest(&self) -> ContentDigest {
+        self.request
+    }
+
+    pub(super) fn accepts(&self, value: &str) -> bool {
+        use zeroize::Zeroizing;
+        let text = value.as_bytes();
+        if text.len() != 64 {
+            return false;
+        }
+        let mut decoded = Zeroizing::new([0u8; 32]);
+        for (dst, pair) in decoded.iter_mut().zip(text.chunks_exact(2)) {
+            fn nibble(b: u8) -> Option<u8> {
+                match b {
+                    b'0'..=b'9' => Some(b - b'0'),
+                    b'a'..=b'f' => Some(b - b'a' + 10),
+                    _ => None,
+                }
+            }
+            let (Some(high), Some(low)) = (nibble(pair[0]), nibble(pair[1])) else {
+                return false;
+            };
+            *dst = (high << 4) | low;
+        }
+        ContentDigest::sha256(&decoded[..]) == self.token_digest
+    }
+}
+
+/// A private request body; it is never exposed by `Debug` and is cleared on drop.
+pub(super) struct Body(Vec<u8>);
+impl Body {
+    pub(super) fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+impl Drop for Body {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
 }
 impl fmt::Debug for Plan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -140,7 +211,35 @@ impl Plan {
             reverse_preview,
             framing,
             controller_port: None,
+            route: Route::Settings,
         })
+    }
+    /// Prepare the experimental 1.2 management route with a single WSS host.
+    /// `token` must be freshly generated from an authorized cryptographic
+    /// entropy source; nonzero bytes do not prove entropy. The camera protocol,
+    /// acceptance, return path and restoration are not established by this plan.
+    /// The existing reverse preview remains address-only and is not a rollback.
+    pub fn new_management_v12(
+        peer: Ipv4Addr,
+        destination: Ipv4Addr,
+        port: u16,
+        token: [u8; 32],
+        current: Preconditions,
+    ) -> Result<Self, Error> {
+        let token = ManagementToken(token);
+        if port == 0 || token.0 == [0; 32] {
+            return Err(Error::Destination);
+        }
+        let mut plan = Self::new(peer, destination, current)?;
+        plan.request = management_request_digest(
+            peer,
+            current.session_generation,
+            destination,
+            port,
+            &token.0,
+        )?;
+        plan.route = Route::ManagementV12 { port, token };
+        Ok(plan)
     }
     /// Bind the reported listener port to this plan's effect preconditions.
     ///
@@ -164,6 +263,17 @@ impl Plan {
     /// Exact semantic request digest for management-effect preparation.
     pub fn request_digest(&self) -> ContentDigest {
         self.request
+    }
+    /// Derive a claim check for this exact 1.2 request. This is not effect
+    /// authority, a dispatch receipt, device identity, or adoption proof.
+    pub fn hello_binding(&self) -> Option<HelloBinding> {
+        match &self.route {
+            Route::Settings => None,
+            Route::ManagementV12 { token, .. } => Some(HelloBinding {
+                request: self.request,
+                token_digest: ContentDigest::sha256(&token.0),
+            }),
+        }
     }
     /// Bound caller-supplied preconditions for management-effect preparation.
     pub fn precondition_digest(&self) -> ContentDigest {
@@ -232,11 +342,41 @@ impl Plan {
     pub(super) fn framing(&self) -> Framing {
         self.framing
     }
-    pub(super) fn body(&self) -> Result<String, Error> {
-        let body = body(self.destination);
-        if request_digest(self.peer, self.generation, self.destination, self.framing)?
-            != self.request
-        {
+    pub(super) fn method_and_path(&self) -> (&'static str, &'static str) {
+        match &self.route {
+            Route::Settings => ("PUT", "/api/1.1/settings"),
+            Route::ManagementV12 { .. } => ("POST", "/api/1.2/manage"),
+        }
+    }
+    pub(super) fn body(&self) -> Result<Body, Error> {
+        let (actual, body) = match &self.route {
+            Route::Settings => (
+                request_digest(self.peer, self.generation, self.destination, self.framing)?,
+                Body(body(self.destination).into_bytes()),
+            ),
+            Route::ManagementV12 { port, token } => {
+                let digest = management_request_digest(
+                    self.peer,
+                    self.generation,
+                    self.destination,
+                    *port,
+                    &token.0,
+                )?;
+                let mut bytes = format!(
+                    "{{\"mgmt\":{{\"protocol\":\"wss\",\"hosts\":[\"{}:{}\"],\"token\":\"",
+                    self.destination, port
+                )
+                .into_bytes();
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                for &byte in &token.0 {
+                    bytes.push(HEX[usize::from(byte >> 4)]);
+                    bytes.push(HEX[usize::from(byte & 15)]);
+                }
+                bytes.extend_from_slice(b"\"}}");
+                (digest, Body(bytes))
+            }
+        };
+        if actual != self.request {
             return Err(Error::Stale);
         }
         Ok(body)
@@ -322,6 +462,27 @@ fn request_digest(
     e.text(&peer.to_string());
     e.u64(generation);
     e.bytes(body.as_bytes());
+    Ok(ContentDigest::sha256(
+        &e.finish_checked().map_err(|_| Error::Encoding)?,
+    ))
+}
+fn management_request_digest(
+    peer: Ipv4Addr,
+    generation: u64,
+    destination: Ipv4Addr,
+    port: u16,
+    token: &[u8; 32],
+) -> Result<ContentDigest, Error> {
+    let mut e = CanonicalEncoder::new();
+    e.text("fss.unifi-direct.controller-management-v12-request.v1");
+    e.text("POST");
+    e.text("/api/1.2/manage");
+    e.text(&peer.to_string());
+    e.u64(generation);
+    e.text("wss");
+    e.text(&destination.to_string());
+    e.u64(u64::from(port));
+    e.digest(ContentDigest::sha256(token));
     Ok(ContentDigest::sha256(
         &e.finish_checked().map_err(|_| Error::Encoding)?,
     ))

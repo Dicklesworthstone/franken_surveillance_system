@@ -49,8 +49,8 @@ pub struct Parts {
     pub source: Source,
     /// Current read/privacy policy, checked before, during and after work.
     pub read: Arc<dyn archive::ReadAuthority + Send + Sync>,
-    /// Explicit declared color interpretation.
-    pub color: video_still::Color,
+    /// Explicit color interpretation or source-SPS selection policy.
+    pub color: video_still::ColorPolicy,
     /// JPEG quality in 1..=100.
     pub quality: u8,
     /// Independent image and output limits.
@@ -206,7 +206,7 @@ impl Worker {
             } else {
                 let p = &state.parts;
                 let result = match &p.source {
-                    Source::Recovered(clip) => video_still::from_archive_with_probe(
+                    Source::Recovered(clip) => video_still::from_archive_with_policy_and_probe(
                         clip,
                         p.color,
                         p.quality,
@@ -215,7 +215,7 @@ impl Worker {
                         p.encode_work_limit,
                         &cancelled,
                     ),
-                    Source::Published(source) => video_still::from_published_with_probe(
+                    Source::Published(source) => video_still::from_published_with_policy_and_probe(
                         source,
                         p.color,
                         p.quality,

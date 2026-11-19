@@ -13,13 +13,36 @@ use fss_codec_jpeg_encode::{
 };
 use fss_core::{CanonicalEncoder, ContentDigest, Sha256Hasher};
 
-/// Caller-declared coded-pixel interpretation; the decoder does not expose VUI color metadata.
+/// Coded-pixel interpretation selected by the caller or from a picture's SPS claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Color {
     /// BT.601 matrix and full-range luma/chroma, with nearest-cell chroma replication.
     Bt601Full,
     /// BT.601 matrix and limited-range luma/chroma, with nearest-cell chroma replication.
     Bt601Limited,
+    /// BT.709 matrix and full-range luma/chroma, with nearest-cell chroma replication.
+    Bt709Full,
+    /// BT.709 matrix and limited-range luma/chroma, with nearest-cell chroma replication.
+    Bt709Limited,
+}
+
+/// Policy for interpreting a decoded picture's YCbCr samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColorPolicy {
+    /// Use the caller's explicit interpretation.
+    Explicit(Color),
+    /// Use the SPS claim attached to this picture; missing or unsupported
+    /// claims are refused. This does not reconcile container color metadata.
+    SourceSignal,
+}
+
+impl ColorPolicy {
+    fn resolve(self, picture: &Picture) -> Result<Color, Error> {
+        match self {
+            Self::Explicit(color) => Ok(color),
+            Self::SourceSignal => Color::from_picture_signal(picture),
+        }
+    }
 }
 
 /// Payload-free failure; no partial image is returned.
@@ -43,6 +66,10 @@ pub enum Error {
     Decode,
     /// The first sample did not yield exactly one picture.
     PictureCount,
+    /// The picture's SPS did not declare both signal range and color matrix.
+    ColorNotReported,
+    /// The declared matrix has no supported YCbCr-to-RGB conversion.
+    ColorUnsupported(u8),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -50,6 +77,31 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+impl Color {
+    /// Select a supported matrix and range from an explicitly supplied SPS claim.
+    pub fn from_video_signal(
+        signal: Option<fss_codec_h264::params::VideoSignal>,
+    ) -> Result<Self, Error> {
+        let signal = signal.ok_or(Error::ColorNotReported)?;
+        let matrix = signal.color.ok_or(Error::ColorNotReported)?.matrix;
+        match (matrix, signal.full_range) {
+            (1, true) => Ok(Self::Bt709Full),
+            (1, false) => Ok(Self::Bt709Limited),
+            (5 | 6, true) => Ok(Self::Bt601Full),
+            (5 | 6, false) => Ok(Self::Bt601Limited),
+            (2, _) => Err(Error::ColorNotReported),
+            (other, _) => Err(Error::ColorUnsupported(other)),
+        }
+    }
+
+    /// Select a supported matrix and range from this picture's SPS claim.
+    /// Missing or unsupported color information is refused rather than guessed.
+    /// This does not authenticate the source or resolve container/SPS conflicts.
+    pub fn from_picture_signal(picture: &Picture) -> Result<Self, Error> {
+        Self::from_video_signal(picture.video_signal())
+    }
+}
 
 /// A complete lossy derivative and its declared interpretation.
 #[must_use]
@@ -135,6 +187,14 @@ fn rgb(y: u8, cb: u8, cr: u8, color: Color) -> [u8; 3] {
             53_279,
             132_201,
         ),
+        Color::Bt709Full => (i32::from(y) * 65_536, 103_206, 12_276, 30_679, 121_609),
+        Color::Bt709Limited => (
+            (i32::from(y) - 16) * 76_309,
+            117_489,
+            13_975,
+            34_925,
+            138_438,
+        ),
     };
     let channel = |v: i32| ((v + 32_768).div_euclid(65_536)).clamp(0, 255) as u8;
     [
@@ -195,6 +255,27 @@ pub fn from_archive_with_probe(
     encode_work_limit: u64,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<ArchivedStill, Error> {
+    from_archive_with_policy_and_probe(
+        clip,
+        ColorPolicy::Explicit(color),
+        quality,
+        limits,
+        pixel_work_limit,
+        encode_work_limit,
+        cancelled,
+    )
+}
+
+/// Derive a source-checked archive still using an explicit or SPS-based color policy.
+pub fn from_archive_with_policy_and_probe(
+    clip: &super::archive::RecoveredUnknownTimeVideoClip,
+    color: ColorPolicy,
+    quality: u8,
+    limits: &EncodeLimits,
+    pixel_work_limit: u64,
+    encode_work_limit: u64,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ArchivedStill, Error> {
     from_media(
         clip.bytes(),
         clip.samples(),
@@ -215,6 +296,27 @@ pub fn from_archive_with_probe(
 pub fn from_published_with_probe(
     source: &super::video_owned_sink::PublishedStillSource,
     color: Color,
+    quality: u8,
+    limits: &EncodeLimits,
+    pixel_work_limit: u64,
+    encode_work_limit: u64,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ArchivedStill, Error> {
+    from_published_with_policy_and_probe(
+        source,
+        ColorPolicy::Explicit(color),
+        quality,
+        limits,
+        pixel_work_limit,
+        encode_work_limit,
+        cancelled,
+    )
+}
+
+/// Derive a confirmed-publication still using an explicit or SPS-based color policy.
+pub fn from_published_with_policy_and_probe(
+    source: &super::video_owned_sink::PublishedStillSource,
+    color: ColorPolicy,
     quality: u8,
     limits: &EncodeLimits,
     pixel_work_limit: u64,
@@ -250,7 +352,7 @@ fn from_media(
     pin: super::archive::UnknownTimePin,
     source: fss_container::flv_avc::SourceKey,
     provenance: Provenance,
-    color: Color,
+    color: ColorPolicy,
     quality: u8,
     limits: &EncodeLimits,
     pixel_work_limit: u64,
@@ -309,6 +411,7 @@ fn from_media(
     }
     let picture = picture.ok_or(Error::PictureCount)?;
     let source_hash = picture_digest(&picture, cancelled)?;
+    let color = color.resolve(&picture)?;
     let still = from_picture_with_probe(
         &picture,
         source_hash,
@@ -341,6 +444,31 @@ fn from_media(
         identity,
         provenance,
     })
+}
+
+/// Encode one full-size picture using the matrix and range reported in its SPS.
+/// Missing or unsupported source metadata is refused, and the SPS claim is not
+/// authenticated or reconciled with any container color metadata.
+pub fn from_picture_signal(
+    picture: &Picture,
+    expected_i420_sha256: [u8; 32],
+    quality: u8,
+    limits: &EncodeLimits,
+    pixel_work_limit: u64,
+    encode_work_limit: u64,
+    cancelled: &AtomicBool,
+) -> Result<Still, Error> {
+    let color = Color::from_picture_signal(picture)?;
+    from_picture(
+        picture,
+        expected_i420_sha256,
+        color,
+        quality,
+        limits,
+        pixel_work_limit,
+        encode_work_limit,
+        cancelled,
+    )
 }
 
 /// Encode one full-size picture; no resize, metadata, I/O, or detached work.
@@ -454,6 +582,8 @@ pub fn from_picture_with_probe(
     identity.text(match color {
         Color::Bt601Full => "bt601-full-q16-nearest",
         Color::Bt601Limited => "bt601-limited-q16-nearest",
+        Color::Bt709Full => "bt709-full-q16-nearest",
+        Color::Bt709Limited => "bt709-limited-q16-nearest",
     });
     identity.bytes(&receipt.pixel_sha256);
     identity.bytes(&receipt.encoder);
@@ -476,7 +606,56 @@ pub fn from_picture_with_probe(
 
 #[cfg(test)]
 mod tests {
-    use super::{Color, rgb};
+    use super::{Color, Error, rgb};
+    use fss_codec_h264::params::{ColorDescription, VideoSignal};
+
+    #[test]
+    fn signal_color_selection_preserves_missing_and_unsupported_claims() {
+        let signal = |full_range, matrix| {
+            Some(VideoSignal {
+                format: 5,
+                full_range,
+                color: Some(ColorDescription {
+                    primaries: 1,
+                    transfer: 1,
+                    matrix,
+                }),
+            })
+        };
+        assert_eq!(
+            Color::from_video_signal(signal(true, 1)),
+            Ok(Color::Bt709Full)
+        );
+        assert_eq!(
+            Color::from_video_signal(signal(false, 1)),
+            Ok(Color::Bt709Limited)
+        );
+        assert_eq!(
+            Color::from_video_signal(signal(true, 5)),
+            Ok(Color::Bt601Full)
+        );
+        assert_eq!(
+            Color::from_video_signal(signal(false, 6)),
+            Ok(Color::Bt601Limited)
+        );
+        assert_eq!(Color::from_video_signal(None), Err(Error::ColorNotReported));
+        assert_eq!(
+            Color::from_video_signal(Some(VideoSignal {
+                format: 5,
+                full_range: true,
+                color: None
+            })),
+            Err(Error::ColorNotReported)
+        );
+        assert_eq!(
+            Color::from_video_signal(signal(true, 2)),
+            Err(Error::ColorNotReported)
+        );
+        assert_eq!(
+            Color::from_video_signal(signal(true, 9)),
+            Err(Error::ColorUnsupported(9))
+        );
+    }
 
     #[test]
     fn explicit_color_ranges_are_distinct_and_match_reference() {
@@ -488,5 +667,34 @@ mod tests {
                 crate::ingest::recorded_decode::video_rgb::ycbcr_limited_to_rgb(y, cb, cr)
             );
         }
+    }
+
+    #[test]
+    fn bt709_matches_independent_rgb_reference_with_rounding_tolerance() {
+        // Uniform 2x2 YUV420 samples independently converted with FFmpeg's
+        // BT.709 nearest-neighbor full/limited-range scaling. Its fixed-point
+        // rounding differs slightly from ours, particularly at limited white.
+        let vectors = [
+            ((16, 128, 128), [16, 16, 16], [0, 0, 0]),
+            ((81, 90, 240), [255, 35, 11], [255, 23, 0]),
+            ((126, 100, 150), [161, 120, 74], [165, 120, 67]),
+            ((255, 255, 255), [255, 171, 255], [255, 182, 255]),
+            ((128, 16, 240), [255, 96, 0], [255, 94, 0]),
+            ((235, 128, 128), [235, 235, 235], [253, 253, 253]),
+        ];
+        for ((y, cb, cr), full, limited) in vectors {
+            for (color, expected) in [(Color::Bt709Full, full), (Color::Bt709Limited, limited)] {
+                for (actual, expected) in rgb(y, cb, cr, color).into_iter().zip(expected) {
+                    assert!(
+                        actual.abs_diff(expected) <= 3,
+                        "{color:?}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+        assert_ne!(
+            rgb(81, 90, 240, Color::Bt709Full),
+            rgb(81, 90, 240, Color::Bt601Full)
+        );
     }
 }

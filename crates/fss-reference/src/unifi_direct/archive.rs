@@ -21,7 +21,7 @@ use super::{
     av_evidence::{self, AudioConfigurationOrigin, PreparedAv, PreparedAvVideoOnly},
     av_recording,
     evidence::{DOMAIN, KIND, Prepared},
-    event_evidence, events, source_evidence,
+    event_evidence, events, source_batch, source_evidence,
 };
 use crate::{ReferenceDeployment, ReplayCx, reference_deployment::ReplayCancellationBridge};
 
@@ -128,6 +128,11 @@ impl UnknownTimePin {
         }
     }
 
+    /// Candidate for a contiguous source batch with unknown capture time.
+    pub fn from_source_batch(plan: &source_batch::Prepared) -> Self {
+        Self { root: plan.manifest().root(), retention: plan.retention() }
+    }
+
     /// Candidate for one camera event whose physical time is unknown.
     pub fn from_event_plan(plan: &event_evidence::Prepared<'_>) -> Self {
         Self { root: plan.manifest().root(), retention: plan.retention() }
@@ -142,6 +147,27 @@ impl UnknownTimePin {
             capture: unknown_ledger_validity(),
         }
     }
+}
+
+/// A local, read-only source-root capacity observation before journal intent.
+/// It is neither a reservation nor proof that other archive checks will pass.
+pub(super) fn source_root_capacity(
+    pin: UnknownTimePin,
+    deployment: &ReferenceDeployment,
+) -> Option<(usize, usize)> {
+    let publisher = deployment.publisher();
+    if publisher.is_poisoned() {
+        return None;
+    }
+    let slot = pin.access_pin().slot().ok()?;
+    // A visible or staged slot needs its ordinary reconciliation path. In
+    // particular, a full store can still replay an already visible candidate.
+    if publisher.root(&slot).is_some() {
+        return None;
+    }
+    let visible = publisher.visible_root_count();
+    let maximum = publisher.limits().max_roots;
+    (visible >= maximum).then_some((visible, maximum))
 }
 
 fn unknown_ledger_validity() -> CaptureInterval {
@@ -223,7 +249,7 @@ impl Default for Limits {
 pub fn slot(plan: &Prepared<'_>) -> Result<SlotName, Error> {
     slot_for_root(plan.manifest().root())
 }
-fn slot_for_root(root: ContentDigest) -> Result<SlotName, Error> {
+pub(super) fn slot_for_root(root: ContentDigest) -> Result<SlotName, Error> {
     let hex: String = root.bytes().iter().map(|b| format!("{b:02x}")).collect();
     SlotName::parse(&format!("uflv1-{hex}")).map_err(storage)
 }
@@ -391,6 +417,22 @@ pub fn publish_unknown_time_source_anchored(
     publish_unknown_time_anchored(
         plan, pin, deployment, authority, limits, work, cx, journal, keeper,
     )
+}
+
+/// Retain a source-tail batch with one journaled root and explicit retention.
+/// Original records remain caller-owned; uncertainty requires reconciliation.
+pub fn publish_unknown_time_source_batch_anchored(
+    plan: &source_batch::Prepared,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, UnknownTimePublishError> {
+    let pin = UnknownTimePin::from_source_batch(plan);
+    publish_unknown_time_anchored(plan, pin, deployment, authority, limits, work, cx, journal, keeper)
 }
 
 /// Retain one event source using an explicit retention grant and dedicated
@@ -1108,6 +1150,12 @@ impl Graph for source_evidence::Prepared<'_> {
     fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
         Box::new(self.payloads())
     }
+}
+impl Graph for source_batch::Prepared {
+    fn manifest(&self) -> &ObjectManifest { self.manifest() }
+    fn capture(&self) -> Option<CaptureInterval> { None }
+    fn retention(&self) -> ContentDigest { self.retention() }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> { Box::new(self.payloads()) }
 }
 impl Graph for event_evidence::Prepared<'_> {
     fn manifest(&self) -> &ObjectManifest { self.manifest() }
@@ -1925,6 +1973,124 @@ pub fn read_unknown_time_source(
     )
 }
 
+/// Reopen one ledgered source batch and verify every original record's bytes,
+/// ordering and local framing claim under current read authority.
+pub fn read_unknown_time_source_batch(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<source_batch::Recovered, Error> {
+    let access = pin.access_pin();
+    let (manifest, metadata) = open_graph_kind_with_time(
+        deployment, access, authority, limits, work, cx, source_batch::KIND,
+        source_batch::DOMAIN, false,
+    )?;
+    recover_source_batch_components(deployment, pin, manifest, metadata, authority, work, cx)
+}
+
+/// Verified ledgered source graph, selected from the rooted manifest kind.
+pub(super) enum RecoveredSourceGraph {
+    Single(RecoveredSource),
+    Batch(source_batch::Recovered),
+}
+
+/// Reopen either source representation without treating arbitrary corruption
+/// or denied access as permission to try a different publication.
+pub(super) fn read_unknown_time_source_graph(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredSourceGraph, Error> {
+    let (manifest, metadata) = open_graph_allowed_with_time(
+        deployment, pin.access_pin(), authority, limits, work, cx,
+        &[(source_evidence::KIND, source_evidence::DOMAIN),
+          (source_batch::KIND, source_batch::DOMAIN)], false,
+    )?;
+    match manifest.kind() {
+        source_evidence::KIND => recover_source_components(
+            deployment, pin, manifest, metadata, authority, limits, work, cx,
+            SourcePublicationState::Ledgered,
+        ).map(RecoveredSourceGraph::Single),
+        source_batch::KIND => recover_source_batch_components(
+            deployment, pin, manifest, metadata, authority, work, cx,
+        ).map(RecoveredSourceGraph::Batch),
+        _ => Err(Error::Mismatch),
+    }
+}
+
+/// Recover a fully staged batch for the exact anchored pending journal pin.
+/// This does not claim that the root was published or its effect settled.
+pub fn read_staged_unknown_time_source_batch(
+    deployment: &ReferenceDeployment,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<source_batch::Recovered, Error> {
+    if journal.inner.is_fenced() || keeper.is_fenced() || keeper.target() != journal.anchor() {
+        return Err(Error::RecoveryRequired);
+    }
+    let pin = journal.pending().ok_or(Error::RecoveryRequired)?;
+    let access = pin.access_pin();
+    let _ = access.slot()?;
+    if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
+        || deployment.publisher().limits().spool.max_object_bytes > limits.maximum_spool_object_bytes
+        || deployment.publisher().is_poisoned()
+    {
+        return Err(Error::Limit);
+    }
+    let root = read_part(deployment, access, pin.root, authority, work, cx)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root).map_err(storage)?;
+    if manifest.root() != pin.root || manifest.kind() != source_batch::KIND
+        || manifest.children().len() != 2
+    {
+        return Err(Error::Mismatch);
+    }
+    let metadata_digest = manifest.metadata_digest().ok_or(Error::Mismatch)?;
+    require_child(&manifest, metadata_digest, work)?;
+    let metadata = read_part(deployment, access, metadata_digest, authority, work, cx)?;
+    let recovered = recover_source_batch_components(deployment, pin, manifest, metadata, authority, work, cx)?;
+    if journal.inner.is_fenced() || keeper.is_fenced() || journal.pending() != Some(pin)
+        || keeper.target() != journal.anchor()
+    {
+        return Err(Error::RecoveryRequired);
+    }
+    Ok(recovered)
+}
+
+fn recover_source_batch_components(
+    deployment: &ReferenceDeployment,
+    pin: UnknownTimePin,
+    manifest: ObjectManifest,
+    metadata: Vec<u8>,
+    authority: &dyn ReadAuthority,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<source_batch::Recovered, Error> {
+    let access = pin.access_pin();
+    let metadata_digest = manifest.metadata_digest().ok_or(Error::Mismatch)?;
+    if manifest.children().len() != 2 { return Err(Error::Mismatch); }
+    require_child(&manifest, metadata_digest, work)?;
+    let mut payloads = manifest.children().iter().copied().filter(|digest| *digest != metadata_digest);
+    let payload_digest = payloads.next().ok_or(Error::Mismatch)?;
+    if payloads.next().is_some() { return Err(Error::Mismatch); }
+    let payload = read_part(deployment, access, payload_digest, authority, work, cx)?;
+    let cost = (metadata.len() as u64).checked_add(payload.len() as u64)
+        .and_then(|v| v.checked_mul(4)).ok_or(Error::Limit)?;
+    work.charge(cost)?;
+    let recovered = source_batch::recover(&metadata, payload, pin.retention).map_err(|_| Error::Mismatch)?;
+    read_authorize(access, authority, cx)?;
+    Ok(recovered)
+}
+
 /// Recover a fully staged pending record without claiming it was published.
 /// The exact journal pin and independently anchored journal prefix are checked
 /// before and after recovery; each digest-verified read rechecks authority.
@@ -2020,6 +2186,7 @@ fn recover_source_components(
         2 => SourceDisposition::PreRoll,
         3 => SourceDisposition::Unclosed,
         4 => SourceDisposition::Unframed,
+        5 => SourceDisposition::BootstrapCopy,
         _ => return Err(Error::Mismatch),
     };
     let offset = decoder.u64().map_err(storage)?;
@@ -2317,6 +2484,21 @@ fn open_graph_kind_with_time(
     domain: &str,
     capture_known: bool,
 ) -> Result<(ObjectManifest, Vec<u8>), Error> {
+    open_graph_allowed_with_time(
+        deployment, pin, authority, limits, work, cx, &[(kind, domain)], capture_known,
+    )
+}
+
+fn open_graph_allowed_with_time(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    allowed: &[(&str, &str)],
+    capture_known: bool,
+) -> Result<(ObjectManifest, Vec<u8>), Error> {
     read_authorize(pin, authority, cx)?;
     if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
         || !(1..=262_144).contains(&limits.maximum_ledger_deltas)
@@ -2349,9 +2531,11 @@ fn open_graph_kind_with_time(
     }
     let root_bytes = read_part(deployment, pin, pin.root, authority, work, cx)?;
     let manifest = ObjectManifest::from_canonical_bytes(&root_bytes).map_err(storage)?;
-    if manifest.root() != pin.root || manifest.kind() != kind {
+    if manifest.root() != pin.root {
         return Err(Error::Mismatch);
     }
+    let domain = allowed.iter().find_map(|(kind, domain)|
+        (*kind == manifest.kind()).then_some(*domain)).ok_or(Error::Mismatch)?;
     let metadata = manifest.metadata_digest().ok_or(Error::Mismatch)?;
     let metadata_bytes = read_part(deployment, pin, metadata, authority, work, cx)?;
     let mut decoder = CanonicalDecoder::new(&metadata_bytes);

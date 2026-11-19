@@ -48,6 +48,386 @@ fn parts(connection: u64) -> Test<(Framer, recording::Recorder)> {
     ))
 }
 
+fn encoded_video_fixture() -> Test<Vec<u8>> {
+    let source = include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264");
+    let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(source).collect();
+    let sps = nals.iter().copied().find(|n| n[0] & 31 == 7).ok_or("SPS")?;
+    let pps = nals.iter().copied().find(|n| n[0] & 31 == 8).ok_or("PPS")?;
+    let pictures: Vec<_> = nals
+        .into_iter()
+        .filter(|n| matches!(n[0] & 31, 1 | 5))
+        .collect();
+    if pictures.len() != 4 || pictures[0][0] & 31 != 5 {
+        return Err("fixture pictures".into());
+    }
+    fn tag(timestamp: u32, payload: &[u8]) -> Vec<u8> {
+        let n = payload.len();
+        let mut result = vec![
+            9,
+            (n >> 16) as u8,
+            (n >> 8) as u8,
+            n as u8,
+            (timestamp >> 16) as u8,
+            (timestamp >> 8) as u8,
+            timestamp as u8,
+            (timestamp >> 24) as u8,
+            0,
+            0,
+            0,
+        ];
+        result.extend_from_slice(payload);
+        result.extend_from_slice(&(11_u32 + n as u32).to_be_bytes());
+        result
+    }
+    let mut config = vec![0x17, 0, 0, 0, 0, 1, sps[1], sps[2], sps[3], 0xff, 0xe1];
+    config.extend_from_slice(&u16::try_from(sps.len())?.to_be_bytes());
+    config.extend_from_slice(sps);
+    config.push(1);
+    config.extend_from_slice(&u16::try_from(pps.len())?.to_be_bytes());
+    config.extend_from_slice(pps);
+    let mut wire = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    wire.extend(tag(0, &config));
+    for index in 0..7 {
+        let nal = pictures[index % 3];
+        let mut payload = vec![0x17, 1, 0, 0, 0];
+        payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
+        payload.extend_from_slice(nal);
+        wire.extend([0x77; 2]);
+        wire.extend(tag(index as u32 * 40, &payload));
+    }
+    Ok(wire)
+}
+
+#[test]
+fn bounded_reaccept_retains_each_tail_and_fences_dropped_waits() -> Test {
+    use fss_reference::unifi_direct::media_reconnect::{self, Inputs, Reaccept};
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = 1_000_000;
+    budget.network_bytes = 1_000_000;
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:media-reaccept".into(),
+            operation_id: OperationId::parse("operation:media-reaccept")?,
+            principal: "principal:owner".into(),
+            capabilities: vec![
+                RuntimeGrant::AdapterNet.as_str().into(),
+                RuntimeGrant::ReadMedia.as_str().into(),
+            ],
+            deadline: Some(TimestampNs(60_000_000_000)),
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"media reaccept fixture"),
+            generation: 1,
+        },
+        RegionId::new("region:media-reaccept")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:media-reaccept")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |task, cx| {
+                let clock = MeteredClock::new(task, cx, TimestampNs(3)).expect("fixture clock");
+                let result: Test = async {
+                    let policy = Policy {
+                        peer: Cell::new(true),
+                    };
+                    let listener = listener::Listener::bind(
+                        task,
+                        cx,
+                        clock,
+                        &policy,
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+                        "fixture:camera",
+                        Duration::from_secs(5),
+                    )
+                    .await?;
+                    let address = SocketAddr::V4(listener.local_addr());
+                    let mut owner = Reaccept::new(listener, None, 7, 1)
+                        .map_err(|_| "reaccept setup refused")?;
+                    let (framer, recorder) = parts(1)?;
+                    let unpolled = owner
+                        .accept_next(
+                            Inputs { framer, recorder },
+                            4096,
+                            100_000,
+                            Duration::from_secs(5),
+                        )
+                        .map_err(|_| "unpolled wait refused")?;
+                    drop(unpolled);
+                    assert!(owner.interrupted());
+                    assert_eq!(
+                        owner.acknowledge_interrupted().map(|key| key.connection),
+                        Some(1)
+                    );
+                    let (framer, recorder) = parts(2)?;
+                    let mut wait = Box::pin(
+                        owner
+                            .accept_next(
+                                Inputs { framer, recorder },
+                                4096,
+                                100_000,
+                                Duration::from_secs(5),
+                            )
+                            .map_err(|_| "initial wait refused")?,
+                    );
+                    poll_fn(|cx| match wait.as_mut().poll(cx) {
+                        Poll::Pending => Poll::Ready(()),
+                        Poll::Ready(_) => panic!("accept did not wait"),
+                    })
+                    .await;
+                    drop(wait);
+                    assert!(owner.interrupted());
+                    let (framer, recorder) = parts(3)?;
+                    let refused = owner
+                        .accept_next(
+                            Inputs { framer, recorder },
+                            4096,
+                            100_000,
+                            Duration::from_secs(5),
+                        )
+                        .err()
+                        .ok_or("interrupted wait was not fenced")?;
+                    assert_eq!(refused.reason, media_reconnect::Error::Waiting);
+                    assert!(refused.inputs.is_some());
+                    assert_eq!(
+                        owner.acknowledge_interrupted(),
+                        Some(SourceKey {
+                            connection: 2,
+                            generation: 1
+                        })
+                    );
+                    let (framer, recorder) = parts(2)?;
+                    let refused = owner
+                        .accept_next(
+                            Inputs { framer, recorder },
+                            4096,
+                            100_000,
+                            Duration::from_secs(5),
+                        )
+                        .err()
+                        .ok_or("reused source key accepted")?;
+                    assert_eq!(refused.reason, media_reconnect::Error::SourceOrder);
+                    assert!(refused.inputs.is_some());
+
+                    policy.peer.set(false);
+                    let denied = std::thread::spawn(move || {
+                        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))
+                            .map(drop)
+                    });
+                    let (framer, recorder) = parts(3)?;
+                    let refused = owner
+                        .accept_next(
+                            Inputs { framer, recorder },
+                            4096,
+                            100_000,
+                            Duration::from_secs(5),
+                        )
+                        .map_err(|_| "denied peer wait refused")?
+                        .await
+                        .err()
+                        .ok_or("denied peer accepted")?;
+                    assert_eq!(
+                        refused,
+                        media_reconnect::Error::Listener(listener::Error::Denied)
+                    );
+                    denied.join().map_err(|_| "denied peer panicked")??;
+                    policy.peer.set(true);
+
+                    let header = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00";
+                    for connection in [4, 5] {
+                        let sender = std::thread::spawn(move || -> std::io::Result<()> {
+                            let mut stream = std::net::TcpStream::connect_timeout(
+                                &address,
+                                Duration::from_secs(5),
+                            )?;
+                            stream.write_all(header)
+                        });
+                        let (framer, recorder) = parts(connection)?;
+                        owner
+                            .accept_next(
+                                Inputs { framer, recorder },
+                                4096,
+                                100_000,
+                                Duration::from_secs(5),
+                            )
+                            .map_err(|_| "media wait refused")?
+                            .await
+                            .map_err(|_| "media accept refused")?;
+                        sender.join().map_err(|_| "media peer panicked")??;
+                        let pipeline = owner.active_mut().ok_or("accepted pipeline lost")?;
+                        assert_eq!(pipeline.source_key().connection, connection);
+                        let mut matched = false;
+                        for _ in 0..20 {
+                            match pipeline.probe_header_step(task, cx, clock.now()?).await? {
+                                ingress::HeaderProbe::Progress => (),
+                                ingress::HeaderProbe::Valid => {
+                                    matched = true;
+                                    break;
+                                }
+                                _ => return Err("synthetic header refused".into()),
+                            }
+                        }
+                        assert!(matched);
+                        assert!(owner.retire_active());
+                        let (framer, recorder) = parts(connection + 10)?;
+                        let refused = owner
+                            .accept_next(
+                                Inputs { framer, recorder },
+                                4096,
+                                100_000,
+                                Duration::from_secs(5),
+                            )
+                            .err()
+                            .ok_or("tail capacity not enforced")?;
+                        assert_eq!(refused.reason, media_reconnect::Error::RetiredCapacity);
+                        assert!(refused.inputs.is_some());
+                        let retired = owner.take_retired().ok_or("retired source lost")?;
+                        assert_eq!(retired.key.connection, connection);
+                        assert_eq!(retired.pipeline.ingress.framing.bytes(), header);
+                    }
+                    for connection in [6, 7] {
+                        let wire = encoded_video_fixture()?;
+                        let sent = wire.clone();
+                        let sender = std::thread::spawn(move || -> std::io::Result<()> {
+                            let mut stream = std::net::TcpStream::connect_timeout(
+                                &address,
+                                Duration::from_secs(5),
+                            )?;
+                            stream.write_all(&sent)
+                        });
+                        let (framer, recorder) = parts(connection)?;
+                        owner
+                            .accept_next(
+                                Inputs { framer, recorder },
+                                4096,
+                                100_000,
+                                Duration::from_secs(5),
+                            )
+                            .map_err(|_| "video wait refused")?
+                            .await
+                            .map_err(|_| "video accept refused")?;
+                        sender.join().map_err(|_| "video peer panicked")??;
+                        let pipeline = owner.active_mut().ok_or("video pipeline lost")?;
+                        let mut ranges = Vec::new();
+                        let mut segments = 0;
+                        let mut eof = false;
+                        for _ in 0..200 {
+                            match pipeline
+                                .step(task, cx, clock.now()?)
+                                .await
+                                .map_err(|error| format!("video step: {error:?}"))?
+                            {
+                                pipeline::Step::Recording(recording::Push::Source {
+                                    record,
+                                    ..
+                                }) => {
+                                    ranges.push((record.offset(), record.bytes().to_vec()));
+                                }
+                                pipeline::Step::Recording(recording::Push::Segment(segment)) => {
+                                    assert_eq!(segment.fragment().key().connection, connection);
+                                    segments += 1;
+                                    ranges.extend(
+                                        segment.source().iter().map(|record| {
+                                            (record.offset(), record.bytes().to_vec())
+                                        }),
+                                    );
+                                }
+                                pipeline::Step::Recording(recording::Push::Buffered)
+                                | pipeline::Step::Progress { .. } => (),
+                                pipeline::Step::Eof => {
+                                    eof = true;
+                                    break;
+                                }
+                                pipeline::Step::LimitReached => {
+                                    return Err("unexpected video limit".into());
+                                }
+                            }
+                        }
+                        assert!(
+                            eof && segments > 0,
+                            "connection did not produce segments and EOF"
+                        );
+                        assert!(owner.retire_active());
+                        let retired = owner.take_retired().ok_or("video retirement lost")?;
+                        assert_eq!(retired.key.connection, connection);
+                        let plan = fss_reference::unifi_direct::retirement_source::Plan::new(
+                            retired.pipeline,
+                        )
+                        .map_err(|_| "video tail refused")?;
+                        ranges.extend(
+                            plan.items_in_order()
+                                .map(|item| (item.record.offset(), item.record.bytes().to_vec())),
+                        );
+                        ranges.sort_by_key(|(offset, _)| *offset);
+                        let mut reconstructed = Vec::new();
+                        for (offset, bytes) in ranges {
+                            assert_eq!(
+                                offset,
+                                reconstructed.len() as u64,
+                                "lost or overlapping source"
+                            );
+                            reconstructed.extend(bytes);
+                        }
+                        assert_eq!(reconstructed, wire, "source bytes changed across recording");
+                    }
+                    assert_eq!(owner.attempts(), 7);
+                    let (framer, recorder) = parts(20)?;
+                    let refused = owner
+                        .accept_next(
+                            Inputs { framer, recorder },
+                            4096,
+                            100_000,
+                            Duration::from_secs(5),
+                        )
+                        .err()
+                        .ok_or("attempt budget not enforced")?;
+                    assert_eq!(refused.reason, media_reconnect::Error::AttemptLimit);
+                    let parts = owner.into_parts();
+                    let (_listener, parts) = parts.split_listener();
+                    fn requires_static<T: 'static>(_: &T) {}
+                    requires_static(&parts);
+                    assert!(
+                        parts.active.is_none() && parts.retired.is_empty() && !parts.interrupted
+                    );
+                    assert_eq!(
+                        (parts.attempts, parts.max_attempts, parts.max_retired),
+                        (7, 7, 1)
+                    );
+                    Ok(())
+                }
+                .await;
+                let outcome = if result.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("media reaccept fixture failed".into())
+                };
+                TaskCompletion {
+                    output: result,
+                    outcome,
+                    completed_at: clock.now().expect("completion clock"),
+                }
+            },
+        )
+        .await?;
+        run.receipt?;
+        run.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+
 #[test]
 fn listener_retains_port_after_cancel_empty_peer_and_denied_peer() -> Test {
     let mut budget = BudgetVector::ZERO;

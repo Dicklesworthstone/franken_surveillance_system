@@ -75,6 +75,28 @@ pub enum ScalingListSyntax {
     Explicit8x8(Box<[u8; 64]>),
 }
 
+/// Raw color-description values from an SPS VUI, not independent source proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ColorDescription {
+    /// `colour_primaries` code, including unspecified or reserved values.
+    pub primaries: u8,
+    /// `transfer_characteristics` code, including unspecified or reserved values.
+    pub transfer: u8,
+    /// `matrix_coefficients` code, including unspecified or reserved values.
+    pub matrix: u8,
+}
+
+/// Video-signal fields actually present in an SPS VUI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VideoSignal {
+    /// Three-bit `video_format` claim, including unspecified or reserved values.
+    pub format: u8,
+    /// The explicitly present `video_full_range_flag`.
+    pub full_range: bool,
+    /// Color description, absent when `colour_description_present_flag` is zero.
+    pub color: Option<ColorDescription>,
+}
+
 /// Sequence parameter set fields used by the pixel decoder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SeqParams {
@@ -115,6 +137,8 @@ pub struct SeqParams {
     /// Sequence-level scaling matrices; `None` when
     /// `seq_scaling_matrix_present_flag == 0` (flat).
     pub scaling: Option<ScalingMatrix>,
+    /// Video-signal claim when present in this SPS, otherwise unknown.
+    pub video_signal: Option<VideoSignal>,
     /// VUI `max_num_reorder_frames`, when `bitstream_restriction_flag`.
     pub max_num_reorder_frames: Option<u32>,
     /// VUI `max_dec_frame_buffering`, when `bitstream_restriction_flag`.
@@ -349,22 +373,40 @@ fn hrd_parameters(r: &mut BitReader<'_>) -> Result<(), DecodeError> {
     Ok(())
 }
 
-/// Reads `vui_parameters()` far enough to recover the bitstream
-/// restriction (Annex E.1.1). Returns `(max_num_reorder_frames,
-/// max_dec_frame_buffering)` when present.
-fn vui_parameters(r: &mut BitReader<'_>) -> Result<Option<(u32, u32)>, DecodeError> {
+#[derive(Default)]
+struct VuiFields {
+    video_signal: Option<VideoSignal>,
+    restriction: Option<(u32, u32)>,
+}
+
+/// Read video-signal claims and bitstream restrictions (Annex E.1.1).
+fn vui_parameters(r: &mut BitReader<'_>) -> Result<VuiFields, DecodeError> {
     if r.flag()? && r.uint(8)? == 255 {
         r.uint(32)?; // sar_width, sar_height
     }
     if r.flag()? {
         r.bit()?; // overscan_appropriate_flag
     }
-    if r.flag()? {
-        r.uint(4)?; // video_format, video_full_range_flag
-        if r.flag()? {
-            r.uint(24)?;
-        }
-    }
+    let video_signal = if r.flag()? {
+        let format = u8::try_from(r.uint(3)?).map_err(|_| DecodeError::Malformed)?;
+        let full_range = r.flag()?;
+        let color = if r.flag()? {
+            Some(ColorDescription {
+                primaries: u8::try_from(r.uint(8)?).map_err(|_| DecodeError::Malformed)?,
+                transfer: u8::try_from(r.uint(8)?).map_err(|_| DecodeError::Malformed)?,
+                matrix: u8::try_from(r.uint(8)?).map_err(|_| DecodeError::Malformed)?,
+            })
+        } else {
+            None
+        };
+        Some(VideoSignal {
+            format,
+            full_range,
+            color,
+        })
+    } else {
+        None
+    };
     if r.flag()? {
         r.ue(5)?;
         r.ue(5)?;
@@ -387,7 +429,10 @@ fn vui_parameters(r: &mut BitReader<'_>) -> Result<Option<(u32, u32)>, DecodeErr
     }
     r.bit()?; // pic_struct_present_flag
     if !r.flag()? {
-        return Ok(None);
+        return Ok(VuiFields {
+            video_signal,
+            restriction: None,
+        });
     }
     r.bit()?; // motion_vectors_over_pic_boundaries_flag
     for _ in 0..4 {
@@ -398,7 +443,10 @@ fn vui_parameters(r: &mut BitReader<'_>) -> Result<Option<(u32, u32)>, DecodeErr
     if reorder > buffering {
         return Err(DecodeError::Malformed);
     }
-    Ok(Some((reorder, buffering)))
+    Ok(VuiFields {
+        video_signal,
+        restriction: Some((reorder, buffering)),
+    })
 }
 
 /// Parses SPS decode fields from the RBSP (NAL header already removed).
@@ -492,10 +540,10 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
     if crop[0] + crop[1] >= width_mbs * 16 || crop[2] + crop[3] >= height_mbs * 16 {
         return Err(DecodeError::Malformed);
     }
-    let restriction = if r.flag()? {
+    let vui = if r.flag()? {
         vui_parameters(&mut r)?
     } else {
-        None
+        VuiFields::default()
     };
     Ok(SeqParams {
         id,
@@ -516,8 +564,9 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
         direct_8x8_inference,
         crop,
         scaling,
-        max_num_reorder_frames: restriction.map(|(reorder, _)| reorder),
-        max_dec_frame_buffering: restriction.map(|(_, buffering)| buffering),
+        video_signal: vui.video_signal,
+        max_num_reorder_frames: vui.restriction.map(|(reorder, _)| reorder),
+        max_dec_frame_buffering: vui.restriction.map(|(_, buffering)| buffering),
     })
 }
 
@@ -610,6 +659,7 @@ mod tests {
             direct_8x8_inference: true,
             crop: [0; 4],
             scaling,
+            video_signal: None,
             max_num_reorder_frames: None,
             max_dec_frame_buffering: None,
         }

@@ -305,7 +305,7 @@ pub fn find_next_provisional(bytes: &[u8], limits: Limits) -> Result<Parse<Candi
 /// that assumption is excluded even if its payload is incomplete. A partial
 /// header remains unresolved. The caller must record the policy and cannot
 /// infer device identity, source completeness, or an authentic boundary.
-pub(crate) fn find_next_zero_stream_id(
+pub fn find_next_zero_stream_id(
     bytes: &[u8],
     limits: Limits,
 ) -> Result<Parse<Candidate<'_>>, Error> {

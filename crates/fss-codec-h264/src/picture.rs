@@ -1,7 +1,7 @@
 //! Decoded picture types: the internal coded-size frame buffer and the
 //! public cropped [`Picture`].
 
-use crate::DecodeError;
+use crate::{DecodeError, params::VideoSignal};
 
 /// Coded-size 8-bit 4:2:0 sample planes (macroblock-aligned, uncropped).
 #[derive(Clone, Debug)]
@@ -62,6 +62,7 @@ pub struct Picture {
     idr: bool,
     reference: bool,
     decode_index: u64,
+    video_signal: Option<VideoSignal>,
 }
 
 impl std::fmt::Debug for Picture {
@@ -85,6 +86,7 @@ pub(crate) struct PictureMeta {
     pub idr: bool,
     pub reference: bool,
     pub decode_index: u64,
+    pub video_signal: Option<VideoSignal>,
 }
 
 impl Picture {
@@ -137,7 +139,15 @@ impl Picture {
             idr: meta.idr,
             reference: meta.reference,
             decode_index: meta.decode_index,
+            video_signal: meta.video_signal,
         })
+    }
+
+    /// Video-signal fields from the SPS bound to this picture. These are
+    /// untrusted source claims; `None` means the fields were not present.
+    #[must_use]
+    pub const fn video_signal(&self) -> Option<VideoSignal> {
+        self.video_signal
     }
 
     /// Visible luma width.

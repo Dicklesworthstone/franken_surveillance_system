@@ -10,7 +10,8 @@ use std::fmt;
 
 use super::aac::Configuration;
 
-const MAX_SAMPLES: u64 = 16_000_000;
+/// Maximum number of AAC frame observations admitted by one clock epoch.
+pub const MAX_EPOCH_FRAMES: u64 = 16_000_000;
 const HALF_WRAP: u32 = 1 << 31;
 
 /// Payload-free refusal; a failed observation leaves the clock unchanged.
@@ -72,7 +73,7 @@ impl Clock {
         let rate = config.sample_rate();
         let frame_samples = config.frame_samples();
         if max_samples == 0
-            || max_samples > MAX_SAMPLES
+            || max_samples > MAX_EPOCH_FRAMES
             || jitter_ms > 100
             || u64::from(jitter_ms) * 2 * u64::from(rate) >= u64::from(frame_samples) * 1000
             || start_ticks.checked_add(u64::from(frame_samples)).is_none()
@@ -97,7 +98,7 @@ impl Clock {
     /// account for the additional work and retain the same authorized source
     /// and configuration epoch. A refused renewal leaves the clock unchanged.
     pub fn extend_limit(&mut self, additional_samples: u64) -> Result<(), Error> {
-        if additional_samples == 0 || additional_samples > MAX_SAMPLES {
+        if additional_samples == 0 || additional_samples > MAX_EPOCH_FRAMES {
             return Err(Error::Configuration);
         }
         let maximum = self

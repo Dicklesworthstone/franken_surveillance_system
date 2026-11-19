@@ -23,9 +23,12 @@ use super::{
     av_worker::{self, StartError},
     metered::MeteredClock,
     recording::SourceDisposition,
-    source_evidence,
+    retirement_source, source_batch, source_evidence,
 };
 use crate::{ReferenceDeployment, ReplayCx};
+
+/// Retained, still-inactive binding between two source stores.
+pub mod cross_store;
 
 /// Original or verified recovered source held by the worker.
 pub enum Input {
@@ -42,12 +45,22 @@ pub enum Input {
     },
     /// A source recovered through an authorized ledgered or staged read.
     Recovered(archive::RecoveredSource),
+    /// Bounded original records owned together until publication is confirmed.
+    Batch {
+        /// Exact original source records in connection order.
+        batch: retirement_source::Batch,
+        /// Caller-bound source connection and generation.
+        key: SourceKey,
+        /// Caller-bound camera claim, not authenticated identity.
+        camera_claim: ContentDigest,
+    },
 }
 impl Input {
-    fn bytes(&self) -> &[u8] {
+    fn bytes_len(&self) -> usize {
         match self {
-            Self::Original { record, .. } => record.bytes(),
-            Self::Recovered(source) => source.bytes(),
+            Self::Original { record, .. } => record.bytes().len(),
+            Self::Recovered(source) => source.bytes().len(),
+            Self::Batch { batch, .. } => batch.bytes(),
         }
     }
 }
@@ -107,10 +120,20 @@ pub enum Publication {
 pub enum Refusal {
     /// Source graph preparation refused the input.
     Preparation(source_evidence::Error),
+    /// Source batch preparation refused while preserving its original records.
+    BatchPreparation(source_batch::Error),
     /// Work allowance or cancellation stopped preparation.
     Work,
     /// The candidate conflicts with the journal's pending or replay pin.
     Candidate,
+    /// A new root cannot fit in the currently owned source deployment. The
+    /// observation precedes journal preparation and reserves no future space.
+    RootCapacity {
+        /// Visible roots in this exclusive local owner.
+        visible: usize,
+        /// Configured visible-root limit.
+        maximum: usize,
+    },
     /// Journal preparation or independent anchoring did not complete.
     BeforePublication(av_worker::FailureReason),
     /// Staging or root publication did not complete cleanly.
@@ -170,6 +193,358 @@ pub struct Retirement {
     pub fenced: bool,
     /// Custody for every attached rollover transition.
     pub rollover_custody: Option<archive::journal::rollover::WorkerCustody>,
+}
+
+/// Evidence of one confirmed source root copied to a separate local store.
+/// The predecessor, successor, pending input and any prior custody remain
+/// caller-owned. This receipt does not activate a successor, bind stores for
+/// crash recovery, authenticate a camera or establish physical independence.
+#[must_use = "retain both stores and separately bind the transition before activation"]
+pub struct FreshStoreCopy {
+    /// Exact source root selected from the predecessor's confirmed journal.
+    pub pin: archive::UnknownTimePin,
+    /// Prior journal head observed before and after the copy.
+    pub predecessor_journal: EffectJournalPin,
+    /// Prior keeper head observed before and after the copy.
+    pub predecessor_keeper: EffectJournalPin,
+    /// Successor journal head observed after the copy and readback.
+    pub successor_journal: EffectJournalPin,
+    /// Successor keeper head observed after the copy and readback.
+    pub successor_keeper: EffectJournalPin,
+    /// Actual destination ledger receipt, not an independently retained switch.
+    pub receipt: RootLedgerReceipt,
+}
+
+/// A refused or uncertain cross-store copy. Both storage owners remain with
+/// the caller; after a publication attempt the destination requires inspection.
+#[derive(Debug)]
+pub enum FreshStoreCopyError {
+    /// The local owners, policies, destination, or source state were unsuitable.
+    Preconditions,
+    /// An existing predecessor rollover lineage could not be verified.
+    PriorLineage(archive::journal::Error),
+    /// The predecessor's ledgered source could not be read and verified.
+    Read(archive::Error),
+    /// The source's caller-bound camera claim did not match.
+    CameraClaim,
+    /// Reconstructing the exact source candidate failed.
+    Candidate,
+    /// Destination publication failed or may have taken effect.
+    Publication(archive::UnknownTimePublishError),
+    /// A receipt exists but post-publication checks did not finish or match.
+    AfterPublication {
+        /// Actual destination receipt; retain it for reconciliation.
+        receipt: Box<RootLedgerReceipt>,
+        /// Payload-free classification of the failed verification.
+        reason: FreshStoreVerification,
+    },
+}
+
+/// Post-publication verification classification; it grants no retry authority.
+#[derive(Debug)]
+pub enum FreshStoreVerification {
+    /// The destination source could not be re-read under current authority.
+    Read(archive::Error),
+    /// Journal heads, destination ledger, claims, or the reconstructed root differed.
+    Mismatch,
+}
+
+impl std::fmt::Display for FreshStoreCopyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Preconditions => "source store copy preconditions refused",
+            Self::PriorLineage(_) => "source store predecessor lineage refused",
+            Self::Read(_) => "source store predecessor read refused",
+            Self::CameraClaim => "source store camera claim did not match",
+            Self::Candidate => "source store candidate could not be reconstructed",
+            Self::Publication(_) => "source store publication requires reconciliation",
+            Self::AfterPublication { .. } => "source store readback requires reconciliation",
+        })
+    }
+}
+impl std::error::Error for FreshStoreCopyError {}
+
+/// Copy one last-confirmed source graph into an empty-ledger successor.
+///
+/// This performs bounded synchronous storage I/O and must be called from a
+/// region-owned blocking task. It never transfers or releases either owner or
+/// the pending source. Publication is journaled by the successor's own keeper;
+/// a later independently retained cross-store binding is still required before
+/// this successor can replace the predecessor. On any error, inspect both owners
+/// and the returned classification before retrying; this is not automatic
+/// rollover or crash recovery.
+pub fn copy_confirmed_to_fresh_store(
+    old: &mut Retirement,
+    next: &mut Parts,
+    expected_camera_claim: ContentDigest,
+    read: &dyn archive::ReadAuthority,
+    work: &mut WorkBudget<'_>,
+) -> Result<FreshStoreCopy, FreshStoreCopyError> {
+    use fss_publication::RootLedgerOutcome;
+
+    let Some(pin) = old.parts.journal.confirmed() else { return Err(FreshStoreCopyError::Preconditions) };
+    if old.fenced
+        || !old.parts.journal.locally_settled(&old.parts.keeper)
+        || !next.journal.locally_settled(&next.keeper)
+        || next.journal.confirmed().is_some()
+        || old.parts.journal.scope() != next.journal.scope()
+        || old.parts.retention != next.retention || pin.retention != next.retention
+        || old.parts.deployment.root() == next.deployment.root()
+        || old.parts.deployment.site_lineage() != next.deployment.site_lineage()
+        || next.deployment.publisher().is_poisoned()
+        || next.deployment.publisher().visible_root_count() != 0
+        || next.deployment.publisher().broken_slots().next().is_some()
+        || next.deployment.publisher().orphaned_temps().next().is_some()
+        || next.deployment.publisher().tombstones().next().is_some()
+        || next.deployment.current_anchor() != &fss_core::LedgerAnchor::genesis(next.deployment.site_lineage())
+        || old.pending.as_ref().is_some_and(|input| !valid_input(input, next))
+        || !read.permits(pin.retention, pin.root)
+        || !next.authority.permits(pin.retention, pin.root)
+    {
+        return Err(FreshStoreCopyError::Preconditions);
+    }
+    if let Some(custody) = &mut old.rollover_custody {
+        custody.check(&old.parts.journal, &old.parts.keeper, &old.parts.replay)
+            .map_err(FreshStoreCopyError::PriorLineage)?;
+    }
+    let predecessor_journal = old.parts.journal.anchor();
+    let predecessor_keeper = old.parts.keeper.anchor();
+    let predecessor_ledger = old.parts.deployment.current_anchor().clone();
+    let recovered = archive::read_unknown_time_source_graph(
+        &mut old.parts.deployment, pin, read, old.parts.limits, work, &old.parts.replay,
+    ).map_err(FreshStoreCopyError::Read)?;
+    let receipt = match recovered {
+        archive::RecoveredSourceGraph::Single(source) => {
+            if source.camera_claim() != expected_camera_claim { return Err(FreshStoreCopyError::CameraClaim); }
+            let plan = source_evidence::Prepared::from_recovered(&source);
+            if archive::UnknownTimePin::from_source_plan(&plan) != pin { return Err(FreshStoreCopyError::Candidate); }
+            archive::publish_unknown_time_source_anchored(&plan, &mut next.deployment,
+                next.authority.as_ref(), next.limits, work, &next.replay, &mut next.journal, &mut next.keeper)
+        }
+        archive::RecoveredSourceGraph::Batch(source) => {
+            if source.camera_claim != expected_camera_claim { return Err(FreshStoreCopyError::CameraClaim); }
+            let plan = source_batch::Prepared::from_recovered(source).map_err(|_| FreshStoreCopyError::Candidate)?;
+            if archive::UnknownTimePin::from_source_batch(&plan) != pin { return Err(FreshStoreCopyError::Candidate); }
+            archive::publish_unknown_time_source_batch_anchored(&plan, &mut next.deployment,
+                next.authority.as_ref(), next.limits, work, &next.replay, &mut next.journal, &mut next.keeper)
+        }
+    }.map_err(FreshStoreCopyError::Publication)?;
+    let verified = (|| -> Result<(), FreshStoreVerification> {
+        if receipt.outcome != RootLedgerOutcome::Committed || receipt.root != pin.root
+            || &receipt.anchor != next.deployment.current_anchor()
+            || next.journal.confirmed() != Some(pin) || !next.journal.locally_settled(&next.keeper)
+            || old.parts.journal.anchor() != predecessor_journal || old.parts.keeper.anchor() != predecessor_keeper
+            || old.parts.deployment.current_anchor() != &predecessor_ledger
+        { return Err(FreshStoreVerification::Mismatch); }
+        let reread = archive::read_unknown_time_source_graph(
+            &mut next.deployment, pin, read, next.limits, work, &next.replay,
+        ).map_err(FreshStoreVerification::Read)?;
+        let matches = match reread {
+            archive::RecoveredSourceGraph::Single(source) => source.camera_claim() == expected_camera_claim
+                && archive::UnknownTimePin::from_source_plan(&source_evidence::Prepared::from_recovered(&source)) == pin,
+            archive::RecoveredSourceGraph::Batch(source) => source.camera_claim == expected_camera_claim
+                && source_batch::Prepared::from_recovered(source).ok()
+                    .is_some_and(|plan| archive::UnknownTimePin::from_source_batch(&plan) == pin),
+        };
+        if matches { Ok(()) } else { Err(FreshStoreVerification::Mismatch) }
+    })();
+    if let Err(reason) = verified {
+        return Err(FreshStoreCopyError::AfterPublication { receipt: Box::new(receipt), reason });
+    }
+    Ok(FreshStoreCopy { pin, predecessor_journal, predecessor_keeper,
+        successor_journal: next.journal.anchor(), successor_keeper: next.keeper.anchor(), receipt })
+}
+
+/// A held input published and read back in a seeded successor. The old input
+/// and both storage owners remain held by the caller. This is not an active
+/// cross-store switch, a recovery inventory, or permission to delete history.
+#[must_use = "retain both stores and independently bind their transition"]
+pub struct FreshStorePending {
+    /// Previously copied and verified predecessor source root.
+    pub seed: archive::UnknownTimePin,
+    /// Exact source root derived from the still-held pending input.
+    pub pending: archive::UnknownTimePin,
+    /// The destination's actual ledger receipt.
+    pub receipt: RootLedgerReceipt,
+    /// Destination publication journal after confirmation.
+    pub successor_journal: EffectJournalPin,
+    /// Destination separately retained journal anchor after confirmation.
+    pub successor_keeper: EffectJournalPin,
+}
+
+/// A held input could not be copied or independently read back.
+#[derive(Debug)]
+pub enum FreshStorePendingError {
+    /// Store, copied seed, retained input, or authority preconditions failed.
+    Preconditions,
+    /// The pending input belongs to a different caller-bound camera claim.
+    CameraClaim,
+    /// Bounded work or cancellation refused the operation.
+    Work,
+    /// The pending source could not be prepared as the same bounded candidate.
+    Candidate,
+    /// The successor has no capacity for another visible root.
+    Capacity,
+    /// The exact pending root's staging slot already has an unresolved temp.
+    CandidateOrphan,
+    /// The seeded source could not be read or verified.
+    Seed(archive::Error),
+    /// Publication failed or may have taken effect; inspect the destination.
+    Publication(archive::UnknownTimePublishError),
+    /// Publication returned a receipt but verification did not complete.
+    AfterPublication {
+        /// Actual destination receipt, retained for reconciliation.
+        receipt: Box<RootLedgerReceipt>,
+        /// Bounded failure classification, not authority to retry.
+        reason: FreshStoreVerification,
+    },
+}
+impl std::fmt::Display for FreshStorePendingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Preconditions => "pending source copy preconditions refused",
+            Self::CameraClaim => "pending source camera claim did not match",
+            Self::Work => "pending source copy work refused",
+            Self::Candidate => "pending source candidate refused",
+            Self::Capacity => "pending source successor is full",
+            Self::CandidateOrphan => "pending source staging slot requires reconciliation",
+            Self::Seed(_) => "pending source seed read refused",
+            Self::Publication(_) => "pending source publication requires reconciliation",
+            Self::AfterPublication { .. } => "pending source readback requires reconciliation",
+        })
+    }
+}
+impl std::error::Error for FreshStorePendingError {}
+
+/// Publish a predecessor's still-held input in a verified seeded successor.
+///
+/// This bounded synchronous I/O belongs on a region-owned blocking worker.
+/// It never consumes the original input, activates a successor, or resolves a
+/// camera effect. A failure during publication may have changed the successor;
+/// reconcile its journal and any returned receipt before attempting anything
+/// else. Store IDs, physical independence, and crash recovery are not proven.
+pub fn copy_pending_to_seeded_store(
+    old: &mut Retirement,
+    next: &mut Parts,
+    copied: &FreshStoreCopy,
+    expected_camera_claim: ContentDigest,
+    read: &dyn archive::ReadAuthority,
+    work: &mut WorkBudget<'_>,
+) -> Result<FreshStorePending, FreshStorePendingError> {
+    use fss_publication::RootLedgerOutcome;
+
+    let input = old.pending.as_ref().ok_or(FreshStorePendingError::Preconditions)?;
+    if old.fenced || !old.parts.journal.locally_settled(&old.parts.keeper)
+        || !next.journal.locally_settled(&next.keeper)
+        || old.parts.journal.confirmed() != Some(copied.pin)
+        || old.parts.journal.anchor() != copied.predecessor_journal
+        || old.parts.keeper.anchor() != copied.predecessor_keeper
+        || next.journal.confirmed() != Some(copied.pin)
+        || next.journal.anchor() != copied.successor_journal
+        || next.keeper.anchor() != copied.successor_keeper
+        || old.parts.journal.scope() != next.journal.scope()
+        || old.parts.retention != next.retention || copied.pin.retention != next.retention
+        || old.parts.deployment.root() == next.deployment.root()
+        || old.parts.deployment.site_lineage() != next.deployment.site_lineage()
+        || copied.receipt.outcome != RootLedgerOutcome::Committed
+        || copied.receipt.root != copied.pin.root
+        || &copied.receipt.anchor != next.deployment.current_anchor()
+        || next.deployment.publisher().is_poisoned()
+        || next.deployment.publisher().visible_root_count() != 1
+        || next.deployment.publisher().broken_slots().next().is_some()
+        || next.deployment.publisher().tombstones().next().is_some()
+        || !valid_input(input, next)
+        || !read.permits(copied.pin.retention, copied.pin.root)
+        || !next.authority.permits(copied.pin.retention, copied.pin.root)
+    {
+        return Err(FreshStorePendingError::Preconditions);
+    }
+    let input_camera = match input {
+        Input::Original { camera_claim, .. } | Input::Batch { camera_claim, .. } => *camera_claim,
+        Input::Recovered(source) => source.camera_claim(),
+    };
+    if input_camera != expected_camera_claim { return Err(FreshStorePendingError::CameraClaim); }
+    let cost = u64::try_from(input.bytes_len()).ok().and_then(|n| n.checked_mul(2))
+        .ok_or(FreshStorePendingError::Work)?;
+    work.charge(cost).map_err(|_| FreshStorePendingError::Work)?;
+    if let Some(custody) = &mut old.rollover_custody {
+        custody.check(&old.parts.journal, &old.parts.keeper, &old.parts.replay)
+            .map_err(|_| FreshStorePendingError::Preconditions)?;
+    }
+    let seed = archive::read_unknown_time_source_graph(
+        &mut next.deployment, copied.pin, read, next.limits, work, &next.replay,
+    ).map_err(FreshStorePendingError::Seed)?;
+    let seed_camera = match seed {
+        archive::RecoveredSourceGraph::Single(source) => source.camera_claim(),
+        archive::RecoveredSourceGraph::Batch(source) => source.camera_claim,
+    };
+    if seed_camera != expected_camera_claim { return Err(FreshStorePendingError::CameraClaim); }
+    enum Candidate<'a> { Source(source_evidence::Prepared<'a>), Batch(source_batch::Prepared) }
+    let candidate = match input {
+        Input::Original { record, key, disposition, camera_claim } => source_evidence::Prepared::new(
+            record, *key, *disposition, *camera_claim, next.retention, next.max_source_bytes,
+        ).map(Candidate::Source).map_err(|_| FreshStorePendingError::Candidate)?,
+        Input::Recovered(source) => Candidate::Source(source_evidence::Prepared::from_recovered(source)),
+        Input::Batch { batch, key, camera_claim } => Candidate::Batch(source_batch::Prepared::from_items(
+            batch.items(), *key, *camera_claim, next.retention, batch.bytes(),
+        ).map_err(|_| FreshStorePendingError::Candidate)?),
+    };
+    let pin = match &candidate {
+        Candidate::Source(plan) => archive::UnknownTimePin::from_source_plan(plan),
+        Candidate::Batch(plan) => archive::UnknownTimePin::from_source_batch(plan),
+    };
+    if pin == copied.pin { return Err(FreshStorePendingError::Candidate); }
+    if archive::source_root_capacity(pin, &next.deployment).is_some() {
+        return Err(FreshStorePendingError::Capacity);
+    }
+    // A retained temp for the already verified seed can coexist with the new
+    // candidate, but an orphan at the candidate's exact slot must be resolved
+    // before preparing its journal intent. The publisher enforces this same
+    // slot check at commit; this earlier check preserves a clean journal.
+    let candidate_slot = archive::slot_for_root(pin.root).map_err(|_| FreshStorePendingError::Candidate)?;
+    let candidate_temp = fss_publication::LocalRootPublisher::root_temp_path(&candidate_slot);
+    if next.deployment.publisher().orphaned_temps().any(|path| path == candidate_temp.as_path()) {
+        return Err(FreshStorePendingError::CandidateOrphan);
+    }
+    if !read.permits(pin.retention, pin.root) || !next.authority.permits(pin.retention, pin.root) {
+        return Err(FreshStorePendingError::Preconditions);
+    }
+    let old_ledger = old.parts.deployment.current_anchor().clone();
+    let receipt = match &candidate {
+        Candidate::Source(plan) => archive::publish_unknown_time_source_anchored(
+            plan, &mut next.deployment, next.authority.as_ref(), next.limits, work,
+            &next.replay, &mut next.journal, &mut next.keeper,
+        ),
+        Candidate::Batch(plan) => archive::publish_unknown_time_source_batch_anchored(
+            plan, &mut next.deployment, next.authority.as_ref(), next.limits, work,
+            &next.replay, &mut next.journal, &mut next.keeper,
+        ),
+    }.map_err(FreshStorePendingError::Publication)?;
+    let verified = (|| -> Result<(), FreshStoreVerification> {
+        if receipt.outcome != RootLedgerOutcome::Committed || receipt.root != pin.root
+            || &receipt.anchor != next.deployment.current_anchor()
+            || next.journal.confirmed() != Some(pin) || !next.journal.locally_settled(&next.keeper)
+            || old.parts.journal.anchor() != copied.predecessor_journal
+            || old.parts.keeper.anchor() != copied.predecessor_keeper
+            || old.parts.deployment.current_anchor() != &old_ledger
+        { return Err(FreshStoreVerification::Mismatch); }
+        let recovered = archive::read_unknown_time_source_graph(
+            &mut next.deployment, pin, read, next.limits, work, &next.replay,
+        ).map_err(FreshStoreVerification::Read)?;
+        let matches = match recovered {
+            archive::RecoveredSourceGraph::Single(source) => source.camera_claim() == expected_camera_claim
+                && archive::UnknownTimePin::from_source_plan(&source_evidence::Prepared::from_recovered(&source)) == pin,
+            archive::RecoveredSourceGraph::Batch(source) => source.camera_claim == expected_camera_claim
+                && source_batch::Prepared::from_recovered(source).ok()
+                    .is_some_and(|plan| archive::UnknownTimePin::from_source_batch(&plan) == pin),
+        };
+        if matches { Ok(()) } else { Err(FreshStoreVerification::Mismatch) }
+    })();
+    if let Err(reason) = verified {
+        return Err(FreshStorePendingError::AfterPublication { receipt: Box::new(receipt), reason });
+    }
+    Ok(FreshStorePending { seed: copied.pin, pending: pin, receipt,
+        successor_journal: next.journal.anchor(), successor_keeper: next.keeper.anchor() })
 }
 
 struct State {
@@ -242,6 +617,17 @@ fn valid_input(input: &Input, parts: &Parts) -> bool {
             source.retention == parts.retention
                 && !source.bytes().is_empty()
                 && source.bytes().len() <= parts.max_source_bytes
+        }
+        Input::Batch { batch, key, camera_claim } => {
+            !batch.items().is_empty()
+                && batch.items().len() <= source_batch::MAX_RECORDS
+                && batch.bytes() <= source_batch::MAX_BYTES
+                && batch.bytes() <= parts.limits.maximum_spool_object_bytes
+                && batch.bytes() <= parts.deployment.publisher().limits().spool.max_object_bytes
+                && batch.items().iter().all(|item| source_evidence::validate_input(
+                    &item.record, *key, item.disposition, *camera_claim,
+                    parts.retention, parts.max_source_bytes,
+                ).is_ok())
         }
     }
 }
@@ -472,6 +858,32 @@ impl archive::RetainAuthority for CurrentRetention<'_> {
 }
 
 impl Worker {
+    /// Compare the retained source policy without acquiring or granting authority.
+    pub(crate) fn matches_retention(&self, retention: ContentDigest) -> bool {
+        if self.fenced || self.running.is_some() {
+            return false;
+        }
+        self.state.try_lock().is_ok_and(|state| state.parts.retention == retention)
+    }
+
+    /// Inspect immediately available custody without reading or changing storage.
+    pub(crate) fn ready_for_start(&self) -> bool {
+        if self.fenced || self.running.is_some() {
+            return false;
+        }
+        self.state.try_lock().is_ok_and(|state| {
+            state.pending.is_none()
+                && state.parts.journal.pending().is_none()
+                && state.parts.journal.replay_pin().is_none()
+                && state.parts.keeper.target() == state.parts.journal.anchor()
+                && state.parts.journal.confirmed().is_none_or(|pin| pin.retention == state.parts.retention)
+                && !state.parts.deployment.publisher().is_poisoned()
+                && (1024..=64 * 1024 * 1024).contains(&state.parts.limits.maximum_spool_object_bytes)
+                && (1..=262_144).contains(&state.parts.limits.maximum_ledger_deltas)
+                && state.parts.deployment.publisher().limits().spool.max_object_bytes <= state.parts.limits.maximum_spool_object_bytes
+        })
+    }
+
     /// Whether an archive attempt still needs to be joined or drained.
     #[must_use]
     pub fn is_running(&self) -> bool {
@@ -642,7 +1054,7 @@ impl Worker {
             }
             let cancel = || child.is_cancel_requested();
             let mut budget = WorkBudget::with_cancellation_probe(parts.work_limit, &cancel);
-            let Some(preparation_cost) = (input.bytes().len() as u64).checked_mul(2) else {
+            let Some(preparation_cost) = (input.bytes_len() as u64).checked_mul(2) else {
                 *report = Some(Publication::Refused {
                     pin: None,
                     reason: Refusal::Work,
@@ -655,6 +1067,10 @@ impl Worker {
                     reason: Refusal::Work,
                 });
                 return;
+            }
+            enum Candidate<'a> {
+                Source(source_evidence::Prepared<'a>),
+                Batch(source_batch::Prepared),
             }
             let prepared = match input {
                 Input::Original {
@@ -669,35 +1085,50 @@ impl Worker {
                     *camera_claim,
                     parts.retention,
                     parts.max_source_bytes,
-                ),
-                Input::Recovered(source) => Ok(source_evidence::Prepared::from_recovered(source)),
+                ).map(Candidate::Source).map_err(Refusal::Preparation),
+                Input::Recovered(source) => Ok(Candidate::Source(source_evidence::Prepared::from_recovered(source))),
+                Input::Batch { batch, key, camera_claim } => source_batch::Prepared::from_items(
+                    batch.items(), *key, *camera_claim, parts.retention, batch.bytes(),
+                ).map(Candidate::Batch).map_err(Refusal::BatchPreparation),
             };
             let plan = match prepared {
                 Ok(plan) => plan,
                 Err(error) => {
                     *report = Some(Publication::Refused {
                         pin: None,
-                        reason: Refusal::Preparation(error),
+                        reason: error,
                     });
                     return;
                 }
             };
-            let pin = archive::UnknownTimePin::from_source_plan(&plan);
+            let pin = match &plan {
+                Candidate::Source(plan) => archive::UnknownTimePin::from_source_plan(plan),
+                Candidate::Batch(plan) => archive::UnknownTimePin::from_source_batch(plan),
+            };
             let access = CurrentRetention {
                 cx: &child,
                 inner: parts.authority.as_ref(),
             };
+            if parts.journal.locally_settled(&parts.keeper)
+                && let Some((visible, maximum)) = archive::source_root_capacity(pin, &parts.deployment)
+                && archive::RetainAuthority::permits(&access, parts.retention, pin.root)
+                && !child.is_cancel_requested()
+            {
+                *report = Some(Publication::Refused {
+                    pin: Some(pin),
+                    reason: Refusal::RootCapacity { visible, maximum },
+                });
+                return;
+            }
             *report = Some(
-                match archive::publish_unknown_time_source_anchored(
-                    &plan,
-                    &mut parts.deployment,
-                    &access,
-                    parts.limits,
-                    &mut budget,
-                    &parts.replay,
-                    &mut parts.journal,
-                    &mut parts.keeper,
-                ) {
+                match match &plan {
+                    Candidate::Source(plan) => archive::publish_unknown_time_source_anchored(
+                        plan, &mut parts.deployment, &access, parts.limits, &mut budget,
+                        &parts.replay, &mut parts.journal, &mut parts.keeper),
+                    Candidate::Batch(plan) => archive::publish_unknown_time_source_batch_anchored(
+                        plan, &mut parts.deployment, &access, parts.limits, &mut budget,
+                        &parts.replay, &mut parts.journal, &mut parts.keeper),
+                } {
                     Ok(receipt) => Publication::Published { pin, receipt },
                     Err(error) => {
                         let reason = match error {

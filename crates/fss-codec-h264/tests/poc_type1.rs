@@ -4,7 +4,7 @@
 //! orders and pixel values are independently hand-computed from H.264 8.2.1.2;
 //! the encoded I_PCM payload makes each picture's identity directly observable.
 
-use fss_codec_h264::params::parse_sps;
+use fss_codec_h264::params::{ColorDescription, VideoSignal, parse_sps};
 use fss_codec_h264::rbsp::{ebsp_from_rbsp, rbsp_from_ebsp};
 use fss_codec_h264::{DecodeError, Decoder, DecoderLimits, Picture};
 
@@ -52,6 +52,7 @@ struct Sequence {
     zero_deltas: bool,
     bottom_delta_present: bool,
     width_mbs: u64,
+    video_signal: Option<(bool, Option<(u8, u8, u8)>)>,
 }
 
 impl Default for Sequence {
@@ -63,6 +64,7 @@ impl Default for Sequence {
             zero_deltas: true,
             bottom_delta_present: false,
             width_mbs: 1,
+            video_signal: None,
         }
     }
 }
@@ -80,7 +82,21 @@ impl Sequence {
         }
         // Four-bit frame_num; two retained reference frames; no gap concealment.
         w.ue(2).u(1, 0).ue(self.width_mbs - 1).ue(0);
-        w.u(1, 1).u(1, 1).u(1, 0).u(1, 0); // progressive, inference, no crop/VUI
+        w.u(1, 1).u(1, 1).u(1, 0); // progressive, inference, no crop
+        if let Some((full, color)) = self.video_signal {
+            w.u(1, 1).u(1, 0).u(1, 0).u(1, 1); // VUI; no aspect/overscan; signal
+            w.u(3, 5)
+                .u(1, u64::from(full))
+                .u(1, u64::from(color.is_some()));
+            if let Some((primaries, transfer, matrix)) = color {
+                w.u(8, primaries.into())
+                    .u(8, transfer.into())
+                    .u(8, matrix.into());
+            }
+            w.u(1, 0).u(1, 0).u(1, 0).u(1, 0).u(1, 0).u(1, 0);
+        } else {
+            w.u(1, 0);
+        }
         w.nal(0x67)
     }
     fn pps(&self) -> Vec<u8> {
@@ -212,6 +228,101 @@ fn assert_pictures(pictures: &[Picture], expected: &[(i32, u8)]) {
                 .all(|value| *value == 128)
         );
     }
+}
+
+#[test]
+fn video_signal_follows_reordered_pictures_and_preserves_absence() {
+    let description = ColorDescription {
+        primaries: 1,
+        transfer: 1,
+        matrix: 1,
+    };
+    let sequence = Sequence {
+        video_signal: Some((true, Some((1, 1, 1)))),
+        ..Sequence::default()
+    };
+    let expected = Some(VideoSignal {
+        format: 5,
+        full_range: true,
+        color: Some(description),
+    });
+    let pictures = decode(
+        &sequence,
+        &[
+            Frame::idr(10),
+            Frame::reference(1, 30),
+            Frame::disposable(2, 20),
+        ],
+    );
+    assert_eq!(pictures.len(), 3);
+    assert!(
+        pictures
+            .iter()
+            .all(|picture| picture.video_signal() == expected)
+    );
+
+    let no_description = Sequence {
+        video_signal: Some((false, None)),
+        ..Sequence::default()
+    };
+    let picture = decode(&no_description, &[Frame::idr(10)]).remove(0);
+    assert_eq!(
+        picture.video_signal(),
+        Some(VideoSignal {
+            format: 5,
+            full_range: false,
+            color: None
+        })
+    );
+    let picture = decode(&Sequence::default(), &[Frame::idr(10)]).remove(0);
+    assert_eq!(picture.video_signal(), None);
+}
+
+#[test]
+fn video_signal_is_bound_to_each_picture_across_sps_replacement() {
+    let first = Sequence {
+        video_signal: Some((true, Some((1, 1, 1)))),
+        ..Sequence::default()
+    };
+    let second = Sequence {
+        video_signal: Some((false, Some((6, 6, 6)))),
+        ..Sequence::default()
+    };
+    let mut units = first.prefix();
+    units.push(first.picture(Frame::idr(10)));
+    units.push(first.picture(Frame::reference(1, 30)));
+    units.extend(second.prefix());
+    units.push(second.picture(Frame::idr(50)));
+    let mut decoder = Decoder::new(DecoderLimits::default()).unwrap();
+    let mut pictures = feed(&mut decoder, &units).unwrap();
+    pictures.extend(decoder.finish().unwrap());
+    assert_eq!(pictures.len(), 3);
+    for picture in pictures {
+        let signal = picture.video_signal().unwrap();
+        match picture.luma()[0] {
+            10 | 30 => {
+                assert!(signal.full_range);
+                assert_eq!(signal.color.unwrap().matrix, 1);
+            }
+            50 => {
+                assert!(!signal.full_range);
+                assert_eq!(signal.color.unwrap().matrix, 6);
+            }
+            _ => panic!("unexpected synthetic pixel"),
+        }
+    }
+}
+
+#[test]
+fn truncated_video_signal_description_is_refused() {
+    let sequence = Sequence {
+        video_signal: Some((true, Some((1, 1, 1)))),
+        ..Sequence::default()
+    };
+    let nal = sequence.sps();
+    let rbsp = rbsp_from_ebsp(&nal[1..], 1024).unwrap();
+    assert!(parse_sps(&rbsp).is_ok());
+    assert!(parse_sps(&rbsp[..rbsp.len() - 3]).is_err());
 }
 
 #[test]

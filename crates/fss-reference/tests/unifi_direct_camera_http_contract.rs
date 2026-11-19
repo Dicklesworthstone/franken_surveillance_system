@@ -11,7 +11,7 @@ use fss_core::{
     RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
 use fss_reference::unifi_direct::{
-    camera_api::{ControllerAddress, Phase},
+    camera_api::{ControllerAddress, LoginEndpoint, Phase},
     camera_http::{self, Operation},
     metered::{MeteredClock, MeteredIo},
 };
@@ -142,6 +142,25 @@ fn fixture(address: SocketAddr) -> io::Result<()> {
             socket.write_all(part)?;
         }
     }
+    Ok(())
+}
+fn alternate_login_fixture(address: SocketAddr) -> io::Result<()> {
+    let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let login = read_request(&mut socket)?;
+    if !login.starts_with(b"POST /api/1.2/login HTTP/1.1\r\n") || !login.ends_with(CREDENTIAL) {
+        return Err(io::Error::other("unexpected alternate login"));
+    }
+    socket.write_all(b"HTTP/1.1 200 OK\r\nSet-Cookie: authId=fixture-cookie; Path=/\r\nContent-Length: 2\r\n\r\n{}")?;
+    let status = read_request(&mut socket)?;
+    if !status.starts_with(b"GET /api/1.1/status HTTP/1.1\r\n")
+        || !status
+            .windows(b"Cookie: authId=fixture-cookie".len())
+            .any(|w| w == b"Cookie: authId=fixture-cookie")
+    {
+        return Err(io::Error::other("unexpected status request"));
+    }
+    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n{\"board\":{}}")?;
     Ok(())
 }
 struct FixedSocket {
@@ -286,6 +305,16 @@ fn owned_camera_http_sequences_and_fences_interruption() -> Test {
                         assert_eq!(owner.phase(), Phase::Snapshot);
                     }
                     peer.join().map_err(|_| "fixture peer panicked")??;
+                    drop(owner);
+                    let listener = TcpListener::bind("127.0.0.1:0").await?;
+                    let address = listener.local_addr()?;
+                    let peer = std::thread::spawn(move || alternate_login_fixture(address));
+                    let (socket, _) = timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
+                    let io = MeteredIo::with_clock(socket, clock, "fixture:camera", 4096)?;
+                    let mut owner = camera_http::Owner::new(io, task, cx, clock, &clocked_access, Ipv4Addr::LOCALHOST, 1, "fixture:camera")?;
+                    owner.login_at(LoginEndpoint::V1_2, CREDENTIAL, Duration::from_secs(5)).await?;
+                    assert!(owner.status(Duration::from_secs(5)).await?.board);
+                    peer.join().map_err(|_| "alternate fixture peer panicked")??;
                     drop(owner);
                     let denied_writes = Rc::new(RefCell::new(Vec::new()));
                     let denied_io = MeteredIo::with_clock(PendingSocket { writes: denied_writes.clone() }, clock, "fixture:camera", 4096)?;

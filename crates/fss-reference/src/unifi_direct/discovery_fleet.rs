@@ -7,7 +7,7 @@
 //! revalidate the exact peer and credential. Interrupted attempts remain in
 //! flight and are never automatically retried.
 
-use super::{Report, SelectionError};
+use super::{CombineError, Report, SelectionError, SweepPage};
 use crate::unifi_direct::{
     VideoChannel, camera_api, camera_http, controller_listener, handoff, setup,
 };
@@ -168,6 +168,8 @@ pub enum Error {
     Configuration,
     /// Discovery stopped early or has inconsistent bounded counters.
     IncompleteReport,
+    /// This fleet was bound to a sweep and requires a full sweep refresh.
+    SweepRequired,
     /// A selected entry is not ready for its first attempt.
     NotReady,
     /// Certificate or credential handle does not match the selected entry.
@@ -190,6 +192,21 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+/// Refusal to classify an owner inventory against a complete labeled sweep.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SweepError {
+    /// Page labels or observations could not be combined.
+    Discovery(CombineError),
+    /// Fleet inventory or combined report was refused.
+    Fleet(Error),
+}
+impl fmt::Display for SweepError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi sweep fleet planning refused: {self:?}")
+    }
+}
+impl std::error::Error for SweepError {}
 
 /// Refusal while retaining evidence and cancelling a completed setup attempt.
 #[derive(Debug)]
@@ -236,6 +253,23 @@ impl fmt::Display for RefreshRefusal {
     }
 }
 impl std::error::Error for RefreshRefusal {}
+
+/// A sweep refresh refused before or during fleet reclassification.
+#[derive(Debug)]
+pub enum SweepRefreshError {
+    /// The fleet was not created from this caller-bound sweep scope.
+    ScopeMismatch,
+    /// The supplied page claims could not be combined; all pages stay borrowed.
+    Discovery(CombineError),
+    /// Fleet reclassification refused; the combined report is retained here.
+    Fleet(RefreshRefusal),
+}
+impl fmt::Display for SweepRefreshError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi sweep refresh refused: {self:?}")
+    }
+}
+impl std::error::Error for SweepRefreshError {}
 
 struct Record {
     enrollment: Enrollment,
@@ -569,6 +603,17 @@ impl<'fleet, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, 'policy: 'fleet>
             && self.listener.matches_clock(&scanner.clock())
     }
 
+    /// Check the local owners for a paged sweep and its exact fleet.
+    pub fn matches_sweep(
+        &self,
+        runner: &super::sweep::Runner<'scope, 'task>,
+        fleet: &Fleet<'_>,
+    ) -> bool {
+        Rc::ptr_eq(&self.fleet.identity, &fleet.identity)
+            && self.listener.matches_clock(&runner.clock())
+            && runner.accepts_fleet(fleet)
+    }
+
     /// Drive until a connection is ready or a refusal must be handled.
     /// Dropping this future preserves the router and its pending owners.
     pub async fn next(&mut self) -> RouterEvent<'scope, 'task, 'policy> {
@@ -653,6 +698,7 @@ impl DiscoverySnapshot {
 /// owned report while unattempted entries can follow newer completed windows.
 pub struct Fleet<'a> {
     identity: Rc<()>,
+    sweep_scope: Option<ContentDigest>,
     latest: RefCell<Rc<DiscoverySnapshot>>,
     initial_report: PhantomData<&'a Report>,
     records: Records,
@@ -660,6 +706,18 @@ pub struct Fleet<'a> {
 }
 
 impl<'a> Fleet<'a> {
+    /// Combine all labeled sweep pages before classifying the owner inventory.
+    /// The labels and scope are caller claims; this does not independently
+    /// prove page coverage, freshness, peer identity, or setup authority.
+    /// Original page evidence remains with the caller.
+    pub fn from_sweep(pages: &[SweepPage<'a>], inventory: &[Enrollment]) -> Result<Self, SweepError> {
+        let report = Report::combine_sweep_pages(pages).map_err(SweepError::Discovery)?;
+        let scope = pages.first().ok_or(SweepError::Discovery(CombineError::WindowCount))?.scope;
+        let mut fleet = Self::build(report, inventory).map_err(SweepError::Fleet)?;
+        fleet.sweep_scope = Some(scope);
+        Ok(fleet)
+    }
+
     /// Classify every inventory entry and retain every discovery claim that
     /// has no matching inventory MAC. Duplicate inventory bindings refuse the
     /// entire plan before any setup can start.
@@ -728,6 +786,7 @@ impl<'a> Fleet<'a> {
         }
         Ok(Self {
             identity: Rc::new(()),
+            sweep_scope: None,
             latest: RefCell::new(Rc::new(DiscoverySnapshot {
                 report,
                 unknown: unknown.into(),
@@ -742,15 +801,38 @@ impl<'a> Fleet<'a> {
         Rc::clone(&self.identity)
     }
 
+    pub(super) fn sweep_scope(&self) -> Option<ContentDigest> {
+        self.sweep_scope
+    }
+
     /// Install a new completed window for entries without an entered setup.
     /// Attempted entries retain their original report and operation, including
     /// interrupted attempts. Finished entries that permit routing update their
     /// untrusted source hint from this window; absent or conflicting claims
     /// suspend new routes. Existing admitted sockets are not affected. A
     /// refusal changes nothing.
+    /// Reclassify unattempted entries using all labeled pages in a sweep.
+    /// A failed combination leaves the fleet unchanged and the caller retains
+    /// every page. The scope and page labels remain caller claims; this does
+    /// not perform a scan, authenticate a device, or authorize setup.
+    pub fn refresh_sweep(&self, pages: &[SweepPage<'_>]) -> Result<(), SweepRefreshError> {
+        if self.sweep_scope.is_none() || pages.first().map(|page| page.scope) != self.sweep_scope {
+            return Err(SweepRefreshError::ScopeMismatch);
+        }
+        let report = Report::combine_sweep_pages(pages).map_err(SweepRefreshError::Discovery)?;
+        self.refresh_report(report).map_err(SweepRefreshError::Fleet)
+    }
+
     /// The caller supplies and owns the bounded scan; this does not scan,
     /// authenticate a peer, or authorize an automatic retry.
     pub fn refresh(&self, report: Report) -> Result<(), RefreshRefusal> {
+        if self.sweep_scope.is_some() {
+            return Err(RefreshRefusal { reason: Error::SweepRequired, report });
+        }
+        self.refresh_report(report)
+    }
+
+    fn refresh_report(&self, report: Report) -> Result<(), RefreshRefusal> {
         if !report.valid_completed() {
             return Err(RefreshRefusal {
                 reason: Error::IncompleteReport,

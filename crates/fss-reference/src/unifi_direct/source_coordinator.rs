@@ -372,6 +372,21 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Shutdown<'scope, 'task, 
 }
 
 impl Coordinator {
+    /// Whether a source archive attempt still requires joining.
+    pub fn is_running(&self) -> bool { self.worker.is_running() }
+
+    /// Stop future source admission and request cancellation of any attempt.
+    /// The caller must still join and account for the exact result.
+    pub fn abort(&mut self) {
+        self.start_armed = false;
+        self.worker.abort();
+    }
+
+    /// Join an in-flight source attempt without discarding its result.
+    pub async fn join_source(&mut self) -> Option<source_worker::Completion> {
+        self.worker.join().await
+    }
+
     /// Attach a worker without starting or retrying existing work.
     pub fn new(worker: source_worker::Worker, key: SourceKey, camera_claim: ContentDigest) -> Self {
         Self {
@@ -386,6 +401,16 @@ impl Coordinator {
     /// worker state or granting authority to publish.
     pub(crate) fn matches_binding(&self, key: SourceKey, camera_claim: ContentDigest) -> bool {
         self.key == key && self.camera_claim == camera_claim
+    }
+
+    /// Compare the source worker's retained policy without granting authority.
+    pub(crate) fn matches_retention(&self, retention: ContentDigest) -> bool {
+        self.worker.matches_retention(retention)
+    }
+
+    /// Inspect source archive custody without starting or reserving work.
+    pub(crate) fn ready_for_start(&self) -> bool {
+        self.worker.ready_for_start()
     }
 
     /// Transfer an event if it contains a separate source, returning all other

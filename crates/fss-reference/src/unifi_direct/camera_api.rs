@@ -45,6 +45,25 @@ pub enum HttpOperation {
     Snapshot,
 }
 
+/// Explicit camera-local login route. This does not select or authorize a
+/// management operation; accepted cookie formats remain camera-profile specific.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoginEndpoint {
+    /// Existing camera-local API route.
+    V1_1,
+    /// Alternate route observed on a G4 using an `authId` session cookie.
+    V1_2,
+}
+
+impl LoginEndpoint {
+    fn path(self) -> &'static str {
+        match self {
+            Self::V1_1 => "/api/1.1/login",
+            Self::V1_2 => "/api/1.2/login",
+        }
+    }
+}
+
 /// Payload-free local API refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -704,6 +723,15 @@ impl Session {
     }
     /// Prepare exactly one login from a bounded JSON object containing only username and password.
     pub fn prepare_login(&mut self, body: &[u8]) -> Result<Request, Error> {
+        self.prepare_login_at(LoginEndpoint::V1_1, body)
+    }
+    /// Prepare an explicitly selected login route with the same session fencing.
+    /// Only `authId` cookies are accepted; other camera profiles must fail closed.
+    pub fn prepare_login_at(
+        &mut self,
+        endpoint: LoginEndpoint,
+        body: &[u8],
+    ) -> Result<Request, Error> {
         if self.phase != Phase::Login {
             return Err(Error::State);
         }
@@ -726,7 +754,8 @@ impl Session {
             return Err(Error::Configuration);
         }
         let head = format!(
-            "POST /api/1.1/login HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\n\r\n",
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\n\r\n",
+            endpoint.path(),
             self.peer,
             body.len()
         );
@@ -1010,9 +1039,10 @@ impl Session {
             handoff::Framing::ContentLength => format!("Content-Length: {}\r\n", body.len()),
             handoff::Framing::Chunked => "Transfer-Encoding: chunked\r\n".to_owned(),
         };
+        let (method, path) = plan.method_and_path();
         let head = format!(
-            "PUT /api/1.1/settings HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n{}Accept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\nCookie: ",
-            self.peer, framing_header
+            "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n{}Accept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\nCookie: ",
+            method, path, self.peer, framing_header
         );
         let prefix = match plan.framing() {
             handoff::Framing::ContentLength => String::new(),

@@ -4,14 +4,66 @@ use asupersync::http::h1::Response;
 use fss_core::ContentDigest;
 use fss_reference::unifi_direct::VideoChannel;
 use fss_reference::unifi_direct::camera_api::{
-    ControllerAddress, ControllerPort, Error, HttpOperation, Phase, Session, StatusShape,
-    VideoDestinationShape, VideoMetric, VideoProfile, VideoProfileDisposition, VideoProfileLimits,
-    WriteOutcome, select_reported_video_profile,
+    ControllerAddress, ControllerPort, Error, HttpOperation, LoginEndpoint, Phase, Session,
+    StatusShape, VideoDestinationShape, VideoMetric, VideoProfile, VideoProfileDisposition,
+    VideoProfileLimits, WriteOutcome, select_reported_video_profile,
 };
 use std::{error::Error as StdError, net::Ipv4Addr};
 
 type Test = Result<(), Box<dyn StdError>>;
 const CREDENTIAL: &[u8] = br#"{"username":"test-user-canary","password":"test-password-canary"}"#;
+
+#[test]
+fn alternate_login_route_keeps_cookie_and_fencing_contract() -> Test {
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    let request = session.prepare_login_at(LoginEndpoint::V1_2, CREDENTIAL)?;
+    assert!(
+        request
+            .bytes()
+            .starts_with(b"POST /api/1.2/login HTTP/1.1\r\n")
+    );
+    assert!(!format!("{request:?}").contains("test-password-canary"));
+    session.finish_write(request, WriteOutcome::Written)?;
+    session.accept_login(
+        Response::new(200, "OK", b"{}".to_vec())
+            .with_header("Set-Cookie", "authId=fixture; Path=/"),
+    )?;
+    let status = session.prepare_status()?;
+    assert!(
+        status
+            .bytes()
+            .starts_with(b"GET /api/1.1/status HTTP/1.1\r\n")
+    );
+    assert!(
+        status
+            .bytes()
+            .windows(b"Cookie: authId=fixture".len())
+            .any(|w| w == b"Cookie: authId=fixture")
+    );
+
+    let mut unsupported = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    let request = unsupported.prepare_login_at(LoginEndpoint::V1_2, CREDENTIAL)?;
+    unsupported.finish_write(request, WriteOutcome::Written)?;
+    assert_eq!(
+        unsupported.accept_login(
+            Response::new(200, "OK", b"{}".to_vec()).with_header("Set-Cookie", "TOKEN=fixture")
+        ),
+        Err(Error::Cookie)
+    );
+    assert_eq!(unsupported.phase(), Phase::Fenced);
+    assert!(unsupported.prepare_login(CREDENTIAL).is_err());
+
+    let mut interrupted = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    let request = interrupted.prepare_login_at(LoginEndpoint::V1_2, CREDENTIAL)?;
+    interrupted.finish_write(request, WriteOutcome::Indeterminate)?;
+    assert_eq!(interrupted.phase(), Phase::Fenced);
+    assert!(
+        interrupted
+            .prepare_login_at(LoginEndpoint::V1_2, CREDENTIAL)
+            .is_err()
+    );
+    Ok(())
+}
 
 #[test]
 fn setup_profile_preflight_configuration_is_single_use_and_bounded() -> Test {
