@@ -77,8 +77,11 @@ fss-event verify \
 Both pins and the execution acknowledgement are mandatory. Changing an event revision or
 provenance root invalidates the selection. The command accepts no source path, saved report,
 threshold, zone, interpretation, health-policy or publication override.
-Explicit verification retains its existing operational deployment owner, including exclusive
-locks and normal restart recovery. It does not append event or verification authority.
+Explicit verification uses the same sealed immutable source owner as inspection and works
+while capture holds the deployment writer. It takes no writer lock, opens no publisher and
+performs no restart recovery. The complete response and exports are held until the original
+metadata, both source closures where applicable, selected payloads and authority head pass
+final verification. It does not append event or verification authority.
 
 Verification opens the exact retained imports, applies current sensor privacy, decodes the
 selected MJPEG, H.264 or H.265 recording in native display order, and reruns the complete
@@ -180,8 +183,8 @@ loads that retained package under its separate explicit model-import reservation
 |---|---:|---:|
 | `--max-metadata-bytes` | 67,108,864 | 268,435,456 |
 | `--max-report-bytes` | 1,048,576 | 16,777,216 |
-| `--max-read-bytes` (inspection only) | 1,073,741,824 | 4,294,967,296 |
-| `--max-read-objects` (inspection only) | 1,000,000 | 4,000,000 |
+| `--max-read-bytes` | 1,073,741,824 | 4,294,967,296 |
+| `--max-read-objects` | 1,000,000 | 4,000,000 |
 | `--source-read-bytes` | 536,870,912 | 536,870,912 |
 | `--pixel-budget` | 1,073,741,824 | 68,719,476,736 |
 | `--assignment-work` | 1,073,741,824 | 68,719,476,736 |
@@ -196,12 +199,15 @@ chosen limits. Lower ceilings can refuse replay; they cannot rewrite the retaine
 to make it fit. Metadata reads, whole-scan source reads and codec work have separate accounting.
 These limits do not claim total operating-system I/O, latency or memory accounting.
 
-For inspection, `--max-read-bytes` and `--max-read-objects` additionally bound the entire
+For inspection and verification, `--max-read-bytes` and `--max-read-objects` additionally bound the entire
 immutable read, including layout/history opening, selected metadata and custody, current
-privacy and calibration authority, and final rereads. They count payload bytes and bounded
+privacy and calibration authority, native source/model reads and final rereads. They count payload bytes and bounded
 read attempts, including empty and absent reads; they do not replenish between phases.
-The reader also has a cooperative 60-second deadline. These options are not native execution
-authority and are therefore rejected by `verify` and omitted from its generated command.
+The reader also has a cooperative 60-second deadline at retained-read admissions. The generated
+verification command preserves these aggregate limits as well as the computation ceilings.
+Increasing a read allowance never grants native execution: `verify` still requires both exact
+selection pins and `--execute-perception yes`. A successful replay followed by a failed final
+read, cancellation or changed source cannot emit a success report or create an export.
 
 Optional `--event-out FILE` and `--report-out FILE` write complete create-only exports outside
 the deployment. Existing files are not overwritten. An export failure may leave a partial
@@ -214,15 +220,20 @@ for native AVC/HEVC dwell replay; its second pin is the selected episode's `prov
 
 ## Focused validation
 
-The immutable reader has a separate native integration target for live-writer watch/dwell
-inspection, absent source pixels, exact aggregate read allowances, late cancellation,
-payload/publication drift, changed event/privacy authority and incomplete journals. The
-real-process CLI suite additionally covers watch/corroboration exports and trained AVC/HEVC
-dwell inspection with a live writer, plus refusal without exports or deployment repair.
-These additions were independently reviewed and formatted with the pinned compiler. Their
-native execution is pending: the local dependency build was killed while compiling
-Asupersync, before any project tests ran. The existing supplementary workflow selects the
-new native contract; this is not release qualification.
+The immutable native integration target covers live-writer watch/dwell inspection and
+actual replay, absent source pixels, exact aggregate read allowances through finalization,
+execution and final-read cancellation, late source/capsule/event damage, changed event/privacy
+authority and incomplete journals. The real-process CLI suite additionally exercises
+watch/corroboration replay and exports with the writer still open, and trained AVC/HEVC dwell
+replay without loose input/model files. Failed final checks must leave exports absent and
+deployment bytes unchanged. The verification command is exercised with both create-only exports
+and all bound options, including the shared immutable allowances.
+
+These changes were independently reviewed. The integrated production `fss-event` graph passed
+pinned-nightly Cargo checking. Executable validation of the expanded contracts remains pending:
+the dependency build was killed during Asupersync code generation under shared memory pressure.
+Current focused validation results are recorded in [implementation status](../IMPLEMENTATION_STATUS.md).
+This is not release qualification.
 
 ```sh
 cargo test -p fss-reference --test long_event_replay_immutable_contract

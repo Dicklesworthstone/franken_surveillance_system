@@ -4,6 +4,8 @@
 
 #[path = "long_event_replay_immutable_contract/fixtures.rs"]
 mod fixtures;
+#[path = "long_event_replay_immutable_contract/native.rs"]
+mod native;
 #[path = "cascade_support/mod.rs"]
 mod support;
 

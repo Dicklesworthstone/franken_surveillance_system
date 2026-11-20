@@ -754,8 +754,10 @@ pub fn inspect_long_event(
 /// Execute the exact retained recipe under explicit ceilings and compare complete analyses/events.
 /// Source bytes come from retained imports. No loose input, report, model file or remembered
 /// command is required. Success is a read result, never a new authority/effect publication.
+/// Immutable callers must also revalidate the source owner's metadata and all selected payloads
+/// before delivering or exporting the result. Those final reads share the original allowance.
 pub fn replay_long_event(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventId,
     pins: LongEventReplayPins,
     limits: &LongEventReplayLimits,
@@ -783,6 +785,7 @@ pub fn replay_long_event(
             {
                 return Err(LongEventReplayError::Diverged);
             }
+            actual.revalidate_derived_source(deployment, cx)?;
             (actual.frames_decoded(), actual.source_chunk_bytes_read())
         }
         LongEventReplayRecipe::Dwell(recipe) => {
@@ -804,6 +807,7 @@ pub fn replay_long_event(
             {
                 return Err(LongEventReplayError::Diverged);
             }
+            actual.revalidate_derived_source(deployment, cx)?;
             (actual.frames_decoded(), actual.source_chunk_bytes_read())
         }
         LongEventReplayRecipe::Corroboration(recipe) => {
@@ -831,6 +835,7 @@ pub fn replay_long_event(
             {
                 return Err(LongEventReplayError::Diverged);
             }
+            actual.revalidate_derived_sources(deployment, cx)?;
             let frames = cameras
                 .iter()
                 .try_fold(0_usize, |sum, camera| sum.checked_add(camera.2))

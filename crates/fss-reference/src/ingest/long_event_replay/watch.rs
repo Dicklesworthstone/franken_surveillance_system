@@ -20,7 +20,7 @@ use crate::ingest::recorded_watch::{
 use crate::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
 use crate::ingest::sensor_health::{policy_bytes, policy_digest};
 use crate::retained_source::RetainedSource;
-use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ReplayCx, ScalarExecCx};
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, EventHypothesis, EventState,
     EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, SensorId,
@@ -91,7 +91,7 @@ impl WatchReplayRecipe {
 
     pub(super) fn analyze(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<LongWatchReport> {
         let Some(retained) = &self.detector else {

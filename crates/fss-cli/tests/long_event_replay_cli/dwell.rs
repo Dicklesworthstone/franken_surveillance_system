@@ -137,7 +137,7 @@ fn publish_dwell(
 }
 
 #[test]
-fn trained_avc_and_hevc_dwell_events_cold_read_and_verify_without_loose_inputs() -> Test {
+fn trained_avc_and_hevc_dwell_replay_without_loose_inputs_while_capture_owns_the_writer() -> Test {
     for (label, bytes, size, frames, duration) in [
         ("dwell-avc", AVC, [48, 32], 300, 20_000_000_000),
         ("dwell-hevc", HEVC, [96, 48], 14, 1),
@@ -149,8 +149,6 @@ fn trained_avc_and_hevc_dwell_events_cold_read_and_verify_without_loose_inputs()
         let cx = context(&f.root)?;
         let writer = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;
         let inspection = good(run(&read_args)?)?;
-        drop(writer);
-        cx.drain_and_finalize();
         assert_eq!(field(&inspection, "profile")?, "long_dwell");
         assert_eq!(field(&inspection, "status")?, "inspected_not_replayed");
         assert_eq!(
@@ -183,6 +181,8 @@ fn trained_avc_and_hevc_dwell_events_cold_read_and_verify_without_loose_inputs()
         );
         assert_eq!(member(&verified, "alert_authorized")?, &Value::Bool(false));
         assert_eq!(f.snapshot()?, before);
+        drop(writer);
+        cx.drain_and_finalize();
 
         let cx = context(&f.root)?;
         let deployment = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;

@@ -27,7 +27,7 @@ fn tree(root: &Path) -> Test<Vec<(PathBuf, ContentDigest)>> {
 }
 
 #[test]
-fn whole_recording_inspection_and_exports_coexist_with_a_live_writer() -> Test {
+fn whole_recording_inspection_replay_and_exports_coexist_with_a_live_writer() -> Test {
     for cameras in [1, 2] {
         let f = Fixture::new(&format!("immutable-writer-{cameras}"), cameras)?;
         let event = f.publish(cameras == 2)?;
@@ -56,6 +56,29 @@ fn whole_recording_inspection_and_exports_coexist_with_a_live_writer() -> Test {
             before,
             "inspection changed deployment bytes"
         );
+        let report_path = f.directory.0.join("live-verification.json");
+        let event_path = f.directory.0.join("live-verified-event.json");
+        let mut args = verification_args(&inspected)?;
+        args.extend([
+            "--report-out".into(),
+            report_path.as_os_str().to_owned(),
+            "--event-out".into(),
+            event_path.as_os_str().to_owned(),
+        ]);
+        let verified = good(run(&args)?)?;
+        assert_eq!(field(&verified, "status")?, "native_replay_matched");
+        assert_eq!(member(&verified, "native_replayed")?, &Value::Bool(true));
+        assert_eq!(
+            member(&verified, "frames_replayed")?.integer(),
+            Some((cameras * FRAMES) as i128)
+        );
+        assert_eq!(member(&verified, "event")?, member(&inspected, "event")?);
+        assert_eq!(parse(&fs::read_to_string(report_path)?)?, verified);
+        assert_eq!(
+            parse(&fs::read_to_string(event_path)?)?,
+            *member(&verified, "event")?
+        );
+        assert_eq!(tree(&f.root)?, before, "replay changed deployment bytes");
         drop(writer);
         cx.drain_and_finalize();
     }
@@ -66,6 +89,8 @@ fn whole_recording_inspection_and_exports_coexist_with_a_live_writer() -> Test {
 fn incomplete_journals_are_refused_without_recovery_or_exports() -> Test {
     let f = Fixture::new("immutable-journal-tail", 1)?;
     let event = f.publish(false)?;
+    let inspection = good(run(&f.read(&event))?)?;
+    let verify = verification_args(&inspection)?;
     for relative in ["ledger/journal.fssj", "effects/journal.fssj"] {
         let path = f.root.join(relative);
         let original = fs::read(&path)?;
@@ -75,21 +100,22 @@ fn incomplete_journals_are_refused_without_recovery_or_exports() -> Test {
         let before = tree(&f.root)?;
         let event_path = f.directory.0.join("refused-event.json");
         let report_path = f.directory.0.join("refused-inspection.json");
-        let mut args = f.read(&event);
-        args.extend([
-            "--event-out".into(),
-            event_path.as_os_str().to_owned(),
-            "--report-out".into(),
-            report_path.as_os_str().to_owned(),
-        ]);
-        refuses(run(&args)?, "ERR-CLI");
-        assert!(!event_path.exists());
-        assert!(!report_path.exists());
-        assert_eq!(
-            tree(&f.root)?,
-            before,
-            "read repaired an incomplete journal"
-        );
+        for mut args in [f.read(&event), verify.clone()] {
+            args.extend([
+                "--event-out".into(),
+                event_path.as_os_str().to_owned(),
+                "--report-out".into(),
+                report_path.as_os_str().to_owned(),
+            ]);
+            refuses(run(&args)?, "ERR-CLI");
+            assert!(!event_path.exists());
+            assert!(!report_path.exists());
+            assert_eq!(
+                tree(&f.root)?,
+                before,
+                "read or replay repaired an incomplete journal"
+            );
+        }
         fs::write(path, original)?;
     }
     Ok(())
@@ -114,6 +140,18 @@ fn read_allowance_or_metadata_damage_never_emits_or_exports_a_success() -> Test 
         let mut bounded = args.clone();
         bounded.extend([key.into(), "1".into()]);
         refuses(run(&bounded)?, "ERR-CLI");
+        assert!(!event_path.exists());
+        assert!(!report_path.exists());
+        assert_eq!(tree(&f.root)?, before);
+        let mut verify = verification_args(&inspected)?;
+        set(&mut verify, key, "1")?;
+        verify.extend([
+            "--event-out".into(),
+            event_path.as_os_str().to_owned(),
+            "--report-out".into(),
+            report_path.as_os_str().to_owned(),
+        ]);
+        refuses(run(&verify)?, "ERR-CLI");
         assert!(!event_path.exists());
         assert!(!report_path.exists());
         assert_eq!(tree(&f.root)?, before);

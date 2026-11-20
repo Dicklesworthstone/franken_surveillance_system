@@ -24,7 +24,7 @@ use fss_reference::ingest::long_event_replay::{
 use fss_reference::retained_source::{
     ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedSource,
 };
-use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
+use fss_reference::{DeploymentLayout, ReplayCx};
 
 type Run<T> = Result<T, Box<dyn Error>>;
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -47,7 +47,7 @@ Every complete analysis and the committed event must match. No source file, save
 threshold, zone, model, screening override, publication approval or network is accepted.\n\
 Common bounds: --max-metadata-bytes N (default 64 MiB, maximum 256 MiB)\n\
   --max-report-bytes N (default 1 MiB, maximum 16 MiB) [--principal ID]\n\
-Read also accepts --max-read-bytes N and --max-read-objects N. Opening metadata,\n\
+Both operations accept --max-read-bytes N and --max-read-objects N. Opening metadata,\n\
 selected custody and final rereads share one allowance (default 1 GiB/1,000,000\n\
 attempts, maximum 4 GiB/4,000,000), with a cooperative 60 s deadline.\n\
 Per-camera execution ceilings (also accepted by read to bind its verification command):\n\
@@ -57,9 +57,9 @@ Ceilings may refuse replay; they cannot change the retained computation recipe.\
 Optional create-only exports: --event-out FILE (event JSON), --report-out FILE (this JSON);\n\
 both must be outside the deployment. Missing custody, stale pins, changed privacy, reviewed\n\
 revisions, exhausted bounds and divergence fail closed with no success output.\n\
-Read works alongside the deployment writer without locks, recovery or media decoding.\n\
-It withholds output and exports until metadata, custody and the opening head revalidate.\n\
-Verify opens the existing deployment with exclusive locks and normal restart recovery.\n\
+Read and verify work alongside the deployment writer without locks or recovery.\n\
+Both withhold output and exports until metadata, custody and the opening head revalidate.\n\
+Read never decodes media; verify requires the explicit execution admission and exact pins.\n\
 Neither operation appends event or effect authority. A match proves reproducibility, not physical\n\
 truth, detector accuracy, independent sensors, health, absence or alert delivery.\n";
 
@@ -70,6 +70,8 @@ const COMMON: &[&str] = &[
     "--principal",
     "--max-metadata-bytes",
     "--max-report-bytes",
+    "--max-read-bytes",
+    "--max-read-objects",
     "--source-read-bytes",
     "--pixel-budget",
     "--assignment-work",
@@ -153,7 +155,9 @@ fn digest(value: &str) -> Result<ContentDigest, String> {
     Ok(value)
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 39 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
+    if args.len() > 1 + 2 * (COMMON.len() + VERIFY.len())
+        || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
+    {
         return Err("argument bounds exceeded".into());
     }
     let verify = match args.first().and_then(|value| value.to_str()) {
@@ -164,8 +168,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or("option names require UTF-8")?;
-        let read_bound = !verify && matches!(key, "--max-read-bytes" | "--max-read-objects");
-        if !COMMON.contains(&key) && !(verify && VERIFY.contains(&key)) && !read_bound {
+        if !COMMON.contains(&key) && !(verify && VERIFY.contains(&key)) {
             return Err(format!("unknown or inapplicable option {key}"));
         }
         let value = pair
@@ -347,7 +350,8 @@ fn command(
             "fss-event verify --root {} --site {} --principal {} --event-id {} ",
             "--expected-event-revision {} --expected-provenance-root {} --execute-perception yes ",
             "--max-metadata-bytes {} --max-report-bytes {} --source-read-bytes {} --pixel-budget {} ",
-            "--assignment-work {} --trace-bytes {} --decode-work {} --max-dimension {} --max-pixels {} --max-segment-bytes {}"
+            "--assignment-work {} --trace-bytes {} --decode-work {} --max-dimension {} --max-pixels {} --max-segment-bytes {} ",
+            "--max-read-bytes {} --max-read-objects {}"
         ),
         quote(root.to_str()?),
         quote(&options.site),
@@ -364,7 +368,9 @@ fn command(
         limits.execution.decode.jpeg_work_units,
         limits.execution.decode.jpeg_limits.maximum_dimension,
         limits.execution.decode.jpeg_limits.maximum_pixels,
-        limits.execution.decode.read_limits.max_segment_bytes
+        limits.execution.decode.read_limits.max_segment_bytes,
+        options.read_limits.max_read_bytes,
+        options.read_limits.max_read_objects
     ))
 }
 fn report(
@@ -568,57 +574,6 @@ fn report(
     Ok(format!("{body}\n"))
 }
 fn run(options: Options) -> Run<String> {
-    if options.pins.is_none() {
-        return read_only(options);
-    }
-    let authority = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:long-event-replay-cli".into(),
-        operation_id: OperationId::parse("operation:long-event-replay-cli")?,
-        principal: options.principal.clone(),
-        capabilities: vec!["ADP-REPLAY-001".into()],
-        deadline: None,
-        priority: 10,
-        budgets: BudgetVector::builder()
-            .bytes(128 * 1024 * 1024)
-            .storage_operations(65_536)
-            .build()?,
-        privacy_scope: "privacy:current-deployment-policy".into(),
-        retention_scope: "retention:existing-deployment-policy".into(),
-        anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
-        generation: 1,
-    })?;
-    let root = preflight(&options.root, &options.site, &authority)?;
-    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
-    let result = (|| -> Run<String> {
-        let deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
-        match options.pins {
-            None => {
-                let inspection =
-                    inspect_long_event(&deployment, &options.event, &options.limits, &cx)?;
-                let output = report(&options, &root, &inspection, None)?;
-                finish(&options, &root, &inspection, output, &cx)
-            }
-            Some(pins) => {
-                let verified =
-                    replay_long_event(&deployment, &options.event, pins, &options.limits, &cx)?;
-                let output = report(
-                    &options,
-                    &root,
-                    verified.inspection(),
-                    Some((
-                        verified.frames_replayed(),
-                        verified.source_chunk_bytes_read(),
-                    )),
-                )?;
-                finish(&options, &root, verified.inspection(), output, &cx)
-            }
-        }
-    })();
-    cx.drain_and_finalize();
-    result
-}
-
-fn read_only(options: Options) -> Run<String> {
     // The immutable owner admits and budgets all layout/history bytes. This preflight only
     // refuses paths that could otherwise create or redirect a deployment namespace.
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
@@ -655,11 +610,29 @@ fn read_only(options: Options) -> Run<String> {
         if deployment.site_lineage() != options.site {
             return Err("deployment site does not match".into());
         }
-        let inspection = inspect_long_event(&deployment, &options.event, &options.limits, &cx)?;
-        let output = report(&options, &root, &inspection, None)?;
+        let verified = options
+            .pins
+            .map(|pins| replay_long_event(&deployment, &options.event, pins, &options.limits, &cx))
+            .transpose()?;
+        let inspected;
+        let (inspection, execution) = match &verified {
+            Some(verified) => (
+                verified.inspection(),
+                Some((
+                    verified.frames_replayed(),
+                    verified.source_chunk_bytes_read(),
+                )),
+            ),
+            None => {
+                inspected = inspect_long_event(&deployment, &options.event, &options.limits, &cx)?;
+                (&inspected, None)
+            }
+        };
+        let output = report(&options, &root, inspection, execution)?;
+        cx.checkpoint("long_event_replay:delivery")?;
         deployment.revalidate_snapshot_metadata()?;
         deployment.revalidate()?;
-        finish(&options, &root, &inspection, output, &cx)
+        finish(&options, &root, inspection, output, &cx)
     })();
     cx.drain_and_finalize();
     result

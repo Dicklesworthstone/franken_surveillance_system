@@ -182,7 +182,23 @@ fn immutable_read_allowances_do_not_grant_native_replay_authority() {
         assert!(parse(&request).is_err());
         let mut request = verify();
         request.extend([key.into(), "1".into()]);
-        assert!(parse(&request).is_err());
+        let parsed = parse(&request).unwrap();
+        assert!(parsed.pins.is_some());
+        let admitted = if key == "--max-read-bytes" {
+            parsed.read_limits.max_read_bytes
+        } else {
+            parsed.read_limits.max_read_objects
+        };
+        assert_eq!(admitted, 1);
+        let execution = request
+            .iter()
+            .position(|value| value == "--execute-perception")
+            .unwrap();
+        request.drain(execution..execution + 2);
+        assert!(
+            parse(&request).is_err(),
+            "read allowances cannot grant execution"
+        );
     }
 }
 
