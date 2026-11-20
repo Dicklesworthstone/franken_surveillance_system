@@ -29,9 +29,9 @@ sys.stdout.write("Bearer secretbearer789\n")
 sys.stdout.write("Line after secret\n")
 '
 
-# Step 3: Large output excerpt capping (1 MiB output across lines)
+# Step 3: Large output excerpt capping (exactly 1 MiB)
 # Output must be capped to <= 4 KiB (4096 bytes) in the step excerpt
-e2e_step "step_large_output" python3 -c 'import sys; [sys.stdout.write("X" * 1024 + "\n") for _ in range(1024)]'
+e2e_step "step_large_output" python3 -c 'import sys; sys.stdout.write("X" * (1024 * 1024))'
 
 # Step 4: Expect equality
 e2e_expect_eq "expect_equality_match" "value_alpha" "value_alpha"
@@ -43,9 +43,16 @@ e2e_expect_exit "step_basic" 0
 e2e_expect_json_field "expect_json_field_match" '{"status":"ok","code":200,"service":"fss"}' .code 200
 
 # Step 7: Temporary directory allocation and automatic cleanup
-TMP_DIR=$(e2e_tmpdir)
-echo "selftest_tmp_data" > "${TMP_DIR}/test_artifact.txt"
-test -f "${TMP_DIR}/test_artifact.txt"
+write_temp_artifact() {
+    local dir
+    dir=$(e2e_tmpdir) || return 1
+    echo "selftest_tmp_data" > "${dir}/test_artifact.txt" && test -f "${dir}/test_artifact.txt"
+}
+e2e_step "step_tempdir" -- write_temp_artifact
+e2e_expect_exit "step_tempdir" 0
+
+e2e_step "missing_binary" -- e2e_bin fss-selftest-absent-binary
+e2e_expect_exit "missing_binary" 1
 
 # Step 8: Optional skip step
 e2e_skip "skipped_feature" "optional feature skipped during standard selftest"

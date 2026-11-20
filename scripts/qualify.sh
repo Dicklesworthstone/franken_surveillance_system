@@ -356,6 +356,7 @@ policy_lane() {
   # rch only, no cargo or network), the cap-script trap-bypass lint, the validator tests, and the
   # harness self-test judged by scripts/e2e/run.sh from its log rather than its exit status.
   run e2e-harness-fail-closed-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_e2e_lib_fail_closed.py
+  run e2e-harness-self-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_e2e_lib.py
   run e2e-validate-log-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_e2e_validate_log.py
   run e2e-selftest-via-runner env FSS_E2E_LOG_DIR="$RECEIPT_DIR/e2e-logs" bash scripts/e2e/run.sh scripts/e2e/selftest.sh
   run diff-check git diff --check

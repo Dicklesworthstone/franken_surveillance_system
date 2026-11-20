@@ -8,6 +8,7 @@ Uses a stub rch on PATH; never invokes real rch, network, or local cargo.
 Never writes to /tmp; all sandbox artifacts reside under target/test_sandboxes/.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -154,6 +155,10 @@ esac
         self.assertEqual(summary["verdict"], "pass")
         self.assertEqual(summary["failures"], [])
         self.assertEqual(summary["steps"], len(records) - 2)
+        missing = next(r for r in records if r["step"] == "missing_binary")
+        self.assertEqual(missing["exit"], 1)
+        self.assertIn("Binary 'fss-selftest-absent-binary' not found.", missing["stderr_excerpt"])
+        self.assertFalse(missing["stdout_excerpt"])
 
     def test_selftest_passes_through_the_parent_runner(self):
         """scripts/e2e/run.sh scripts/e2e/selftest.sh judges the selftest log PASS (fss-2h5zq.2)."""
@@ -210,7 +215,17 @@ esac
                     excerpt_bytes = rec.get("stdout_excerpt", "").encode("utf-8")
                     self.assertLessEqual(len(excerpt_bytes), 4096)
                     self.assertEqual(len(excerpt_bytes), 4096, "Expected exactly 4096 bytes for capped 1 MiB excerpt")
+                    self.assertEqual(rec["stdout_sha256"], hashlib.sha256(b"X" * (1024 * 1024)).hexdigest())
         self.assertTrue(found_large_step, "step_large_output record was not found in log")
+
+    def test_list_steps_without_creating_a_run_or_tempdir(self):
+        log_dir = self.sandbox_root / "list-only"
+        res = self._run_script(REPO_ROOT / "scripts/e2e/selftest.sh", ["--list"],
+                               {"FSS_E2E_LOG_DIR": str(log_dir)})
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("step_tempdir", res.stdout.splitlines())
+        self.assertIn("missing_binary", res.stdout.splitlines())
+        self.assertFalse(log_dir.exists())
 
     def test_selftest_two_runs_identical_after_stripping_ts(self):
         """Two runs give identical logs after stripping ts (and deterministic time/path normalization)."""

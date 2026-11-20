@@ -6,13 +6,18 @@
 //!
 //! The committed bytes and `fixture_manifest.json` are first proven identical to the generator,
 //! so the generator's packet descriptors ARE the manifest predictions used below.
+mod caplog_support;
 mod rtpdump_support;
+use caplog_support::Record;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use fss_core::{ContentDigest, SensorId, StreamId, TimestampNs};
 use fss_packet::H264Status;
+use fss_reference::ReferenceDeployment;
 use fss_reference::ingest::rtpdump::import::*;
 use fss_reference::ingest::rtpdump::replay::RestartCause;
+use fss_reference::ingest::{FileImport, FileIngestAdapter, FileIngestRequest};
 use fss_reference::media_fixture::{
     H264AnnexBStream, H264FixtureParams, MediaFixtureError, RtpdumpFixture, RtpdumpParams,
     build_rtp_manifest_json, generate_h264_annexb, generate_rtpdump_clean,
@@ -209,16 +214,68 @@ fn scope() -> Result<RtpImportScope, Error> {
 fn fixh264_rtpdump_variants_match_their_manifest_predictions() -> TestResult {
     let cx = cx()?;
     let fixtures = fixtures()?;
+    let scratch = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(scratch)?;
+    let run = (0..1000)
+        .map(|n| scratch.join(format!("rtpdump-ledger-{}-{n}", std::process::id())))
+        .find_map(|dir| match std::fs::create_dir(&dir) {
+            Ok(()) => Some(Ok(dir)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+            Err(e) => Some(Err(e)),
+        })
+        .ok_or("test directories exhausted")??;
     for (e, f) in EXPECT.iter().zip(&fixtures) {
         let name = e.name;
-        let plan = prepare_rtp_import(
-            &f.bytes,
-            scope()?,
-            config_for(RtpdumpParams::default().ssrc),
-            RtpImportLimits::default(),
-            &cx,
-        )?;
-        let report = plan.report();
+        let source = run.join(name);
+        std::fs::write(&source, &f.bytes)?;
+        let store = run.join(format!("{name}-store"));
+        let mut dep = ReferenceDeployment::open(&store, "site:fixture-custody", &cx)?;
+        let scope = scope()?;
+        let request = FileIngestRequest::new(source, scope.sensor, scope.stream)
+            .with_receive_time(scope.receive_time)
+            .with_rtp_binding(config_for(RtpdumpParams::default().ssrc));
+        let FileImport::RecordedRtp(receipt) =
+            FileIngestAdapter::ingest_file(request, &cx, &mut dep)?
+        else {
+            return Err("recorded RTP file routed to a different format".into());
+        };
+        drop(dep);
+        let reopened = ReferenceDeployment::open(&store, "site:fixture-custody", &cx)?;
+        let verified = load_rtp_import(&receipt, &cx, &reopened)?;
+        assert_eq!(verified.source(), f.bytes, "{name} retained original");
+        let report = verified.report();
+        let mut ledger_capsules: Vec<_> = reopened
+            .ledger()
+            .batches()
+            .iter()
+            .flat_map(|b| &b.deltas)
+            .filter(|delta| delta.family == "sensor_capsule")
+            .map(|delta| {
+                (
+                    delta.delta_id.clone(),
+                    delta.payload_digest,
+                    delta.witness_digest,
+                )
+            })
+            .collect();
+        let mut expected_capsules: Vec<_> = report
+            .access_units()
+            .iter()
+            .map(|unit| {
+                (
+                    format!("delta:{}", unit.capsule.capsule_id.as_str()),
+                    unit.capsule_object,
+                    Some(unit.capsule.source_digest),
+                )
+            })
+            .collect();
+        // Batch ordering is canonical and independent of the media access-unit order.
+        ledger_capsules.sort_by(|a, b| a.0.cmp(&b.0));
+        expected_capsules.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            ledger_capsules, expected_capsules,
+            "{name} capsule deltas and exact source witnesses after reopening"
+        );
         assert_eq!(report.input_bytes(), f.bytes.len(), "{name}");
         assert_eq!(report.input_digest(), ContentDigest::sha256(&f.bytes));
         assert_eq!(report.records().len(), f.packets.len(), "{name} records");
@@ -230,6 +287,9 @@ fn fixh264_rtpdump_variants_match_their_manifest_predictions() -> TestResult {
         assert_eq!(f.is_truncated, !e.clean_end, "{name}");
         // No fragment is interrupted anywhere in the family: nothing is retired.
         assert!(report.final_discard().is_none(), "{name}");
+        let mut expected_classes = BTreeMap::new();
+        let mut observed_classes = BTreeMap::new();
+        let mut discards = usize::from(report.final_discard().is_some());
         for (i, (record, d)) in report.records().iter().zip(&f.packets).enumerate() {
             assert_eq!(record.ssrc, d.ssrc, "{name} record {i} ssrc");
             assert_eq!(record.timestamp, Some(d.timestamp), "{name} record {i}");
@@ -243,6 +303,10 @@ fn fixh264_rtpdump_variants_match_their_manifest_predictions() -> TestResult {
                 .map(|o| format!("{:?}", o.class))
                 .ok_or(format!("{name} record {i} has no sequence observation"))?;
             assert_eq!(observed, class, "{name} record {i} class");
+            *expected_classes.entry(class.to_owned()).or_insert(0_usize) += 1;
+            *observed_classes.entry(observed).or_insert(0_usize) += 1;
+            discards +=
+                usize::from(record.expired.is_some()) + usize::from(record.discarded.is_some());
             let pushed = matches!(
                 record.disposition,
                 RecordDisposition::H264(H264Status::Complete | H264Status::FragmentPending)
@@ -275,6 +339,86 @@ fn fixh264_rtpdump_variants_match_their_manifest_predictions() -> TestResult {
                     .all(|n| n.timestamp == u.timestamp)
             );
         }
+        if name == "clean.rtp" {
+            let annexb = generate_h264_annexb(&H264FixtureParams::default())?;
+            let committed =
+                std::fs::read(repo_root()?.join("tests/fixtures/media/h264/clean.264"))?;
+            assert_eq!(committed, annexb.bytes);
+            let expected: Vec<_> = annexb
+                .nal_spans
+                .iter()
+                .map(|span| &committed[span.offset..span.offset + span.len])
+                .collect();
+            let recovered: Vec<_> = verified.nals().iter().map(|n| n.nal.bytes()).collect();
+            assert_eq!(
+                recovered, expected,
+                "clean RTP must recover the complete ordered Annex-B NAL bytes"
+            );
+            let wrapped = report.records()[2]
+                .sequence
+                .ok_or("missing wrap observation")?;
+            assert_eq!(wrapped.extended_sequence, Some(65_536));
+            assert_eq!(
+                report.records()[1].generation,
+                report.records()[2].generation
+            );
+        }
+        let mut log = Record::new(f.variant_name)
+            .check("packets", f.packets.len(), report.records().len())
+            .check(
+                "nals",
+                e.units.iter().map(|u| u.0).sum::<usize>(),
+                verified.nals().len(),
+            )
+            .check("access_units", e.units.len(), report.access_units().len())
+            .check("ledger_capsules", e.units.len(), ledger_capsules.len())
+            .check("fragment_discards", 0_usize, discards)
+            .check(
+                "clean_eof",
+                e.clean_end,
+                matches!(report.end(), ImportEnd::Ended),
+            )
+            .check(
+                "ssrc_restarts",
+                e.restarts
+                    .iter()
+                    .filter(|r| r.1 == RestartCause::SsrcChange)
+                    .count(),
+                report
+                    .records()
+                    .iter()
+                    .filter(|r| r.restart == Some(RestartCause::SsrcChange))
+                    .count(),
+            )
+            .check(
+                "old_epoch_restart_required",
+                e.restarts
+                    .iter()
+                    .filter(|r| r.1 == RestartCause::SequenceRestart)
+                    .count(),
+                report
+                    .records()
+                    .iter()
+                    .filter(|r| r.restart == Some(RestartCause::SequenceRestart))
+                    .count(),
+            );
+        for class in [
+            "Probation",
+            "Baseline",
+            "Advanced",
+            "Reordered",
+            "Duplicate",
+            "BeforeBaseline",
+            "DiscontinuitySuspected",
+            "RestartRequired",
+        ] {
+            log = log.check(
+                class,
+                expected_classes.get(class).copied().unwrap_or(0),
+                observed_classes.get(class).copied().unwrap_or(0),
+            );
+        }
+        log.emit_checked(0, true);
     }
     Ok(())
 }
