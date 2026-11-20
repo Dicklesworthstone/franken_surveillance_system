@@ -26,7 +26,8 @@ fss-review reject --root "$ROOT" --site "$SITE" --event-id "$EVENT" \
 ```
 
 Review the returned event, operator statement, provenance root, and `result.approval_digest`.
-Repeat exactly the same command with `--approve "$APPROVAL"` to publish. Without that option,
+Repeat the same action, event, actor, rationale and revision with `--approve "$APPROVAL"`
+to publish, omitting any preview-only `--max-read-*` flags. Without approval,
 there is no event or provenance write. Changing the actor, rationale, disposition or expected
 revision changes the approval. A different current event revision makes a competing request
 stale; no last-writer-wins replacement is performed.
@@ -37,6 +38,30 @@ is not a permitted direct transition. An operator who needs to reopen investigat
 resolve must review and approve each permitted transition separately. There are no implicit
 intermediate states, no urgent exception option, and no mutation of terminal events. An exact
 retry of an already committed current review is verified and returned without republishing.
+
+## Inspect and prepare while capture is running
+
+`show` and unapproved `investigate`, `resolve` and `reject` requests read one
+immutable retained snapshot. They can run while capture owns the deployment
+writer. They inspect canonical event and review metadata, without opening
+original media or model payloads, acquiring the publisher, repairing journals,
+or creating recovery state. Publishing an approved successor still requires
+the exclusive writer and rechecks the exact request and current effects.
+
+The complete JSON response is buffered until final authority, event/review
+payload, publication, and ledger/effect-journal verification succeeds. A stale
+snapshot, damaged retained object, torn journal, cancellation or exhausted
+allowance refuses the complete response. An active writer can advance the
+deployment during inspection; in that case, retry against a fresh snapshot.
+No partial successor or approval is emitted.
+
+The optional `--max-read-bytes N` and `--max-read-objects N` flags bound the
+cumulative immutable reads, including opening metadata, lineage reconstruction
+and final rereads. Defaults are 1 GiB and 1,000,000 attempted reads; supported
+maxima are 4 GiB and 4,000,000. A cooperative 60-second deadline and a 4 MiB
+JSON-report ceiling also apply. These read allowances do not change the review
+request or its approval identity and are rejected when `--approve` is present.
+The existing lineage, effect-operation and statement bounds below still apply.
 
 ## Evidence and effect boundaries
 
@@ -57,6 +82,10 @@ until narrower effect-to-event dependency admission is implemented. A new effect
 between preview and commit is checked again. Reviews never cancel an alert, reconcile a lost
 acknowledgement, claim delivery, or erase an outstanding obligation. Use the owning effect
 workflow first. An exact already-published retry does not perform a new lifecycle mutation.
+Missing effect history is unknown, not proof that no effects are pending. A new
+immutable review preview therefore refuses an absent effect journal without
+recreating it. Metadata inspection and verified already-published readback keep
+their separate, non-mutating semantics.
 
 The library uses separately registered review prepare/commit capabilities, matching site
 universe and local I/O root, and explicit approval. Advisory agent-feedback authority is not
@@ -100,9 +129,19 @@ python3 crates/fss-reference/tests/fixtures/event_review_model.py
 
 The Rust cases exercise real deployment journals, state/authority restrictions, cold reopen,
 competing approvals, retained readback, cancellation cuts, a real prepared effect, and a
-generated-JPEG-to-watch-to-review workflow through the native binary. They were authored but
-not executed in the authoring environment: Rust compilation, tests, rustfmt and Clippy remain
-unverified because no Rust toolchain is available.
+generated-JPEG-to-watch-to-review workflow through the native binary. Seven additional
+immutable contracts cover active-writer display/preview, exact native receipt and approval
+parity, exclusive publication and committed retry, final cumulative budgets, cancellation,
+late custody damage, effect-only changes and missing journals without reconstruction.
+
+For the 2026-11-20 extension, independent source review, pinned-nightly formatting and
+whitespace checks passed. The core and RTP suites passed 199 and 50 tests; they are baseline
+checks, not execution of these new review paths. Changed reference/CLI execution remains
+pending: after restoring the exact pinned toolchain, ordinary and supplementary
+low-memory builds again received SIGKILL in `asupersync`, before reaching FSS code.
+Existing build artifacts survived. No native review-test pass or release qualification
+is inferred from those partial checks; see [implementation status](../IMPLEMENTATION_STATUS.md)
+for the separate policy-lane findings.
 
 The independent Python model passed 5,184 state/action/interleaving/publication-cut/effect/
 foreign-append scenarios plus a late effect guard. It is not execution of the Rust code or

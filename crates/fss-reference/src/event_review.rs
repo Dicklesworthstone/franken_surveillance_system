@@ -29,8 +29,11 @@ use fss_publication::SlotName;
 use crate::reference_deployment::{FAMILY_EVENT_REVISION, validate_site_lineage};
 use crate::{
     ReferenceDeployment, ReferenceError, ReferenceEventReceipt, ReferencePolicyAction,
-    ReferencePolicyDecision, ReplayCx,
+    ReferencePolicyDecision, ReplayCx, RetainedSource,
 };
+
+mod retained;
+use retained::{current_revision, retained_error};
 
 /// Read and preview permission; no event mutation is implied.
 pub const CAP_REVIEW_PREPARE: &str = "CAP-EVENT-REVIEW-PREPARE-001";
@@ -395,7 +398,7 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), ReviewError> {
     cx.checkpoint(stage).map_err(|_| ReviewError::Cancelled)
 }
 fn authorize(
-    d: &ReferenceDeployment,
+    d: &dyn RetainedSource,
     a: &ContextAuthority,
     cx: &ReplayCx,
     cap: &str,
@@ -411,7 +414,7 @@ fn authorize(
     {
         return Err(ReviewError::Unauthorized);
     }
-    Ok(())
+    d.verify_read_head().map_err(retained_error)
 }
 
 struct Revision {
@@ -420,7 +423,7 @@ struct Revision {
     anchor: LedgerAnchor,
 }
 fn history(
-    d: &ReferenceDeployment,
+    d: &dyn RetainedSource,
     id: &EventId,
     cx: &ReplayCx,
 ) -> Result<Vec<Revision>, ReviewError> {
@@ -449,7 +452,7 @@ impl ReviewReadBudget {
     }
     fn read(
         &mut self,
-        d: &ReferenceDeployment,
+        d: &dyn RetainedSource,
         digest: ContentDigest,
         maximum: usize,
     ) -> Result<Vec<u8>, ReviewError> {
@@ -457,14 +460,16 @@ impl ReviewReadBudget {
         if maximum == 0 {
             return Err(ReviewError::Limit);
         }
-        let bytes = d.publisher().spool().read_bounded(digest, maximum)?;
+        let bytes = d
+            .read_object_bounded(digest, maximum)
+            .map_err(retained_error)?;
         self.reserve(bytes.len())?;
         Ok(bytes)
     }
 }
 
 fn history_budgeted(
-    d: &ReferenceDeployment,
+    d: &dyn RetainedSource,
     id: &EventId,
     cx: &ReplayCx,
     reader: &mut ReviewReadBudget,
@@ -528,7 +533,7 @@ fn history_budgeted(
 /// Read the current event through the same guarded authority path used by publication.
 /// This reads retained event metadata, not original media or a reconstructed model result.
 pub fn read_review_event(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventId,
     authority: &ContextAuthority,
     cx: &ReplayCx,
@@ -539,8 +544,8 @@ pub fn read_review_event(
     {
         return Err(ReviewError::Limit);
     }
-    let _ = history(deployment, event, cx)?;
-    Ok(deployment.current_event_authority(event)?)
+    let revisions = history(deployment, event, cx)?;
+    current_revision(deployment, event, &revisions, cx)
 }
 
 fn derive(record: ReviewRecord, chain: &[EventHypothesis]) -> Result<ReviewPreview, ReviewError> {
@@ -607,26 +612,27 @@ fn derive(record: ReviewRecord, chain: &[EventHypothesis]) -> Result<ReviewPrevi
     })
 }
 
-fn verify_provenance(d: &ReferenceDeployment, preview: &ReviewPreview) -> Result<(), ReviewError> {
+fn verify_provenance(d: &dyn RetainedSource, preview: &ReviewPreview) -> Result<(), ReviewError> {
     let record = &preview.record;
     let slot = record.slot()?;
-    let visible = d
-        .publisher()
-        .root(&slot)
-        .ok_or(ReviewError::CustodyMismatch)?;
-    if visible.root != preview.provenance_root {
+    let manifest = record.manifest()?;
+    d.check_publication(&slot, preview.provenance_root, manifest.children().len())
+        .map_err(retained_error)?;
+    let root = d
+        .read_object_bounded(preview.provenance_root, MAX_REVIEW_RECORD_BYTES)
+        .map_err(retained_error)?;
+    if root != manifest.canonical_bytes() {
         return Err(ReviewError::CustodyMismatch);
     }
-    let root = d.publisher().spool().read(preview.provenance_root)?;
-    if root != record.manifest()?.canonical_bytes() {
-        return Err(ReviewError::CustodyMismatch);
-    }
-    let bytes = d.publisher().spool().read(record.digest())?;
+    let bytes = d
+        .read_object_bounded(record.digest(), MAX_REVIEW_RECORD_BYTES)
+        .map_err(retained_error)?;
     if ReviewRecord::from_bytes(&bytes, record.digest())? != *record {
         return Err(ReviewError::CustodyMismatch);
     }
     // Verify the exact original event root too; an idempotent read is not a repair mechanism.
-    d.publisher().spool().read(record.previous_event_root)?;
+    d.read_object_bounded(record.previous_event_root, MAX_REVIEW_HISTORY_BYTES)
+        .map_err(retained_error)?;
     Ok(())
 }
 
@@ -639,7 +645,7 @@ fn effect_blocks_review(state: EffectState) -> bool {
 
 /// Construct an exact, non-authorizing successor. The core validates the complete lineage.
 pub fn preview_review(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &ReviewRequest,
     authority: &ContextAuthority,
     cx: &ReplayCx,
@@ -674,7 +680,7 @@ pub fn preview_review(
     };
     let mut preview = derive(record, &chain)?;
     // Recheck the current authority and accumulated tamper through the existing owner as well.
-    let (authoritative, _) = deployment.current_event_authority(&request.event_id)?;
+    let (authoritative, _) = current_revision(deployment, &request.event_id, &history, cx)?;
     if authoritative != current.event {
         return Err(ReviewError::CustodyMismatch);
     }
@@ -685,17 +691,22 @@ pub fn preview_review(
         verify_provenance(deployment, &preview)?;
         preview.already_published = true;
     } else {
-        for (index, operation) in deployment.effects().operations().enumerate() {
+        for (index, state) in deployment
+            .effect_states()
+            .map_err(retained_error)?
+            .enumerate()
+        {
             checkpoint(cx, "event_review:effects")?;
             if index >= MAX_REVIEW_EFFECT_OPERATIONS {
                 return Err(ReviewError::Limit);
             }
             // Conservative across the deployment, including unrelated outstanding effects.
-            if effect_blocks_review(operation.state) {
+            if effect_blocks_review(state) {
                 return Err(ReviewError::OpenEffects);
             }
         }
     }
+    deployment.verify_read_head().map_err(retained_error)?;
     checkpoint(cx, "event_review:prepared")?;
     Ok(preview)
 }

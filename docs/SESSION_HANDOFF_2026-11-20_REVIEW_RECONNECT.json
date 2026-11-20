@@ -1,0 +1,95 @@
+{
+  "format": "engineering-session-handoff",
+  "date_utc": "2026-11-20",
+  "mission": "Implement the most consequential remaining functional gaps after reading the comprehensive plan and Beads; commit meaningful batches directly to main without pull requests.",
+  "basis": {
+    "started_at": "f4e08fc41ad95148f9276a94505880a48e3d90f8",
+    "parent_main": "1af85e1a7f4e8b566b903723e38e26dbd95eda09",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "incorporated_concurrent_work": [
+      "b2895cec19cd043f98e2f3757eb82f719f6c10b3",
+      "244cf30cbb4c6c901da464bd71d3e2a02323478f",
+      "cad6740cecb1b1f6cd420c875923bca6bbe0e419",
+      "1af85e1a7f4e8b566b903723e38e26dbd95eda09"
+    ]
+  },
+  "authority": {
+    "repository": "User authorized direct main commits through GitHub; no pull requests.",
+    "operational": "No device operation or external notification authorized by this coding work. Capture still requires exact finite approvals; review publication retains exclusive ownership and separate commit capability."
+  },
+  "delivered": [
+    {
+      "feature": "Strict corroboration advice delivery and native refusal compatibility",
+      "commit": "6152c7ac8794b75f2c84b06107d3a23f22797a7c",
+      "scope": "Shared final advice validation and cancellation checkpoint for immutable and publishing owners; original deployment/spool error families; whole-recording, recipe, trained-advice and custody regressions."
+    },
+    {
+      "feature": "Per-attempt automatic senders in bounded native RTSP reconnect",
+      "commit": "515e853cb66d61e54fe2df582b3cab738f70f790",
+      "scope": "Finite AVC/HEVC reconnects and campaigns learn a sender independently in each approved attempt, with a distinct outer approval, unchanged numeric identities, exact original RTP, strict mid-session refusal and existing history/recovery owners."
+    },
+    {
+      "feature": "Immutable operator event review during capture",
+      "commit": "this_commit",
+      "scope": "Show and unapproved investigate/resolve/reject use a single bounded retained owner, exact canonical lineage/receipt/approval identities and complete final validation. New review preparation refuses missing or outstanding effect history; publication stays exclusive."
+    }
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31",
+    "passed": [
+      "fss-core library: 199 tests",
+      "fss-packet library: 50 tests",
+      "Independent event-review model: 5184 scenarios plus late effect guard",
+      "Independent source reviews of changed production paths and tests",
+      "Scoped pinned Rust formatting and whitespace checks",
+      "Staged layered-manifest checks for the committed batches"
+    ],
+    "pending": "Changed reference/CLI compilation and feature-specific native tests. The exact pinned toolchain was restored; existing build artifacts survived under Cargo's newer directory layout. Both final checks received SIGKILL in asupersync metadata before reaching FSS code: the ordinary attempt peaked at 2,965,972 KiB child RSS, and the supplementary -Zthreads=1 -Zmir-opt-level=0 -Cdebuginfo=0 attempt peaked at 4,472,264 KiB after 335.2 seconds. No compiler or validation runner remains active.",
+    "qualification": "No release, real-device, detection-quality or broad requirement qualification is claimed. Baseline and Python model passes do not execute the new Rust paths.",
+    "policy_lane": {
+      "result": "failed",
+      "basis_commit": "515e853cb66d61e54fe2df582b3cab738f70f790",
+      "included_staged_review_changes": true,
+      "findings": "Pre-existing dependency admission/build-target metadata findings (including DEP-CLASS-F0 and DEP-FUND-001), an experiment toolchain override, unregistered existing digest domains, and unrelated broken documentation links.",
+      "subsequent_concurrent_change": "1af85e1 registers the missing digest domains and adjusts ignored build directories. Incorporated without altering the review feature; the policy lane has not been rerun on that successor.",
+      "capacity_and_seal": "Capacity remained unproven because sbh was unavailable. The network seal used its documented environment-only fallback; its probe refused network access."
+    }
+  },
+  "preserved_constraints": [
+    "Preview read limits and final validation share one nonrenewing allowance; no partial JSON on refusal.",
+    "Review preparation must know the effect-journal basis. Missing history is not an empty operation inventory.",
+    "Numeric SSRC remains an exact pin, including zero. Auto selects once per finite approved session; it does not permit mid-session migration.",
+    "Automatic SSRC remains unavailable with retain-source; standing recorder authority and D7 remain unresolved.",
+    "No dependency, toolchain pin, architecture or qualification gate was weakened."
+  ],
+  "related_open_beads": [
+    "fss-808pm",
+    "fss-x4a.11.7",
+    "fss-vit021-ssrc-vfr-adr-kmjub",
+    "fss-x4a.16.7"
+  ],
+  "continuations": [
+    {
+      "state": "pending_validation",
+      "commands": [
+        "cargo +nightly-2026-08-31 check --locked --offline -p fss-cli --bin fss-event --bin fss-capture-rtsp --bin fss-review",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test long_corroboration_contract immutable::",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-event corroborate::immutable",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib event_fusion::corroboration",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test capture_rtsp_reconnect_cli automatic_ssrc -- --test-threads=1",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp plan_mode_tests::automatic_ssrc",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-review",
+        "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib event_review::"
+      ]
+    },
+    {
+      "state": "open",
+      "work": "Fresh unretained detector and sentinel previews still require the capture writer. The prior immutable-analysis handoff identifies their existing retained-source migration points."
+    },
+    {
+      "state": "open",
+      "work": "Standing capture policy, automatic sender support for source-datagram retention, wider VFR semantics and controlled-device/qualification coverage remain separate acceptance work."
+    }
+  ]
+}

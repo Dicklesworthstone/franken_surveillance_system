@@ -4,6 +4,46 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Operator review alongside capture — 2026-11-20
+
+`fss-review show` and unapproved `investigate`, `resolve` and `reject` requests
+now use one immutable retained source while capture holds the deployment writer.
+Canonical event and review metadata, complete revision lineage and native receipt
+identities are verified without acquiring a publisher or invoking recovery,
+models, media decoding or effects. Exact review records, successor events,
+approval digests and ordinary JSON remain compatible. Approved publication keeps
+the exclusive owner and rechecks its existing authority and effect constraints.
+
+The complete JSON remains buffered until final snapshot, journal, publication
+and retained-payload validation succeeds. Preview-only cumulative byte/read
+allowances include opening metadata and final rereads. The read owner has a
+cooperative 60-second deadline and a 4 MiB JSON ceiling. New review preparation
+refuses absent/incomplete effect history as unknown, as well as outstanding
+operations; metadata display and exact already-published retries retain their
+separate read semantics. See [operator event review](docs/EVENT_REVIEW.md).
+
+Seven real-deployment contracts cover active-writer show and all preview actions,
+exact native JSON/approval/receipt parity, exclusive publication, committed retry,
+final read budgets, cancellation, late provenance damage, effect-only journal
+changes and missing-journal refusal without reconstruction. Independent source
+reviews, scoped pinned formatting and whitespace checks passed. The local core
+and RTP packet suites passed 199 and 50 tests respectively; the independent review
+model passed 5,184 scenarios and its late-effect guard. These results do not
+execute the changed review/corroboration/reconnect Rust graph. Feature-specific
+execution remains pending: after restoring the exact pinned toolchain, both the
+ordinary and supplementary low-memory checks were killed while compiling
+`asupersync`, before reaching FSS code. The last attempt reached 4,472,264 KiB
+peak child RSS. Existing build artifacts survived in Cargo's newer directory
+layout; no build-cache loss is inferred. No release qualification or broad
+FSS-087 closure is claimed.
+
+The policy lane on parent `515e853` plus the staged review changes failed on
+pre-existing dependency-admission/metadata findings, an experiment toolchain
+override, missing digest registrations and unrelated documentation links.
+Concurrent commit `1af85e1`, incorporated before this publication, adds those
+digest registrations and adjusts ignored build directories. The policy lane
+has not been rerun against that successor, and no aggregate pass is claimed.
+
 ## Per-session senders in bounded RTSP reconnect — 2026-11-20
 
 `fss-capture-rtsp reconnect --ssrc auto` now admits finite AVC/HEVC reconnects

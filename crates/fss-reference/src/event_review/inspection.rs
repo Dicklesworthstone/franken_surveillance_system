@@ -6,7 +6,7 @@ use super::*;
 /// an event naming this review policy with missing or altered provenance fails closed instead.
 /// This is metadata access only, not renewed source-media availability or effect authority.
 pub fn read_current_review(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event_id: &EventId,
     authority: &ContextAuthority,
     cx: &ReplayCx,
@@ -17,7 +17,7 @@ pub fn read_current_review(
     }
     let revisions = history(deployment, event_id, cx)?;
     let current = revisions.last().ok_or(ReviewError::StaleRevision)?;
-    let (event, _) = deployment.current_event_authority(event_id)?;
+    let (event, _) = current_revision(deployment, event_id, &revisions, cx)?;
     if event != current.event {
         return Err(ReviewError::CustodyMismatch);
     }
@@ -30,7 +30,9 @@ pub fn read_current_review(
         .ok_or(ReviewError::CustodyMismatch)?;
     let prior = &revisions[index];
     let root = event.decision_path.fingerprint;
-    let bytes = deployment.publisher().spool().read(root)?;
+    let bytes = deployment
+        .read_object_bounded(root, MAX_REVIEW_RECORD_BYTES)
+        .map_err(retained_error)?;
     let manifest = ObjectManifest::from_canonical_bytes(&bytes)?;
     if manifest.children().len() != 2 || !manifest.children().contains(&prior.root) {
         return Err(ReviewError::CustodyMismatch);
@@ -41,7 +43,9 @@ pub fn read_current_review(
         .copied()
         .find(|d| *d != prior.root)
         .ok_or(ReviewError::CustodyMismatch)?;
-    let bytes = deployment.publisher().spool().read(digest)?;
+    let bytes = deployment
+        .read_object_bounded(digest, MAX_REVIEW_RECORD_BYTES)
+        .map_err(retained_error)?;
     let record = ReviewRecord::from_bytes(&bytes, digest)?;
     if record.site != deployment.site_lineage()
         || record.request.event_id != *event_id
@@ -61,6 +65,7 @@ pub fn read_current_review(
         return Err(ReviewError::CustodyMismatch);
     }
     verify_provenance(deployment, &preview)?;
+    deployment.verify_read_head().map_err(retained_error)?;
     checkpoint(cx, "event_review:readback")?;
     preview.already_published = true;
     Ok(Some(preview))

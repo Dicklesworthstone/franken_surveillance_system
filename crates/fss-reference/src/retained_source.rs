@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use fss_core::{
-    CanonicalEncode, ContentDigest, EventHypothesis, EvidenceDeltaBatch, LedgerAnchor,
+    CanonicalEncode, ContentDigest, EffectState, EventHypothesis, EvidenceDeltaBatch, LedgerAnchor,
     LedgerSnapshot, Plane,
 };
 use fss_object::ObjectManifest;
@@ -137,6 +137,10 @@ pub trait RetainedSource: sealed::Sealed {
     fn root(&self) -> &Path;
     /// Committed authority supplied by the native ledger owner.
     fn ledger(&self) -> RetainedLedger<'_>;
+    /// Read-only operation states from this owner's exact effect-journal basis.
+    /// This exposes neither effect receipts nor dispatch, reconciliation or mutation authority.
+    /// Missing effect history is unknown, never an empty set of operations.
+    fn effect_states(&self) -> Result<Box<dyn Iterator<Item = EffectState> + '_>, FileIngestError>;
     /// Site lineage from the exact committed authority snapshot.
     fn site_lineage(&self) -> &str {
         &self.current_anchor().site_lineage
@@ -185,6 +189,12 @@ impl RetainedSource for ReferenceDeployment {
             current: ReferenceDeployment::ledger(self).current(),
             batches: ReferenceDeployment::ledger(self).batches(),
         }
+    }
+
+    fn effect_states(&self) -> Result<Box<dyn Iterator<Item = EffectState> + '_>, FileIngestError> {
+        Ok(Box::new(
+            self.effects().operations().map(|operation| operation.state),
+        ))
     }
 
     fn verify_read_head(&self) -> Result<(), FileIngestError> {
@@ -456,6 +466,20 @@ impl RetainedSource for ImmutableRetainedSource<'_> {
             current: self.history.retained_ledger_snapshot(),
             batches: self.history.batches_through_head(),
         }
+    }
+
+    fn effect_states(&self) -> Result<Box<dyn Iterator<Item = EffectState> + '_>, FileIngestError> {
+        self.admit()?;
+        if !self.snapshot.effect_journal_present || self.snapshot.effect_tail_uncommitted {
+            self.budget.fail();
+            return Err(corrupt("retained effect history is absent or incomplete"));
+        }
+        Ok(Box::new(
+            self.snapshot
+                .operations
+                .iter()
+                .map(|operation| operation.state),
+        ))
     }
 
     fn verify_read_head(&self) -> Result<(), FileIngestError> {

@@ -19,7 +19,13 @@ use fss_reference::event_review::{
     ReviewRecord, ReviewRequest, commit_review, preview_review, read_current_review,
     read_review_event,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource};
+
+#[path = "fss-review/immutable.rs"]
+mod immutable;
+#[path = "fss-infer/retained_read.rs"]
+mod retained_read;
 
 const HELP: &str = "fss-review <show|investigate|resolve|reject> --root DIR --site SITE --event-id ID\n\
   [--principal ID]\n\
@@ -27,7 +33,11 @@ const HELP: &str = "fss-review <show|investigate|resolve|reject> --root DIR --si
     --expected-revision sha256:HEX --reason TEXT [--approve sha256:HEX]\n\
   show reads the current event and, when present, its verified operator review.\n\
   Without --approve, a change is only previewed; review the successor and approval digest.\n\
-  Repeat that exact command with --approve to publish; exact committed retries write nothing.\n\
+  Repeat the same action, revision and reason with --approve to publish; exact retries write nothing.\n\
+  show and unapproved previews work while capture holds the deployment writer, without recovery.\n\
+  Optional preview-only --max-read-bytes N and --max-read-objects N bound all metadata\n\
+  and final custody reads (default 1 GiB/1,000,000; maximum 4 GiB/4,000,000). Omit these\n\
+  flags when publishing. A cooperative 60 s deadline applies; output waits for final validation.\n\
   Core transitions are enforced: resolve is not a direct transition from corroborated.\n\
   Source evidence, classification, probability and uncertainty are never rewritten.\n\
   Operator feedback is an assertion, not verified ground truth or new sensor support.\n\
@@ -38,7 +48,7 @@ const HELP: &str = "fss-review <show|investigate|resolve|reject> --root DIR --si
 
 type RunResult<T> = Result<T, Box<dyn Error>>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Options {
     root: PathBuf,
     site: String,
@@ -46,6 +56,7 @@ struct Options {
     event: EventId,
     request: Option<ReviewRequest>,
     approval: Option<ContentDigest>,
+    read_limits: ImmutableRetainedReadLimits,
 }
 
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
@@ -63,7 +74,7 @@ fn digest(text: &str) -> Result<ContentDigest, String> {
     Ok(value)
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 15 {
+    if args.len() > 19 {
         return Err("too many arguments".into());
     }
     let action = args
@@ -79,7 +90,15 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
-        let allowed = ["--root", "--site", "--principal", "--event-id"].contains(&key)
+        let allowed = [
+            "--root",
+            "--site",
+            "--principal",
+            "--event-id",
+            "--max-read-bytes",
+            "--max-read-objects",
+        ]
+        .contains(&key)
             || (disposition.is_some()
                 && ["--expected-revision", "--reason", "--approve"].contains(&key));
         if !allowed {
@@ -131,6 +150,16 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         .get("--approve")
         .map(|_| text(&values, "--approve").and_then(digest))
         .transpose()?;
+    if approval.is_some()
+        && values
+            .keys()
+            .any(|key| matches!(key.as_str(), "--max-read-bytes" | "--max-read-objects"))
+    {
+        return Err(
+            "aggregate read allowances require show or an unapproved review preview".into(),
+        );
+    }
+    let read_limits = retained_read::parse_limits(&values)?;
     Ok(Options {
         root,
         site,
@@ -138,6 +167,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         event,
         request,
         approval,
+        read_limits,
     })
 }
 
@@ -194,6 +224,9 @@ fn run(options: &Options) -> RunResult<String> {
     {
         return Err(io::Error::other("existing regular deployment and LAYOUT required").into());
     }
+    let mut normalized = options.clone();
+    normalized.root = fs::canonicalize(&options.root)?;
+    let options = &normalized;
     let mut capabilities = vec!["ADP-REPLAY-001".to_owned(), CAP_REVIEW_PREPARE.to_owned()];
     if options.approval.is_some() {
         capabilities.push(CAP_REVIEW_COMMIT.to_owned());
@@ -206,8 +239,16 @@ fn run(options: &Options) -> RunResult<String> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(64 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(if options.approval.is_none() {
+                options.read_limits.max_read_bytes as u64
+            } else {
+                64 * 1024 * 1024
+            })
+            .storage_operations(if options.approval.is_none() {
+                options.read_limits.max_read_objects as u64
+            } else {
+                65_536
+            })
             .build()?,
         privacy_scope: "privacy:local-authorized-files".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
@@ -215,17 +256,51 @@ fn run(options: &Options) -> RunResult<String> {
         generation: 1,
     })?;
     authority.validate()?;
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    let cx = if options.approval.is_none() {
+        ReplayCx::from_context_authority_read_only(&authority, options.root.clone())?
+    } else {
+        ReplayCx::from_context_authority(&authority, options.root.clone())?
+    };
     let result = run_with(options, &authority, &cx);
     cx.drain_and_finalize();
     result
 }
 fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> RunResult<String> {
+    if options.approval.is_none() {
+        let started = std::time::Instant::now();
+        let cancelled = || started.elapsed() >= retained_read::DEADLINE;
+        return immutable::run_with(options, authority, cx, &cancelled).map(|(json, _)| json);
+    }
     let mut deployment = ReferenceDeployment::open(&options.root, &options.site, cx)?;
+    let request = options.request.as_ref().ok_or(ReviewError::InvalidRequest(
+        "approval requires a review request",
+    ))?;
+    let approval = options.approval.ok_or(ReviewError::InvalidRequest(
+        "publication requires exact approval",
+    ))?;
+    let receipt = commit_review(&mut deployment, request, approval, authority, cx)?;
+    let result = review_json(
+        &receipt.review,
+        if receipt.published {
+            "published"
+        } else {
+            "already_published"
+        },
+        receipt.published,
+    );
+    Ok(envelope(options, deployment.current_anchor(), result))
+}
+
+fn render_read(
+    options: &Options,
+    deployment: &dyn RetainedSource,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+) -> RunResult<String> {
     let result = match &options.request {
         None => {
-            let (event, receipt) = read_review_event(&deployment, &options.event, authority, cx)?;
-            let review = read_current_review(&deployment, &options.event, authority, cx)?;
+            let (event, receipt) = read_review_event(deployment, &options.event, authority, cx)?;
+            let review = read_current_review(deployment, &options.event, authority, cx)?;
             let allowed: Vec<_> = [
                 ReviewDisposition::Investigate,
                 ReviewDisposition::Resolve,
@@ -267,42 +342,32 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
                 ),
             ])
         }
-        Some(request) => match options.approval {
-            None => {
-                let review = preview_review(&deployment, request, authority, cx)?;
-                review_json(
-                    &review,
-                    if review.already_published() {
-                        "already_published"
-                    } else {
-                        "proposed"
-                    },
-                    false,
-                )
-            }
-            Some(approval) => {
-                let receipt = commit_review(&mut deployment, request, approval, authority, cx)?;
-                review_json(
-                    &receipt.review,
-                    if receipt.published {
-                        "published"
-                    } else {
-                        "already_published"
-                    },
-                    receipt.published,
-                )
-            }
-        },
+        Some(request) => {
+            let review = preview_review(deployment, request, authority, cx)?;
+            review_json(
+                &review,
+                if review.already_published() {
+                    "already_published"
+                } else {
+                    "proposed"
+                },
+                false,
+            )
+        }
     };
-    Ok(object(&[
+    Ok(envelope(options, deployment.current_anchor(), result))
+}
+
+fn envelope(options: &Options, anchor: &fss_core::LedgerAnchor, result: String) -> String {
+    object(&[
         ("format", string("fss.operator_event_review_cli.v1")),
         ("site", string(&options.site)),
-        ("anchor", evidence_anchor(deployment.current_anchor())),
+        ("anchor", evidence_anchor(anchor)),
         ("result", result),
         ("effects_performed", "false".into()),
         ("source_evidence_rewritten", "false".into()),
         ("qualification", string("implemented_not_qualified")),
-    ]))
+    ])
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
