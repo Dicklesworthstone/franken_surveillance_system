@@ -26,24 +26,46 @@ def timestamp(seconds):
 
 
 def main():
-    estate = json.loads((PUBLIC / "estate/estate.json").read_bytes())
-    captures = json.loads((MEDIA / "capture.json").read_bytes())["captures"]
+    plan_path = PUBLIC / "estate/estate.json"
+    capture_path = MEDIA / "capture.json"
+    plan_bytes = plan_path.read_bytes()
+    capture_bytes = capture_path.read_bytes()
+    estate = json.loads(plan_bytes)
+    capture = json.loads(capture_bytes)
+    if (
+        capture["inputs"]["/estate/estate.json"]["sha256"]
+        != sha256(plan_bytes).hexdigest()
+    ):
+        raise ValueError("Estate plan differs from the registered capture")
     hero = estate.get("hero", "/estate/hero.jpg")
-    shots = [(hero, 3, "A light is on over the front door of the simulated property.")]
+    shots = [
+        (hero, 3, "A light is on over the front door of the simulated property.", None)
+    ]
     for case, camera, caption in SHOTS:
-        take = next(
-            row for row in captures if row["caseId"] == case and row["camera"] == camera
+        (take,) = [
+            row
+            for row in capture["captures"]
+            if row["caseId"] == case and row["camera"] == camera
+        ]
+        shots.append(
+            (take["film"], min(8, int(take["seconds"])), caption, take["videoSha256"])
         )
-        shots.append((take["film"], min(8, int(take["seconds"])), caption))
     filters, inputs, chapters, cues = [], [], [], ["WEBVTT", ""]
+    snapshots = {}
     clock = 0
-    for i, (url, duration, caption) in enumerate(shots):
+    for i, (url, duration, caption, expected) in enumerate(shots):
         path = PUBLIC / url.lstrip("/")
+        data = path.read_bytes()
+        source_hash = sha256(data).hexdigest()
+        if i and source_hash != expected:
+            raise ValueError(f"Camera film differs from its capture receipt: {url}")
+        filename = f"shot-{i}{path.suffix}"
+        snapshots[filename] = data
         inputs += (["-loop", "1", "-framerate", str(FPS)] if i == 0 else []) + [
             "-t",
             str(duration),
             "-i",
-            str(path),
+            filename,
         ]
         filters.append(
             f"[{i}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1,fps={FPS},format=yuv420p,setpts=PTS-STARTPTS[s{i}]"
@@ -53,7 +75,7 @@ def main():
                 start=clock,
                 seconds=duration,
                 source=url,
-                sha256=digest(path),
+                sha256=source_hash,
                 caption=caption,
             )
         )
@@ -67,6 +89,8 @@ def main():
     )
     with TemporaryDirectory(dir=MEDIA, prefix=".briefing-") as temp:
         stage = Path(temp)
+        for filename, data in snapshots.items():
+            (stage / filename).write_bytes(data)
         film = stage / "estate-briefing.mp4"
         subprocess.run(
             [
@@ -95,6 +119,7 @@ def main():
                 str(film),
             ],
             check=True,
+            cwd=stage,
         )
         captions = stage / "estate-briefing.vtt"
         captions.write_text("\n".join(cues))
@@ -105,6 +130,7 @@ def main():
             fps=FPS,
             captions="/night-media/" + captions.name,
             captionsSha256=digest(captions),
+            captureSha256=sha256(capture_bytes).hexdigest(),
             chapters=chapters,
         )
         encoded = json.loads(
@@ -128,6 +154,15 @@ def main():
             or encoded["r_frame_rate"] != f"{FPS}/1"
         ):
             raise ValueError("The briefing duration differs from the registered cuts")
+        if (
+            plan_path.read_bytes() != plan_bytes
+            or capture_path.read_bytes() != capture_bytes
+            or any(
+                digest(PUBLIC / shot["source"].lstrip("/")) != shot["sha256"]
+                for shot in chapters
+            )
+        ):
+            raise ValueError("Briefing sources changed during encoding")
         (stage / "briefing.json").write_text(json.dumps(receipt, indent=2) + "\n")
         for output in [film, captions, stage / "briefing.json"]:
             output.replace(MEDIA / output.name)

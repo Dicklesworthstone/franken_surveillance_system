@@ -5,9 +5,11 @@ The authoring cache contains the original FBX and 8K photographs. Published GLBs
 embed smaller textures and can be viewed offline. See night-media/actors/CREDITS.txt.
 """
 
+import argparse
 from hashlib import sha256
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -34,20 +36,30 @@ DIGESTS = {
 }
 
 
-def source_file(source_dir, name, filename):
-    path = Path(source_dir) / name / filename
-    if path.is_file():
+def verified_source(path, url, expected):
+    cached = path.is_file()
+    if cached:
         data = path.read_bytes()
     else:
-        directory = f"Chapter 9/{name}/" + ("tex/" if path.suffix == ".jpg" else "")
-        with urlopen(SOURCE + quote(directory + filename), timeout=90) as response:
+        with urlopen(url, timeout=90) as response:
             data = response.read()
-    if sha256(data).hexdigest() != DIGESTS[filename]:
-        raise ValueError(f"Unexpected source bytes for {filename}")
-    if not path.is_file():
+    if sha256(data).hexdigest() != expected:
+        raise ValueError(f"Unexpected source bytes for {path.name}")
+    if not cached:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        with TemporaryDirectory(dir=path.parent) as scratch:
+            staged = Path(scratch) / path.name
+            staged.write_bytes(data)
+            staged.replace(path)
     return path
+
+
+def source_file(source_dir, name, filename):
+    path = Path(source_dir) / name / filename
+    directory = f"Chapter 9/{name}/" + ("tex/" if path.suffix == ".jpg" else "")
+    return verified_source(
+        path, SOURCE + quote(directory + filename), DIGESTS[filename]
+    )
 
 
 def texture(source_dir, work_dir, role, channel, size):
@@ -163,8 +175,21 @@ def prepare_body(role, source_dir, work_dir):
 
 
 if __name__ == "__main__":
-    source_dir, work_dir = map(Path, sys.argv[-2:])
-    for role in PERFORMERS:
-        bpy.ops.wm.read_factory_settings(use_empty=True)
-        prepare_body(role, source_dir, work_dir)
-        bpy.ops.wm.save_as_mainfile(filepath=str(work_dir / f"{role}.blend"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source_dir", type=Path)
+    parser.add_argument("work_dir", type=Path)
+    args = parser.parse_args(
+        sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else None
+    )
+    source_dir, work_dir = args.source_dir.resolve(), args.work_dir.resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=work_dir) as scratch:
+        stage = Path(scratch)
+        for role in PERFORMERS:
+            bpy.ops.wm.read_factory_settings(use_empty=True)
+            prepare_body(role, source_dir, stage)
+            result = bpy.ops.wm.save_as_mainfile(filepath=str(stage / f"{role}.blend"))
+            if result != {"FINISHED"}:
+                raise RuntimeError(f"Blender could not save {role}: {result}")
+        for output in stage.iterdir():
+            output.replace(work_dir / output.name)

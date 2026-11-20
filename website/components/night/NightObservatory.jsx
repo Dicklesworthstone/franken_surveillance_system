@@ -138,6 +138,7 @@ function CaseFiles({ records }) {
                     aria-label={c.title + ", " + displayCamera(c.primary) + " camera recording"}
                     poster={plate(id, c.primary)}
                     filmUrl={c.views[c.primary].film}
+                    filmDigest={c.views[c.primary].filmDigest}
                   />
                 ) : (
                   <button
@@ -272,6 +273,7 @@ function NightBriefing({ data }) {
               muted
               preload="metadata"
               filmUrl={briefing.film}
+              filmDigest={briefing.filmDigest}
               poster={data.estate.hero}
             >
               <track
@@ -373,17 +375,27 @@ function Archive({ records }) {
 }
 function EstatePhotographs({ photographs }) {
   const [album, setAlbum] = useState(null);
+  const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open || album) return;
     const controller = new AbortController();
+    setFailed(false);
     fetch("/estate/stills.json", { signal: controller.signal })
       .then((r) => {
         if (!r.ok) throw Error("Render index unavailable");
         return r.json();
       })
-      .then(({ stills }) => setAlbum(stills))
-      .catch(() => { if (!controller.signal.aborted) setAlbum([]); });
+      .then(({ stills }) => {
+        if (!Array.isArray(stills) || !stills.every((row) =>
+          row && typeof row.camera === "string" &&
+          /^\/estate\/(?:stills\/)?[\w-]+\.jpg$/.test(row.path) &&
+          Number.isInteger(row.width) && row.width > 0 &&
+          Number.isInteger(row.height) && row.height > 0
+        )) throw Error("Invalid render index");
+        if (!controller.signal.aborted) setAlbum(stills);
+      })
+      .catch(() => { if (!controller.signal.aborted) setFailed(true); });
     return () => controller.abort();
   }, [open, album]);
   if (!photographs.length) return null;
@@ -413,7 +425,9 @@ function EstatePhotographs({ photographs }) {
       </div>
       <details onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>All architectural and camera views</summary>
-        {open && !album && <p role="status">Opening the render index…</p>}
+        {open && !album && <p role="status">{failed
+          ? "The render index could not be loaded. Close and reopen these views to retry."
+          : "Opening the render index…"}</p>}
         {open && album && (
           <ul>
             {album.map(({ path, camera, width, height }) => {
@@ -585,7 +599,7 @@ export default function NightObservatory({ page, data, prints = [] }) {
               <>
                 <EstateViewer
                   lenses={data.estate.cameras}
-                  key={caseId}
+                  key={"twin-" + caseId}
                   id={caseId}
                   incident={incident}
                   seconds={incident.seconds}
@@ -597,7 +611,7 @@ export default function NightObservatory({ page, data, prints = [] }) {
             {showPlayer && (
               <CameraReview
                 estate={data.estate}
-                key={caseId}
+                key={"recordings-" + caseId}
                 id={caseId}
                 incident={incident}
                 compare={mode === "compare"}
@@ -607,7 +621,7 @@ export default function NightObservatory({ page, data, prints = [] }) {
             )}
             {showDesk && (
               <CaseDesk
-                key={caseId}
+                key={"desk-" + caseId}
                 incident={incident}
                 id={caseId}
                 mode={mode}

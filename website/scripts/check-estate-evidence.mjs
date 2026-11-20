@@ -17,11 +17,26 @@ assert.ok(positionals.length <= 1, "Expected at most one public directory");
 const root = positionals[0] || fileURLToPath(new URL("../public/", import.meta.url));
 const sha = (buf) => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
+// GroundHomography::digest uses canonical length-prefixed UTF-8 and nine
+// big-endian IEEE-754 coefficients, in CLI row order.
+function homographyDigest(matrix) {
+  const fields = [];
+  for (const label of ["fss.recorded_corroboration_plan.v1", "ground-homography"]) {
+    const text = Buffer.from(label), length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(text.length));
+    fields.push(length, text);
+  }
+  const coefficients = Buffer.alloc(72);
+  matrix.forEach((value, i) => coefficients.writeDoubleBE(value, 8 * i));
+  return sha(Buffer.concat([...fields, coefficients]));
+}
+
 async function bytes(url, digest) {
   assert.match(url, /^\/(night-media|night-evidence)\/[\w/.-]+$/);
   assert.ok(!url.includes(".."));
   const data = await readFile(resolve(root, "." + url));
-  if (url.startsWith("/night-evidence/objects/")) {
+  if (url.startsWith("/night-evidence/") && url !== "/night-evidence/index.json") {
+    assert.match(url, /^\/night-evidence\/objects\/[0-9a-f]{64}\.(json|txt|jpg|mjpeg|bin)$/);
     assert.equal(sha(data), "sha256:" + url.split("/").pop().split(".")[0], url);
   }
   if (digest) assert.equal(sha(data), digest, url);
@@ -32,12 +47,15 @@ const index = await json("/night-evidence/index.json");
 assert.equal(index.schema, "fss.web.alder_evidence.v1");
 assert.equal(index.modelDigest, "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74");
 assert.deepEqual(Object.keys(index.cases).sort(), ["after-hours", "delivery", "wildlife"]);
+assert.equal(index.capture, "/night-media/capture.json");
+assert.match(index.captureDigest, /^sha256:[a-f0-9]{64}$/);
 const {captures} = JSON.parse(await bytes(index.capture, index.captureDigest));
 let lenses = 0, frames = 0, packages = 0, verifiedEvents = 0;
 for (const [caseId, record] of Object.entries(index.cases)) {
   const captureViews = captures.filter(c => c.caseId === caseId && c.camera !== "overview");
   assert.deepEqual(Object.keys(record.views).sort(), captureViews.map(c => c.camera).sort());
   assert.ok(captureViews.length >= 2);
+  const candidates = new Map();
   for (const capture of captureViews) {
     const view = record.views[capture.camera];
     assert.equal(view.film, "/night-media/" + caseId + "-" + capture.camera + ".mp4");
@@ -60,11 +78,21 @@ for (const [caseId, record] of Object.entries(index.cases)) {
       assert.ok(reference.equals(input), `${view.film} did not reproduce its complete native input`);
     }
     const receipt = (await bytes(view.importReceipt)).toString();
-    assert.ok(receipt.includes("import_identity=" + view.importId + "\n"));
-    assert.ok(receipt.includes("verified_source_sha256=" + view.inputDigest + "\n"));
+    const fields = Object.fromEntries(receipt.trim().split("\n").map(line => {
+      const separator = line.indexOf("=");
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }));
+    assert.equal(fields.import_identity, view.importId);
+    assert.equal(fields.verified_source_sha256, view.inputDigest);
+    assert.equal(fields.input_sha256, view.inputDigest);
+    assert.equal(fields.input_bytes, String(input.length));
+    assert.equal(fields.segment_count, String(view.frames));
+    assert.equal(fields.omission_count, "0");
     const watch = await json(view.watch);
     assert.equal(watch.import_identity, view.importId);
     assert.equal(watch.candidate_count, view.candidateCount);
+    assert.equal(watch.candidates.length, view.candidateCount);
+    candidates.set(capture.camera, watch.candidates);
     assert.equal(watch.frames_decoded, view.frames);
     assert.equal(watch.absence_certifiable, false);
     assert.equal(watch.effects_authorized, false);
@@ -131,13 +159,29 @@ for (const [caseId, record] of Object.entries(index.cases)) {
     lenses++;
     frames += view.frames;
   }
-  for (const {report:link,cameras,count} of Object.values(record.associations.pairs)) {
+  const cameraNames = Object.keys(record.views).sort();
+  const pairNames = cameraNames.flatMap((a, i) => cameraNames.slice(i + 1).map(b => a + "+" + b));
+  assert.deepEqual(Object.keys(record.associations.pairs).sort(), [...pairNames].sort());
+  const reference = captureViews.find(c => c.camera === cameraNames[0]);
+  const [x, , z] = reference.sample.subjectFoot;
+  const zone = [x - 2, z - 2, 4, 4];
+  assert.equal(record.associations.referenceCamera, reference.camera);
+  assert.equal(record.associations.referenceSeconds, reference.stillSeconds);
+  assert.deepEqual(record.associations.zone, zone);
+  for (const [pair, {report:link,cameras,count}] of Object.entries(record.associations.pairs)) {
     const report = await json(link);
-    assert.equal(cameras.length, 2);
-    assert.ok(cameras.every(cam => record.views[cam]));
+    assert.deepEqual(cameras, pair.split("+"));
     assert.deepEqual(report.cameras.map(c => c.camera).sort(), [...cameras].sort());
-    assert.ok(report.cameras.every(c => c.import_identity === record.views[c.camera].importId));
+    for (const c of report.cameras) {
+      assert.equal(c.import_identity, record.views[c.camera].importId);
+      assert.equal(c.ground_homography_digest, homographyDigest(record.associations.projections[c.camera]));
+    }
+    assert.deepEqual(report.zones, [{ zone_id: "review", x: zone[0], y: zone[1], width: zone[2], height: zone[3] }]);
+    assert.equal(report.time_gate_ns, 250000000);
+    assert.equal(report.distance_gate, 1);
     assert.equal(report.candidate_count, count);
+    assert.equal(report.candidates.length, count);
+    candidates.set(pair, report.candidates);
     assert.equal(report.dependencies.independence_certified, false);
     assert.equal(report.dependencies.dependency_cluster_count, 1);
     assert.equal(report.effects_authorized, false);
@@ -146,6 +190,9 @@ for (const [caseId, record] of Object.entries(index.cases)) {
   assert.equal(record.decision.effectsAuthorized, false);
   assert.equal(record.decision.absenceCertified, false);
   assert.equal(record.decision.independentConfirmation, false);
+  const labels = new Set(Object.values(record.views).flatMap(v =>
+    v.samples.flatMap(s => s.detections.map(d => d.label))));
+  assert.deepEqual(record.decision.observedLabels, [...labels].sort());
   const lab = record.belief;
   const positives = Object.entries(record.views).flatMap(([camera,view]) => {
     const rows = view.samples.flatMap(s => s.detections.filter(d => d.label === "person")
@@ -172,7 +219,8 @@ for (const [caseId, record] of Object.entries(index.cases)) {
   }
   const sessions = await Promise.all(["open","orient","handoff","resume"].map(k => json(record.agent[k])));
   assert.ok(sessions.every(s => s.schema === "fss.agent_response_envelope.v1" &&
-    s.sessionId === sessions[0].sessionId && s.outcome === "ok"));
+    s.sessionId === sessions[0].sessionId && s.missionId === sessions[0].missionId && s.outcome === "ok"));
+  assert.deepEqual(sessions.map(s => s.operationId), ["AOP-001","AOP-003","AOP-012","AOP-002"]);
   assert.equal(sessions[1].inputAnchor.deploymentId, "site:alder-house-replay");
   const ledger = record.ledger;
   if (ledger.status === "no_candidate") {
@@ -181,21 +229,36 @@ for (const [caseId, record] of Object.entries(index.cases)) {
     continue;
   }
   assert.equal(ledger.status, "verified");
+  const source = [...pairNames, ...cameraNames].find(key => candidates.get(key)?.length);
+  assert.equal(ledger.source, source);
+  const selected = candidates.get(source)[0];
+  assert.equal(ledger.eventId, selected.event_id);
   const [first, retry, audit, explain] = await Promise.all(
     [ledger.publication,ledger.repeat,ledger.custody,ledger.explain].map(json));
   assert.equal(first.published_count, 1);
   assert.equal(retry.already_published_count, 1);
   assert.equal(first.authority_sequence, ledger.sequence);
   assert.equal(retry.authority_sequence, ledger.sequence);
+  for (const [publication, status] of [[first,"published"],[retry,"already_published"]]) {
+    const rows = publication.candidates.filter(c => c.status === status);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].event_id, selected.event_id);
+    assert.equal(rows[0].proposal_digest, selected.proposal_digest);
+    assert.equal(rows[0].provenance_root, selected.provenance_root);
+  }
   assert.equal(audit.event_id, ledger.eventId);
   assert.equal(audit.ledger_root, ledger.root);
   assert.equal(audit.all_verified, true);
   assert.equal(audit.site, sessions[1].inputAnchor.deploymentId);
   assert.equal(audit.anchor.authorityRoot, sessions[1].inputAnchor.authorityRoot);
+  assert.equal(audit.anchor.capsuleSequence, ledger.sequence);
   assert.equal(explain.outcome, "ok");
+  assert.ok(explain.payload.evidenceHandles.some(h => h.kind === "event_revision" &&
+    h.handleId.startsWith("fss://event/" + ledger.eventId + "/revision/") && h.objectDigest === audit.revision_digest));
   const alertPlan = await json(record.agent.notification);
   assert.equal(alertPlan.errorId, "ERR-ALERT-NOT-ELIGIBLE-001");
   assert.equal(alertPlan.outcome, "refused");
+  assert.equal(alertPlan.inputAnchor.authorityRoot, audit.anchor.authorityRoot);
   assert.deepEqual(ledger.objects.map(o => o.digest), audit.objects.map(o => o.digest));
   for (const obj of ledger.objects) await bytes(obj.file, obj.digest);
   verifiedEvents++;

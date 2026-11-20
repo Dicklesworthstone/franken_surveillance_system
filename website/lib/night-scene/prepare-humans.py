@@ -4,18 +4,16 @@ Run with Blender 4.3's Python: prepare-humans.py SCAN_ROOT ROCKETBOX_MOTIONS OUT
 The Nathan and Eric directories contain their original UE4 FBX and scan materials.
 """
 
+import argparse
 import sys
-from hashlib import sha256
 from tempfile import TemporaryDirectory
-from urllib.request import urlopen
 from pathlib import Path
 import bpy
 from mathutils import Matrix
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from prepare_performers import prepare_body, source_file
+from prepare_performers import prepare_body, source_file, verified_source
 
-scan_root, motions, output = map(Path, sys.argv[-3:])
 ROCKETBOX = "https://raw.githubusercontent.com/microsoft/Microsoft-Rocketbox/0943055db6ec570bcef9f2c8b41c9e5467c808f9/Assets/Animations/"
 MOTIONS = [
     (
@@ -39,23 +37,10 @@ MOTIONS = [
 ]
 
 
-def motion_file(region, name, digest):
+def motion_file(motions, region, name, digest):
     filename = name + ".max.fbx"
-    path = motions / filename
-    if path.exists():
-        data = path.read_bytes()
-    else:
-        with urlopen(
-            ROCKETBOX + "all_animations_max_motextr_" + region + "/" + filename,
-            timeout=90,
-        ) as response:
-            data = response.read()
-    if sha256(data).hexdigest() != digest:
-        raise ValueError("Unexpected motion source bytes: " + filename)
-    if not path.exists():
-        motions.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-    return path
+    url = ROCKETBOX + "all_animations_max_motextr_" + region + "/" + filename
+    return verified_source(motions / filename, url, digest)
 
 
 # The target's joint names, donor landmarks and a real anatomical endpoint for
@@ -253,7 +238,7 @@ def bake(target, path, name):
     return action, abs(travel.y) * scale
 
 
-for role in ("visitor", "courier"):
+def export_performer(role, scan_root, motions, output):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     with TemporaryDirectory() as texture_dir:
         target, mesh = prepare_body(role, scan_root, texture_dir)
@@ -272,7 +257,7 @@ for role in ("visitor", "courier"):
             obj.name = f"{role}_scan"
     if role == "visitor":
         clips = [
-            (motion_file(region, name, digest), label)
+            (motion_file(motions, region, name, digest), label)
             for label, region, name, digest in MOTIONS
         ]
     else:
@@ -304,7 +289,7 @@ for role in ("visitor", "courier"):
     sc.render.fps = 30
     sc.frame_start, sc.frame_end = 1, int(max(a.frame_range[1] for a in actions))
     sc.frame_set(1)
-    bpy.ops.export_scene.gltf(
+    result = bpy.ops.export_scene.gltf(
         filepath=str(output / f"{role}.glb"),
         export_copyright="Renderpeople, CC BY 4.0. Adapted for Franken Surveillance. Performance sources and license links in CREDITS.txt.",
         export_animation_mode="ACTIONS",
@@ -313,3 +298,28 @@ for role in ("visitor", "courier"):
         export_extras=True,
         export_optimize_animation_size=True,
     )
+    if result != {"FINISHED"}:
+        raise RuntimeError(f"Blender could not export {role}: {result}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("scan_root", type=Path)
+    parser.add_argument("motions", type=Path)
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args(
+        sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else None
+    )
+    scan_root, motions, output = (
+        args.scan_root.resolve(),
+        args.motions.resolve(),
+        args.output.resolve(),
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=output) as scratch:
+        stage = Path(scratch)
+        actors = ("visitor", "courier")
+        for role in actors:
+            export_performer(role, scan_root, motions, stage)
+        for role in actors:
+            (stage / f"{role}.glb").replace(output / f"{role}.glb")

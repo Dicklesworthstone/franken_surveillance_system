@@ -4,7 +4,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-const root = fileURLToPath(new URL("../public/", import.meta.url));
+import { CatmullRomCurve3, Vector3 } from "three";
+import { motionAt, registeredTakes } from "../lib/night-scene/takes.js";
+const root = process.argv[2] || fileURLToPath(new URL("../public/", import.meta.url));
 const bytes = (path) => readFile(resolve(root, "." + path));
 const json = async (path) => JSON.parse(await bytes(path));
 const sha = (data) => createHash("sha256").update(data).digest("hex");
@@ -27,7 +29,7 @@ assert.equal(
   0xffd8,
   "Share-card and HTML cover require a JPEG",
 );
-const { site, inputs, captures, fps, exposure } = await json("/night-media/capture.json");
+const { site, inputs, captures, fps, exposure, width, height } = await json("/night-media/capture.json");
 assert.equal(site, "Residential security simulation");
 assert.ok(Number.isSafeInteger(fps) && fps > 0);
 assert.deepEqual(exposure, { shutterSeconds: 0.5 / fps, samples: 3 });
@@ -93,19 +95,44 @@ for (const [path, check] of Object.entries(inputs)) {
   assert.equal(content.length, check.bytes, path);
   assert.equal(sha(content), check.sha256, path);
 }
+assert.deepEqual([...new Set(captures.map(t => t.caseId))].sort(), ["after-hours", "delivery", "wildlife"]);
+const takesByCase = registeredTakes(estate);
 for (const id of ["after-hours", "delivery", "wildlife"]) {
   const takes = captures.filter((t) => t.caseId === id);
-  assert.ok(takes.filter((t) => t.camera !== "overview").length >= 2);
+  const incident = estate.incidents.find(c => c.id === id);
+  const spec = takesByCase[id];
+  const route = new CatmullRomCurve3((spec.path.points || spec.path).map(p =>
+    Array.isArray(p) ? new Vector3(...p) : new Vector3(p.x, p.y ?? 0.055, p.z)), false, "centripetal");
+  const length = route.getLength();
+  assert.deepEqual(takes.map(t => t.camera).sort(), ["overview", ...incident.cameras].sort());
   for (const t of takes) {
-    if (t.camera !== "overview")
-      assert.ok(
-        Array.isArray(estate.cameras)
-          ? estate.cameras.some((c) => c.id === t.camera)
-          : estate.cameras[t.camera],
-        "Unknown lens " + t.camera,
-      );
+    const lens = t.camera === "overview" ? estate.overview : estate.cameras.find(c => c.id === t.camera);
+    assert.deepEqual(t.sample.eye, lens.position);
+    assert.deepEqual(t.sample.target, lens.look_at);
+    assert.equal(t.sample.verticalFovDegrees, lens.vfov);
+    assert.equal(t.sample.aspect, width / height);
+    assert.equal(t.width, width);
+    assert.equal(t.height, height);
+    assert.equal(t.seconds, incident.seconds);
+    assert.equal(t.film, "/night-media/" + id + "-" + t.camera + ".mp4");
+    assert.equal(t.poster, "/night-media/" + id + "-" + t.camera + ".jpg");
     assert.equal(t.fps, fps);
     assert.equal(t.fps * t.seconds, t.frames);
+    assert.equal(t.trajectory[0].seconds, 0);
+    assert.equal(t.trajectory.at(-1).seconds, (t.frames - 1) / fps);
+    let previous = -1;
+    for (const row of [...t.trajectory, { ...t.sample, seconds: t.stillSeconds }]) {
+      const frame = Math.round(row.seconds * fps);
+      assert.ok(frame >= 0 && frame < t.frames && Math.abs(frame / fps - row.seconds) < 1e-9);
+      const motion = motionAt(row.seconds, spec.pace, length, spec.braking);
+      const point = route.getPointAt(motion.distance / length);
+      assert.deepEqual(row.subjectFoot, point.toArray().map(n => Number(n.toFixed(5))));
+      assert.equal(row.movementPhase, motion.phase);
+    }
+    for (const row of t.trajectory) {
+      assert.ok(row.seconds > previous, "Out-of-order trajectory in " + t.film);
+      previous = row.seconds;
+    }
     assert.equal(sha(await bytes(t.film)), t.videoSha256, t.film);
     assert.equal(sha(await bytes(t.poster)), t.posterSha256, t.poster);
   }
@@ -118,12 +145,24 @@ console.log(
 );
 
 const briefing = await json("/night-media/briefing.json");
+assert.equal(briefing.film, "/night-media/estate-briefing.mp4");
+assert.equal(briefing.captions, "/night-media/estate-briefing.vtt");
+assert.equal(briefing.fps, fps);
+if ("captureSha256" in briefing)
+  assert.equal(briefing.captureSha256, sha(await bytes("/night-media/capture.json")));
 assert.equal(sha(await bytes(briefing.film)), briefing.filmSha256);
 assert.equal(sha(await bytes(briefing.captions)), briefing.captionsSha256);
 let end = 0;
+const [opening, ...cuts] = briefing.chapters;
+assert.equal(opening.source, estate.hero || "/estate/hero.jpg");
+assert.equal(opening.seconds, 3);
+assert.deepEqual(cuts.map(shot => captures.find(t => t.film === shot.source)?.caseId),
+  ["after-hours", "delivery", "wildlife"]);
 for (const shot of briefing.chapters) {
+  assert.ok(Number.isSafeInteger(shot.seconds) && shot.seconds > 0);
   assert.equal(shot.start, end);
   assert.equal(sha(await bytes(shot.source)), shot.sha256);
   end += shot.seconds;
 }
 assert.equal(end, briefing.seconds);
+console.log("Briefing film, captions and all four source chapters verified.");

@@ -56,7 +56,15 @@ def record(stage, tmp, tool, args):
     return json.loads(raw), save(stage, raw.encode(), "json")
 
 
-def import_film(case, cam, movie, tmp, stage):
+def import_film(case, cam, movie, tmp, stage, expected_digest):
+    # All decoders must open the same bytes, including when a new film generation
+    # is published between the probe, JPEG extraction and native file import.
+    source_bytes = movie.read_bytes()
+    film_digest = hashed(source_bytes)
+    if film_digest != expected_digest:
+        raise ValueError(f"{movie.name} differs from the captured film digest")
+    movie = tmp / movie.name
+    movie.write_bytes(source_bytes)
     source = json.loads(
         command(
             [
@@ -174,7 +182,7 @@ def import_film(case, cam, movie, tmp, stage):
         )
     return dict(
         film="/night-media/" + movie.name,
-        filmDigest=hashed(movie.read_bytes()),
+        filmDigest=film_digest,
         filmFps=fps,
         filmFrames=len(timestamps),
         nativeFps=rate,
@@ -642,7 +650,12 @@ def capture(case, films, rows, stage):
     with TemporaryDirectory(prefix="fss-alder-replay-") as directory:
         tmp = Path(directory)
         shutil.copyfile(MODEL, tmp / "model.fmpk")
-        views = {cam: import_film(case, cam, f, tmp, stage) for cam, f in films.items()}
+        views = {
+            row["camera"]: import_film(
+                case, row["camera"], films[row["camera"]], tmp, stage, "sha256:" + row["videoSha256"]
+            )
+            for row in rows
+        }
         for row in rows:
             view = views[row["camera"]]
             if (

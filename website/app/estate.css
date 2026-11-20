@@ -361,6 +361,23 @@ dd {
   background: #1c2b28;
   border: 1px solid #404b45;
 }
+.case-card .fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  color: #f2efe5;
+  background: #111b19ee;
+  text-align: center;
+}
+.case-card .fallback button,
+.briefing-panel .fallback button {
+  color: var(--gold);
+  text-decoration: underline;
+}
 .case-card img,
 .case-card video,
 .case-preview {

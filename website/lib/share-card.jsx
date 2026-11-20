@@ -265,11 +265,12 @@ const render = cache(async (id, h) => {
 });
 export async function imageMeta(id, h) {
   const bytes = await render(id, h);
+  const { title, description } = exhibits[id];
   return [
     {
       id:
         createHash("sha256").update(bytes).digest("hex").slice(0, 20) + ".png",
-      alt: exhibits[id].title + ". " + exhibits[id].description,
+      alt: title + (/[.!?]$/.test(title) ? " " : ". ") + description,
       size: { width: 1200, height: h },
       contentType: "image/png",
     },

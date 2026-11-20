@@ -1,6 +1,6 @@
 // From website/: node scripts/render-night-estate.mjs. A local Chromium and FFmpeg are required.
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   mkdir,
@@ -12,14 +12,23 @@ import {
 } from "node:fs/promises";
 import { createServer } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { parseArgs, promisify } from "node:util";
 import { build } from "esbuild";
 import { chromium } from "playwright-core";
 import { registeredTakes } from "../lib/night-scene/takes.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const {
+  values: { preview: previewDir },
+} = parseArgs({
+  options: { preview: { type: "string" } },
+});
+if (previewDir !== undefined && !previewDir)
+  throw Error("--preview requires a destination directory");
 const publicDir =
-  process.argv.includes("--preview") && process.env.FSS_PREVIEW_PUBLIC
+  previewDir && process.env.FSS_PREVIEW_PUBLIC
     ? resolve(process.env.FSS_PREVIEW_PUBLIC)
     : join(root, "public");
 const filmDir = join(publicDir, "night-media");
@@ -27,6 +36,7 @@ const width = 960,
   height = 540,
   fps = 24;
 const sha = (data) => createHash("sha256").update(data).digest("hex");
+const run = promisify(execFile);
 const sources = new Map();
 const inputs = {};
 async function freezeSource(url) {
@@ -127,26 +137,31 @@ const server = createServer((req, res) => {
 server.listen(0, "127.0.0.1");
 await once(server, "listening");
 const mode = process.env.FSS_CHROME_ANGLE || "gl-egl";
-const browser = await chromium.launch({
-  executablePath: process.env.CHROME_BIN || "/usr/bin/google-chrome",
-  args: [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--enable-gpu",
-    "--ignore-gpu-blocklist",
-    "--use-gl=angle",
-    "--use-angle=" + mode,
-    ...(mode === "vulkan"
-      ? ["--enable-features=Vulkan", "--disable-vulkan-surface"]
-      : []),
-    "--enable-unsafe-swiftshader",
-  ],
-});
-const work = await mkdtemp(join(root, ".night-capture-"));
-const previewIndex = process.argv.indexOf("--preview");
-const previewDir = previewIndex < 0 ? null : process.argv[previewIndex + 1];
-if (previewIndex >= 0 && !previewDir)
-  throw Error("--preview requires a destination directory");
+function launchBrowser() {
+  return chromium.launch({
+    executablePath: process.env.CHROME_BIN || "/usr/bin/google-chrome",
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--enable-gpu",
+      "--ignore-gpu-blocklist",
+      "--use-gl=angle",
+      "--use-angle=" + mode,
+      ...(mode === "vulkan"
+        ? ["--enable-features=Vulkan", "--disable-vulkan-surface"]
+        : []),
+      "--enable-unsafe-swiftshader",
+    ],
+  });
+}
+function stillFrame(config, camera) {
+  const target = config.still[camera] ?? config.still.overview;
+  return Math.min(
+    config.seconds * fps - 1,
+    Math.max(0, Math.round(target * fps)),
+  );
+}
+let browser, work;
 async function raster(page, id, camera, config) {
   const stem = id + "-" + camera,
     filename = stem + ".mp4";
@@ -182,13 +197,11 @@ async function raster(page, id, camera, config) {
     { stdio: ["pipe", "ignore", "inherit"] },
   );
   const finished = once(encoder, "close");
-  let sample,
-    stillBytes,
-    stillT = config.still[camera] ?? config.still.overview;
+  let sample, stillBytes;
   const total = config.seconds * fps,
-    stillIndex = Math.min(total - 1, Math.round(stillT * fps));
+    stillIndex = stillFrame(config, camera);
   const trajectory = [];
-  try {
+  async function* jpegFrames() {
     for (let i = 0; i < total; i++) {
       const result = await page.evaluate((args) => window.frame(args), {
         id,
@@ -217,11 +230,40 @@ async function raster(page, id, camera, config) {
         sample = result.sample;
         stillBytes = bytes;
       }
-      if (!encoder.stdin.write(bytes)) await once(encoder.stdin, "drain");
+      yield bytes;
     }
-    encoder.stdin.end();
-    const [code] = await finished;
-    if (code !== 0) throw Error("FFmpeg exited with " + code + " for " + stem);
+  }
+  try {
+    const [, [code, signal]] = await Promise.all([
+      pipeline(jpegFrames(), encoder.stdin),
+      finished,
+    ]);
+    if (code !== 0)
+      throw Error("FFmpeg exited with " + (signal ?? code) + " for " + stem);
+    const probe = await run("ffprobe", [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-count_frames",
+      "-show_entries",
+      "stream=codec_name,width,height,avg_frame_rate,nb_read_frames",
+      "-of",
+      "json",
+      join(work, filename),
+    ]);
+    const [stream] = JSON.parse(probe.stdout).streams;
+    if (
+      stream?.codec_name !== "h264" ||
+      stream.width !== width ||
+      stream.height !== height ||
+      stream.avg_frame_rate !== fps + "/1" ||
+      Number(stream.nb_read_frames) !== total
+    )
+      throw Error(
+        "Encoded camera film differs from its requested dimensions or timing: " +
+          stem,
+      );
     const film = await readFile(join(work, filename));
     await writeFile(join(work, stem + ".jpg"), stillBytes);
     console.log("Captured", stem, film.length);
@@ -241,11 +283,17 @@ async function raster(page, id, camera, config) {
       videoSha256: sha(film),
       posterSha256: sha(stillBytes),
     };
+  } catch (cause) {
+    throw new Error("Camera recording failed for " + stem, { cause });
   } finally {
-    if (encoder.exitCode === null) encoder.kill();
+    if (encoder.exitCode === null && encoder.signalCode === null)
+      encoder.kill();
+    await finished.catch(() => {});
   }
 }
 try {
+  browser = await launchBrowser();
+  work = await mkdtemp(join(root, ".night-capture-"));
   await mkdir(filmDir, { recursive: true });
   const page = await browser.newPage();
   page.on("pageerror", (error) => console.error(error.message));
@@ -270,7 +318,7 @@ try {
       if (!init.cameras.includes(camera))
         throw Error("Missing calibrated camera " + camera);
       if (previewDir) {
-        const t = config.still[camera] ?? config.still.overview;
+        const t = stillFrame(config, camera) / fps;
         const snapshot = await page.evaluate((args) => window.frame(args), {
           id,
           camera,
@@ -297,6 +345,12 @@ try {
       height,
       site: "Residential security simulation",
       exposure: { shutterSeconds: 0.5 / fps, samples: 3 },
+      recorder: {
+        bundleSha256: sha(outputFiles[0].contents),
+        chromium: browser.version(),
+        angle: mode,
+        ffmpeg: (await run("ffmpeg", ["-version"])).stdout.split("\n")[0],
+      },
       rendering: sources.has("/night-media/plates/index.json")
         ? "Calibrated Cycles architecture, WebGL occlusion and articulated subjects, FFmpeg H.264"
         : "WebGL architecture and articulated subjects, FFmpeg H.264",
@@ -315,7 +369,10 @@ try {
     await rename(join(work, "capture.json"), join(filmDir, "capture.json"));
   }
 } finally {
-  await browser.close();
-  server.close();
-  await rm(work, { recursive: true, force: true });
+  try {
+    await browser?.close();
+  } finally {
+    server.close();
+    if (work) await rm(work, { recursive: true, force: true });
+  }
 }

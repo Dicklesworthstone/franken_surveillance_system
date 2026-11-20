@@ -29,6 +29,7 @@ function sceneClock(localTime, elapsed) {
 const stems = (id, c) => "/night-media/" + id + "-" + c;
 function waitForMedia(element, event, signal) {
   return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
     function done(e) {
       element.removeEventListener(event, done);
       element.removeEventListener("error", done);
@@ -185,7 +186,12 @@ export default function CameraReview({
   const ids = Object.keys(incident.views),
     [camera, setCamera] = useState(incident.primary);
   const [split, setSplit] = useState(compare),
-    [second, selectSecond] = useState(ids.find((x) => x !== incident.primary));
+    [second, selectSecond] = useState(() => {
+      const match = Object.values(incident.associations.pairs).find(
+        (pair) => pair.count > 0 && pair.cameras.includes(incident.primary),
+      );
+      return (match?.cameras ?? ids).find((c) => c !== incident.primary);
+    });
   const [playing, setPlaying] = useState(false),
     [t, setTime] = useState(0),
     [problem, setProblem] = useState({}),
@@ -283,7 +289,12 @@ export default function CameraReview({
         <div className="film-well">
           {problem[c] ? (
             <div role="status" className="media-failure">
-              Camera film unavailable <a href={v.film}>Open source file ↗</a>
+              {problem[c]}{" "}
+              <button type="button" onClick={() => {
+                setPlayError("");
+                setProblem((previous) => ({ ...previous, [c]: null }));
+              }}>Retry {displayCamera(c)} recording</button>
+              <a href={v.film}>Open source file ↗</a>
             </div>
           ) : (
             <CameraFilm
@@ -292,13 +303,15 @@ export default function CameraReview({
               playsInline
               preload="auto"
               filmUrl={v.film}
+              filmDigest={v.filmDigest}
               poster={stems(id, c) + ".jpg"}
               aria-label={displayCamera(c) + " recording"}
               onLoadedMetadata={(e) =>
                 setPosition(e.currentTarget, clock.current)
               }
-              onError={() => {
-                setProblem((x) => ({ ...x, [c]: true }));
+              onError={(event) => {
+                const reason = event.nativeEvent.detail || "Camera film unavailable.";
+                setProblem((x) => ({ ...x, [c]: reason }));
                 setPlaying(false);
               }}
               onEnded={
@@ -395,10 +408,10 @@ export default function CameraReview({
                 seek(main.current?.currentTime ?? clock.current);
                 return;
               }
-              if (!playing && t >= duration - 0.06) seek(0);
+              if (clock.current >= duration) seek(0);
               setPlaying(true);
             }}
-            disabled={!!problem[camera]}
+            disabled={Boolean(problem[camera] || (split && problem[otherId]))}
           >
             {playing ? <Pause /> : <Play />}
           </button>

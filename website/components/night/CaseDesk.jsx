@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Check, Fingerprint, FileJson } from "lucide-react";
 import { displayCamera } from "../../lib/night/catalog";
+import { matchesDigest, readEvidenceReport } from "../../lib/night/digest";
 
 function ProofLinks({ items }) {
   return (
@@ -31,15 +32,8 @@ function VerifyBytes({ url, digest, label, source }) {
       try {
         const response = await fetch(url, { signal: abort.signal });
         if (!response.ok) throw Error();
-        const hash = await crypto.subtle.digest(
-          "SHA-256",
-          await response.arrayBuffer(),
-        );
-        const actual = Array.from(new Uint8Array(hash), (n) =>
-          n.toString(16).padStart(2, "0"),
-        ).join("");
-        if (!abort.signal.aborted)
-          setState("sha256:" + actual === digest ? "verified" : "mismatch");
+        const matches = await matchesDigest(await response.blob(), digest);
+        if (!abort.signal.aborted) setState(matches ? "verified" : "mismatch");
       } catch {
         if (!abort.signal.aborted) setState("unavailable");
       }
@@ -167,18 +161,16 @@ function AgentReadout({ agent, mode }) {
   const options = links.filter(([, url]) => url);
   const [active, choose] = useState(0),
     [result, load] = useState(null);
-  const url = options[active][1];
+  const url = options[active]?.[1] ?? options[0]?.[1];
   useEffect(() => {
+    if (!url) return;
     const ctrl = new AbortController();
-    load(null);
     async function open() {
       try {
-        const response = await fetch(url, { signal: ctrl.signal });
-        if (!response.ok) throw Error();
-        const record = await response.json();
-        if (!ctrl.signal.aborted) load({ record });
+        const record = await readEvidenceReport(url, ctrl.signal);
+        if (!ctrl.signal.aborted) load({ url, record });
       } catch {
-        if (!ctrl.signal.aborted) load({ error: true });
+        if (!ctrl.signal.aborted) load({ url, error: true });
       }
     }
     open();
@@ -205,14 +197,14 @@ function AgentReadout({ agent, mode }) {
         {options.map(([name, link], i) => (
           <button
             key={link}
-            aria-pressed={i === active}
+            aria-pressed={link === url}
             onClick={() => choose(i)}
           >
             {name}
           </button>
         ))}
       </div>
-      {result?.record ? (
+      {result?.url === url && result?.record ? (
         <>
           <div className="native-fields">
             {Object.entries(result.record)
@@ -243,9 +235,10 @@ function AgentReadout({ agent, mode }) {
         </>
       ) : (
         <p role="status">
-          {result?.error
-            ? "Could not open the agent record."
-            : "Opening the agent record…"}
+          {!url ? "No agent record is available."
+            : result?.url === url && result.error
+              ? "Could not verify the agent record."
+              : "Opening the agent record…"}
         </p>
       )}
       <ProofLinks items={[["Download native record", url]]} />

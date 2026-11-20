@@ -16,10 +16,10 @@ import { makeActor, updateActor } from "./subjects.js";
 const vector = (xyz) => new THREE.Vector3(...xyz);
 const clamp = THREE.MathUtils.clamp;
 
-async function estateLoadingManager(interactive, recording) {
+async function estateLoadingManager(interactive, recording, signal) {
   const manager = new THREE.LoadingManager();
   if (!interactive || recording || window.innerWidth >= 700) return manager;
-  const response = await fetch("/estate/mesh-receipt.json");
+  const response = await fetch("/estate/mesh-receipt.json", { signal });
   if (response.status === 404) return manager;
   if (!response.ok) throw Error("Estate texture receipt unavailable");
   const { compactTextures } = await response.json();
@@ -48,8 +48,9 @@ async function estateLoadingManager(interactive, recording) {
 /** Canvas coordinates and projection samples use metres, +Y up, and a top-left image origin. */
 export async function createNightStage(
   canvas,
-  { interactive = true, recording = false, photographic = true, caseId } = {},
+  { interactive = true, recording = false, photographic = true, caseId, signal } = {},
 ) {
+  signal?.throwIfAborted();
   // Present the completed picture in one operation. A paused lens must retain
   // every skinned submesh even while the browser composites other DOM layers.
   const presenter =
@@ -84,8 +85,17 @@ export async function createNightStage(
       canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
   }
   if (presenter) surface.addEventListener("webglcontextlost", contextLost);
-  function dispose() {
+  let released = false;
+  function releaseContext() {
+    if (released) return;
+    released = true;
     if (presenter) surface.removeEventListener("webglcontextlost", contextLost);
+    signal?.removeEventListener("abort", releaseContext);
+    renderer.dispose();
+    if (!renderer.getContext().isContextLost()) renderer.forceContextLoss();
+  }
+  signal?.addEventListener("abort", releaseContext, { once: true });
+  function dispose() {
     controls?.dispose();
     const geometries = new Set(),
       materials = new Set(),
@@ -104,19 +114,23 @@ export async function createNightStage(
     }
     for (const item of [...geometries, ...materials, ...textures, ...resources])
       item.dispose?.();
-    renderer.dispose();
+    // GLTFLoader decodes texture sources as ImageBitmaps. Three releases its GPU
+    // textures on dispose; the decoded bitmaps have a separate browser lifetime.
+    const images = new Set([...textures].map((texture) => texture.source?.data));
+    for (const image of images) image?.close?.();
+    releaseContext();
   }
   try {
-    const manager = await estateLoadingManager(interactive, recording);
+    const manager = await estateLoadingManager(interactive, recording, signal);
     const loader = new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder);
-    const metaResponse = await fetch("/estate/estate.json");
+    const metaResponse = await fetch("/estate/estate.json", { signal });
     if (!metaResponse.ok) throw Error("Estate calibration unavailable");
     const estate = await metaResponse.json();
     const nightCases = registeredTakes(estate);
     if (caseId !== undefined && !Object.hasOwn(nightCases, caseId))
       throw Error("Unknown residential case " + caseId);
     const cases = caseId === undefined ? Object.keys(nightCases) : [caseId];
-    const [building, ...bodies] = await Promise.all(
+    const loads = await Promise.allSettled(
       [
         "/estate/estate.glb",
         ...cases.map(
@@ -128,6 +142,10 @@ export async function createNightStage(
         return result;
       }),
     );
+    signal?.throwIfAborted();
+    const failure = loads.find((load) => load.status === "rejected");
+    if (failure) throw failure.reason;
+    const [building, ...bodies] = loads.map((load) => load.value);
     scene.add(building.scene);
     const rig = Object.fromEntries(
       estate.cameras.map((camera) => [camera.id, camera]),
@@ -180,6 +198,7 @@ export async function createNightStage(
     }
     sky.mapping = THREE.EquirectangularReflectionMapping;
     resources.push(sky);
+    signal?.throwIfAborted();
     scene.background = sky;
     scene.backgroundIntensity = 0.13;
     scene.backgroundRotation.y = 0.82;
@@ -221,6 +240,7 @@ export async function createNightStage(
     const plates = photographic
       ? await loadPlates(configured, resources, recording)
       : new Map();
+    signal?.throwIfAborted();
     const lamps = [];
     for (const fixture of plates.practicals || []) {
       const practical = new THREE.PointLight(
@@ -252,6 +272,7 @@ export async function createNightStage(
       }),
     );
     await renderer.compileAsync(scene, orbit.camera);
+    signal?.throwIfAborted();
     const paths = Object.fromEntries(
       cases.map((id) => {
         const route = nightCases[id].path;
@@ -339,6 +360,12 @@ export async function createNightStage(
             controls.target.distanceTo(optics.target) < 0.0001);
         const plate =
           view !== "overview" || orbitAtPlate ? plates.get(view) : null;
+        const nativeAspect = 16 / 9;
+        const nativeView = view !== "overview" || Boolean(plate);
+        if (view === "overview") {
+          optics.camera.aspect = nativeView ? nativeAspect : width / height;
+          optics.camera.updateProjectionMatrix();
+        }
         // The dominant measured fixture casts the local moving shadow on the walk.
         let nearest,
           greatest = 0;
@@ -384,12 +411,6 @@ export async function createNightStage(
           pad.scale.set(quadruped ? 0.115 : 0.25, quadruped ? 0.16 : 0.36, 1);
           pad.rotation.z = -actor.root.rotation.y;
         });
-        const nativeAspect = 16 / 9;
-        const nativeView = view !== "overview" || Boolean(plate);
-        if (view === "overview") {
-          optics.camera.aspect = nativeView ? nativeAspect : width / height;
-          optics.camera.updateProjectionMatrix();
-        }
         const pictureWidth = nativeView
           ? Math.min(width, Math.round(height * nativeAspect))
           : width;

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { displayCamera } from "../../lib/night/catalog";
+import { readEvidenceReport } from "../../lib/night/digest";
 
 function Plan({ estate, pair, report, selected }) {
   const canvas = useRef(null);
@@ -136,9 +137,7 @@ export default function GroundReview({ estate, incident, cameras, onSeek }) {
     const abort = new AbortController();
     async function load() {
       try {
-        const r = await fetch(pair.report, { signal: abort.signal });
-        if (!r.ok) throw Error();
-        const value = await r.json();
+        const value = await readEvidenceReport(pair.report, abort.signal);
         if (!abort.signal.aborted) setResult({ src: pair.report, value });
       } catch {
         if (!abort.signal.aborted) setResult({ src: pair.report, error: true });

@@ -1,50 +1,63 @@
 "use client";
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
+import { matchesDigest } from "../lib/night/digest";
 
 // These small, same-origin fixtures must be seekable even on a static host
 // that ignores byte ranges. Release the clip whenever the view changes.
 export default function CameraFilm({
   asset,
   filmUrl,
+  filmDigest,
   directory = "films",
   active = true,
   videoRef,
   target,
   onDisplayed,
+  onError,
   ...props
 }) {
   const ref = useRef(null);
   useImperativeHandle(videoRef, () => ref.current, []);
-  const [source, setSource] = useState(null);
-  const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(null);
+  const [failure, setFailure] = useState("");
+  const [attempt, retry] = useState(0);
   const path = filmUrl ?? "/" + directory + "/" + asset + ".mp4";
+  const source = active && loaded?.path === path && loaded.digest === filmDigest
+    ? loaded.url : undefined;
   useEffect(() => {
-    setSource(null);
-    setFailed(false);
+    setLoaded(null);
+    setFailure("");
     if (!active) return;
     const request = new AbortController();
     let url;
-    fetch(path, { signal: request.signal })
-      .then((response) => {
+    async function load() {
+      let message = "Camera film unavailable.";
+      try {
+        const response = await fetch(path, { signal: request.signal });
         if (!response.ok) throw Error("Film unavailable");
-        return response.blob();
-      })
-      .then((blob) => {
+        const blob = await response.blob();
+        if (filmDigest !== undefined) {
+          message = "The camera film could not be verified.";
+          if (!(await matchesDigest(blob, filmDigest))) {
+            message = "The recording differs from its retained digest.";
+            throw Error(message);
+          }
+        }
         if (request.signal.aborted) return;
         url = URL.createObjectURL(blob);
-        setSource(url);
-      })
-      .catch(() => {
+        setLoaded({ path, digest: filmDigest, url });
+      } catch {
         if (!request.signal.aborted) {
-          setFailed(true);
-          ref.current?.dispatchEvent(new Event("error"));
+          ref.current?.dispatchEvent(new CustomEvent("error", { detail: message }));
         }
-      });
+      }
+    }
+    load();
     return () => {
       request.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [path, active]);
+  }, [path, filmDigest, active, attempt]);
   useEffect(() => {
     const video = ref.current;
     if (!source || target === undefined || !video) return;
@@ -84,12 +97,16 @@ export default function CameraFilm({
         muted
         playsInline
         preload="auto"
-        onError={() => setFailed(true)}
+        onError={(event) => {
+          setFailure(event.nativeEvent.detail || "Camera film unavailable.");
+          onError?.(event);
+        }}
         {...props}
       />
-      {failed && (
+      {failure && (
         <span className="fallback" role="status">
-          Camera film unavailable
+          {failure}{" "}
+          <button type="button" onClick={() => retry((n) => n + 1)}>Retry recording</button>
         </span>
       )}
     </>

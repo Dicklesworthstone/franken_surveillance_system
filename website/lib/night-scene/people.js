@@ -22,7 +22,10 @@ function sampler(model, clips) {
   }
   return (name, time, second, secondTime = 0, weight = 0) => {
     for (const { binding, quaternion, curves } of channels.values()) {
-      const a = curves.get(name)?.evaluate(time);
+      let a = curves.get(name)?.evaluate(time);
+      // Three reuses an interpolant's result buffer. Preserve the outgoing
+      // sample when settling between two instants in the same captured walk.
+      if (weight && name === second && a) a = a.slice();
       const b = weight && curves.get(second)?.evaluate(secondTime);
       if (a && b) {
         if (quaternion) T.Quaternion.slerpFlat(a, 0, a, 0, b, 0, weight);
@@ -235,6 +238,13 @@ export function updatePerson(
         Math.max(0, Math.min(-remaining, clips.Looking.duration)),
         ease((-remaining - 0.12) / 0.92),
       );
+  } else if (actor.parcel && remaining < 0) {
+    // A faster custom courier can reach the end before the film clock expires.
+    // At 27.3% of this captured walk both outsoles are down, 18 cm apart.
+    const planted = 0.273 * clips.Walk.duration;
+    const settled = ease(-remaining / 0.42);
+    if (settled === 1) sample("Walk", planted);
+    else sample("Walk", walkTime, "Walk", planted, settled);
   } else sample("Walk", walkTime);
   root.updateMatrixWorld(true);
   const glance = actor.parcel

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { readEvidenceReport } from "../../lib/night/digest";
 export function useNativeWatch(view) {
   const [response, store] = useState(null),
     url = view?.watch;
@@ -8,9 +9,7 @@ export function useNativeWatch(view) {
     const controller = new AbortController();
     async function read() {
       try {
-        const r = await fetch(url, { signal: controller.signal });
-        if (!r.ok) throw Error();
-        const data = await r.json();
+        const data = await readEvidenceReport(url, controller.signal);
         if (!controller.signal.aborted) store({ url, data });
       } catch {
         if (!controller.signal.aborted) store({ url, error: true });

@@ -31,13 +31,19 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
     draw();
   }, [id, time, camera, height, speed, custom, state]);
   useEffect(() => {
-    let disposed = false,
-      observer,
-      rig;
+    const lifetime = new AbortController();
+    let observer, rig;
     const element = canvas.current;
+    const stop = () => {
+      observer?.disconnect();
+      stage.current = null;
+      rig?.dispose();
+      lifetime.abort();
+    };
     const lost = (e) => {
       e.preventDefault();
-      if (!disposed) {
+      if (!lifetime.signal.aborted) {
+        stop();
         play(false);
         status("unavailable");
       }
@@ -46,14 +52,14 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
     status("loading");
     (async () => {
       const { createNightStage } = await import("../../lib/night-scene/stage");
-      if (disposed) return;
-      rig = await createNightStage(element, { interactive: true, caseId: id });
-      if (disposed) {
-        rig.dispose();
-        return;
-      }
+      if (lifetime.signal.aborted) return;
+      rig = await createNightStage(element, {
+        interactive: true, caseId: id, signal: lifetime.signal,
+      });
+      if (lifetime.signal.aborted) return rig.dispose();
       stage.current = rig;
       const size = () => {
+        if (lifetime.signal.aborted) return;
         const parent = element.parentElement;
         rig.resize(parent.clientWidth, parent.clientHeight);
         draw();
@@ -64,14 +70,14 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
       size();
       status("ready");
     })().catch(() => {
-      if (!disposed) status("unavailable");
+      if (!lifetime.signal.aborted) {
+        stop();
+        status("unavailable");
+      }
     });
     return () => {
-      disposed = true;
-      observer?.disconnect();
       element.removeEventListener("webglcontextlost", lost);
-      rig?.dispose();
-      stage.current = null;
+      if (!lifetime.signal.aborted) stop();
     };
   }, [generation, id]);
   const startTime = useRef(0);
@@ -186,6 +192,7 @@ export default function EstateViewer({ id, lenses, seconds, hero }) {
             Scene time <output>{time.toFixed(2)} s</output>
             <input
               type="range"
+              aria-label="Scene time"
               min="0"
               max={duration}
               step=".05"
