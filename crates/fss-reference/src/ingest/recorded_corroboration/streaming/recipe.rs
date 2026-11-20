@@ -18,7 +18,7 @@ use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_decode::h264::H264_DECODER_LABEL;
 use crate::ingest::recorded_decode::h265::H265_DECODER_LABEL;
 use crate::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
-use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ReplayCx, RetainedSource, ScalarExecCx};
 
 /// Hard ceiling checked before parsing or cloning any variable-length recipe fields.
 pub const MAX_LONG_CORROBORATION_RECIPE_BYTES: usize = 128 * 1024;
@@ -357,7 +357,7 @@ impl LongCorroborationRecipe {
     /// policy. A changed privacy generation changes analysis and exact approval identities.
     pub fn analyze(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<LongCorroborationReport> {
         let geometry = self
@@ -372,11 +372,9 @@ impl LongCorroborationRecipe {
                 return Err(CorroborationError::Conflict);
             }
             super::checkpoint(cx, "long_corroboration:retained_model")?;
-            let archive = fss_object::read_verified_payload(
-                deployment.publisher().spool().root(),
+            let archive = deployment.read_object_bounded(
                 recipe.package_digest(),
                 crate::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES,
-                &fss_object::HostSpoolIo,
             )?;
             let scalar = ScalarExecCx::new();
             let result = (|| {

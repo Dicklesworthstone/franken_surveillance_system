@@ -13,6 +13,7 @@ use fss_geometry::{CameraGeneration, WorkBudget};
 use fss_twin::PropertyTwin;
 
 use super::{CorroborationDependencies, CorroborationError, CorroborationPlan, Result, checkpoint};
+use crate::ReplayCx;
 use crate::ingest::calibration_adoption::{
     AdoptionError, adopted_currency, retained_adoptions_from_batches,
 };
@@ -30,7 +31,6 @@ use crate::ingest::recorded_corroboration::{FailureDomainDeclaration, hex, json_
 use crate::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
 use crate::ingest::site_calibration::SiteCalibration;
 use crate::retained_source::RetainedSource;
-use crate::{ReferenceDeployment, ReplayCx};
 
 /// Fixed custody bound for an optional neutral scene package.
 pub const MAX_LONG_CORROBORATION_SCENE_BYTES: usize = 64 * 1024 * 1024;
@@ -447,7 +447,7 @@ impl LongCorroborationGeometry {
     }
 
     pub(crate) fn load_retained(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         recipe: &LongCorroborationGeometryRecipe,
         cx: &ReplayCx,
@@ -457,13 +457,9 @@ impl LongCorroborationGeometry {
         }
         checkpoint(cx, "long_corroboration:retained_geometry")?;
         let read = |digest, maximum| {
-            fss_object::read_verified_payload(
-                deployment.publisher().spool().root(),
-                digest,
-                maximum,
-                &fss_object::HostSpoolIo,
-            )
-            .map_err(CorroborationError::from)
+            deployment
+                .read_object_bounded(digest, maximum)
+                .map_err(CorroborationError::from)
         };
         let calibration = recipe
             .calibration

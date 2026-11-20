@@ -768,21 +768,17 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         && !action.is_immutable_preview()
     {
         return Err(
-            "aggregate read allowances require an unapproved short corroboration preview"
-                .to_owned(),
+            "aggregate read allowances require an unapproved corroboration preview".to_owned(),
         );
     }
     Ok(action)
 }
 
 impl CorroborateAction {
-    /// Only bounded, unapproved analysis uses the immutable owner. Retention and whole-recording
-    /// publication retain their existing owner; an external report grants no ledger authority.
+    /// Bounded, unapproved analysis uses the immutable owner for short and whole recordings.
+    /// Retention and publication require their exclusive owner; a report grants no authority.
     pub(super) fn is_immutable_preview(&self) -> bool {
-        self.approvals.is_empty()
-            && self.retain_coverage.is_none()
-            && self.retain_health.is_none()
-            && self.streaming.is_none()
+        self.approvals.is_empty() && self.retain_coverage.is_none() && self.retain_health.is_none()
     }
 }
 

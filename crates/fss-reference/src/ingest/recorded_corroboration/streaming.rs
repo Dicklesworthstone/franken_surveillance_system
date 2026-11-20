@@ -47,7 +47,7 @@ use crate::ingest::sensor_health::{
     policy_bytes as health_policy_bytes, policy_digest as health_policy_digest,
 };
 use crate::ingest::tracker::TrackStatus;
-use crate::{ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReplayCx};
+use crate::{ReferenceDeployment, ReferencePolicyAction, ReplayCx, RetainedSource};
 
 /// Source-byte, pixel, assignment and trace ceilings, independently spent once per camera.
 pub type LongCorroborationLimits = LongDwellLimits;
@@ -357,7 +357,7 @@ impl ScanObserver for GroundConsumer<'_> {
 impl LongCorroborationReport {
     /// Analyze two complete retained recordings with independent per-camera aggregate ceilings.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         options: CorroborationOptions,
         limits: &LongCorroborationLimits,
@@ -379,7 +379,7 @@ impl LongCorroborationReport {
 
     /// Screen each entire native scan; any finding or missing evidence blocks all publication.
     pub fn analyze_screened(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         options: CorroborationOptions,
         limits: &LongCorroborationLimits,
@@ -405,7 +405,7 @@ impl LongCorroborationReport {
     /// Class scores remain uncalibrated and never change the ground/common-cause event policy.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_detector(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         options: CorroborationOptions,
         limits: &LongCorroborationLimits,
@@ -432,7 +432,7 @@ impl LongCorroborationReport {
     /// and health screening compose without granting extra authority to geometry.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_geometry(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         options: CorroborationOptions,
         limits: &LongCorroborationLimits,
@@ -457,7 +457,7 @@ impl LongCorroborationReport {
 
     #[allow(clippy::too_many_arguments)]
     fn analyze_inner(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         plan: &CorroborationPlan,
         options: CorroborationOptions,
         limits: &LongCorroborationLimits,
@@ -483,10 +483,7 @@ impl LongCorroborationReport {
         if cx.root_dir() != deployment.root() {
             return Err(CorroborationError::Conflict);
         }
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
+        deployment.verify_read_head()?;
         // Preflight BOTH recordings before either native decoder spends its work allowance.
         let mut counts = [0; 2];
         let mut sensors = Vec::with_capacity(2);
@@ -847,11 +844,7 @@ impl LongCorroborationReport {
         })
     }
 
-    fn check_geometry_current(
-        &self,
-        deployment: &ReferenceDeployment,
-        cx: &ReplayCx,
-    ) -> Result<()> {
+    fn check_geometry_current(&self, deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
         if let Some(geometry) = &self.geometry {
             let sensors = [
                 fss_core::SensorId::parse(&self.cameras[0].summary.sensor_id)?,
@@ -1185,7 +1178,7 @@ impl LongCorroborationReport {
 }
 
 fn prepare_camera(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     plan: &CorroborationPlan,
     index: usize,
     plan_digest: ContentDigest,

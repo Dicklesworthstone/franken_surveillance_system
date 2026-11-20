@@ -18,7 +18,7 @@ use fss_reference::ingest::recorded_corroboration::streaming::{
     LongCorroborationGeometry, LongCorroborationReport,
 };
 use fss_reference::ingest::recorded_watch::WatchLimits;
-use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource, ScalarExecCx};
 
 use super::{CorroborateAction, RunResult, export, number};
 
@@ -177,17 +177,16 @@ pub(super) fn limits(
     Ok(Some(limits))
 }
 
-pub(super) fn run(
+/// Identical native analysis for immutable previews and exclusively owned publication.
+pub(super) fn analyze(
     action: &CorroborateAction,
-    deployment: &mut ReferenceDeployment,
-    root: &Path,
+    deployment: &dyn RetainedSource,
     limits: &LongCorroborationLimits,
     cx: &ReplayCx,
     scalar: &ScalarExecCx,
-    out: &mut impl Write,
-) -> RunResult<()> {
-    // Hash and parse the exact profile before geometry, source or model work. Absence of
-    // a profile leaves the original path untouched; every authority write was refused above.
+) -> RunResult<(LongCorroborationReport, Option<EventFusionReport>)> {
+    // Hash and parse the exact profile before geometry, source or model work. The caller
+    // admits fusion only without publication authority; this analysis has no write methods.
     let fusion_profile = super::super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     let geometry = if action.geometry_requested {
         let (poses, mut sources, calibration, _, record) = super::resolve_poses(action)?;
@@ -243,7 +242,7 @@ pub(super) fn run(
         )?),
         _ => None,
     };
-    let mut report = if let Some(geometry) = &geometry {
+    let report = if let Some(geometry) = &geometry {
         LongCorroborationReport::analyze_with_geometry(
             deployment,
             &action.plan,
@@ -291,6 +290,19 @@ pub(super) fn run(
         (None, _) => None,
         _ => return Err(EventFusionError::Scope.into()),
     };
+    Ok((report, fusion))
+}
+
+pub(super) fn run(
+    action: &CorroborateAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    limits: &LongCorroborationLimits,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let (mut report, fusion) = analyze(action, deployment, limits, cx, scalar)?;
     // Check every camera proposal and the complete post-retention shape before any write.
     // A selected health receipt is independent of paired candidates or their publication gate.
     let selection = {
@@ -337,16 +349,13 @@ pub(super) fn run(
         }
         None
     };
-    let native_json = with_diagnostics(
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun),
-        )?,
-        &camera_diagnostics(action, &report)?,
+    let complete = render(
+        action,
+        &report,
+        deployment.current_anchor().commit_sequence,
         retention.as_ref(),
-        &action.rerun,
+        fusion.as_ref(),
     )?;
-    let complete = super::super::detector::with_fusion(native_json, fusion.as_ref())?;
     if fusion.is_some() {
         let checked = report.revalidate_derived_sources(deployment, cx);
         cx.checkpoint("event_fusion:long_corroboration_delivery")?;
@@ -361,4 +370,20 @@ pub(super) fn run(
     }
     out.write_all(json.as_bytes())?;
     Ok(())
+}
+
+pub(super) fn render(
+    action: &CorroborateAction,
+    report: &LongCorroborationReport,
+    sequence: u64,
+    retention: Option<&HistoricalHealthRetention>,
+    fusion: Option<&EventFusionReport>,
+) -> RunResult<String> {
+    let native = with_diagnostics(
+        report.to_json(sequence, Some(&action.rerun))?,
+        &camera_diagnostics(action, report)?,
+        retention,
+        &action.rerun,
+    )?;
+    Ok(super::super::detector::with_fusion(native, fusion)?)
 }

@@ -59,7 +59,7 @@ impl EventFusionReport {
         native: &LongCorroborationReport,
         package: &RgbDetectorPackage,
         profile: &EventFusionProfile,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
@@ -194,7 +194,7 @@ impl EventFusionReport {
 
 fn revalidate(
     native: &LongCorroborationReport,
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     cx: &ReplayCx,
 ) -> Result<()> {
     let checked = native.revalidate_derived_sources(deployment, cx);

@@ -100,13 +100,12 @@ fn request_args(
     ]
 }
 
-fn request(root: &Path, imports: [ContentDigest; 2]) -> Test<CorroborateAction> {
-    Ok(super::super::parse(&request_args(
-        root,
-        imports,
-        "gray",
-        "door:64,0,32,32",
-    ))?)
+fn request_mode(root: &Path, imports: [ContentDigest; 2], whole: bool) -> Test<CorroborateAction> {
+    let mut args = request_args(root, imports, "gray", "door:64,0,32,32");
+    if whole {
+        args.push("--stream-corroborate".into());
+    }
+    Ok(super::super::parse(&args)?)
 }
 
 fn read_context(root: &Path) -> Test<ReplayCx> {
@@ -153,7 +152,16 @@ fn tree(root: &Path) -> Test<BTreeMap<PathBuf, Vec<u8>>> {
 
 #[test]
 fn active_writer_previews_preserve_native_mjpeg_avc_hevc_and_screened_reports() -> Test {
-    let mut fixture = Fixture::new("immutable-corroborate-native")?;
+    active_writer_previews(false)
+}
+
+#[test]
+fn whole_active_writer_previews_preserve_native_mjpeg_avc_hevc_and_screened_reports() -> Test {
+    active_writer_previews(true)
+}
+
+fn active_writer_previews(whole: bool) -> Test {
+    let mut fixture = Fixture::new(&format!("immutable-corroborate-native-{whole}"))?;
     let root = fixture.deployment.root().to_path_buf();
     let mjpeg = ingest_pair(
         &mut fixture,
@@ -188,6 +196,9 @@ fn active_writer_previews_preserve_native_mjpeg_avc_hevc_and_screened_reports() 
         (mjpeg, "gray", "door:64,0,32,32", "posed"),
     ] {
         let mut args = request_args(&root, import, interpretation, zone);
+        if whole {
+            args.push("--stream-corroborate".into());
+        }
         match mode {
             "screened" => args.extend(["--sensor-health".into(), "conservative-v1".into()]),
             "dependent" => {
@@ -219,21 +230,169 @@ fn active_writer_previews_preserve_native_mjpeg_avc_hevc_and_screened_reports() 
         assert_eq!(preview, native, "{interpretation}, mode={mode}");
         assert_eq!(tree(&root)?, before, "preview mutated an active deployment");
     }
-    let mut approval = request_args(&root, mjpeg, "gray", "door:64,0,32,32");
-    approval.extend([
-        "--approve".into(),
-        ContentDigest::sha256(b"explicit approval").to_text().into(),
+    for retain_health in [false, true] {
+        if retain_health && !whole {
+            continue;
+        }
+        let mut approval = request_args(&root, mjpeg, "gray", "door:64,0,32,32");
+        if whole {
+            approval.push("--stream-corroborate".into());
+        }
+        if retain_health {
+            approval.extend(["--sensor-health".into(), "conservative-v1".into()]);
+        }
+        approval.extend([
+            if retain_health {
+                "--retain-health"
+            } else {
+                "--approve"
+            }
+            .into(),
+            ContentDigest::sha256(b"explicit approval").to_text().into(),
+        ]);
+        approval.insert(0, "corroborate".into());
+        let options = crate::parse(&approval)?.ok_or("corroborate unexpectedly parsed as help")?;
+        let mut output = Vec::new();
+        let refused =
+            crate::run(options, &mut output).expect_err("approval bypassed active publisher");
+        assert!(matches!(
+            refused.downcast_ref::<fss_reference::ReferenceError>(),
+            Some(fss_reference::ReferenceError::DeploymentLocked { .. })
+        ));
+        assert!(output.is_empty());
+        assert_eq!(tree(&root)?, before);
+    }
+    scalar.drain_and_finalize();
+    fixture.cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn whole_preview_finds_both_camera_entries_beyond_the_short_window() -> Test {
+    let mut fixture = Fixture::new("immutable-corroborate-long-entry")?;
+    let mut imports = Vec::new();
+    for (camera, background) in [("east", 40), ("west", 41)] {
+        let quiet = encode_jpeg(
+            96,
+            48,
+            &vec![background; 96 * 48],
+            &JpegConfig {
+                quality: 90,
+                subsampling: Subsampling::Grayscale,
+                restart_interval: 0,
+                custom_markers: Vec::new(),
+            },
+        )?;
+        let mut recording = quiet.repeat(128);
+        recording.extend(scene_with_background(background)?);
+        imports.push(fixture.ingest(
+            &format!("sensor:immutable-long-{camera}"),
+            &recording,
+            FileFormatHint::JpegStream,
+            Some(0),
+        )?);
+    }
+    let root = fixture.deployment.root();
+    let action = request_mode(root, [imports[0], imports[1]], true)?;
+    let before = tree(root)?;
+    let scalar = ScalarExecCx::new();
+    let limits = action.streaming.as_ref().ok_or("missing whole limits")?;
+    let (native, fusion) =
+        streaming::analyze(&action, &fixture.deployment, limits, &fixture.cx, &scalar)?;
+    assert_eq!(native.candidates().len(), 1);
+    assert_eq!(native.entries().len(), 2);
+    assert!(native.entries().iter().all(|entry| entry.segment >= 128));
+    assert!(
+        native
+            .source_cameras()
+            .all(|(camera, _)| camera.frames == 142)
+    );
+    let expected = format!(
+        "{}\n",
+        streaming::render(
+            &action,
+            &native,
+            fixture.deployment.current_anchor().commit_sequence,
+            None,
+            fusion.as_ref(),
+        )?
+    );
+    let mut preview = Vec::new();
+    run(&action, &mut preview)?;
+    assert_eq!(preview, expected.as_bytes());
+    assert_eq!(tree(root)?, before);
+    scalar.drain_and_finalize();
+    fixture.cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn whole_health_degraded_quiet_preview_preserves_diagnostics_and_blocks_derived_use() -> Test {
+    let mut fixture = Fixture::new("immutable-corroborate-health-degraded")?;
+    let quiet = encode_jpeg(
+        96,
+        48,
+        &vec![0; 96 * 48],
+        &JpegConfig {
+            quality: 90,
+            subsampling: Subsampling::Grayscale,
+            restart_interval: 0,
+            custom_markers: Vec::new(),
+        },
+    )?
+    .repeat(40);
+    let east = fixture.ingest(
+        "sensor:immutable-dark-east",
+        &quiet,
+        FileFormatHint::JpegStream,
+        Some(0),
+    )?;
+    let west = fixture.ingest(
+        "sensor:immutable-dark-west",
+        &quiet,
+        FileFormatHint::JpegStream,
+        Some(0),
+    )?;
+    let root = fixture.deployment.root();
+    let mut args = request_args(root, [east, west], "gray", "door:64,0,32,32");
+    args.extend([
+        "--stream-corroborate".into(),
+        "--sensor-health".into(),
+        "conservative-v1".into(),
     ]);
-    approval.insert(0, "corroborate".into());
-    let options = crate::parse(&approval)?.ok_or("corroborate unexpectedly parsed as help")?;
-    let mut output = Vec::new();
-    let refused = crate::run(options, &mut output).expect_err("approval bypassed active publisher");
-    assert!(matches!(
-        refused.downcast_ref::<fss_reference::ReferenceError>(),
-        Some(fss_reference::ReferenceError::DeploymentLocked { .. })
-    ));
-    assert!(output.is_empty());
-    assert_eq!(tree(&root)?, before);
+    let action = super::super::parse(&args)?;
+    let before = tree(root)?;
+    let scalar = ScalarExecCx::new();
+    let (native, fusion) = streaming::analyze(
+        &action,
+        &fixture.deployment,
+        action.streaming.as_ref().ok_or("missing whole limits")?,
+        &fixture.cx,
+        &scalar,
+    )?;
+    assert!(native.publication_blocked());
+    assert!(native.candidates().is_empty());
+    assert_eq!(native.health_diagnostics().count(), 2);
+    assert!(
+        native
+            .revalidate_derived_sources(&fixture.deployment, &fixture.cx)
+            .is_err()
+    );
+    let expected = format!(
+        "{}\n",
+        streaming::render(
+            &action,
+            &native,
+            fixture.deployment.current_anchor().commit_sequence,
+            None,
+            fusion.as_ref(),
+        )?
+    );
+    let mut preview = Vec::new();
+    run(&action, &mut preview)?;
+    assert_eq!(preview, expected.as_bytes());
+    assert!(expected.contains("\"publication_blocked\":true"));
+    assert_eq!(tree(root)?, before);
     scalar.drain_and_finalize();
     fixture.cx.drain_and_finalize();
     Ok(())
@@ -241,7 +400,16 @@ fn active_writer_previews_preserve_native_mjpeg_avc_hevc_and_screened_reports() 
 
 #[test]
 fn final_rereads_share_exact_allowance_and_short_allowances_emit_and_save_nothing() -> Test {
-    let mut fixture = Fixture::new("immutable-corroborate-budget")?;
+    final_rereads(false)
+}
+
+#[test]
+fn whole_final_rereads_share_exact_allowance_and_short_allowances_emit_and_save_nothing() -> Test {
+    final_rereads(true)
+}
+
+fn final_rereads(whole: bool) -> Test {
+    let mut fixture = Fixture::new(&format!("immutable-corroborate-budget-{whole}"))?;
     let import = ingest_pair(
         &mut fixture,
         "sensor:immutable-budget",
@@ -250,7 +418,7 @@ fn final_rereads_share_exact_allowance_and_short_allowances_emit_and_save_nothin
     )?;
     let root = fixture.deployment.root();
     let before = tree(root)?;
-    let mut action = request(root, import)?;
+    let mut action = request_mode(root, import, whole)?;
     let cx = read_context(root)?;
     let scalar = ScalarExecCx::new();
     let mut expected = Vec::new();
@@ -296,7 +464,16 @@ fn final_rereads_share_exact_allowance_and_short_allowances_emit_and_save_nothin
 
 #[test]
 fn cancellation_at_the_last_admission_withholds_stdout_and_external_report() -> Test {
-    let mut fixture = Fixture::new("immutable-corroborate-final-cancel")?;
+    cancellation_at_delivery(false)
+}
+
+#[test]
+fn whole_cancellation_at_the_last_admission_withholds_stdout_and_external_report() -> Test {
+    cancellation_at_delivery(true)
+}
+
+fn cancellation_at_delivery(whole: bool) -> Test {
+    let mut fixture = Fixture::new(&format!("immutable-corroborate-final-cancel-{whole}"))?;
     let import = ingest_pair(
         &mut fixture,
         "sensor:immutable-cancel",
@@ -305,7 +482,7 @@ fn cancellation_at_the_last_admission_withholds_stdout_and_external_report() -> 
     )?;
     let root = fixture.deployment.root();
     let before = tree(root)?;
-    let mut action = request(root, import)?;
+    let mut action = request_mode(root, import, whole)?;
     let cx = read_context(root)?;
     let scalar = ScalarExecCx::new();
     let calls = AtomicUsize::new(0);
@@ -335,8 +512,19 @@ fn cancellation_at_the_last_admission_withholds_stdout_and_external_report() -> 
 
 #[test]
 fn late_quiet_capsule_or_source_damage_refuses_without_output_export_or_repair() -> Test {
+    late_damage(false)
+}
+
+#[test]
+fn whole_late_quiet_capsule_or_source_damage_refuses_without_output_export_or_repair() -> Test {
+    late_damage(true)
+}
+
+fn late_damage(whole: bool) -> Test {
     for capsule in [true, false] {
-        let mut fixture = Fixture::new(&format!("immutable-corroborate-late-damage-{capsule}"))?;
+        let mut fixture = Fixture::new(&format!(
+            "immutable-corroborate-late-damage-{whole}-{capsule}"
+        ))?;
         let import = ingest_pair(
             &mut fixture,
             "sensor:immutable-damage",
@@ -344,7 +532,7 @@ fn late_quiet_capsule_or_source_damage_refuses_without_output_export_or_repair()
             FileFormatHint::JpegStream,
         )?;
         let root = fixture.deployment.root();
-        let mut action = request(root, import)?;
+        let mut action = request_mode(root, import, whole)?;
         // Tolerant decode still cannot excuse damaged retained source custody.
         if !capsule {
             action.recovery.tolerate_decode_refusals = true;
@@ -432,7 +620,16 @@ fn late_quiet_capsule_or_source_damage_refuses_without_output_export_or_repair()
 
 #[test]
 fn an_uncommitted_journal_tail_refuses_without_recovery_or_a_partial_report() -> Test {
-    let mut fixture = Fixture::new("immutable-corroborate-torn-tail")?;
+    torn_tail(false)
+}
+
+#[test]
+fn whole_uncommitted_journal_tail_refuses_without_recovery_or_a_partial_report() -> Test {
+    torn_tail(true)
+}
+
+fn torn_tail(whole: bool) -> Test {
+    let mut fixture = Fixture::new(&format!("immutable-corroborate-torn-tail-{whole}"))?;
     let import = ingest_pair(
         &mut fixture,
         "sensor:immutable-tail",
@@ -442,6 +639,9 @@ fn an_uncommitted_journal_tail_refuses_without_recovery_or_a_partial_report() ->
     let root = fixture.deployment.root();
     let report = fixture.directory.0.join("torn-report.json");
     let mut args = request_args(root, import, "gray", "door:64,0,32,32");
+    if whole {
+        args.push("--stream-corroborate".into());
+    }
     args.extend(["--report-out".into(), report.as_os_str().to_owned()]);
     args.insert(0, "corroborate".into());
     let journal = root.join(fss_reference::reference_deployment::RELATIVE_PATH_LEDGER);
@@ -465,7 +665,8 @@ fn an_uncommitted_journal_tail_refuses_without_recovery_or_a_partial_report() ->
 }
 
 #[test]
-fn read_allowances_never_route_publication_or_whole_recordings_to_an_immutable_owner() -> Test {
+fn read_allowances_admit_whole_previews_but_never_route_publication_to_an_immutable_owner() -> Test
+{
     let root = Path::new("/existing/deployment");
     let imports = [
         ContentDigest::sha256(b"east request-only fixture"),
@@ -487,11 +688,18 @@ fn read_allowances_never_route_publication_or_whole_recordings_to_an_immutable_o
         !action.rerun.contains("--max-read-"),
         "approval hint carries preview-only options"
     );
+    let mut whole_preview = preview.clone();
+    whole_preview.push("--stream-corroborate".into());
+    let whole = super::super::parse(&whole_preview)?;
+    assert!(whole.is_immutable_preview());
+    assert!(whole.streaming.is_some());
+    assert_eq!(whole.read_limits, action.read_limits);
+    assert!(!whole.rerun.contains("--max-read-"));
     let approval = imports[0].to_text();
     for suffix in [
         vec!["--approve", approval.as_str()],
         vec!["--retain-coverage", approval.as_str()],
-        vec!["--stream-corroborate"],
+        vec!["--stream-corroborate", "--approve", approval.as_str()],
         vec![
             "--stream-corroborate",
             "--sensor-health",
@@ -517,10 +725,19 @@ fn read_allowances_never_route_publication_or_whole_recordings_to_an_immutable_o
 
 #[test]
 fn a_committed_companion_privacy_change_at_delivery_withholds_the_stale_pair() -> Test {
+    privacy_change_at_delivery(false)
+}
+
+#[test]
+fn whole_committed_companion_privacy_change_at_delivery_withholds_the_stale_pair() -> Test {
+    privacy_change_at_delivery(true)
+}
+
+fn privacy_change_at_delivery(whole: bool) -> Test {
     use fss_core::SensorId;
     use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
 
-    let mut fixture = Fixture::new("immutable-corroboration-privacy-drift")?;
+    let mut fixture = Fixture::new(&format!("immutable-corroboration-privacy-drift-{whole}"))?;
     let imports = ingest_pair(
         &mut fixture,
         "sensor:immutable-policy",
@@ -528,7 +745,7 @@ fn a_committed_companion_privacy_change_at_delivery_withholds_the_stale_pair() -
         FileFormatHint::JpegStream,
     )?;
     let root = fixture.deployment.root().to_path_buf();
-    let mut action = request(&root, imports)?;
+    let mut action = request_mode(&root, imports, whole)?;
     let scalar = ScalarExecCx::new();
 
     // Build a real committed authority successor with the ordinary owner API. Replaying its

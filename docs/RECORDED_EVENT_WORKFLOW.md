@@ -229,7 +229,7 @@ fss-event corroborate --root DIR --site SITE \
   [watch thresholds and budgets] [--approve sha256:P[,sha256:Q]] [--report-out FILE]
 ```
 
-Unapproved short corroboration previews can run while capture owns the deployment's publisher
+Unapproved short and `--stream-corroborate` whole-recording previews can run while capture owns the deployment's publisher
 lock. Both recordings share one sealed immutable snapshot. The existing detector cascade,
 calibrated class advice, failure-domain declarations, owner poses, retained calibration
 adoptions, covariance-aware coverage, scene occlusion, privacy masks and sensor-health
@@ -245,10 +245,12 @@ calibration currency, snapshot metadata and registered payloads pass final valid
 
 A failed final check, exhausted allowance, cancellation or incomplete journal tail produces no
 stdout or new report export, and does not repair or mutate the deployment. Concurrent authority
-changes require a new preview at a stable committed snapshot. These aggregate limits apply only
-to short previews without `--approve`, `--retain-coverage` or `--retain-health`; approval hints
-omit preview-only limits. Approved publication, retention and `--stream-corroborate` keep their
-existing writer ownership and authority checks.
+changes require a new preview at a stable committed snapshot. These aggregate limits apply to
+previews without `--approve`, `--retain-coverage` or `--retain-health`; approval hints omit
+preview-only limits. Whole-recording previews also retain their separate per-camera scan and
+global detector ceilings. Approved publication and retention keep their existing writer
+ownership and authority checks. See [whole-recording corroboration](long_recording_corroboration.md)
+for persistent tracking, native codec recovery and trained class-advice scope.
 
 Each recording (1..128 frames) runs the watch pipeline over the whole decoded frame. The foot
 point (bottom centre of each confirmed track's filtered box) is projected through the camera's

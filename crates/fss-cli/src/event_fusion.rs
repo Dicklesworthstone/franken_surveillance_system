@@ -18,7 +18,7 @@ use fss_fusion::{
 use fss_reference::ingest::detector_cascade::{ClassEvidence, DetectorCascade, EvidenceOutcome};
 use fss_reference::ingest::recorded_corroboration::CorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchReport;
-use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource};
+use fss_reference::{ReplayCx, RetainedSource};
 
 mod ablation;
 mod corroboration;

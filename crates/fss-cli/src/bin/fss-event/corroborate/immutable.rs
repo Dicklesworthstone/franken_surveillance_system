@@ -12,7 +12,7 @@ use super::*;
 pub(crate) fn run(action: &CorroborateAction, out: &mut impl Write) -> RunResult<()> {
     if !action.is_immutable_preview() {
         return Err(CorroborationError::InvalidPlan(
-            "immutable corroboration requires an unapproved short preview",
+            "immutable corroboration requires an unapproved preview",
         )
         .into());
     }
@@ -56,7 +56,7 @@ fn run_with(
     // immutable operation can acquire a publisher through this path.
     if !action.is_immutable_preview() {
         return Err(CorroborationError::InvalidPlan(
-            "immutable corroboration requires an unapproved short preview",
+            "immutable corroboration requires an unapproved preview",
         )
         .into());
     }
@@ -68,12 +68,50 @@ fn run_with(
             CorroborationError::InvalidPlan("retained deployment site lineage mismatch").into(),
         );
     }
-    let inputs = short::ShortInputs::load(action, &source, cx, scalar)?;
+    let complete = if let Some(limits) = &action.streaming {
+        let (report, fusion) = streaming::analyze(action, &source, limits, cx, scalar)?;
+        let json = streaming::render(
+            action,
+            &report,
+            source.current_anchor().commit_sequence,
+            None,
+            fusion.as_ref(),
+        )?;
+        // A health-degraded diagnostic is still a valid preview. Every original source and
+        // capsule must remain intact; the publication gate applies only to derived advice.
+        report.revalidate_preview_sources(&source, cx)?;
+        json
+    } else {
+        short_preview(action, &source, cx, scalar)?
+    };
+    let json = format!("{complete}\n");
+    if json.len() > super::super::MAX_ANALYSIS_REPORT_BYTES {
+        return Err(CorroborationError::Limit.into());
+    }
+    // All source reads, metadata and final custody verification share the opening allowance.
+    // Any refusal withholds both stdout and an optional external report.
+    cx.checkpoint("corroborate_preview:delivery")?;
+    source.revalidate_snapshot_metadata()?;
+    source.revalidate()?;
+    if let Some(path) = &action.report_out {
+        export(path, json.as_bytes(), root, cx)?;
+    }
+    out.write_all(json.as_bytes())?;
+    Ok(source.usage())
+}
+
+fn short_preview(
+    action: &CorroborateAction,
+    source: &dyn RetainedSource,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+) -> RunResult<String> {
+    let inputs = short::ShortInputs::load(action, source, cx, scalar)?;
     let provenance = retained_provenance(&inputs.sources, inputs.calibration);
     let visibility = inputs.visibility(action);
     let mut cascade = inputs.cascade(action, scalar)?;
     let report = CorroborationReport::analyze_with_dependencies(
-        &source,
+        source,
         &action.plan,
         &action.limits,
         cascade.as_mut(),
@@ -92,48 +130,35 @@ fn run_with(
         action,
         inputs.calibration_record.as_ref(),
         inputs.calibration,
-        &source,
+        source,
         &report,
         cx,
         &mut guard_budget,
     )?;
     let fusion = match (&inputs.fusion_profile, cascade.as_ref()) {
         (Some(profile), Some(cascade)) => Some(match &guard {
-            Some(guard) => guard.fuse(&report, cascade, profile, &source, cx)?,
-            None => EventFusionReport::corroborate(&report, cascade, profile, &source, cx)?,
+            Some(guard) => guard.fuse(&report, cascade, profile, source, cx)?,
+            None => EventFusionReport::corroborate(&report, cascade, profile, source, cx)?,
         }),
         (None, _) => None,
         _ => return Err(EventFusionError::Scope.into()),
     };
-    let json = format!(
-        "{}\n",
-        inputs.render(
-            action,
-            &report,
-            &report,
-            guard.as_ref(),
-            source.current_anchor().commit_sequence,
-            fusion.as_ref(),
-        )?
-    );
-    if json.len() > super::super::MAX_ANALYSIS_REPORT_BYTES {
-        return Err(CorroborationError::Limit.into());
-    }
+    let json = inputs.render(
+        action,
+        &report,
+        &report,
+        guard.as_ref(),
+        source.current_anchor().commit_sequence,
+        fusion.as_ref(),
+    )?;
     // Include every original and supporting capsule in final custody, even when the
     // analysis was quiet, health-degraded or tolerant of a decode refusal. Budget and
     // cancellation cannot turn failed verification into a successful report prefix.
-    report.revalidate_derived_sources(&source, cx)?;
+    report.revalidate_derived_sources(source, cx)?;
     if let Some(guard) = &guard {
-        guard.revalidate(&source, cx)?;
+        guard.revalidate(source, cx)?;
     }
-    cx.checkpoint("corroborate_preview:delivery")?;
-    source.revalidate_snapshot_metadata()?;
-    source.revalidate()?;
-    if let Some(path) = &action.report_out {
-        export(path, json.as_bytes(), root, cx)?;
-    }
-    out.write_all(json.as_bytes())?;
-    Ok(source.usage())
+    Ok(json)
 }
 
 #[cfg(test)]

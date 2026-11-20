@@ -210,17 +210,34 @@ The four aggregate limits apply **separately to each camera's entire scan**:
 
 Reservations do not refill at frame, chunk or recovery boundaries. The total two-camera
 reservation is twice the chosen per-camera ceiling; cross-camera association has its own bounded
-work allowance. Metadata, source revalidation and publication retain their separate owner
-bounds. This is not an accounting claim for all operating-system I/O or memory.
+work allowance. Immutable previews additionally share one retained-read allowance across both
+cameras, opening metadata, retained geometry and model objects, and every final custody read.
+Set `--max-read-bytes N` and `--max-read-objects N` to bound that complete operation: defaults
+are 1 GiB and 1,000,000 read attempts, with maxima of 4 GiB and 4,000,000. These preview limits
+do not replace the per-camera computation ceilings or enter the publication identity. A
+cooperative 60-second deadline is checked at retained-read admissions. Publication retains
+its existing owner bounds. This is not an accounting claim for all operating-system I/O or memory.
 
 Exhaustion refuses the analysis before event publication. All aggregate limits participate in
 the new mode's identity, even when changing a limit does not change the observed entries.
 
 ## Review, publish and restart
 
-Without `--approve`, the complete `fss.long_corroboration_report.v1` projection is read-only.
-Review each candidate's proposal and rerun its exact `publish_command`. A comma-separated
+Without `--approve`, `--retain-coverage` or `--retain-health`, the complete
+`fss.long_corroboration_report.v1` projection uses one sealed immutable snapshot and can run
+while capture holds the deployment writer. It takes no writer lock, performs no restart
+recovery and changes no deployment bytes. Incomplete journal tails are refused without repair.
+The complete response and optional report export remain buffered until both source guards,
+all supporting capsules (including quiet frames), privacy and calibration currency, snapshot
+metadata and registered payloads pass final verification. Late damage, cancellation, exhausted
+allowances or a concurrent authority change produce no successful response or new export;
+retry from a stable committed snapshot. Health-degraded diagnostic previews receive the same
+custody checks, while publication and class advice keep their strict health gates.
+
+Review each candidate's proposal and rerun its exact `publish_command`. Approval hints omit
+the immutable preview limits. A comma-separated
 `--approve sha256:PROPOSAL[,sha256:PROPOSAL...]` publishes only the matching candidates.
+Approved publication and explicit retention keep the exclusive writer and existing authority checks.
 
 The complete report is bounded before publication. A new analysis or privacy binding requires
 a new approval; ordinary short-recording corroboration approvals cannot authorize this mode.
@@ -257,6 +274,7 @@ cargo test -p fss-cli --test corroborate_stream_cli
 cargo test -p fss-cli --test corroborate_stream_geometry_cli
 cargo test -p fss-cli --test corroborate_stream_detector_cli
 cargo test -p fss-reference --test long_corroboration_contract
+cargo test -p fss-cli --bin fss-event corroborate::immutable::tests::
 ```
 
 Synthetic fixtures exercise the pipeline and evidence contracts. They do not qualify live
