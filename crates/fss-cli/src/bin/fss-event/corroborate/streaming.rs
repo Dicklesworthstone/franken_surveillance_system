@@ -357,18 +357,28 @@ pub(super) fn run(
         fusion.as_ref(),
     )?;
     if fusion.is_some() {
-        let checked = report.revalidate_derived_sources(deployment, cx);
-        cx.checkpoint("event_fusion:long_corroboration_delivery")?;
-        checked.map_err(|error| match error {
-            CorroborationError::Conflict => EventFusionError::StaleBasis,
-            _ => EventFusionError::Evidence,
-        })?;
+        revalidate_fusion_delivery(&report, deployment, cx)?;
     }
     let json = format!("{complete}\n");
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
     }
     out.write_all(json.as_bytes())?;
+    Ok(())
+}
+
+/// Preserve the strict advice gate and final cancellation boundary for either storage owner.
+pub(super) fn revalidate_fusion_delivery(
+    report: &LongCorroborationReport,
+    source: &dyn RetainedSource,
+    cx: &ReplayCx,
+) -> RunResult<()> {
+    let checked = report.revalidate_derived_sources(source, cx);
+    cx.checkpoint("event_fusion:long_corroboration_delivery")?;
+    checked.map_err(|error| match error {
+        CorroborationError::Conflict => EventFusionError::StaleBasis,
+        _ => EventFusionError::Evidence,
+    })?;
     Ok(())
 }
 

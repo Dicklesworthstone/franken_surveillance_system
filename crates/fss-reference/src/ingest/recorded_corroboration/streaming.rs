@@ -483,7 +483,7 @@ impl LongCorroborationReport {
         if cx.root_dir() != deployment.root() {
             return Err(CorroborationError::Conflict);
         }
-        deployment.verify_read_head()?;
+        deployment.verify_read_head().map_err(retained_read_error)?;
         // Preflight BOTH recordings before either native decoder spends its work allowance.
         let mut counts = [0; 2];
         let mut sensors = Vec::with_capacity(2);
@@ -1174,6 +1174,15 @@ impl LongCorroborationReport {
             return Err(CorroborationError::Limit);
         }
         Ok(text)
+    }
+}
+
+// Retained-source admission preserves the mutable owner's existing ledger/spool refusals.
+fn retained_read_error(error: crate::ingest::FileIngestError) -> CorroborationError {
+    match error {
+        crate::ingest::FileIngestError::Reference(error) => error.into(),
+        crate::ingest::FileIngestError::Spool(error) => error.into(),
+        error => error.into(),
     }
 }
 

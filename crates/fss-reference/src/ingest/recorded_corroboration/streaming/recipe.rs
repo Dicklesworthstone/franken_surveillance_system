@@ -372,10 +372,12 @@ impl LongCorroborationRecipe {
                 return Err(CorroborationError::Conflict);
             }
             super::checkpoint(cx, "long_corroboration:retained_model")?;
-            let archive = deployment.read_object_bounded(
-                recipe.package_digest(),
-                crate::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES,
-            )?;
+            let archive = deployment
+                .read_object_bounded(
+                    recipe.package_digest(),
+                    crate::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES,
+                )
+                .map_err(super::retained_read_error)?;
             let scalar = ScalarExecCx::new();
             let result = (|| {
                 let package = crate::ingest::rgb_package::RgbDetectorPackage::load_with_backend(

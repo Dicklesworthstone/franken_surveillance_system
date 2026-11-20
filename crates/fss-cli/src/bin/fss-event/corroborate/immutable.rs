@@ -79,7 +79,11 @@ fn run_with(
         )?;
         // A health-degraded diagnostic is still a valid preview. Every original source and
         // capsule must remain intact; the publication gate applies only to derived advice.
-        report.revalidate_preview_sources(&source, cx)?;
+        if fusion.is_some() {
+            streaming::revalidate_fusion_delivery(&report, &source, cx)?;
+        } else {
+            report.revalidate_preview_sources(&source, cx)?;
+        }
         json
     } else {
         short_preview(action, &source, cx, scalar)?

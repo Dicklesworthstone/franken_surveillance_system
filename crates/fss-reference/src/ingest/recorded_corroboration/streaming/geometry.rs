@@ -459,7 +459,7 @@ impl LongCorroborationGeometry {
         let read = |digest, maximum| {
             deployment
                 .read_object_bounded(digest, maximum)
-                .map_err(CorroborationError::from)
+                .map_err(super::retained_read_error)
         };
         let calibration = recipe
             .calibration

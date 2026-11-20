@@ -4,6 +4,28 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Corroboration advice delivery during capture — 2026-11-20
+
+Whole-recording immutable corroboration now uses the same strict final advice
+validation and `event_fusion:long_corroboration_delivery` cancellation boundary as
+the exclusive publishing owner. Health-degraded diagnostics remain readable;
+they cannot pass the calibrated-advice gate. Retained-source admission and
+retained model/geometry reads preserve the pre-existing deployment and spool
+error families for callers using the native owner.
+
+Focused contracts cover complete-recording and retained-recipe parity while the
+writer is held, canonical proposal and actual trained-advice identities, both
+cameras' quiet capsules and source tails, health refusal, exact cumulative read
+allowances, privacy drift, final cancellation, and refusal without journal repair.
+The existing CLI contracts cover the immutable whole-recording route; an added
+regression checks the final advice checkpoint through both storage owners.
+
+Independent source review and pinned-nightly formatting completed. The local
+`fss-core` library suite passed all 199 tests. Focused execution of the changed
+reference/CLI graph remains pending: multiple builds were killed while compiling
+the existing `asupersync` dependency, and a lower-memory retry stalled before FSS
+compilation. No release qualification or broad requirement closure is claimed.
+
 ## Immutable complete-recording analysis and trained-zone reads — 2026-11-20
 
 Unapproved whole-recording two-camera corroboration now uses the same sealed

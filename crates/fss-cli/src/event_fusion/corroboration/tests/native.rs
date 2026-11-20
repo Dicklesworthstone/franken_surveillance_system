@@ -11,6 +11,7 @@ use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
     BudgetVector, ContentDigest, LedgerAnchor, OperationId, SensorId, StreamId, TimestampNs,
 };
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::ingest::detector_cascade::CascadeConfig;
 use fss_reference::ingest::long_watch::LongWatchDetector;
 use fss_reference::ingest::package_detect::PackageDetectLimits;
@@ -30,6 +31,7 @@ use fss_reference::ingest::{
     RetainedReadLimits,
 };
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -288,6 +290,14 @@ fn profile_for(report: &LongCorroborationReport) -> Test<EventFusionProfile> {
     )?)
 }
 
+fn immutable_limits() -> ImmutableRetainedReadLimits {
+    ImmutableRetainedReadLimits {
+        snapshot: OrientLimits::default(),
+        max_read_bytes: 256 * 1024 * 1024,
+        max_read_objects: 100_000,
+    }
+}
+
 #[test]
 fn paired_native_advice_covers_late_entries_and_refuses_wrong_scope_without_mutating_authority()
 -> Test {
@@ -351,6 +361,19 @@ fn paired_native_advice_covers_late_entries_and_refuses_wrong_scope_without_muta
             .digest(),
         advice.digest()
     );
+    {
+        // The same actual late-entry class evidence must retain every score, dependency,
+        // proposal and counterfactual when capture still owns the exclusive publisher.
+        let source = ImmutableRetainedSource::open(f.deployment.root(), immutable_limits(), &f.cx)?;
+        let immutable =
+            EventFusionReport::long_corroborate(&native, &package, &profile, &source, &f.cx)?;
+        assert_eq!(immutable.to_json()?, json);
+        assert_eq!(immutable.digest(), advice.digest());
+        native.revalidate_preview_sources(&source, &f.cx)?;
+        source.revalidate_snapshot_metadata()?;
+        source.revalidate()?;
+        assert_eq!(f.snapshot(), before);
+    }
     for index in 0..5 {
         let mut request = profile.spec().clone();
         let mut roots = profile.long_corroboration_analysis_roots().ok_or("roots")?;
@@ -476,5 +499,67 @@ fn requested_whole_scan_health_findings_fence_derived_advice() -> Test {
             .is_err()
     );
     assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn immutable_source_keeps_health_and_final_cancellation_strict_for_empty_advice() -> Test {
+    for screened in [false, true] {
+        let f = Fixture::new(
+            &format!("immutable-empty-{screened}"),
+            &jpeg(None)?.repeat(40),
+            "mjpeg",
+        )?;
+        let before = f.snapshot();
+        let scalar = ScalarExecCx::new();
+        let package = f.trained_package(&scalar)?;
+        let detector = LongWatchDetector::new(
+            &package,
+            DETECTOR_PACKAGE,
+            CascadeConfig {
+                max_inferences: 1,
+                ..CascadeConfig::default()
+            },
+            PackageDetectLimits::default(),
+            &scalar,
+        )?;
+        let source = ImmutableRetainedSource::open(f.deployment.root(), immutable_limits(), &f.cx)?;
+        let native = LongCorroborationReport::analyze_with_detector(
+            &source,
+            &f.plan,
+            CorroborationOptions::default(),
+            &LongCorroborationLimits::default(),
+            &CorroborationDependencies::default(),
+            screened,
+            &detector,
+            &f.cx,
+        )?;
+        assert!(native.candidates().is_empty());
+        assert_eq!(native.inference_selections_admitted(), 0);
+        let profile = profile_for(&native)?;
+        native.revalidate_preview_sources(&source, &f.cx)?;
+        if screened {
+            assert!(native.publication_blocked());
+            assert!(matches!(
+                EventFusionReport::long_corroborate(&native, &package, &profile, &source, &f.cx),
+                Err(EventFusionError::Evidence),
+            ));
+            source.revalidate_snapshot_metadata()?;
+            source.revalidate()?;
+        } else {
+            let advice =
+                EventFusionReport::long_corroborate(&native, &package, &profile, &source, &f.cx)?;
+            assert!(advice.candidates().is_empty());
+            f.cx.set_cancel_at_checkpoint("long_corroboration:derived_sources_checked");
+            assert!(matches!(
+                EventFusionReport::long_corroborate(&native, &package, &profile, &source, &f.cx),
+                Err(EventFusionError::Cancelled),
+            ));
+            assert!(f.cx.is_cancelled());
+            assert!(source.revalidate().is_err());
+        }
+        assert_eq!(f.snapshot(), before);
+        scalar.drain_and_finalize();
+    }
     Ok(())
 }

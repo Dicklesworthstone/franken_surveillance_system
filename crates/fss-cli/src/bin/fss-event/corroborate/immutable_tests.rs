@@ -404,6 +404,46 @@ fn final_rereads_share_exact_allowance_and_short_allowances_emit_and_save_nothin
 }
 
 #[test]
+fn whole_fusion_delivery_keeps_the_final_cancellation_boundary_with_either_owner() -> Test {
+    for immutable in [false, true] {
+        let mut fixture = Fixture::new(&format!("immutable-fusion-delivery-{immutable}"))?;
+        let imports = ingest_pair(
+            &mut fixture,
+            "sensor:immutable-fusion-delivery",
+            &scene()?,
+            FileFormatHint::JpegStream,
+        )?;
+        let root = fixture.deployment.root();
+        let action = request_mode(root, imports, true)?;
+        let before = tree(root)?;
+        let cx = read_context(root)?;
+        let scalar = ScalarExecCx::new();
+        let source = ImmutableRetainedSource::open(root, action.read_limits, &cx)?;
+        let owner: &dyn RetainedSource = if immutable {
+            &source
+        } else {
+            &fixture.deployment
+        };
+        let (native, _) = streaming::analyze(
+            &action,
+            owner,
+            action.streaming.as_ref().ok_or("missing whole limits")?,
+            &cx,
+            &scalar,
+        )?;
+        streaming::revalidate_fusion_delivery(&native, owner, &cx)?;
+        cx.set_cancel_at_checkpoint("event_fusion:long_corroboration_delivery");
+        assert!(streaming::revalidate_fusion_delivery(&native, owner, &cx).is_err());
+        assert!(cx.is_cancelled(), "the final advice boundary was skipped");
+        assert_eq!(tree(root)?, before);
+        scalar.drain_and_finalize();
+        cx.drain_and_finalize();
+        fixture.cx.drain_and_finalize();
+    }
+    Ok(())
+}
+
+#[test]
 fn whole_final_rereads_share_exact_allowance_and_short_allowances_emit_and_save_nothing() -> Test {
     final_rereads(true)
 }

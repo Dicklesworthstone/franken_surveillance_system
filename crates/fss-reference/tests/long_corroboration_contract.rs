@@ -2,6 +2,9 @@
 //! Native ground projection beyond former windows, discontinuities and publication prerequisites.
 //! Synthetic recordings prove the executable composition, not detection quality or calibration.
 
+#[path = "long_corroboration_contract/immutable.rs"]
+mod immutable;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
