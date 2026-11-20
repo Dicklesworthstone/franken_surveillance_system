@@ -29,6 +29,12 @@ pub mod neighbor;
 #[path = "discovery_scan.rs"]
 pub mod scan;
 
+#[path = "discovery_sweep.rs"]
+pub mod sweep;
+
+#[path = "discovery_sweep_pump.rs"]
+pub mod sweep_pump;
+
 #[path = "discovery_pump.rs"]
 pub mod pump;
 
@@ -38,6 +44,10 @@ pub mod retry;
 const MAX_PACKETS: usize = 128;
 const MAX_TARGETS: usize = 64;
 const MAX_COMBINED_WINDOWS: usize = 4;
+// A /20 sweep with four windows of up to 62 unicast targets per page needs
+// at most 17 pages. Keep the total distinct claims separately bounded.
+const MAX_SWEEP_PAGES: usize = 17;
+const MAX_SWEEP_CANDIDATES: usize = 512;
 const MAX_WINDOW: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
 
@@ -276,6 +286,10 @@ pub enum CombineError {
     Incomplete,
     /// A report exceeds the bounds of a single discovery window.
     InvalidReport,
+    /// Page indices, page counts, or the caller-bound scope do not agree.
+    PageMismatch,
+    /// Too many distinct claims were observed across the supplied pages.
+    CandidateLimit,
     /// Bounded output allocation failed.
     Allocation,
 }
@@ -286,6 +300,21 @@ impl fmt::Display for CombineError {
     }
 }
 impl std::error::Error for CombineError {}
+
+/// One caller-labeled page of a single bounded sweep. The scope is a claim
+/// supplied by the caller; this type does not verify the interface, targets,
+/// freshness, provenance, device identity, or permission to perform setup.
+#[derive(Clone, Copy)]
+pub struct SweepPage<'a> {
+    /// Nonzero SHA-256 binding chosen for this sweep and its authorized scope.
+    pub scope: fss_core::ContentDigest,
+    /// Zero-based page number.
+    pub index: u8,
+    /// Total number of pages claimed for the sweep.
+    pub count: u8,
+    /// Completed, already-combined windows for this page.
+    pub report: &'a Report,
+}
 
 /// Payload-free refusal to select an owner-specified hardware claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -337,7 +366,9 @@ impl Report {
     }
 
     pub(crate) fn valid_completed(&self) -> bool {
-        self.stop == Stop::WindowElapsed && self.valid_counts(MAX_PACKETS * MAX_COMBINED_WINDOWS)
+        self.stop == Stop::WindowElapsed
+            && self.cameras.len() <= MAX_SWEEP_CANDIDATES
+            && self.valid_counts(MAX_PACKETS * MAX_COMBINED_WINDOWS * MAX_SWEEP_PAGES)
     }
 
     /// Locate one owner-specified MAC claim in a completed discovery report.
@@ -398,6 +429,65 @@ impl Report {
         Ok(combined)
     }
 
+    /// Combine every numbered page of one caller-bound sweep for cross-page
+    /// claim assessment and fleet selection. Exact duplicate claims are
+    /// deduplicated and conflicting claims are retained. Each page must be
+    /// complete and individually bounded; missing, repeated, or differently
+    /// scoped pages are refused. This does not prove the page labels, network
+    /// coverage, device identity, camera absence, or authority to contact it.
+    /// The caller must retain the page evidence and independently establish
+    /// scope, freshness, peer admission, and any setup authority.
+    pub fn combine_sweep_pages(pages: &[SweepPage<'_>]) -> Result<Self, CombineError> {
+        if pages.is_empty() || pages.len() > MAX_SWEEP_PAGES {
+            return Err(CombineError::WindowCount);
+        }
+        let first = &pages[0];
+        if first.count as usize != pages.len()
+            || first.scope.algorithm() != fss_core::DigestAlgorithm::Sha256
+            || first.scope.is_laboratory()
+            || first.scope.bytes() == [0; 32]
+        {
+            return Err(CombineError::PageMismatch);
+        }
+        let mut seen = [false; MAX_SWEEP_PAGES];
+        let mut combined = Self {
+            cameras: Vec::new(), datagrams: 0, malformed: 0, out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        };
+        combined.cameras.try_reserve_exact(MAX_SWEEP_CANDIDATES)
+            .map_err(|_| CombineError::Allocation)?;
+        for page in pages {
+            let index = usize::from(page.index);
+            if page.scope != first.scope || page.count != first.count || index >= pages.len() || seen[index] {
+                return Err(CombineError::PageMismatch);
+            }
+            seen[index] = true;
+        }
+        // Input delivery order is not the page order; use page numbers so
+        // candidate indices and fleet planning remain deterministic.
+        for index in 0..pages.len() {
+            let page = pages.iter().find(|page| usize::from(page.index) == index)
+                .ok_or(CombineError::PageMismatch)?;
+            let report = page.report;
+            if report.stop != Stop::WindowElapsed { return Err(CombineError::Incomplete); }
+            if !report.valid_counts(MAX_PACKETS * MAX_COMBINED_WINDOWS) {
+                return Err(CombineError::InvalidReport);
+            }
+            combined.datagrams += report.datagrams;
+            combined.malformed += report.malformed;
+            combined.out_of_scope += report.out_of_scope;
+            for candidate in &report.cameras {
+                if !combined.cameras.contains(candidate) {
+                    if combined.cameras.len() == MAX_SWEEP_CANDIDATES {
+                        return Err(CombineError::CandidateLimit);
+                    }
+                    combined.cameras.push(candidate.clone());
+                }
+            }
+        }
+        Ok(combined)
+    }
+
     /// Assess one candidate against this report, without treating a MAC or IP
     /// as identity. A moving device can produce conflicts during a window;
     /// callers must preserve that uncertainty rather than choose a winner.
@@ -431,6 +521,21 @@ impl Report {
     }
 }
 
+fn cancellation_or(owner: &TaskCx<'_>, runtime_cx: &Cx, fallback: Stop) -> Stop {
+    if runtime_cx.is_cancelled() || matches!(owner.cancellation_was_requested(), Ok(true)) {
+        Stop::Cancelled
+    } else {
+        fallback
+    }
+}
+
+fn closed_owner_stop(owner: &TaskCx<'_>, runtime_cx: &Cx) -> Option<Stop> {
+    match owner.is_cancel_requested() {
+        Ok(false) => None,
+        Ok(true) | Err(_) => Some(cancellation_or(owner, runtime_cx, Stop::AuthorityStopped)),
+    }
+}
+
 /// Revalidate the canonical owner immediately before each raw socket poll.
 ///
 /// The caller prepays the operation's byte ceiling once. Repeated pending
@@ -450,18 +555,13 @@ async fn authorized_io<F: Future>(
         }
         // Check metadata before sampling time: a canonical cancellation/drain
         // may be newer than the last co-observed transport clock sample.
-        match owner.is_cancel_requested() {
-            Ok(false) => {}
-            Ok(true) | Err(_) => return Poll::Ready(Err(Stop::AuthorityStopped)),
+        if let Some(stop) = closed_owner_stop(owner, runtime_cx) {
+            return Poll::Ready(Err(stop));
         }
         let current = match clock.now() {
             Ok(current) => current,
             Err(_) => {
-                return Poll::Ready(Err(if runtime_cx.is_cancelled() {
-                    Stop::Cancelled
-                } else {
-                    Stop::AuthorityStopped
-                }));
+                return Poll::Ready(Err(cancellation_or(owner, runtime_cx, Stop::AuthorityStopped)));
             }
         };
         if let Err(error) = owner.checkpoint_for(
@@ -470,11 +570,12 @@ async fn authorized_io<F: Future>(
             current,
             &BudgetVector::ZERO,
         ) {
-            return Poll::Ready(Err(match error {
+            let fallback = match error {
                 ExecutionError::Budget(_) => Stop::BudgetExhausted,
                 ExecutionError::Deadline { .. } => Stop::AuthorityDeadline,
                 _ => Stop::AuthorityStopped,
-            }));
+            };
+            return Poll::Ready(Err(cancellation_or(owner, runtime_cx, fallback)));
         }
         operation.as_mut().poll(task).map(Ok)
     })
@@ -606,6 +707,10 @@ pub async fn discover(
             report.stop = Stop::Cancelled;
             break;
         }
+        if let Some(stop) = closed_owner_stop(owner, runtime_cx) {
+            report.stop = stop;
+            break;
+        }
         if report.datagrams == config.max_packets {
             report.stop = Stop::PacketLimit;
             break;
@@ -621,11 +726,7 @@ pub async fn discover(
         let current = match clock.now() {
             Ok(current) => current,
             Err(_) => {
-                report.stop = if runtime_cx.is_cancelled() {
-                    Stop::Cancelled
-                } else {
-                    Stop::AuthorityStopped
-                };
+                report.stop = cancellation_or(owner, runtime_cx, Stop::AuthorityStopped);
                 break;
             }
         };
@@ -635,11 +736,12 @@ pub async fn discover(
             current,
             &receive_cost,
         ) {
-            report.stop = match error {
+            let fallback = match error {
                 ExecutionError::Budget(_) => Stop::BudgetExhausted,
                 ExecutionError::Deadline { .. } => Stop::AuthorityDeadline,
                 _ => Stop::AuthorityStopped,
             };
+            report.stop = cancellation_or(owner, runtime_cx, fallback);
             break;
         }
         let (len, source) = match timeout_at(
@@ -655,9 +757,7 @@ pub async fn discover(
         .await
         {
             Err(_) => {
-                if runtime_cx.is_cancelled() {
-                    report.stop = Stop::Cancelled;
-                }
+                report.stop = cancellation_or(owner, runtime_cx, report.stop);
                 break;
             }
             Ok(Err(stop)) => {
@@ -681,17 +781,17 @@ pub async fn discover(
             report.stop = Stop::Cancelled;
             break;
         }
+        if let Some(stop) = closed_owner_stop(owner, runtime_cx) {
+            report.stop = stop;
+            break;
+        }
         if runtime_cx.now() >= deadline {
             break;
         }
         let current = match clock.now() {
             Ok(current) => current,
             Err(_) => {
-                report.stop = if runtime_cx.is_cancelled() {
-                    Stop::Cancelled
-                } else {
-                    Stop::AuthorityStopped
-                };
+                report.stop = cancellation_or(owner, runtime_cx, Stop::AuthorityStopped);
                 break;
             }
         };
@@ -701,11 +801,12 @@ pub async fn discover(
             current,
             &BudgetVector::ZERO,
         ) {
-            report.stop = match error {
+            let fallback = match error {
                 ExecutionError::Deadline { .. } => Stop::AuthorityDeadline,
                 ExecutionError::Budget(_) => Stop::BudgetExhausted,
                 _ => Stop::AuthorityStopped,
             };
+            report.stop = cancellation_or(owner, runtime_cx, fallback);
             break;
         }
         let SocketAddr::V4(source) = source else {

@@ -14,8 +14,8 @@ use fss_object::{
 };
 use fss_reference::unifi_direct::{
     camera_api::{
-        ControllerAddress, HandoffAuthority, HandoffError, HandoffResponseObservation,
-        HandoffWrite, Phase, Session, WriteOutcome,
+        ControllerAddress, ControllerPort, HandoffAuthority, HandoffError,
+        HandoffResponseObservation, HandoffWrite, Phase, Session, StatusShape, WriteOutcome,
     },
     camera_http,
     handoff::{Framing, Plan, Preconditions},
@@ -116,6 +116,14 @@ fn harness_with_optional_port(
     framing: Framing,
     bound_port: Option<u16>,
 ) -> Result<Harness, Box<dyn Error>> {
+    harness_with_route(suffix, framing, bound_port, false)
+}
+fn harness_with_route(
+    suffix: &str,
+    framing: Framing,
+    bound_port: Option<u16>,
+    management: bool,
+) -> Result<Harness, Box<dyn Error>> {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-handoff-dispatch-{}-{suffix}",
         std::process::id()
@@ -188,8 +196,17 @@ fn harness_with_optional_port(
         lease_fence: fence,
         settings,
     };
-    let mut plan =
-        Plan::new_with_framing(peer, Ipv4Addr::new(192, 168, 1, 40), conditions, framing)?;
+    let mut plan = if management {
+        Plan::new_management_v12(
+            peer,
+            Ipv4Addr::new(192, 168, 1, 40),
+            7442,
+            [0x11; 32],
+            conditions,
+        )?
+    } else {
+        Plan::new_with_framing(peer, Ipv4Addr::new(192, 168, 1, 40), conditions, framing)?
+    };
     if let Some(port) = bound_port {
         plan = plan.bind_reported_controller_port(status, port)?;
     }
@@ -233,6 +250,68 @@ fn harness_with_optional_port(
         conditions,
         permit,
     })
+}
+
+#[test]
+fn management_v12_dispatch_is_journal_bound_and_writes_exact_request() -> Test {
+    let Harness {
+        _temp,
+        mut authority,
+        mut tree,
+        effects,
+        mut session,
+        plan,
+        conditions,
+        permit,
+    } = harness_with_route("management-v12", Framing::ContentLength, Some(7442), true)?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let run = run_owned_async(&mut authority, &mut tree, TaskSpec {
+            task_id: TaskId::new("task:management-v12")?, started_at: TimestampNs(5),
+        }, &cx, async |task, cx| {
+            let output: Test = async {
+                let clock = MeteredClock::new(task, cx, TimestampNs(6))?;
+                let bytes = Rc::new(RefCell::new(Vec::new()));
+                let mut io = MeteredIo::with_clock(Sink { bytes: bytes.clone(), partial: false, polled: Rc::new(Cell::new(false)) }, clock, "fixture:camera", 4096)?;
+                let other = Plan::new_management_v12(Ipv4Addr::new(192, 168, 1, 30), Ipv4Addr::new(192, 168, 1, 40), 7442, [0x22; 32], conditions)?
+                    .bind_reported_controller_port(StatusShape { board: false, firmware: false, controller: true, controller_port: ControllerPort::Reported(7442) }, 7442)?;
+                let refusal = session.dispatch_handoff(cx, &mut io, &other, conditions, permit, &Guard(true), Duration::from_secs(1)).await.expect_err("different token must not reuse permit");
+                assert_eq!(refusal.reason, HandoffError::PermitMismatch);
+                assert!(bytes.borrow().is_empty());
+                let refusal = session.dispatch_handoff(cx, &mut io, &plan, conditions, refusal.permit, &Guard(false), Duration::from_secs(1)).await.expect_err("denied authority must not dispatch");
+                assert_eq!(refusal.reason, HandoffError::Denied);
+                assert!(bytes.borrow().is_empty());
+                let write = session.dispatch_handoff(cx, &mut io, &plan, conditions, refusal.permit, &Guard(true), Duration::from_secs(1)).await.map_err(|_| "management dispatch refused")?;
+                assert!(matches!(write, HandoffWrite::Written { .. }));
+                assert_eq!(session.phase(), Phase::AwaitHandoff);
+                let bytes = bytes.borrow();
+                assert!(bytes.starts_with(b"POST /api/1.2/manage HTTP/1.1\r\n"));
+                assert!(bytes.windows(b"Cookie: authId=synthetic-cookie".len()).any(|w| w == b"Cookie: authId=synthetic-cookie"));
+                let expected = format!("{{\"mgmt\":{{\"protocol\":\"wss\",\"hosts\":[\"192.168.1.40:7442\"],\"token\":\"{}\"}}}}", "11".repeat(32));
+                assert!(bytes.ends_with(expected.as_bytes()));
+                let length_header = format!("Content-Length: {}\r\n", expected.len());
+                assert!(bytes.windows(length_header.len()).any(|w| w == length_header.as_bytes()));
+                let response = session.accept_handoff_response_observed(Response::new(200, "OK", b"{}".to_vec()))?;
+                assert!(matches!(response, HandoffResponseObservation::Object { .. }));
+                assert_eq!(session.phase(), Phase::ReconcileSettings);
+                Ok(())
+            }.await;
+            let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("management fixture failed".into()) };
+            TaskCompletion { output, outcome, completed_at: TimestampNs(59_000_000_000) }
+        }).await?;
+        run.receipt?;
+        run.output
+    })?;
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&OperationId::parse("operation:handoff-dispatch")?)
+            .ok_or("missing journal")?
+            .state,
+        fss_core::EffectState::Committed
+    );
+    Ok(())
 }
 
 #[test]
@@ -575,6 +654,15 @@ fn exercise_framing(framing: Framing) -> Test {
 
 #[test]
 fn revoked_authority_stops_a_partial_write_and_fences_the_session() -> Test {
+    exercise_revoked_authority(false)
+}
+
+#[test]
+fn management_v12_partial_write_remains_indeterminate() -> Test {
+    exercise_revoked_authority(true)
+}
+
+fn exercise_revoked_authority(management: bool) -> Test {
     let Harness {
         _temp,
         mut authority,
@@ -584,7 +672,11 @@ fn revoked_authority_stops_a_partial_write_and_fences_the_session() -> Test {
         plan,
         conditions,
         permit,
-    } = harness("revoked")?;
+    } = if management {
+        harness_with_route("management-v12-revoked", Framing::ContentLength, None, true)?
+    } else {
+        harness("revoked")?
+    };
     let runtime = RuntimeBuilder::current_thread().build()?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -876,6 +968,7 @@ fn http_fixture(
     let double_read = observe || setup_preflight;
     let refresh_status =
         setup_preflight && !observe && reported_port.is_some() && !already && !changed;
+    let management_v12 = reported_port.as_ref().is_some_and(|(_, mode)| *mode == 5);
     let handoff_index = if setup_preflight {
         4 + usize::from(refresh_status)
     } else {
@@ -891,6 +984,10 @@ fn http_fixture(
     if refresh_status {
         routes.insert(4, "GET /api/1.1/status ");
     }
+    if management_v12 {
+        routes[0] = "POST /api/1.2/login ";
+        routes[handoff_index] = "POST /api/1.2/manage ";
+    }
     for (index, route) in routes.iter().enumerate() {
         let request = http_request(&mut socket)?;
         if !request.starts_with(route.as_bytes()) {
@@ -903,8 +1000,16 @@ fn http_fixture(
         {
             return Err(std::io::Error::other("fixture cookie missing"));
         }
-        if index == handoff_index && !observe && !request.ends_with(target_body.as_bytes()) {
-            return Err(std::io::Error::other("fixture handoff mismatch"));
+        if index == handoff_index && !observe {
+            let expected = if management_v12 {
+                let port = reported_port.as_ref().ok_or_else(|| std::io::Error::other("missing port"))?.0.load(std::sync::atomic::Ordering::Acquire);
+                format!("{{\"mgmt\":{{\"protocol\":\"wss\",\"hosts\":[\"{destination}:{port}\"],\"token\":\"{}\"}}}}", "11".repeat(32))
+            } else {
+                target_body.clone()
+            };
+            if !request.ends_with(expected.as_bytes()) {
+                return Err(std::io::Error::other("fixture handoff mismatch"));
+            }
         }
         if index == handoff_index && !observe {
             let chunked = request
@@ -1473,7 +1578,7 @@ fn run_discovered_setup_with_listener(
                     assert_eq!(report.cameras.len(), 1);
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
-                    let revoke_policy = revoked.then(|| if integrated_mode == 12 {
+                    let revoke_policy = revoked.then(|| if matches!(integrated_mode, 12 | 19) {
                         Arc::clone(&shared)
                     } else { Arc::clone(&live) });
                     let port_claim = ready.map(|_| (Arc::clone(&advertised_port), port_mode));
@@ -1700,7 +1805,7 @@ fn run_discovered_setup_with_listener(
                         return Ok(());
                     }
                     let result = if ready.is_some() {
-                        let shared_mode = matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18);
+                        let shared_mode = matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18 | 19);
                         let policy = ReadyPolicy {
                             live: Arc::clone(&live),
                             shared: Arc::clone(&shared),
@@ -1808,7 +1913,7 @@ fn run_discovered_setup_with_listener(
                         );
                         assert_eq!(http.phase(), Phase::Login);
                         live.store(true, std::sync::atomic::Ordering::Release);
-                        if matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18) {
+                        if matches!(integrated_mode, 10 | 11 | 12 | 16 | 17 | 18 | 19) {
                             use discovery::fleet::{Enrollment, Error as FleetError, Fleet, State};
                             let certificate = ContentDigest::sha256(b"fixture certificate binding");
                             let credential_handle = ContentDigest::sha256(b"fixture credential handle");
@@ -1816,7 +1921,15 @@ fn run_discovered_setup_with_listener(
                                 report.cameras[0].mac().ok_or("fixture MAC missing")?,
                                 camera, peer_admission, certificate, credential_handle, 1,
                             )?;
-                            let fleet = Fleet::new(&report, &[enrollment])?;
+                            let sweep_scope = ContentDigest::sha256(b"fixture paged setup scope");
+                            let sweep_pages = [discovery::SweepPage {
+                                scope: sweep_scope, index: 0, count: 1, report: &report,
+                            }];
+                            let fleet = if integrated_mode == 19 {
+                                Fleet::from_sweep(&sweep_pages, &[enrollment])?
+                            } else {
+                                Fleet::new(&report, &[enrollment])?
+                            };
                             assert_eq!(fleet.next_ready(), Some(0));
                             let mut trace = setup::Trace::default();
                             let credential = br#"{"username":"fixture","password":"synthetic"}"#;
@@ -1950,6 +2063,52 @@ fn run_discovered_setup_with_listener(
                                 assert_eq!(trace.take_permit().ok_or("fleet lost pending permit")?.operation(), &operation);
                                 assert_eq!(http.phase(), Phase::Fenced);
                                 assert!(matches!(fleet.rearm_before_effect(0), Err(FleetError::RetryNotSafe)));
+                            } else if integrated_mode == 19 {
+                                use discovery::{pump::{CameraWorkSet, RetryDisposition, SetupCompletion}, retry,
+                                    sweep::Runner, sweep_pump::{Coordinated, Pump}};
+                                let runner = Runner::new(cx, task, clock, sweep_scope,
+                                    vec![vec![config.clone()]], Duration::from_secs(5))?;
+                                let mut router = discovery::fleet::Router::new(&fleet, &control, 1, 4096, Duration::from_secs(5))?;
+                                let mut pump = Pump::new(&runner, &fleet, &mut router)?;
+                                pump.request_sweep_stop();
+                                let policy = retry::Policy::new(Duration::from_millis(250), Duration::from_secs(1), 3)?;
+                                let mut retries = retry::Queue::new(&fleet, task, cx, clock, policy)?;
+                                let mut work = CameraWorkSet::new(1).map_err(|_| "work capacity")?;
+                                let setup = fleet.setup_one(
+                                    0, &mut owner, &control, port, &mut http,
+                                    certificate, credential_handle, credential, fence, destination,
+                                    &operation, framing, Duration::from_secs(5), &mut trace,
+                                );
+                                let setup_operation = operation.clone();
+                                work.insert(0, Box::pin(async move {
+                                    SetupCompletion { operation: setup_operation, outcome: setup.await }
+                                })).map_err(|_| "setup work")?;
+                                match pump.next_coordinated(&mut work, &mut retries).await? {
+                                    Coordinated::Setup { index: 0, completion, retry: RetryDisposition::NotEligible } => {
+                                        assert!(matches!(completion.outcome, Err(FleetError::Setup(setup::Error::Denied))));
+                                        assert_eq!(completion.operation, operation);
+                                    }
+                                    _ => return Err("setup denial was not retained".into()),
+                                }
+                                assert!(retries.is_empty());
+                                assert_eq!(fleet.state(0), Some(State::Finished { candidate: 0 }));
+                                retries.schedule_for(0, &operation)?;
+                                let mut wait = Box::pin(pump.next_coordinated(&mut work, &mut retries));
+                                poll_fn(|context| match wait.as_mut().poll(context) {
+                                    Poll::Pending => Poll::Ready(()),
+                                    Poll::Ready(_) => panic!("retry did not observe its backoff"),
+                                }).await;
+                                drop(wait);
+                                assert_eq!(retries.len(), 1);
+                                assert!(matches!(pump.next_coordinated(&mut work, &mut retries).await?,
+                                    Coordinated::Retry(retry::Event::Rearmed { index: 0, state: State::Ready { candidate: 0 } })));
+                                assert!(retries.is_empty());
+                                drop(pump);
+                                drop(work);
+                                assert!(trace.operation().is_none());
+                                drop(http);
+                                peer.join().map_err(|_| "HTTP fixture panic")??;
+                                return Ok(());
                             } else if integrated_mode == 12 {
                                 {
                                     use discovery::{pump::{CameraWorkSet, Coordinated, Pump, RetryDisposition, SetupCompletion}, retry, scan::Scanner};
@@ -2078,6 +2237,10 @@ fn run_discovered_setup_with_listener(
                         }
                         if integrated_mode != 0 {
                             let mut trace = setup::AcceptTrace::default();
+                            if port_mode == 5 {
+                                trace.setup_mut().require_management_v12([0x11; 32])?;
+                                assert!(trace.setup_mut().take_management_hello_binding().is_none());
+                            }
                             let client = if matches!(integrated_mode, 1 | 4 | 6 | 8) {
                                 let socket = asupersync::net::TcpSocket::new_v4()?;
                                 let source = if integrated_mode == 4 { Ipv4Addr::new(127, 0, 0, 2) } else { Ipv4Addr::LOCALHOST };
@@ -2196,10 +2359,21 @@ fn run_discovered_setup_with_listener(
                                     let accepted = result.map_err(|e| format!("integrated handoff accept: {e:?}"))?;
                                     assert_eq!(*accepted.gate.source().ip(), Ipv4Addr::LOCALHOST);
                                     assert!(trace.accept_started());
+                                    let mut controller = if port_mode == 5 {
+                                        let identity = fss_reference::unifi_direct::Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?;
+                                        let mut controller = fss_reference::unifi_direct::Controller::new(identity, 1)?;
+                                        trace.bind_management_hello(&mut controller)?;
+                                        Some(controller)
+                                    } else { None };
                                     match trace.take_outcome() {
                                         Some(setup::Outcome::Observed { permit, readback, .. }) => {
                                             assert_eq!(permit.operation(), &operation);
                                             assert_eq!(readback, fss_reference::unifi_direct::handoff::Readback::Requested);
+                                            if let Some(controller) = &mut controller {
+                                                let payload = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_hello\",\"messageId\":9,\"inResponseTo\":0,\"payload\":{{\"adoptionCode\":\"{}\"}}}}", "11".repeat(32));
+                                                assert_eq!(controller.observe(payload.as_bytes())?, fss_reference::unifi_direct::Observation::Hello);
+                                                assert_eq!(controller.management_hello_claim(), Some(permit.prepared().request_digest()));
+                                            }
                                         }
                                         _ => return Err("successful accept lost committed handoff".into()),
                                     }
@@ -2369,7 +2543,7 @@ fn run_discovered_setup_with_listener(
                 }
                 .await;
                 let outcome = if output.is_ok()
-                    && (already || observe || changed || revoked || port_mode != 0 || matches!(integrated_mode, 13..=15) || integrated_mode == 17)
+                    && (already || observe || changed || revoked || (port_mode != 0 && port_mode != 5) || matches!(integrated_mode, 13..=15) || integrated_mode == 17)
                 {
                     TaskOutcome::Success
                 } else if output.is_ok() {
@@ -2393,7 +2567,7 @@ fn run_discovered_setup_with_listener(
         assert_eq!(journal_entry.ok_or("missing cancelled setup")?.state, fss_core::EffectState::Cancelled);
     } else if integrated_mode == 18 {
         assert_eq!(journal_entry.ok_or("missing prepared setup")?.state, fss_core::EffectState::Prepared);
-    } else if already || observe || changed || revoked || port_mode != 0 {
+    } else if already || observe || changed || revoked || (port_mode != 0 && port_mode != 5) {
         assert!(journal_entry.is_none());
     } else {
         assert_eq!(
@@ -2561,6 +2735,20 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
 
 /// Exercises the full setup-to-accept boundary on an isolated worker.
 #[test]
+#[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on an isolated test worker"]
+fn management_v12_setup_links_dispatch_accept_and_hello_claim() -> Test {
+    let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(ip.is_private() || ip.is_link_local())
+        || ip == Ipv4Addr::new(192, 168, 1, 10)
+        || ip == Ipv4Addr::new(192, 168, 1, 99)
+    {
+        return Err("test controller interface is not suitable".into());
+    }
+    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 5, false, 6)
+}
+
+/// Exercises the full setup-to-accept boundary on an isolated worker.
+#[test]
 #[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on the test worker"]
 fn setup_accept_retains_outcome_across_handoff_and_accept_boundaries() -> Test {
     let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
@@ -2602,6 +2790,20 @@ fn fleet_setup_dispatches_and_preserves_cancelled_effects() -> Test {
         )?;
     }
     Ok(())
+}
+
+/// Drives a paged-fleet setup denial and retry timer against a synthetic camera.
+#[test]
+#[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on the test worker"]
+fn sweep_pump_retries_a_real_pre_effect_setup_failure() -> Test {
+    let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(ip.is_private() || ip.is_link_local()) || ip == Ipv4Addr::new(192, 168, 1, 10) {
+        return Err("test controller interface is not suitable".into());
+    }
+    run_discovered_setup_with_listener(
+        false, false, false, Framing::ContentLength,
+        false, false, Some((ip, true)), 0, false, 19,
+    )
 }
 
 /// Exercises two distinct discovery claims and setup effects on one listener.

@@ -7,7 +7,7 @@
 
 use super::{Plan, Preconditions, ReadbackChange, ReadbackObservation, checkpoint::Anchored};
 use crate::unifi_direct::{
-    camera_api::{HandoffError, HandoffWrite, SerializerAuthority, VideoSerializers},
+    camera_api::{HandoffError, HandoffResponseObservation, HandoffWrite, SerializerAuthority, VideoSerializers},
     camera_http, ingress, listener,
     pipeline::{NameProbeError, Pipeline, ProbeError},
     recording::Recorder,
@@ -16,7 +16,10 @@ use asupersync::io::{AsyncRead, AsyncWrite};
 use fss_core::{ContentDigest, TimestampNs};
 use fss_packet::extended_flv::stream::{Framer, NameProbeOwner};
 use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
-use std::{net::Ipv4Addr, time::Duration};
+use std::{
+    net::{Ipv4Addr, SocketAddrV4},
+    time::Duration,
+};
 
 /// Caller-owned inputs for one bounded attempt. Identity, listener routing,
 /// checkpoint/key custody, lease and peer admission require independent checks.
@@ -54,6 +57,14 @@ pub enum Failure {
     IndeterminateWrite,
     /// The HTTP response could not be read or was refused.
     Response(camera_http::Error),
+    /// The response was received, but the caller could not retain its claim.
+    /// The permit and bounded response shape remain available for reconciliation.
+    ResponseCustody {
+        /// Payload-free untrusted response shape.
+        observation: HandoffResponseObservation,
+        /// Whether cancellation, admission, or persistent custody failed.
+        reason: ResponseCustodyError,
+    },
     /// A required full serializer readback failed.
     Readback(camera_http::Error),
     /// The retained baseline and fresh readback could not be compared.
@@ -63,6 +74,23 @@ pub enum Failure {
     /// The bound listener did not accept an admitted connection.
     Accept(listener::Error),
 }
+
+/// Why the caller could not retain a received camera response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResponseCustodyError {
+    /// Cancellation or time admission prevented custody.
+    Cancelled,
+    /// Storage authority or budget was refused.
+    Authority,
+    /// Persistence failed or its outcome requires inspection.
+    Storage,
+}
+
+/// Synchronous caller-owned custody of an untrusted HTTP response claim. The
+/// caller must bound or offload blocking work, preserve the supplied permit on
+/// failure, and not treat this claim as verified effect or permission to retry.
+pub type ResponseRecorder<'a> = dyn FnMut(&mut CommittedEffect, HandoffResponseObservation)
+    -> Result<(), ResponseCustodyError> + 'a;
 
 /// Retained committed effect and optional private readback after refusal.
 /// `may_have_written` is not proof of a remote outcome; reconcile the journal.
@@ -86,11 +114,13 @@ impl std::fmt::Debug for Refusal {
     }
 }
 
-/// A TCP connection accepted after a matching camera readback. Its bytes,
-/// identity, high-resolution profile and durable recording remain unverified.
+/// A TCP connection associated with an original matching camera readback.
+/// After reaccept the readback is historical. Its bytes, identity,
+/// high-resolution profile and durable recording remain unverified.
 #[must_use = "retain or explicitly retire the media pipeline and reconcile the effect"]
 pub struct Connected {
     camera_claim: ContentDigest,
+    pub(super) listener_addr: SocketAddrV4,
     /// Claimed permit retained for independent effect reconciliation.
     pub(super) permit: CommittedEffect,
     /// Full private serializer readback.
@@ -102,12 +132,22 @@ pub struct Connected {
 }
 
 impl Connected {
+    pub(super) fn from_reaccept(detached: Detached, listener_addr: SocketAddrV4) -> Self {
+        Self {
+            camera_claim: detached.camera_claim,
+            listener_addr,
+            permit: detached.permit,
+            readback: detached.readback,
+            comparison: detached.comparison,
+            pipeline: detached.pipeline,
+        }
+    }
     /// The camera claim bound to the dispatched start, not authenticated identity.
     pub fn camera_claim(&self) -> ContentDigest {
         self.camera_claim
     }
 
-    /// The redacted readback comparison made before accepting the socket.
+    /// The original readback comparison; after reaccept it may be stale.
     pub fn comparison(&self) -> ReadbackObservation {
         self.comparison
     }
@@ -180,6 +220,20 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
     permit: CommittedEffect,
     authorize_observation: impl Fn(Ipv4Addr, u64) -> bool,
 ) -> Result<Connected, Refusal> {
+    start_with_response(http, listener, request, permit, authorize_observation, &mut |_, _| Ok(())).await
+}
+
+/// Start with caller-owned response custody, before reading settings or media.
+/// A custody refusal retains the exact permit and redacted response shape;
+/// it never triggers an automatic retry or restore.
+pub async fn start_with_response<IO: AsyncRead + AsyncWrite + Unpin>(
+    http: &mut camera_http::Owner<'_, '_, '_, IO>,
+    listener: &mut listener::Listener<'_, '_, '_>,
+    request: Request<'_>,
+    permit: CommittedEffect,
+    authorize_observation: impl Fn(Ipv4Addr, u64) -> bool,
+    record_response: &mut ResponseRecorder<'_>,
+) -> Result<Connected, Refusal> {
     if request.plan.operation() != super::Operation::Start
         || request.current.listener != listener.local_addr()
         || !http.matches_media_listener(listener)
@@ -192,7 +246,7 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
             readback: None,
         });
     }
-    let permit = match http
+    let mut permit = match http
         .dispatch_serializer(
             request.plan,
             request.current,
@@ -222,12 +276,21 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
         }
         Ok(HandoffWrite::Written { permit }) => permit,
     };
-    if let Err(error) = http
+    let response = match http
         .read_serializer_response_observed(&permit, request.wait)
         .await
     {
-        return Err(Refusal {
+        Ok(response) => response,
+        Err(error) => return Err(Refusal {
             failure: Failure::Response(error),
+            permit,
+            may_have_written: true,
+            readback: None,
+        }),
+    };
+    if let Err(reason) = record_response(&mut permit, response) {
+        return Err(Refusal {
+            failure: Failure::ResponseCustody { observation: response, reason },
             permit,
             may_have_written: true,
             readback: None,
@@ -279,6 +342,7 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
     {
         Ok(pipeline) => Ok(Connected {
             camera_claim: request.current.camera,
+            listener_addr: listener.local_addr(),
             permit,
             readback,
             comparison,

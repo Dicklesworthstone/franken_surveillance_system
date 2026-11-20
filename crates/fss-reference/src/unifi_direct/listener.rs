@@ -111,6 +111,19 @@ impl fmt::Debug for Listener<'_, '_, '_> {
 }
 
 impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
+    pub(crate) fn owns_pipeline_task(&self, pipeline: &Pipeline) -> bool {
+        pipeline.is_bound_to_task(self.task)
+    }
+
+    pub(crate) fn matches_context<'s, 't>(
+        &self,
+        task: &TaskCx<'t>,
+        cx: &Cx,
+        clock: MeteredClock<'s, 't>,
+    ) -> bool {
+        clock.matches(task, cx) && self.clock.same_mapping(&clock)
+    }
+
     fn check(
         task: &TaskCx<'task>,
         cx: &Cx,
@@ -350,6 +363,11 @@ pub struct StartedWithListener<'scope, 'task, 'policy> {
 }
 
 impl<'scope, 'task, 'policy> StartedWithListener<'scope, 'task, 'policy> {
+    /// Inspect the retained startup without moving its listener or request binding.
+    pub fn started(&self) -> &StartedBeforeReply {
+        &self.started
+    }
+
     /// Recover the first connection and listener for explicit disposition.
     /// Splitting the owner discards the request binding used for selection.
     pub fn into_parts(self) -> (StartedBeforeReply, Listener<'scope, 'task, 'policy>) {

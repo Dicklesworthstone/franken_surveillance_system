@@ -1117,7 +1117,7 @@ fn direct_trial_rejects_invalid_video_still_before_io() -> Test {
     let base = ["127.0.0.1:1", "127.0.0.1", "001122aabbcc", "/absent/cert", "/absent/key",
         "/absent/journal", "/absent/output", "12345678-1234-4abc-9abc-123456789abc"];
     for (options, expected) in [
-        (&["--lab-video-still=unknown"][..], "video still requires explicit full or limited color"),
+        (&["--lab-video-still=unknown"][..], "video still requires an explicit supported matrix and range"),
         (&["--lab-video-still=full"][..], "video still requires video-only archive and owned decode"),
         (&["--lab-save-still=/tmp/still.jpg"][..], "still export requires a still and an absolute normal path"),
         (&["--lab-owned-archive", "--lab-video-only-archive", "--lab-decode-owned", "--lab-video-still=full", "--lab-save-still=relative.jpg"][..], "still export requires a still and an absolute normal path"),
@@ -1215,6 +1215,17 @@ fn direct_trial_process_managed_video_archive_still() -> Test {
     if std::env::var_os("FSS_TEST_VIDEO_STILL").as_deref() != Some(std::ffi::OsStr::new("full")) {return Err("explicit still color missing".into());}
     direct_trial_process_clip_for_channel(false, false, false, false, 0, 3, false, false, false, false,
         Some(2), None, Some((160, 128)))
+}
+
+#[test]
+#[ignore = "requires disposable TLS fixtures and automatic still fixture options"]
+fn direct_trial_process_video_still_uses_sps_color() -> Test {
+    for name in ["FSS_TEST_VIDEO_ONLY", "FSS_TEST_MANAGED_ARCHIVE", "FSS_TEST_MANAGED_ROLLOVER"] {
+        if std::env::var_os(name).as_deref() != Some(std::ffi::OsStr::new("1")) { return Err("automatic still fixture options missing".into()); }
+    }
+    if std::env::var_os("FSS_TEST_VIDEO_STILL").as_deref() != Some(std::ffi::OsStr::new("auto")) { return Err("automatic still color missing".into()); }
+    direct_trial_process_clip_for_channel(false, false, false, false, 0, 3, false, false, false, false,
+        Some(2), Some(include_bytes!("../../../crates/fss-packet/tests/fixtures/avc/baseline_bt709_full.264")), Some((160, 128)))
 }
 
 #[test]
@@ -1690,7 +1701,7 @@ fn direct_trial_process_clip_for_channel(
     let force_rollover=std::env::var_os("FSS_TEST_MANAGED_ROLLOVER").as_deref() == Some(std::ffi::OsStr::new("1"));
     let retained_generations=std::env::var_os("FSS_TEST_RETAINED_VIDEO_GENERATIONS").as_deref() == Some(std::ffi::OsStr::new("1"));
     let auto_retained=std::env::var_os("FSS_TEST_AUTO_RETAINED_GENERATIONS").as_deref() == Some(std::ffi::OsStr::new("1"));
-    let video_still=match std::env::var("FSS_TEST_VIDEO_STILL") {Ok(value) if value=="full" || value=="limited"=>Some(value),Ok(_)=>return Err("invalid explicit still color".into()),Err(std::env::VarError::NotPresent)=>None,Err(_)=>return Err("invalid still color encoding".into())};
+    let video_still=match std::env::var("FSS_TEST_VIDEO_STILL") {Ok(value) if ["full","limited","bt601-full","bt601-limited","bt709-full","bt709-limited","auto"].contains(&value.as_str())=>Some(value),Ok(_)=>return Err("invalid still color".into()),Err(std::env::VarError::NotPresent)=>None,Err(_)=>return Err("invalid still color encoding".into())};
     let event_after_ready=std::env::var_os("FSS_TEST_EVENT_AFTER_READY").as_deref() == Some(std::ffi::OsStr::new("1"));
     let event_after_still=event_after_ready || std::env::var_os("FSS_TEST_EVENT_AFTER_STILL").as_deref() == Some(std::ffi::OsStr::new("1"));
     let ready_before_next=std::env::var_os("FSS_TEST_STILL_READY_BEFORE_NEXT").as_deref() == Some(std::ffi::OsStr::new("1"));
@@ -2337,7 +2348,7 @@ fn direct_trial_process_clip_for_channel(
             let value=|name:&str| -> Result<usize,Box<dyn Error>> {Ok(decoded.split_whitespace().find_map(|word|word.strip_prefix(name)).ok_or("missing decoded field")?.parse()?)};
             let (width,height,frames)=(value("width=")?,value("height=")?,value("frames=")?);
             if let Some(color)=&video_still {
-                let expected_color=if color=="full" {"Bt601Full"} else {"Bt601Limited"};
+                let expected_color=match color.as_str() {"full"|"bt601-full"=>"Bt601Full","limited"|"bt601-limited"=>"Bt601Limited","bt709-full"|"auto"=>"Bt709Full","bt709-limited"=>"Bt709Limited",_=>return Err("unexpected still color".into())};
                 let marker=format!("trial_owned_archive_still=complete width={width} height={height} color={expected_color} root_binding=checked capture_bounds=unknown export=none");
                 if !report.contains(&marker) {return Err("source-checked archive still missing or mismatched".into());}
                 let live_start=report.find("trial_owned_live_still=started source=confirmed_publication").ok_or("confirmed-publication still did not start")?;

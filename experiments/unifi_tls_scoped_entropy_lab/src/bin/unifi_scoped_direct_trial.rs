@@ -11,8 +11,14 @@ mod auth;
 mod trial_checkpoint;
 #[path = "trial_http_checkpoint/mod.rs"]
 mod trial_http_checkpoint;
+#[path = "trial_local_history/mod.rs"]
+mod trial_local_history;
 #[path = "trial_http_record/mod.rs"]
 mod trial_http_record;
+#[path = "trial_http_av_record/mod.rs"]
+mod trial_http_av_record;
+#[path = "trial_http_restore/mod.rs"]
+mod trial_http_restore;
 #[path = "trial_run_id/mod.rs"]
 mod trial_run_id;
 #[path = "trial_setup_fence/mod.rs"]
@@ -105,9 +111,9 @@ fn retain_output_on_receipt_failure<R, E: Into<Box<dyn Error>>>(
         },
     }
 }
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--uncorrelated-timesync|--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-http-record] [--lab-http-checkpoint=DIR] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized\nAutomatic pinned setup defaults to a bounded continuing time-sync exchange; each reply remains a separately authorized journaled effect. --uncorrelated-timesync selects the conservative policy.";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX|auto CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--uncorrelated-timesync|--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--lab-stream-name-event=EVENT] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id|--lab-trailer16-opaque] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--discovery-neighbor-interface=NAME] [--lab-discovery-sweep-all] [--lab-auto-pinned-setup] [--lab-setup-fence=DIR] [--observe-only] [--observe-snapshot] [--observe-serializers] [--lab-http-record|--lab-http-av-record] [--lab-http-av-auto=1..7] [--lab-http-av-supervised] [--lab-http-name-probe] [--lab-http-restore-after] [--lab-http-checkpoint=DIR] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=auto|full|limited|bt601-full|bt601-limited|bt709-full|bt709-limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--lab-exhaust-network-in-bootstrap|--lab-exhaust-network-after-bootstrap] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--lab-management-v12] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized\nAutomatic pinned setup defaults to a bounded continuing time-sync exchange; each reply remains a separately authorized journaled effect. --uncorrelated-timesync selects the conservative policy.";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
-const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized";
+const FENCE_RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-setup-fence FENCE_DIR CAMERA_CERT_DER JOURNAL_SCOPE --owner-authorized; --inspect-setup-fence-with-checkpoints adds BASELINE OBSERVATION; --inspect-setup-fence-with-restored adds BASELINE OBSERVATION RESTORED; --inspect-setup-fence-with-restore-request adds BASELINE OBSERVATION RESTORED PEER_IPV4 before --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
@@ -305,19 +311,29 @@ struct Options {
     listen: SocketAddrV4,
     camera: Option<Ipv4Addr>,
     discovery_prefix: Option<u8>,
+    discovery_sweep_all: bool,
     discovery_hint: Option<Ipv4Addr>,
     discovery_neighbor_interface: Option<String>,
     observe_only: bool,
     observe_snapshot: bool,
     observe_serializers: bool,
+    lab_compare_checkpoint: Option<PathBuf>,
     lab_http_checkpoint: Option<PathBuf>,
     lab_http_record: bool,
+    lab_http_name_probe: bool,
+    lab_http_av_record: bool,
+    lab_http_av_auto: Option<u64>,
+    lab_http_av_supervised: bool,
+    lab_exhaust_network_after_bootstrap: bool,
+    lab_exhaust_network_in_bootstrap: bool,
+    lab_http_restore_after: bool,
     mac: Option<[u8; 6]>,
     cert: PathBuf,
     key: PathBuf,
     journal: PathBuf,
     anchored_journal: Option<(PathBuf, PathBuf)>,
     lab_setup_fence: Option<PathBuf>,
+    lab_management_v12: bool,
     output: PathBuf,
     uuid: String,
     wait: Duration,
@@ -333,6 +349,7 @@ struct Options {
     lab_aac_source: bool,
     lab_g4_trailer: bool,
     lab_zero_stream_id: bool,
+    lab_opaque_trailer: bool,
     lab_segments: usize,
     lab_owned_archive: bool,
     lab_video_only_archive: bool,
@@ -345,7 +362,7 @@ struct Options {
     lab_av_history_records: Option<usize>,
     lab_renew_batch: Option<u64>,
     lab_decode_owned: bool,
-    lab_video_still: Option<fss_reference::unifi_direct::video_still::Color>,
+    lab_video_still: Option<fss_reference::unifi_direct::video_still::ColorPolicy>,
     lab_save_still: Option<PathBuf>,
     lab_anchor_root: Option<PathBuf>,
     setup: Option<SetupOptions>,
@@ -409,6 +426,8 @@ fn options() -> ResultBox<Options> {
     } else {
         None
     };
+    let lab_management_v12 = args.last().is_some_and(|s| s == "--lab-management-v12");
+    if lab_management_v12 { args.pop(); }
     let anchored_journal = if let Some(value) = args
         .last()
         .and_then(|s| s.strip_prefix("--anchored-journal="))
@@ -423,6 +442,10 @@ fn options() -> ResultBox<Options> {
     } else {
         None
     };
+    let lab_exhaust_network_after_bootstrap = args.last().is_some_and(|s| s == "--lab-exhaust-network-after-bootstrap");
+    if lab_exhaust_network_after_bootstrap { args.pop(); }
+    let lab_exhaust_network_in_bootstrap = args.last().is_some_and(|s| s == "--lab-exhaust-network-in-bootstrap");
+    if lab_exhaust_network_in_bootstrap { args.pop(); }
     let lab_anchor_root=if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-anchor-root=")) {
         let path=PathBuf::from(value);args.pop();Some(path)
     } else {None};
@@ -430,7 +453,8 @@ fn options() -> ResultBox<Options> {
         let path=PathBuf::from(value);args.pop();Some(path)
     } else {None};
     let lab_video_still = if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-video-still=")) {
-        let color=match value {"full"=>fss_reference::unifi_direct::video_still::Color::Bt601Full,"limited"=>fss_reference::unifi_direct::video_still::Color::Bt601Limited,_=>return Err("video still requires explicit full or limited color".into())};
+        use fss_reference::unifi_direct::video_still::{Color, ColorPolicy};
+        let color=match value {"auto"=>ColorPolicy::SourceSignal,"full"|"bt601-full"=>ColorPolicy::Explicit(Color::Bt601Full),"limited"|"bt601-limited"=>ColorPolicy::Explicit(Color::Bt601Limited),"bt709-full"=>ColorPolicy::Explicit(Color::Bt709Full),"bt709-limited"=>ColorPolicy::Explicit(Color::Bt709Limited),_=>return Err("video still requires an explicit supported matrix and range".into())};
         args.pop();Some(color)
     } else {None};
     let lab_decode_owned = args.last().is_some_and(|s| s == "--lab-decode-owned");
@@ -467,8 +491,26 @@ fn options() -> ResultBox<Options> {
         args.pop();
         Some(path)
     } else { None };
+    let lab_http_restore_after = args.last().is_some_and(|s| s == "--lab-http-restore-after");
+    if lab_http_restore_after { args.pop(); }
+    let lab_http_name_probe = args.last().is_some_and(|s| s == "--lab-http-name-probe");
+    if lab_http_name_probe { args.pop(); }
+    let lab_http_av_supervised = args.last().is_some_and(|s| s == "--lab-http-av-supervised");
+    if lab_http_av_supervised { args.pop(); }
+    let lab_http_av_auto = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-http-av-auto=")) {
+        let count = value.parse::<u64>()?;
+        if !(1..=7).contains(&count) { return Err("HTTP A/V automatic generations must be 1 to 7".into()); }
+        args.pop(); Some(count)
+    } else { None };
+    let lab_http_av_record = args.last().is_some_and(|s| s == "--lab-http-av-record");
+    if lab_http_av_record { args.pop(); }
     let lab_http_record = args.last().is_some_and(|s| s == "--lab-http-record");
     if lab_http_record { args.pop(); }
+    let lab_compare_checkpoint = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-compare-checkpoint=")) {
+        let path = PathBuf::from(value);
+        args.pop();
+        Some(path)
+    } else { None };
     let observe_serializers = args.last().is_some_and(|s| s == "--observe-serializers");
     if observe_serializers { args.pop(); }
     let observe_snapshot = args.last().is_some_and(|s| s == "--observe-snapshot");
@@ -482,12 +524,16 @@ fn options() -> ResultBox<Options> {
     } else { None };
     let lab_auto_pinned_setup = args.last().is_some_and(|s| s == "--lab-auto-pinned-setup");
     if lab_auto_pinned_setup { args.pop(); }
-    // The automatic managed video-only laboratory path preserves identical
-    // in-band parameter sets using avc3. Manual and A/V paths retain their
-    // explicit selection; parameter-set changes are still refused by the muxer.
-    let lab_inband_avc_auto = lab_auto_pinned_setup && lab_managed_archive
-        && lab_video_only_archive && !lab_inband_avc_explicit;
+    // The format must be chosen when the configuration record arrives, before
+    // later keyframes can reveal whether parameter sets will be repeated. Use
+    // avc3 conservatively in automatic recording paths; it also accepts samples
+    // without repeated sets, while changed sets remain refused by the muxer.
+    let lab_inband_avc_auto = lab_auto_pinned_setup
+        && ((lab_managed_archive && lab_video_only_archive) || lab_http_record || lab_http_av_record)
+        && !lab_inband_avc_explicit;
     let lab_inband_avc = lab_inband_avc_explicit || lab_inband_avc_auto;
+    let discovery_sweep_all = args.last().is_some_and(|s| s == "--lab-discovery-sweep-all");
+    if discovery_sweep_all { args.pop(); }
     let discovery_neighbor_interface = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--discovery-neighbor-interface=")) {
         if value.is_empty() || value.len() > 15 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b,b'_'|b'-'|b'.'|b':')) {
             return Err("invalid discovery neighbor interface".into());
@@ -526,6 +572,10 @@ fn options() -> ResultBox<Options> {
         } else {
             1
         };
+    let lab_opaque_trailer = args.last().is_some_and(|s| s == "--lab-trailer16-opaque");
+    if lab_opaque_trailer {
+        args.pop();
+    }
     let lab_zero_stream_id = args.last().is_some_and(|s| s == "--lab-zero-stream-id");
     if lab_zero_stream_id {
         args.pop();
@@ -534,7 +584,7 @@ fn options() -> ResultBox<Options> {
     if lab_g4_trailer {
         args.pop();
     }
-    if lab_zero_stream_id && lab_g4_trailer {
+    if usize::from(lab_zero_stream_id) + usize::from(lab_g4_trailer) + usize::from(lab_opaque_trailer) > 1 {
         return Err("choose one laboratory framing policy".into());
     }
     let lab_aac_source = args.last().is_some_and(|s| s == "--lab-aac-source");
@@ -646,6 +696,10 @@ fn options() -> ResultBox<Options> {
     {
         return Err("automatic discovery requires auto, a scope prefix and Linux camera setup".into());
     }
+    if discovery_sweep_all && (discovery_prefix.is_none_or(|prefix| !(20..=30).contains(&prefix))
+        || discovery_neighbor_interface.is_none() || discovery_hint.is_some()) {
+        return Err("all-page discovery requires a /20 to /30 scope and one validated interface, without a hint".into());
+    }
     if observe_only && (setup.is_none() || anchored_journal.is_some()) {
         return Err("read-only observation requires camera setup and no effect journal".into());
     }
@@ -658,12 +712,37 @@ fn options() -> ResultBox<Options> {
     if observe_serializers && !observe_only {
         return Err("serializer observation requires --observe-only".into());
     }
-    if lab_http_checkpoint.is_some() && ((!lab_http_record && (!observe_only || !observe_serializers)) || setup.is_none() || video_channel.is_some()) {
+    if lab_compare_checkpoint.is_some() && (!observe_only || !observe_serializers || setup.is_none() || lab_http_checkpoint.is_some()) {
+        return Err("checkpoint comparison requires read-only serializer observation without checkpoint creation".into());
+    }
+    if lab_http_checkpoint.is_some() && ((!(lab_http_record || lab_http_av_record) && (!observe_only || !observe_serializers)) || setup.is_none() || video_channel.is_some()) {
         return Err("HTTP checkpoint requires serializer observation and automatic video selection".into());
     }
-    if lab_http_record && (observe_only || observe_serializers || !lab_auto_pinned_setup || lab_http_checkpoint.is_none() || lab_owned_archive || lab_managed_archive || lab_video_only_archive || lab_decode_owned || lab_video_still.is_some() || lab_save_still.is_some()) {
+    if (lab_http_record || lab_http_av_record) && (observe_only || observe_serializers || !lab_auto_pinned_setup || lab_http_checkpoint.is_none() || lab_owned_archive || lab_managed_archive || lab_video_only_archive || lab_decode_owned || lab_video_still.is_some() || lab_save_still.is_some()) {
         return Err("HTTP recording requires anchored automatic setup and an HTTP checkpoint without controller archive flags".into());
     }
+    if lab_management_v12 && (!lab_auto_pinned_setup || observe_only || lab_http_record || lab_http_av_record || setup.as_ref().is_none_or(|value| value.chunked)) {
+        return Err("management 1.2 requires anchored automatic controller setup with content-length framing".into());
+    }
+    if lab_http_record && lab_http_av_record { return Err("choose video-only or A/V HTTP recording".into()); }
+    if lab_http_name_probe && (!(lab_http_record || lab_http_av_record) || !lab_http_restore_after) {
+        return Err("HTTP stream-name probe requires recording with restoration".into());
+    }
+    if lab_http_av_auto.is_some() && !lab_http_av_record {
+        return Err("HTTP A/V automatic generations require A/V recording".into());
+    }
+    if lab_http_av_supervised && (lab_http_av_auto.is_none() || !lab_http_av_record) {
+        return Err("HTTP A/V supervision requires automatic A/V recording".into());
+    }
+    if (lab_exhaust_network_after_bootstrap || lab_exhaust_network_in_bootstrap) && !lab_http_av_record {
+        return Err("network exhaustion injection requires laboratory HTTP A/V recording".into());
+    }
+    if lab_exhaust_network_after_bootstrap && lab_exhaust_network_in_bootstrap {
+        return Err("choose one network exhaustion injection stage".into());
+    }
+    if lab_http_restore_after && !(lab_http_record || lab_http_av_record) { return Err("HTTP restore requires a bounded HTTP recording".into()); }
+    if lab_http_av_record && lab_aac_config.is_none() && !lab_aac_source { return Err("HTTP A/V recording requires an explicit or in-band AAC configuration".into()); }
+    if lab_http_record && (lab_aac_config.is_some() || lab_aac_source) { return Err("video-only HTTP recording cannot use an AAC configuration".into()); }
     if lab_auto_pinned_setup != lab_setup_fence.is_some()
         || (lab_auto_pinned_setup && (observe_only || anchored_journal.is_none() || setup.is_none() || discovery_prefix.is_none() || args.get(2).is_none_or(|mac| mac != "auto"))) {
         return Err("automatic pinned setup requires auto discovery, auto MAC, camera setup, anchored journal and a persistent fence".into());
@@ -673,8 +752,8 @@ fn options() -> ResultBox<Options> {
     }
     if lab_managed_archive && !lab_owned_archive {return Err("managed archive requires owned archive mode".into());}
     if lab_video_only_archive && !lab_owned_archive {return Err("video-only archive requires owned archive mode".into());}
-    if lab_inband_avc && !lab_owned_archive && !lab_http_record {return Err("in-band AVC requires owned archive or HTTP recording mode".into());}
-    if lab_av_history_records.is_some() && !lab_managed_archive {return Err("laboratory A/V history limit requires managed archive mode".into());}
+    if lab_inband_avc && !lab_owned_archive && !lab_http_record && !lab_http_av_record {return Err("in-band AVC requires owned archive or HTTP recording mode".into());}
+    if lab_av_history_records.is_some() && !lab_managed_archive && lab_http_av_auto.is_none() {return Err("laboratory A/V history limit requires managed archive mode".into());}
     if lab_renew_batch.is_some() && !lab_managed_archive {return Err("laboratory renewal requires managed archive mode".into());}
     if lab_retained_video_generations && (!lab_managed_archive || !lab_video_only_archive || lab_anchor_root.is_none() || (lab_renew_batch.is_some() && lab_auto_retained_generations.is_none())) {return Err("retained video generations require managed video-only archive, an anchor root, and automatic mode for renewal".into());}
     if lab_stop_after_retained_reservation && !lab_retained_video_generations {return Err("laboratory reservation stop requires retained video generations".into());}
@@ -704,6 +783,14 @@ fn options() -> ResultBox<Options> {
     let key = PathBuf::from(&args[4]);
     let journal = PathBuf::from(&args[5]);
     let output = PathBuf::from(&args[6]);
+    if let Some(path) = &lab_compare_checkpoint {
+        if !path.is_absolute()
+            || !path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)))
+            || !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir() && metadata.mode() & 0o077 == 0)
+        {
+            return Err("comparison checkpoint must be an existing private absolute directory".into());
+        }
+    }
     if let Some(path) = &lab_http_checkpoint {
         if !path.is_absolute()
             || !path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)))
@@ -772,19 +859,29 @@ fn options() -> ResultBox<Options> {
         listen,
         camera,
         discovery_prefix,
+        discovery_sweep_all,
         discovery_hint,
         discovery_neighbor_interface,
         observe_only,
         observe_snapshot,
         observe_serializers,
+        lab_compare_checkpoint,
         lab_http_checkpoint,
         lab_http_record,
+        lab_http_name_probe,
+        lab_http_av_record,
+        lab_http_av_auto,
+        lab_http_av_supervised,
+        lab_exhaust_network_after_bootstrap,
+        lab_exhaust_network_in_bootstrap,
+        lab_http_restore_after,
         mac,
         cert,
         key,
         journal,
         anchored_journal,
         lab_setup_fence,
+        lab_management_v12,
         output,
         uuid: args[7].clone(),
         wait: Duration::from_secs(wait_seconds),
@@ -798,6 +895,7 @@ fn options() -> ResultBox<Options> {
         lab_aac_source,
         lab_g4_trailer,
         lab_zero_stream_id,
+        lab_opaque_trailer,
         lab_segments,
         lab_owned_archive,
         lab_video_only_archive,
@@ -1072,7 +1170,7 @@ fn derive_av_fragment(
 fn run(args: Options) -> ResultBox<()> {
     println!("trial_video_channel_request={:?} resolution=unverified", args.video_channel);
     if args.lab_inband_avc_auto {
-        println!("trial_avc_selection=automatic_inband format=avc3 configuration_changes=refused");
+        println!("trial_avc_selection=automatic_inband format=avc3 configuration_changes=refused selection=conservative_policy");
     }
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     println!("trial_media_before_reply={}", args.media_before_reply);
@@ -1084,7 +1182,9 @@ fn run(args: Options) -> ResultBox<()> {
     println!("trial_segment_limit={}", args.lab_segments);
     println!(
         "trial_framing={}",
-        if args.lab_zero_stream_id {
+        if args.lab_opaque_trailer {
+            "trailer16_opaque_heuristic"
+        } else if args.lab_zero_stream_id {
             "zero_stream_id_heuristic"
         } else if args.lab_g4_trailer {
             "trailer16_av_flag_heuristic"
@@ -1112,7 +1212,7 @@ fn run(args: Options) -> ResultBox<()> {
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 128 * 1024 * 1024;
     budget.bytes = 128 * 1024 * 1024;
-    budget.storage_operations = if args.lab_owned_archive || args.lab_http_record { 512 } else if args.lab_http_checkpoint.is_some() { 64 } else if args.lab_setup_fence.is_some() { 8 } else { 5 };
+    budget.storage_operations = if args.lab_owned_archive || args.lab_http_record || args.lab_http_av_record { 512 } else if args.lab_http_checkpoint.is_some() || args.lab_compare_checkpoint.is_some() { 64 } else if args.lab_setup_fence.is_some() { 8 } else { 5 };
     let mut caps = vec![
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
@@ -1121,7 +1221,7 @@ fn run(args: Options) -> ResultBox<()> {
     if !args.observe_only || args.observe_snapshot || args.lab_http_checkpoint.is_some() {
         caps.extend([RuntimeGrant::ReadMedia, RuntimeGrant::MediaDecode]);
     }
-    if args.lab_http_checkpoint.is_some() { caps.push(RuntimeGrant::ObjectStage); }
+    if args.lab_http_checkpoint.is_some() || args.lab_compare_checkpoint.is_some() { caps.push(RuntimeGrant::ObjectStage); }
     if !args.observe_only {
         caps.extend([
             RuntimeGrant::ObjectStage,
@@ -1131,7 +1231,7 @@ fn run(args: Options) -> ResultBox<()> {
             RuntimeGrant::CameraSettingCommit,
         ]);
     }
-    if args.lab_owned_archive || args.lab_http_record { caps.push(RuntimeGrant::ObjectPublish); }
+    if args.lab_owned_archive || args.lab_http_record || args.lab_http_av_record { caps.push(RuntimeGrant::ObjectPublish); }
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:unifi-direct-trial".into(),
@@ -1175,7 +1275,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let nonce=acquire_entropy(task,cx,clock,"trial:run-identity-entropy").await?.trial_public_nonce()?;
                 let run_id=TrialRunId::from_nonce(nonce)?;
                 println!("trial_run_id={}",run_id.as_str());
-                let config=if args.observe_only || args.lab_http_record {None} else {
+                let config=if args.observe_only || args.lab_http_record || args.lab_http_av_record {None} else {
                     task.checkpoint_for(RuntimeGrant::AdapterAuth,"trial:tls-key",clock.now()?,&BudgetVector::ZERO)?;
                     let cert=bounded_read(&args.cert,false)?; let key=bounded_read(&args.key,true)?;
                     let mut config=ServerConfig::builder_with_provider(Arc::new(scoped_provider(false))).with_protocol_versions(&[&rustls::version::TLS13])?.with_no_client_auth().with_single_cert(vec![CertificateDer::from(cert)],PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))?;
@@ -1186,6 +1286,34 @@ fn run(args: Options) -> ResultBox<()> {
                 #[cfg(target_os="linux")]
                 let discovered=if let Some(prefix)=args.discovery_prefix {
                     let setup_args=args.setup.as_ref().ok_or("automatic discovery requires setup")?;
+                    let report=if args.discovery_sweep_all {
+                        let interface=args.discovery_neighbor_interface.as_deref().ok_or("sweep interface missing")?;
+                        lab_check_neighbor_interface(task,cx,clock,interface,*args.listen.ip(),prefix).await?;
+                        let targets=discovery::sweep::host_plans(*args.listen.ip(),prefix,setup_args.discovery_port,false)?;
+                        let mut plans=Vec::new();
+                        plans.try_reserve_exact(targets.len())?;
+                        for page in targets {
+                            let mut configs=Vec::new();
+                            configs.try_reserve_exact(page.len())?;
+                            for window in page {
+                                configs.push(discovery::Config::new_many(*args.listen.ip(),prefix,&window,"unifi:discovery",Duration::from_secs(2),MAX_DISCOVERY_PACKETS)?);
+                            }
+                            plans.push(configs);
+                        }
+                        let scope=ContentDigest::sha256(format!("fss.unifi-direct.trial-sweep.v1|{}|{}|{}|{}",args.listen.ip(),prefix,setup_args.discovery_port,interface).as_bytes());
+                        let runner=discovery::sweep::Runner::new(cx,task,clock,scope,plans,Duration::from_secs(1))?;
+                        loop {
+                            match runner.next(None).await? {
+                                discovery::sweep::Step::Progress { .. } => (),
+                                discovery::sweep::Step::Incomplete { .. } => return Err("discovery sweep incomplete; camera setup refused".into()),
+                                discovery::sweep::Step::Finished { batch, .. } => {
+                                    let report=discovery::Report::combine_sweep_pages(&batch.pages()?)?;
+                                    println!("trial_discovery_sweep=complete pages={} windows={} identity=unverified",batch.page_reports().len(),batch.windows().len());
+                                    break report;
+                                }
+                            }
+                        }
+                    } else {
                     let plans=if let Some(interface)=args.discovery_neighbor_interface.as_deref() {
                         let scope=discovery::neighbor::Scope::new(*args.listen.ip(),prefix,setup_args.discovery_port)?;
                         lab_check_neighbor_interface(task,cx,clock,interface,*args.listen.ip(),prefix).await?;
@@ -1200,8 +1328,9 @@ fn run(args: Options) -> ResultBox<()> {
                         let cfg=discovery::Config::new_many(*args.listen.ip(),prefix,targets,"unifi:discovery",Duration::from_secs(2),MAX_DISCOVERY_PACKETS)?;
                         reports.push(discovery::discover(task,cx,clock.now()?,&cfg).await?);
                     }
-                    let report=if reports.len()==1 {reports.pop().ok_or("discovery report missing")?} else {
+                    if reports.len()==1 {reports.pop().ok_or("discovery report missing")?} else {
                         discovery::Report::combine_completed(&reports.iter().collect::<Vec<_>>())?
+                    }
                     };
                     let index=match args.mac {
                         Some(mac)=>report.select_mac_claim(mac)?,
@@ -1273,7 +1402,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let management=management::Preconditions {camera,peer_admission:admission,session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
                 let stream_conditions=intent::Preconditions {camera,peer_admission:admission,stream_generation:1,previous_settings:None,lease_fence:fence};
                 let policy=Policy {local:*args.listen.ip(),camera:camera_address,mac};
-                let mut controller_listener=if args.observe_only || args.lab_http_record {None} else {
+                let mut controller_listener=if args.observe_only || args.lab_http_record || args.lab_http_av_record {None} else {
                     let listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
                     println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                     Some(listener)
@@ -1308,6 +1437,10 @@ fn run(args: Options) -> ResultBox<()> {
                     let operation=run_id.operation("handoff")?;
                     let setup_config=setup::Config {report:&report,index,camera,peer_admission:admission,generation:1,fence,destination:*args.listen.ip(),operation:&operation,credential:&lease.secret.0,wait:Duration::from_secs(20)};
                     let mut trace=setup::AcceptTrace::default();
+                    if args.lab_management_v12 {
+                        let token=acquire_entropy(task,cx,clock,"trial:management-token-entropy").await?.trial_management_token()?;
+                        trace.setup_mut().require_management_v12(*token)?;
+                    }
                     let auto_profile_limits=if args.video_channel.is_none() {
                         // The decoder's default dimensions and a bounded fps cap.
                         Some(camera_api::VideoProfileLimits {
@@ -1318,7 +1451,7 @@ fn run(args: Options) -> ResultBox<()> {
                     if let Some(limits)=auto_profile_limits { trace.require_reported_video(limits)?; }
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let mut setup_owner=setup::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&setup_approval,admission:&setup_policy,handoff_authority:&setup_policy};
-                    if args.observe_only || args.lab_http_record {
+                    if args.observe_only || args.lab_http_record || args.lab_http_av_record {
                         let observed=setup_owner.observe(&mut http,&setup_config).await?;
                         if setup_owner.effects.journal().operations().next().is_some() {return Err("read-only observation unexpectedly prepared an effect".into());}
                         println!("trial_projection_observation=matched reads=2 values=redacted");
@@ -1327,7 +1460,7 @@ fn run(args: Options) -> ResultBox<()> {
                             let selection=observed.select_reported_video(limits)?;
                             println!("trial_reported_video={:?} provenance=camera_claim delivery=unverified",selection.selected);
                         }
-                        if args.observe_serializers || args.lab_http_record {
+                        if args.observe_serializers || args.lab_http_record || args.lab_http_av_record {
                             // The public settings projection hides destination values. Compare
                             // independently authorized bindings without printing or retaining
                             // the values or their potentially sensitive digests.
@@ -1346,9 +1479,20 @@ fn run(args: Options) -> ResultBox<()> {
                             }
                             let shapes = second.visit(&authorize, serializer_shapes)?;
                             println!("trial_serializer_shapes={shapes:?} values=redacted restoration=unverified");
+                            if let Some(root) = &args.lab_compare_checkpoint {
+                                let pin = camera_pin.as_deref().ok_or("camera certificate pin required for checkpoint comparison")?;
+                                let comparison = trial_http_checkpoint::compare_live(
+                                    task, cx, clock, root.clone(), camera, ContentDigest::sha256(pin), &second, &authorize,
+                                ).await?;
+                                println!("trial_live_checkpoint_comparison={:?} requested_fields_match={} camera_write=false identity=network_claim certificate=pin_claim settlement=none", comparison.change, comparison.requested_fields_match);
+                            }
                             if let Some(root) = &args.lab_http_checkpoint {
                                 let limits = auto_profile_limits.ok_or("automatic video limits missing")?;
                                 let (channel, profile) = observed.select_reported_video(limits)?.selected.ok_or("video profile unavailable")?;
+                                let index = match channel { VideoChannel::Video1 => 0, VideoChannel::Video2 => 1, VideoChannel::Video3 => 2 };
+                                if args.lab_http_restore_after && !matches!(shapes[index], "null" | "object") {
+                                    return Err("HTTP restore requires a representable prior serializer".into());
+                                }
                                 let listener = listener::Listener::bind(
                                     task, cx, clock, &policy, args.listen, &resource, Duration::from_secs(10),
                                 ).await?;
@@ -1371,10 +1515,10 @@ fn run(args: Options) -> ResultBox<()> {
                                     task, cx, clock, root.clone(), plan, second, ContentDigest::sha256(pin),
                                 ).await?;
                                 println!("trial_http_checkpoint=anchored listener=bound camera_write=false restoration=unverified");
-                                if args.lab_http_record {
+                                if args.lab_http_record || args.lab_http_av_record {
                                     let (camera_api::VideoMetric::Reported(width), camera_api::VideoMetric::Reported(height)) = (profile.width, profile.height)
                                         else { return Err("selected video dimensions unavailable".into()); };
-                                    let framing = if args.lab_zero_stream_id { SearchMode::ZeroStreamId } else if args.lab_g4_trailer { SearchMode::StructuredTrailer16AvFlag } else { SearchMode::Conservative };
+                                    let framing = if args.lab_opaque_trailer { SearchMode::StructuredTrailer16OpaqueFlag } else if args.lab_zero_stream_id { SearchMode::ZeroStreamId } else if args.lab_g4_trailer { SearchMode::StructuredTrailer16AvFlag } else { SearchMode::Conservative };
                                     let current_guard = |plan: &fss_reference::unifi_direct::http_stream::Plan, current: fss_reference::unifi_direct::http_stream::Preconditions, permit: &CommittedEffect| {
                                         current.camera == camera && current.peer_admission == admission && current.lease_fence == fence
                                             && plan.resource() == resource && permit.fence() == fence
@@ -1382,10 +1526,18 @@ fn run(args: Options) -> ResultBox<()> {
                                             && clock.now().is_ok_and(|now| leases.borrow_mut().check_fence(&resource, fence, now).is_ok())
                                     };
                                     let serializer_guard = HttpSerializerGuard { check: &current_guard };
+                                    if args.lab_http_av_record {
+                                        return Box::pin(trial_http_av_record::run(
+                                            task, cx, clock, &mut http, listener, prepared, conditions,
+                                            &serializer_guard, &leases, &mut *setup_owner.effects, &run_id,
+                                            &args.output, &resource, &setup_approval.0, framing, args.lab_inband_avc, [width, height], args.lab_segments, args.lab_aac_config, args.lab_http_restore_after, args.lab_http_name_probe, args.lab_http_av_auto, args.lab_http_av_supervised, args.lab_av_history_records, args.lab_exhaust_network_after_bootstrap, args.lab_exhaust_network_in_bootstrap,
+                                            trial_http_record::ObservationCheckpoint { peer: camera_address, start: &start, root, certificate: ContentDigest::sha256(pin) }, &authorize,
+                                        )).await;
+                                    }
                                     let result = trial_http_record::run(
                                         task, cx, clock, &mut http, listener, prepared, conditions,
                                         &serializer_guard, &leases, &mut *setup_owner.effects, &run_id,
-                                        &args.output, &resource, &setup_approval.0, framing, args.lab_inband_avc, [width, height],
+                                        &args.output, &resource, &setup_approval.0, framing, args.lab_inband_avc, [width, height], args.lab_segments, args.lab_http_restore_after, args.lab_http_name_probe,
                                         trial_http_record::ObservationCheckpoint { peer: camera_address, start: &start, root, certificate: ContentDigest::sha256(pin) }, &authorize,
                                     ).await;
                                     return result;
@@ -1499,7 +1651,7 @@ fn run(args: Options) -> ResultBox<()> {
                     // unrelated trials do not all request the same name.
                     let requested_stream_name=if args.lab_stream_name_event.is_some() {run_id.as_str().get(..16).ok_or("invalid run identity")?} else {"0123456789abcdef"};
                     let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:selected_video_channel,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:requested_stream_name,hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
-                    let framing=if args.lab_zero_stream_id {SearchMode::ZeroStreamId} else if args.lab_g4_trailer {SearchMode::StructuredTrailer16AvFlag} else {SearchMode::Conservative};
+                    let framing=if args.lab_opaque_trailer {SearchMode::StructuredTrailer16OpaqueFlag} else if args.lab_zero_stream_id {SearchMode::ZeroStreamId} else if args.lab_g4_trailer {SearchMode::StructuredTrailer16AvFlag} else {SearchMode::Conservative};
                     let flv_limits=FlvLimits::default();
                     let framer=Framer::with_mode(flv_limits,flv_limits.complete_candidate_buffer()?,framing)?; let recorder_factory=if args.lab_inband_avc {recording::Recorder::new_inband} else {recording::Recorder::new}; let mut recorder=recorder_factory(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
                     if let Some(dimensions)=selected_video_dimensions {recorder.require_dimensions(dimensions)?;}
@@ -1791,17 +1943,20 @@ fn run(args: Options) -> ResultBox<()> {
     })
 }
 fn inspect_http_checkpoint(args: &[String]) -> ResultBox<()> {
-    if args.len() != 3 || args[0] != "--inspect-http-checkpoint" || args[2] != "--owner-authorized" {
-        return Err("usage: unifi_direct_trial --inspect-http-checkpoint DIR --owner-authorized".into());
-    }
-    let root = PathBuf::from(&args[1]);
-    if !root.is_absolute() {
+    let (root, observation, restored) = match args {
+        [mode, root, auth] if mode == "--inspect-http-checkpoint" && auth == "--owner-authorized" => (PathBuf::from(root), None, false),
+        [mode, root, observation, auth] if mode == "--compare-http-checkpoints" && auth == "--owner-authorized" => (PathBuf::from(root), Some(PathBuf::from(observation)), false),
+        [mode, root, observation, auth] if mode == "--compare-http-restored-checkpoints" && auth == "--owner-authorized" => (PathBuf::from(root), Some(PathBuf::from(observation)), true),
+        _ => return Err("usage: unifi_direct_trial --inspect-http-checkpoint DIR --owner-authorized | --compare-http-checkpoints BEFORE AFTER --owner-authorized | --compare-http-restored-checkpoints BEFORE RESTORED --owner-authorized".into()),
+    };
+    let compare = observation.is_some();
+    if !root.is_absolute() || observation.as_ref().is_some_and(|path| !path.is_absolute()) {
         return Err("checkpoint path must be absolute".into());
     }
     let (start, _) = epoch()?;
     let deadline = TimestampNs(start.0.checked_add(30_000_000_000).ok_or("deadline overflow")?);
     let mut budget = BudgetVector::ZERO;
-    budget.storage_operations = 64;
+    budget.storage_operations = 128;
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:unifi-http-checkpoint-inspection".into(),
@@ -1835,14 +1990,77 @@ fn inspect_http_checkpoint(args: &[String]) -> ResultBox<()> {
                     Ok(clock) => clock,
                     Err(error) => return TaskCompletion { output: Err(Box::new(error) as Box<dyn Error>), outcome: TaskOutcome::Failed("checkpoint clock unavailable".into()), completed_at: task_start },
                 };
-                let output: ResultBox<()> = trial_http_checkpoint::inspect(task, cx, clock, root).await.map_err(Into::into);
+                let output: ResultBox<()> = trial_http_checkpoint::inspect(task, cx, clock, root, observation, restored).await.map(|_| ()).map_err(Into::into);
                 let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("checkpoint inspection refused".into()) };
                 TaskCompletion { output, outcome, completed_at: clock.now().unwrap_or(deadline) }
             },
         ).await?;
         result.receipt?;
         result.output?;
-        println!("trial_http_checkpoint_inspection=authenticated camera_write=false root_trust=operator_selected independence=unverified");
+        if restored {
+            println!("trial_http_restored_checkpoint_comparison=consistent camera_write=false root_trust=operator_selected effect=unsettled independence=unverified");
+        } else if compare {
+            println!("trial_http_checkpoint_comparison=consistent camera_write=false root_trust=operator_selected effect=unsettled independence=unverified");
+        } else {
+            println!("trial_http_checkpoint_inspection=authenticated camera_write=false root_trust=operator_selected independence=unverified");
+        }
+        Ok(())
+    })
+}
+
+fn compare_http_source_name(args: &[String]) -> ResultBox<()> {
+    let [mode, checkpoint, spool, digest, auth] = args else {
+        return Err("usage: --compare-http-source-name CHECKPOINT SOURCE_SPOOL SHA256 --owner-authorized".into());
+    };
+    if !matches!(mode.as_str(), "--compare-http-source-name" | "--compare-http-ledger-source-name" | "--compare-http-history-source-name") || auth != "--owner-authorized" {
+        return Err("source comparison requires owner authorization".into());
+    }
+    let ledger_source = mode != "--compare-http-source-name";
+    let history_source = mode == "--compare-http-history-source-name";
+    let checkpoint = PathBuf::from(checkpoint);
+    let spool = PathBuf::from(spool);
+    let digest = ContentDigest::parse(digest)?;
+    let (start, _) = epoch()?;
+    let deadline = TimestampNs(start.0.checked_add(30_000_000_000).ok_or("deadline overflow")?);
+    let mut budget = BudgetVector::ZERO;
+    budget.storage_operations = 256;
+    budget.bytes = 20 * 1024 * 1024;
+    let (mut authority, mut tree) = AuthorityCx::root(RootAuthoritySpec {
+        trace_id: "trace:unifi-source-comparison".into(),
+        operation_id: OperationId::parse("operation:unifi-source-comparison")?,
+        principal: "principal:owner".into(), capabilities: vec![RuntimeGrant::ObjectStage.as_str().into(), RuntimeGrant::ReadMedia.as_str().into()],
+        deadline: Some(deadline), priority: 1, budgets: budget,
+        privacy_scope: "privacy:owner".into(), retention_scope: "retention:trial".into(),
+        anchor_universe: ContentDigest::sha256(b"owner-authorized source comparison"), generation: 1,
+    }, RegionId::new("region:unifi-source-comparison")?, RegionKind::Process, budget, start)?;
+    let runtime = RuntimeBuilder::current_thread().blocking_threads(1, 1).build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let task_start = TimestampNs(start.0 + 1);
+        let result = run_owned_async(&mut authority, &mut tree,
+            TaskSpec { task_id: TaskId::new("task:unifi-source-comparison")?, started_at: task_start },
+            &cx, async |task, cx| {
+                let clock = match MeteredClock::new(task, cx, TimestampNs(start.0 + 2)) {
+                    Ok(clock) => clock,
+                    Err(error) => return TaskCompletion { output: Err(Box::new(error) as Box<dyn Error>), outcome: TaskOutcome::Failed("comparison clock unavailable".into()), completed_at: task_start },
+                };
+                let output: ResultBox<()> = if ledger_source {
+                    trial_http_checkpoint::compare_ledger_source_name(task, cx, clock, checkpoint, spool, digest, history_source).await.map_err(Into::into)
+                } else {
+                    trial_http_checkpoint::compare_source_name(task, cx, clock, checkpoint, spool, digest).await.map_err(Into::into)
+                };
+                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("source comparison refused".into()) };
+                TaskCompletion { output, outcome, completed_at: clock.now().unwrap_or(deadline) }
+            }).await?;
+        result.receipt?;
+        result.output?;
+        if history_source {
+            println!("trial_http_source_name=matches checkpoint=authenticated source_graph=locally_ledgered source_history=locally_confirmed keeper=locally_caught_up namespace=unverified independent_pin=unavailable publication_state=unverified camera_identity=unverified effect=unsettled");
+        } else if ledger_source {
+            println!("trial_http_source_name=matches checkpoint=authenticated source_graph=locally_ledgered publication_state=unverified journal_binding=unverified root=operator_selected camera_identity=unverified effect=unsettled");
+        } else {
+            println!("trial_http_source_name=matches checkpoint=authenticated source_object=hash_verified source_binding=operator_selected camera_identity=unverified effect=unsettled");
+        }
         Ok(())
     })
 }
@@ -1971,9 +2189,11 @@ fn inspect_owned_archive(args:&[String])->ResultBox<()> {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let result = if args.first().is_some_and(|arg| arg == "--inspect-http-checkpoint") {
+    let result = if args.first().is_some_and(|arg| matches!(arg.as_str(), "--compare-http-source-name" | "--compare-http-ledger-source-name" | "--compare-http-history-source-name")) {
+        compare_http_source_name(&args)
+    } else if args.first().is_some_and(|arg| arg == "--inspect-http-checkpoint" || arg == "--compare-http-checkpoints" || arg == "--compare-http-restored-checkpoints") {
         inspect_http_checkpoint(&args)
-    } else if args.first().is_some_and(|arg| arg == "--inspect-setup-fence") {
+    } else if args.first().is_some_and(|arg| matches!(arg.as_str(), "--inspect-setup-fence" | "--inspect-setup-fence-with-checkpoints" | "--inspect-setup-fence-with-restored" | "--inspect-setup-fence-with-restore-request")) {
         trial_setup_fence::inspect(&args)
     } else if args.first().is_some_and(|arg| arg == "--inspect-anchored") {
         inspect_anchored_journal(&args)

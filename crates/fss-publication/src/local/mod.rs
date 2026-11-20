@@ -871,6 +871,13 @@ impl LocalRootPublisher {
         self.visible.values().map(|entry| &entry.visible)
     }
 
+    /// Number of locally visible roots in this exclusive publisher owner.
+    /// This is an in-memory observation, not an independently retained claim.
+    #[must_use]
+    pub fn visible_root_count(&self) -> usize {
+        self.visible.len()
+    }
+
     /// Every object digest with a durable tombstone recorded in this instance, in digest order.
     pub fn tombstones(&self) -> impl Iterator<Item = &ContentDigest> {
         self.tombstones.keys()

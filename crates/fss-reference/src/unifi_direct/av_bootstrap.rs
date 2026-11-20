@@ -130,6 +130,20 @@ impl Collector {
         self.video.is_some() && self.audio.is_some() && self.first_segment.is_some()
     }
 
+    /// Borrow collector-held original source records, excluding separately
+    /// supplied AAC bytes and the first segment's copied lookahead witnesses.
+    /// The order reflects collector fields; callers must validate and sort
+    /// connection-relative ranges before combining them with another owner.
+    pub fn retained_source_records(&self) -> impl Iterator<Item = &SourceRecord> + Clone {
+        let audio = match &self.audio {
+            Some(av_owned_sink::Audio::InBand { record, .. }) => Some(record),
+            _ => None,
+        };
+        self.video.iter().chain(audio).chain(
+            self.first_segment.iter().flat_map(|segment| segment.source().iter()),
+        )
+    }
+
     /// Recover all retained custody, including on cancellation or refusal.
     pub fn into_parts(self) -> Parts {
         Parts {

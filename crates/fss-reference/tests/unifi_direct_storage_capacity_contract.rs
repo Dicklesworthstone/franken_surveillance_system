@@ -836,12 +836,23 @@ fn retained_generation_bootstrap_drains_create_recover_and_partial_failure() -> 
 
 #[test]
 fn rollover_replays_real_source_root_before_next_publication() -> Test {
+    rollover_replays_source_before_next_publication(false)
+}
+
+#[test]
+fn rollover_cold_replays_source_batch_before_next_publication() -> Test {
+    rollover_replays_source_before_next_publication(true)
+}
+
+fn rollover_replays_source_before_next_publication(batch: bool) -> Test {
     use fss_object::{
         HostSpoolIo,
         effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
     };
     use fss_publication::RootLedgerOutcome;
     use fss_runtime::effect_journal::{EffectJournalStore, PinRetainedEffectJournal};
+    use fss_reference::unifi_direct::{ingress, pipeline, recording, retirement_source, source_batch};
+    use fss_runtime::tcp_ingress::{EndState, Retirement};
 
     struct Deny;
     impl archive::ReadAuthority for Deny {
@@ -923,6 +934,103 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
             &mut keeper,
         )?;
     }
+    if batch {
+        let mut batch_framer = Framer::new(FlvLimits::default(), 64 * 1024)?;
+        batch_framer.append(0, &wire)?;
+        if !matches!(batch_framer.take()?, Next::Record(_)) { return Err("batch header missing".into()); }
+        let mut records = Vec::new();
+        while let Next::Record(record) = batch_framer.take()? { records.push(record); }
+        let source_bytes = records.iter().map(|record| record.bytes().len()).sum();
+        let plan = retirement_source::Plan::new(pipeline::Retirement {
+            ingress: ingress::Retirement {
+                source: Retirement { state: EndState::Eof, received: wire.len() as u64, pending: None, reserved_bytes: 0 },
+                framing: batch_framer.retire(), buffered: None,
+            },
+            recorder: recording::Retirement { pending: records, source_bytes, fenced: false },
+            pending_audio: None,
+        }).map_err(|_| "batch retirement refused")?;
+        if plan.len() < 2 { return Err("batch fixture needs multiple source records".into()); }
+        let prepared = source_batch::Prepared::new(&plan, key, camera, retention, 256, 64 * 1024)?;
+        archive::publish_unknown_time_source_batch_anchored(
+            &prepared, &mut deployment, &access, archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000), &replay, &mut journal, &mut keeper,
+        )?;
+    }
+    let (mut deployment, journal, keeper, replay) = if batch {
+        use fss_reference::unifi_direct::source_worker;
+        let successor_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+        let successor_deployment = ReferenceDeployment::open(
+            &temp.0.join("batch-copy-archive"), "site:rollover-source", &successor_replay,
+        )?;
+        let successor_journal = archive::journal::UnknownTimeJournal::create(
+            store("batch-copy-journal")?, scope, &successor_replay,
+        )?;
+        let successor_keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+            store("batch-copy-keeper")?, &successor_journal, &successor_replay,
+        )?;
+        let mut successor = source_worker::Parts {
+            deployment: successor_deployment, journal: successor_journal, keeper: successor_keeper,
+            replay: successor_replay, authority: Arc::new(Access(retention)), retention,
+            limits: archive::Limits::default(), max_source_bytes: 1024 * 1024, work_limit: 4_000_000_000,
+        };
+        let mut old = source_worker::Retirement {
+            parts: source_worker::Parts { deployment, journal, keeper, replay,
+                authority: Arc::new(Access(retention)), retention, limits: archive::Limits::default(),
+                max_source_bytes: 1024 * 1024, work_limit: 4_000_000_000 },
+            pending: None, fenced: false, rollover_custody: None,
+        };
+        let expected = old.parts.journal.confirmed().ok_or("batch root missing")?;
+        let copied = source_worker::copy_confirmed_to_fresh_store(
+            &mut old, &mut successor, camera, &access, &mut WorkBudget::new(4_000_000_000),
+        )?;
+        assert_eq!(copied.pin, expected);
+        let recovered = archive::read_unknown_time_source_batch(
+            &mut successor.deployment, expected, &access, archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000), &successor.replay,
+        )?;
+        assert_eq!(recovered.records.len(), 2);
+        assert_eq!(recovered.key, key);
+        assert_eq!(recovered.camera_claim, camera);
+        for item in &recovered.records {
+            let start = usize::try_from(item.offset)?;
+            let end = start.checked_add(item.range.len()).ok_or("source range overflow")?;
+            assert_eq!(wire.get(start..end), recovered.payload.get(item.range.clone()));
+        }
+        let next_journal_head = copied.successor_journal;
+        let next_keeper_head = copied.successor_keeper;
+        drop(successor);
+        // Reopen the destination from explicit observed minima; this does not
+        // prove the two stores have a durable, independently retained binding.
+        let reopened_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+        let mut reopened_deployment = ReferenceDeployment::open(
+            &temp.0.join("batch-copy-archive"), "site:rollover-source", &reopened_replay,
+        )?;
+        let reopened_journal = archive::journal::UnknownTimeJournal::reopen(
+            Box::new(FileEffectJournal::open(temp.0.join("batch-copy-journal"), storage_limits, Arc::new(HostSpoolIo), next_journal_head)?),
+            scope, next_journal_head, &reopened_replay,
+        )?;
+        let reopened_keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+            Box::new(FileEffectJournal::open(temp.0.join("batch-copy-keeper"), storage_limits, Arc::new(HostSpoolIo), next_keeper_head)?),
+            &reopened_journal, next_keeper_head, &reopened_replay,
+        )?;
+        assert_eq!(reopened_journal.confirmed(), Some(expected));
+        assert_eq!(reopened_keeper.target(), reopened_journal.anchor());
+        let reread = archive::read_unknown_time_source_batch(
+            &mut reopened_deployment, expected, &access, archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000), &reopened_replay,
+        )?;
+        assert_eq!(reread.records.len(), 2);
+        for item in &reread.records {
+            let start = usize::try_from(item.offset)?;
+            let end = start.checked_add(item.range.len()).ok_or("reopened range overflow")?;
+            assert_eq!(wire.get(start..end), reread.payload.get(item.range.clone()));
+        }
+        let _retained_successor = (copied, reopened_deployment, reopened_journal, reopened_keeper, reopened_replay);
+        let source_worker::Parts { deployment, journal, keeper, replay, .. } = old.parts;
+        (deployment, journal, keeper, replay)
+    } else {
+        (deployment, journal, keeper, replay)
+    };
     let previous = archive::journal::rollover::Previous { journal, keeper };
     let staged = archive::journal::rollover::Staged::begin(
         previous,
@@ -941,6 +1049,35 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
     let mut active = staged
         .commit(switch, &replay)
         .map_err(|_| "rollover switch failed")?;
+    if batch {
+        let binding = active.binding();
+        let switch_head = active.switch_head();
+        let heads = {
+            let (journal, keeper) = active.successor();
+            archive::journal::rollover::SuccessorHeads { journal: journal.anchor(), keeper: keeper.anchor() }
+        };
+        drop(active);
+        let open = |name: &str, pin| -> Result<Box<dyn EffectJournalStore>, Box<dyn Error>> {
+            Ok(Box::new(FileEffectJournal::open(temp.0.join(name), storage_limits, Arc::new(HostSpoolIo), pin)?))
+        };
+        let pair = |journal_name: &str, keeper_name: &str, heads: archive::journal::rollover::SuccessorHeads|
+            -> Result<archive::journal::rollover::Previous, Box<dyn Error>> {
+            let journal = archive::journal::UnknownTimeJournal::reopen(open(journal_name, heads.journal)?, scope, heads.journal, &replay)?;
+            let keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(open(keeper_name, heads.keeper)?, &journal, heads.keeper, &replay)?;
+            Ok(archive::journal::rollover::Previous { journal, keeper })
+        };
+        let previous = pair("old-journal", "old-keeper", archive::journal::rollover::SuccessorHeads {
+            journal: binding.old_journal, keeper: binding.old_keeper,
+        })?;
+        let successor = pair("new-journal", "new-keeper", heads)?;
+        let retainer = FileTrustedRootPinRetainer::open_trusting_storage(
+            temp.0.join("switch-retainer"), storage_limits, Arc::new(HostSpoolIo),
+            ContentDigest::sha256(b"rollover switch custody"),
+        )?;
+        let switch = PinRetainedEffectJournal::for_reconciliation(open("switch", switch_head)?, Box::new(retainer))?;
+        active = archive::journal::rollover::recover(previous, successor, switch, heads, &replay)
+            .map_err(|_| "batch rollover cold recovery failed")?;
+    }
     let confirmed = active.binding().confirmed;
     assert!(matches!(
         active.replay_confirmed_source(
@@ -993,6 +1130,25 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
     )?;
     assert_eq!(receipt.outcome, RootLedgerOutcome::AlreadyLedgered);
     assert_eq!(active.successor().0.replay_pin(), None);
+    if batch {
+        let recovered = archive::read_unknown_time_source_batch(
+            &mut deployment, confirmed, &access, archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000), &replay,
+        )?;
+        assert_eq!(recovered.key, key);
+        assert_eq!(recovered.camera_claim, camera);
+        let mut expected_offset = recovered.records.first().ok_or("empty replayed batch")?.offset;
+        for record in &recovered.records {
+            let offset = usize::try_from(record.offset)?;
+            let bytes = recovered.payload.get(record.range.clone()).ok_or("invalid batch range")?;
+            let end = offset.checked_add(bytes.len()).ok_or("batch offset overflow")?;
+            if record.offset != expected_offset || wire.get(offset..end) != Some(bytes) {
+                return Err("replayed batch differs from original wire".into());
+            }
+            expected_offset = u64::try_from(end)?;
+        }
+        assert_eq!(expected_offset, wire.len() as u64);
+    }
     let Next::Record(record) = framer.take()? else {
         return Err("missing next source".into());
     };
@@ -1015,7 +1171,7 @@ fn rollover_replays_real_source_root_before_next_publication() -> Test {
         journal,
         keeper,
     )?;
-    assert_eq!(deployment.publisher().visible_roots().count(), 3);
+    assert_eq!(deployment.publisher().visible_roots().count(), if batch { 4 } else { 3 });
 
     // Create a second switch, then close every history before reopening the
     // same intermediate owner exactly once for chained recovery.
@@ -2352,6 +2508,728 @@ fn worker_rollover_preserves_pending_source_and_switch_custody() -> Test {
             },
         )
         .await?;
+        result.receipt?;
+        result.output
+    })?;
+    assert!(authority.finalize_report(&tree)?.is_empty());
+    Ok(())
+}
+#[test]
+fn source_root_capacity_stops_before_intent_and_preserves_original() -> Test {
+    source_root_capacity_with_cross_store(0)
+}
+
+#[test]
+fn source_cross_store_indeterminate_switch_stays_fenced() -> Test {
+    source_root_capacity_with_cross_store(1)
+}
+
+#[test]
+fn source_pending_candidate_orphan_refuses_before_intent() -> Test {
+    source_root_capacity_with_cross_store(2)
+}
+
+#[test]
+fn source_cross_store_separate_process_recovery() -> Test {
+    source_root_capacity_with_cross_store(3)
+}
+
+// This entry point is invoked only by the parent fixture with a fresh root.
+// It receives no in-memory pins or source claims from the producing process.
+#[test]
+#[ignore = "requires a parent-created synthetic recovery root"]
+fn source_cross_store_recovery_child() -> Test {
+    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer}};
+    use fss_reference::unifi_direct::source_worker;
+    use fss_runtime::effect_journal::{EffectPinRetainer, PinRetainedEffectJournal};
+
+    let root = std::fs::canonicalize(std::env::var_os("FSS_SOURCE_CROSS_STORE_ROOT").ok_or("missing fixture root")?)?;
+    let tmp = std::fs::canonicalize(std::env::temp_dir())?;
+    if root.parent() != Some(tmp.as_path()) || !root.file_name().and_then(|s| s.to_str())
+        .is_some_and(|s| s.starts_with("fss-source-root-capacity-")) {
+        return Err("invalid fixture root".into());
+    }
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = 64 * 1024 * 1024;
+    let replay_authority = fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:source-cross-store-child".into(),
+        operation_id: OperationId::parse("operation:source-cross-store-child")?,
+        principal: "principal:fixture".into(), capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None, priority: 1, budgets: budget, privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"source root capacity fixture"), generation: 1,
+    })?;
+    let limits = EffectJournalLimits::default();
+    let mut retainer = FileTrustedRootPinRetainer::open_trusting_storage(
+        root.join("fresh-switch-pin"), limits, Arc::new(HostSpoolIo),
+        ContentDigest::sha256(b"fresh source switch custody"))?;
+    let switch_head = retainer.retained_pin()?.ok_or("missing retained switch pin")?;
+    let store = FileEffectJournal::open(root.join("fresh-switch"), limits, Arc::new(HostSpoolIo), switch_head)?;
+    let mut switch = PinRetainedEffectJournal::for_reconciliation(Box::new(store), Box::new(retainer))?;
+    let inspection_replay = ReplayCx::from_context_authority(&replay_authority, root.clone())?;
+    let scope = ContentDigest::sha256(b"source root scope");
+    let (binding, observed_head) = source_worker::cross_store::inspect(
+        &mut switch, scope, &mut WorkBudget::new(4_000_000_000), &inspection_replay)?;
+    assert_eq!(observed_head, switch_head);
+    let camera = ContentDigest::sha256(b"source root camera");
+    let retention = ContentDigest::sha256(b"source root retention");
+    assert_eq!(binding.camera, camera);
+    assert_eq!(binding.seed.retention, retention);
+    assert_eq!(binding.pending.retention, retention);
+
+    let reopen = |archive_name: &str, journal_name: &str, keeper_name: &str,
+                  roots: usize, journal_head, keeper_head| -> Result<source_worker::Parts, Box<dyn Error>> {
+        let replay = ReplayCx::from_context_authority(&replay_authority, root.clone())?;
+        let deployment = ReferenceDeployment::open_with_limits(&root.join(archive_name),
+            "site:source-root-capacity", DeploymentLimits { max_roots: roots, ..DeploymentLimits::standard() }, &replay)?;
+        let journal = archive::journal::UnknownTimeJournal::reopen(
+            Box::new(FileEffectJournal::open(root.join(journal_name), limits, Arc::new(HostSpoolIo), journal_head)?),
+            scope, journal_head, &replay)?;
+        let keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+            Box::new(FileEffectJournal::open(root.join(keeper_name), limits, Arc::new(HostSpoolIo), keeper_head)?),
+            &journal, keeper_head, &replay)?;
+        Ok(source_worker::Parts { deployment, journal, keeper, replay, authority: Arc::new(Access(retention)),
+            retention, limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 })
+    };
+    let mut old = reopen("archive", "journal", "keeper", 1, binding.old_journal, binding.old_keeper)?;
+    let mut next = reopen("next-archive", "next-journal", "next-keeper", 2, binding.new_journal, binding.new_keeper)?;
+    assert_eq!(old.journal.replay_pin(), Some(binding.seed));
+    assert_eq!(next.journal.replay_pin(), Some(binding.pending));
+    let access = Access(retention);
+    assert!(source_worker::cross_store::verify_reopened_stores(binding, switch_head, &mut switch,
+        &mut old, &mut next, &access, &mut WorkBudget::new(4_000_000_000)).is_err());
+    for (parts, pin) in [(&mut old, binding.seed), (&mut next, binding.pending)] {
+        let receipt = source_worker::cross_store::replay_reopened_store(parts, pin, camera,
+            &access, &mut WorkBudget::new(4_000_000_000))?;
+        assert_eq!(receipt.outcome, fss_publication::RootLedgerOutcome::AlreadyLedgered);
+    }
+    source_worker::cross_store::verify_reopened_stores(binding, switch_head, &mut switch,
+        &mut old, &mut next, &access, &mut WorkBudget::new(4_000_000_000))?;
+    let mut wrong_head = switch_head;
+    wrong_head.sequence += 1;
+    assert!(source_worker::cross_store::verify_reopened_stores(binding, wrong_head, &mut switch,
+        &mut old, &mut next, &access, &mut WorkBudget::new(4_000_000_000)).is_err());
+    let batch = archive::read_unknown_time_source_batch(&mut next.deployment, binding.pending,
+        &access, archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &next.replay)?;
+    assert_eq!(batch.camera_claim, camera);
+    assert_eq!(batch.records.len(), 2);
+    println!("source_cross_store_child_recovered=true");
+    Ok(())
+}
+
+fn source_root_capacity_with_cross_store(scenario: u8) -> Test {
+    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer}};
+    use fss_reference::unifi_direct::{ingress, pipeline, recording, retirement_source, source_batch, source_coordinator::ArchiveAdmission, source_worker};
+    use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError, EffectPinRetainer, PinRetainedEffectJournal};
+    use fss_runtime::tcp_ingress::{EndState, Retirement};
+
+    let parent = std::env::temp_dir().join(format!("fss-source-root-capacity-{}", std::process::id()));
+    std::fs::create_dir(&parent)?;
+    let temp = Temp(std::fs::canonicalize(parent)?);
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = 64 * 1024 * 1024;
+    let spec = |name: &str, capabilities: Vec<String>| -> Result<RootAuthoritySpec, Box<dyn Error>> {
+        Ok(RootAuthoritySpec {
+            trace_id: format!("trace:{name}"), operation_id: OperationId::parse(&format!("operation:{name}"))?,
+            principal: "principal:fixture".into(), capabilities, deadline: None, priority: 1, budgets: budget,
+            privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"source root capacity fixture"), generation: 1,
+        })
+    };
+    let (mut authority, mut tree) = AuthorityCx::root(
+        spec("source-root-capacity", vec![RuntimeGrant::ObjectPublish.as_str().into(), RuntimeGrant::ObjectStage.as_str().into()])?,
+        RegionId::new("region:source-root-capacity")?, RegionKind::Process, budget, TimestampNs(1),
+    )?;
+    let replay_authority = fss_core::region::ContextAuthority::new_root(spec(
+        "source-root-capacity-replay", vec!["ADP-REPLAY-001".into()],
+    )?)?;
+    let runtime = RuntimeBuilder::current_thread().blocking_threads(1, 1).build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(&mut authority, &mut tree,
+            TaskSpec { task_id: TaskId::new("task:source-root-capacity")?, started_at: TimestampNs(3) },
+            &cx, async |task, cx| {
+                let output: Test = async {
+                    let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
+                    let replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let mut deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 1, ..DeploymentLimits::standard() }, &replay,
+                    )?;
+                    let limits = EffectJournalLimits::default();
+                    let journal_store = FileEffectJournal::create(temp.0.join("journal"), limits, Arc::new(HostSpoolIo))?;
+                    let mut journal = archive::journal::UnknownTimeJournal::create(
+                        Box::new(journal_store), ContentDigest::sha256(b"source root scope"), &replay,
+                    )?;
+                    let keeper_store = FileEffectJournal::create(temp.0.join("keeper"), limits, Arc::new(HostSpoolIo))?;
+                    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::create(Box::new(keeper_store), &journal, &replay)?;
+                    let retention = ContentDigest::sha256(b"source root retention");
+                    let camera = ContentDigest::sha256(b"source root camera");
+                    let key = SourceKey { connection: 1, generation: 1 };
+                    let mut wire = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+                    wire.extend_from_slice(&[18, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 15]);
+                    wire.extend_from_slice(&[18, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 5, 6, 7, 8, 0, 0, 0, 15]);
+                    let mut framer = Framer::new(FlvLimits::default(), 1024)?;
+                    framer.append(0, &wire)?;
+                    let Next::Record(header) = framer.take()? else { return Err("header missing".into()) };
+                    let initial = source_evidence::Prepared::new(&header, key, SourceDisposition::Header, camera, retention, 1024)?;
+                    let first = archive::publish_unknown_time_source_anchored(
+                        &initial, &mut deployment, &Access(retention), archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000), &replay, &mut journal, &mut keeper,
+                    )?;
+                    let journal_head = journal.anchor();
+                    let keeper_head = keeper.anchor();
+                    let mut worker = source_worker::Worker::new(source_worker::Parts {
+                        deployment, journal, keeper, replay, authority: Arc::new(Access(retention)), retention,
+                        limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000,
+                    }).map_err(|_| "source worker refused")?;
+                    worker.offer(source_worker::Input::Original { record: header, key,
+                        disposition: SourceDisposition::Header, camera_claim: camera }).map_err(|_| "replay offer refused")?;
+                    worker.start(task, cx, clock, "fixture:source-root-capacity", &BudgetVector::ZERO)
+                        .map_err(|error| format!("replay start: {error:?}"))?;
+                    let replayed = worker.join().await.ok_or("replay did not join")?;
+                    assert!(replayed.runtime.is_ok());
+                    assert!(matches!(replayed.outcome, source_worker::Outcome::Publication(
+                        source_worker::Publication::Published { ref pin, .. }) if pin.root == first.root));
+                    let Next::Record(record) = framer.take()? else { return Err("next source missing".into()) };
+                    let digest = ContentDigest::sha256(record.bytes());
+                    let offset = record.offset();
+                    worker.offer(source_worker::Input::Original { record, key,
+                        disposition: SourceDisposition::PreRoll, camera_claim: camera }).map_err(|_| "next offer refused")?;
+                    worker.start(task, cx, clock, "fixture:source-root-capacity", &BudgetVector::ZERO)
+                        .map_err(|error| format!("capacity start: {error:?}"))?;
+                    let full = worker.join().await.ok_or("capacity did not join")?;
+                    assert!(full.runtime.is_ok());
+                    assert!(matches!(full.outcome, source_worker::Outcome::Publication(
+                        source_worker::Publication::Refused { pin: Some(_), reason: source_worker::Refusal::RootCapacity { visible: 1, maximum: 1 } })));
+                    let retired = worker.retire().map_err(|_| "source worker still running")?;
+                    assert!(!retired.fenced);
+                    assert_eq!(retired.parts.journal.anchor(), journal_head);
+                    assert_eq!(retired.parts.keeper.anchor(), keeper_head);
+                    assert_eq!(retired.parts.keeper.target(), journal_head);
+                    assert!(retired.parts.journal.pending().is_none());
+                    assert!(retired.parts.journal.replay_pin().is_none());
+                    assert_eq!(retired.parts.deployment.publisher().visible_roots().count(), 1);
+                    let record = match retired.pending.ok_or("pending source lost")? {
+                        source_worker::Input::Original { record, disposition, .. } => {
+                            assert_eq!(record.offset(), offset);
+                            assert_eq!(ContentDigest::sha256(record.bytes()), digest);
+                            assert_eq!(disposition, SourceDisposition::PreRoll);
+                            record
+                        }
+                        _ => return Err("pending source kind changed".into()),
+                    };
+                    // The reconnect path batches original records. A full
+                    // store must return the exact batch without intent too.
+                    let Next::Record(second) = framer.take()? else { return Err("second source missing".into()) };
+                    let second_digest = ContentDigest::sha256(second.bytes());
+                    let second_offset = second.offset();
+                    let copy = record.try_duplicate()?;
+                    let source_bytes = copy.bytes().len() + second.bytes().len();
+                    let plan = retirement_source::Plan::new(pipeline::Retirement {
+                        ingress: ingress::Retirement {
+                            source: Retirement { state: EndState::Eof, received: wire.len() as u64, pending: None, reserved_bytes: 0 },
+                            framing: framer.retire(), buffered: None,
+                        },
+                        recorder: recording::Retirement { pending: vec![copy, second], source_bytes, fenced: false },
+                        pending_audio: None,
+                    }).map_err(|_| "batch retirement plan refused")?;
+                    let expected_pending = archive::UnknownTimePin::from_source_batch(
+                        &source_batch::Prepared::new(&plan, key, camera, retention, 256, 1024)?);
+                    let worker = source_worker::Worker::new(retired.parts).map_err(|_| "batch worker refused")?;
+                    let mut batch_driver = retirement_source::Driver::begin(worker, plan, key, camera)
+                        .map_err(|_| "batch driver refused")?;
+                    assert!(batch_driver.enable_batching(256, 1024));
+                    let cost = BudgetVector::ZERO;
+                    let admission = ArchiveAdmission { resource: "fixture:source-root-capacity", cost: &cost };
+                    assert!(matches!(batch_driver.step(task, cx, clock, admission).await,
+                        retirement_source::DriverStep::BatchOffered { records: 2, .. }));
+                    assert!(matches!(batch_driver.step(task, cx, clock, admission).await,
+                        retirement_source::DriverStep::Started));
+                    let completion = batch_driver.step(task, cx, clock, admission).await;
+                    assert!(matches!(completion, retirement_source::DriverStep::Completed(ref done)
+                        if done.runtime.is_ok() && matches!(&done.outcome, source_worker::Outcome::Publication(
+                            source_worker::Publication::Refused { reason: source_worker::Refusal::RootCapacity { visible: 1, maximum: 1 }, .. }))));
+                    let tail = batch_driver.into_parts().map_err(|_| "batch driver still running")?;
+                    let batch_retired = tail.worker.retire().map_err(|_| "batch worker still running")?;
+                    assert!(!batch_retired.fenced && tail.plan.is_empty());
+                    assert_eq!(batch_retired.parts.journal.anchor(), journal_head);
+                    assert_eq!(batch_retired.parts.keeper.anchor(), keeper_head);
+                    assert!(batch_retired.parts.journal.pending().is_none());
+                    match &batch_retired.pending {
+                        Some(source_worker::Input::Batch { batch, .. }) => {
+                            let actual: Vec<_> = batch.items_in_order().map(|item|
+                                (item.record.offset(), ContentDigest::sha256(item.record.bytes()), item.disposition)).collect();
+                            assert_eq!(actual, vec![(offset, digest, SourceDisposition::Unclosed),
+                                (second_offset, second_digest, SourceDisposition::Unclosed)]);
+                        }
+                        _ => return Err("pending source batch lost".into()),
+                    }
+                    // Copy the last confirmed root to a separate empty-ledger
+                    // store while the full predecessor retains its batch.
+                    let mut old = batch_retired;
+                    let next_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let next_deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("next-archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &next_replay,
+                    )?;
+                    let next_journal_store = FileEffectJournal::create(temp.0.join("next-journal"), limits, Arc::new(HostSpoolIo))?;
+                    let next_journal = archive::journal::UnknownTimeJournal::create(
+                        Box::new(next_journal_store), old.parts.journal.scope(), &next_replay,
+                    )?;
+                    let next_keeper_store = FileEffectJournal::create(temp.0.join("next-keeper"), limits, Arc::new(HostSpoolIo))?;
+                    let next_keeper = archive::journal::UnknownTimeAnchorKeeper::create(Box::new(next_keeper_store), &next_journal, &next_replay)?;
+                    let mut next = source_worker::Parts { deployment: next_deployment, journal: next_journal,
+                        keeper: next_keeper, replay: next_replay, authority: Arc::new(Access(retention)), retention,
+                        limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                    let empty_next_head = next.journal.anchor();
+                    let wrong_camera = source_worker::copy_confirmed_to_fresh_store(&mut old, &mut next,
+                        ContentDigest::sha256(b"wrong camera"), &Access(retention), &mut WorkBudget::new(4_000_000_000));
+                    assert!(matches!(wrong_camera, Err(source_worker::FreshStoreCopyError::CameraClaim)));
+                    assert_eq!(next.journal.anchor(), empty_next_head);
+                    assert_eq!(next.deployment.publisher().visible_root_count(), 0);
+                    let mut copied = source_worker::copy_confirmed_to_fresh_store(&mut old, &mut next,
+                        camera, &Access(retention), &mut WorkBudget::new(4_000_000_000))
+                        .map_err(|error| format!("fresh source copy: {error:?}"))?;
+                    assert_eq!(copied.pin.root, first.root);
+                    assert_eq!(copied.predecessor_journal, journal_head);
+                    assert_eq!(copied.predecessor_keeper, keeper_head);
+                    assert_eq!(copied.successor_journal, next.journal.anchor());
+                    assert_eq!(copied.successor_keeper, next.keeper.anchor());
+                    assert_eq!(next.deployment.publisher().visible_root_count(), 1);
+                    assert!(matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                    if scenario == 2 {
+                        use std::io::Write;
+                        let hex: String = expected_pending.root.bytes().iter().map(|b| format!("{b:02x}")).collect();
+                        let slot = fss_publication::SlotName::parse(&format!("uflv1-{hex}"))?;
+                        let relative = fss_publication::LocalRootPublisher::root_temp_path(&slot);
+                        let path = next.deployment.publisher().root_dir().join(&relative);
+                        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+                        file.write_all(b"synthetic unresolved candidate")?;
+                        file.sync_all()?;
+                        drop(file);
+                        let journal_head = next.journal.anchor();
+                        let keeper_head = next.keeper.anchor();
+                        drop(next);
+                        let replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                        let deployment = ReferenceDeployment::open_with_limits(
+                            &temp.0.join("next-archive"), "site:source-root-capacity",
+                            DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &replay)?;
+                        let journal = archive::journal::UnknownTimeJournal::reopen(
+                            Box::new(FileEffectJournal::open(temp.0.join("next-journal"), limits, Arc::new(HostSpoolIo), journal_head)?),
+                            old.parts.journal.scope(), journal_head, &replay)?;
+                        let keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+                            Box::new(FileEffectJournal::open(temp.0.join("next-keeper"), limits, Arc::new(HostSpoolIo), keeper_head)?),
+                            &journal, keeper_head, &replay)?;
+                        let mut next = source_worker::Parts { deployment, journal, keeper, replay,
+                            authority: Arc::new(Access(retention)), retention, limits: archive::Limits::default(),
+                            max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                        assert!(next.deployment.publisher().orphaned_temps().any(|p| p == relative.as_path()));
+                        assert_eq!(next.journal.replay_pin(), Some(copied.pin));
+                        assert!(source_worker::cross_store::replay_reopened_store(&mut next, copied.pin,
+                            ContentDigest::sha256(b"wrong camera"), &Access(retention),
+                            &mut WorkBudget::new(4_000_000_000)).is_err());
+                        let replayed = source_worker::cross_store::replay_reopened_store(&mut next, copied.pin,
+                            camera, &Access(retention), &mut WorkBudget::new(4_000_000_000))?;
+                        assert_eq!(replayed.outcome, fss_publication::RootLedgerOutcome::AlreadyLedgered);
+                        assert!(next.journal.replay_pin().is_none());
+                        assert!(matches!(source_worker::copy_pending_to_seeded_store(&mut old, &mut next,
+                            &copied, camera, &Access(retention), &mut WorkBudget::new(4_000_000_000)),
+                            Err(source_worker::FreshStorePendingError::CandidateOrphan)));
+                        assert_eq!(next.journal.anchor(), journal_head);
+                        assert_eq!(next.keeper.anchor(), keeper_head);
+                        assert!(matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                        return Ok(());
+                    }
+                    // Before selecting a successor, copy the still-held
+                    // batch there and verify both original byte ranges.
+                    let seed_head = next.journal.anchor();
+                    let wrong_pending = source_worker::copy_pending_to_seeded_store(
+                        &mut old, &mut next, &copied, ContentDigest::sha256(b"wrong camera"),
+                        &Access(retention), &mut WorkBudget::new(4_000_000_000));
+                    assert!(matches!(&wrong_pending, Err(source_worker::FreshStorePendingError::CameraClaim)),
+                        "wrong-camera refusal={:?}, broken={}, orphaned={}, tombstones={}, poisoned={}",
+                        wrong_pending.err(), next.deployment.publisher().broken_slots().count(),
+                        next.deployment.publisher().orphaned_temps().count(), next.deployment.publisher().tombstones().count(),
+                        next.deployment.publisher().is_poisoned());
+                    assert_eq!(next.journal.anchor(), seed_head);
+                    assert!(matches!(source_worker::copy_pending_to_seeded_store(
+                        &mut old, &mut next, &copied, camera, &Access(retention), &mut WorkBudget::new(0)),
+                        Err(source_worker::FreshStorePendingError::Work)));
+                    assert_eq!(next.journal.anchor(), seed_head);
+                    let successor_head = copied.successor_journal;
+                    copied.successor_journal.sequence += 1;
+                    assert!(matches!(source_worker::copy_pending_to_seeded_store(
+                        &mut old, &mut next, &copied, camera, &Access(retention),
+                        &mut WorkBudget::new(4_000_000_000)),
+                        Err(source_worker::FreshStorePendingError::Preconditions)));
+                    copied.successor_journal = successor_head;
+                    struct DenyPending;
+                    impl archive::RetainAuthority for DenyPending {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { false }
+                    }
+                    let retained_policy = Arc::clone(&next.authority);
+                    next.authority = Arc::new(DenyPending);
+                    assert!(matches!(source_worker::copy_pending_to_seeded_store(
+                        &mut old, &mut next, &copied, camera, &Access(retention),
+                        &mut WorkBudget::new(4_000_000_000)),
+                        Err(source_worker::FreshStorePendingError::Preconditions)));
+                    next.authority = retained_policy;
+                    assert_eq!(next.journal.anchor(), seed_head);
+                    let pending_copy = source_worker::copy_pending_to_seeded_store(
+                        &mut old, &mut next, &copied, camera, &Access(retention),
+                        &mut WorkBudget::new(4_000_000_000))?;
+                    assert_eq!(pending_copy.seed, copied.pin);
+                    assert_ne!(pending_copy.pending, copied.pin);
+                    assert_eq!(pending_copy.successor_journal, next.journal.anchor());
+                    assert_eq!(pending_copy.successor_keeper, next.keeper.anchor());
+                    assert_eq!(next.deployment.publisher().visible_root_count(), 2);
+                    assert_eq!(old.parts.journal.anchor(), journal_head);
+                    assert_eq!(old.parts.keeper.anchor(), keeper_head);
+                    assert!(matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                    let recovered = archive::read_unknown_time_source_batch(
+                        &mut next.deployment, pending_copy.pending, &Access(retention), archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000), &next.replay)?;
+                    let actual: Vec<_> = recovered.records.iter().map(|item|
+                        (item.offset, ContentDigest::sha256(&recovered.payload[item.range.clone()]), item.disposition)).collect();
+                    assert_eq!(actual, vec![(offset, digest, SourceDisposition::Unclosed),
+                        (second_offset, second_digest, SourceDisposition::Unclosed)]);
+                    assert!(matches!(source_worker::copy_pending_to_seeded_store(
+                        &mut old, &mut next, &copied, camera, &Access(retention),
+                        &mut WorkBudget::new(4_000_000_000)),
+                        Err(source_worker::FreshStorePendingError::Preconditions)));
+                    // Retain a separately pinned candidate switch while
+                    // preserving both stores and the old pending batch.
+                    let read_access = Access(retention);
+                    assert!(source_worker::cross_store::Staged::begin(
+                        &mut old, &mut next, &copied, &pending_copy, ContentDigest::sha256(b"wrong camera"),
+                        &read_access, &mut WorkBudget::new(4_000_000_000)).is_err());
+                    let staged = source_worker::cross_store::Staged::begin(
+                        &mut old, &mut next, &copied, &pending_copy, camera,
+                        &read_access, &mut WorkBudget::new(4_000_000_000))?;
+                    let expected_binding = staged.binding();
+                    let switch_scope = ContentDigest::sha256(b"fresh source switch custody");
+                    if scenario == 1 {
+                        #[derive(Debug)]
+                        struct FailAfterRetain(Box<dyn EffectPinRetainer>);
+                        impl EffectPinRetainer for FailAfterRetain {
+                            fn retained_pin(&mut self) -> Result<Option<EffectJournalPin>, EffectPersistenceError> { self.0.retained_pin() }
+                            fn reserve_capacity(&mut self, count: usize) -> Result<(), EffectPersistenceError> { self.0.reserve_capacity(count) }
+                            fn verify_effect_history(&mut self, journal: &dyn EffectJournalStore) -> Result<(), EffectPersistenceError> { self.0.verify_effect_history(journal) }
+                            fn retain(&mut self, expected: Option<EffectJournalPin>, next: EffectJournalPin) -> Result<(), EffectPersistenceError> {
+                                self.0.retain(expected, next)?;
+                                Err(EffectPersistenceError::Storage("synthetic post-retain refusal".into()))
+                            }
+                        }
+                        let store = FileEffectJournal::create(temp.0.join("uncertain-switch"), limits, Arc::new(HostSpoolIo))?;
+                        let retainer = FileTrustedRootPinRetainer::create(temp.0.join("uncertain-switch-pin"), limits,
+                            Arc::new(HostSpoolIo), switch_scope)?;
+                        let switch = PinRetainedEffectJournal::new(Box::new(store), Box::new(FailAfterRetain(Box::new(retainer))))?;
+                        let failure = match staged.commit(switch, &mut WorkBudget::new(4_000_000_000)) {
+                            Err(error) => error, Ok(_) => return Err("uncertain switch accepted".into()),
+                        };
+                        assert!(failure.indeterminate);
+                        let (spent, switch) = failure.into_parts();
+                        let switch_head = switch.head().ok_or("uncertain switch head missing")?;
+                        let retry = match spent.commit(switch, &mut WorkBudget::new(4_000_000_000)) {
+                            Err(error) => error, Ok(_) => return Err("spent switch retried".into()),
+                        };
+                        assert!(!retry.indeterminate);
+                        let (spent, switch) = retry.into_parts();
+                        drop(spent);
+                        assert!(old.fenced && matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                        assert!(source_worker::cross_store::Staged::begin(&mut old, &mut next, &copied,
+                            &pending_copy, camera, &read_access, &mut WorkBudget::new(4_000_000_000)).is_err());
+                        drop(switch);
+                        let store = FileEffectJournal::open(temp.0.join("uncertain-switch"), limits, Arc::new(HostSpoolIo), switch_head)?;
+                        let retainer = FileTrustedRootPinRetainer::open_trusting_storage(temp.0.join("uncertain-switch-pin"), limits,
+                            Arc::new(HostSpoolIo), switch_scope)?;
+                        let mut reopened = PinRetainedEffectJournal::for_reconciliation(Box::new(store), Box::new(retainer))?;
+                        assert_eq!(source_worker::cross_store::inspect(&mut reopened, next.journal.scope(),
+                            &mut WorkBudget::new(4_000_000_000), &next.replay)?, (expected_binding, switch_head));
+                        assert!(old.fenced);
+                        return Ok(());
+                    }
+                    let switch_store = FileEffectJournal::create(temp.0.join("fresh-switch"), limits, Arc::new(HostSpoolIo))?;
+                    let switch_retainer = FileTrustedRootPinRetainer::create(temp.0.join("fresh-switch-pin"), limits,
+                        Arc::new(HostSpoolIo), switch_scope)?;
+                    let switch = PinRetainedEffectJournal::new(Box::new(switch_store), Box::new(switch_retainer))?;
+                    let retained = staged.commit(switch, &mut WorkBudget::new(4_000_000_000))
+                        .map_err(|_| "fresh store switch refused")?;
+                    assert_eq!(retained.binding(), expected_binding);
+                    let switch_head = retained.head();
+                    let (old_ref, next_ref, mut switch) = retained.into_parts();
+                    assert!(matches!(&old_ref.pending, Some(source_worker::Input::Batch { .. })));
+                    assert_eq!(next_ref.journal.confirmed(), Some(pending_copy.pending));
+                    let inspected = source_worker::cross_store::inspect(&mut switch, next_ref.journal.scope(),
+                        &mut WorkBudget::new(4_000_000_000), &next_ref.replay)?;
+                    assert_eq!(inspected, (expected_binding, switch_head));
+                    source_worker::cross_store::verify_reopened_stores(expected_binding, switch_head, &mut switch,
+                        &mut old_ref.parts, next_ref, &read_access, &mut WorkBudget::new(4_000_000_000))?;
+                    let mut wrong_binding = expected_binding;
+                    wrong_binding.new_ledger = ContentDigest::sha256(b"wrong ledger");
+                    assert!(source_worker::cross_store::verify_reopened_stores(wrong_binding, switch_head, &mut switch,
+                        &mut old_ref.parts, next_ref, &read_access, &mut WorkBudget::new(4_000_000_000)).is_err());
+                    let mut wrong_head = switch_head;
+                    wrong_head.sequence += 1;
+                    assert!(source_worker::cross_store::verify_reopened_stores(expected_binding, wrong_head, &mut switch,
+                        &mut old_ref.parts, next_ref, &read_access, &mut WorkBudget::new(4_000_000_000)).is_err());
+                    assert!(source_worker::cross_store::inspect(&mut switch, ContentDigest::sha256(b"wrong scope"),
+                        &mut WorkBudget::new(4_000_000_000), &next_ref.replay).is_err());
+                    drop(switch);
+                    let switch_store = FileEffectJournal::open(temp.0.join("fresh-switch"), limits, Arc::new(HostSpoolIo), switch_head)?;
+                    let switch_retainer = FileTrustedRootPinRetainer::open_trusting_storage(temp.0.join("fresh-switch-pin"), limits,
+                        Arc::new(HostSpoolIo), switch_scope)?;
+                    let mut reopened_switch = PinRetainedEffectJournal::for_reconciliation(Box::new(switch_store), Box::new(switch_retainer))?;
+                    assert_eq!(source_worker::cross_store::inspect(&mut reopened_switch, next_ref.journal.scope(),
+                        &mut WorkBudget::new(4_000_000_000), &next_ref.replay)?, (expected_binding, switch_head));
+                    if scenario == 3 {
+                        drop(reopened_switch);
+                        drop(next);
+                        drop(old);
+                        let child = std::process::Command::new(std::env::current_exe()?)
+                            .args(["--ignored", "--exact", "source_cross_store_recovery_child", "--nocapture", "--test-threads=1"])
+                            .env("FSS_SOURCE_CROSS_STORE_ROOT", &temp.0)
+                            .output()?;
+                        let stdout = String::from_utf8_lossy(&child.stdout);
+                        if !child.status.success() || !stdout.contains("source_cross_store_child_recovered=true") {
+                            return Err(format!("recovery child failed: status={} stdout={} stderr={}", child.status,
+                                stdout, String::from_utf8_lossy(&child.stderr)).into());
+                        }
+                        println!("source_cross_store_child_recovered=true");
+                        return Ok(());
+                    }
+                    assert!(matches!(source_worker::copy_confirmed_to_fresh_store(&mut old, &mut next,
+                        camera, &Access(retention), &mut WorkBudget::new(4_000_000_000)),
+                        Err(source_worker::FreshStoreCopyError::Preconditions)));
+                    let next_journal_head = pending_copy.successor_journal;
+                    let next_keeper_head = pending_copy.successor_keeper;
+                    let pending_pin = pending_copy.pending;
+                    drop(next);
+                    let reopened_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let reopened_deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("next-archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &reopened_replay)?;
+                    let reopened_journal = archive::journal::UnknownTimeJournal::reopen(
+                        Box::new(FileEffectJournal::open(temp.0.join("next-journal"), limits, Arc::new(HostSpoolIo), next_journal_head)?),
+                        old.parts.journal.scope(), next_journal_head, &reopened_replay)?;
+                    let reopened_keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+                        Box::new(FileEffectJournal::open(temp.0.join("next-keeper"), limits, Arc::new(HostSpoolIo), next_keeper_head)?),
+                        &reopened_journal, next_keeper_head, &reopened_replay)?;
+                    assert_eq!(reopened_journal.confirmed(), Some(pending_pin));
+                    assert_eq!(reopened_keeper.target(), reopened_journal.anchor());
+                    let mut reopened_next = source_worker::Parts { deployment: reopened_deployment, journal: reopened_journal,
+                        keeper: reopened_keeper, replay: reopened_replay, authority: Arc::new(Access(retention)), retention,
+                        limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                    assert!(source_worker::cross_store::verify_reopened_stores(expected_binding, switch_head, &mut reopened_switch,
+                        &mut old.parts, &mut reopened_next, &read_access, &mut WorkBudget::new(4_000_000_000)).is_err());
+                    let replayed = source_worker::cross_store::replay_reopened_store(&mut reopened_next, pending_pin,
+                        camera, &read_access, &mut WorkBudget::new(4_000_000_000))?;
+                    assert_eq!(replayed.outcome, fss_publication::RootLedgerOutcome::AlreadyLedgered);
+                    source_worker::cross_store::verify_reopened_stores(expected_binding, switch_head, &mut reopened_switch,
+                        &mut old.parts, &mut reopened_next, &read_access, &mut WorkBudget::new(4_000_000_000))?;
+                    let reopened_batch = archive::read_unknown_time_source_batch(
+                        &mut reopened_next.deployment, pending_pin, &Access(retention), archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000), &reopened_next.replay)?;
+                    let reopened: Vec<_> = reopened_batch.records.iter().map(|item|
+                        (item.offset, ContentDigest::sha256(&reopened_batch.payload[item.range.clone()]), item.disposition)).collect();
+                    assert_eq!(reopened, actual);
+                    assert!(matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                    // The normal single-record path must preserve the same
+                    // ownership and source bytes as a batch transition.
+                    let saved_batch = old.pending.replace(source_worker::Input::Original {
+                        record: record.try_duplicate()?, key,
+                        disposition: SourceDisposition::PreRoll, camera_claim: camera,
+                    });
+                    let single_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let single_deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("single-archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &single_replay)?;
+                    let single_journal = archive::journal::UnknownTimeJournal::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("single-journal"), limits, Arc::new(HostSpoolIo))?),
+                        old.parts.journal.scope(), &single_replay)?;
+                    let single_keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("single-keeper"), limits, Arc::new(HostSpoolIo))?),
+                        &single_journal, &single_replay)?;
+                    let mut single = source_worker::Parts { deployment: single_deployment, journal: single_journal,
+                        keeper: single_keeper, replay: single_replay, authority: Arc::new(Access(retention)), retention,
+                        limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                    let single_seed = source_worker::copy_confirmed_to_fresh_store(&mut old, &mut single,
+                        camera, &Access(retention), &mut WorkBudget::new(4_000_000_000))?;
+                    let single_copy = source_worker::copy_pending_to_seeded_store(&mut old, &mut single,
+                        &single_seed, camera, &Access(retention), &mut WorkBudget::new(4_000_000_000))?;
+                    let single_read = archive::read_unknown_time_source(&mut single.deployment,
+                        single_copy.pending, &Access(retention), archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000), &single.replay)?;
+                    assert_eq!(ContentDigest::sha256(single_read.bytes()), digest);
+                    assert!(matches!(&old.pending, Some(source_worker::Input::Original { .. })));
+                    old.pending = saved_batch;
+                    // Retention can be withdrawn after preflight. The new
+                    // journal then retains its pending intent and a retry
+                    // must not treat that destination as fresh.
+                    struct RetainOnce(std::sync::atomic::AtomicUsize);
+                    impl archive::RetainAuthority for RetainOnce {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                        }
+                    }
+                    let denied_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let denied_deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("publish-fail-archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &denied_replay,
+                    )?;
+                    let denied_journal = archive::journal::UnknownTimeJournal::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("publish-fail-journal"), limits, Arc::new(HostSpoolIo))?),
+                        old.parts.journal.scope(), &denied_replay,
+                    )?;
+                    let denied_keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("publish-fail-keeper"), limits, Arc::new(HostSpoolIo))?),
+                        &denied_journal, &denied_replay,
+                    )?;
+                    let mut denied_next = source_worker::Parts { deployment: denied_deployment, journal: denied_journal,
+                        keeper: denied_keeper, replay: denied_replay,
+                        authority: Arc::new(RetainOnce(std::sync::atomic::AtomicUsize::new(0))),
+                        retention, limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                    let denied = source_worker::copy_confirmed_to_fresh_store(&mut old, &mut denied_next,
+                        camera, &Access(retention), &mut WorkBudget::new(4_000_000_000));
+                    assert!(matches!(&denied, Err(source_worker::FreshStoreCopyError::Publication(
+                        archive::UnknownTimePublishError::Archive(archive::Error::Denied)))));
+                    assert_eq!(denied_next.journal.pending().map(|pin| pin.root), Some(first.root));
+                    assert_eq!(denied_next.keeper.target(), denied_next.journal.anchor());
+                    assert!(matches!(source_worker::copy_confirmed_to_fresh_store(&mut old, &mut denied_next,
+                        camera, &Access(retention), &mut WorkBudget::new(4_000_000_000)),
+                        Err(source_worker::FreshStoreCopyError::Preconditions)));
+                    // Withdraw read authority only after destination
+                    // publication begins; the real receipt and both owners
+                    // must survive a post-publication readback refusal.
+                    struct ReadGate(Arc<std::sync::atomic::AtomicBool>);
+                    impl archive::ReadAuthority for ReadGate {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                            self.0.load(std::sync::atomic::Ordering::SeqCst)
+                        }
+                    }
+                    struct RetainThenDenyRead {
+                        reads_allowed: Arc<std::sync::atomic::AtomicBool>,
+                        calls: std::sync::atomic::AtomicUsize,
+                    }
+                    impl archive::RetainAuthority for RetainThenDenyRead {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                                self.reads_allowed.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            true
+                        }
+                    }
+                    let fail_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let fail_deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("readback-fail-archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &fail_replay,
+                    )?;
+                    let fail_journal = archive::journal::UnknownTimeJournal::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("readback-fail-journal"), limits, Arc::new(HostSpoolIo))?),
+                        old.parts.journal.scope(), &fail_replay,
+                    )?;
+                    let fail_keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("readback-fail-keeper"), limits, Arc::new(HostSpoolIo))?),
+                        &fail_journal, &fail_replay,
+                    )?;
+                    let read_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                    let mut fail_next = source_worker::Parts { deployment: fail_deployment, journal: fail_journal,
+                        keeper: fail_keeper, replay: fail_replay,
+                        authority: Arc::new(RetainThenDenyRead { reads_allowed: Arc::clone(&read_flag), calls: std::sync::atomic::AtomicUsize::new(0) }),
+                        retention, limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                    let failure = source_worker::copy_confirmed_to_fresh_store(&mut old, &mut fail_next,
+                        camera, &ReadGate(read_flag), &mut WorkBudget::new(4_000_000_000));
+                    assert!(matches!(&failure, Err(source_worker::FreshStoreCopyError::AfterPublication {
+                        receipt, reason: source_worker::FreshStoreVerification::Read(archive::Error::Denied)
+                    }) if receipt.root == first.root));
+                    assert_eq!(fail_next.journal.confirmed().map(|pin| pin.root), Some(first.root));
+                    assert!(matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                    // Withhold readback only after the pending source has
+                    // passed preflight and destination publication begins.
+                    struct ArmedReadRevocation {
+                        reads_allowed: Arc<std::sync::atomic::AtomicBool>,
+                        armed: Arc<std::sync::atomic::AtomicBool>,
+                        armed_calls: std::sync::atomic::AtomicUsize,
+                    }
+                    impl archive::RetainAuthority for ArmedReadRevocation {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                            if self.armed.load(std::sync::atomic::Ordering::SeqCst)
+                                && self.armed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2 {
+                                self.reads_allowed.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            true
+                        }
+                    }
+                    let pending_fail_replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
+                    let pending_fail_deployment = ReferenceDeployment::open_with_limits(
+                        &temp.0.join("pending-readback-fail-archive"), "site:source-root-capacity",
+                        DeploymentLimits { max_roots: 2, ..DeploymentLimits::standard() }, &pending_fail_replay)?;
+                    let pending_fail_journal = archive::journal::UnknownTimeJournal::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("pending-readback-fail-journal"), limits, Arc::new(HostSpoolIo))?),
+                        old.parts.journal.scope(), &pending_fail_replay)?;
+                    let pending_fail_keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+                        Box::new(FileEffectJournal::create(temp.0.join("pending-readback-fail-keeper"), limits, Arc::new(HostSpoolIo))?),
+                        &pending_fail_journal, &pending_fail_replay)?;
+                    let pending_read_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let mut pending_fail = source_worker::Parts { deployment: pending_fail_deployment,
+                        journal: pending_fail_journal, keeper: pending_fail_keeper, replay: pending_fail_replay,
+                        authority: Arc::new(ArmedReadRevocation { reads_allowed: Arc::clone(&pending_read_flag),
+                            armed: Arc::clone(&armed), armed_calls: std::sync::atomic::AtomicUsize::new(0) }),
+                        retention, limits: archive::Limits::default(), max_source_bytes: 1024, work_limit: 4_000_000_000 };
+                    let pending_fail_seed = source_worker::copy_confirmed_to_fresh_store(&mut old, &mut pending_fail,
+                        camera, &ReadGate(Arc::clone(&pending_read_flag)), &mut WorkBudget::new(4_000_000_000))?;
+                    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let pending_failure = source_worker::copy_pending_to_seeded_store(&mut old, &mut pending_fail,
+                        &pending_fail_seed, camera, &ReadGate(Arc::clone(&pending_read_flag)),
+                        &mut WorkBudget::new(4_000_000_000));
+                    assert!(matches!(&pending_failure, Err(source_worker::FreshStorePendingError::AfterPublication {
+                        receipt, reason: source_worker::FreshStoreVerification::Read(archive::Error::Denied)
+                    }) if pending_fail.journal.confirmed().is_some_and(|pin| pin.root == receipt.root)));
+                    assert!(matches!(&old.pending, Some(source_worker::Input::Batch { .. })));
+                    assert!(matches!(source_worker::copy_pending_to_seeded_store(&mut old, &mut pending_fail,
+                        &pending_fail_seed, camera, &Access(retention), &mut WorkBudget::new(4_000_000_000)),
+                        Err(source_worker::FreshStorePendingError::Preconditions)));
+                    // A pre-existing indeterminate intent must retain its
+                    // candidate semantics even when the root store is full.
+                    struct Deny;
+                    impl archive::RetainAuthority for Deny {
+                        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { false }
+                    }
+                    let mut parts = old.parts;
+                    let plan = source_evidence::Prepared::new(&record, key, SourceDisposition::PreRoll, camera, retention, 1024)?;
+                    assert!(matches!(archive::publish_unknown_time_source_anchored(
+                        &plan, &mut parts.deployment, &Deny, archive::Limits::default(),
+                        &mut WorkBudget::new(4_000_000_000), &parts.replay, &mut parts.journal, &mut parts.keeper,
+                    ), Err(archive::UnknownTimePublishError::Archive(archive::Error::Denied))));
+                    let pending = parts.journal.pending().ok_or("expected journal intent")?;
+                    let pending_head = parts.journal.anchor();
+                    let pending_keeper = parts.keeper.anchor();
+                    let mut duplicate = Framer::new(FlvLimits::default(), 1024)?;
+                    duplicate.append(0, &wire)?;
+                    let Next::Record(header) = duplicate.take()? else { return Err("replay header missing".into()) };
+                    let mut worker = source_worker::Worker::new(parts).map_err(|_| "pending worker refused")?;
+                    worker.offer(source_worker::Input::Original { record: header, key,
+                        disposition: SourceDisposition::Header, camera_claim: camera }).map_err(|_| "conflicting offer refused")?;
+                    worker.start(task, cx, clock, "fixture:source-root-capacity", &BudgetVector::ZERO)
+                        .map_err(|error| format!("conflict start: {error:?}"))?;
+                    let conflict = worker.join().await.ok_or("conflict did not join")?;
+                    assert!(conflict.runtime.is_ok());
+                    assert!(matches!(conflict.outcome, source_worker::Outcome::Publication(
+                        source_worker::Publication::Refused { reason: source_worker::Refusal::Candidate, .. })));
+                    let conflicted = worker.retire().map_err(|_| "conflicting worker still running")?;
+                    assert_eq!(conflicted.parts.journal.pending(), Some(pending));
+                    assert_eq!(conflicted.parts.journal.anchor(), pending_head);
+                    assert_eq!(conflicted.parts.keeper.anchor(), pending_keeper);
+                    assert!(conflicted.pending.is_some());
+                    let _custody = (record, conflicted, old.pending, reopened_next, copied, denied_next, denied, fail_next, failure,
+                        pending_fail, pending_failure, single, reopened_switch, completion);
+                    Ok(())
+                }.await;
+                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("source root capacity fixture failed".into()) };
+                TaskCompletion { output, outcome, completed_at: TimestampNs(59_000_000_000) }
+            }).await?;
         result.receipt?;
         result.output
     })?;

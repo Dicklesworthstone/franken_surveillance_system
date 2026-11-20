@@ -679,6 +679,23 @@ pub struct Retained {
     value: SecretValue,
 }
 
+/// Caller-supplied request claims for a read-only restore-digest comparison.
+/// None of these fields authenticates the peer or grants camera authority.
+pub struct RestoreRequestClaim<'a> {
+    /// Peer bound to the original forward and restore requests.
+    pub peer: Ipv4Addr,
+    /// Reconstructed original forward request.
+    pub forward: &'a super::super::StreamStart,
+    /// Original camera-session generation.
+    pub generation: u64,
+    /// Original forward request framing.
+    pub forward_framing: super::Framing,
+    /// Framing claimed for the restore request.
+    pub restore_framing: super::Framing,
+    /// Expected restore-request digest from the retained effect journal.
+    pub expected: ContentDigest,
+}
+
 /// Caller-supplied claims for planning a separate post-restart restore.
 /// The camera, certificate, journal anchors, current session, listener and
 /// lease require independent validation; this structure grants no authority.
@@ -733,6 +750,40 @@ impl Retained {
             .ok_or(Error::Invalid)?;
         let view = std::array::from_fn(|i| tracks[i].object().and_then(|v| v.get("value")));
         Ok(inspect(view, root.get("forward").ok_or(Error::Invalid)?))
+    }
+
+    /// Compare an exact restore-request digest against this encrypted baseline.
+    /// The reconstructed forward request must first match this checkpoint's
+    /// request digest and channel. This is a local comparison, not proof of
+    /// dispatch, camera identity, effect settlement, or authority to retry.
+    pub fn matches_restore_request(
+        &self,
+        cx: &Cx,
+        authority: &dyn Authority,
+        claim: RestoreRequestClaim<'_>,
+    ) -> Result<bool, Error> {
+        admit(cx, &self.scope, authority, Action::Inspect)?;
+        let channel = match claim.forward.channel {
+            super::super::VideoChannel::Video1 => 1,
+            super::super::VideoChannel::Video2 => 2,
+            super::super::VideoChannel::Video3 => 3,
+        };
+        if channel != self.scope.channel || !valid_digest(claim.expected)
+            || !super::local_unicast(claim.peer) || claim.generation == 0
+            || super::request_digest(claim.peer, claim.forward, claim.generation, claim.forward_framing)
+                .map_err(|_| Error::Invalid)? != self.scope.request {
+            return Err(Error::Invalid);
+        }
+        let matched = self.visit(cx, authority, |tracks, _| {
+            let prior = tracks[usize::from(channel - 1)].ok_or(Error::Invalid)?;
+            let body = super::restore_body(claim.forward.channel, prior).map_err(|_| Error::Invalid)?;
+            let digest = super::request_digest_with_body(
+                claim.peer, claim.forward, claim.generation, claim.restore_framing, &body, Operation::Restore,
+            ).map_err(|_| Error::Invalid)?;
+            Ok::<bool, Error>(digest == claim.expected)
+        })??;
+        admit(cx, &self.scope, authority, Action::Inspect)?;
+        Ok(matched)
     }
 
     /// Compare a newly observed session with the retained pre-change values
@@ -1060,6 +1111,17 @@ mod tests {
                 assert_eq!(tracks[2], None);
                 assert!(forward.object().is_some());
             })?;
+            let same_session = snapshot(peer, 1, br#"{"av":{"video":{"video1":{"avSerializer":{"type":"extendedFlv","parameters":{"streamName":"0123456789abcdef","withOpus":false},"destinations":["tcp://192.168.44.10:17777?retryInterval=1&connectTimeout=5"]}},"video2":{"avSerializer":null}}}}"#);
+            let current = conditions(&same_session, listener);
+            let restore = plan.prepare_restore(&baseline, &same_session, current, Framing::ContentLength, |_, _| true)?;
+            let make_claim = |claimed_peer, expected| RestoreRequestClaim {
+                peer: claimed_peer, forward: &start, generation: 1,
+                forward_framing: Framing::ContentLength, restore_framing: Framing::ContentLength, expected,
+            };
+            assert!(retained.matches_restore_request(&cx, &Policy(true), make_claim(peer, restore.request_digest()))?);
+            assert!(!retained.matches_restore_request(&cx, &Policy(true), make_claim(peer, ContentDigest::sha256(b"wrong request")))?);
+            assert!(matches!(retained.matches_restore_request(&cx, &Policy(true), make_claim(Ipv4Addr::new(192, 168, 44, 21), restore.request_digest())), Err(Error::Invalid)));
+            assert!(matches!(retained.matches_restore_request(&cx, &Deny(Action::Inspect), make_claim(peer, restore.request_digest())), Err(Error::Denied)));
             let certificate = ContentDigest::sha256(b"synthetic certificate");
             let new_peer = Ipv4Addr::new(192, 168, 44, 21);
             let after = snapshot(new_peer, 2, br#"{"av":{"video":{"video1":{"avSerializer":{"type":"extendedFlv","parameters":{"streamName":"0123456789abcdef","withOpus":false},"destinations":["tcp://192.168.44.10:17777?retryInterval=1&connectTimeout=5"]}},"video2":{"avSerializer":null}}}}"#);

@@ -197,6 +197,10 @@ pub enum SearchMode {
     /// whose complete FLV header has a nonzero stream ID. This is an explicit
     /// source-profile assumption, not proof of a tag boundary or identity.
     ZeroStreamId,
+    /// Require exactly 16 trailer bytes with seven zero padding bytes, then a
+    /// zero-stream-ID tags. The remaining trailer bytes are opaque. This
+    /// opt-in profile is a structural hypothesis, not boundary authentication.
+    StructuredTrailer16OpaqueFlag,
 }
 impl SearchMode {
     /// Stable policy identity used in source-evidence metadata.
@@ -207,6 +211,7 @@ impl SearchMode {
             Self::StructuredTrailer16 => 2,
             Self::StructuredTrailer16AvFlag => 3,
             Self::ZeroStreamId => 4,
+            Self::StructuredTrailer16OpaqueFlag => 5,
         }
     }
 
@@ -218,6 +223,7 @@ impl SearchMode {
             2 => Some(Self::StructuredTrailer16),
             3 => Some(Self::StructuredTrailer16AvFlag),
             4 => Some(Self::ZeroStreamId),
+            5 => Some(Self::StructuredTrailer16OpaqueFlag),
             _ => None,
         }
     }
@@ -465,7 +471,7 @@ impl Framer {
             || Header::parse(&[], limits).is_err()
             || (matches!(
                 mode,
-                SearchMode::StructuredTrailer16 | SearchMode::StructuredTrailer16AvFlag
+                SearchMode::StructuredTrailer16 | SearchMode::StructuredTrailer16AvFlag | SearchMode::StructuredTrailer16OpaqueFlag
             ) && limits.max_trailer < 16)
         {
             return Err(Error::Configuration);
@@ -563,7 +569,7 @@ impl Framer {
             let rest = &input[position..];
             let tag = if index == 0 {
                 name_probe_charge(work_remaining, rest.len().min(15))?;
-                if self.mode == SearchMode::ZeroStreamId
+                if matches!(self.mode, SearchMode::ZeroStreamId | SearchMode::StructuredTrailer16OpaqueFlag)
                     && rest.len() >= 11
                     && rest[8..11] != [0; 3]
                 {
@@ -651,7 +657,7 @@ impl Framer {
                 ),
             },
             Phase::FirstTag
-                if self.mode == SearchMode::ZeroStreamId
+                if matches!(self.mode, SearchMode::ZeroStreamId | SearchMode::StructuredTrailer16OpaqueFlag)
                     && input.len() >= 11
                     && input[8..11] != [0; 3] =>
             {
@@ -767,7 +773,7 @@ fn successor(
     match mode {
         SearchMode::Conservative => find_next(input, limits).map_err(Error::Parse),
         SearchMode::Provisional => find_next_provisional(input, limits).map_err(Error::Parse),
-        SearchMode::StructuredTrailer16 => structured_trailer_16(input, limits, None),
+        SearchMode::StructuredTrailer16 => structured_trailer_16(input, limits, Some(0)),
         SearchMode::StructuredTrailer16AvFlag => {
             let flag = match previous_kind {
                 Some(8) => 0,
@@ -779,6 +785,7 @@ fn successor(
         SearchMode::ZeroStreamId => {
             super::find_next_zero_stream_id(input, limits).map_err(Error::Parse)
         }
+        SearchMode::StructuredTrailer16OpaqueFlag => structured_trailer_16(input, limits, None),
     }
 }
 
@@ -790,7 +797,7 @@ fn structured_trailer_16(
     if input.len() < 16 {
         return Ok(Parse::NeedMore);
     }
-    if input[4..11] != [0; 7] || input[11] != flag.unwrap_or(0) {
+    if input[4..11] != [0; 7] || flag.is_some_and(|expected| input[11] != expected) {
         return Err(Error::TrailerPolicyMismatch);
     }
     if input.len() >= 27 && input[24..27] != [0; 3] {

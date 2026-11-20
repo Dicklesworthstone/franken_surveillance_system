@@ -24,7 +24,7 @@ use super::{
     controller_upgrade,
     discovery::{
         fleet::{RouteError, Router, RouterEvent},
-        pump, scan,
+        pump, scan, sweep, sweep_pump,
     },
     metered::MAX_POLL_BYTES,
     owner::PeerAdmission,
@@ -227,6 +227,15 @@ where
         self.router.matches_scanner(scanner) && scanner.matches_context(self.cx)
     }
 
+    /// Check the exact fleet, task clock and runtime used by a paged sweep.
+    pub fn matches_sweep(
+        &self,
+        runner: &sweep::Runner<'scope, 'task>,
+        fleet: &super::discovery::fleet::Fleet<'_>,
+    ) -> bool {
+        self.router.matches_sweep(runner, fleet) && runner.matches_context(self.cx)
+    }
+
     /// Drive the owned handshakes and router until one event is available.
     pub async fn next(&mut self) -> Event<'scope, 'task, 'policy, P::Stream> {
         poll_fn(|cx| self.poll_next(cx)).await
@@ -301,6 +310,25 @@ where
     type Event = Event<'scope, 'task, 'policy, P::Stream>;
     fn matches_scanner(&self, scanner: &scan::Scanner<'_, '_, 'scope, 'task>) -> bool {
         Acceptor::matches_scanner(self, scanner)
+    }
+    fn poll_driver(&mut self, cx: &mut Context<'_>) -> Poll<Self::Event> {
+        self.poll_next(cx)
+    }
+}
+
+impl<'fleet, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, 'policy: 'fleet + 'scope, A, P>
+    sweep_pump::Driver<'scope, 'task> for Acceptor<'fleet, 'report, 'scope, 'task, 'policy, A, P>
+where
+    A: PeerAdmission + 'fleet,
+    P: Transport<'scope, 'task, 'policy> + 'fleet,
+{
+    type Event = Event<'scope, 'task, 'policy, P::Stream>;
+    fn matches_sweep(
+        &self,
+        runner: &sweep::Runner<'scope, 'task>,
+        fleet: &super::discovery::fleet::Fleet<'_>,
+    ) -> bool {
+        Acceptor::matches_sweep(self, runner, fleet)
     }
     fn poll_driver(&mut self, cx: &mut Context<'_>) -> Poll<Self::Event> {
         self.poll_next(cx)

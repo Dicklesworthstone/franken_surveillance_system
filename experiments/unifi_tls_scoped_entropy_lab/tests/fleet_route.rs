@@ -259,6 +259,7 @@ fn camera_fixture_with_gate(
         "GET /api/1.1/status ",
         "GET /api/1.1/settings ",
         "GET /api/1.1/settings ",
+        "GET /api/1.1/status ",
         "PUT /api/1.1/settings ",
         "GET /api/1.1/settings ",
     ];
@@ -274,7 +275,7 @@ fn camera_fixture_with_gate(
         {
             return Err(io::Error::other("fixture cookie missing"));
         }
-        if index == 4
+        if index == 5
             && !message.ends_with(format!(r#"{{"controller":{{"addr":"{peer}"}}}}"#).as_bytes())
         {
             return Err(io::Error::other("fixture destination mismatch"));
@@ -297,19 +298,19 @@ fn camera_fixture_with_gate(
             }
         }
         let body = match index {
-            1 => format!(r#"{{"controller":{{"port":{port}}}}}"#),
-            2 | 3 | 5 => {
-                let controller = if index == 5 {
+            1 | 4 => format!(r#"{{"controller":{{"port":{port}}}}}"#),
+            2 | 3 | 6 => {
+                let controller = if index == 6 {
                     peer.to_string()
                 } else {
                     "192.168.1.10".to_owned()
                 };
-                let (width, height) = if changed_readback && index == 5 { (80, 64) } else { (160, 128) };
+                let (width, height) = if changed_readback && index == 6 { (80, 64) } else { (160, 128) };
                 format!(
                     r#"{{"controller":{{"addr":"{controller}"}},"av":{{"video":{{"video1":{{"width":2688,"height":1512,"fps":25}},"video2":{{"width":{width},"height":{height},"fps":25}},"video3":{{"width":64,"height":64,"fps":15}}}}}}}}"#
                 )
             }
-            4 => r#"{"success":true}"#.to_owned(),
+            5 => r#"{"success":true}"#.to_owned(),
             _ => "{}".to_owned(),
         };
         let cookie = if index == 0 {
@@ -322,7 +323,7 @@ fn camera_fixture_with_gate(
             "HTTP/1.1 200 OK\r\n{cookie}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
             body.len()
         )?;
-        if stop_before_handoff && index == 3 {
+        if stop_before_handoff && index == 4 {
             socket.flush()?;
             let mut byte = [0_u8; 1];
             return match socket.read(&mut byte) {
@@ -619,15 +620,15 @@ fn parallel_fleet_upgrade_scenario(
                 let recorder = recording::Recorder::new(SourceKey { connection: 3, generation: 1 }, recording::Limits::default())?;
                 let mut trace = listener::StartTrace::default();
                 let started = listener::start_before_reply_retaining_listener(&mut owner, &mut session, &request, framer, recorder, &mut trace).await?;
-                let initial_clocks = started.started.time_syncs_during_accept;
-                let initial_observations = started.started.observations_during_accept.len();
+                let initial_clocks = started.started().time_syncs_during_accept;
+                let initial_observations = started.started().observations_during_accept.len();
                 let refusal = match listener::ValidatedMediaSelection::new(started, 3, 4096, 12, Duration::from_secs(10)) {
                     Err(refusal) => refusal,
                     Ok(_) => return Err("automatic short source limit accepted".into()),
                 };
-                assert_eq!(refusal.startup.started.pipeline.source_key().connection, 3);
-                assert_eq!(refusal.startup.started.time_syncs_during_accept, initial_clocks);
-                assert_eq!(refusal.startup.started.observations_during_accept.len(), initial_observations);
+                assert_eq!(refusal.startup.started().pipeline.source_key().connection, 3);
+                assert_eq!(refusal.startup.started().time_syncs_during_accept, initial_clocks);
+                assert_eq!(refusal.startup.started().observations_during_accept.len(), initial_observations);
                 let mut selection = listener::ValidatedMediaSelection::new(refusal.startup, 3, 4096, 1_000_000, Duration::from_secs(10)).map_err(|_| "automatic candidate configuration refused")?;
                 assert_eq!(selection.startup().time_syncs_during_accept, initial_clocks);
                 assert_eq!(selection.startup().observations_during_accept.len(), initial_observations);
@@ -1335,6 +1336,18 @@ fn parallel_fleet_upgrade_scenario(
         Arc::new(HostSpoolIo),
     )?;
     let mut upgrade_effects = EffectCoordinator::with_journal(Box::new(upgrade_store))?;
+    let sweep_store = FileEffectJournal::create(
+        temp.0.join("journal-sweep-factory"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut sweep_effects = EffectCoordinator::with_journal(Box::new(sweep_store))?;
+    let sweep_stream_store = FileEffectJournal::create(
+        temp.0.join("journal-sweep-stream"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let sweep_stream_effects = EffectCoordinator::with_journal(Box::new(sweep_stream_store))?;
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 4_000_000;
     budget.bytes = 128 * 1024 * 1024;
@@ -1675,6 +1688,7 @@ fn parallel_fleet_upgrade_scenario(
                     assert!(matches!(empty_supply.next().await, Some(SupplyEvent::Stopped)));
                     drop(empty_supply);
                     drop(empty_transport);
+                    let sweep_server = scoped_server.clone();
                     let transport = FleetLeased::new(scoped_server.clone(), task, cx, clock, &fleet_resources)?;
                     if !matches!(
                         FleetLeased::new(scoped_server, task, cx, clock, &fleet_resources),
@@ -1732,6 +1746,280 @@ fn parallel_fleet_upgrade_scenario(
                         retained,
                         "full supply should wait without discarding ownership"
                     );
+                    // A separately scoped fleet starts with its enrolled camera
+                    // unobserved. Drive a complete sweep through the real
+                    // protected-transport acceptor, then select its work.
+                    {
+                        use fss_reference::unifi_direct::discovery::{
+                            self, sweep::{Runner as SweepRunner, Step as SweepStep},
+                            sweep_pump::{Event as SweepEvent, Progress as SweepProgress, Pump as SweepPump},
+                        };
+                        use fss_unifi_scoped_tls_entropy_lab::fleet_leased::{
+                            SweepAutomaticEvent, SweepAutoRoutedEvent, SweepFleetStreamEvent, SweepRetryingEvent,
+                        };
+                        let empty = discovery::Report { cameras: Vec::new(), datagrams: 0, malformed: 0,
+                            out_of_scope: 0, stop: discovery::Stop::WindowElapsed };
+                        let scope = ContentDigest::sha256(b"fixture automatic sweep scope");
+                        let pages = [
+                            discovery::SweepPage { scope, index: 0, count: 2, report: &empty },
+                            discovery::SweepPage { scope, index: 1, count: 2, report: &empty },
+                        ];
+                        let sweep_enrollment = Enrollment::new(MACS[0], cameras[0], admissions[0],
+                            ContentDigest::sha256(cert), handles[0], 1)?;
+                        let sweep_fleet = Fleet::from_sweep(&pages, &[sweep_enrollment])?;
+                        assert_eq!(sweep_fleet.state(0), Some(discovery::fleet::State::NotObserved));
+                        let udp = std::net::UdpSocket::bind((PEERS[0], 0))?;
+                        udp.set_read_timeout(Some(Duration::from_secs(5)))?;
+                        let SocketAddr::V4(destination) = udp.local_addr()? else { return Err("IPv4 required".into()); };
+                        let sender = Joined(Some(std::thread::spawn(move || -> io::Result<()> {
+                            for _ in 0..2 {
+                                let mut query = [0u8; 32];
+                                let (_, source) = udp.recv_from(&mut query)?;
+                                udp.send_to(&discovery_packet_for(PEERS[0], MACS[0]), source)?;
+                            }
+                            Ok(())
+                        })));
+                        let sweep_config = discovery::Config::new(PEERS[0], 8, destination,
+                            "fixture:parallel-discovery", Duration::from_millis(300), 8)?;
+                        let runner = SweepRunner::new(cx, task, clock, scope,
+                            vec![vec![sweep_config.clone()], vec![sweep_config]], Duration::from_secs(5))?;
+                        let sweep_resources = FleetResources::new(&resources[..1])?;
+                        let sweep_transport = FleetLeased::new(sweep_server, task, cx, clock, &sweep_resources)?;
+                        let mut sweep_supply = LeaseSupply::new(sweep_transport.clone(), 1, 128)?;
+                        let sweep_router = Router::new(&sweep_fleet, &listener, 2, 4096, Duration::from_secs(10))?;
+                        let mut sweep_acceptor = FleetAcceptor::new(sweep_router, cx, &policy,
+                            sweep_transport, identity.clone(), Default::default(), ProtocolPolicy::RequireOffer,
+                            4096, Duration::from_secs(10), 1)
+                            .map_err(|error| format!("sweep acceptor: {error:?}"))?;
+                        let mut sweep_pump = SweepPump::new(&runner, &sweep_fleet, &mut sweep_acceptor)?;
+                        let invoked = Cell::new(false);
+                        let mut wrong_fleet = AutomaticWork::<usize>::new(&fleet, 1).map_err(|_| "wrong fleet work capacity")?;
+                        let mut wrong_factory = |_: usize, _: Enrollment| -> io::Result<CameraWork<'_, usize>> {
+                            invoked.set(true);
+                            Ok(Box::pin(async { 1 }))
+                        };
+                        assert!(matches!(sweep_supply.next_with_sweep_automatic_setup(&mut sweep_pump, &mut wrong_fleet, &mut wrong_factory).await,
+                            Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+                        assert!(!invoked.get());
+                        type SweepSetup = RetryCompletion<Result<setup::Outcome, camera_setup::Error>>;
+                        let mut automatic = AutomaticWork::<SweepSetup>::new(&sweep_fleet, 1).map_err(|_| "sweep work capacity")?;
+                        let mut before_discovery = |_: usize, _: Enrollment| -> io::Result<CameraWork<'_, SweepSetup>> {
+                            Err(io::ErrorKind::NotFound.into())
+                        };
+                        let mut first_page_finished = false;
+                        loop {
+                            match timeout(cx.now(), Duration::from_secs(10),
+                                sweep_supply.next_with_sweep_automatic_setup(&mut sweep_pump, &mut automatic, &mut before_discovery)).await??
+                            {
+                                SweepAutomaticEvent::Fleet(SweepProgress::Event(SweepEvent::Discovery(
+                                    Ok(SweepStep::Finished { refresh: Some(Ok(_)), .. })))) => {
+                                        assert!(first_page_finished);
+                                        break;
+                                    }
+                                SweepAutomaticEvent::Fleet(SweepProgress::Event(SweepEvent::Discovery(
+                                    Ok(SweepStep::Progress { page: 0, window: 0 })))) => {
+                                        assert!(!first_page_finished);
+                                        assert_eq!(sweep_fleet.state(0), Some(discovery::fleet::State::NotObserved));
+                                        first_page_finished = true;
+                                    }
+                                SweepAutomaticEvent::Fleet(SweepProgress::Work(Some(SupplyEvent::Started(_) | SupplyEvent::Installed(_)))) => (),
+                                _ => return Err("sweep did not discover the enrolled synthetic camera".into()),
+                            }
+                        }
+                        sender.finish()?;
+                        sweep_pump.request_sweep_stop();
+
+                        let camera_listener = std::net::TcpListener::bind((PEERS[0], 0))?;
+                        let SocketAddr::V4(camera_address) = camera_listener.local_addr()? else { return Err("IPv4 required".into()); };
+                        let sweep_camera_server = server.clone();
+                        let reject_server = server.clone();
+                        let reject_listener = camera_listener.try_clone()?;
+                        let sweep_camera_client = client.clone();
+                        let start_controller = Arc::new(AtomicBool::new(false));
+                        let peer_start = start_controller.clone();
+                        let stream_seen = Arc::new(AtomicBool::new(false));
+                        let peer_stream_seen = stream_seen.clone();
+                        let candidate_hold = Arc::new(AtomicBool::new(false));
+                        let candidate_proceed = Arc::new(AtomicBool::new(false));
+                        let peer_hold = candidate_hold.clone();
+                        let peer_proceed = candidate_proceed.clone();
+                        let camera_peer = Joined(Some(std::thread::spawn(move || {
+                            camera_reject_login(reject_listener, reject_server, false)?;
+                            camera_fixture(camera_listener, endpoint.port(), peer, sweep_camera_server)?;
+                            let deadline = Instant::now() + Duration::from_secs(15);
+                            while !peer_start.load(Ordering::Acquire) {
+                                if Instant::now() >= deadline { return Err(io::Error::new(io::ErrorKind::TimedOut, "paged setup did not complete")); }
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            stream_fixture::camera_with_candidates(endpoint, PEERS[0], sweep_camera_client,
+                                "001122aabbcc", peer_stream_seen, Arc::new(AtomicBool::new(true)),
+                                full_resolution, peer_hold, peer_proceed, audio)
+                        })));
+                        let sweep_owner = Rc::new(RefCell::new(setup::Owner {
+                            cx, task, clock, effects: &mut sweep_effects, leases: &leases,
+                            approval: &Approval, admission: &policy, handoff_authority: &Handoff,
+                        }));
+                        let sweep_spool = Rc::new(RefCell::new(fss_object::StagingSpool::open(
+                            temp.0.join("sweep-factory-evidence"), fss_object::SpoolLimits::new(4, 4096, 1024, 4),
+                        )?));
+                        let params = fss_unifi_scoped_tls_entropy_lab::prepared_camera::Parameters {
+                            fleet: &sweep_fleet, index: 0, enrollment: sweep_enrollment, listener: &listener,
+                            http_authority: &policy, peer: camera_address, certificate_der: cert,
+                            credential_handle: handles[0], credential: br#"{"username":"fixture","password":"synthetic"}"#,
+                            resource: &resources[0], provider: scoped_camera_provider.clone(), fence: fences[0],
+                            destination: peer, framing: handoff::Framing::ContentLength, wait: Duration::from_secs(10),
+                            storage_resource: &resources[0],
+                        };
+                        let mut camera_factory = fss_unifi_scoped_tls_entropy_lab::camera_factory::Factory::new(
+                            &sweep_fleet, fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::new([0x47; 16])?)?;
+                        camera_factory.register(fss_unifi_scoped_tls_entropy_lab::camera_factory::Plan::new(
+                            params, sweep_owner.clone(), sweep_spool, 2, Some(profile_limits(full_resolution)),
+                        )).map_err(|_| "sweep camera plan refused")?;
+                        let mut sweep_streams = ActiveStreams::new(&sweep_fleet, 1).map_err(|_| "sweep stream capacity")?;
+                        let mut wrong_streams = ActiveStreams::<(Test, EffectCoordinator)>::new(&fleet, 1)
+                            .map_err(|_| "wrong sweep stream capacity")?;
+                        let setup_called = Cell::new(false);
+                        let mut forbidden_setup = |_: usize, _: Enrollment| -> io::Result<CameraWork<'_, SweepSetup>> {
+                            setup_called.set(true);
+                            Err(io::ErrorKind::PermissionDenied.into())
+                        };
+                        assert!(matches!(sweep_supply.next_with_sweep_setup_and_streams(
+                            &mut sweep_pump, &mut automatic, &mut wrong_streams, &mut forbidden_setup).await,
+                            Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+                        assert!(!setup_called.get());
+                        let archive_base = temp.0.join("sweep-factory-media");
+                        std::fs::create_dir(&archive_base)?;
+                        let made = Rc::new(Cell::new(0usize));
+                        let polled = Rc::new(Cell::new(0usize));
+                        let media = AutoMedia { index: 0, cx, task, clock, effects: Some(sweep_stream_effects),
+                            leases: &leases, policy: &policy, resource: &resources[0], peer, camera: cameras[0],
+                            admission: admissions[0], fence: fences[0], full_resolution,
+                            archive_base: Some(archive_base), archive_budget: budget, abort_source: false,
+                            audio, rollover, candidate_hold, candidate_proceed };
+                        let mut stream_factory = auto_media_factory(media, made.clone(), polled.clone(), Rc::new(Cell::new(true)));
+                        let retry_policy = discovery::retry::Policy::new(Duration::from_millis(50), Duration::from_millis(100), 2)?;
+                        let queue = discovery::retry::Queue::new(&sweep_fleet, task, cx, clock, retry_policy)?;
+                        let mut sweep_retries = RetryCoordinator::new(queue).map_err(|_| "sweep retry queue not empty")?;
+                        let wrong_queue = discovery::retry::Queue::new(&fleet, task, cx, clock, retry_policy)?;
+                        let mut wrong_retries = RetryCoordinator::new(wrong_queue).map_err(|_| "wrong sweep retry queue not empty")?;
+                        assert!(matches!(sweep_supply.next_with_sweep_retries_and_streams(
+                            &mut sweep_pump, &mut automatic, &mut sweep_streams, &mut wrong_retries,
+                            &mut forbidden_setup, &mut stream_factory).await, Err(RetryLoopError::Binding)));
+                        assert!(!setup_called.get());
+                        let mut wrong_camera_factory = fss_unifi_scoped_tls_entropy_lab::camera_factory::Factory::new(
+                            &fleet, fss_unifi_scoped_tls_entropy_lab::camera_factory::RunId::new([0x48; 16])?)?;
+                        assert!(matches!(sweep_supply.next_with_sweep_camera_factory_and_streams(
+                            &mut sweep_pump, &mut automatic, &mut sweep_streams, &mut sweep_retries,
+                            &mut wrong_camera_factory, &mut stream_factory).await, Err(RetryLoopError::Binding)));
+                        assert_eq!(camera_factory.attempt_count(0), Some(0));
+                        assert!(matches!(sweep_supply.next_with_sweep_camera_factory_and_streams(
+                            &mut sweep_pump, &mut automatic, &mut sweep_streams, &mut sweep_retries,
+                            &mut camera_factory, &mut stream_factory).await.map_err(|error| format!("paged first setup: {error:?}"))?,
+                            SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::Progress(
+                                SweepFleetStreamEvent::Automatic(SweepAutomaticEvent::Started { index: 0 })), retry: None }));
+                        let mut overlapping = ActiveStreams::<(Test, EffectCoordinator)>::new(&sweep_fleet, 1)
+                            .map_err(|_| "overlap stream capacity")?;
+                        let overlap_polled = Rc::new(Cell::new(false));
+                        let overlap_flag = overlap_polled.clone();
+                        assert!(overlapping.insert(0, Box::pin(poll_fn(move |_| {
+                            overlap_flag.set(true);
+                            Poll::Pending
+                        }))).is_ok());
+                        assert!(matches!(sweep_supply.next_with_sweep_setup_and_streams(
+                            &mut sweep_pump, &mut automatic, &mut overlapping, &mut forbidden_setup).await,
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists));
+                        assert!(!setup_called.get() && !overlap_polled.get());
+                        drop(overlapping.into_pending().ok().ok_or("overlap owner refused retirement")?);
+                        let mut setup_complete = false;
+                        let mut stream_started = false;
+                        let mut stream_complete = false;
+                        let mut retry_scheduled = false;
+                        let mut retry_rearmed = false;
+                        let mut attempts_started = 1;
+                        let mut failed_operation = None;
+                        while !setup_complete || !stream_complete {
+                            match timeout(cx.now(), Duration::from_secs(45),
+                                sweep_supply.next_with_sweep_camera_factory_and_streams(&mut sweep_pump, &mut automatic, &mut sweep_streams,
+                                    &mut sweep_retries, &mut camera_factory, &mut stream_factory)).await?
+                                    .map_err(|error| format!("paged retry loop: {error:?}"))?
+                            {
+                                SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::Progress(
+                                    SweepFleetStreamEvent::Automatic(SweepAutomaticEvent::Camera { index: 0, output })),
+                                    retry: Some(discovery::pump::RetryDisposition::Scheduled) } => {
+                                    assert!(!retry_scheduled && !setup_complete);
+                                    assert!(matches!(output.output, Err(camera_setup::Error::Setup(
+                                        discovery::fleet::Error::Setup(setup::Error::Camera(camera_http::Error::Io(io::ErrorKind::UnexpectedEof)))))));
+                                    assert!(sweep_owner.borrow().effects.journal().operation(&output.operation).is_none());
+                                    failed_operation = Some(output.operation);
+                                    retry_scheduled = true;
+                                }
+                                SweepRetryingEvent::Retry { event: discovery::retry::Event::Rearmed { index: 0, state: discovery::fleet::State::Ready { .. } },
+                                    selection: RetrySelection::Released } => {
+                                    assert!(retry_scheduled && !retry_rearmed);
+                                    retry_rearmed = true;
+                                }
+                                SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::Progress(
+                                    SweepFleetStreamEvent::Automatic(SweepAutomaticEvent::Started { index: 0 })), retry: None } => {
+                                    assert!(retry_rearmed);
+                                    attempts_started += 1;
+                                }
+                                SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::Progress(
+                                    SweepFleetStreamEvent::Automatic(SweepAutomaticEvent::Camera { index: 0, output })),
+                                    retry: Some(discovery::pump::RetryDisposition::NotEligible) } => {
+                                    assert!(!setup_complete);
+                                    assert!(retry_rearmed && failed_operation.as_ref() != Some(&output.operation));
+                                    assert!(matches!(output.output?, setup::Outcome::Observed { .. }));
+                                    setup_complete = true;
+                                    start_controller.store(true, Ordering::Release);
+                                }
+                                SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::StreamStarted { index: 0 }, retry: None } => {
+                                    assert!(!stream_started);
+                                    stream_started = true;
+                                }
+                                SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::StreamFinished { index: 0, output: (result, returned_effects), completion }, retry: None } => {
+                                    assert!(stream_started && !stream_complete);
+                                    result?;
+                                    assert_eq!(completion.index(), 0);
+                                    assert_eq!(sweep_streams.release_after_reconciliation(&completion, &returned_effects),
+                                        Err(StreamCompletionRefusal::UnsettledEffects));
+                                    stream_complete = true;
+                                }
+                                SweepRetryingEvent::Fleet { event: SweepAutoRoutedEvent::Progress(SweepFleetStreamEvent::Automatic(SweepAutomaticEvent::Fleet(
+                                    SweepProgress::Work(Some(SupplyEvent::Started(_) | SupplyEvent::Installed(_)))))), retry: None } => (),
+                                _ => return Err("unexpected paged synthetic setup or controller event".into()),
+                            }
+                        }
+                        assert!(stream_seen.load(Ordering::Acquire));
+                        assert!(retry_scheduled && retry_rearmed && sweep_retries.is_empty());
+                        assert_eq!(attempts_started, 2);
+                        assert_eq!(made.get(), 1);
+                        assert!(polled.get() > 0);
+                        drop(stream_factory);
+                        camera_peer.finish()?;
+                        assert_eq!(automatic.pending_len(), 0);
+                        let first_attempt = camera_factory.attempt(0, 0).ok_or("missing failed paged attempt")?;
+                        assert!(first_attempt.borrow().started() && first_attempt.borrow().workers_drained());
+                        assert!(first_attempt.borrow().trace().operation().is_none());
+                        assert_eq!(Some(first_attempt.borrow().operation().clone()), failed_operation);
+                        let attempt = camera_factory.attempt(0, 1).ok_or("missing paged camera retry")?;
+                        assert!(attempt.borrow().started() && attempt.borrow().workers_drained());
+                        let operation = attempt.borrow().operation().clone();
+                        assert_eq!(sweep_owner.borrow().effects.journal().operation(&operation).ok_or("missing paged effect")?.state,
+                            fss_core::EffectState::Committed);
+                        drop(automatic);
+                        drop(camera_factory);
+                        drop(sweep_owner);
+                        drop(sweep_pump);
+                        drop(sweep_acceptor);
+                        sweep_supply.request_stop();
+                        loop {
+                            match sweep_supply.next().await {
+                                Some(SupplyEvent::Drained(_)) => (),
+                                Some(SupplyEvent::Stopped) => break,
+                                _ => return Err("paged lease supply did not drain".into()),
+                            }
+                        }
+                    }
                     let refused = match FleetAcceptor::new(
                         router,
                         cx,

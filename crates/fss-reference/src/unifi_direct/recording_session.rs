@@ -102,9 +102,9 @@ pub enum AudioAllowanceError {
 /// `minimum` should cover the largest permitted segment's AAC frame count.
 /// This does not authorize retries, reconnection, publication, or retention.
 pub struct AudioAllowancePolicy {
-    minimum: u64,
-    chunk: u64,
-    remaining_budget: u64,
+    pub(crate) minimum: u64,
+    pub(crate) chunk: u64,
+    pub(crate) remaining_budget: u64,
 }
 
 impl AudioAllowancePolicy {

@@ -29,6 +29,8 @@ pub mod av_owned_sink;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
 mod av_rollover_preflight;
+/// Region-owned validation of recovered A/V archive custody before camera startup.
+pub mod av_recovered_startup;
 /// Bounded, deterministic planning of future rollover generations.
 pub mod av_rollover_generation;
 /// Region-owned creation of fresh successor journal stores.
@@ -80,12 +82,20 @@ pub mod evidence;
 pub mod handoff;
 /// Inert, scoped planning for a camera-local HTTP serializer request.
 pub mod http_stream;
+/// Experimental, bounded camera-local diagnostic IPC framing; no transport or authority.
+pub mod ipc_diagnostic;
+/// Task-owned, single-use transport for experimental diagnostic IPC.
+pub mod ipc_diagnostic_io;
+/// Admitted same-host Unix transport for experimental diagnostic IPC.
+#[cfg(unix)]
+pub mod ipc_diagnostic_unix;
 /// Source-preserving TCP-to-extended-FLV ingress boundary.
 pub mod ingress;
 /// Exact inert stream-setting effect intent.
 pub mod intent;
 /// Bounded task-scoped media listener with caller-supplied peer admission.
 pub mod listener;
+pub mod media_reconnect;
 /// Exact inert controller-association and clock effect intent.
 pub mod management;
 /// Task-scoped byte admission for controller transport I/O.
@@ -118,6 +128,7 @@ pub mod setup;
 pub mod source_coordinator;
 /// Exact standalone source-record evidence for separately returned media.
 pub mod source_evidence;
+pub mod source_batch;
 /// Custody-preserving handoff from session events to standalone source storage.
 pub mod source_handoff;
 /// Task-owned durable publication of separately returned source records.
@@ -161,6 +172,8 @@ pub enum Error {
     InvalidJson,
     /// Required envelope fields or their exact types and bounds are invalid.
     InvalidEnvelope,
+    /// A required management hello token was missing, malformed or different.
+    HelloBindingMismatch,
     /// The message is incompatible with the current protocol state.
     UnexpectedMessage,
     /// A required response is not pending, or another message is already prepared.
@@ -428,6 +441,8 @@ pub struct Retirement {
     pub agreement_id: Option<u64>,
     /// Observed hello request awaiting a locally written reply, if any.
     pub hello_request_id: Option<u64>,
+    /// Request-bound hello claim, if one matched before retirement; not identity.
+    pub management_hello_claim: Option<fss_core::ContentDigest>,
     /// Observed time-sync request awaiting a locally written reply, if any.
     pub time_sync_request_id: Option<u64>,
     /// Locally written stream request for which no matching reply was observed.
@@ -595,6 +610,9 @@ pub struct Controller {
     phase: Phase,
     next_id: Option<u64>,
     hello: Option<(u64, u32)>,
+    hello_binding: Option<handoff::HelloBinding>,
+    management_hello_claim: Option<fss_core::ContentDigest>,
+    observed_any: bool,
     time_sync: Option<u64>,
     agreement_id: Option<u64>,
     stream_request: Option<(u64, MessageKind)>,
@@ -622,6 +640,18 @@ struct ContinuingClock {
     request_next: usize,
     chain_replies: usize,
     pending: bool,
+}
+
+struct ScopedMessageJson {
+    value: Value,
+    scrub: bool,
+}
+impl Drop for ScopedMessageJson {
+    fn drop(&mut self) {
+        if self.scrub {
+            camera_api::clear_value(&mut self.value);
+        }
+    }
 }
 
 impl fmt::Debug for Controller {
@@ -656,6 +686,9 @@ impl Controller {
             phase: Phase::AwaitHello,
             next_id: Some(first_message_id),
             hello: None,
+            hello_binding: None,
+            management_hello_claim: None,
+            observed_any: false,
             time_sync: None,
             agreement_id: None,
             stream_request: None,
@@ -690,6 +723,26 @@ impl Controller {
     /// Current local protocol state, independent of physical camera health.
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Require a request-bound adoption-code claim before accepting a hello.
+    /// Configure before observing any frame. A match does not authenticate
+    /// the camera, prove dispatch, prevent replay or settle the effect.
+    pub fn require_management_hello(
+        &mut self,
+        binding: handoff::HelloBinding,
+    ) -> Result<(), Error> {
+        if self.phase != Phase::AwaitHello || self.observed_any || self.hello_binding.is_some() {
+            return Err(Error::InvalidState);
+        }
+        self.hello_binding = Some(binding);
+        Ok(())
+    }
+
+    /// The request whose hello token was observed, if any. This is an
+    /// untrusted peer claim and does not settle the management effect.
+    pub fn management_hello_claim(&self) -> Option<fss_core::ContentDigest> {
+        self.management_hello_claim
     }
 
     /// Payload-free time-sync observations; these do not prove message delivery.
@@ -760,12 +813,16 @@ impl Controller {
         if matches!(self.phase, Phase::Indeterminate | Phase::Closed) {
             return Err(Error::InvalidState);
         }
+        self.observed_any = true;
         if bytes.len() > MAX_MESSAGE_BYTES {
             return Err(Error::InvalidJson);
         }
         let text = std::str::from_utf8(bytes).map_err(|_| Error::InvalidJson)?;
-        let parsed = json_input::parse(text).map_err(|_| Error::InvalidJson)?;
-        let fields = parsed.object().ok_or(Error::InvalidEnvelope)?;
+        let parsed = ScopedMessageJson {
+            value: json_input::parse(text).map_err(|_| Error::InvalidJson)?,
+            scrub: self.hello_binding.is_some(),
+        };
+        let fields = parsed.value.object().ok_or(Error::InvalidEnvelope)?;
         if text_field(fields, "from")? != "ubnt_avclient"
             || text_field(fields, "to")? != "UniFiVideo"
         {
@@ -794,6 +851,21 @@ impl Controller {
                     self.rejected_message = Some(RejectedMessage::Hello);
                     return Err(Error::UnexpectedMessage);
                 }
+                let matched_request = if let Some(binding) = &self.hello_binding {
+                    let claim = fields
+                        .get("payload")
+                        .and_then(Value::object)
+                        .and_then(|payload| payload.get("adoptionCode"))
+                        .and_then(Value::text);
+                    if !claim.is_some_and(|claim| binding.accepts(claim)) {
+                        self.rejected_message = Some(RejectedMessage::Hello);
+                        self.phase = Phase::Closed;
+                        return Err(Error::HelloBindingMismatch);
+                    }
+                    Some(binding.request_digest())
+                } else {
+                    None
+                };
                 let version = match fields.get("payload") {
                     None | Some(Value::Null) => None,
                     Some(Value::Object(payload)) => payload.get("protocolVersion"),
@@ -808,6 +880,10 @@ impl Controller {
                     },
                     Some(_) => return Err(Error::InvalidEnvelope),
                 };
+                if let Some(request) = matched_request {
+                    self.management_hello_claim = Some(request);
+                    self.hello_binding = None;
+                }
                 self.hello = Some((id, protocol));
                 self.phase = Phase::HelloObserved;
                 Ok(Observation::Hello)
@@ -1394,6 +1470,7 @@ impl Controller {
             prepared: self.prepared.as_ref().map(|m| (m.id, m.kind)),
             agreement_id: self.agreement_id,
             hello_request_id: self.hello.map(|hello| hello.0),
+            management_hello_claim: self.management_hello_claim,
             time_sync_request_id: self.time_sync,
             stream_request: self.stream_request.and_then(|(id, kind)| match kind {
                 MessageKind::StartStream(channel) | MessageKind::QuiesceStream(channel) => {
@@ -1409,6 +1486,8 @@ impl Controller {
         };
         self.prepared = None;
         self.hello = None;
+        self.hello_binding = None;
+        self.management_hello_claim = None;
         self.time_sync = None;
         self.agreement_id = None;
         self.stream_request = None;

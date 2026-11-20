@@ -438,6 +438,17 @@ impl UnknownTimeJournal {
         self.inner.confirmed().map(unknown_pin)
     }
 
+    /// Check only the in-memory predecessor state; this does not verify
+    /// physical custody or reserve capacity for a later publication.
+    pub(crate) fn locally_settled(&self, keeper: &UnknownTimeAnchorKeeper) -> bool {
+        !self.inner.is_fenced()
+            && !keeper.is_fenced()
+            && keeper.inner.scope == self.inner.scope
+            && self.pending().is_none()
+            && self.replay_pin().is_none()
+            && keeper.target() == self.anchor()
+    }
+
     /// Read at most 128 confirmations from one verified prefix of this
     /// generation. Supply zero for the first cursor, then `next_after` from
     /// the previous page and the same `snapshot`. Later appends do not change

@@ -70,7 +70,7 @@ use trial_run_id::TrialRunId;
 use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=full|limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4|auto CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT CONTROLLER_UUID [WAIT_SECONDS] [--video-channel=1|2|3] [--allow-correlated-timesync|--bounded-prehello-clock|--bounded-any-prehello-clock|--bounded-continuing-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--auto-discovery=PREFIX] [--discovery-hint=IP] [--observe-only] [--observe-snapshot] [--lab-owned-archive] [--lab-video-only-archive] [--lab-managed-archive] [--lab-retained-video-generations] [--lab-auto-retained-generations=1..7] [--lab-stop-after-retained-reservation] [--lab-inband-avc] [--lab-renew-batch=1..8] [--lab-av-history-records=N] [--lab-decode-owned] [--lab-video-still=auto|full|limited|bt601-full|bt601-limited|bt709-full|bt709-limited] [--lab-save-still=ABSOLUTE_PATH] [--lab-anchor-root=DIR] [--anchored-journal=KEEPER_DIR,TRUSTED_ROOT_DIR] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const RECOVERY_USAGE: &str = "usage: unifi_direct_trial --inspect-anchored JOURNAL_DIR KEEPER_DIR TRUSTED_ROOT_DIR CONTROLLER_UUID CAMERA_MAC_HEX --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
@@ -112,7 +112,7 @@ struct Options {
     lab_av_history_records: Option<usize>,
     lab_renew_batch: Option<u64>,
     lab_decode_owned: bool,
-    lab_video_still: Option<fss_reference::unifi_direct::video_still::Color>,
+    lab_video_still: Option<fss_reference::unifi_direct::video_still::ColorPolicy>,
     lab_save_still: Option<PathBuf>,
     lab_anchor_root: Option<PathBuf>,
     setup: Option<SetupOptions>,
@@ -181,7 +181,8 @@ fn options() -> ResultBox<Options> {
         let path=PathBuf::from(value);args.pop();Some(path)
     } else {None};
     let lab_video_still = if let Some(value)=args.last().and_then(|s|s.strip_prefix("--lab-video-still=")) {
-        let color=match value {"full"=>fss_reference::unifi_direct::video_still::Color::Bt601Full,"limited"=>fss_reference::unifi_direct::video_still::Color::Bt601Limited,_=>return Err("video still requires explicit full or limited color".into())};
+        use fss_reference::unifi_direct::video_still::{Color, ColorPolicy};
+        let color=match value {"auto"=>ColorPolicy::SourceSignal,"full"|"bt601-full"=>ColorPolicy::Explicit(Color::Bt601Full),"limited"|"bt601-limited"=>ColorPolicy::Explicit(Color::Bt601Limited),"bt709-full"=>ColorPolicy::Explicit(Color::Bt709Full),"bt709-limited"=>ColorPolicy::Explicit(Color::Bt709Limited),_=>return Err("video still requires an explicit supported matrix and range".into())};
         args.pop();Some(color)
     } else {None};
     let lab_decode_owned = args.last().is_some_and(|s| s == "--lab-decode-owned");

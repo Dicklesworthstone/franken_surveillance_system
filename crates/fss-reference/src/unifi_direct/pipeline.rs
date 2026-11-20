@@ -142,6 +142,10 @@ pub struct Pipeline {
     name_probe: Option<extended_flv::stream::NameProbeOwner>,
 }
 impl Pipeline {
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
     pub(crate) fn is_fresh(&self) -> bool {
         !self.started && !self.stopped
     }

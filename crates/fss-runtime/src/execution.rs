@@ -649,6 +649,15 @@ impl<'a> TaskCx<'a> {
             .map_err(ExecutionError::Authority)
     }
 
+    /// Whether this task owner explicitly requested cancellation. Unlike
+    /// `is_cancel_requested`, this does not conflate ordinary drain or a
+    /// closed parent scope with a request made through this owner.
+    pub fn cancellation_was_requested(&self) -> Result<bool, ExecutionError> {
+        let state = self.state()?;
+        self.check_registration(&state)?;
+        Ok(state.cancellation_requested)
+    }
+
     /// Inspect remaining metered capacity without exposing a mutable ledger.
     pub fn remaining_budget(&self) -> Result<BudgetVector, ExecutionError> {
         let state = self.state()?;

@@ -10,6 +10,11 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let mode = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => SearchMode::StructuredTrailer16,
+        [argument] if argument == "--zero-stream-id" => SearchMode::ZeroStreamId,
+        _ => return Err("usage: unifi_aac_adts_replay [--zero-stream-id]".into()),
+    };
     let mut input = Vec::new();
     std::io::stdin()
         .lock()
@@ -25,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut framer = Framer::with_mode(
         Limits::default(),
         8 * 1024 * 1024,
-        SearchMode::StructuredTrailer16,
+        mode,
     )?;
     framer.append(0, &input[2..])?;
     let mut output = std::io::stdout().lock();

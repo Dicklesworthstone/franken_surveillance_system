@@ -107,11 +107,12 @@ def stop_child(child):
         return child.communicate(timeout=5)
 
 
-def serve_http(tls, controller_port, address, profiles, needs_handoff=False, finish_handoff=False, changed=False):
-    routes = (b"POST /api/1.1/login ", b"GET /api/1.1/status ",
+def serve_http(tls, controller_port, address, profiles, needs_handoff=False, finish_handoff=False, changed=False, management=False):
+    routes = (b"POST /api/1.2/login " if management else b"POST /api/1.1/login ", b"GET /api/1.1/status ",
               b"GET /api/1.1/settings ", b"GET /api/1.1/settings ")
     if finish_handoff:
-        routes += (b"GET /api/1.1/status ", b"PUT /api/1.1/settings ", b"GET /api/1.1/settings ")
+        routes += (b"GET /api/1.1/status ", b"POST /api/1.2/manage " if management else b"PUT /api/1.1/settings ", b"GET /api/1.1/settings ")
+    management_token = None
     prior = "192.168.1.10" if address != "192.168.1.10" else "192.168.1.11"
     settings = json.dumps({"controller": {"addr": prior if needs_handoff else address}, "av": {"video": profiles}}, separators=(",", ":")).encode()
     for index, route in enumerate(routes):
@@ -129,30 +130,44 @@ def serve_http(tls, controller_port, address, profiles, needs_handoff=False, fin
         request_body = exact(tls, length)
         if route.startswith(b"PUT ") and json.loads(request_body) != {"controller": {"addr": address}}:
             raise ValueError("handoff targeted an unexpected destination")
+        if management and route.startswith(b"POST /api/1.2/manage "):
+            payload = json.loads(request_body)
+            mgmt = payload.get("mgmt", {})
+            management_token = mgmt.get("token")
+            if (set(payload) != {"mgmt"} or set(mgmt) != {"protocol", "hosts", "token"}
+                    or mgmt.get("protocol") != "wss" or mgmt.get("hosts") != [f"{address}:{controller_port}"]
+                    or not isinstance(management_token, str) or re.fullmatch("[0-9a-f]{64}", management_token) is None):
+                raise ValueError("invalid management request")
         body = (b"{}" if index == 0 else
                 json.dumps({"controller": {"port": controller_port}}).encode() if route.startswith(b"GET /api/1.1/status ") else
-                b'{"success":true}' if route.startswith(b"PUT ") else
+                b'{"success":true}' if route.startswith(b"PUT ") or route.startswith(b"POST /api/1.2/manage ") else
                 json.dumps({"controller": {"addr": address}, "av": {"video": {**profiles, "video1": {"width": 640, "height": 360, "fps": 15}} if changed else profiles}}, separators=(",", ":")).encode() if finish_handoff and index == 6 else settings)
         cookie = b"Set-Cookie: authId=fixture-cookie\r\n" if index == 0 else b""
         tls.sendall(b"HTTP/1.1 200 OK\r\n" + cookie + b"Content-Length: " + str(len(body)).encode()
                     + b"\r\nConnection: keep-alive\r\n\r\n" + body)
+    return management_token
 
 
-def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False, inband=False, wait_seconds=20, expect_auto_inband=False, expect_media_refusal=None, min_frames=6, min_archive_frames=5, stream_name_event=None, first_candidate=None):
+def run(binary, address, root, certs, name, profiles, expected, override=None, media=None, archive=False, clock_burst=None, auto_pin=False, inband=False, wait_seconds=20, expect_auto_inband=False, expect_media_refusal=None, min_frames=6, min_archive_frames=5, stream_name_event=None, first_candidate=None, management=None, sweep_peer=None):
     if not isinstance(min_frames, int) or min_frames < 1 or not isinstance(min_archive_frames, int) or min_archive_frames < 1:
         raise ValueError("invalid minimum decoded frames")
     if (stream_name_event is not None and media is None) or (first_candidate is not None and stream_name_event is None):
         raise ValueError("name selection requires synthetic media and a name policy")
+    if management not in (None, "matching", "mismatched") or (management is not None and not auto_pin):
+        raise ValueError("management fixture requires explicit automatic setup")
+    if sweep_peer is not None and not auto_pin:
+        raise ValueError("sweep fixture requires automatic setup")
+    camera_address = sweep_peer or address
     case = root / name
     case.mkdir(mode=0o700)
     credential = case / "credential.json"
     credential.write_text('{"username":"fixture","password":"synthetic"}')
     os.chmod(credential, 0o600)
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.bind((address, 0))
-    udp.settimeout(15)
+    udp.bind((camera_address, 0))
+    udp.settimeout(20)
     https = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    https.bind((address, 0))
+    https.bind((camera_address, 0))
     https.listen(1)
     https.settimeout(15)
     reserve = socket.socket()
@@ -182,7 +197,9 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
             command.append("--lab-aac-config=1408")
         command.append("--lab-segments=3" if archive else "--lab-segments=2")
     if auto_pin:
-        command.extend(["--auto-discovery=24", f"--discovery-hint={address}", "--lab-auto-pinned-setup", f"--lab-setup-fence={root / 'camera-fence'}"])
+        discovery = (["--discovery-neighbor-interface=fssdummy", "--lab-discovery-sweep-all"]
+                     if sweep_peer is not None else [f"--discovery-hint={address}"])
+        command.extend(["--auto-discovery=24", *discovery, "--lab-auto-pinned-setup", f"--lab-setup-fence={root / 'camera-fence'}"])
     if inband and not archive:
         raise ValueError("in-band AVC replay requires an owned archive")
     if expect_auto_inband and (inband or not auto_pin or archive != "video"):
@@ -197,12 +214,15 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         command.extend(["--lab-av-history-records=5", "--lab-decode-owned"])
     if auto_pin:
         command.append(f"--anchored-journal={case / 'keeper'},{case / 'root'}")
+    if management is not None:
+        command.append("--lab-management-v12")
     command += [f"--setup-camera={udp.getsockname()[1]},{https.getsockname()[1]},{cert},{credential}", "--owner-authorized"]
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output = b""
+    token = None
     try:
         _, source = udp.recvfrom(1024)
-        udp.sendto(advertisement(address), source)
+        udp.sendto(advertisement(camera_address), source)
         if auto_pin:
             raw, _ = https.accept()
             raw.settimeout(8)
@@ -216,7 +236,7 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
         with server.wrap_socket(raw, server_side=True) as camera:
             camera.settimeout(15)
             handoff = name.startswith("handoff-") or name.startswith("auto-handoff-")
-            serve_http(camera, controller_port, address, profiles, needs_handoff=expected is None or handoff, finish_handoff=handoff, changed=name == "handoff-changed")
+            token = serve_http(camera, controller_port, address, profiles, needs_handoff=expected is None or handoff, finish_handoff=handoff, changed=name == "handoff-changed", management=management is not None)
             if expected is None:
                 try:
                     sent = camera.recv(1)
@@ -235,9 +255,10 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
             client = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             client.check_hostname = False
             client.verify_mode = ssl.CERT_NONE  # Disposable local fixture cert.
-            with client.wrap_socket(socket.create_connection((address, controller_port), timeout=15), server_hostname="localhost") as control:
+            with client.wrap_socket(socket.create_connection((address, controller_port), timeout=15, source_address=(camera_address, 0) if sweep_peer is not None else None), server_hostname="localhost") as control:
                 control.settimeout(15)
-                control.sendall(HEAD + (b"" if clock_burst else frame(message("ubnt_avclient_hello", 7, payload={}))))
+                hello_payload = {} if management is None else {"adoptionCode": token if management == "matching" else "00" * 32}
+                control.sendall(HEAD + (b"" if clock_burst else frame(message("ubnt_avclient_hello", 7, payload=hello_payload))))
                 header = bytearray()
                 while not header.endswith(b"\r\n\r\n"):
                     header.extend(exact(control, 1))
@@ -245,6 +266,24 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                         raise ValueError("upgrade header limit")
                 if not header.startswith(b"HTTP/1.1 101 "):
                     raise ValueError("upgrade refused")
+                if management == "mismatched":
+                    try:
+                        control.settimeout(10)
+                        first = control.recv(1)
+                    except (ssl.SSLError, ConnectionResetError):
+                        first = b""
+                    if first:
+                        raise ValueError("mismatched management hello received a reply")
+                    out, err = child.communicate(timeout=15)
+                    output = out + err
+                    if token is not None and token.encode() in output:
+                        raise ValueError("management token leaked to output")
+                    if child.returncode == 0 or b"HelloBindingMismatch" not in output:
+                        raise ValueError("mismatched management hello did not fail closed")
+                    if token.encode() in output:
+                        raise ValueError("management token leaked to output")
+                    print(f"trial_profile_fixture case={name} hello=mismatched result=pass", flush=True)
+                    return
                 if clock_burst:
                     first = message("ubnt_avclient_timeSync", 61)
                     first["responseExpected"] = True
@@ -327,17 +366,17 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                         if first_candidate is not None:
                             if stream_name_event is None:
                                 raise ValueError("candidate metadata needs a name policy")
-                            with socket.create_connection((address, target.port), timeout=5) as candidate:
+                            with socket.create_connection((address, target.port), timeout=5, source_address=(camera_address, 0) if sweep_peer is not None else None) as candidate:
                                 candidate.sendall(first_candidate)
                         if name in ("full-empty-first", "full-empty-events", "full-empty-av", "full-empty-control", "resolution-reconnect-mismatch", "resolution-archive-reconnect-mismatch"):
-                            with socket.create_connection((address, target.port), timeout=5):
+                            with socket.create_connection((address, target.port), timeout=5, source_address=(camera_address, 0) if sweep_peer is not None else None):
                                 pass
                         held = []
                         if name == "full-idle-control":
-                            held.append(socket.create_connection((address, target.port), timeout=5))
+                            held.append(socket.create_connection((address, target.port), timeout=5, source_address=(camera_address, 0) if sweep_peer is not None else None))
                         if name == "full-prefix-control":
                             for prefix_byte in (b"X", b"F"):
-                                candidate = socket.create_connection((address, target.port), timeout=5)
+                                candidate = socket.create_connection((address, target.port), timeout=5, source_address=(camera_address, 0) if sweep_peer is not None else None)
                                 candidate.sendall(prefix_byte)
                                 held.append(candidate)
                         if name in ("full-empty-control", "full-idle-control", "full-prefix-control"):
@@ -365,7 +404,7 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                             reply = received(control)
                             if reply.get("functionName") != "EventSmartMotion" or reply.get("inResponseTo") != 78:
                                 raise ValueError("selection-time event reply missing")
-                        with socket.create_connection((address, target.port), timeout=5) as transport:
+                        with socket.create_connection((address, target.port), timeout=5, source_address=(camera_address, 0) if sweep_peer is not None else None) as transport:
                             if inband or expect_auto_inband:
                                 # Full-resolution real-media replay can apply archive backpressure.
                                 transport.settimeout(90)
@@ -461,6 +500,8 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
                             raise ValueError("matching stream was not the replacement candidate")
                     if auto_pin and (b"trial_pin_discovery=matched candidates=1 credentials_sent=false" not in output or b"trial_setup_fence=created" not in output or b"trial_journal=anchored" not in output):
                         raise ValueError("automatic pinned setup or anchored journal trace missing")
+                    if sweep_peer is not None and b"trial_discovery_sweep=complete pages=2 windows=5" not in output:
+                        raise ValueError("all-page setup discovery trace missing")
                     if auto_pin and b"trial_task_outcome=effect_unsettled" not in output:
                         raise ValueError("automatic setup lost its unsettled effect outcome")
                     if expect_auto_inband and (b"trial_avc_selection=automatic_inband format=avc3 configuration_changes=refused" not in output or b"trial_owned_avc_profile=avc3" not in output):
@@ -476,7 +517,10 @@ def run(binary, address, root, certs, name, profiles, expected, override=None, m
     except Exception:
         if auto_pin:
             out, err = stop_child(child) if child.poll() is None else child.communicate()
-            print("auto_setup_fixture diagnostic=" + (out + err).decode(errors="replace")[-3000:], flush=True)
+            diagnostic = out + err
+            if token is not None:
+                diagnostic = diagnostic.replace(token.encode(), b"[redacted]")
+            print("auto_setup_fixture diagnostic=" + diagnostic.decode(errors="replace")[-3000:], flush=True)
         raise
     finally:
         if child.poll() is None:

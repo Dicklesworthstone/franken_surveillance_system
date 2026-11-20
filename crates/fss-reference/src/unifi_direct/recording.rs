@@ -72,6 +72,10 @@ pub enum SourceDisposition {
     Unclosed,
     /// Unparsed bytes returned by a framer or socket owner at shutdown.
     Unframed,
+    /// An exact copy of a bootstrap collector's original configuration or
+    /// unpublished first-segment source record. The collector retains its
+    /// original; the copy alone does not prove complete stream custody.
+    BootstrapCopy,
 }
 
 /// Exact source configuration and derived initialization binding.
@@ -253,6 +257,12 @@ impl fmt::Debug for Recorder {
 impl Recorder {
     pub(crate) fn source_key(&self) -> SourceKey {
         self.key
+    }
+
+    /// A fresh recorder has never received a source record; configured
+    /// dimensions alone do not make it non-fresh.
+    pub(crate) fn is_pristine(&self) -> bool {
+        !self.observed && !self.started && !self.fenced && self.pending.is_empty()
     }
 
     pub(crate) fn inband_mode(&self) -> bool {

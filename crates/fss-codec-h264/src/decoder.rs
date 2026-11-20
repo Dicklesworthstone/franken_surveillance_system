@@ -691,6 +691,7 @@ impl Decoder {
             idr: header.idr,
             reference,
             decode_index: self.pictures,
+            video_signal: pending.sps.video_signal,
         };
         self.pictures += 1;
         let current = DpbFrame {

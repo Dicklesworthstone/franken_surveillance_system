@@ -19,15 +19,23 @@ use fss_reference::discovery::{DiscoverConfig, DiscoverReport, discover};
 
 #[path = "fss-discover/liveness.rs"]
 mod liveness;
+// Reuse the scoped laboratory probe without invoking a second process or
+// promoting its unauthenticated observations to enrolled camera identities.
+#[allow(dead_code)]
+#[path = "fss-unifi-discover.rs"]
+mod unifi_discovery;
 
 const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] [--beacon-seconds N] [--watch N]\n\
-                    \x20 [--standards-seconds N] --owner-authorized --json\n\
+                    \x20 [--standards-seconds N] [--unifi-only] [--unifi-principal PRINCIPAL --unifi-approval SHA256] --owner-authorized --json\n\
                     \n\
                     Owner-network camera discovery: passive-first (beacons + mDNS/SSDP/\n\
                     WS-Discovery), then a bounded census (ping -> ARP -> OUI -> registered\n\
                     port connects), typed brand classification and adapter dispatch with\n\
                     the exact missing owner-auth ingredient per candidate. Owner-network\n\
                     scope only. Report: fss.discover_cli.v1 JSON on stdout.\n\
+                    The optional UniFi probe emits separate laboratory JSON records;\n\
+                    camera claims are unauthenticated and setup is not performed.\n\
+                    --unifi-only skips all other discovery probes and the census.\n\
                     \n\
                     Retain network health in an existing deployment with:\n\
                     --root ABS_DIR --site SITE --bind IP=SENSOR[,CLASS] [--bind ...]\n\
@@ -49,6 +57,8 @@ struct Options {
     /// plus typed device_state_change records from the liveness watchdog.
     watch_seconds: Option<u64>,
     retention: Option<liveness::Options>,
+    unifi: Vec<unifi_discovery::Options>,
+    unifi_only: bool,
 }
 
 fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
@@ -63,12 +73,19 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
     let mut root = None;
     let mut site = None;
     let mut bindings = Vec::new();
+    let mut unifi_principal = None;
+    let mut unifi_approval = None;
+    let mut unifi_only = false;
     let mut i = 0;
     while i < args.len() {
         let Some(flag) = args[i].to_str() else {
             return Err("non-UTF-8 argument");
         };
         match flag {
+            "--unifi-only" if !unifi_only => {
+                unifi_only = true;
+                i += 1;
+            }
             "--json" | "--owner-authorized" => {
                 i += 1;
                 continue;
@@ -134,6 +151,22 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
                 }
                 i += 2;
             }
+            "--unifi-principal" | "--unifi-approval" => {
+                let value = args
+                    .get(i + 1)
+                    .and_then(|value| value.to_str())
+                    .ok_or("missing UniFi authority value")?
+                    .to_owned();
+                let slot = if flag == "--unifi-principal" {
+                    &mut unifi_principal
+                } else {
+                    &mut unifi_approval
+                };
+                if slot.replace(value).is_some() {
+                    return Err("duplicate UniFi authority option");
+                }
+                i += 2;
+            }
             _ => return Err("unknown flag; use fss-discover --help"),
         }
     }
@@ -148,6 +181,30 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
             "--owner-authorized is required (network discovery touches the LAN; the flag attests owner authorization)",
         );
     }
+    let unifi = match (unifi_principal, unifi_approval) {
+        (None, None) => Vec::new(),
+        (Some(principal), Some(approval)) => {
+            unifi_discovery::prepare_scopes(&subnets, &principal, &approval)?
+        }
+        _ => return Err("UniFi discovery requires both --unifi-principal and --unifi-approval"),
+    };
+    if unifi_only
+        && (unifi.is_empty()
+            || watch_seconds.is_some()
+            || root.is_some()
+            || site.is_some()
+            || !bindings.is_empty()
+            || args.iter().any(|arg| {
+                matches!(
+                    arg.to_str(),
+                    Some("--iface" | "--beacon-seconds" | "--standards-seconds")
+                )
+            }))
+    {
+        return Err(
+            "--unifi-only requires UniFi authority and does not support other probe, watch, or retained liveness options",
+        );
+    }
     Ok(Options {
         subnets,
         iface,
@@ -155,6 +212,8 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
         standards_seconds,
         watch_seconds,
         retention: liveness::Options::parse(root, site, bindings)?,
+        unifi,
+        unifi_only,
     })
 }
 
@@ -276,11 +335,20 @@ fn probe_tutk_listeners(report: &mut DiscoverReport, cancel: &AtomicBool) {
 }
 
 fn run(o: &Options) -> Result<String, &'static str> {
+    if o.unifi_only {
+        return Ok(o
+            .unifi
+            .iter()
+            .map(unifi_discovery::scope_report)
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
     let mut clock = SweepClock::new();
     let sweep_started_ns = clock.next_ns();
     let (report, cfg) = run_typed(o)?;
     let sweep_completed_ns = clock.next_ns();
     let mut lines = vec![format_report(&report, &cfg)];
+    lines.extend(o.unifi.iter().map(unifi_discovery::scope_report));
     if let Some(retention) = &o.retention {
         lines.extend(retention.retain(&report, sweep_started_ns, sweep_completed_ns)?);
     }
@@ -410,6 +478,9 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
                     None => Vec::new(),
                 };
                 println!("{}", format_report(&report, &cfg));
+                for scope in &o.unifi {
+                    println!("{}", unifi_discovery::scope_report(scope));
+                }
                 for record in retained {
                     println!("{record}");
                 }
@@ -553,6 +624,55 @@ mod tests {
     #[test]
     fn refuses_without_owner_authorization() {
         assert!(parse(&args(&["--subnet", "192.168.4.0/22", "--json"])).is_err());
+    }
+
+    #[test]
+    fn unifi_probe_requires_both_authority_inputs_and_valid_scopes() {
+        const APPROVAL: &str =
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let base = ["--subnet", "192.168.4.0/22", "--json", "--owner-authorized"];
+        let mut supplied = base.to_vec();
+        supplied.extend(["--unifi-principal", "principal:owner"]);
+        assert!(parse(&args(&supplied)).is_err());
+        supplied.extend(["--unifi-approval", APPROVAL]);
+        let options = parse(&args(&supplied)).unwrap();
+        assert_eq!(options.unifi.len(), 1);
+        supplied.extend(["--subnet", "8.8.8.0/24"]);
+        assert!(parse(&args(&supplied)).is_err());
+        supplied.truncate(base.len());
+        supplied.extend([
+            "--unifi-principal",
+            "principal:owner",
+            "--unifi-approval",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ]);
+        assert!(parse(&args(&supplied)).is_err());
+    }
+
+    #[test]
+    fn unifi_only_refuses_without_authority_or_with_other_modes() {
+        const APPROVAL: &str =
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let mut values = vec![
+            "--subnet",
+            "192.168.4.0/22",
+            "--json",
+            "--owner-authorized",
+            "--unifi-only",
+        ];
+        assert!(parse(&args(&values)).is_err());
+        values.extend([
+            "--unifi-principal",
+            "principal:owner",
+            "--unifi-approval",
+            APPROVAL,
+        ]);
+        assert!(parse(&args(&values)).unwrap().unifi_only);
+        values.extend(["--watch", "300"]);
+        assert!(parse(&args(&values)).is_err());
+        values.truncate(values.len() - 2);
+        values.extend(["--root", "/tmp/fss", "--site", "site:one"]);
+        assert!(parse(&args(&values)).is_err());
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::rc::Rc;
 use super::{Error, UnknownTimeAnchorKeeper, UnknownTimeJournal, checkpoint, valid_digest};
 use crate::{
     ReferenceDeployment, ReplayCx,
-    unifi_direct::{archive, archive::UnknownTimePin, source_evidence},
+    unifi_direct::{archive, archive::UnknownTimePin, source_batch, source_evidence},
 };
 
 const DOMAIN: &str = "fss.unifi-direct.unknown-time-rollover.v1";
@@ -181,6 +181,17 @@ pub struct Active {
 #[must_use = "retain or explicitly reconcile this rollover custody"]
 pub struct WorkerCustody {
     transitions: Vec<WorkerTransition>,
+    startup_verification: Option<StartupVerification>,
+}
+
+#[derive(Clone, Copy)]
+struct StartupVerification {
+    scope: ContentDigest,
+    confirmed: UnknownTimePin,
+    journal: EffectJournalPin,
+    keeper: EffectJournalPin,
+    transitions: usize,
+    binding: Binding,
 }
 
 struct WorkerTransition {
@@ -313,6 +324,55 @@ impl History<'_> {
 }
 
 impl WorkerCustody {
+    pub(crate) fn invalidate_startup_verification(&mut self) {
+        self.startup_verification = None;
+    }
+
+    /// Record a just-completed custody check without performing further I/O.
+    pub(crate) fn mark_startup_verified(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+    ) -> bool {
+        let Some(confirmed) = journal.confirmed() else { return false; };
+        if journal.pending().is_some() || journal.replay_pin().is_some()
+            || keeper.target() != journal.anchor() || self.transitions.is_empty()
+        {
+            return false;
+        }
+        self.startup_verification = Some(StartupVerification {
+            scope: journal.scope(), confirmed, journal: journal.anchor(), keeper: keeper.anchor(),
+            transitions: self.transitions.len(), binding: self.binding(),
+        });
+        true
+    }
+
+    /// Compare the observation to the exact current in-memory owners.
+    pub(crate) fn startup_verified(
+        &self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+    ) -> bool {
+        self.startup_verification.is_some_and(|verified| {
+            journal.scope() == verified.scope
+                && journal.confirmed() == Some(verified.confirmed)
+                && journal.pending().is_none() && journal.replay_pin().is_none()
+                && journal.anchor() == verified.journal && keeper.anchor() == verified.keeper
+                && keeper.target() == verified.journal
+                && self.transitions.len() == verified.transitions
+                && self.transitions.last().is_some_and(|t| t.binding == verified.binding)
+        })
+    }
+
+    pub(crate) fn take_startup_verification(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        keeper: &UnknownTimeAnchorKeeper,
+    ) -> bool {
+        let valid = self.startup_verified(journal, keeper);
+        self.startup_verification = None;
+        valid
+    }
     /// Identity of the newest transition; this is not camera authentication.
     pub fn binding(&self) -> Binding {
         self.transitions
@@ -370,6 +430,7 @@ impl WorkerCustody {
     }
 
     pub(crate) fn append(&mut self, mut newer: Self) {
+        self.invalidate_startup_verification();
         self.transitions.append(&mut newer.transitions);
     }
 
@@ -1390,7 +1451,7 @@ impl Active {
             });
         }
         transitions.push(transition);
-        Ok((next_journal, next_keeper, WorkerCustody { transitions }))
+        Ok((next_journal, next_keeper, WorkerCustody { transitions, startup_verification: None }))
     }
 
     /// Start a recovered lineage after the exact successor root was replayed.
@@ -1411,7 +1472,7 @@ impl Active {
         prior.check(&self.previous.journal, &self.previous.keeper, cx)
     }
 
-    /// Verify and replay the exact ledgered standalone-source root after rollover.
+    /// Verify and replay the exact ledgered source record or batch after rollover.
     ///
     /// Both access policies and the retained switch are rechecked. Success
     /// requires an `AlreadyLedgered` receipt and clears only this successor's
@@ -1448,24 +1509,38 @@ impl Active {
         {
             return Err(SourceReplayError::History(Error::Invalid));
         }
-        let source = archive::read_unknown_time_source(deployment, pin, read, limits, work, cx)
+        let source = archive::read_unknown_time_source_graph(deployment, pin, read, limits, work, cx)
             .map_err(SourceReplayError::Readback)?;
-        if source.camera_claim() != expected_camera_claim {
-            return Err(SourceReplayError::ClaimMismatch);
-        }
-        let plan = source_evidence::Prepared::from_recovered(&source);
         let gate = SourceReplayGate { read, retain };
-        let receipt = archive::publish_unknown_time_source_anchored(
-            &plan,
-            deployment,
-            &gate,
-            limits,
-            work,
-            cx,
-            &mut self.next_journal,
-            &mut self.next_keeper,
-        )
-        .map_err(SourceReplayError::Publication)?;
+        let receipt = match source {
+            archive::RecoveredSourceGraph::Single(source) => {
+                if source.camera_claim() != expected_camera_claim {
+                    return Err(SourceReplayError::ClaimMismatch);
+                }
+                let plan = source_evidence::Prepared::from_recovered(&source);
+                if UnknownTimePin::from_source_plan(&plan) != pin {
+                    return Err(SourceReplayError::Readback(archive::Error::Mismatch));
+                }
+                archive::publish_unknown_time_source_anchored(
+                    &plan, deployment, &gate, limits, work, cx,
+                    &mut self.next_journal, &mut self.next_keeper,
+                )
+            }
+            archive::RecoveredSourceGraph::Batch(source) => {
+                if source.camera_claim != expected_camera_claim {
+                    return Err(SourceReplayError::ClaimMismatch);
+                }
+                let plan = source_batch::Prepared::from_recovered(source)
+                    .map_err(|_| SourceReplayError::Readback(archive::Error::Mismatch))?;
+                if UnknownTimePin::from_source_batch(&plan) != pin {
+                    return Err(SourceReplayError::Readback(archive::Error::Mismatch));
+                }
+                archive::publish_unknown_time_source_batch_anchored(
+                    &plan, deployment, &gate, limits, work, cx,
+                    &mut self.next_journal, &mut self.next_keeper,
+                )
+            }
+        }.map_err(SourceReplayError::Publication)?;
         if receipt.outcome != RootLedgerOutcome::AlreadyLedgered {
             self.next_journal.inner.replay_pin = Some(pin.access_pin());
             return Err(SourceReplayError::UnexpectedReceipt(Box::new(receipt)));

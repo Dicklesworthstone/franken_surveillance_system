@@ -19,12 +19,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--neighbor-cache | --sweep-page N] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
+#[path = "fss_unifi_sweep_all/mod.rs"]
+mod sweep_all;
+
+const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--neighbor-cache | --sweep-page N | --sweep-all] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 const MAX_AUTO_INTERFACES: usize = 4;
 const MAX_AUTO_WINDOWS: usize = 4;
 const MAX_NEIGHBOR_BYTES: usize = 128 * 1024;
 
-struct Options {
+#[derive(Debug)]
+pub(crate) struct Options {
     iface: Ipv4Addr,
     prefix: u8,
     targets: Vec<Ipv4Addr>,
@@ -37,6 +41,7 @@ struct Options {
     include_mac_claims: bool,
     neighbor_cache: bool,
     sweep_page: Option<u16>,
+    sweep_all: bool,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -49,6 +54,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     let mut include_mac_claims = false;
     let mut neighbor_cache = false;
     let mut sweep_page = None;
+    let mut sweep_all = false;
     let mut authorized = false;
     let mut i = 0;
     while i < args.len() {
@@ -75,6 +81,11 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         }
         if flag == "--neighbor-cache" && !neighbor_cache {
             neighbor_cache = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--sweep-all" && !sweep_all {
+            sweep_all = true;
             i += 1;
             continue;
         }
@@ -152,7 +163,8 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
             || combined_v2
             || limited_broadcast
             || neighbor_cache
-            || sweep_page.is_some())
+            || sweep_page.is_some()
+            || sweep_all)
     {
         return Err("automatic-only option used with an explicit interface");
     }
@@ -162,12 +174,13 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     if neighbor_cache && only_interface.is_none() {
         return Err("neighbor cache requires an explicitly selected interface");
     }
-    if sweep_page.is_some()
+    if (sweep_page.is_some() || sweep_all)
         && (only_interface.is_none()
             || neighbor_cache
             || combined_v2
             || !targets.is_empty()
-            || prefix < 20)
+            || prefix < 20
+            || (sweep_all && sweep_page.is_some()))
     {
         return Err(
             "sweep requires one selected interface, a /20 or narrower scope, and no other targets",
@@ -186,6 +199,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         include_mac_claims,
         neighbor_cache,
         sweep_page,
+        sweep_all,
     })
 }
 
@@ -522,42 +536,14 @@ fn auto_sweep_page(
     let [interface] = interfaces else {
         return Err("sweep requires exactly one eligible interface address");
     };
-    if !(20..=30).contains(&interface.prefix) {
-        return Err("sweep interface scope must be /20 to /30");
-    }
-    let mask = u32::MAX << (32 - interface.prefix);
-    let base = u32::from(interface.address) & mask;
-    let own_host = u32::from(interface.address) & !mask;
-    if own_host == 0 || own_host == !mask {
-        return Err("invalid interface host");
-    }
-    let own = own_host - 1;
-    let host_count = (1_u32 << (32 - interface.prefix)) - 3;
-    let capacity = 64 - 1 - usize::from(limited_broadcast);
-    let per_page = capacity * MAX_AUTO_WINDOWS;
-    let count = usize::try_from(host_count).map_err(|_| "sweep host count overflow")?;
-    let pages = count.div_ceil(per_page);
-    let start = usize::from(page)
-        .checked_mul(per_page)
-        .ok_or("sweep page overflow")?;
-    if start >= count {
+    let mut plans = fss_reference::unifi_direct::discovery::sweep::host_plans(
+        interface.address, interface.prefix, 10001, limited_broadcast,
+    ).map_err(|_| "invalid sweep scope or allocation")?;
+    let pages = plans.len();
+    if usize::from(page) >= pages {
         return Err("sweep page is outside the selected interface scope");
     }
-    let end = (start + per_page).min(count);
-    let mut plans = Vec::new();
-    for first in (start..end).step_by(capacity) {
-        let mut targets = vec![SocketAddrV4::new(directed_broadcast(*interface), 10001)];
-        if limited_broadcast {
-            targets.push(SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001));
-        }
-        for index in first..(first + capacity).min(end) {
-            let index = u32::try_from(index).map_err(|_| "sweep host index overflow")?;
-            let host = base + 1 + index + u32::from(index >= own);
-            targets.push(SocketAddrV4::new(Ipv4Addr::from(host), 10001));
-        }
-        plans.push((*interface, targets));
-    }
-    Ok((pages, plans))
+    Ok((pages, plans.swap_remove(usize::from(page)).into_iter().map(|targets| (*interface, targets)).collect()))
 }
 
 fn elapsed(start: Instant) -> TimestampNs {
@@ -790,15 +776,90 @@ fn combine_windows(windows: &[Window]) -> Result<Report, &'static str> {
     })
 }
 
+/// Prepare the normal discovery command's optional UniFi probe before it
+/// starts any network work. The supplied digest refers to existing owner
+/// authorization; it is never manufactured from the command line.
+pub(crate) fn prepare_scopes(
+    scopes: &[String],
+    principal: &str,
+    approval: &str,
+) -> Result<Vec<Options>, &'static str> {
+    scopes
+        .iter()
+        .map(|scope| {
+            options(&[
+                "--auto-scope".into(),
+                scope.clone(),
+                "--principal".into(),
+                principal.into(),
+                "--approval".into(),
+                approval.into(),
+                "--owner-authorized".into(),
+            ])
+        })
+        .collect()
+}
+
+/// Return the existing laboratory report shapes, preserving partial windows
+/// and refusing to turn a failed or truncated probe into an absence claim.
+pub(crate) fn scope_report(options: &Options) -> String {
+    match execute(options) {
+        Ok(windows) => format_scope_windows(&windows),
+        Err(error) => format!(
+            "{{\"schema\":\"fss.unifi_discovery_auto_lab.v1\",\"absence_proven\":false,\"windows_ok\":false,\"combination\":{},\"combined\":null,\"windows\":[]}}",
+            json(error)
+        ),
+    }
+}
+
+fn format_scope_windows(windows: &[Window]) -> String {
+    let (combined, combination, success) = match combine_windows(windows) {
+        Ok(report) => (report_json(&report, false), "complete", true),
+        Err(error) => ("null".to_owned(), error, false),
+    };
+    let results = windows
+        .iter()
+        .map(|window| {
+            let (report, error) = match &window.report {
+                Ok(report) => (report_json(report, false), "null".to_owned()),
+                Err(error) => ("null".to_owned(), json(error)),
+            };
+            format!(
+                "{{\"interface\":{},\"prefix\":{},\"report\":{},\"error\":{}}}",
+                json(&window.interface.address.to_string()),
+                window.interface.prefix,
+                report,
+                error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"schema\":\"fss.unifi_discovery_auto_lab.v1\",\"absence_proven\":false,\"windows_ok\":{success},\"combination\":{},\"combined\":{combined},\"windows\":[{results}]}}",
+        json(combination)
+    )
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "{USAGE}\nAutomatic selection scans only active broadcast interfaces inside the supplied authorized subnet, with at most four bounded windows. On Linux, --neighbor-cache adds complete cached neighbors on the explicitly selected interface; --sweep-page probes one bounded page of a /20 or narrower interface scope. Neither proves host absence. Setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
+            "{USAGE}\nAutomatic selection scans only active broadcast interfaces inside the supplied authorized subnet. On Linux, --neighbor-cache adds cached neighbors; --sweep-page probes one bounded page and --sweep-all drives every page of a /20 or narrower explicitly selected interface. No scan proves host absence. Setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
         );
         return ExitCode::SUCCESS;
     }
-    let result = options(&args).and_then(|options| {
+    let parsed = match options(&args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("UniFi discovery: {error}; {USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if parsed.sweep_all {
+        return sweep_all::run(&parsed);
+    }
+    let result = {
+        let options = parsed;
         execute(&options).map(|windows| {
             (
                 options.auto,
@@ -810,7 +871,7 @@ fn main() -> ExitCode {
                 windows,
             )
         })
-    });
+    };
     match result {
         Ok((false, _, include_mac_claims, _, _, _, mut windows)) => match windows
             .pop()
@@ -914,6 +975,28 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normal_discovery_keeps_incomplete_unifi_windows_visible() {
+        let window = Window {
+            interface: AutoInterface {
+                address: Ipv4Addr::new(192, 168, 4, 10),
+                prefix: 24,
+            },
+            report: Ok(Report {
+                cameras: Vec::new(),
+                datagrams: 1,
+                malformed: 1,
+                out_of_scope: 0,
+                stop: Stop::PacketLimit,
+            }),
+        };
+        let output = format_scope_windows(&[window]);
+        assert!(output.contains("\"absence_proven\":false"));
+        assert!(output.contains("\"windows_ok\":false"));
+        assert!(output.contains("\"combination\":\"incomplete_window\""));
+        assert!(output.contains("\"stop\":\"PacketLimit\""));
+        assert!(output.contains("\"malformed\":1"));
+    }
     #[test]
     fn authorization_and_scope_are_explicit() {
         let args = [
@@ -1355,6 +1438,18 @@ mod tests {
         .map(str::to_owned)
         .collect::<Vec<_>>();
         assert_eq!(options(&args).unwrap().sweep_page, Some(0));
+        let mut all = args.clone();
+        all.splice(4..6, ["--sweep-all".to_owned()]);
+        assert!(options(&all).unwrap().sweep_all);
+        let mut both = all.clone();
+        both.extend(["--sweep-page".to_owned(), "0".to_owned()]);
+        assert!(options(&both).is_err());
+        let mut all_neighbor = all.clone();
+        all_neighbor.push("--neighbor-cache".into());
+        assert!(options(&all_neighbor).is_err());
+        let mut all_no_interface = all.clone();
+        all_no_interface.drain(2..4);
+        assert!(options(&all_no_interface).is_err());
         let mut conflicting = args.clone();
         conflicting.push("--neighbor-cache".into());
         assert!(options(&conflicting).is_err());

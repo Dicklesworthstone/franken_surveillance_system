@@ -258,6 +258,22 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     permit: CommittedEffect,
     authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
 ) -> Result<Driver, StartRefusal<'a>> {
+    start_with_response(task, cx, clock, http, listener, inputs, permit, authorize_observation, &mut |_, _| Ok(())).await
+}
+
+/// Start with caller-owned custody of the camera's untrusted HTTP response.
+/// A custody failure retains the permit and never authorizes a retry.
+pub async fn start_with_response<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    http: &mut camera_http::Owner<'_, '_, '_, IO>,
+    listener: &mut listener::Listener<'_, '_, '_>,
+    inputs: Start<'a>,
+    permit: CommittedEffect,
+    authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
+    record_response: &mut media::ResponseRecorder<'_>,
+) -> Result<Driver, StartRefusal<'a>> {
     let key = inputs.request.recorder.source_key();
     let camera = inputs.request.current.camera;
     let retention = inputs.policy.retention;
@@ -306,7 +322,7 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         storage,
         policy,
     } = inputs;
-    let connected = match media::start(http, listener, request, permit, authorize_observation).await
+    let connected = match media::start_with_response(http, listener, request, permit, authorize_observation, record_response).await
     {
         Ok(connected) => connected,
         Err(refusal) => {
@@ -321,6 +337,34 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
 }
 
 impl Driver {
+    /// Install a bounded metadata-name probe before any recording work. A
+    /// matching name is a connection claim, not authenticated peer identity.
+    pub fn begin_name_probe(
+        &mut self,
+        probe: fss_packet::extended_flv::stream::NameProbeOwner,
+    ) -> Result<(), fss_packet::extended_flv::stream::NameProbeOwner> {
+        if self.parts.halted || self.parts.source_armed || self.parts.video_armed
+            || self.parts.source.status() != source_worker::Status::Idle
+            || self.parts.video.is_some() {
+            return Err(probe);
+        }
+        self.parts.connected.begin_name_probe(probe)
+    }
+
+    /// Advance the installed non-consuming probe under the caller's task.
+    /// Dropping a pending call retains its prefix and cumulative work budget.
+    pub async fn probe_name_step(
+        &mut self, task: &TaskCx<'_>, cx: &Cx, now: fss_core::TimestampNs,
+    ) -> Result<crate::unifi_direct::ingress::NameProbeStep, pipeline::NameProbeError> {
+        if self.parts.halted { return Err(pipeline::NameProbeError::NotFresh); }
+        self.parts.connected.probe_name_step(task, cx, now).await
+    }
+
+    /// Transfer the probe and its remaining work; source bytes remain retained.
+    pub fn take_name_probe(&mut self) -> Option<fss_packet::extended_flv::stream::NameProbeOwner> {
+        self.parts.connected.take_name_probe()
+    }
+
     /// Drive a bounded number of media and archive decisions in the owning
     /// task. Every nonterminal event is handed to the observer before another
     /// step. This is not a reconnect loop, retention policy, or service.

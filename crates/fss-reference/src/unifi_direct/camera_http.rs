@@ -383,8 +383,19 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
     }
     /// Authenticate using caller-owned credential bytes; this owner does not store them.
     pub async fn login(&mut self, credential: &[u8], wait: Duration) -> Result<(), Error> {
+        self.login_at(camera_api::LoginEndpoint::V1_1, credential, wait)
+            .await
+    }
+    /// Authenticate at the explicitly selected camera-local route. The owner
+    /// accepts only the existing `authId` session profile and never retries.
+    pub async fn login_at(
+        &mut self,
+        endpoint: camera_api::LoginEndpoint,
+        credential: &[u8],
+        wait: Duration,
+    ) -> Result<(), Error> {
         self.admit(Operation::Login, wait)?;
-        let request = self.session.prepare_login(credential)?;
+        let request = self.session.prepare_login_at(endpoint, credential)?;
         let response = self.perform(request, Operation::Login, wait).await?;
         self.session.accept_login(response).map_err(Error::Camera)
     }

@@ -1195,6 +1195,9 @@ fn classify_unknown_time(
 }
 
 impl UnknownTimeWorker {
+    /// Whether an admitted A/V attempt still requires joining.
+    pub fn is_running(&self) -> bool { self.running.is_some() }
+
     /// Inspect the existing epoch allowance without blocking archive work.
     pub fn remaining_audio_frames(&mut self) -> Result<u64, AudioAllowanceError> {
         if self.fenced {
@@ -1287,6 +1290,7 @@ impl UnknownTimeWorker {
         parts: UnknownTimeParts,
         mut custody: archive::journal::rollover::WorkerCustody,
     ) -> Result<Self, (UnknownTimeParts, archive::journal::rollover::WorkerCustody)> {
+        custody.invalidate_startup_verification();
         if !(1..=100_000_000_000).contains(&parts.work_limit)
             || parts.sink.pending_publication().is_some()
             || parts
@@ -1305,6 +1309,27 @@ impl UnknownTimeWorker {
                 report: None,
                 rollover_custody: Some(custody),
             })),
+            running: None,
+            fenced: false,
+        })
+    }
+
+    /// Attach a lineage verified by the drained recovered-startup worker.
+    /// This consumes its observation without performing storage I/O. The
+    /// worker rechecks custody inside every later publication operation.
+    pub fn from_recovered_preverified(
+        parts: UnknownTimeParts,
+        mut custody: archive::journal::rollover::WorkerCustody,
+    ) -> Result<Self, (UnknownTimeParts, archive::journal::rollover::WorkerCustody)> {
+        if !(1..=100_000_000_000).contains(&parts.work_limit)
+            || parts.sink.pending_publication().is_some()
+            || parts.journal.confirmed().is_none_or(|pin| pin.retention != parts.sink.retention())
+            || !custody.take_startup_verification(&parts.journal, &parts.keeper)
+        {
+            return Err((parts, custody));
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(UnknownTimeState { parts, report: None, rollover_custody: Some(custody) })),
             running: None,
             fenced: false,
         })

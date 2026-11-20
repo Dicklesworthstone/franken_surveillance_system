@@ -371,15 +371,17 @@ fn startup_name_probe_refuses_unsupported_metadata_and_wrong_first_stream_id() -
 
     let mut wrong_id = wire(9, b"video");
     wrong_id[8] = 1;
-    let mut framer = Framer::with_mode(Limits::default(), 4096, SearchMode::ZeroStreamId)?;
-    framer.append(0, header)?;
-    framer.append(framer.next_offset(), &wrong_id)?;
-    assert_eq!(
-        framer.inspect_initial_name("event1", "0123456789abcdef", 4096, 2, &mut work),
-        Err(NameProbeError::Framing(
-            extended_flv::stream::Error::StreamIdMismatch
-        ))
-    );
+    for mode in [SearchMode::ZeroStreamId, SearchMode::StructuredTrailer16OpaqueFlag] {
+        let mut framer = Framer::with_mode(Limits::default(), 4096, mode)?;
+        framer.append(0, header)?;
+        framer.append(framer.next_offset(), &wrong_id)?;
+        assert_eq!(
+            framer.inspect_initial_name("event1", "0123456789abcdef", 4096, 2, &mut work),
+            Err(NameProbeError::Framing(
+                extended_flv::stream::Error::StreamIdMismatch
+            ))
+        );
+    }
     Ok(())
 }
 

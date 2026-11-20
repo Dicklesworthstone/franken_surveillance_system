@@ -382,7 +382,7 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     management: management::Preconditions,
     reply_events: bool,
     decode_owned: bool,
-    still_color: Option<video_still::Color>,
+    still_color: Option<video_still::ColorPolicy>,
     still_export_path: Option<&Path>,
     inband: bool,
     mut plan: Option<av_rollover_generation::Plan>,
@@ -1481,7 +1481,7 @@ pub(super) async fn run<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
                             let dimensions = still.still().jpeg().receipt().dimensions;
                             println!(
                                 "trial_owned_archive_still=complete width={} height={} color={:?} root_binding=checked capture_bounds=unknown export=none",
-                                dimensions[0], dimensions[1], color
+                                dimensions[0], dimensions[1], still.still().color()
                             );
                             clip = retirement
                                 .parts

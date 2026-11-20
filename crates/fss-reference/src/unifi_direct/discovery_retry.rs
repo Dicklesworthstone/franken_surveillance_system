@@ -151,6 +151,17 @@ impl<'fleet, 'report, 'scope, 'task> Queue<'fleet, 'report, 'scope, 'task> {
             && scanner.matches_context(self.cx)
     }
 
+    pub(super) fn matches_sweep(
+        &self,
+        runner: &super::sweep::Runner<'scope, 'task>,
+        fleet: &fleet::Fleet<'_>,
+    ) -> bool {
+        Rc::ptr_eq(&self.fleet.identity(), &fleet.identity())
+            && self.clock.same_mapping(&runner.clock())
+            && runner.matches_context(self.cx)
+            && runner.accepts_fleet(fleet)
+    }
+
     /// Number of still-owned timers.
     pub fn len(&self) -> usize {
         self.pending.len()

@@ -74,8 +74,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
     let profiles =
         args.len() == 6 && args[4] == "--observe-profiles" && args[5] == "--owner-authorized";
-    if !(profiles || (args.len() == 5 && args[4] == "--owner-authorized")) {
-        return Err("usage: live_snapshot_probe PRIVATE_IPV4:PORT CERT_DER CREDENTIAL_FILE [--observe-profiles] --owner-authorized".into());
+    let api_12 = args.len() == 6 && args[4] == "--api-1.2-login" && args[5] == "--owner-authorized";
+    if !(profiles || api_12 || (args.len() == 5 && args[4] == "--owner-authorized")) {
+        return Err("usage: live_snapshot_probe PRIVATE_IPV4:PORT CERT_DER CREDENTIAL_FILE [--observe-profiles | --api-1.2-login] --owner-authorized".into());
     }
     let peer: SocketAddrV4 = args[1].parse()?;
     let address = *peer.ip();
@@ -150,7 +151,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let policy = Policy { lease: &credential, check, peer: address, profiles };
                 let plaintext = MeteredIo::with_clock(tls, clock, resource, 4096)?;
                 let mut api = camera_http::Owner::new(plaintext, task, cx, clock, &policy, address, 1, resource)?;
-                api.login(&credential.secret.0, Duration::from_secs(10)).await?;
+                if api_12 {
+                    api.login_at(fss_reference::unifi_direct::camera_api::LoginEndpoint::V1_2, &credential.secret.0, Duration::from_secs(10)).await?;
+                } else {
+                    api.login(&credential.secret.0, Duration::from_secs(10)).await?;
+                }
                 let _ = api.status(Duration::from_secs(10)).await?;
                 let reported = if profiles {
                     let settings = api.settings(Duration::from_secs(10)).await?;
@@ -170,6 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }).await?;
         result.receipt?;
         let ([width, height], reported) = result.output?;
+        println!("login_endpoint={}", if api_12 { "1.2" } else { "1.1" });
         println!("tls13=completed observed_pin=matched login=ok status=ok snapshot=decoded dimensions={}x{} media_persisted=false", width, height);
         if let Some(reported) = reported {
             fn metric(value: VideoMetric) -> String {

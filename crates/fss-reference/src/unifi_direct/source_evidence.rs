@@ -73,6 +73,7 @@ impl<'a> Prepared<'a> {
             SourceDisposition::PreRoll => 2,
             SourceDisposition::Unclosed => 3,
             SourceDisposition::Unframed => 4,
+            SourceDisposition::BootstrapCopy => 5,
         });
         evidence::encode_record(&mut encoder, record);
         let metadata = encoder.finish_checked().map_err(|_| Error::Encoding)?;

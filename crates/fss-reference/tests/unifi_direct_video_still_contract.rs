@@ -29,6 +29,24 @@ fn decoded_picture_produces_full_size_source_bound_jpeg() -> Result<(), Box<dyn 
     let picture = picture()?;
     let source = picture.i420_sha256();
     let limits = EncodeLimits::default();
+    if picture.video_signal().is_none() {
+        assert!(matches!(
+            Color::from_picture_signal(&picture),
+            Err(Error::ColorNotReported)
+        ));
+        assert!(matches!(
+            video_still::from_picture_signal(
+                &picture,
+                source,
+                95,
+                &limits,
+                u64::from(picture.width()) * u64::from(picture.height()),
+                limits.work_bound(PixelFormat::Rgb),
+                &AtomicBool::new(false),
+            ),
+            Err(Error::ColorNotReported)
+        ));
+    }
     let still = video_still::from_picture(
         &picture,
         source,
@@ -52,6 +70,22 @@ fn decoded_picture_produces_full_size_source_bound_jpeg() -> Result<(), Box<dyn 
         &AtomicBool::new(false),
     )?;
     assert_ne!(still.identity(), limited.identity());
+    let bt709 = video_still::from_picture(
+        &picture,
+        source,
+        Color::Bt709Full,
+        95,
+        &limits,
+        u64::from(picture.width()) * u64::from(picture.height()),
+        limits.work_bound(PixelFormat::Rgb),
+        &AtomicBool::new(false),
+    )?;
+    assert_eq!(bt709.color(), Color::Bt709Full);
+    assert_ne!(still.identity(), bt709.identity());
+    assert_eq!(
+        bt709.jpeg().receipt().dimensions,
+        [picture.width(), picture.height()]
+    );
     let receipt = still.jpeg().receipt();
     assert_eq!(receipt.dimensions, [picture.width(), picture.height()]);
     assert_eq!(receipt.format, PixelFormat::Rgb);
@@ -66,6 +100,52 @@ fn decoded_picture_produces_full_size_source_bound_jpeg() -> Result<(), Box<dyn 
     assert_eq!(
         decoded.pixels().len(),
         picture.width() as usize * picture.height() as usize * 3
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the owner-supplied private G4 high-profile MP4 on stdin"]
+fn private_g4_color_signal_selects_native_still() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read;
+    let mut input = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut input)?;
+    if input.is_empty() || input.len() > 16 * 1024 * 1024 {
+        return Err("private MP4 input bound".into());
+    }
+    let movie = fss_container::demux::AvcMp4::parse(
+        &input,
+        None,
+        fss_container::demux::DemuxLimits::default(),
+    )?;
+    let annex = movie.annex_b(0, 1)?;
+    let mut decoder = Decoder::new(DecoderLimits::default())?;
+    let mut frames = decoder.decode_annex_b(annex.bytes())?;
+    frames.extend(decoder.finish()?);
+    let frame = frames
+        .into_iter()
+        .next()
+        .ok_or("private input produced no first picture")?;
+    println!("sps_video_signal={:?}", frame.video_signal());
+    let color = Color::from_picture_signal(&frame)?;
+    assert_eq!(color, Color::Bt709Full);
+    let limits = EncodeLimits::default();
+    let still = video_still::from_picture_signal(
+        &frame,
+        frame.i420_sha256(),
+        90,
+        &limits,
+        u64::from(frame.width()) * u64::from(frame.height()),
+        limits.work_bound(PixelFormat::Rgb),
+        &AtomicBool::new(false),
+    )?;
+    assert_eq!(still.color(), color);
+    assert_eq!(still.jpeg().receipt().dimensions, [2688, 1512]);
+    println!(
+        "private_g4_auto_color=passed source=previously_saved_g4_clip controller=not_contacted"
     );
     Ok(())
 }
@@ -102,7 +182,7 @@ fn private_g4_2k_video_frame_yields_native_jpeg() -> Result<(), Box<dyn std::err
     let still = video_still::from_picture(
         &frame,
         frame.i420_sha256(),
-        Color::Bt601Full,
+        Color::Bt709Full,
         90,
         &limits,
         u64::from(frame.width()) * u64::from(frame.height()),
@@ -121,7 +201,7 @@ fn private_g4_2k_video_frame_yields_native_jpeg() -> Result<(), Box<dyn std::err
         return Err("native JPEG decoded dimensions differ".into());
     }
     println!(
-        "private_g4_still=passed width=2688 height=1512 matrix=bt601_full_declared jpeg_bytes={} source=previously_saved_g4_clip controller=not_contacted",
+        "private_g4_still=passed width=2688 height=1512 matrix=bt709_full_declared jpeg_bytes={} source=previously_saved_g4_clip controller=not_contacted",
         still.jpeg().bytes().len()
     );
     Ok(())

@@ -138,6 +138,16 @@ pub struct Trace {
     response: Option<camera_api::HandoffResponseObservation>,
     profile: Option<Box<ProfilePreflight>>,
     listener_refusal: Option<controller_listener::ReadinessRefusal>,
+    management_token: Option<ManagementSetupToken>,
+    management_hello_binding: Option<handoff::HelloBinding>,
+    management_selected: bool,
+}
+
+struct ManagementSetupToken(zeroize::Zeroizing<[u8; 32]>);
+impl fmt::Debug for ManagementSetupToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ManagementSetupToken(<redacted>)")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -186,6 +196,28 @@ struct ProfilePreflight {
     selection: Option<camera_api::VideoProfileSelection>,
 }
 impl Trace {
+    /// Select the experimental 1.2 management route for a listener-bound
+    /// attempt. The caller supplies fresh cryptographic entropy. This grants
+    /// no effect authority, and the camera's route support is unverified.
+    pub fn require_management_v12(&mut self, token: [u8; 32]) -> Result<(), Error> {
+        let token = ManagementSetupToken(zeroize::Zeroizing::new(token));
+        if self.started || self.management_token.is_some() || *token.0 == [0; 32] {
+            return Err(Error::Configuration);
+        }
+        self.management_token = Some(token);
+        self.management_selected = true;
+        Ok(())
+    }
+
+    /// Transfer the request-bound hello claim check after dispatch was entered.
+    /// This is not evidence that bytes were sent or that the peer is genuine.
+    pub fn take_management_hello_binding(&mut self) -> Option<handoff::HelloBinding> {
+        if self.dispatch_started {
+            self.management_hello_binding.take()
+        } else {
+            None
+        }
+    }
     /// Most recent pre-effect listener readiness refusal for this unstarted
     /// trace. This is a local diagnostic and does not authenticate a camera.
     pub fn listener_refusal(&self) -> Option<controller_listener::ReadinessRefusal> {
@@ -332,8 +364,39 @@ pub struct AcceptTrace {
     setup: Trace,
     outcome: Option<Outcome>,
     accept_started: bool,
+    accept_completed: bool,
 }
 impl AcceptTrace {
+    /// Whether this setup selected the request-bound management hello check.
+    pub fn management_hello_required(&self) -> bool {
+        self.setup.management_selected
+    }
+    /// Bind the controller's hello check to the exact committed request from
+    /// this accepted setup. A matching token remains an untrusted peer claim;
+    /// this neither authenticates the connection nor settles the effect.
+    /// Call before taking the setup outcome or observing controller frames.
+    pub fn bind_management_hello(
+        &mut self,
+        controller: &mut super::Controller,
+    ) -> Result<(), Error> {
+        if !self.accept_completed {
+            return Err(Error::Configuration);
+        }
+        let request = match self.outcome.as_ref() {
+            Some(Outcome::Observed { permit, .. }) => permit.prepared().request_digest(),
+            _ => return Err(Error::Configuration),
+        };
+        let binding = self
+            .setup
+            .take_management_hello_binding()
+            .ok_or(Error::Configuration)?;
+        if binding.request_digest() != request {
+            return Err(Error::Configuration);
+        }
+        controller
+            .require_management_hello(binding)
+            .map_err(|_| Error::Configuration)
+    }
     /// Require a complete in-bounds camera-reported video profile before any
     /// handoff effect is prepared. This untrusted claim does not grant stream
     /// authority or establish camera identity, codec support, or delivery.
@@ -736,6 +799,7 @@ impl Owner<'_, '_, '_> {
         {
             return Err(AcceptError::PeerMismatch);
         }
+        trace.accept_completed = true;
         Ok(Accepted { io, gate })
     }
 
@@ -972,6 +1036,8 @@ impl Owner<'_, '_, '_> {
             || !valid_destination(cfg.destination)
             || !self.clock.matches(self.task, self.cx)
             || camera.phase() != camera_api::Phase::Login
+            || (trace.management_token.is_some()
+                && (expected_port.is_none() || framing != handoff::Framing::ContentLength))
         {
             return Err(Error::Configuration);
         }
@@ -1013,8 +1079,13 @@ impl Owner<'_, '_, '_> {
             .as_nanos()
             .checked_add(u64::try_from(cfg.wait.as_nanos()).map_err(|_| Error::Configuration)?)
             .ok_or(Error::Configuration)?;
+        let endpoint = if trace.management_token.is_some() {
+            camera_api::LoginEndpoint::V1_2
+        } else {
+            camera_api::LoginEndpoint::V1_1
+        };
         camera
-            .login(cfg.credential, remaining(self.cx, deadline)?)
+            .login_at(endpoint, cfg.credential, remaining(self.cx, deadline)?)
             .await
             .map_err(Error::Camera)?;
         if !guard.current() {
@@ -1059,6 +1130,10 @@ impl Owner<'_, '_, '_> {
             }
         }
         if before.controller == camera_api::ControllerAddress::Reported(cfg.destination) {
+            if trace.management_token.is_some() {
+                // Address equality does not establish the requested token or listener.
+                return Err(Error::Configuration);
+            }
             let expected = camera_api::controller_binding(
                 before.controller,
                 *candidate.source().ip(),
@@ -1099,13 +1174,24 @@ impl Owner<'_, '_, '_> {
             lease_fence: cfg.fence,
             settings: before,
         };
-        let mut plan = handoff::Plan::new_with_framing(
-            *candidate.source().ip(),
-            cfg.destination,
-            conditions,
-            framing,
-        )
+        let mut plan = if let Some(token) = trace.management_token.take() {
+            handoff::Plan::new_management_v12(
+                *candidate.source().ip(),
+                cfg.destination,
+                expected_port.ok_or(Error::Configuration)?,
+                *token.0,
+                conditions,
+            )
+        } else {
+            handoff::Plan::new_with_framing(
+                *candidate.source().ip(),
+                cfg.destination,
+                conditions,
+                framing,
+            )
+        }
         .map_err(Error::Plan)?;
+        trace.management_hello_binding = plan.hello_binding();
         if let Some(port) = expected_port {
             plan = plan
                 .bind_reported_controller_port(status, port)
@@ -1304,17 +1390,34 @@ mod profile_tests {
             controller: true,
             controller_port: ControllerPort::Reported(7442),
         };
-        let read_only = Observation { status, settings: observation };
+        let read_only = Observation {
+            status,
+            settings: observation,
+        };
         let selected = read_only.select_reported_video(limits).unwrap();
-        assert_eq!(selected.selected, Some((super::super::VideoChannel::Video1, high)));
-        let constrained = camera_api::VideoProfileLimits { max_width: 1280, ..limits };
         assert_eq!(
-            read_only.select_reported_video(constrained).unwrap().selected,
+            selected.selected,
+            Some((super::super::VideoChannel::Video1, high))
+        );
+        let constrained = camera_api::VideoProfileLimits {
+            max_width: 1280,
+            ..limits
+        };
+        assert_eq!(
+            read_only
+                .select_reported_video(constrained)
+                .unwrap()
+                .selected,
             Some((super::super::VideoChannel::Video2, low))
         );
-        assert!(read_only.select_reported_video(camera_api::VideoProfileLimits {
-            max_width: 0, ..limits
-        }).is_err());
+        assert!(
+            read_only
+                .select_reported_video(camera_api::VideoProfileLimits {
+                    max_width: 0,
+                    ..limits
+                })
+                .is_err()
+        );
         let outcome = Outcome::AlreadyAssociated {
             status,
             observation,

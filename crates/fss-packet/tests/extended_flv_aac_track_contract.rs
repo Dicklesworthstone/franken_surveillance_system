@@ -364,7 +364,10 @@ fn owner_camera_audio_track_replay() -> TestResult {
         return Err("invalid bounded laboratory input".into());
     }
     let limits = Limits::default();
-    let mut framer = Framer::with_mode(limits, 8 * 1024 * 1024, SearchMode::StructuredTrailer16)?;
+    // Passive capture begins midstream; strict 16-byte trailer variants do not
+    // cover every observed camera. This explicit heuristic excludes nonzero
+    // stream IDs but does not authenticate a boundary or the sender.
+    let mut framer = Framer::with_mode(limits, 8 * 1024 * 1024, SearchMode::ZeroStreamId)?;
     let mut track = Track::new(limits, aac::Limits::default());
     framer.append(0, &input)?;
     let (mut records, mut configurations, mut configured, mut unconfigured, mut provisional) =
